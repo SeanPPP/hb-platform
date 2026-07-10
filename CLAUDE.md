@@ -1,17 +1,9 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **hb-platform**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **hb-platform** (48961 symbols, 139086 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Code Query Tool Order
-
-- 代码发现首选 `codebase-memory-mcp`，当前项目名使用 `Users-sean-DEV-hb-platform`；优先用 `search_graph`、`trace_path`、`get_code_snippet`、`query_graph`、`search_code`。
-- GitNexus 项目名继续使用 `hb-platform`，用于影响分析、风险判断、执行流理解；修改函数、类或方法前仍必须先做 GitNexus impact 并报告影响面。
-- 提交前仍必须运行 GitNexus `detect_changes`，确认只影响预期符号和执行流。
-- CodeGraph 用于定义、调用关系、签名、源码片段和结构上下文；当 codebase-memory 或 GitNexus 不可用、结果不足，或需要快速 AST 结构导航时作为兜底。
-- `rg` 仅用于字符串字面量、配置、日志、非代码文件，或 MCP 图工具不可用时。
 
 ## Always Do
 

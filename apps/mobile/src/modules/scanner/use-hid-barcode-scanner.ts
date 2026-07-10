@@ -9,6 +9,7 @@ import {
   type HidBarcodeKeyEvent,
 } from "./hid-barcode-buffer";
 import { createHiddenInputFocusController, type HiddenInputFocusController } from "./hid-hidden-input-focus";
+import { createHidScannerEnabledGate } from "./hid-scanner-enabled-gate";
 
 interface UseHidBarcodeScannerOptions {
   enabled?: boolean;
@@ -83,6 +84,8 @@ export function useHidBarcodeScanner({
   const textInputRef = useRef<TextInput>(null);
   const focusTargetRef = useRef<() => void>(() => {});
   const focusControllerRef = useRef<HiddenInputFocusController | null>(null);
+  const enabledGateRef = useRef(createHidScannerEnabledGate(enabled));
+  enabledGateRef.current.setEnabled(enabled);
 
   const [forceTextInput, setForceTextInput] = useState<boolean>(cachedForceTextInput === true);
   const lastSubmittedRef = useRef("");
@@ -101,7 +104,11 @@ export function useHidBarcodeScanner({
   const nativeKeyBuffer = useMemo(() => createHidBarcodeKeyBuffer({
     idleMs,
     minLength,
-    onBarcode: (barcode) => onScanRef.current?.(barcode),
+    onBarcode: (barcode) => {
+      if (enabledGateRef.current.isEnabled()) {
+        onScanRef.current?.(barcode);
+      }
+    },
     onFallbackToTextInput: switchToTextInputMode,
   }), [idleMs, minLength, switchToTextInputMode]);
 
@@ -118,6 +125,10 @@ export function useHidBarcodeScanner({
 
   const submitBarcode = useCallback(
     (rawValue: string) => {
+      if (!enabledGateRef.current.isEnabled()) {
+        lastSubmittedRawValueRef.current = "";
+        return;
+      }
       const normalizedRawValue = normalizeHidBarcode(rawValue);
       const barcode = extractNewHidBarcodeSegment(normalizedRawValue, lastSubmittedRawValueRef.current);
       if (!barcode || barcode.length < minLength) {
@@ -140,13 +151,26 @@ export function useHidBarcodeScanner({
 
   const handleTextInputChange = useCallback(
     (nextValue: string) => {
+      if (!enabledGateRef.current.isEnabled()) {
+        if (textInputTimerRef.current) {
+          clearTimeout(textInputTimerRef.current);
+          textInputTimerRef.current = null;
+        }
+        setTextInputValue("");
+        return;
+      }
+
       setTextInputValue(nextValue);
       if (textInputTimerRef.current) {
         clearTimeout(textInputTimerRef.current);
       }
       // 隐藏 TextInput 模式兼容不能提供 character 的扫码枪，仍按输入停顿自动提交。
+      const canSubmit = enabledGateRef.current.captureSubmission();
       textInputTimerRef.current = setTimeout(() => {
-        submitBarcode(nextValue);
+        textInputTimerRef.current = null;
+        if (canSubmit()) {
+          submitBarcode(nextValue);
+        }
         setTextInputValue("");
       }, idleMs);
     },
@@ -158,6 +182,11 @@ export function useHidBarcodeScanner({
       if (textInputTimerRef.current) {
         clearTimeout(textInputTimerRef.current);
         textInputTimerRef.current = null;
+      }
+      if (!enabledGateRef.current.isEnabled()) {
+        setTextInputValue("");
+        lastSubmittedRawValueRef.current = "";
+        return;
       }
       const value = event.nativeEvent.text || textInputValue;
       submitBarcode(value);
@@ -214,6 +243,20 @@ export function useHidBarcodeScanner({
       setTimeout(() => focusHiddenInput(), 50);
     }
   }, [forceTextInput, enabled, focusHiddenInput]);
+
+  useEffect(() => {
+    if (enabled) {
+      return;
+    }
+
+    if (textInputTimerRef.current) {
+      clearTimeout(textInputTimerRef.current);
+      textInputTimerRef.current = null;
+    }
+    setTextInputValue("");
+    lastSubmittedRawValueRef.current = "";
+    nativeKeyBuffer.dispose();
+  }, [enabled, nativeKeyBuffer]);
 
   useEffect(() => {
     return () => {
@@ -284,6 +327,7 @@ export function useHidBarcodeScanner({
       onSubmitEditing: handleTextInputSubmit,
       autoCapitalize: "none" as const,
       autoCorrect: false,
+      editable: enabled,
       blurOnSubmit: false,
       showSoftInputOnFocus: false,
       caretHidden: true,

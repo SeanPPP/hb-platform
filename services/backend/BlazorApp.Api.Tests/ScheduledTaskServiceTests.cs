@@ -180,6 +180,93 @@ public sealed class ScheduledTaskServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LogTaskSuccessStrictAsync_任务日志不存在时抛出异常()
+    {
+        var missingTaskId = Guid.NewGuid();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _taskLogService.LogTaskSuccessStrictAsync(missingTaskId)
+        );
+
+        Assert.Contains(missingTaskId.ToString(), exception.Message);
+    }
+
+    [Fact]
+    public async Task LogTaskSuccessStrictAsync_成功时持久化完成时间()
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+
+        await _taskLogService.LogTaskSuccessStrictAsync(taskLog.Id);
+
+        var persisted = await _db.Queryable<ScheduledTaskLog>().SingleAsync(item => item.Id == taskLog.Id);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Success, persisted.Status);
+        Assert.NotNull(persisted.CompletedAt);
+    }
+
+    [Fact]
+    public async Task LogTaskSuccessStrictAsync_成功写入失败后可严格标记Failed()
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+        _db.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER reject_success_status
+            BEFORE UPDATE ON ScheduledTaskLog
+            WHEN NEW.Status = 'Success'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject success');
+            END;
+            """
+        );
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            _taskLogService.LogTaskSuccessStrictAsync(taskLog.Id)
+        );
+        await _taskLogService.LogTaskFailureStrictAsync(taskLog.Id, "成功版本写入失败");
+
+        var persisted = await _db.Queryable<ScheduledTaskLog>().SingleAsync(item => item.Id == taskLog.Id);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Failed, persisted.Status);
+        Assert.Contains("成功版本写入失败", persisted.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task StopAsync_与重新布置并发时原子清空销售统计Timer引用()
+    {
+        var service = CreateScheduledTaskService(
+            CreateScopeFactory(CreateScope(new Dictionary<Type, object?>())).Object,
+            NullLogger<ScheduledTaskService>.Instance
+        );
+        var timerField = typeof(ScheduledTaskService).GetField(
+            "_salesStatisticsTimer",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        timerField!.SetValue(
+            service,
+            new Timer(_ => { }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan)
+        );
+        var scheduleMethod = typeof(ScheduledTaskService).GetMethod(
+            "ScheduleNextSalesStatisticsRun",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        var rearmTask = Task.Run(() =>
+        {
+            for (var index = 0; index < 200; index++)
+            {
+                scheduleMethod!.Invoke(service, null);
+            }
+        });
+
+        await Task.WhenAll(rearmTask, service.StopAsync(CancellationToken.None));
+
+        Assert.Null(timerField.GetValue(service));
+    }
+
+    [Fact]
     public void CalculateNextMonthlyRun_默认31号时_二月取月末()
     {
         var service = CreateScheduledTaskService(
@@ -213,6 +300,27 @@ public sealed class ScheduledTaskServiceTests : IDisposable
         var delay = (TimeSpan)method!.Invoke(service, new object[] { now })!;
 
         Assert.Equal(new DateTime(2026, 7, 5, 23, 59, 0), now.Add(delay));
+    }
+
+    [Theory]
+    [InlineData("2026-07-10 10:12:34", "2026-07-10 10:30:00")]
+    [InlineData("2026-07-10 10:30:00", "2026-07-10 11:00:00")]
+    [InlineData("2026-07-10 23:59:59", "2026-07-11 00:00:00")]
+    public void CalculateNextSalesStatisticsRun_始终对齐下一个整点或半点(
+        string nowText,
+        string expectedText
+    )
+    {
+        var method = typeof(ScheduledTaskService).GetMethod(
+            "CalculateNextSalesStatisticsRun",
+            BindingFlags.Static | BindingFlags.NonPublic
+        );
+        var now = DateTime.Parse(nowText);
+
+        Assert.NotNull(method);
+        var delay = (TimeSpan)method!.Invoke(null, new object[] { now })!;
+
+        Assert.Equal(DateTime.Parse(expectedText), now.Add(delay));
     }
 
     [Fact]
@@ -294,6 +402,9 @@ public sealed class ScheduledTaskServiceTests : IDisposable
         typeof(ScheduledTaskService)
             .GetField("_sydneyTimeZone", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(service, CreateAllowedTimeZone());
+        typeof(ScheduledTaskService)
+            .GetField("_salesStatisticsTimerLock", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, new object());
 
         return service;
     }

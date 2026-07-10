@@ -251,6 +251,34 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpPost("store-prices/{uuid}/sync-warehouse")]
+        public async Task<IActionResult> SyncWarehousePrice(
+            string uuid,
+            [FromBody] SyncStoreProductWarehousePriceRequestDto request
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(
+                    ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(access.Message)
+                );
+            }
+
+            var result = await _service.SyncWarehousePriceAsync(
+                uuid,
+                request,
+                access.ActorLabel,
+                access.StoreCodes
+            );
+            if (string.Equals(result.ErrorCode, "PRICE_VERSION_CONFLICT", StringComparison.Ordinal))
+            {
+                return Conflict(result);
+            }
+
+            return Ok(result);
+        }
+
         [HttpPut("products/{productCode}/type")]
         public async Task<IActionResult> UpdateProductType(
             string productCode,

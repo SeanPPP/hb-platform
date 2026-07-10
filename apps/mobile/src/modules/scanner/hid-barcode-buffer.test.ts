@@ -128,6 +128,23 @@ function createBuffer(options?: {
 }
 
 {
+  let currentTime = 1000;
+  const { buffer, scans } = createBuffer({ now: () => currentTime });
+  for (const character of "HB-DISABLE") {
+    buffer.handleKeyPress({ key: character, character });
+  }
+  buffer.handleKeyPress({ key: "Enter" });
+
+  buffer.dispose();
+  for (const character of "HB-DISABLE") {
+    buffer.handleKeyPress({ key: character, character });
+  }
+  buffer.handleKeyPress({ key: "Enter" });
+
+  assert.deepEqual(scans, ["HB-DISABLE", "HB-DISABLE"], "禁用清理后不得保留旧扫码缓存");
+}
+
+{
   assert.equal(
     extractNewHidBarcodeSegment("93000000000019300000000002", "9300000000001"),
     "9300000000002",

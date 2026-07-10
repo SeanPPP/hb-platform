@@ -11,6 +11,11 @@ export interface RevenuePeriod {
   endDate: string;
 }
 
+export interface RevenueDateBounds {
+  minDate: string;
+  maxDate: string;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function pad(value: number) {
@@ -95,6 +100,40 @@ export function getDefaultRevenuePeriod(mode: RevenuePeriodMode, anchor = new Da
 
   const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
   return { mode, startDate: formatDateKey(start), endDate: formatDateKey(endOfMonth(start)) };
+}
+
+export function getRevenuePeriodForDate(mode: RevenuePeriodMode, date: string) {
+  return getDefaultRevenuePeriod(mode, parseDateKey(date));
+}
+
+export function getRevenueDateBounds(anchor = new Date()): RevenueDateBounds {
+  const minimumYear = anchor.getFullYear() - 1;
+  const minimumDay = Math.min(
+    anchor.getDate(),
+    new Date(minimumYear, anchor.getMonth() + 1, 0).getDate(),
+  );
+  return {
+    minDate: formatDateKey(new Date(minimumYear, anchor.getMonth(), minimumDay)),
+    maxDate: formatDateKey(anchor),
+  };
+}
+
+export function refreshRevenueDateSelection(selectedDate: string, anchor = new Date()) {
+  const bounds = getRevenueDateBounds(anchor);
+  return {
+    bounds,
+    // 常驻页面跨日后保留仍有效的选择，只收敛真正越界的日期。
+    selectedDate: selectedDate < bounds.minDate
+      ? bounds.minDate
+      : selectedDate > bounds.maxDate
+        ? bounds.maxDate
+        : selectedDate,
+  };
+}
+
+export function isRevenuePeriodAvailable(period: RevenuePeriod, bounds: RevenueDateBounds) {
+  // 周期只要覆盖至少一个可选日期即可，例如本周即使尚未结束仍可查询。
+  return period.endDate >= bounds.minDate && period.startDate <= bounds.maxDate;
 }
 
 export function getPreviousRevenuePeriod(period: RevenuePeriod): RevenuePeriod {

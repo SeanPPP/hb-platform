@@ -3,8 +3,17 @@ import request, { RequestError } from '../utils/request'
 const API_BASE = '/api/react/v1/domestic-products'
 
 export interface HbwebProductNameUpdateItem {
+  SupplierCode: string
   ItemNumber: string
   ProductName: string
+}
+
+export interface HqProductNameSyncResult {
+  success: boolean
+  updatedCount: number
+  unchangedCount: number
+  missingItemNumbers: string[]
+  errors: string[]
 }
 
 export interface UpdateHbwebProductNamesResult {
@@ -12,6 +21,7 @@ export interface UpdateHbwebProductNamesResult {
   unchangedCount: number
   missingItemNumbers: string[]
   errors: string[]
+  hqSyncResult?: HqProductNameSyncResult
 }
 
 export interface UpdateHbwebProductNamesResponse {
@@ -48,7 +58,7 @@ export async function batchUpdateDomesticProducts(data: { Products: Array<Record
   return response?.data ?? response
 }
 
-export async function updateHbwebProductNames(data: { Products: HbwebProductNameUpdateItem[] }): Promise<UpdateHbwebProductNamesResponse> {
+export async function updateHbwebProductNames(data: { Products: HbwebProductNameUpdateItem[]; SyncToHq?: boolean }): Promise<UpdateHbwebProductNamesResponse> {
   try {
     const response: any = await request(`${API_BASE}/product-master-names`, {
       method: 'PUT',

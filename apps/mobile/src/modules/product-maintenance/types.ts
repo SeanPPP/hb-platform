@@ -133,6 +133,36 @@ export interface UpdateStorePriceRequest {
   isActive?: boolean;
 }
 
+export type WarehousePriceSyncStatus =
+  | "not_applicable"
+  | "missing_source"
+  | "synced"
+  | "confirmation_required";
+
+export interface WarehousePriceSyncRequest {
+  confirmRetailPrice: boolean;
+  expectedWarehousePurchasePrice?: number | null;
+  expectedWarehouseRetailPrice?: number | null;
+  expectedStorePurchasePrice?: number | null;
+  expectedStoreRetailPrice?: number | null;
+  expectedDiscountRate?: number | null;
+}
+
+export interface WarehousePriceSyncResult {
+  status: WarehousePriceSyncStatus;
+  purchaseUpdated: boolean;
+  retailUpdated: boolean;
+  retailConfirmationRequired: boolean;
+  storePrice: StorePriceEditable | null;
+  warehousePurchasePrice: number | null;
+  warehouseRetailPrice: number | null;
+  previousStorePurchasePrice: number | null;
+  previousStoreRetailPrice: number | null;
+  discountRate: number | null;
+  previousDiscountedRetailPrice: number | null;
+  newDiscountedRetailPrice: number | null;
+}
+
 export interface UpdateMultiCodeRequest {
   purchasePrice?: number | null;
   retailPrice?: number | null;

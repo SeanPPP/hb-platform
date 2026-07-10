@@ -181,6 +181,24 @@
     "discountHint": "Confirm to update the retail price and refresh the regular label.",
     "confirm": "Update price and label"
   },
+  "warehousePriceSync": {
+    "title": "Warehouse retail price changed",
+    "product": "{{name}} ({{code}})",
+    "currentRetail": "Current retail",
+    "warehouseRetail": "New warehouse retail",
+    "toWarehousePrice": "Update to the warehouse retail price",
+    "preservedDiscount": "Keep current discount",
+    "discountedRetail": "Discounted price",
+    "hint": "The purchase price has already synced from the warehouse. Confirm to keep the current discount rate and recalculate the discounted price from the new retail price.",
+    "cancel": "Not now",
+    "confirm": "Confirm update",
+    "purchaseUpdated": "Purchase price updated from the warehouse",
+    "retailUpdated": "Retail price updated with the current discount rate preserved",
+    "retailUpdatedPrintFailed": "Retail price updated with the current discount preserved, but label printing failed. Please print again.",
+    "previewFailed": "Warehouse price reconciliation failed",
+    "confirmFailed": "Warehouse retail price update failed. Try again.",
+    "conflict": "The prices changed. The latest values are shown; please confirm again."
+  },
   "print": {
     "title": "Label printing",
     "quick": "Print",

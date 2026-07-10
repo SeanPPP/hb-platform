@@ -7,6 +7,8 @@ interface SearchPanelProps {
   loading?: boolean;
   lastHitLabel?: string;
   onChangeText: (value: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
   onSubmit: () => void;
   onClear: () => void;
   onOpenPrintSettings?: () => void;
@@ -17,6 +19,8 @@ export function SearchPanel({
   loading = false,
   lastHitLabel,
   onChangeText,
+  onFocus,
+  onBlur,
   onSubmit,
   onClear,
   onOpenPrintSettings,
@@ -30,6 +34,8 @@ export function SearchPanel({
           placeholder={t("search.placeholder")}
           value={value}
           onChangeText={onChangeText}
+          onFocus={onFocus}
+          onBlur={onBlur}
           onSubmitEditing={onSubmit}
           style={styles.searchbar}
           inputStyle={styles.input}

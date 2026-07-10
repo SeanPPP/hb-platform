@@ -181,6 +181,24 @@
     "discountHint": "确认后会同步更新零售价，并按新价格更新普通标签。",
     "confirm": "更新价格并更新标签"
   },
+  "warehousePriceSync": {
+    "title": "仓库零售价有变化",
+    "product": "{{name}}（{{code}}）",
+    "currentRetail": "当前零售价",
+    "warehouseRetail": "仓库新零售价",
+    "toWarehousePrice": "更新为仓库零售价",
+    "preservedDiscount": "保留当前折扣率",
+    "discountedRetail": "折后价",
+    "hint": "进货价已按仓库自动同步。确认后会保留当前折扣率，并按仓库新零售价重算折后价。",
+    "cancel": "暂不更新",
+    "confirm": "确认更新",
+    "purchaseUpdated": "进货价已按仓库更新",
+    "retailUpdated": "零售价已更新，当前折扣率保持不变",
+    "retailUpdatedPrintFailed": "零售价已更新并保留当前折扣率，但标签打印失败，请重试打印",
+    "previewFailed": "仓库价格对账失败",
+    "confirmFailed": "仓库零售价更新失败，请重试",
+    "conflict": "价格已发生变化，已刷新为最新内容，请重新确认"
+  },
   "print": {
     "title": "标签打印",
     "quick": "打",

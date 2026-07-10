@@ -10,7 +10,7 @@ import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, f
 import { batchTranslate } from '../../../services/translationService'
 import { isValidEAN13 } from '../../../utils/barcode'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
-import { applyProductImportNameTranslations, buildAssignContainerItems, buildHbwebProductNameUpdates, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
+import { applyProductImportNameTranslations, buildAssignContainerItems, buildHbwebProductNameSyncNotificationDecision, buildHbwebProductNameUpdates, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, getHbwebProductNameSyncConfirmationKeys, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, summarizeHbwebProductNameSyncResponse, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
@@ -50,6 +50,7 @@ export default function ProductImportPage() {
   const [containers, setContainers] = useState<any[]>([])
   const [loadingContainers, setLoadingContainers] = useState(false)
   const [translating, setTranslating] = useState(false)
+  const [syncProductNamesToHq, setSyncProductNamesToHq] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState('')
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false)
   const [conflictItems, setConflictItems] = useState<Array<{ productCode: string; existingPieces?: number }>>([])
@@ -282,12 +283,14 @@ export default function ProductImportPage() {
       return
     }
 
+    if (!state.supplier?.trim()) { message.warning(t('productImport.selectSupplierFirst', '请先选择供应商')); return }
+
     if (state.selectedIds.length === 0) {
       message.warning(t('productImport.selectProductsFirst', '请先选择商品'))
       return
     }
 
-    const updatePayload = buildHbwebProductNameUpdates(state.products, state.selectedIds)
+    const updatePayload = buildHbwebProductNameUpdates(state.products, state.selectedIds, state.supplier)
     if (updatePayload.missingItemNumbers.length > 0) {
       message.error(t('productImport.missingHbwebNameItemNumbers', '已选商品存在空货号，请先补齐货号'))
       return
@@ -304,13 +307,25 @@ export default function ProductImportPage() {
       message.warning(t('productImport.noHbwebProductNamesToUpdate', '没有可更新的商品主表名称'))
       return
     }
+    const confirmationKeys = getHbwebProductNameSyncConfirmationKeys(syncProductNamesToHq)
 
     Modal.confirm({
       title: t('productImport.updateHbwebProductNamesTitle', '更新商品主表名称'),
       content: (
         <div>
-          <div>{t('productImport.updateHbwebProductNamesConfirm', '将把选中 {{count}} 个货号的英文名称写入 HBweb 商品主表 Product.ProductName。', { count: updatePayload.products.length })}</div>
-          <div style={{ marginTop: 8, color: '#8c8c8c' }}>{t('productImport.updateHbwebProductNamesScope', '只更新商品名称字段，不改英文名、价格、条码、图片和分店价格。')}</div>
+          <div>{t(
+            confirmationKeys.confirmKey,
+            syncProductNamesToHq
+              ? '将把选中 {{count}} 个货号的英文名称同时写入 HBweb 商品主表 Product.ProductName 和 HQ DIC_商品信息字典表.H商品名称。'
+              : '将把选中 {{count}} 个货号的英文名称写入 HBweb 商品主表 Product.ProductName。',
+            { count: updatePayload.products.length },
+          )}</div>
+          <div style={{ marginTop: 8, color: '#8c8c8c' }}>{t(
+            confirmationKeys.scopeKey,
+            syncProductNamesToHq
+              ? '仅更新商品名称和审计字段，不改价格、库存、条码、图片，也不会创建 HQ 缺失商品。'
+              : '只更新商品名称字段，不改英文名、价格、条码、图片和分店价格。',
+          )}</div>
         </div>
       ),
       okText: t('productImport.confirmUpdateHbwebProductNames', '确认更新'),
@@ -318,21 +333,47 @@ export default function ProductImportPage() {
       onOk: async () => {
         setState((prev) => ({ ...prev, saving: true }))
         try {
-          const response = await updateHbwebProductNames({ Products: updatePayload.products })
-          if (!response.success) {
-            const errors = response.data?.errors?.filter(Boolean) ?? []
-            const detail = errors.length > 0 ? `：${errors.join('; ')}` : ''
-            throw new Error(`${response.message || t('productImport.updateHbwebProductNamesFailed', '更新商品主表名称失败')}${detail}`)
+          const response = await updateHbwebProductNames({ Products: updatePayload.products, SyncToHq: syncProductNamesToHq })
+          const feedback = summarizeHbwebProductNameSyncResponse(response)
+          if (feedback.status === 'failure') {
+            throw new Error(response.message || t('productImport.updateHbwebProductNamesFailed', '更新商品主表名称失败'))
           }
 
-          const data = response.data
-          message.success(t('productImport.updateHbwebProductNamesSuccess', '商品主表名称更新完成：更新 {{updated}}，无变化 {{unchanged}}，未找到 {{missing}}', {
-            updated: data?.updatedCount ?? 0,
-            unchanged: data?.unchangedCount ?? 0,
-            missing: data?.missingItemNumbers?.length ?? 0,
-          }))
-          if (data?.errors?.length) {
-            message.warning(t('productImport.updateHbwebProductNamesSkipped', '有 {{count}} 条被跳过：{{items}}', { count: data.errors.length, items: data.errors.join('; ') }))
+          const notification = buildHbwebProductNameSyncNotificationDecision(feedback)
+          let notificationText: string
+          if (notification.partial) {
+            notificationText = t('productImport.hqProductNameSyncPartialFailed', 'HBweb 商品主表名称已更新：更新 {{updated}}，无变化 {{unchanged}}，未找到 {{missing}}，跳过 {{skipped}}；HQ 同步失败', {
+              updated: notification.hbweb.updatedCount,
+              unchanged: notification.hbweb.unchangedCount,
+              missing: notification.hbweb.missingCount,
+              skipped: notification.hbweb.warningCount,
+            })
+          } else {
+            const parts = [t('productImport.updateHbwebProductNamesSuccess', '商品主表名称更新完成：更新 {{updated}}，无变化 {{unchanged}}，未找到 {{missing}}', {
+              updated: notification.hbweb.updatedCount,
+              unchanged: notification.hbweb.unchangedCount,
+              missing: notification.hbweb.missingCount,
+            })]
+            if (notification.hbweb.warningCount > 0) {
+              parts.push(t('productImport.updateHbwebProductNamesSkipped', '跳过商品：{{count}}', { count: notification.hbweb.warningCount }))
+            }
+            if (notification.hq) {
+              parts.push(t('productImport.hqProductNameSyncSuccess', 'HQ 商品名称同步完成：更新 {{updated}}，无变化 {{unchanged}}，未找到 {{missing}}', {
+                updated: notification.hq.updatedCount,
+                unchanged: notification.hq.unchangedCount,
+                missing: notification.hq.missingCount,
+              }))
+              if (notification.hq.warningCount > 0) {
+                parts.push(t('productImport.hqProductNameSyncWarning', 'HQ 警告：{{count}}', { count: notification.hq.warningCount }))
+              }
+            }
+            notificationText = parts.join(' | ')
+          }
+
+          if (notification.level === 'success') {
+            message.success(notificationText)
+          } else {
+            message.warning(notificationText)
           }
         } catch (error: any) {
           message.error(error?.message || t('productImport.updateHbwebProductNamesFailed', '更新商品主表名称失败'))
@@ -341,7 +382,7 @@ export default function ProductImportPage() {
         }
       },
     })
-  }, [state.detecting, state.products, state.saving, state.selectedIds, t, translating])
+  }, [state.detecting, state.products, state.saving, state.selectedIds, state.supplier, syncProductNamesToHq, t, translating])
 
   const handleBatchCreate = useCallback(async () => {
     const newProducts = state.products.filter((p) => p.status === 'new')
@@ -1003,9 +1044,18 @@ export default function ProductImportPage() {
           <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>{t('productImport.deleteSelected', '删除选中')}</Button>
           <Button danger icon={<DeleteOutlined />} onClick={deleteAllRows} disabled={state.products.length === 0}>{t('productImport.deleteAll', '删除全部')}</Button>
           <Button icon={<TranslationOutlined />} onClick={handleBatchTranslate} disabled={translating || state.products.length === 0} loading={translating}>{t('productImport.batchTranslate', '批量翻译')}</Button>
-          <Tooltip title={t('productImport.updateHbwebProductNamesTooltip', '把已选行英文名称写入 HBweb 商品主表 Product.ProductName')}>
-            <Button icon={<EditOutlined />} onClick={handleUpdateHbwebProductNames} disabled={state.selectedIds.length === 0 || state.saving || state.detecting || translating} loading={state.saving}>{t('productImport.updateHbwebProductNames', '更新主表名称')}</Button>
-          </Tooltip>
+          <Space size="small" wrap={false}>
+            <Tooltip title={t('productImport.updateHbwebProductNamesTooltip', '把已选行英文名称写入 HBweb 商品主表 Product.ProductName')}>
+              <Button icon={<EditOutlined />} onClick={handleUpdateHbwebProductNames} disabled={state.selectedIds.length === 0 || state.saving || state.detecting || translating} loading={state.saving}>{t('productImport.updateHbwebProductNames', '更新主表名称')}</Button>
+            </Tooltip>
+            <Checkbox
+              checked={syncProductNamesToHq}
+              onChange={(event) => setSyncProductNamesToHq(event.target.checked)}
+              disabled={state.saving || state.detecting || translating}
+            >
+              {t('productImport.syncProductNamesToHq', '同步 HQ 商品表')}
+            </Checkbox>
+          </Space>
           <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>{t('productImport.detectMatch', '检测匹配')}</Button>
           {!state.needsDetection && (
             <>

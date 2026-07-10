@@ -539,6 +539,422 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> SyncWarehousePriceAsync(
+            string uuid,
+            SyncStoreProductWarehousePriceRequestDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                var result = await SyncWarehousePriceWithinTransactionAsync(
+                    uuid,
+                    request,
+                    updatedBy,
+                    accessibleStoreCodes
+                );
+                if (result.Success)
+                {
+                    await _db.Ado.CommitTranAsync();
+                }
+                else
+                {
+                    await _db.Ado.RollbackTranAsync();
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                await _db.Ado.RollbackTranAsync();
+                _logger.LogError(ex, "分店商品仓库价格对账失败: {Uuid}", uuid);
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                    "仓库价格对账失败，请稍后重试"
+                );
+            }
+        }
+
+        private async Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> SyncWarehousePriceWithinTransactionAsync(
+            string uuid,
+            SyncStoreProductWarehousePriceRequestDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            // 定位读取只取锁序所需字段，保持普通 READ COMMITTED，不提前占用分店价更新锁。
+            var locator = await _db.Ado.SqlQuerySingleAsync<StoreRetailPrice>(
+                "SELECT UUID, StoreCode, ProductCode FROM StoreRetailPrice WHERE UUID = @uuid AND (IsDeleted = 0 OR IsDeleted IS NULL)",
+                new { uuid }
+            );
+            if (locator == null)
+            {
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                    "分店商品记录不存在"
+                );
+            }
+
+            if (!CanAccessStore(locator.StoreCode, accessibleStoreCodes))
+            {
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                    "当前账号或设备无权修改该分店商品"
+                );
+            }
+
+            // 与仓库商品写链路保持 Product → WarehouseProduct → StoreRetailPrice 的固定锁序。
+            var product = await WithWarehouseSyncUpdateLock(
+                    _db.Queryable<Product>()
+                        .Where(x => x.ProductCode == locator.ProductCode && !x.IsDeleted)
+                )
+                .FirstAsync();
+            var warehouseProduct = await WithWarehouseSyncUpdateLock(
+                    _db.Queryable<WarehouseProduct>()
+                        .Where(x => x.ProductCode == locator.ProductCode && !x.IsDeleted)
+                )
+                .FirstAsync();
+            var entity = await WithWarehouseSyncUpdateLock(
+                    _db.Queryable<StoreRetailPrice>().Where(x => x.UUID == uuid && !x.IsDeleted)
+                )
+                .FirstAsync();
+            if (entity == null)
+            {
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                    "分店商品记录已变化",
+                    "PRICE_VERSION_CONFLICT"
+                );
+            }
+
+            // 最终锁定后必须先复核权限，避免并发换店时把无权分店价格放进冲突响应。
+            if (!CanAccessStore(entity.StoreCode, accessibleStoreCodes))
+            {
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                    "当前账号或设备无权修改该分店商品"
+                );
+            }
+
+            if (
+                !string.Equals(entity.ProductCode, locator.ProductCode, StringComparison.Ordinal)
+                || !string.Equals(entity.StoreCode, locator.StoreCode, StringComparison.Ordinal)
+            )
+            {
+                return await BuildWarehousePriceConflictAsync(
+                    entity,
+                    entity.SupplierCode,
+                    null,
+                    null
+                );
+            }
+
+            if (product == null)
+            {
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error("商品记录不存在");
+            }
+
+            var supplierCode = product.LocalSupplierCode?.Trim();
+            var previousPurchasePrice = entity.PurchasePrice;
+            var previousRetailPrice = entity.StoreRetailPriceValue;
+            var discountRate = entity.DiscountRate;
+            if (!string.Equals(supplierCode, "200", StringComparison.Ordinal))
+            {
+                var notApplicable = await BuildWarehousePriceSyncResultAsync(
+                    entity,
+                    supplierCode,
+                    "not_applicable",
+                    false,
+                    false,
+                    false,
+                    null,
+                    null,
+                    previousPurchasePrice,
+                    previousRetailPrice,
+                    discountRate
+                );
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.OK(notApplicable);
+            }
+
+            var warehousePurchasePrice = NormalizeSourcePrice(warehouseProduct?.ImportPrice);
+            var warehouseRetailPrice = NormalizeSourcePrice(warehouseProduct?.OEMPrice);
+            if (
+                warehouseProduct == null
+                || (!warehousePurchasePrice.HasValue && !warehouseRetailPrice.HasValue)
+            )
+            {
+                var missingSource = await BuildWarehousePriceSyncResultAsync(
+                    entity,
+                    supplierCode,
+                    "missing_source",
+                    false,
+                    false,
+                    false,
+                    warehousePurchasePrice,
+                    warehouseRetailPrice,
+                    previousPurchasePrice,
+                    previousRetailPrice,
+                    discountRate
+                );
+                return ApiResponse<SyncStoreProductWarehousePriceResultDto>.OK(missingSource);
+            }
+
+            var purchaseChanged = warehousePurchasePrice.HasValue
+                && !PricesEqual(entity.PurchasePrice, warehousePurchasePrice);
+            var retailChanged = warehouseRetailPrice.HasValue
+                && !PricesEqual(entity.StoreRetailPriceValue, warehouseRetailPrice);
+
+            // 确认请求必须基于用户看到的完整快照；任一来源或目标值变化都拒绝写入。
+            if (
+                request.ConfirmRetailPrice
+                && !WarehousePriceSnapshotMatches(
+                    request,
+                    warehousePurchasePrice,
+                    warehouseRetailPrice,
+                    entity.PurchasePrice,
+                    entity.StoreRetailPriceValue,
+                    entity.DiscountRate
+                )
+            )
+            {
+                return await BuildWarehousePriceConflictAsync(
+                    entity,
+                    supplierCode,
+                    warehousePurchasePrice,
+                    warehouseRetailPrice
+                );
+            }
+
+            var purchaseUpdated = purchaseChanged;
+            var retailUpdated = request.ConfirmRetailPrice && retailChanged;
+            if (purchaseUpdated || retailUpdated)
+            {
+                var previousIsAutoPricing = entity.IsAutoPricing;
+                var previousIsSpecialProduct = entity.IsSpecialProduct;
+                var previousIsActive = entity.IsActive;
+                var previousUpdatedAt = entity.UpdatedAt;
+                var previousSupplierCode = entity.SupplierCode;
+                var previousStoreCode = entity.StoreCode;
+                var previousProductCode = entity.ProductCode;
+
+                if (purchaseUpdated)
+                {
+                    entity.PurchasePrice = warehousePurchasePrice;
+                }
+
+                if (retailUpdated)
+                {
+                    entity.StoreRetailPriceValue = warehouseRetailPrice;
+                }
+
+                entity.UpdatedAt = DateTime.UtcNow;
+                entity.UpdatedBy = updatedBy;
+                // 仅写本入口负责的价格与更新审计列；WHERE 同时承担乐观并发兜底。
+                var affectedRows = await _db.Updateable(entity)
+                    .UpdateColumns(x => new
+                    {
+                        x.PurchasePrice,
+                        x.StoreRetailPriceValue,
+                        x.UpdatedAt,
+                        x.UpdatedBy,
+                    })
+                    .Where(x =>
+                        x.UUID == uuid
+                        && !x.IsDeleted
+                        && x.StoreCode == previousStoreCode
+                        && x.ProductCode == previousProductCode
+                        && x.SupplierCode == previousSupplierCode
+                        && x.PurchasePrice == previousPurchasePrice
+                        && x.StoreRetailPriceValue == previousRetailPrice
+                        && x.DiscountRate == discountRate
+                        && x.IsAutoPricing == previousIsAutoPricing
+                        && x.IsSpecialProduct == previousIsSpecialProduct
+                        && x.IsActive == previousIsActive
+                        && x.UpdatedAt == previousUpdatedAt
+                    )
+                    .ExecuteCommandAsync();
+                if (affectedRows == 0)
+                {
+                    var latestEntity = await WithWarehouseSyncUpdateLock(
+                            _db.Queryable<StoreRetailPrice>()
+                                .Where(x => x.UUID == uuid && !x.IsDeleted)
+                        )
+                        .FirstAsync();
+                    if (latestEntity == null)
+                    {
+                        return ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(
+                            "分店商品记录已变化",
+                            "PRICE_VERSION_CONFLICT"
+                        );
+                    }
+
+                    return await BuildWarehousePriceConflictAsync(
+                        latestEntity,
+                        supplierCode,
+                        warehousePurchasePrice,
+                        warehouseRetailPrice
+                    );
+                }
+
+                await SyncCurrentStoreProjectedPriceRecordsAsync(entity, updatedBy);
+            }
+
+            var confirmationRequired = !request.ConfirmRetailPrice && retailChanged;
+            var status = confirmationRequired ? "confirmation_required" : "synced";
+            var result = await BuildWarehousePriceSyncResultAsync(
+                entity,
+                supplierCode,
+                status,
+                purchaseUpdated,
+                retailUpdated,
+                confirmationRequired,
+                warehousePurchasePrice,
+                warehouseRetailPrice,
+                previousPurchasePrice,
+                previousRetailPrice,
+                discountRate
+            );
+            return ApiResponse<SyncStoreProductWarehousePriceResultDto>.OK(result);
+        }
+
+        private async Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> BuildWarehousePriceConflictAsync(
+            StoreRetailPrice entity,
+            string? supplierCode,
+            decimal? warehousePurchasePrice,
+            decimal? warehouseRetailPrice
+        )
+        {
+            var retailChanged = warehouseRetailPrice.HasValue
+                && !PricesEqual(entity.StoreRetailPriceValue, warehouseRetailPrice);
+            var latest = await BuildWarehousePriceSyncResultAsync(
+                entity,
+                supplierCode,
+                retailChanged ? "confirmation_required" : "synced",
+                false,
+                false,
+                retailChanged,
+                warehousePurchasePrice,
+                warehouseRetailPrice,
+                entity.PurchasePrice,
+                entity.StoreRetailPriceValue,
+                entity.DiscountRate
+            );
+            return new ApiResponse<SyncStoreProductWarehousePriceResultDto>
+            {
+                Success = false,
+                ErrorCode = "PRICE_VERSION_CONFLICT",
+                Message = "仓库或分店价格已变化，请按最新价格重新确认",
+                Data = latest,
+            };
+        }
+
+        private ISugarQueryable<T> WithWarehouseSyncUpdateLock<T>(ISugarQueryable<T> queryable)
+        {
+            return _db.CurrentConnectionConfig.DbType == DbType.SqlServer
+                ? queryable.With(SqlWith.UpdLock)
+                : queryable;
+        }
+
+        private async Task<SyncStoreProductWarehousePriceResultDto> BuildWarehousePriceSyncResultAsync(
+            StoreRetailPrice entity,
+            string? supplierCode,
+            string status,
+            bool purchaseUpdated,
+            bool retailUpdated,
+            bool retailConfirmationRequired,
+            decimal? warehousePurchasePrice,
+            decimal? warehouseRetailPrice,
+            decimal? previousStorePurchasePrice,
+            decimal? previousStoreRetailPrice,
+            decimal? discountRate
+        )
+        {
+            return new SyncStoreProductWarehousePriceResultDto
+            {
+                Status = status,
+                PurchaseUpdated = purchaseUpdated,
+                RetailUpdated = retailUpdated,
+                RetailConfirmationRequired = retailConfirmationRequired,
+                StorePrice = await BuildStorePriceDtoAsync(entity, supplierCode),
+                WarehousePurchasePrice = warehousePurchasePrice,
+                WarehouseRetailPrice = warehouseRetailPrice,
+                PreviousStorePurchasePrice = previousStorePurchasePrice,
+                PreviousStoreRetailPrice = previousStoreRetailPrice,
+                DiscountRate = discountRate,
+                PreviousDiscountedRetailPrice = CalculateDiscountedPrice(
+                    previousStoreRetailPrice,
+                    discountRate
+                ),
+                NewDiscountedRetailPrice = CalculateDiscountedPrice(
+                    warehouseRetailPrice ?? previousStoreRetailPrice,
+                    discountRate
+                ),
+            };
+        }
+
+        private static bool WarehousePriceSnapshotMatches(
+            SyncStoreProductWarehousePriceRequestDto request,
+            decimal? warehousePurchasePrice,
+            decimal? warehouseRetailPrice,
+            decimal? storePurchasePrice,
+            decimal? storeRetailPrice,
+            decimal? discountRate
+        )
+        {
+            return PricesEqual(request.ExpectedWarehousePurchasePrice, warehousePurchasePrice)
+                && PricesEqual(request.ExpectedWarehouseRetailPrice, warehouseRetailPrice)
+                && PricesEqual(request.ExpectedStorePurchasePrice, storePurchasePrice)
+                && PricesEqual(request.ExpectedStoreRetailPrice, storeRetailPrice)
+                && DiscountRatesEqual(request.ExpectedDiscountRate, discountRate);
+        }
+
+        private static decimal? NormalizeSourcePrice(decimal? value)
+        {
+            if (!value.HasValue)
+            {
+                return null;
+            }
+
+            var rounded = RoundPrice(value.Value);
+            return rounded > 0 ? rounded : null;
+        }
+
+        private static bool PricesEqual(decimal? left, decimal? right)
+        {
+            return RoundNullablePrice(left) == RoundNullablePrice(right);
+        }
+
+        private static bool DiscountRatesEqual(decimal? left, decimal? right)
+        {
+            return RoundNullableDiscountRate(left) == RoundNullableDiscountRate(right);
+        }
+
+        private static decimal? RoundNullablePrice(decimal? value)
+        {
+            return value.HasValue ? RoundPrice(value.Value) : null;
+        }
+
+        private static decimal? RoundNullableDiscountRate(decimal? value)
+        {
+            return value.HasValue
+                ? Math.Round(value.Value, 4, MidpointRounding.AwayFromZero)
+                : null;
+        }
+
+        private static decimal RoundPrice(decimal value)
+        {
+            return Math.Round(value, 2, MidpointRounding.AwayFromZero);
+        }
+
+        private static decimal? CalculateDiscountedPrice(decimal? retailPrice, decimal? discountRate)
+        {
+            if (!retailPrice.HasValue)
+            {
+                return null;
+            }
+
+            // DiscountRate 表示减免比例（例如 0.2 为减 20%），不是支付比例。
+            var discountReductionRate = discountRate ?? 0m;
+            return RoundPrice(retailPrice.Value * (1m - discountReductionRate));
+        }
+
         public async Task<ApiResponse<StoreProductCodePageDto<StoreProductSetCodeDto>>> GetSetCodesAsync(
             string productCode,
             string? storeCode,
@@ -2151,6 +2567,110 @@ namespace BlazorApp.Api.Services.React
             if (updates.Count > 0)
             {
                 await _db.Updateable(updates).ExecuteCommandAsync();
+            }
+        }
+
+        private async Task SyncCurrentStoreProjectedPriceRecordsAsync(
+            StoreRetailPrice mainStorePrice,
+            string updatedBy
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(mainStorePrice.StoreCode)
+                || string.IsNullOrWhiteSpace(mainStorePrice.ProductCode)
+            )
+            {
+                return;
+            }
+
+            var setCodes = await WithWarehouseSyncUpdateLock(
+                    _db.Queryable<ProductSetCode>()
+                        .Where(x => x.ProductCode == mainStorePrice.ProductCode && !x.IsDeleted)
+                )
+                .ToListAsync();
+            if (setCodes.Count == 0)
+            {
+                return;
+            }
+
+            var setProductCodes = setCodes
+                .Select(x => ResolveSetProductCode(x.SetProductCode, x.SetCodeId))
+                .Distinct()
+                .ToList();
+            var currentStoreRecords = await WithWarehouseSyncUpdateLock(
+                    _db.Queryable<StoreMultiCodeProduct>()
+                        .Where(x =>
+                            x.StoreCode == mainStorePrice.StoreCode
+                            && x.MultiCodeProductCode != null
+                            && setProductCodes.Contains(x.MultiCodeProductCode)
+                            && !x.IsDeleted
+                        )
+                )
+                .ToListAsync();
+            var projectionMap = currentStoreRecords.ToDictionary(
+                x => ResolveSetProductCode(x.MultiCodeProductCode, x.UUID),
+                x => x
+            );
+            var inserts = new List<StoreMultiCodeProduct>();
+            var updates = new List<StoreMultiCodeProduct>();
+            foreach (var setCode in setCodes)
+            {
+                var setProductCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                if (!projectionMap.TryGetValue(setProductCode, out var existing))
+                {
+                    inserts.Add(
+                        BuildProjectedStoreMultiCode(
+                            setCode,
+                            mainStorePrice,
+                            mainStorePrice.StoreCode!,
+                            updatedBy
+                        )
+                    );
+                    continue;
+                }
+
+                var nextRetailPrice = setCode.SetType == 2
+                    ? mainStorePrice.StoreRetailPriceValue
+                    : setCode.SetRetailPrice;
+                var nextPurchasePrice = setCode.SetType == 2
+                    ? mainStorePrice.PurchasePrice
+                    : StoreProductMaintenanceSyncHelper.CalculateSetPurchasePrice(
+                        mainStorePrice.PurchasePrice,
+                        mainStorePrice.StoreRetailPriceValue,
+                        setCode.SetRetailPrice
+                    );
+                if (
+                    PricesEqual(existing.PurchasePrice, nextPurchasePrice)
+                    && PricesEqual(existing.MultiCodeRetailPrice, nextRetailPrice)
+                )
+                {
+                    continue;
+                }
+
+                // 既有派生记录只同步价格，折扣、自动价、特殊商品、启用状态和创建审计全部保留。
+                existing.PurchasePrice = nextPurchasePrice;
+                existing.MultiCodeRetailPrice = nextRetailPrice;
+                existing.UpdatedAt = DateTime.UtcNow;
+                existing.UpdatedBy = updatedBy;
+                updates.Add(existing);
+            }
+
+            if (inserts.Count > 0)
+            {
+                await _db.Insertable(inserts).ExecuteCommandAsync();
+            }
+
+            if (updates.Count > 0)
+            {
+                await _db.Updateable(updates)
+                    .UpdateColumns(x => new
+                    {
+                        x.PurchasePrice,
+                        x.MultiCodeRetailPrice,
+                        x.UpdatedAt,
+                        x.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
             }
         }
 

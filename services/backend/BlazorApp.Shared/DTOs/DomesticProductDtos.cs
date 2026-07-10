@@ -962,9 +962,14 @@ namespace BlazorApp.Shared.DTOs
     public class BatchUpdateHbwebProductNamesDto
     {
         /// <summary>
-        /// 需要按货号更新的商品列表
+        /// 需要按 HBweb Product.LocalSupplierCode + Product.ItemNumber 更新的商品列表
         /// </summary>
         public List<HbwebProductNameUpdateItemDto> Products { get; set; } = new();
+
+        /// <summary>
+        /// 是否同时同步 HQ 商品名称，默认不访问 HQ
+        /// </summary>
+        public bool SyncToHq { get; set; }
     }
 
     /// <summary>
@@ -972,6 +977,11 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class HbwebProductNameUpdateItemDto
     {
+        /// <summary>
+        /// HBweb Product.LocalSupplierCode（本地供应商代码，不是国内供应商代码）
+        /// </summary>
+        public string SupplierCode { get; set; } = string.Empty;
+
         /// <summary>
         /// HBweb Product.ItemNumber，对应导入页货号
         /// </summary>
@@ -1000,6 +1010,42 @@ namespace BlazorApp.Shared.DTOs
 
         /// <summary>
         /// HBweb 主表未找到的货号
+        /// </summary>
+        public List<string> MissingItemNumbers { get; set; } = new();
+
+        /// <summary>
+        /// 跳过或失败原因
+        /// </summary>
+        public List<string> Errors { get; set; } = new();
+
+        /// <summary>
+        /// 可选的 HQ 商品名称同步结果；未要求同步时为空
+        /// </summary>
+        public HqProductNameSyncResultDto? HqSyncResult { get; set; }
+    }
+
+    /// <summary>
+    /// HQ 商品名称同步结果
+    /// </summary>
+    public class HqProductNameSyncResultDto
+    {
+        /// <summary>
+        /// HQ 同步是否整体成功
+        /// </summary>
+        public bool Success { get; set; }
+
+        /// <summary>
+        /// 实际更新数量
+        /// </summary>
+        public int UpdatedCount { get; set; }
+
+        /// <summary>
+        /// 名称已一致、未写入数量
+        /// </summary>
+        public int UnchangedCount { get; set; }
+
+        /// <summary>
+        /// HQ 商品字典未找到的货号
         /// </summary>
         public List<string> MissingItemNumbers { get; set; } = new();
 

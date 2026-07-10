@@ -13,7 +13,7 @@
     "test:i18n-locales": "node scripts/check-locale-parity.js",
     "test:native-app-update": "npx --yes tsx src/modules/updates/native-app-update.test.ts",
     "test:public-holiday-sync": "npx --yes tsx src/modules/attendance/public-holiday-sync.test.ts",
-    "test:reports": "npx --yes tsx src/modules/reports/revenue-api-normalization.test.ts && npx --yes tsx src/modules/reports/growth-rate.test.ts && npx --yes tsx src/modules/reports/revenue-format.test.ts && npx --yes tsx src/modules/reports/revenue-periods.test.ts",
+    "test:reports": "npx --yes tsx src/modules/reports/revenue-api-normalization.test.ts && npx --yes tsx src/modules/reports/growth-rate.test.ts && npx --yes tsx src/modules/reports/revenue-format.test.ts && npx --yes tsx src/modules/reports/revenue-periods.test.ts && npx --yes tsx src/modules/reports/statistics-freshness.test.ts && npx --yes tsx src/components/attendance/month-date-picker-range.test.ts",
     "web": "expo start --web"
   },
   "dependencies": {

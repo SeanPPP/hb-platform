@@ -7,6 +7,7 @@ import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tr
 import { isUnauthenticatedApiPayload } from "@/shared/api/auth-error";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
+import { preserveApiClientError } from "@/shared/api/client-error";
 import { isLogCenterIngestUrl } from "@/shared/logging/log-center";
 import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
 
@@ -220,7 +221,8 @@ apiClient.interceptors.response.use(
       } else {
         await invalidateLocalSession(message);
       }
-      return Promise.reject(new Error(message));
+      error.message = message;
+      return Promise.reject(preserveApiClientError(error));
     }
 
     if (error.response?.status === 401 && !original?._retry && !isLoginRequest(original)) {
@@ -272,6 +274,6 @@ apiClient.interceptors.response.use(
       responseStatus: error.response?.status,
       responseData: error.response?.data,
     });
-    return Promise.reject(new Error(extractApiErrorMessage(error, error.message)));
+    return Promise.reject(preserveApiClientError(error));
   }
 );

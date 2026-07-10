@@ -53,6 +53,7 @@ type Drilldown =
 
 interface ProductReportScreenProps {
   embedded?: boolean;
+  onRefreshFreshness?: () => Promise<unknown>;
 }
 
 // 商品报表已在 API 层控制 3 秒超时，这里关闭自动重试，避免一次查询拖成两次。
@@ -97,7 +98,7 @@ function TableCell({
   );
 }
 
-export function ProductReportScreen({ embedded = false }: ProductReportScreenProps) {
+export function ProductReportScreen({ embedded = false, onRefreshFreshness }: ProductReportScreenProps) {
   const { t } = useAppTranslation("common");
   const { height } = useWindowDimensions();
   const [kind, setKind] = useState<SupplierReportKind>("australia");
@@ -314,6 +315,7 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
   };
 
   const refresh = () => {
+    void onRefreshFreshness?.();
     storeOptionsQuery.refetch();
     if (queryParams) {
       totalRevenueQuery.refetch();

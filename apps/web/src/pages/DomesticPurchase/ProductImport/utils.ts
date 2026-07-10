@@ -39,6 +39,7 @@ export interface AssignProductsResultSummary {
 }
 
 export interface HbwebProductNameUpdate {
+  SupplierCode: string
   ItemNumber: string
   ProductName: string
 }
@@ -48,6 +49,111 @@ export interface BuildHbwebProductNameUpdatesResult {
   missingItemNumbers: string[]
   missingProductNames: string[]
   conflictItemNumbers: string[]
+}
+
+interface ProductNameSyncResultLike {
+  success: boolean
+  updatedCount: number
+  unchangedCount: number
+  missingItemNumbers: string[]
+  errors: string[]
+}
+
+interface HbwebProductNameSyncResponseLike {
+  success: boolean
+  message?: string
+  errorCode?: string
+  data?: {
+    updatedCount: number
+    unchangedCount: number
+    missingItemNumbers: string[]
+    errors: string[]
+    hqSyncResult?: ProductNameSyncResultLike
+  }
+}
+
+export interface ProductNameSyncSummary {
+  status: 'success' | 'hqPartialFailure' | 'failure'
+  hbweb: { updatedCount: number; unchangedCount: number; missingCount: number; skippedCount: number }
+  hq?: { success: boolean; updatedCount: number; unchangedCount: number; missingCount: number }
+  hqWarningCount: number
+}
+
+export interface ProductNameSyncNotificationDecision {
+  level: 'success' | 'warning'
+  includesHq: boolean
+  partial: boolean
+  hbweb: { updatedCount: number; unchangedCount: number; missingCount: number; warningCount: number }
+  hq?: { updatedCount: number; unchangedCount: number; missingCount: number; warningCount: number }
+}
+
+export function getHbwebProductNameSyncConfirmationKeys(syncToHq: boolean): { confirmKey: string; scopeKey: string } {
+  return syncToHq
+    ? {
+        confirmKey: 'productImport.updateHbwebProductNamesWithHqConfirm',
+        scopeKey: 'productImport.updateHbwebProductNamesWithHqScope',
+      }
+    : {
+        confirmKey: 'productImport.updateHbwebProductNamesConfirm',
+        scopeKey: 'productImport.updateHbwebProductNamesScope',
+      }
+}
+
+export function summarizeHbwebProductNameSyncResponse(response: HbwebProductNameSyncResponseLike): ProductNameSyncSummary {
+  const data = response.data
+  const hqResult = data?.hqSyncResult
+  const isHqPartialFailure = !response.success
+    && response.errorCode === 'HQ_PRODUCT_NAME_SYNC_FAILED'
+    && data !== undefined
+
+  return {
+    status: isHqPartialFailure ? 'hqPartialFailure' : response.success ? 'success' : 'failure',
+    hbweb: {
+      updatedCount: data?.updatedCount ?? 0,
+      unchangedCount: data?.unchangedCount ?? 0,
+      missingCount: data?.missingItemNumbers?.length ?? 0,
+      skippedCount: data?.errors?.filter(Boolean).length ?? 0,
+    },
+    hq: hqResult
+      ? {
+          success: hqResult.success,
+          updatedCount: hqResult.updatedCount ?? 0,
+          unchangedCount: hqResult.unchangedCount ?? 0,
+          missingCount: hqResult.missingItemNumbers?.length ?? 0,
+        }
+      : undefined,
+    hqWarningCount: hqResult?.errors?.filter(Boolean).length ?? 0,
+  }
+}
+
+export function buildHbwebProductNameSyncNotificationDecision(summary: ProductNameSyncSummary): ProductNameSyncNotificationDecision {
+  const partial = summary.status === 'hqPartialFailure'
+  const includesHq = partial || summary.hq !== undefined
+  const hq = !partial && summary.hq
+    ? {
+        updatedCount: summary.hq.updatedCount,
+        unchangedCount: summary.hq.unchangedCount,
+        missingCount: summary.hq.missingCount,
+        warningCount: summary.hqWarningCount,
+      }
+    : undefined
+  const hasWarning = partial
+    || summary.hbweb.missingCount > 0
+    || summary.hbweb.skippedCount > 0
+    || (hq !== undefined && (hq.missingCount > 0 || hq.warningCount > 0 || summary.hq?.success === false))
+
+  return {
+    level: hasWarning ? 'warning' : 'success',
+    includesHq,
+    partial,
+    hbweb: {
+      updatedCount: summary.hbweb.updatedCount,
+      unchangedCount: summary.hbweb.unchangedCount,
+      missingCount: summary.hbweb.missingCount,
+      warningCount: summary.hbweb.skippedCount,
+    },
+    hq,
+  }
 }
 
 export type AssignContainerValidationItem = AssignContainerItem & {
@@ -310,9 +416,14 @@ export function findInvalidAssignContainerItems(items: AssignContainerValidation
     .filter((item) => item.fields.length > 0)
 }
 
-export function buildHbwebProductNameUpdates(products: ProductImportItem[], selectedIds: string[]): BuildHbwebProductNameUpdatesResult {
+export function buildHbwebProductNameUpdates(
+  products: ProductImportItem[],
+  selectedIds: string[],
+  supplierCode: string,
+): BuildHbwebProductNameUpdatesResult {
   const selectedSet = new Set(selectedIds)
-  const nameByItemNumber = new Map<string, string>()
+  const normalizedSupplierCode = supplierCode.trim()
+  const nameBySupplierItem = new Map<string, string>()
   const updates: HbwebProductNameUpdate[] = []
   const missingItemNumbers: string[] = []
   const missingProductNames: string[] = []
@@ -334,11 +445,12 @@ export function buildHbwebProductNameUpdates(products: ProductImportItem[], sele
       return
     }
 
-    const existingName = nameByItemNumber.get(itemNumber)
+    const supplierItemKey = `${normalizedSupplierCode}\u001f${itemNumber}`.toUpperCase()
+    const existingName = nameBySupplierItem.get(supplierItemKey)
     if (existingName === undefined) {
-      // 商品导入页货号对应 HBweb Product.ItemNumber，这里只构建主表商品名称更新项。
-      nameByItemNumber.set(itemNumber, productName)
-      updates.push({ ItemNumber: itemNumber, ProductName: productName })
+      // 供应商代码对应 HBweb Product.LocalSupplierCode，必须与货号一起定位主表商品。
+      nameBySupplierItem.set(supplierItemKey, productName)
+      updates.push({ SupplierCode: normalizedSupplierCode, ItemNumber: itemNumber, ProductName: productName })
       return
     }
 
