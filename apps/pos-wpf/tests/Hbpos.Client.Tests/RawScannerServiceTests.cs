@@ -23,6 +23,31 @@ public sealed class RawScannerServiceTests
     }
 
     [Fact]
+    public void DispatchResultForDiagnostics_suppresses_raw_delivery_after_matching_keyboard_fallback()
+    {
+        using var logs = new ConsoleLogCapture();
+        var service = new RawScannerService(new FakeScannerBindingService(), new RawScannerInputProcessor());
+        var deliveryCount = 0;
+        var now = DateTimeOffset.UtcNow;
+        service.Subscribe("returns", _ => deliveryCount++);
+        service.SetActivePage("returns");
+
+        var keyboardAccepted = ((IScannerInputDeduplicator)service).TryAcceptScanDelivery(
+            "ABC123",
+            "keyboard-fallback",
+            now);
+        service.DispatchResultForDiagnostics(new RawScannerInputResult(
+            "ABC123",
+            "scanner-device",
+            RawScannerCompletionKind.Enter,
+            now.AddMilliseconds(10)));
+
+        Assert.True(keyboardAccepted);
+        Assert.Equal(0, deliveryCount);
+        Assert.Contains(logs.Lines, line => line.Contains("scan duplicate suppressed source=raw", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DispatchResultForDiagnostics_LogsWhenNoActiveHandler()
     {
         using var logs = new ConsoleLogCapture();

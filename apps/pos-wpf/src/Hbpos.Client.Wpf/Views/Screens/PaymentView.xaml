@@ -920,10 +920,13 @@
                                FontWeight="SemiBold"
                                Foreground="{StaticResource PosMutedForegroundBrush}" />
 
+                    <!-- 代金券码是扫码专用输入，关闭中文输入法，避免字母条码进入组合输入后丢失。 -->
                     <TextBox x:Name="VoucherEntryTextBox"
                              Grid.Row="2"
                              Text="{Binding VoucherEntryText, UpdateSourceTrigger=PropertyChanged}"
                              materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
+                             InputMethod.IsInputMethodEnabled="False"
+                             InputMethod.PreferredImeState="Off"
                              Height="56"
                              FontSize="24"
                              FontWeight="Black"

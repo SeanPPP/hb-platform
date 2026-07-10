@@ -27,7 +27,8 @@ public sealed class DailyClosePrintingTests
         Assert.NotNull(driver.LastDocument);
         Assert.Contains(driver.LastDocument!.PreviewRows, row => row.Text == "==== DAILY CLOSE ====" && row.IsCentered && row.IsEmphasized);
         Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text == "Daily Close Date: 2026-05-27");
-        Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text == "Store: S001");
+        Assert.Contains(driver.LastDocument.Elements, element => element.Text == "Store: Sunnybank (S001)");
+        Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text == "Store: Sunnybank (S001)");
         Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text == "Terminal: POS-01");
         Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text == "Cashier: Alice");
         Assert.Contains(driver.LastDocument.PreviewRows, row => row.Text.Contains("Cash Counted", StringComparison.Ordinal) && row.Text.Contains("$287.00", StringComparison.Ordinal));
@@ -63,13 +64,53 @@ public sealed class DailyClosePrintingTests
     public async Task BuildDocumentAsync_builds_reprint_preview_without_printing()
     {
         var driver = new RecordingReceiptPrinterDriver();
-        var service = new DailyClosePrintService(new FakeReceiptPrinterSettingsStore(), driver);
+        var settingsStore = new FakeReceiptPrinterSettingsStore
+        {
+            Settings = ReceiptPrinterSettings.Default with { StoreName = "Sunnybank" }
+        };
+        var service = new DailyClosePrintService(settingsStore, driver);
 
         var document = await service.BuildDocumentAsync(CreateArchive(), ReceiptPrintReason.Reprint);
 
         Assert.Null(driver.LastDocument);
         Assert.Contains(document.PreviewRows, row => row.Text == "==== DAILY CLOSE REPRINT ====");
+        Assert.Contains(document.Elements, element => element.Text == "Store: Sunnybank (S001)");
+        Assert.Contains(document.PreviewRows, row => row.Text == "Store: Sunnybank (S001)");
         AssertAllDenominationsArePrinted(document);
+    }
+
+    [Theory]
+    [InlineData("   ", "Store: S001")]
+    [InlineData("  s001  ", "Store: S001")]
+    public void Daily_close_text_formatter_uses_store_code_without_duplicate_name(string storeName, string expected)
+    {
+        var settings = ReceiptPrinterSettings.Default with { StoreName = storeName };
+
+        var document = DailyCloseTextFormatter.Build(CreateArchive(), settings);
+
+        Assert.Contains(document.Elements, element => element.Text == expected);
+    }
+
+    [Fact]
+    public void Daily_close_text_formatter_wraps_every_store_line_to_receipt_width()
+    {
+        var settings = ReceiptPrinterSettings.Default with
+        {
+            StoreName = "The Very Long Sunnybank Shopping Centre Main Store"
+        };
+
+        var document = DailyCloseTextFormatter.Build(CreateArchive(), settings);
+
+        var storeLines = document.Elements
+            .SkipWhile(element => !element.Text.StartsWith("Store: ", StringComparison.Ordinal))
+            .TakeWhile(element => !element.Text.StartsWith("Terminal: ", StringComparison.Ordinal))
+            .Select(element => element.Text)
+            .ToList();
+        Assert.NotEmpty(storeLines);
+        Assert.Equal(
+            "Store: The Very Long Sunnybank Shopping Centre Main Store (S001)",
+            string.Join(" ", storeLines));
+        Assert.All(storeLines, line => Assert.True(line.Length <= 42, $"Store line exceeds 42 characters: {line}"));
     }
 
     private static DailyCloseArchive CreateArchive()

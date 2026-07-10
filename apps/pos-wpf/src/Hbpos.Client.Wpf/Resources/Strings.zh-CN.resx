@@ -1630,28 +1630,28 @@
     <value>请扫描订单号开始小票退货。</value>
   </data>
   <data name="returns.status.loadedOnline" xml:space="preserve">
-    <value>已从线上订单历史加载订单 {0}。</value>
+    <value>已从线上订单历史加载订单和退货记录。</value>
   </data>
   <data name="returns.status.lookupFailed" xml:space="preserve">
     <value>订单查询失败：{0}</value>
   </data>
   <data name="returns.status.loadedLocalStaleWithError" xml:space="preserve">
-    <value>已加载本地订单 {0}；线上查询失败。{1}</value>
+    <value>已加载本地订单；线上查询失败。{0}</value>
   </data>
   <data name="returns.status.scanProduct" xml:space="preserve">
     <value>请扫描商品编码添加无小票退货行。</value>
   </data>
   <data name="returns.status.productNotFound" xml:space="preserve">
-    <value>未在本地目录中找到商品 {0}。</value>
+    <value>未在本地目录中找到商品。</value>
   </data>
   <data name="returns.status.addedNoReceipt" xml:space="preserve">
     <value>已添加 {0} 到无小票退货。</value>
   </data>
   <data name="returns.status.orderNotFound" xml:space="preserve">
-    <value>未找到订单 {0}。</value>
+    <value>未找到订单。</value>
   </data>
   <data name="returns.status.loadedLocalStale" xml:space="preserve">
-    <value>已加载本地订单 {0}；线上订单历史不可用。</value>
+    <value>已加载本地订单；线上订单历史不可用。</value>
   </data>
   <data name="returns.status.addedReceiptLine" xml:space="preserve">
     <value>已将 {0} 加入退款购物车。</value>

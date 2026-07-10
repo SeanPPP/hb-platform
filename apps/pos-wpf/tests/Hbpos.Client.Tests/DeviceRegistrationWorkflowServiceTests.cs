@@ -84,6 +84,8 @@ public sealed class DeviceRegistrationWorkflowServiceTests
 
         Assert.Equal("1002", api.LastRegisterRequest?.StoreCode);
         Assert.Equal("HW-001", api.LastRegisterRequest?.HardwareId);
+        Assert.Null(repository.LastRegisterResponse);
+        await result.PersistAsync!(CancellationToken.None);
         Assert.NotNull(repository.LastRegisterResponse);
         Assert.Equal("HW-001", repository.LastHardwareId);
         Assert.Equal("POS-001", result.DeviceCode);
@@ -128,12 +130,36 @@ public sealed class DeviceRegistrationWorkflowServiceTests
 
         var result = await service.VerifyAsync(new StoreSelectionItem("1002", "Lutwyche", true), "POS-001", "HW-001");
 
+        Assert.Null(repository.LastVerifyResponse);
+        await result.PersistAsync!(CancellationToken.None);
         Assert.NotNull(repository.LastVerifyResponse);
         Assert.Equal("POS-001", api.LastVerifyRequest?.DeviceCode);
         Assert.Equal("1002", api.LastVerifyRequest?.StoreCode);
         Assert.False(result.HasPendingRegistration);
         Assert.Equal("Device authorization code was not returned. Please verify again.", result.StatusMessage);
         Assert.False(result.ShouldRaiseActivated);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenCallerCancelsAfterApiReturns_ThrowsAndDoesNotSaveCache()
+    {
+        using var cancellationTokenSource = new CancellationTokenSource();
+        var api = new FakeDeviceApiClient
+        {
+            VerifyResponse = new DeviceVerifyResponse("POS-001", "1002", "Lutwyche", 1, true, "Device is enabled.", "AUTH-001"),
+            VerifyCancellationSourceToCancel = cancellationTokenSource
+        };
+        var repository = new FakeLocalDeviceRepository();
+        var service = new DeviceRegistrationWorkflowService(api, repository, new FakeFingerprintService("HW-001"));
+
+        // 模拟 API 已经成功返回，但调用方在本地缓存写入前取消。
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.VerifyAsync(
+            new StoreSelectionItem("1002", "Lutwyche", true),
+            "POS-001",
+            "HW-001",
+            cancellationTokenSource.Token));
+
+        Assert.Null(repository.LastVerifyResponse);
     }
 
     [Fact]
@@ -148,6 +174,8 @@ public sealed class DeviceRegistrationWorkflowServiceTests
 
         var accepted = await service.ReregisterAsync(new StoreSelectionItem("1003", "Zillmere", true), "HW-001");
 
+        Assert.Null(repository.LastReregisterResponse);
+        await accepted.PersistAsync!(CancellationToken.None);
         Assert.NotNull(repository.LastReregisterResponse);
         Assert.True(accepted.ShouldRaiseReregistered);
         Assert.Equal("Pending approval", accepted.StatusMessage);
@@ -172,6 +200,8 @@ public sealed class DeviceRegistrationWorkflowServiceTests
 
         public DeviceReregisterResponse? ReregisterResponse { get; set; }
 
+        public CancellationTokenSource? VerifyCancellationSourceToCancel { get; init; }
+
         public DeviceRegisterRequest? LastRegisterRequest { get; private set; }
 
         public DeviceVerifyRequest? LastVerifyRequest { get; private set; }
@@ -194,6 +224,8 @@ public sealed class DeviceRegistrationWorkflowServiceTests
             CancellationToken cancellationToken = default)
         {
             LastVerifyRequest = request;
+            // 在返回响应前触发外部取消，稳定复现 await 之后的取消窗口。
+            VerifyCancellationSourceToCancel?.Cancel();
             return Task.FromResult(VerifyResponse!);
         }
 

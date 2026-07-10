@@ -47,7 +47,10 @@ public sealed record DeviceRegistrationActionResult(
     string StatusMessage,
     string? AuthorizationCode,
     bool ShouldRaiseActivated,
-    bool ShouldRaiseReregistered);
+    bool ShouldRaiseReregistered)
+{
+    internal Func<CancellationToken, Task>? PersistAsync { get; init; }
+}
 
 public sealed class DeviceRegistrationWorkflowService(
     IDeviceApiClient deviceApiClient,
@@ -108,12 +111,9 @@ public sealed class DeviceRegistrationWorkflowService(
         var response = await deviceApiClient.RegisterAsync(
             new DeviceRegisterRequest(selectedStore.StoreCode, hardwareId, Environment.MachineName),
             cancellationToken);
-        if (ShouldSaveRegisterResponse(response))
-        {
-            await deviceRepository.SaveAsync(response, hardwareId, cancellationToken);
-        }
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return CreateActionResult(
+        var result = CreateActionResult(
             response.DeviceCode,
             response.StoreCode,
             response.StoreName,
@@ -123,6 +123,14 @@ public sealed class DeviceRegistrationWorkflowService(
             response.AuthorizationCode,
             hardwareId,
             shouldRaiseReregistered: false);
+
+        return ShouldSaveRegisterResponse(response)
+            ? result with
+            {
+                PersistAsync = persistenceCancellationToken =>
+                    deviceRepository.SaveAsync(response, hardwareId, persistenceCancellationToken)
+            }
+            : result;
     }
 
     public async Task<DeviceRegistrationActionResult> VerifyAsync(
@@ -134,9 +142,9 @@ public sealed class DeviceRegistrationWorkflowService(
         var response = await deviceApiClient.VerifyAsync(
             new DeviceVerifyRequest(deviceCode, selectedStore.StoreCode, hardwareId, Environment.MachineName),
             cancellationToken);
-        await deviceRepository.SaveAsync(response, hardwareId, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return CreateActionResult(
+        var result = CreateActionResult(
             response.DeviceCode,
             response.StoreCode,
             response.StoreName,
@@ -146,6 +154,13 @@ public sealed class DeviceRegistrationWorkflowService(
             response.AuthorizationCode,
             hardwareId,
             shouldRaiseReregistered: false);
+
+        // 由调用方确认认证结果仍属于当前轮询会话后，才允许写入本地设备缓存。
+        return result with
+        {
+            PersistAsync = persistenceCancellationToken =>
+                deviceRepository.SaveAsync(response, hardwareId, persistenceCancellationToken)
+        };
     }
 
     public async Task<DeviceRegistrationActionResult> ReregisterAsync(
@@ -156,13 +171,10 @@ public sealed class DeviceRegistrationWorkflowService(
         var response = await deviceApiClient.ReregisterAsync(
             new DeviceReregisterRequest(selectedStore.StoreCode, hardwareId, Environment.MachineName),
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var shouldRaiseReregistered = IsAcceptedReregister(response);
-        if (shouldRaiseReregistered)
-        {
-            await deviceRepository.SaveAsync(response, hardwareId, cancellationToken);
-        }
 
-        return CreateActionResult(
+        var result = CreateActionResult(
             response.DeviceCode,
             response.StoreCode,
             response.StoreName,
@@ -172,6 +184,14 @@ public sealed class DeviceRegistrationWorkflowService(
             response.AuthorizationCode,
             hardwareId,
             shouldRaiseReregistered);
+
+        return shouldRaiseReregistered
+            ? result with
+            {
+                PersistAsync = persistenceCancellationToken =>
+                    deviceRepository.SaveAsync(response, hardwareId, persistenceCancellationToken)
+            }
+            : result;
     }
 
     private DeviceRegistrationActionResult CreateActionResult(

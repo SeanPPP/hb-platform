@@ -417,9 +417,18 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = _keyboardScannerFallback.Process(e.Key, DateTimeOffset.Now);
+        var timestamp = DateTimeOffset.Now;
+        var result = _keyboardScannerFallback.Process(e.Key, timestamp, e.ImeProcessedKey);
         if (result is null)
         {
+            return;
+        }
+
+        if (_rawScannerService is IScannerInputDeduplicator deduplicator &&
+            !deduplicator.TryAcceptScanDelivery(result, "keyboard-fallback", timestamp))
+        {
+            // 同一把 HID 扫码枪可能同时产生 Raw Input 与普通键盘事件，只允许其中一路提交。
+            e.Handled = true;
             return;
         }
 
@@ -539,8 +548,14 @@ internal sealed class KeyboardScannerFallbackBuffer
     private readonly System.Text.StringBuilder _buffer = new();
     private DateTimeOffset _lastInputAt = DateTimeOffset.MinValue;
 
-    public string? Process(Key key, DateTimeOffset timestamp)
+    public string? Process(Key key, DateTimeOffset timestamp, Key imeProcessedKey = Key.None)
     {
+        if (key == Key.ImeProcessed && imeProcessedKey != Key.None)
+        {
+            // 中文输入法会把扫码枪字母键标记为 ImeProcessed，必须还原物理按键后再进入扫码缓冲。
+            key = imeProcessedKey;
+        }
+
         if (key == Key.Enter)
         {
             return Complete();

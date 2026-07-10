@@ -1,3 +1,4 @@
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
@@ -62,6 +63,78 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         Assert.Equal(order.OrderGuid, result.Order.OrderGuid);
     }
 
+    [Theory]
+    [InlineData("en-US", "Loaded local order; online lookup failed. Remote unavailable.")]
+    [InlineData("zh-CN", "已加载本地订单；线上查询失败。Remote unavailable.")]
+    public async Task LookupOrderAsync_RemoteFailureWithLocalOrderFormatsLocalizedStatus(string cultureName, string expectedStatus)
+    {
+        var order = CreateLocalOrder(Guid.NewGuid());
+        var localRepository = new FakeLocalOrderRepository([order]);
+        var service = CreateService(
+            new ThrowingRemoteOrderHistoryService(),
+            localRepository,
+            localization: CreateLocalization(cultureName));
+
+        var result = await service.LookupOrderAsync(CreateOnlineSession(), order.OrderGuid.ToString("D"));
+
+        Assert.Equal(expectedStatus, result.StatusMessage);
+        Assert.DoesNotContain("{0}", result.StatusMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("{1}", result.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("en-US", "Loaded online order and return records.")]
+    [InlineData("zh-CN", "已从线上订单历史加载订单和退货记录。")]
+    public async Task LookupOrderAsync_RemoteOrderStatusDoesNotExposePlaceholder(string cultureName, string expectedStatus)
+    {
+        var orderGuid = Guid.NewGuid();
+        var lineGuid = Guid.NewGuid();
+        var remote = new FakeRemoteOrderHistoryService
+        {
+            ReturnContext = new OrderReturnContextDto(
+                CreateRemoteOrder(orderGuid, lineGuid, quantity: 1m, actualAmount: 10m),
+                [])
+        };
+        var service = CreateService(remote, localization: CreateLocalization(cultureName));
+
+        var result = await service.LookupOrderAsync(CreateOnlineSession(), orderGuid.ToString("D"));
+
+        Assert.NotNull(result.Order);
+        Assert.Equal(expectedStatus, result.StatusMessage);
+        Assert.DoesNotContain("{0}", result.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("en-US", "Order was not found.")]
+    [InlineData("zh-CN", "未找到订单。")]
+    public async Task LookupOrderAsync_MissingOrderStatusDoesNotExposePlaceholder(string cultureName, string expectedStatus)
+    {
+        var service = CreateService(localization: CreateLocalization(cultureName));
+
+        var result = await service.LookupOrderAsync(CreateOnlineSession(), Guid.NewGuid().ToString("D"));
+
+        Assert.Null(result.Order);
+        Assert.Equal(expectedStatus, result.StatusMessage);
+        Assert.DoesNotContain("{0}", result.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("en-US", "Loaded local order; online order history is not available.")]
+    [InlineData("zh-CN", "已加载本地订单；线上订单历史不可用。")]
+    public async Task LookupOrderAsync_LocalOrderStatusDoesNotExposePlaceholder(string cultureName, string expectedStatus)
+    {
+        var order = CreateLocalOrder(Guid.NewGuid());
+        var service = CreateService(
+            localRepository: new FakeLocalOrderRepository([order]),
+            localization: CreateLocalization(cultureName));
+
+        var result = await service.LookupOrderAsync(CreateOfflineSession(), order.OrderGuid.ToString("D"));
+
+        Assert.NotNull(result.Order);
+        Assert.Equal(expectedStatus, result.StatusMessage);
+        Assert.DoesNotContain("{0}", result.StatusMessage, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task LookupOrderAsync_LocalCardPaymentCapacitiesCarryOriginalOrderGuid()
     {
@@ -102,6 +175,20 @@ public sealed class ReceiptReturnsWorkflowServiceTests
 
         Assert.NotNull(result.Item);
         Assert.Equal("SKU-001", result.Item.ProductCode);
+    }
+
+    [Theory]
+    [InlineData("en-US", "Product was not found in the local catalog.")]
+    [InlineData("zh-CN", "未在本地目录中找到商品。")]
+    public void LookupNoReceiptProduct_MissingProductStatusDoesNotExposePlaceholder(string cultureName, string expectedStatus)
+    {
+        var service = CreateService(localization: CreateLocalization(cultureName));
+
+        var result = service.LookupNoReceiptProduct(CreateOnlineSession(), "MISSING-SKU");
+
+        Assert.Null(result.Item);
+        Assert.Equal(expectedStatus, result.StatusMessage);
+        Assert.DoesNotContain("{0}", result.StatusMessage, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -151,7 +238,8 @@ public sealed class ReceiptReturnsWorkflowServiceTests
     private static ReceiptReturnsWorkflowService CreateService(
         IRemoteOrderHistoryService? remote = null,
         FakeLocalOrderRepository? localRepository = null,
-        LocalSellableItemIndex? priceIndex = null)
+        LocalSellableItemIndex? priceIndex = null,
+        ILocalizationService? localization = null)
     {
         localRepository ??= new FakeLocalOrderRepository([]);
         return new ReceiptReturnsWorkflowService(
@@ -159,12 +247,25 @@ public sealed class ReceiptReturnsWorkflowServiceTests
             localRepository,
             remote,
             priceIndex ?? new LocalSellableItemIndex(),
-            new PosCartService());
+            new PosCartService(),
+            localization);
     }
 
     private static PosSessionState CreateOnlineSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C01", "Alice", true, 0);
+    }
+
+    private static PosSessionState CreateOfflineSession()
+    {
+        return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C01", "Alice", false, 0);
+    }
+
+    private static LocalizationService CreateLocalization(string cultureName)
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(cultureName);
+        return localization;
     }
 
     private static OrderHistoryDetailsDto CreateRemoteOrder(Guid orderGuid, Guid lineGuid, decimal quantity, decimal actualAmount)
