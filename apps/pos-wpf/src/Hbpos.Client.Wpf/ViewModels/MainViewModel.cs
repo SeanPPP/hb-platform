@@ -1844,11 +1844,79 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         }
 
-        if (MainReceiptCoordinator.ContainsCardPayment(e.Order))
+        // 中文注释：普通销售成功后不再自动打印；卡退款仍保留自动收据，便于退款凭证留存。
+        if (IsPureVoucherRefund(e.Order))
+        {
+            var receipt = ReceiptQueryService.CreateReceipt(e.Order);
+            if (receipt.RefundVoucher is not null)
+            {
+                // 中文注释：发券引用已落库后才自动打印独立券面，打印失败不能回滚已成功的退款。
+                await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
+                return;
+            }
+        }
+
+        if (MainReceiptCoordinator.ContainsCardPayment(e.Order) && e.Order.ActualAmount < 0m)
         {
             await PrintReceiptWithShellPermissionAsync(
                 ReceiptQueryService.CreateReceipt(e.Order),
                 ReceiptPrintReason.CardAuto);
+            return;
+        }
+
+        if (e.Order.ActualAmount >= 0m)
+        {
+            await PrintVoucherBalancesAsync(e.Order);
+        }
+    }
+
+    private static bool IsPureVoucherRefund(LocalOrder order) =>
+        order.ActualAmount < 0m &&
+        order.Payments.Count == 1 &&
+        order.Payments[0].Method == PaymentMethodKind.Voucher &&
+        order.Payments[0].Amount < 0m;
+
+    private async Task PrintVoucherBalancesAsync(LocalOrder order)
+    {
+        var receipt = ReceiptQueryService.CreateReceipt(order);
+        var balances = receipt.Payments
+            .Where(payment => payment.Method == PaymentMethodKind.Voucher && payment.Amount > 0m)
+            .Select(payment => new
+            {
+                VoucherCode = payment.DisplayReference?.Trim(),
+                RemainingBalance = payment.VoucherRemainingBalance
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.VoucherCode) && item.RemainingBalance is > 0m)
+            .GroupBy(item => item.VoucherCode!, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                // 中文注释：保持券码首次出现顺序，但余额必须采用同券最后一笔兑换后的最终值。
+                VoucherCode = group.First().VoucherCode,
+                RemainingBalance = group.Last().RemainingBalance
+            })
+            .ToList();
+
+        (string VoucherCode, ReceiptPrintResult Result)? firstFailure = null;
+        foreach (var balance in balances)
+        {
+            var voucherCode = balance.VoucherCode!;
+            // 中文注释：每张余额券独立尝试打印；单张失败不能阻断其余券，也不能回滚已完成交易。
+            var result = await PrintReceiptWithShellPermissionAsync(
+                receipt with
+                {
+                    RefundVoucher = null,
+                    VoucherBalance = new VoucherBalanceReceipt(voucherCode, balance.RemainingBalance!.Value)
+                },
+                ReceiptPrintReason.VoucherBalanceAuto);
+            firstFailure ??= result.Succeeded ? null : (voucherCode, result);
+        }
+
+        if (firstFailure is { } failure)
+        {
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                $"{failure.VoucherCode}: {failure.Result.Message}");
         }
     }
 
@@ -1951,7 +2019,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptWithShellPermissionAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
     {
         // 关键逻辑：自动卡支付/恢复小票是系统完成交易流程，不等同于人工补打上一张。
-        if (reason is not ReceiptPrintReason.CardAuto and not ReceiptPrintReason.InstallmentAuto &&
+        if (reason is not ReceiptPrintReason.CardAuto and
+            not ReceiptPrintReason.InstallmentAuto and
+            not ReceiptPrintReason.VoucherRefundAuto and
+            not ReceiptPrintReason.VoucherBalanceAuto &&
             !TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
         {
             return new ReceiptPrintResult(false, StatusMessage, receipt.OrderGuid);

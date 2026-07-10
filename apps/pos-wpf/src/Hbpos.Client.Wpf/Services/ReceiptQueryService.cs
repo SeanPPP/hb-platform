@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -51,6 +52,11 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
     public static ReceiptDetails CreateReceipt(LocalOrder order)
     {
         // 小票详情补带本地持久化的实收/找零，避免界面只能依赖瞬时导航参数。
+        var payments = order.Payments.Select(payment => new ReceiptPaymentLine(
+            payment.Method,
+            payment.Amount,
+            payment.Reference,
+            payment.CardTransactions)).ToList();
         return new ReceiptDetails(
             order.OrderGuid,
             order.StoreCode,
@@ -67,15 +73,44 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
                 line.UnitPrice,
                 line.DiscountAmount,
                 line.ActualAmount)).ToList(),
-            order.Payments.Select(payment => new ReceiptPaymentLine(
-                payment.Method,
-                payment.Amount,
-                payment.Reference,
-                payment.CardTransactions)).ToList(),
+            payments,
             order.TenderedAmount,
-            order.ChangeAmount);
+            order.ChangeAmount,
+            RefundVoucher: TryCreateRefundVoucher(order.Payments));
+    }
+
+    private static RefundVoucherReceipt? TryCreateRefundVoucher(IEnumerable<LocalPayment> payments)
+    {
+        var paymentList = payments.ToList();
+        if (paymentList.Count != 1)
+        {
+            return null;
+        }
+
+        var refundPayment = paymentList[0];
+        if (refundPayment.Method != PaymentMethodKind.Voucher || refundPayment.Amount >= 0m)
+        {
+            return null;
+        }
+
+        const string prefix = "VOUCHER_REFUND:";
+        var reference = refundPayment.Reference?.Trim();
+        if (string.IsNullOrWhiteSpace(reference) ||
+            !reference.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var voucherCode = reference[prefix.Length..].Trim();
+        return string.IsNullOrWhiteSpace(voucherCode)
+            ? null
+            : new RefundVoucherReceipt(voucherCode, decimal.Abs(refundPayment.Amount));
     }
 }
+
+public sealed record RefundVoucherReceipt(string VoucherCode, decimal Amount);
+
+public sealed record VoucherBalanceReceipt(string VoucherCode, decimal RemainingBalance);
 
 public sealed record ReceiptDetails(
     Guid OrderGuid,
@@ -93,7 +128,9 @@ public sealed record ReceiptDetails(
     string? DocumentTitle = null,
     string? StatusText = null,
     string? OrderDisplay = null,
-    IReadOnlyList<string>? ExtraInfoLines = null)
+    IReadOnlyList<string>? ExtraInfoLines = null,
+    RefundVoucherReceipt? RefundVoucher = null,
+    VoucherBalanceReceipt? VoucherBalance = null)
 {
     public string TransactionIdDisplay => $"#{OrderGuid.ToString("N")[..10].ToUpperInvariant()}";
 

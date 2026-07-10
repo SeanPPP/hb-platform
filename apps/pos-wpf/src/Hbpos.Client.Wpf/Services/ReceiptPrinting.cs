@@ -16,6 +16,8 @@ public enum ReceiptPrintReason
     Reprint,
     CardAuto,
     InstallmentAuto,
+    VoucherRefundAuto,
+    VoucherBalanceAuto,
     Test
 }
 
@@ -283,6 +285,18 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
             builder.Text($"ABN: {settings.Abn.Trim()}", ReceiptPrintAlignment.Center);
         }
 
+        if (receipt.RefundVoucher is { } refundVoucher)
+        {
+            // 中文注释：退款代金券必须是独立券面，避免商品和支付明细被误当作普通退款收据打印。
+            return BuildRefundVoucherDocument(builder, receipt, refundVoucher, printedAt);
+        }
+
+        if (receipt.VoucherBalance is { } voucherBalance)
+        {
+            // 中文注释：余额凭证独立出票，不混入商品、付款明细或 Linkly 银行原文。
+            return BuildVoucherBalanceDocument(builder, receipt, voucherBalance, settings, printedAt);
+        }
+
         builder.Blank();
         builder.Text(string.IsNullOrWhiteSpace(receipt.DocumentTitle)
             ? "===== TAX INVOICE ====="
@@ -303,7 +317,13 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         builder.Text($"Order: {displayOrderId}");
         builder.Text($"Date: {receipt.SoldAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
         builder.Text($"Cashier: {receipt.CashierName}");
-        builder.Text($"Store: {receipt.StoreCode}");
+        // 中文注释：门店名称与代码共用显示规则，并按纸宽换行，保证打印和预览保持一致。
+        foreach (var storeLine in WrapByWord(
+                     $"Store: {FormatStoreDisplay(settings.StoreName, receipt.StoreCode)}",
+                     LineWidth))
+        {
+            builder.Text(storeLine);
+        }
         builder.Text($"Device: {receipt.DeviceCode}");
         foreach (var infoLine in receipt.ExtraInfoLines ?? [])
         {
@@ -401,39 +421,97 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         builder.Blank();
         builder.Text("Thank you for your purchase!", ReceiptPrintAlignment.Center, isEmphasized: true);
         builder.Blank();
-        AppendVoucherBalanceSections(builder, receipt.Payments);
 
         return builder.Build();
     }
 
-    private static void AppendVoucherBalanceSections(
+    private static ReceiptPrintDocument BuildRefundVoucherDocument(
         ReceiptDocumentBuilder builder,
-        IEnumerable<ReceiptPaymentLine> payments)
+        ReceiptDetails receipt,
+        RefundVoucherReceipt refundVoucher,
+        DateTimeOffset printedAt)
     {
-        foreach (var payment in payments)
-        {
-            var voucherCode = payment.DisplayReference;
-            var remainingBalance = payment.VoucherRemainingBalance;
-            if (string.IsNullOrWhiteSpace(voucherCode) || remainingBalance is null)
-            {
-                continue;
-            }
+        var displayOrderId = string.IsNullOrWhiteSpace(receipt.OrderDisplay)
+            ? receipt.OrderGuid.ToString()
+            : receipt.OrderDisplay.Trim();
 
-            // 中文注释：余额券面跟随完整小票打印和重印，不单独发起第二个打印任务。
-            builder.Separator();
-            builder.Text("VOUCHER BALANCE", ReceiptPrintAlignment.Center, isEmphasized: true);
-            builder.Blank();
-            builder.Text($"Voucher: {voucherCode}");
-            builder.Text($"Balance: {Money(remainingBalance.Value)}", isEmphasized: true);
-            builder.Barcode(voucherCode);
-            builder.QrCode(voucherCode);
-            builder.Blank();
+        builder.Blank();
+        builder.Text("===== REFUND VOUCHER =====", ReceiptPrintAlignment.Center, isEmphasized: true);
+        builder.Blank();
+        builder.Text($"Voucher: {refundVoucher.VoucherCode}", ReceiptPrintAlignment.Center, isEmphasized: true);
+        builder.Text($"Amount: {Money(refundVoucher.Amount)}", ReceiptPrintAlignment.Center, isEmphasized: true);
+        builder.Separator();
+        builder.Text($"Order: {displayOrderId}");
+        builder.Text($"Print Time: {printedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+        builder.Barcode(refundVoucher.VoucherCode);
+        builder.QrCode(refundVoucher.VoucherCode);
+        builder.Blank();
+
+        return builder.Build();
+    }
+
+    private static ReceiptPrintDocument BuildVoucherBalanceDocument(
+        ReceiptDocumentBuilder builder,
+        ReceiptDetails receipt,
+        VoucherBalanceReceipt voucherBalance,
+        ReceiptPrinterSettings settings,
+        DateTimeOffset printedAt)
+    {
+        var voucherCode = voucherBalance.VoucherCode.Trim();
+        var displayOrderId = string.IsNullOrWhiteSpace(receipt.OrderDisplay)
+            ? receipt.OrderGuid.ToString()
+            : receipt.OrderDisplay.Trim();
+
+        builder.Blank();
+        builder.Text("===== VOUCHER BALANCE =====", ReceiptPrintAlignment.Center, isEmphasized: true);
+        builder.Blank();
+        // 中文注释：余额凭证沿用普通小票的门店名称与代码规则，并保证所有文本不超过纸宽。
+        foreach (var storeLine in WrapByWord(
+                     $"Store: {FormatStoreDisplay(settings.StoreName, receipt.StoreCode)}",
+                     LineWidth))
+        {
+            builder.Text(storeLine);
         }
+        foreach (var voucherLine in WrapByWord($"Voucher: {voucherCode}", LineWidth))
+        {
+            builder.Text(voucherLine, ReceiptPrintAlignment.Center, isEmphasized: true);
+        }
+        builder.Text($"Balance: {Money(voucherBalance.RemainingBalance)}", ReceiptPrintAlignment.Center, isEmphasized: true);
+        builder.Separator();
+        foreach (var orderLine in WrapByWord($"Order: {displayOrderId}", LineWidth))
+        {
+            builder.Text(orderLine);
+        }
+        builder.Text($"Print Time: {printedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+        builder.Barcode(voucherCode);
+        builder.QrCode(voucherCode);
+        builder.Blank();
+
+        return builder.Build();
     }
 
     private static string FirstNonBlank(params string[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+    }
+
+    private static string FormatStoreDisplay(string? storeName, string? storeCode)
+    {
+        var name = storeName?.Trim() ?? string.Empty;
+        var code = storeCode?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+        {
+            return code.Length == 0 ? "-" : code;
+        }
+
+        if (code.Length == 0)
+        {
+            return name;
+        }
+
+        return string.Equals(name, code, StringComparison.OrdinalIgnoreCase)
+            ? code
+            : $"{name} ({code})";
     }
 
     private static IReadOnlyList<string> WrapByWord(string? text, int maxChars)
@@ -607,9 +685,13 @@ public sealed class ReceiptPrintService(
         try
         {
             var settings = await settingsStore.LoadAsync(cancellationToken);
-            var document = formatter.Build(receipt, settings, receipt.SoldAt);
+            // 中文注释：退款券和余额凭证都是即时新出票，需记录实际打印时间。
+            DateTimeOffset? printTime = reason is ReceiptPrintReason.VoucherRefundAuto or ReceiptPrintReason.VoucherBalanceAuto
+                ? null
+                : receipt.SoldAt;
+            var document = formatter.Build(receipt, settings, printTime);
             var result = await driver.PrintAsync(document, settings, cancellationToken);
-            if (result.Succeeded)
+            if (result.Succeeded && reason != ReceiptPrintReason.VoucherBalanceAuto)
             {
                 await MarkCardReceiptsPrintedAsync(receipt, cancellationToken);
             }

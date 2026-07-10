@@ -3,6 +3,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using System.Globalization;
 
 namespace Hbpos.Client.Tests;
 
@@ -65,9 +66,10 @@ public sealed class ReceiptPrintingTests
             ],
             null);
         var formatter = new ReceiptTextFormatter();
+        var settings = ReceiptPrinterSettings.Default with { StoreName = "Main Store" };
 
         var receipt = InstallmentReceiptMapper.CreateReceipt(order);
-        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
+        var document = formatter.Build(receipt, settings, order.CreatedAt);
 
         Assert.DoesNotContain("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
@@ -83,6 +85,9 @@ public sealed class ReceiptPrintingTests
         Assert.Contains("Ref: CARD-REF", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Installment Tea", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Cash", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Store: Main Store (S001)", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains(document.Elements, element => element.Text == "Store: Main Store (S001)");
+        Assert.Contains(document.PreviewRows, row => row.Text == "Store: Main Store (S001)");
     }
 
     [Fact]
@@ -169,8 +174,73 @@ public sealed class ReceiptPrintingTests
         Assert.Contains(document.PreviewRows, row => row.Text.Contains("Organic Gala Apples", StringComparison.Ordinal));
         Assert.Contains(document.PreviewRows, row => row.Text.Contains("GST", StringComparison.Ordinal));
         Assert.Contains(document.PreviewRows, row => row.Text.Contains("APPROVED CARD RECEIPT", StringComparison.Ordinal));
+        Assert.Contains(document.Elements, element => element.Text == "Store: Main Store (S001)");
+        Assert.Contains(document.PreviewRows, row => row.Text == "Store: Main Store (S001)");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == orderGuid.ToString());
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == orderGuid.ToString());
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_falls_back_to_trimmed_store_code_when_store_name_is_blank()
+    {
+        var receipt = CreateReceipt(Guid.NewGuid()) with { StoreCode = "  S001  " };
+        var settings = ReceiptPrinterSettings.Default with { StoreName = "   " };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, settings, receipt.SoldAt);
+
+        Assert.Contains(document.Elements, element => element.Text == "Store: S001");
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_does_not_repeat_store_name_when_it_matches_store_code()
+    {
+        var receipt = CreateReceipt(Guid.NewGuid());
+        var settings = ReceiptPrinterSettings.Default with { StoreName = "  s001  " };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, settings, receipt.SoldAt);
+
+        Assert.Contains(document.Elements, element => element.Text == "Store: S001");
+        Assert.DoesNotContain(document.Elements, element => element.Text.Contains("S001 (S001)", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_uses_safe_store_fallback_when_name_and_code_are_blank()
+    {
+        var receipt = CreateReceipt(Guid.NewGuid()) with { StoreCode = "   " };
+        var settings = ReceiptPrinterSettings.Default with { StoreName = "   " };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, settings, receipt.SoldAt);
+
+        Assert.Contains(document.Elements, element => element.Text == "Store: -");
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_wraps_every_store_line_to_receipt_width()
+    {
+        var receipt = CreateReceipt(Guid.NewGuid());
+        var settings = ReceiptPrinterSettings.Default with
+        {
+            StoreName = "The Very Long Sunnybank Shopping Centre Main Store"
+        };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, settings, receipt.SoldAt);
+
+        var storeLines = document.Elements
+            .SkipWhile(element => element.Text != "Cashier: Alice")
+            .Skip(1)
+            .TakeWhile(element => element.Text != "Device: POS-01")
+            .Select(element => element.Text)
+            .ToList();
+        Assert.NotEmpty(storeLines);
+        Assert.StartsWith("Store: ", storeLines[0], StringComparison.Ordinal);
+        Assert.Equal(
+            "Store: The Very Long Sunnybank Shopping Centre Main Store (S001)",
+            string.Join(" ", storeLines));
+        Assert.All(storeLines, line => Assert.True(line.Length <= 42, $"Store line exceeds 42 characters: {line}"));
     }
 
     [Fact]
@@ -201,7 +271,7 @@ public sealed class ReceiptPrintingTests
     }
 
     [Fact]
-    public void Receipt_text_formatter_prints_remaining_voucher_balance_as_complete_voucher_section()
+    public void Receipt_text_formatter_does_not_append_voucher_balance_to_complete_receipt()
     {
         var receipt = CreateReceipt(
             Guid.NewGuid(),
@@ -211,11 +281,157 @@ public sealed class ReceiptPrintingTests
 
         var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
 
+        Assert.DoesNotContain("VOUCHER BALANCE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC200");
+        Assert.DoesNotContain(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC200");
+        Assert.DoesNotContain(document.PreviewRows, row => row.Text.Contains("VOUCHER BALANCE", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_prints_voucher_balance_as_standalone_document()
+    {
+        var orderGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        var printTime = new DateTimeOffset(2026, 7, 10, 9, 30, 0, TimeSpan.Zero);
+        var receipt = CreateReceipt(orderGuid) with
+        {
+            VoucherBalance = new VoucherBalanceReceipt(" VC200 ", 12.34m)
+        };
+        var settings = ReceiptPrinterSettings.Default with { StoreName = "Sunnybank" };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, settings, printTime);
+
         Assert.Contains("VOUCHER BALANCE", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Voucher: VC200", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Balance: $12.34", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains(document.Elements, element => element.Text == "Order:");
+        Assert.Contains(document.Elements, element => element.Text == orderGuid.ToString());
+        Assert.Contains($"Print Time: {printTime.ToLocalTime():yyyy-MM-dd HH:mm:ss}", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Store: Sunnybank (S001)", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Organic Gala Apples", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Payment:", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("APPROVED CARD RECEIPT", document.PlainText, StringComparison.Ordinal);
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC200");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC200");
+        Assert.Contains(document.PreviewRows, row => row.Text == "Voucher: VC200");
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_wraps_long_voucher_balance_text_to_receipt_width()
+    {
+        var receipt = CreateReceipt(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")) with
+        {
+            OrderDisplay = "ORDER-20260710-VERY-LONG-REFERENCE-1234567890",
+            VoucherBalance = new VoucherBalanceReceipt(
+                "VC200-VERY-LONG-VOUCHER-CODE-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                12.34m)
+        };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.All(
+            document.Elements.Where(element => element.Kind == ReceiptPrintElementKind.Text),
+            element => Assert.True(element.Text.Length <= 42, $"Receipt line exceeds 42 characters: {element.Text}"));
+        Assert.Contains(document.Elements, element => element.Text == "Voucher:");
+        Assert.Contains(document.Elements, element => element.Text == "Order:");
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_prints_refund_voucher_as_standalone_voucher_document()
+    {
+        var orderGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        var printTime = new DateTimeOffset(2026, 7, 10, 9, 30, 0, TimeSpan.Zero);
+        var receipt = CreateReceipt(orderGuid, paymentReference: "VOUCHER_REFUND:RF123", paymentMethod: PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments = [new ReceiptPaymentLine(PaymentMethodKind.Voucher, -8m, "VOUCHER_REFUND:RF123")],
+            RefundVoucher = new RefundVoucherReceipt("RF123", 8m)
+        };
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, printTime);
+
+        Assert.Contains("REFUND VOUCHER", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Voucher: RF123", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Amount: $8.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains($"Order: {orderGuid}", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains($"Print Time: {printTime.ToLocalTime():yyyy-MM-dd HH:mm:ss}", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Organic Gala Apples", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Payment:", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "RF123");
+        Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "RF123");
+    }
+
+    [Fact]
+    public async Task Receipt_print_service_uses_actual_print_time_for_voucher_refund_auto()
+    {
+        var receipt = CreateReceipt(Guid.NewGuid()) with
+        {
+            SoldAt = new DateTimeOffset(2020, 1, 1, 9, 30, 0, TimeSpan.Zero),
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments = [new ReceiptPaymentLine(PaymentMethodKind.Voucher, -8m, "VOUCHER_REFUND:RF123")],
+            RefundVoucher = new RefundVoucherReceipt("RF123", 8m)
+        };
+        var driver = new RecordingReceiptPrinterDriver();
+        var service = new ReceiptPrintService(
+            new FakeReceiptQueryService(),
+            new FakeReceiptPrinterSettingsStore(),
+            new ReceiptTextFormatter(),
+            driver);
+        var before = DateTime.Now.AddSeconds(-1);
+
+        var result = await service.PrintReceiptAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
+
+        var after = DateTime.Now.AddSeconds(1);
+        Assert.True(result.Succeeded);
+        var printTimeText = Assert.Single(driver.LastDocument!.Elements, element =>
+            element.Kind == ReceiptPrintElementKind.Text && element.Text.StartsWith("Print Time: ", StringComparison.Ordinal)).Text;
+        var printedAt = DateTime.ParseExact(
+            printTimeText["Print Time: ".Length..],
+            "yyyy-MM-dd HH:mm:ss",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None);
+        Assert.InRange(printedAt, before, after);
+    }
+
+    [Fact]
+    public async Task Receipt_print_service_uses_actual_time_and_skips_card_marker_for_voucher_balance_auto()
+    {
+        var receipt = CreateReceipt(
+            Guid.NewGuid(),
+            paymentReference: "ANZBACKEND:260601120001:session=11111111-2222-3333-4444-555555555555:environment=Sandbox") with
+        {
+            SoldAt = new DateTimeOffset(2020, 1, 1, 9, 30, 0, TimeSpan.Zero),
+            VoucherBalance = new VoucherBalanceReceipt("VC200", 12.34m)
+        };
+        var driver = new RecordingReceiptPrinterDriver();
+        var notifier = new RecordingCardReceiptPrintedNotifier();
+        var service = new ReceiptPrintService(
+            new FakeReceiptQueryService(),
+            new FakeReceiptPrinterSettingsStore(),
+            new ReceiptTextFormatter(),
+            driver,
+            [notifier]);
+        var before = DateTime.Now.AddSeconds(-1);
+
+        var result = await service.PrintReceiptAsync(receipt, ReceiptPrintReason.VoucherBalanceAuto);
+
+        var after = DateTime.Now.AddSeconds(1);
+        Assert.True(result.Succeeded);
+        Assert.Empty(notifier.Calls);
+        var printTimeText = Assert.Single(driver.LastDocument!.Elements, element =>
+            element.Kind == ReceiptPrintElementKind.Text && element.Text.StartsWith("Print Time: ", StringComparison.Ordinal)).Text;
+        var printedAt = DateTime.ParseExact(
+            printTimeText["Print Time: ".Length..],
+            "yyyy-MM-dd HH:mm:ss",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None);
+        Assert.InRange(printedAt, before, after);
     }
 
     [Fact]

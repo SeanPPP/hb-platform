@@ -290,7 +290,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_completion_auto_prints_receipt_after_success_screen()
+    public async Task Card_payment_completion_does_not_auto_print_receipt_after_success_screen()
     {
         var printService = new RecordingReceiptPrintService();
         var cashDrawerService = new RecordingCashDrawerService();
@@ -303,10 +303,9 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
     }
 
@@ -344,7 +343,206 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_completion_auto_prints_without_receipt_permission()
+    public async Task Mixed_card_and_voucher_refund_keeps_card_refund_receipt()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card, PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -10m,
+            ActualAmount = -10m,
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Card, -6m, "CARD-REFUND-123"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, -4m, "VOUCHER_REFUND:RF123")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.Null(call.Receipt!.RefundVoucher);
+        var document = new ReceiptTextFormatter().Build(call.Receipt, ReceiptPrinterSettings.Default, order.SoldAt);
+        Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFUND VOUCHER", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Voucher_refund_completion_auto_prints_voucher_after_success_screen()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments =
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Voucher,
+                    -8m,
+                    "VOUCHER_REFUND:RF123")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal("VoucherRefundAuto", call.Reason.ToString());
+        Assert.Equal("RF123", call.Receipt!.RefundVoucher!.VoucherCode);
+        Assert.Equal(8m, call.Receipt.RefundVoucher.Amount);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
+    }
+
+    [Fact]
+    public async Task Pending_voucher_refund_completion_does_not_auto_print()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments =
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Voucher,
+                    -8m,
+                    "VOUCHER_REFUND_PENDING")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
+    }
+
+    [Fact]
+    public async Task Voucher_payment_with_remaining_balance_auto_prints_standalone_balance_without_permission()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments = [new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:12.34")]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(ReceiptPrintReason.VoucherBalanceAuto, call.Reason);
+        Assert.Equal("VC200", call.Receipt!.VoucherBalance!.VoucherCode);
+        Assert.Equal(12.34m, call.Receipt.VoucherBalance.RemainingBalance);
+        Assert.Null(call.Receipt.RefundVoucher);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
+    }
+
+    [Fact]
+    public async Task Multiple_voucher_balances_print_once_per_normalized_unique_code()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 4m, "VOUCHER:VC200:LOCK-1:12.34"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 3m, "VOUCHER: vc200 :LOCK-2:9.00"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 3m, "VOUCHER:VC201:LOCK-3:5.67")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 2);
+        Assert.All(printService.Calls, call => Assert.Equal(ReceiptPrintReason.VoucherBalanceAuto, call.Reason));
+        Assert.Equal(["VC200", "VC201"], printService.Calls.Select(call => call.Receipt!.VoucherBalance!.VoucherCode).ToArray());
+        Assert.Equal(9.00m, printService.Calls[0].Receipt!.VoucherBalance!.RemainingBalance);
+    }
+
+    [Fact]
+    public async Task Voucher_balance_auto_print_skips_invalid_zero_and_refund_payments()
+    {
+        var cases = new[]
+        {
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:0.00"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:not-money"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:  :LOCK-1:12.34"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, -10m, "VOUCHER:VC200:LOCK-1:12.34"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Cash, 10m, "VOUCHER:VC200:LOCK-1:12.34")
+        };
+
+        foreach (var payment in cases)
+        {
+            var printService = new RecordingReceiptPrintService();
+            var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+            await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+            var order = CreateReceiptPrintOrder(payment.Method) with { Payments = [payment] };
+
+            InvokePaymentCompleted(viewModel, order);
+
+            await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+            await Task.Delay(30);
+            Assert.Empty(printService.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task Voucher_balance_auto_print_continues_after_failure_and_restores_first_error()
+    {
+        var printService = new RecordingReceiptPrintService();
+        printService.PrintReceiptResults.Enqueue(new ReceiptPrintResult(false, "printer offline"));
+        printService.PrintReceiptResults.Enqueue(new ReceiptPrintResult(true, "printed"));
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "VOUCHER:VC200:LOCK-1:12.34"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "VOUCHER:VC201:LOCK-2:5.67")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 2);
+        Assert.Contains("VC200", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("printer offline", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Card_payment_completion_does_not_auto_print_without_receipt_permission()
     {
         var printService = new RecordingReceiptPrintService();
         var cashierContext = new CashierSessionContext();
@@ -359,10 +557,9 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
         Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
     }
 
@@ -596,7 +793,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Mixed_cash_card_payment_completion_opens_cash_drawer_and_auto_prints_receipt()
+    public async Task Mixed_cash_card_payment_completion_opens_cash_drawer_and_does_not_auto_print_receipt()
     {
         var printService = new RecordingReceiptPrintService();
         var cashDrawerService = new RecordingCashDrawerService();
@@ -611,13 +808,11 @@ public sealed class MainViewModelScannerTests
 
         await WaitUntilAsync(() =>
             ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) &&
-            cashDrawerService.OpenCallCount == 1 &&
-            printService.Calls.Count == 1);
+            cashDrawerService.OpenCallCount == 1);
 
+        await Task.Delay(50);
         Assert.Equal(1, cashDrawerService.OpenCallCount);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.Empty(printService.Calls);
     }
 
     [Fact]
@@ -4995,6 +5190,8 @@ public sealed class MainViewModelScannerTests
 
         public ReceiptPrintResult? PrintReceiptResult { get; init; }
 
+        public Queue<ReceiptPrintResult> PrintReceiptResults { get; } = new();
+
         public Task<ReceiptPrintResult> PrintLatestReceiptAsync(
             ReceiptPrintReason reason = ReceiptPrintReason.LastReceipt,
             CancellationToken cancellationToken = default)
@@ -5018,7 +5215,10 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             Calls.Add(new ReceiptPrintCall(receipt.OrderGuid, reason, receipt));
-            return Task.FromResult(PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", receipt.OrderGuid));
+            var result = PrintReceiptResults.Count > 0
+                ? PrintReceiptResults.Dequeue()
+                : PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", receipt.OrderGuid);
+            return Task.FromResult(result);
         }
 
         public Task<ReceiptPrintResult> TestPrinterAsync(CancellationToken cancellationToken = default)
