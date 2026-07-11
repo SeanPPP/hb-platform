@@ -38,8 +38,9 @@
 
 **Interfaces:**
 - Produces: `WpfAppFixture.Launch(string arguments, IReadOnlyDictionary<string,string?>? environment = null) : Window`
-- Produces: `WpfAppFixture.WaitForAutomationId(string automationId, TimeSpan? timeout = null) : AutomationElement`
-- Produces: `WpfAppFixture.CaptureFailure(string step) : string`
+- Produces: `WpfAppFixture.WaitForAutomationId(string automationId, TimeSpan? timeout = null, string step = "等待控件") : AutomationElement`
+- Produces: `WpfAppFixture.CaptureFailure(string step, bool allowScreenshot = true) : WpfFailureEvidence`
+- Produces: `WpfFailureEvidence.Wrap(Exception original) : Exception`
 - Produces: `WpfAppFixture.CloseOwnedProcess() : bool`
 - Produces AutomationIds: `PosMainWindow`, `PosTerminalScreen`
 
@@ -75,95 +76,34 @@
 
 - [ ] **Step 2: 先写 Preview 冒烟测试和未依赖 AutomationId 的启动夹具**
 
-`WpfAppFixture.cs` 必须先包含程序集串行设置、collection fixture、延迟启动、FlaUI 会话、临时证据目录和进程所有权清理。WPF 可执行文件用 `typeof(Hbpos.Client.Wpf.App).Assembly.Location` 替换扩展名为 `.exe`，不硬编码仓库路径。
+`WpfAppFixture.cs` 必须包含程序集串行设置、collection fixture、延迟启动、FlaUI 会话、临时证据目录、live 启动预检和进程所有权清理。WPF 可执行文件用 `typeof(Hbpos.Client.Wpf.App).Assembly.Location` 替换扩展名为 `.exe`，不硬编码仓库路径。
 
 ```csharp
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
-
-namespace Hbpos.Client.UiTests;
-
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class WpfUiCollection : ICollectionFixture<WpfAppFixture>
+public sealed record WpfFailureEvidence(
+    string ScreenshotPath,
+    string ClientLogPath,
+    bool ScreenshotCaptured = false)
 {
-    public const string Name = "WPF UI";
+    public Exception Wrap(Exception original);
 }
 
 public sealed class WpfAppFixture : IDisposable
 {
-    public FlaUI.Core.Application? App { get; private set; }
-    public UIA3Automation? Automation { get; private set; }
-    public Window? MainWindow { get; private set; }
-    public string EvidenceDirectory { get; } = Path.Combine(
-        Path.GetTempPath(), "hbpos-ui-tests", Guid.NewGuid().ToString("N"));
-
-    public Window Launch(string arguments, IReadOnlyDictionary<string, string?>? environment = null)
-    {
-        if (App is not null) throw new InvalidOperationException("测试夹具已经拥有一个 WPF 进程。");
-        var assemblyPath = typeof(Hbpos.Client.Wpf.App).Assembly.Location;
-        var executablePath = Path.ChangeExtension(assemblyPath, ".exe");
-        if (!File.Exists(executablePath)) throw new FileNotFoundException("找不到 WPF 可执行文件。", executablePath);
-        Directory.CreateDirectory(EvidenceDirectory);
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executablePath,
-            Arguments = arguments,
-            WorkingDirectory = Path.GetDirectoryName(executablePath)!,
-            UseShellExecute = false,
-        };
-        startInfo.Environment["HBPOS_CLIENT_LOG_FILE"] = Path.Combine(EvidenceDirectory, "hbpos-client.log");
-        if (environment is not null)
-        {
-            foreach (var pair in environment)
-            {
-                if (pair.Value is null) startInfo.Environment.Remove(pair.Key);
-                else startInfo.Environment[pair.Key] = pair.Value;
-            }
-        }
-        App = FlaUI.Core.Application.Launch(startInfo);
-        Automation = new UIA3Automation();
-        MainWindow = App.GetMainWindow(Automation, TimeSpan.FromSeconds(30))
-            ?? throw new TimeoutException("30 秒内未找到 WPF 主窗口。");
-        return MainWindow;
-    }
-
-    public AutomationElement WaitForAutomationId(string automationId, TimeSpan? timeout = null) =>
-        Retry.WhileNull(
-            () => MainWindow?.FindFirstDescendant(automationId),
-            timeout: timeout ?? TimeSpan.FromSeconds(10),
-            interval: TimeSpan.FromMilliseconds(100),
-            throwOnTimeout: true,
-            ignoreException: true,
-            timeoutMessage: $"未找到 AutomationId={automationId}。")
-        .Result!;
-
-    public string CaptureFailure(string step)
-    {
-        Directory.CreateDirectory(EvidenceDirectory);
-        var path = Path.Combine(EvidenceDirectory, $"{step}.png");
-        if (MainWindow is not null)
-        {
-            using var image = Capture.Element(MainWindow);
-            image.ToFile(path);
-        }
-        return path;
-    }
-
-    public bool CloseOwnedProcess()
-    {
-        if (App is null) return true;
-        var exited = App.HasExited || App.Close(killIfCloseFails: false);
-        if (!exited) App.Kill();
-        Automation?.Dispose();
-        App.Dispose();
-        Automation = null;
-        App = null;
-        MainWindow = null;
-        return exited;
-    }
-
-    public void Dispose() => CloseOwnedProcess();
+    public string ClientLogPath { get; }
+    public Window Launch(string arguments, IReadOnlyDictionary<string, string?>? environment = null);
+    public AutomationElement WaitForAutomationId(
+        string automationId,
+        TimeSpan? timeout = null,
+        string step = "等待控件");
+    public WpfFailureEvidence CaptureFailure(string step, bool allowScreenshot = true);
+    public bool CloseOwnedProcess();
 }
 ```
+
+- `Launch` 在创建目录和启动进程前执行只读预检：非 Preview 若发现同一目标 executable 已运行，或同名进程路径不可读，立即失败；Preview 绕过该门禁。测试不关闭、不替换用户已有进程。
+- 创建子进程参数时移除全部 `HBPOS_E2E_*` 变量；Preview 最后强制写入无效后台地址并关闭上传，live 只接收明确允许的客户端环境变量。
+- `CaptureFailure` 以 best-effort 方式创建目录、清空 `CashierLoginInput` / `ProductBarcodeInput` 并截图。任何一步失败均返回 `ScreenshotCaptured=false`，`Wrap` 始终报告步骤对应的截图状态和客户端日志路径，并把原异常保留为 `InnerException`。
+- 一旦 live 开始提交任一受保护值，调用方传入 `allowScreenshot:false`；此时不尝试脱敏或整窗截图。`CloseOwnedProcess` 只清理由当前夹具启动并持有的进程。
 
 `StartupSmokeTests.cs`：
 
@@ -188,10 +128,11 @@ public sealed class StartupSmokeTests
             Assert.False(pos.IsOffscreen);
             Assert.True(_app.CloseOwnedProcess());
         }
-        catch
+        catch (Exception error)
         {
-            _app.CaptureFailure(nameof(Preview_mode_shows_pos_screen_and_exits_cleanly));
-            throw;
+            throw _app.CaptureFailure(
+                    nameof(Preview_mode_shows_pos_screen_and_exits_cleanly))
+                .Wrap(error);
         }
     }
 }
@@ -417,40 +358,47 @@ HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED=true
 `SaleFlowTests.Store_cash_sale_reaches_payment_success` 的顺序必须固定：
 
 ```csharp
-var config = LiveE2eConfiguration.FromEnvironment();
-var device = await LiveDeviceBinding.ReadLatestAsync();
-device.EnsureMatches(config.StoreCode);
-var window = _app.Launch("--culture=en-AU", new Dictionary<string, string?>
+var sensitiveValueSubmitted = false;
+try
 {
-    ["HBPOS_API_BASE_URL"] = config.PosApiBaseUrl.ToString(),
-    ["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "true",
-});
-Assert.Equal(config.StoreCode, ExtractAllowedStore(_app.WaitForAutomationId("CurrentStoreInfo").Name));
-var login = _app.WaitForAutomationId("CashierLoginInput");
-login.Focus();
-Keyboard.Type(config.CashierBarcode);
-Keyboard.Type(VirtualKeyShort.RETURN);
-WaitUntilHidden("CashierLoginOverlay");
-var scan = _app.WaitForAutomationId("ProductBarcodeInput");
-scan.Focus();
-Keyboard.Type(config.ProductBarcode);
-Keyboard.Type(VirtualKeyShort.RETURN);
-var row = WaitForSingleCartRow("CartItemsGrid");
-var quantity = ReadQuantity(row, "CartLineQuantity");
-row.FindFirstDescendant("CartLineIncreaseButton")!.AsButton().Invoke();
-WaitForQuantity(row, quantity + 1m);
-_app.WaitForAutomationId("OpenPaymentButton").AsButton().Invoke();
-_app.WaitForAutomationId("PaymentScreen", TimeSpan.FromSeconds(30));
-_app.WaitForAutomationId("AddCashTenderButton").AsButton().Invoke();
-WaitForTenderAndZeroRemaining();
-var confirm = _app.WaitForAutomationId("ConfirmPaymentButton").AsButton();
-Assert.True(confirm.IsEnabled);
-confirm.Invoke();
-_app.WaitForAutomationId("PaymentSuccessScreen", TimeSpan.FromSeconds(60));
-Assert.NotEqual("-", _app.WaitForAutomationId("CompletedTransactionId").Name);
+    var config = LiveE2eConfiguration.FromEnvironment();
+    var device = await LiveDeviceBinding.ReadLatestAsync();
+    device.EnsureMatches(config.StoreCode);
+    // Launch 内部必须先完成 live 同 executable 只读预检，再启动测试拥有的进程。
+    var window = _app.Launch("--culture=en-AU", new Dictionary<string, string?>
+    {
+        ["HBPOS_API_BASE_URL"] = config.PosApiBaseUrl.ToString(),
+        ["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "true",
+    });
+    Assert.Equal(config.StoreCode, ExtractAllowedStore(
+        _app.WaitForAutomationId("CurrentStoreInfo", step: "校验当前门店").Name));
+
+    var login = _app.WaitForAutomationId("CashierLoginInput", step: "等待收银员登录输入框");
+    login.Focus();
+    // 状态区可能从此刻起回显受保护值，后续失败必须禁止整窗截图。
+    sensitiveValueSubmitted = true;
+    Keyboard.Type(config.CashierBarcode);
+    Keyboard.Type(VirtualKeyShort.RETURN);
+
+    // 继续执行扫码、数量增加、现金支付，并等待 PaymentSuccessScreen。
+    var successEvidence = _app.CaptureFailure(
+        $"{nameof(Store_cash_sale_reaches_payment_success)}-success");
+    Assert.True(File.Exists(successEvidence.ScreenshotPath));
+}
+catch (Exception error)
+{
+    throw _app.CaptureFailure(
+            nameof(Store_cash_sale_reaches_payment_success),
+            allowScreenshot: !sensitiveValueSubmitted)
+        .Wrap(error);
+}
+finally
+{
+    _app.CloseOwnedProcess();
+}
 ```
 
-所有等待辅助方法使用 `Retry.WhileNull` / `Retry.WhileFalse`，超时信息包含当前步骤和 AutomationId。`catch` 先调用 `CaptureFailure`，`finally` 只调用 `CloseOwnedProcess`，不点击新交易、不删除或撤销销售。
+所有等待辅助方法使用 `Retry.WhileNull` / `Retry.WhileFalse`，超时信息包含当前步骤和 AutomationId。成功页允许安全截图；live 开始提交受保护值后，`catch` 必须明确禁用整窗截图并通过 `WpfFailureEvidence.Wrap` 保留原异常、报告截图状态和日志路径。`finally` 只调用 `CloseOwnedProcess`，不点击新交易、不删除或撤销销售。
 
 - [ ] **Step 8: 运行纯门禁测试并编译真实流程**
 
