@@ -93,6 +93,39 @@ public sealed class CatalogIndexCacheTests
         }
     }
 
+    [Fact]
+    public async Task GetOrBuildAsync_OwnerCancellationKeepsSharedBuildAliveUntilCompletion()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
+        var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowBuildToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var firstCancellation = new CancellationTokenSource();
+        var buildCount = 0;
+
+        var first = cache.GetOrBuildAsync("S01", since: null, BuildAsync, firstCancellation.Token);
+        await buildStarted.Task;
+        var second = cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+
+        firstCancellation.Cancel();
+        Assert.False(first.IsCompleted);
+        allowBuildToFinish.SetResult();
+
+        var results = await Task.WhenAll(first, second);
+        var cached = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+
+        Assert.Same(results[0], results[1]);
+        Assert.Same(results[0], cached);
+        Assert.Equal(1, buildCount);
+
+        async Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken cancellationToken)
+        {
+            buildCount++;
+            buildStarted.SetResult();
+            await allowBuildToFinish.Task.WaitAsync(cancellationToken);
+            return CreateResult("S01");
+        }
+    }
+
     private static CatalogIndexBuildResult CreateResult(string storeCode)
     {
         return new CatalogIndexBuildResult(

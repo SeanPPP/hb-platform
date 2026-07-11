@@ -566,6 +566,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _lastCompletedOrder = order;
                 PaymentSuccess.LoadFromOrder(order);
                 CurrentScreen = PaymentSuccess;
+                // 真实恢复订单完成后仅在首次进入成功页时播放一次结账成功音。
+                _userFeedbackService.Play(UserFeedbackCue.Checkout);
                 PosTerminal?.RefreshCart();
                 CashPayment?.RefreshCart();
             },
@@ -1907,6 +1909,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await RefreshPendingSyncAsync();
         await PaymentSuccess.LoadFromOrderAsync(e.Order);
         CurrentScreen = PaymentSuccess;
+        // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
+        _userFeedbackService.Play(UserFeedbackCue.Checkout);
 
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
         if (MainReceiptCoordinator.ContainsCashPayment(e.Order))

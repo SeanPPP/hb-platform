@@ -940,6 +940,35 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Payment_completion_plays_checkout_feedback_once()
+    {
+        var feedback = new RecordingUserFeedbackService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            userFeedbackService: feedback);
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+
+        InvokePaymentCompleted(viewModel, order);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+
+        Assert.Equal([UserFeedbackCue.Checkout], feedback.Cues);
+    }
+
+    [Fact]
+    public async Task Manually_opening_payment_success_does_not_play_checkout_feedback()
+    {
+        var feedback = new RecordingUserFeedbackService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            userFeedbackService: feedback);
+
+        await viewModel.ShowPaymentSuccessCommand.ExecuteAsync(null);
+        await viewModel.ShowPaymentSuccessCommand.ExecuteAsync(null);
+
+        Assert.Empty(feedback.Cues);
+    }
+
+    [Fact]
     public async Task Full_card_tender_auto_completes_payment_and_opens_success_screen()
     {
         var cart = new PosCartService();
@@ -3488,6 +3517,26 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Card_payment_recovery_completion_plays_checkout_feedback_once()
+    {
+        var feedback = new RecordingUserFeedbackService();
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.OrderCompleted,
+                "Recovered approved payment.",
+                order)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            userFeedbackService: feedback);
+
+        Assert.True(await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false));
+
+        Assert.Equal([UserFeedbackCue.Checkout], feedback.Cues);
+    }
+
+    [Fact]
     public async Task Card_payment_recovery_completed_auto_prints_without_receipt_permission_but_manual_print_stays_blocked()
     {
         var printService = new RecordingReceiptPrintService();
@@ -4075,6 +4124,7 @@ public sealed class MainViewModelScannerTests
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
         IInstallmentOrderService? installmentOrderService = null,
         IOperationAuditLogger? operationAuditLogger = null,
+        IUserFeedbackService? userFeedbackService = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -4091,7 +4141,7 @@ public sealed class MainViewModelScannerTests
             new PosInfrastructureFacade(
                 connectivityApiClient ?? new FakeConnectivityApiClient(),
                 rawScannerService ?? new FakeRawScannerService(),
-                userFeedbackService: null,
+                userFeedbackService: userFeedbackService,
                 applicationExitService: applicationExitService,
                 confirmationDialogService: confirmationDialogService),
             new PaymentTerminalFacade(
@@ -5863,6 +5913,16 @@ public sealed class MainViewModelScannerTests
                     null,
                     null,
                     DateTimeOffset.Now)));
+        }
+    }
+
+    private sealed class RecordingUserFeedbackService : IUserFeedbackService
+    {
+        public List<UserFeedbackCue> Cues { get; } = [];
+
+        public void Play(UserFeedbackCue cue)
+        {
+            Cues.Add(cue);
         }
     }
 

@@ -4,7 +4,6 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
-using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 
@@ -12,8 +11,6 @@ namespace Hbpos.Client.Wpf;
 
 public partial class MainWindow : Window
 {
-    private static readonly TimeSpan StartupUpdateRetryDelay = TimeSpan.FromSeconds(5);
-    private const string UnconfiguredAppUpdateCenterErrorCode = "APP_UPDATE_CENTER_NOT_CONFIGURED";
     private const int RawInputMessageId = 0x00FF;
 
     internal delegate IntPtr WindowMessageProcessor(
@@ -247,78 +244,34 @@ public partial class MainWindow : Window
     {
         return await RunStartupAppUpdateCheckCoreAsync(
             () => _appUpdateCoordinator.CheckForUpdatesAsync(manual: false),
-            delay => Task.Delay(delay),
             ReportStartupAppUpdateException,
-            ShowStartupAppUpdateFailure);
+            ReportStartupAppUpdateFailure);
     }
 
     private void ReportStartupAppUpdateException(Exception ex)
     {
         ConsoleLog.WriteError("Startup", $"app update startup check failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
-        ShowStartupAppUpdateFailure(AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.CheckFailed, ex.Message));
     }
 
-    private void ShowStartupAppUpdateFailure(AppUpdateCoordinatorResult result)
+    private static void ReportStartupAppUpdateFailure(AppUpdateCoordinatorResult result)
     {
-        var message = ResolveStartupAppUpdateFailureMessage(result);
-        _viewModel.StatusMessage = message;
-        _viewModel.AppUpdate.ShowStartupUpdateError(message, RetryStartupAfterAppUpdateFailureAsync, Close);
-    }
-
-    private async Task RetryStartupAfterAppUpdateFailureAsync()
-    {
-        try
-        {
-            // 重试启动闸门时要清掉上一次失败遮罩，并绕开已经完成的启动初始化任务缓存。
-            _viewModel.AppUpdate.ClearStartupUpdateError();
-            IsStartupBlockedByAppUpdate = false;
-            _startupInitializationTask = null;
-            // 关键逻辑：新一轮初始化必须允许 post-show 续程再次启动，否则新注册页不会请求门店列表。
-            _postShowStartupStarted = false;
-            await InitializeForStartupAsync();
-            if (IsStartupBlockedByAppUpdate)
-            {
-                return;
-            }
-
-            ActivateForScannerInput();
-            ContinueStartupAfterShown();
-        }
-        catch (Exception ex)
-        {
-            ConsoleLog.WriteError("Startup", $"startup retry after app update failure failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
-            _viewModel.StatusMessage = ex.Message;
-            Close();
-        }
+        ConsoleLog.WriteError(
+            "Startup",
+            $"app update startup check allowed status={result.Status} errorCode={result.ErrorCode ?? "<null>"} errorMessage={result.ErrorMessage ?? "<null>"}");
     }
 
     internal static async Task<AppUpdateCoordinatorResult> RunStartupAppUpdateCheckCoreAsync(
         Func<Task<AppUpdateCoordinatorResult>> checkAsync,
-        Func<TimeSpan, Task> delayAsync,
         Action<Exception> reportException,
-        Action<AppUpdateCoordinatorResult>? reportFinalFailure = null)
+        Action<AppUpdateCoordinatorResult>? reportFailure = null)
     {
         try
         {
             var result = await checkAsync();
-            if (IsUnconfiguredAppUpdateCenter(result))
-            {
-                // 中文注释：未配置更新中心是本机部署缺口，不能把门店 POS 阻断在启动页；其他检查失败仍走重试和阻断。
-                return result;
-            }
-
             if (result.Status is AppUpdateCoordinatorStatus.CheckFailed or AppUpdateCoordinatorStatus.PolicyFailed)
             {
-                // 启动阶段的检查失败和策略失败都不能直接放行，只安排一次短延迟重试。
-                await delayAsync(StartupUpdateRetryDelay);
-                var retryResult = await checkAsync();
-                if (retryResult.Status is AppUpdateCoordinatorStatus.CheckFailed or AppUpdateCoordinatorStatus.PolicyFailed)
-                {
-                    // 二次失败必须进入前台可见的阻断态，避免门店无感知地继续运行旧版本。
-                    reportFinalFailure?.Invoke(retryResult);
-                }
-
-                return retryResult;
+                // 启动自动检查不可用时只记录一次并静默放行；强制更新状态仍由启动闸门阻断。
+                reportFailure?.Invoke(result);
             }
 
             return result;
@@ -337,38 +290,11 @@ public partial class MainWindow : Window
             AppUpdateCoordinatorStatus.NoUpdate
                 or AppUpdateCoordinatorStatus.OptionalDeclined
                 or AppUpdateCoordinatorStatus.OptionalReady
-                or AppUpdateCoordinatorStatus.InstallFailed => true,
-            _ => IsUnconfiguredAppUpdateCenter(result)
+                or AppUpdateCoordinatorStatus.InstallFailed
+                or AppUpdateCoordinatorStatus.CheckFailed
+                or AppUpdateCoordinatorStatus.PolicyFailed => true,
+            _ => false
         };
-    }
-
-    private static bool IsUnconfiguredAppUpdateCenter(AppUpdateCoordinatorResult result)
-    {
-        return result.Status == AppUpdateCoordinatorStatus.CheckFailed &&
-            string.Equals(
-                result.ErrorCode,
-                UnconfiguredAppUpdateCenterErrorCode,
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string FormatAppUpdateStatus(AppUpdateCoordinatorResult result)
-    {
-        var template = LocalizationResourceProvider.Instance[result.StatusKey];
-        return result.StatusArgs.Length == 0
-            ? template
-            : string.Format(LocalizationResourceProvider.Instance.CurrentCulture, template, result.StatusArgs);
-    }
-
-    private static string ResolveStartupAppUpdateFailureMessage(AppUpdateCoordinatorResult result)
-    {
-        if (result.StatusArgs.Length > 0 &&
-            result.StatusArgs[0] is string message &&
-            !string.IsNullOrWhiteSpace(message))
-        {
-            return message;
-        }
-
-        return FormatAppUpdateStatus(result);
     }
 
     private void MainWindowSourceInitialized(object? sender, EventArgs e)
