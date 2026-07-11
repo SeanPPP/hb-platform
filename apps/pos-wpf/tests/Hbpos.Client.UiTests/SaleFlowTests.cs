@@ -1,4 +1,9 @@
+using System.Diagnostics;
 using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -7,6 +12,333 @@ using FlaUI.Core.WindowsAPI;
 using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.UiTests;
+
+public sealed class OperationAuditBackendClientTests
+{
+    [Fact]
+    public async Task FetchAllAsync_reads_all_pages_without_writes()
+    {
+        var rows = Enumerable.Range(1, 201).Select(Row).ToArray();
+        var handler = new RecordingHandler(
+            Page(rows[..200], 201),
+            Page(rows[200..], 201));
+        using var client = new OperationAuditBackendClient(
+            new Uri("https://backend.example.test/"),
+            "test-bearer-secret",
+            handler);
+
+        var result = await client.FetchAllAsync(
+            new AuditQuery(
+                DateTimeOffset.Parse("2026-07-11T10:00:00Z", CultureInfo.InvariantCulture),
+                DateTimeOffset.Parse("2026-07-11T10:10:00Z", CultureInfo.InvariantCulture),
+                "1042",
+                "DEV-1",
+                "cashier-1"),
+            CancellationToken.None);
+
+        Assert.Equal(201, result.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+        Assert.Contains("pageNumber=1", handler.Requests[0].Uri.Query);
+        Assert.Contains("pageNumber=2", handler.Requests[1].Uri.Query);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Contains("pageSize=200", request.Uri.Query);
+            Assert.DoesNotContain("test-bearer-secret", request.Uri.ToString());
+            Assert.Equal("Bearer", request.AuthorizationScheme);
+            Assert.Equal("test-bearer-secret", request.AuthorizationParameter);
+        });
+    }
+
+    [Fact]
+    public async Task PollRequiredAsync_uses_login_cashier_id_for_the_five_events()
+    {
+        var required = RequiredRows();
+        var handler = new RecordingHandler(
+            Page(required.Where(row => row.OperationType == "CASHIER_LOGIN"), 1),
+            Page(required, required.Count));
+        using var client = new OperationAuditBackendClient(
+            new Uri("https://backend.example.test/"),
+            "test-bearer-secret",
+            handler);
+
+        var result = await client.PollRequiredAsync(
+            new AuditQuery(
+                DateTimeOffset.Parse("2026-07-11T10:00:00Z", CultureInfo.InvariantCulture),
+                DateTimeOffset.Parse("2026-07-11T10:10:00Z", CultureInfo.InvariantCulture),
+                "1042",
+                "DEV-1"),
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        Assert.Equal(5, result.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.DoesNotContain("cashierKeyword", handler.Requests[0].Uri.Query);
+        Assert.Contains("cashierKeyword=cashier-1", handler.Requests[1].Uri.Query);
+        Assert.All(handler.Requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+    }
+
+    [Fact]
+    public async Task Detail_GET_requires_an_exact_product_identifier_match()
+    {
+        const string productBarcode = "test-product-secret";
+        var eventId = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var handler = new RecordingHandler(JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = new
+            {
+                eventId,
+                items = new[]
+                {
+                    new
+                    {
+                        productCode = "SKU-1",
+                        itemNumber = "ITEM-1",
+                        referenceCode = "REF-1",
+                        lookupCode = productBarcode,
+                    },
+                },
+            },
+        }));
+        using var client = new OperationAuditBackendClient(
+            new Uri("https://backend.example.test/"),
+            "test-bearer-secret",
+            handler);
+
+        using var detail = await client.GetDetailAsync(eventId, CancellationToken.None);
+
+        AuditDetailValidator.AssertContainsProduct(detail, productBarcode);
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            AuditDetailValidator.AssertContainsProduct(detail, "different-product-secret"));
+        Assert.DoesNotContain("different-product-secret", error.Message);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.EndsWith(eventId.ToString(), request.Uri.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task PollOrderAsync_accepts_only_the_target_store_order()
+    {
+        var orderGuid = Guid.Parse("30000000-0000-0000-0000-000000000001").ToString();
+        var handler = new RecordingHandler(JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = new { order = new { orderGuid, branchCode = "1042" } },
+        }));
+        using var client = new OperationAuditBackendClient(
+            new Uri("https://backend.example.test/"),
+            "test-bearer-secret",
+            handler);
+
+        await client.PollOrderAsync(orderGuid, "1042", CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.EndsWith(orderGuid, request.Uri.AbsolutePath);
+
+        var wrongStoreHandler = new RecordingHandler(JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = new { order = new { orderGuid, branchCode = "1005" } },
+        }));
+        using var wrongStoreClient = new OperationAuditBackendClient(
+            new Uri("https://backend.example.test/"),
+            "test-bearer-secret",
+            wrongStoreHandler);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            wrongStoreClient.PollOrderAsync(orderGuid, "1042", CancellationToken.None));
+        Assert.DoesNotContain("test-bearer-secret", error.Message);
+    }
+
+    [Fact]
+    public void Detail_selection_uses_only_new_ids_for_the_four_business_events()
+    {
+        var required = RequiredRows().ToList();
+        var oldAdd = required[1] with
+        {
+            EventId = Guid.Parse("40000000-0000-0000-0000-000000000001"),
+            OccurredAtUtc = required[1].OccurredAtUtc.AddMinutes(-1),
+        };
+        required.Add(oldAdd);
+        var newIds = required
+            .Where(row => row.OperationType != "CASHIER_LOGIN" && row.EventId != oldAdd.EventId)
+            .Select(row => row.EventId)
+            .ToHashSet();
+
+        var selected = AuditDetailValidator.SelectNewRequiredEvents(required, newIds);
+
+        Assert.Equal(4, selected.Count);
+        Assert.All(selected, row => Assert.Contains(row.EventId, newIds));
+        Assert.DoesNotContain(selected, row => row.EventId == oldAdd.EventId);
+    }
+
+    private static AuditRow Row(int index) => new(
+        Guid.NewGuid(),
+        DateTimeOffset.Parse("2026-07-11T10:00:00Z", CultureInfo.InvariantCulture).AddSeconds(index),
+        DateTimeOffset.Parse("2026-07-11T10:00:01Z", CultureInfo.InvariantCulture).AddSeconds(index),
+        "CART_ITEM_ADD",
+        "Succeeded",
+        "1042",
+        "DEV-1",
+        "cashier-1",
+        "Cashier One",
+        "instance-1",
+        null,
+        null,
+        null);
+
+    private static IReadOnlyList<AuditRow> RequiredRows()
+    {
+        var rows = Enumerable.Range(1, 5).Select(Row).ToArray();
+        rows[0] = rows[0] with { OperationType = "CASHIER_LOGIN" };
+        rows[1] = rows[1] with { OperationType = "CART_ITEM_ADD" };
+        rows[2] = rows[2] with { OperationType = "CART_ITEM_QUANTITY_CHANGE" };
+        rows[3] = rows[3] with { OperationType = "PAYMENT_TENDER_ADD", PaymentMethod = "Cash" };
+        rows[4] = rows[4] with
+        {
+            OperationType = "SALE_COMPLETE",
+            ReasonCode = "SALE",
+            OrderGuid = Guid.Parse("10000000-0000-0000-0000-000000000001").ToString(),
+        };
+        return rows;
+    }
+
+    private static string Page(IEnumerable<AuditRow> rows, int total) => JsonSerializer.Serialize(
+        new { success = true, data = new { items = rows, total } },
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+    private sealed class RecordingHandler(params string[] responses) : HttpMessageHandler
+    {
+        private readonly Queue<string> _responses = new(responses);
+
+        public List<RecordedRequest> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(new RecordedRequest(
+                request.Method,
+                request.RequestUri!,
+                request.Headers.Authorization?.Scheme,
+                request.Headers.Authorization?.Parameter));
+            if (!_responses.TryDequeue(out var response))
+                throw new InvalidOperationException("测试响应已耗尽。");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed record RecordedRequest(
+        HttpMethod Method,
+        Uri Uri,
+        string? AuthorizationScheme,
+        string? AuthorizationParameter);
+}
+
+public sealed class AuditSnapshotTests
+{
+    [Fact]
+    public void Snapshot_rejects_new_event_in_other_store()
+    {
+        var before = AuditSnapshot.Create([
+            Row(Guid.Parse("00000000-0000-0000-0000-000000001042"), "1042", "DEV-1", "CASHIER_LOGIN")
+        ]);
+        var after = AuditSnapshot.Create([
+            Row(Guid.Parse("00000000-0000-0000-0000-000000001042"), "1042", "DEV-1", "CASHIER_LOGIN"),
+            Row(Guid.Parse("00000000-0000-0000-0000-000000001009"), "1009", "DEV-X", "SALE_COMPLETE")
+        ]);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            AuditSnapshot.AssertOtherStoresUnchanged(
+                before,
+                after,
+                new HashSet<string> { "1042", "1005" }));
+    }
+
+    [Fact]
+    public void Required_events_must_be_succeeded_for_same_store_device_and_cashier()
+    {
+        var valid = RequiredRows();
+
+        var sale = RequiredEventValidator.Validate(valid, "1042", "DEV-1");
+
+        Assert.Equal("SALE_COMPLETE", sale.OperationType);
+        var invalidSets = new IReadOnlyList<AuditRow>[]
+        {
+            Replace(valid, 1, valid[1] with { Outcome = "Failed" }),
+            Replace(valid, 1, valid[1] with { StoreCode = "1005" }),
+            Replace(valid, 1, valid[1] with { DeviceCode = "DEV-X" }),
+            Replace(valid, 1, valid[1] with { CashierId = "cashier-2" }),
+            Replace(valid, 3, valid[3] with { PaymentMethod = "Card" }),
+            Replace(valid, 4, valid[4] with { ReasonCode = "REFUND" }),
+            Replace(valid, 4, valid[4] with { OrderGuid = null }),
+        };
+        Assert.All(invalidSets, rows =>
+            Assert.Throws<InvalidOperationException>(() =>
+                RequiredEventValidator.Validate(rows, "1042", "DEV-1")));
+    }
+
+    [Fact]
+    public void New_target_device_events_cannot_move_to_another_allowed_store()
+    {
+        var old = Row(Guid.NewGuid(), "1042", "DEV-1", "CASHIER_LOGIN");
+        var before = AuditSnapshot.Create([old]);
+        var afterRows = new[]
+        {
+            old,
+            Row(Guid.NewGuid(), "1005", "DEV-1", "SALE_COMPLETE"),
+        };
+
+        Assert.Throws<InvalidOperationException>(() =>
+            AuditSnapshot.AssertNewTargetDeviceBelongsToStore(
+                before,
+                afterRows,
+                "DEV-1",
+                "1042"));
+    }
+
+    private static IReadOnlyList<AuditRow> RequiredRows()
+    {
+        var orderGuid = Guid.Parse("10000000-0000-0000-0000-000000000001").ToString();
+        return
+        [
+            Row(Guid.NewGuid(), "1042", "DEV-1", "CASHIER_LOGIN"),
+            Row(Guid.NewGuid(), "1042", "DEV-1", "CART_ITEM_ADD"),
+            Row(Guid.NewGuid(), "1042", "DEV-1", "CART_ITEM_QUANTITY_CHANGE"),
+            Row(Guid.NewGuid(), "1042", "DEV-1", "PAYMENT_TENDER_ADD") with { PaymentMethod = "Cash" },
+            Row(Guid.NewGuid(), "1042", "DEV-1", "SALE_COMPLETE") with
+            {
+                ReasonCode = "SALE",
+                OrderGuid = orderGuid,
+            },
+        ];
+    }
+
+    private static AuditRow Row(Guid eventId, string store, string device, string operationType) => new(
+        eventId,
+        DateTimeOffset.Parse("2026-07-11T10:00:00Z", CultureInfo.InvariantCulture),
+        DateTimeOffset.Parse("2026-07-11T10:00:01Z", CultureInfo.InvariantCulture),
+        operationType,
+        "Succeeded",
+        store,
+        device,
+        "cashier-1",
+        "Cashier One",
+        "instance-1",
+        null,
+        null,
+        null);
+
+    private static IReadOnlyList<AuditRow> Replace(
+        IReadOnlyList<AuditRow> rows,
+        int index,
+        AuditRow replacement) => rows.Select((row, itemIndex) =>
+        itemIndex == index ? replacement : row).ToArray();
+}
 
 public sealed class WpfAppFixtureMessageTests
 {
@@ -281,6 +613,18 @@ public sealed class SaleFlowTests
             var config = LiveE2eConfiguration.FromEnvironment();
             var device = await LiveDeviceBinding.ReadLatestAsync();
             device.EnsureMatches(config.StoreCode);
+            var runStartedUtc = DateTimeOffset.UtcNow;
+            var windowFrom = runStartedUtc.AddMinutes(-2);
+            var windowTo = runStartedUtc.AddMinutes(10);
+            using var backend = new OperationAuditBackendClient(
+                config.BackendBaseUrl,
+                config.BackendBearerToken);
+            // 全门店基线必须早于 WPF 启动，先证明管理端只读权限可用再做业务操作。
+            var beforeRows = await backend.FetchAllAsync(
+                new AuditQuery(windowFrom, windowTo),
+                CancellationToken.None);
+            var before = AuditSnapshot.Create(beforeRows);
+
             var window = _app.Launch("--culture=en-AU", new Dictionary<string, string?>
             {
                 ["HBPOS_API_BASE_URL"] = config.PosApiBaseUrl.ToString(),
@@ -323,6 +667,41 @@ public sealed class SaleFlowTests
             Assert.NotEqual("-", _app.WaitForAutomationId(
                 "CompletedTransactionId",
                 step: "等待交易编号").Name);
+            var successScreenshot = _app.CaptureFailure(
+                $"{nameof(Store_cash_sale_reaches_payment_success)}-success");
+            Assert.True(File.Exists(successScreenshot));
+            // 成功页留证后优雅退出，让客户端执行最后一次 outbox flush。
+            Assert.True(_app.CloseOwnedProcess(), "WPF 进程未能优雅关闭，无法确认最后一次 outbox flush。");
+
+            var required = await backend.PollRequiredAsync(
+                new AuditQuery(windowFrom, windowTo, config.StoreCode, device.DeviceCode),
+                TimeSpan.FromSeconds(120),
+                CancellationToken.None);
+            var sale = RequiredEventValidator.Validate(required, config.StoreCode, device.DeviceCode);
+            await backend.PollOrderAsync(sale.OrderGuid!, config.StoreCode, CancellationToken.None);
+
+            var afterRows = await backend.FetchAllAsync(
+                new AuditQuery(windowFrom, windowTo),
+                CancellationToken.None);
+            var after = AuditSnapshot.Create(afterRows);
+            AuditSnapshot.AssertOtherStoresUnchanged(
+                before,
+                after,
+                new HashSet<string> { "1042", "1005" });
+            AuditSnapshot.AssertNewTargetDeviceBelongsToStore(
+                before,
+                afterRows,
+                device.DeviceCode,
+                config.StoreCode);
+
+            var newIds = new HashSet<Guid>(after.EventIds);
+            newIds.ExceptWith(before.EventIds);
+            // 详情只查本轮新增事件，避免把历史业务数据误判为本次销售证据。
+            foreach (var auditEvent in AuditDetailValidator.SelectNewRequiredEvents(required, newIds))
+            {
+                using var detail = await backend.GetDetailAsync(auditEvent.EventId, CancellationToken.None);
+                AuditDetailValidator.AssertContainsProduct(detail, config.ProductBarcode);
+            }
         }
         catch
         {
@@ -518,5 +897,393 @@ internal sealed record LiveE2eConfiguration(
             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             throw new InvalidOperationException($"环境变量 {name} 必须是绝对 HTTP/HTTPS URI。");
         return uri;
+    }
+}
+
+internal sealed record AuditRow(
+    Guid EventId,
+    DateTimeOffset OccurredAtUtc,
+    DateTimeOffset ReceivedAtUtc,
+    string OperationType,
+    string Outcome,
+    string StoreCode,
+    string DeviceCode,
+    string? CashierId,
+    string? CashierName,
+    string? InstanceId,
+    string? OrderGuid,
+    string? PaymentMethod,
+    string? ReasonCode);
+
+internal sealed record AuditQuery(
+    DateTimeOffset FromUtc,
+    DateTimeOffset ToUtc,
+    string? StoreCode = null,
+    string? DeviceCode = null,
+    string? CashierKeyword = null);
+
+internal sealed class OperationAuditBackendClient : IDisposable
+{
+    private const int PageSize = 200;
+    private static readonly TimeSpan MaxPollDuration = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+    private readonly Uri _baseUrl;
+    private readonly HttpClient _client;
+
+    public OperationAuditBackendClient(
+        Uri baseUrl,
+        string bearerToken,
+        HttpMessageHandler? handler = null)
+    {
+        _baseUrl = baseUrl;
+        _client = handler is null ? new HttpClient() : new HttpClient(handler);
+        // Bearer token 只进入 Authorization header，绝不拼接到 URI 或错误消息。
+        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+    }
+
+    public async Task<IReadOnlyList<AuditRow>> FetchAllAsync(
+        AuditQuery query,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<AuditRow>();
+        for (var pageNumber = 1; ; pageNumber++)
+        {
+            using var response = await _client.GetAsync(BuildListUri(query, pageNumber), cancellationToken);
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var root = document.RootElement;
+            if (!root.GetProperty("success").GetBoolean())
+                throw new InvalidOperationException("后台操作日志查询未成功。");
+            var data = root.GetProperty("data");
+            var page = data.GetProperty("items").Deserialize<AuditRow[]>(JsonOptions) ?? [];
+            var total = data.GetProperty("total").GetInt32();
+            if (total < 0) throw new InvalidOperationException("后台操作日志总数无效。");
+            rows.AddRange(page);
+            if (page.Length == 0 || rows.Count >= total) return rows;
+        }
+    }
+
+    public async Task<IReadOnlyList<AuditRow>> PollRequiredAsync(
+        AuditQuery query,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var effectiveTimeout = timeout > MaxPollDuration ? MaxPollDuration : timeout;
+        var elapsed = Stopwatch.StartNew();
+        var observed = new HashSet<string>(StringComparer.Ordinal);
+        string? cashierId = null;
+
+        while (true)
+        {
+            if (cashierId is null)
+            {
+                var loginRows = await FetchAllAsync(query with { CashierKeyword = null }, cancellationToken);
+                observed.UnionWith(loginRows.Select(row => row.OperationType));
+                cashierId = loginRows
+                    .Where(row => row.OperationType == "CASHIER_LOGIN" &&
+                                  row.StoreCode == query.StoreCode &&
+                                  row.DeviceCode == query.DeviceCode &&
+                                  row.Outcome == "Succeeded" &&
+                                  !string.IsNullOrWhiteSpace(row.CashierId))
+                    .OrderByDescending(row => row.OccurredAtUtc)
+                    .Select(row => row.CashierId)
+                    .FirstOrDefault();
+            }
+
+            if (cashierId is not null)
+            {
+                var rows = await FetchAllAsync(query with { CashierKeyword = cashierId }, cancellationToken);
+                observed.UnionWith(rows.Select(row => row.OperationType));
+                try
+                {
+                    _ = RequiredEventValidator.Validate(rows, query.StoreCode!, query.DeviceCode!);
+                    return rows;
+                }
+                catch (InvalidOperationException)
+                {
+                    // 后台 outbox 可能尚未上传完整，继续在固定上限内轮询。
+                }
+            }
+
+            if (elapsed.Elapsed >= effectiveTimeout)
+                throw new TimeoutException(
+                    $"等待必需操作日志超时，已观察 OperationType={string.Join(",", observed.Order())}。");
+            await DelayAsync(elapsed.Elapsed, effectiveTimeout, cancellationToken);
+        }
+    }
+
+    public async Task<JsonDocument> GetDetailAsync(
+        Guid eventId,
+        CancellationToken cancellationToken)
+    {
+        var uri = new Uri(_baseUrl, $"api/react/pos-operation-audits/{eventId:D}");
+        using var response = await _client.GetAsync(uri, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (document.RootElement.GetProperty("success").GetBoolean()) return document;
+        document.Dispose();
+        throw new InvalidOperationException("后台操作日志详情查询未成功。");
+    }
+
+    public async Task PollOrderAsync(
+        string orderGuid,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(orderGuid, out _))
+            throw new InvalidOperationException("订单标识必须是 GUID。");
+        var uri = new Uri(
+            _baseUrl,
+            $"api/react/v1/posm-sales-orders/detail/{Uri.EscapeDataString(orderGuid)}");
+        var elapsed = Stopwatch.StartNew();
+
+        while (true)
+        {
+            using var response = await _client.GetAsync(uri, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                var root = document.RootElement;
+                if (root.GetProperty("success").GetBoolean() &&
+                    root.TryGetProperty("data", out var data) &&
+                    data.ValueKind == JsonValueKind.Object &&
+                    data.TryGetProperty("order", out var order) &&
+                    order.ValueKind == JsonValueKind.Object)
+                {
+                    if (order.TryGetProperty("branchCode", out var branchCode) &&
+                        branchCode.ValueKind == JsonValueKind.String &&
+                        !string.IsNullOrWhiteSpace(branchCode.GetString()) &&
+                        branchCode.GetString() != storeCode)
+                        throw new InvalidOperationException("后台订单门店与目标门店不一致。");
+                    return;
+                }
+            }
+
+            if (elapsed.Elapsed >= MaxPollDuration)
+                throw new TimeoutException("等待后台订单处理超时。");
+            await DelayAsync(elapsed.Elapsed, MaxPollDuration, cancellationToken);
+        }
+    }
+
+    private static Task DelayAsync(
+        TimeSpan elapsed,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var remaining = timeout - elapsed;
+        return Task.Delay(remaining < PollInterval ? remaining : PollInterval, cancellationToken);
+    }
+
+    private Uri BuildListUri(AuditQuery query, int pageNumber)
+    {
+        var endpoint = new Uri(_baseUrl, "api/react/pos-operation-audits");
+        var values = new List<KeyValuePair<string, string>>
+        {
+            new("fromUtc", query.FromUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)),
+            new("toUtc", query.ToUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)),
+            new("pageNumber", pageNumber.ToString(CultureInfo.InvariantCulture)),
+            new("pageSize", PageSize.ToString(CultureInfo.InvariantCulture)),
+        };
+        AddOptional(values, "storeCode", query.StoreCode);
+        AddOptional(values, "deviceCode", query.DeviceCode);
+        AddOptional(values, "cashierKeyword", query.CashierKeyword);
+        var builder = new UriBuilder(endpoint)
+        {
+            Query = string.Join("&", values.Select(pair =>
+                $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")),
+        };
+        return builder.Uri;
+    }
+
+    private static void AddOptional(
+        ICollection<KeyValuePair<string, string>> values,
+        string name,
+        string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value)) values.Add(new KeyValuePair<string, string>(name, value));
+    }
+
+    public void Dispose() => _client.Dispose();
+}
+
+internal sealed record StoreAuditSnapshot(
+    int Count,
+    DateTimeOffset? MaxReceivedAtUtc,
+    ISet<Guid> EventIds);
+
+internal sealed record AuditSnapshot(
+    IReadOnlyDictionary<string, StoreAuditSnapshot> Stores,
+    ISet<Guid> EventIds)
+{
+    public static AuditSnapshot Create(IEnumerable<AuditRow> rows)
+    {
+        var materialized = rows.ToArray();
+        var stores = materialized
+            .GroupBy(row => row.StoreCode, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => new StoreAuditSnapshot(
+                    group.Count(),
+                    group.Max(row => (DateTimeOffset?)row.ReceivedAtUtc),
+                    group.Select(row => row.EventId).ToHashSet()),
+                StringComparer.Ordinal);
+        return new AuditSnapshot(stores, materialized.Select(row => row.EventId).ToHashSet());
+    }
+
+    public static void AssertOtherStoresUnchanged(
+        AuditSnapshot before,
+        AuditSnapshot after,
+        ISet<string> allowedStores)
+    {
+        foreach (var storeCode in before.Stores.Keys.Union(after.Stores.Keys, StringComparer.Ordinal)
+                     .Where(store => !allowedStores.Contains(store)))
+        {
+            before.Stores.TryGetValue(storeCode, out var beforeStore);
+            after.Stores.TryGetValue(storeCode, out var afterStore);
+            var unchanged = beforeStore is not null &&
+                            afterStore is not null &&
+                            beforeStore.Count == afterStore.Count &&
+                            beforeStore.MaxReceivedAtUtc == afterStore.MaxReceivedAtUtc &&
+                            beforeStore.EventIds.SetEquals(afterStore.EventIds);
+            if (unchanged) continue;
+
+            var changedIds = new HashSet<Guid>(beforeStore?.EventIds ?? Enumerable.Empty<Guid>());
+            changedIds.SymmetricExceptWith(afterStore?.EventIds ?? Enumerable.Empty<Guid>());
+            if (changedIds.Count == 0)
+                changedIds.UnionWith(
+                    (beforeStore?.EventIds ?? Enumerable.Empty<Guid>())
+                    .Concat(afterStore?.EventIds ?? Enumerable.Empty<Guid>()));
+            throw new InvalidOperationException(
+                $"门店 {storeCode} 的审计快照发生变化，EventId={string.Join(",", changedIds.Order())}。");
+        }
+    }
+
+    public static void AssertNewTargetDeviceBelongsToStore(
+        AuditSnapshot before,
+        IEnumerable<AuditRow> afterRows,
+        string deviceCode,
+        string storeCode)
+    {
+        var invalid = afterRows
+            .Where(row =>
+                !before.EventIds.Contains(row.EventId) &&
+                row.DeviceCode == deviceCode &&
+                row.StoreCode != storeCode)
+            .ToArray();
+        if (invalid.Length == 0) return;
+        throw new InvalidOperationException(
+            $"门店 {invalid[0].StoreCode} 出现目标设备的新事件，EventId={string.Join(",", invalid.Select(row => row.EventId).Order())}。");
+    }
+}
+
+internal static class RequiredEventValidator
+{
+    private static readonly HashSet<string> RequiredOperationTypes =
+    [
+        "CASHIER_LOGIN",
+        "CART_ITEM_ADD",
+        "CART_ITEM_QUANTITY_CHANGE",
+        "PAYMENT_TENDER_ADD",
+        "SALE_COMPLETE",
+    ];
+
+    public static AuditRow Validate(
+        IReadOnlyList<AuditRow> rows,
+        string storeCode,
+        string deviceCode)
+    {
+        var requiredRows = rows
+            .Where(row => RequiredOperationTypes.Contains(row.OperationType))
+            .ToArray();
+        var login = requiredRows
+            .Where(row => row.OperationType == "CASHIER_LOGIN" &&
+                          row.StoreCode == storeCode &&
+                          row.DeviceCode == deviceCode &&
+                          row.Outcome == "Succeeded" &&
+                          !string.IsNullOrWhiteSpace(row.CashierId))
+            .OrderByDescending(row => row.OccurredAtUtc)
+            .FirstOrDefault()
+            ?? throw new InvalidOperationException("缺少有效的 CASHIER_LOGIN 事件。");
+
+        foreach (var operationType in RequiredOperationTypes)
+        {
+            var matching = requiredRows.Where(row => row.OperationType == operationType).ToArray();
+            if (matching.Length == 0)
+                throw new InvalidOperationException($"缺少 {operationType} 事件。");
+            if (matching.Any(row =>
+                    row.StoreCode != storeCode ||
+                    row.DeviceCode != deviceCode ||
+                    row.CashierId != login.CashierId ||
+                    row.Outcome != "Succeeded"))
+                throw new InvalidOperationException($"{operationType} 事件的门店、设备、收银员或结果不一致。");
+        }
+
+        if (requiredRows.Where(row => row.OperationType == "PAYMENT_TENDER_ADD")
+            .Any(row => row.PaymentMethod != "Cash"))
+            throw new InvalidOperationException("PAYMENT_TENDER_ADD 必须是 Cash。");
+
+        var sales = requiredRows.Where(row => row.OperationType == "SALE_COMPLETE").ToArray();
+        if (sales.Any(row => row.ReasonCode != "SALE" || !Guid.TryParse(row.OrderGuid, out _)))
+            throw new InvalidOperationException("SALE_COMPLETE 必须包含 SALE 原因和有效 OrderGuid。");
+        return sales.OrderByDescending(row => row.OccurredAtUtc).First();
+    }
+}
+
+internal static class AuditDetailValidator
+{
+    private static readonly string[] ProductIdentifierNames =
+        ["productCode", "itemNumber", "referenceCode", "lookupCode"];
+    private static readonly string[] DetailOperationTypes =
+    [
+        "CART_ITEM_ADD",
+        "CART_ITEM_QUANTITY_CHANGE",
+        "PAYMENT_TENDER_ADD",
+        "SALE_COMPLETE",
+    ];
+
+    public static IReadOnlyList<AuditRow> SelectNewRequiredEvents(
+        IReadOnlyList<AuditRow> rows,
+        ISet<Guid> newEventIds)
+    {
+        var selected = new List<AuditRow>(DetailOperationTypes.Length);
+        foreach (var operationType in DetailOperationTypes)
+        {
+            var row = rows
+                .Where(item => item.OperationType == operationType && newEventIds.Contains(item.EventId))
+                .OrderByDescending(item => item.OccurredAtUtc)
+                .FirstOrDefault()
+                ?? throw new InvalidOperationException($"新增事件中缺少 {operationType}。");
+            selected.Add(row);
+        }
+        return selected;
+    }
+
+    public static void AssertContainsProduct(JsonDocument detail, string productBarcode)
+    {
+        var root = detail.RootElement;
+        if (!root.GetProperty("success").GetBoolean() ||
+            !root.TryGetProperty("data", out var data) ||
+            data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("items", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("操作日志详情缺少商品明细。");
+
+        foreach (var item in items.EnumerateArray())
+        {
+            if (ProductIdentifierNames.Any(name =>
+                    item.TryGetProperty(name, out var value) &&
+                    value.ValueKind == JsonValueKind.String &&
+                    string.Equals(value.GetString(), productBarcode, StringComparison.Ordinal)))
+                return;
+        }
+
+        throw new InvalidOperationException("操作日志详情未包含测试商品。");
     }
 }
