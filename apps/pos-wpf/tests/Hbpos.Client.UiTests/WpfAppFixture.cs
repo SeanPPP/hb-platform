@@ -22,13 +22,11 @@ public sealed class WpfAppFixture : IDisposable
     public string EvidenceDirectory { get; } = Path.Combine(
         Path.GetTempPath(), "hbpos-ui-tests", Guid.NewGuid().ToString("N"));
 
-    public Window Launch(string arguments, IReadOnlyDictionary<string, string?>? environment = null)
+    internal ProcessStartInfo CreateStartInfo(
+        string executablePath,
+        string arguments,
+        IReadOnlyDictionary<string, string?>? environment)
     {
-        if (App is not null) throw new InvalidOperationException("测试夹具已经拥有一个 WPF 进程。");
-        var assemblyPath = typeof(Hbpos.Client.Wpf.App).Assembly.Location;
-        var executablePath = Path.ChangeExtension(assemblyPath, ".exe");
-        if (!File.Exists(executablePath)) throw new FileNotFoundException("找不到 WPF 可执行文件。", executablePath);
-        Directory.CreateDirectory(EvidenceDirectory);
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
@@ -46,6 +44,31 @@ public sealed class WpfAppFixture : IDisposable
                 else startInfo.Environment[pair.Key] = pair.Value;
             }
         }
+
+        var argumentTokens = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var isPreview = argumentTokens.Any(argument =>
+            argument.Equals("--preview", StringComparison.OrdinalIgnoreCase) ||
+            argument.Equals("--screen", StringComparison.OrdinalIgnoreCase) ||
+            argument.StartsWith("--screen=", StringComparison.OrdinalIgnoreCase));
+        if (isPreview)
+        {
+            // 安全值必须最后写入，禁止父进程或调用者把 Preview 指向真实后台。
+            startInfo.Environment["HBPOS_API_BASE_URL"] = "http://127.0.0.1:0/";
+            startInfo.Environment["HBPOS_LOG_CENTER_ENABLED"] = "false";
+            startInfo.Environment["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "false";
+        }
+
+        return startInfo;
+    }
+
+    public Window Launch(string arguments, IReadOnlyDictionary<string, string?>? environment = null)
+    {
+        if (App is not null) throw new InvalidOperationException("测试夹具已经拥有一个 WPF 进程。");
+        var assemblyPath = typeof(Hbpos.Client.Wpf.App).Assembly.Location;
+        var executablePath = Path.ChangeExtension(assemblyPath, ".exe");
+        if (!File.Exists(executablePath)) throw new FileNotFoundException("找不到 WPF 可执行文件。", executablePath);
+        Directory.CreateDirectory(EvidenceDirectory);
+        var startInfo = CreateStartInfo(executablePath, arguments, environment);
         App = FlaUI.Core.Application.Launch(startInfo);
         Automation = new UIA3Automation();
         MainWindow = App.GetMainWindow(Automation, TimeSpan.FromSeconds(30))
