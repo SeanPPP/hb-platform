@@ -10,6 +10,7 @@
              xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
              mc:Ignorable="d"
+             AutomationProperties.AutomationId="PosTerminalScreen"
              d:DesignHeight="688"
              d:DesignWidth="1366"
              Background="{StaticResource PosScreenBackgroundBrush}">

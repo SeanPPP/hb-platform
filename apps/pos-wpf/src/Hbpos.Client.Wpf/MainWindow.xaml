@@ -10,6 +10,7 @@
         xmlns:views="clr-namespace:Hbpos.Client.Wpf.Views.Screens"
         xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
         mc:Ignorable="d"
+        AutomationProperties.AutomationId="PosMainWindow"
         Title="HB POS"
         Width="1366"
         Height="768"
