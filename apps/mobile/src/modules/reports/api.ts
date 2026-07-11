@@ -1,3 +1,5 @@
+import { REPORT_QUERY_TIMEOUT_MS } from "./report-config";
+
 export interface RevenueReportQuery {
   startDate: string;
   endDate: string;
@@ -252,6 +254,7 @@ export async function fetchExecutiveBranchPerformance(query: RevenueReportQuery)
   const apiClient = await getApiClient();
   const response = await apiClient.get("/react/v1/dashboard/executive-branch-performance", {
     params: buildParams(query),
+    ...getRevenueReportRequestConfig(),
   });
   return normalizeBranchRevenueRows(response.data);
 }
@@ -260,6 +263,7 @@ export async function fetchExecutiveHourlyTraffic(query: RevenueReportQuery) {
   const apiClient = await getApiClient();
   const response = await apiClient.get("/react/v1/dashboard/executive-hourly-traffic", {
     params: buildParams(query),
+    ...getRevenueReportRequestConfig(),
   });
   return normalizeHourlyRevenueRows(response.data);
 }
@@ -268,6 +272,11 @@ export async function fetchBranchDailyPerformance(query: RevenueReportQuery) {
   const apiClient = await getApiClient();
   const response = await apiClient.get("/react/v1/dashboard/branch-daily-performance", {
     params: buildParams(query),
+    ...getRevenueReportRequestConfig(),
   });
   return normalizeDailyRevenueRows(response.data);
+}
+
+export function getRevenueReportRequestConfig() {
+  return { timeout: REPORT_QUERY_TIMEOUT_MS } as const;
 }

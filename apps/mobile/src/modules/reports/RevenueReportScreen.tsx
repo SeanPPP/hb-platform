@@ -40,6 +40,7 @@ import {
 } from "@/modules/reports/periods";
 import { formatMoney } from "@/modules/reports/format";
 import { GROWTH_COLORS, formatGrowthRate, getGrowthTone } from "@/modules/reports/growth-rate";
+import { REPORT_QUERY_OPTIONS } from "@/modules/reports/report-config";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type Drilldown =
@@ -51,6 +52,7 @@ type DetailRow = HourlyRevenueRow | DailyRevenueRow;
 interface RevenueReportScreenProps {
   embedded?: boolean;
   onRefreshFreshness?: () => Promise<unknown>;
+  onRefreshReport?: () => Promise<unknown>;
 }
 
 function buildQuery(period: RevenuePeriod, branchCode?: string) {
@@ -146,7 +148,11 @@ function DetailPeriodText({
   );
 }
 
-export function RevenueReportScreen({ embedded = false, onRefreshFreshness }: RevenueReportScreenProps) {
+export function RevenueReportScreen({
+  embedded = false,
+  onRefreshFreshness,
+  onRefreshReport,
+}: RevenueReportScreenProps) {
   const { t } = useAppTranslation("common");
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<RevenuePeriodMode>("day");
@@ -170,6 +176,7 @@ export function RevenueReportScreen({ embedded = false, onRefreshFreshness }: Re
   const summaryQuery = useQuery({
     queryKey: ["reports", "revenue-summary", queryParams],
     queryFn: () => fetchExecutiveBranchPerformance(queryParams),
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const detailParams = useMemo(
@@ -185,7 +192,17 @@ export function RevenueReportScreen({ embedded = false, onRefreshFreshness }: Re
       return fetchBranchDailyPerformance(detailParams);
     },
     enabled: Boolean(drilldown),
+    ...REPORT_QUERY_OPTIONS,
   });
+
+  const refresh = () => {
+    if (onRefreshReport) {
+      // 嵌入报告中心时统一走控制器，避免下拉与页头刷新并发。
+      void onRefreshReport();
+      return;
+    }
+    void Promise.all([summaryQuery.refetch(), onRefreshFreshness?.()]);
+  };
 
   const setPeriodMode = (nextMode: RevenuePeriodMode) => {
     const nextPeriod = getDefaultRevenuePeriod(nextMode);
@@ -386,7 +403,7 @@ export function RevenueReportScreen({ embedded = false, onRefreshFreshness }: Re
               refreshControl={
                 <RefreshControl
                   refreshing={summaryQuery.isRefetching}
-                  onRefresh={() => void Promise.all([summaryQuery.refetch(), onRefreshFreshness?.()])}
+                  onRefresh={refresh}
                 />
               }
               ListEmptyComponent={<StateBox label={t("reports.states.empty")} />}
