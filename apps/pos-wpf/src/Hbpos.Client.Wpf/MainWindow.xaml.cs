@@ -273,6 +273,8 @@ public partial class MainWindow : Window
             _viewModel.AppUpdate.ClearStartupUpdateError();
             IsStartupBlockedByAppUpdate = false;
             _startupInitializationTask = null;
+            // 关键逻辑：新一轮初始化必须允许 post-show 续程再次启动，否则新注册页不会请求门店列表。
+            _postShowStartupStarted = false;
             await InitializeForStartupAsync();
             if (IsStartupBlockedByAppUpdate)
             {

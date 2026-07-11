@@ -1873,14 +1873,16 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var index = new LocalSellableItemIndex();
         var oldItem = CreateItem("SKU-106", "Old Tea", "930106", PriceSourceKind.ProductBase, 3m);
         var syncedItem = CreateItem("SKU-107", "Synced Tea", "930107", PriceSourceKind.StoreRetailPrice, 3.5m);
+        var syncToken = CancellationToken.None;
         index.ReplaceAll([oldItem]);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
             onOpenPayment: null,
-            syncCatalogAsync: _ =>
+            syncCatalogAsync: cancellationToken =>
             {
+                syncToken = cancellationToken;
                 index.ReplaceAll([syncedItem]);
                 return Task.FromResult<IReadOnlyList<SellableItemDto>>([syncedItem]);
             });
@@ -1893,6 +1895,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var match = Assert.Single(viewModel.Matches);
         Assert.Equal("Synced Tea", match.DisplayName);
         Assert.Contains("completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(syncToken.CanBeCanceled);
     }
 
     [Fact]
@@ -1904,6 +1907,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var resetItem = CreateItem("SKU-109", "Reset Tea", "930109", PriceSourceKind.StoreRetailPrice, 4.5m);
         var syncCalled = false;
         var resetCalled = false;
+        var resetToken = CancellationToken.None;
         index.ReplaceAll([oldItem]);
         var viewModel = new PosTerminalViewModel(
             index,
@@ -1915,9 +1919,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 syncCalled = true;
                 return Task.FromResult<IReadOnlyList<SellableItemDto>>([oldItem]);
             },
-            resetCatalogAsync: _ =>
+            resetCatalogAsync: cancellationToken =>
             {
                 resetCalled = true;
+                resetToken = cancellationToken;
                 index.ReplaceAll([resetItem]);
                 return Task.FromResult<IReadOnlyList<SellableItemDto>>([resetItem]);
             });
@@ -1932,6 +1937,84 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var match = Assert.Single(viewModel.Matches);
         Assert.Equal("Reset Tea", match.DisplayName);
         Assert.Contains("reset completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(resetToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_sync_command_cancel_stops_running_catalog_download()
+    {
+        var downloadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDownload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receivedToken = CancellationToken.None;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            syncCatalogAsync: async cancellationToken =>
+            {
+                receivedToken = cancellationToken;
+                using var registration = cancellationToken.Register(cancellationObserved.SetResult);
+                downloadStarted.SetResult();
+                await Task.WhenAny(cancellationObserved.Task, releaseDownload.Task);
+                cancellationToken.ThrowIfCancellationRequested();
+                return [];
+            });
+
+        var execution = viewModel.SyncCommand.ExecuteAsync(null);
+        await downloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        viewModel.SyncCommand.Cancel();
+        var wasCancellationRequested = receivedToken.IsCancellationRequested;
+        releaseDownload.TrySetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(receivedToken.CanBeCanceled);
+        Assert.True(wasCancellationRequested);
+        Assert.Equal("pos.status.ready", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_sync_command_cancel_stops_online_refresh_before_download()
+    {
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var downloadCalled = false;
+        var receivedToken = CancellationToken.None;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            syncCatalogAsync: _ =>
+            {
+                downloadCalled = true;
+                return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+            },
+            refreshOnlineAsync: async cancellationToken =>
+            {
+                receivedToken = cancellationToken;
+                using var registration = cancellationToken.Register(cancellationObserved.SetResult);
+                refreshStarted.SetResult();
+                await Task.WhenAny(cancellationObserved.Task, releaseRefresh.Task);
+                cancellationToken.ThrowIfCancellationRequested();
+                return true;
+            });
+
+        var execution = viewModel.SyncCommand.ExecuteAsync(null);
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        viewModel.SyncCommand.Cancel();
+        var wasCancellationRequested = receivedToken.IsCancellationRequested;
+        releaseRefresh.TrySetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(receivedToken.CanBeCanceled);
+        Assert.True(wasCancellationRequested);
+        Assert.False(downloadCalled);
+        Assert.Equal("pos.status.ready", viewModel.StatusMessage);
     }
 
     [Fact]

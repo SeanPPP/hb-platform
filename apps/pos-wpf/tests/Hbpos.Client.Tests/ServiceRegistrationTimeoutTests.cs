@@ -8,6 +8,18 @@ namespace Hbpos.Client.Tests;
 public sealed class ServiceRegistrationTimeoutTests
 {
     [Fact]
+    public void AddHbposClientServices_configures_catalog_http_client_without_hidden_timeout()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, factory.CreateClient(nameof(ICatalogApiClient)).Timeout);
+    }
+
+    [Fact]
     public void AddHbposClientServices_configures_linkly_http_clients_above_business_wait()
     {
         var services = new ServiceCollection();

@@ -1530,6 +1530,64 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task ContinueStartupAfterShownAsync_AfterReinitialize_LoadsStoresForCurrentRegistrationScreen()
+    {
+        var deviceApi = new FakeDeviceApiClient
+        {
+            Stores = [new StoreSelectionItem("1042", "Main Branch", true)]
+        };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository();
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
+        var viewModel = new MainViewModel(
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
+            new FakeRemoteLookupRefreshService(),
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(deviceApi, deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+        var firstRegistration = Assert.IsType<DeviceRegistrationViewModel>(viewModel.DeviceRegistration);
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+        Assert.Single(firstRegistration.Stores);
+
+        await viewModel.InitializeAsync(startupOptions);
+        var currentRegistration = Assert.IsType<DeviceRegistrationViewModel>(viewModel.DeviceRegistration);
+        Assert.NotSame(firstRegistration, currentRegistration);
+
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+
+        Assert.Equal(2, deviceApi.GetStoresCallCount);
+        Assert.Single(currentRegistration.Stores);
+    }
+
+    [Fact]
     public async Task InitializeAsync_LoadsSpecialProductsDataBeforeNavigatingToPos()
     {
         var catalog = new FakeCatalogRepository

@@ -797,6 +797,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task InitializeAsync(AppStartupOptions startupOptions)
     {
         _startupOptions = startupOptions;
+        // 关键逻辑：重新初始化会创建新的页面实例，必须丢弃上一轮 post-show 任务，避免新注册页永久停在“正在加载门店”。
+        _deviceRegistrationStoreLoadTask = null;
+        _posPostShowStartupTask = null;
         await _schema.InitializeAsync();
         _schemaReady = true;
 

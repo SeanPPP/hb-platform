@@ -101,6 +101,8 @@ public static class ServiceRegistration
         services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
+            // 商品同步由调用方令牌控制，禁止 HttpClient 隐式 100 秒超时截断冷缓存构建。
+            client.Timeout = Timeout.InfiniteTimeSpan;
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IDeviceApiClient, DeviceApiClient>(client =>

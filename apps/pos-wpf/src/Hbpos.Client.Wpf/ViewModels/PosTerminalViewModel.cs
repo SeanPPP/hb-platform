@@ -186,6 +186,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
         OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
         ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync, () => _actions.CanExitApplication);
+        // 手动目录操作使用命令令牌，保留调用方取消能力，同时不影响后台无超时同步。
         SyncCommand = new AsyncRelayCommand(SyncAsync);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync);
@@ -1427,7 +1428,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             result.Matches.Count == 0;
     }
 
-    private async Task SyncAsync()
+    private async Task SyncAsync(CancellationToken cancellationToken)
     {
         if (!TryRequirePermission(Permissions.PosTerminal.System.Sync))
         {
@@ -1438,10 +1439,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             _syncCatalogAsync,
             T("pos.catalogSync.starting", "Syncing catalog..."),
             T("pos.catalogSync.completed", "Catalog sync completed."),
-            T("pos.catalogSync.failed", "Catalog sync failed"));
+            T("pos.catalogSync.failed", "Catalog sync failed"),
+            cancellationToken);
     }
 
-    private async Task ResetCatalogAsync()
+    private async Task ResetCatalogAsync(CancellationToken cancellationToken)
     {
         if (!TryRequirePermission(Permissions.PosTerminal.Settings.CatalogReset))
         {
@@ -1452,42 +1454,46 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             _resetCatalogAsync,
             T("pos.catalogReset.starting", "Resetting catalog..."),
             T("pos.catalogReset.completed", "Catalog reset completed."),
-            T("pos.catalogReset.failed", "Catalog reset failed"));
+            T("pos.catalogReset.failed", "Catalog reset failed"),
+            cancellationToken);
     }
 
     private async Task RunCatalogDownloadAsync(
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? downloadCatalogAsync,
         string startingMessage,
         string completedMessage,
-        string failedPrefix)
+        string failedPrefix,
+        CancellationToken cancellationToken)
     {
-        if (_refreshOnlineAsync is not null)
-        {
-            var isOnline = await _refreshOnlineAsync(CancellationToken.None);
-            Session = Session with { IsOnline = isOnline };
-        }
-
-        if (!Session.IsOnline)
-        {
-            SetStatusText(T("pos.status.catalogSyncSkipped", "Offline: catalog sync skipped."));
-            return;
-        }
-
-        if (downloadCatalogAsync is null)
-        {
-            SetStatus("pos.status.ready");
-            return;
-        }
-
         try
         {
+            if (_refreshOnlineAsync is not null)
+            {
+                var isOnline = await _refreshOnlineAsync(cancellationToken);
+                Session = Session with { IsOnline = isOnline };
+            }
+
+            if (!Session.IsOnline)
+            {
+                SetStatusText(T("pos.status.catalogSyncSkipped", "Offline: catalog sync skipped."));
+                return;
+            }
+
+            if (downloadCatalogAsync is null)
+            {
+                SetStatus("pos.status.ready");
+                return;
+            }
+
             SetStatusText(startingMessage);
-            var catalogItems = await downloadCatalogAsync(CancellationToken.None);
+            var catalogItems = await downloadCatalogAsync(cancellationToken);
             RefreshMatches(catalogItems);
             SetStatusText(completedMessage);
         }
         catch (OperationCanceledException)
         {
+            // 取消后恢复可操作状态，避免界面永久停留在“正在同步”。
+            SetStatus("pos.status.ready");
         }
         catch (Exception ex)
         {

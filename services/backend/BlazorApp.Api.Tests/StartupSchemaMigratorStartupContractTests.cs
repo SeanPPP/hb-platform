@@ -273,6 +273,132 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task ApplicationLogSchemaMigrator_SqlServerIndexesUseSeparateBatchAfterAddingColumns()
+    {
+        var repoRoot = FindRepoRoot();
+        var migratorPath = Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Services/Logging/ApplicationLogSchemaMigrator.cs"
+        );
+
+        var migrator = await File.ReadAllTextAsync(migratorPath);
+        var sqlServerCaseIndex = migrator.IndexOf(
+            "case DbType.SqlServer:",
+            StringComparison.Ordinal
+        );
+
+        Assert.True(sqlServerCaseIndex >= 0, "必须存在 SQL Server 日志结构迁移分支。");
+
+        var sqlServerBreakIndex = migrator.IndexOf(
+            "break;",
+            sqlServerCaseIndex,
+            StringComparison.Ordinal
+        );
+
+        Assert.True(sqlServerBreakIndex > sqlServerCaseIndex, "SQL Server 日志结构迁移分支必须正常结束。");
+
+        var sqlServerBranch = migrator[sqlServerCaseIndex..sqlServerBreakIndex];
+        var columnMigrationIndex = sqlServerBranch.IndexOf(
+            "db.Ado.ExecuteCommand(SqlServerColumnMigrationSql);",
+            StringComparison.Ordinal
+        );
+        var indexMigrationIndex = sqlServerBranch.IndexOf(
+            "db.Ado.ExecuteCommand(SqlServerIndexMigrationSql);",
+            StringComparison.Ordinal
+        );
+
+        // 关键位置：SQL Server 会预编译整个 batch，新增列与静态引用新列的索引必须分批执行。
+        Assert.True(columnMigrationIndex >= 0, "SQL Server 日志迁移必须先执行独立的补列 batch。");
+        Assert.True(
+            indexMigrationIndex > columnMigrationIndex,
+            "SQL Server 日志迁移必须在补列 batch 完成后再执行索引 batch。"
+        );
+
+        const string columnSqlDeclaration =
+            "private const string SqlServerColumnMigrationSql = \"\"\"";
+        const string indexSqlDeclaration =
+            "private const string SqlServerIndexMigrationSql = \"\"\"";
+        const string rawStringTerminator = "\"\"\";";
+
+        var columnSqlDeclarationIndex = migrator.IndexOf(
+            columnSqlDeclaration,
+            StringComparison.Ordinal
+        );
+        var indexSqlDeclarationIndex = migrator.IndexOf(
+            indexSqlDeclaration,
+            StringComparison.Ordinal
+        );
+
+        Assert.True(columnSqlDeclarationIndex >= 0, "必须声明 SQL Server 独立补列 SQL 常量。");
+        Assert.True(
+            indexSqlDeclarationIndex > columnSqlDeclarationIndex,
+            "必须在补列 SQL 常量之后声明 SQL Server 独立索引 SQL 常量。"
+        );
+
+        var columnSqlBodyStartIndex = columnSqlDeclarationIndex + columnSqlDeclaration.Length;
+        var columnSqlBodyEndIndex = migrator.IndexOf(
+            rawStringTerminator,
+            columnSqlBodyStartIndex,
+            StringComparison.Ordinal
+        );
+        var indexSqlBodyStartIndex = indexSqlDeclarationIndex + indexSqlDeclaration.Length;
+        var indexSqlBodyEndIndex = migrator.IndexOf(
+            rawStringTerminator,
+            indexSqlBodyStartIndex,
+            StringComparison.Ordinal
+        );
+
+        Assert.True(
+            columnSqlBodyEndIndex > columnSqlBodyStartIndex
+                && columnSqlBodyEndIndex < indexSqlDeclarationIndex,
+            "必须能按声明边界提取 SQL Server 补列 SQL 正文。"
+        );
+        Assert.True(
+            indexSqlBodyEndIndex > indexSqlBodyStartIndex,
+            "必须能按声明边界提取 SQL Server 索引 SQL 正文。"
+        );
+
+        var columnSqlBody = migrator[columnSqlBodyStartIndex..columnSqlBodyEndIndex];
+        var indexSqlBody = migrator[indexSqlBodyStartIndex..indexSqlBodyEndIndex];
+        const string addColumnStatement = "ALTER TABLE [dbo].[ApplicationLog] ADD";
+        var addColumnCount = columnSqlBody.Split(addColumnStatement, StringSplitOptions.None).Length - 1;
+
+        // 关键位置：除了调用顺序，还要锁定两个 SQL 常量的职责，防止索引重新混入补列 batch。
+        Assert.True(
+            addColumnCount == 4,
+            $"SQL Server 补列 SQL 必须恰好包含 4 次幂等补列，实际为 {addColumnCount} 次。"
+        );
+        Assert.True(
+            !columnSqlBody.Contains("CREATE INDEX", StringComparison.OrdinalIgnoreCase),
+            "SQL Server 补列 SQL 不得包含普通索引创建语句。"
+        );
+        Assert.True(
+            !columnSqlBody.Contains("CREATE UNIQUE INDEX", StringComparison.OrdinalIgnoreCase),
+            "SQL Server 补列 SQL 不得包含唯一索引创建语句。"
+        );
+        Assert.True(
+            !indexSqlBody.Contains("ALTER TABLE", StringComparison.OrdinalIgnoreCase),
+            "SQL Server 索引 SQL 不得包含补列语句。"
+        );
+
+        var expectedIndexNames = new[]
+        {
+            "IX_ApplicationLog_ProjectCode_ClientEventId",
+            "IX_ApplicationLog_StoreCode_TimestampUtc",
+            "IX_ApplicationLog_DeviceCode_TimestampUtc",
+            "IX_ApplicationLog_InstanceId",
+        };
+
+        foreach (var expectedIndexName in expectedIndexNames)
+        {
+            Assert.True(
+                indexSqlBody.Contains(expectedIndexName, StringComparison.Ordinal),
+                $"SQL Server 索引 SQL 必须包含预期索引 {expectedIndexName}。"
+            );
+        }
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_WarehouseCartOwnerColumnFailureIsNotSwallowed()
     {
         var repoRoot = FindRepoRoot();

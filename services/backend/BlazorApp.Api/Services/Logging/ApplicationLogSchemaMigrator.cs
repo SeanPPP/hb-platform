@@ -20,7 +20,9 @@ public static class ApplicationLogSchemaMigrator
         switch (db.CurrentConnectionConfig.DbType)
         {
             case DbType.SqlServer:
-                db.Ado.ExecuteCommand(SqlServerMigrationSql);
+                // SQL Server 会预编译整个 batch，必须先独立补列，再创建静态引用新列的索引。
+                db.Ado.ExecuteCommand(SqlServerColumnMigrationSql);
+                db.Ado.ExecuteCommand(SqlServerIndexMigrationSql);
                 break;
             case DbType.PostgreSQL:
                 db.Ado.ExecuteCommand(PostgreSqlMigrationSql);
@@ -89,7 +91,7 @@ public static class ApplicationLogSchemaMigrator
         );
     }
 
-    private const string SqlServerMigrationSql = """
+    private const string SqlServerColumnMigrationSql = """
         IF COL_LENGTH(N'dbo.ApplicationLog', N'ClientEventId') IS NULL
             ALTER TABLE [dbo].[ApplicationLog] ADD [ClientEventId] uniqueidentifier NULL;
         IF COL_LENGTH(N'dbo.ApplicationLog', N'StoreCode') IS NULL
@@ -98,7 +100,9 @@ public static class ApplicationLogSchemaMigrator
             ALTER TABLE [dbo].[ApplicationLog] ADD [DeviceCode] nvarchar(120) NULL;
         IF COL_LENGTH(N'dbo.ApplicationLog', N'AppVersion') IS NULL
             ALTER TABLE [dbo].[ApplicationLog] ADD [AppVersion] nvarchar(60) NULL;
+        """;
 
+    private const string SqlServerIndexMigrationSql = """
         IF NOT EXISTS (
             SELECT 1 FROM sys.indexes
             WHERE [name] = N'IX_ApplicationLog_ProjectCode_ClientEventId'
