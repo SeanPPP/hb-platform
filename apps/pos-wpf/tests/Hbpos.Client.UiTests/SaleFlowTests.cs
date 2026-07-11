@@ -181,6 +181,51 @@ public sealed class OperationAuditBackendClientTests
     }
 
     [Fact]
+    public async Task PollRequiredAsync_filters_events_from_other_instances()
+    {
+        var current = RequiredRows().ToList();
+        var otherInstance = current[1] with
+        {
+            EventId = Guid.Parse("60000000-0000-0000-0000-000000000001"),
+            InstanceId = "instance-2",
+        };
+        var handler = new RecordingHandler(
+            Page([current[0]], 1),
+            Page(current.Append(otherInstance), 6));
+        using var client = Client(handler);
+
+        var result = await client.PollRequiredAsync(
+            Query() with { CashierKeyword = null },
+            new HashSet<Guid>(),
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        Assert.Equal(5, result.Count);
+        Assert.DoesNotContain(result, row => row.InstanceId == "instance-2");
+    }
+
+    [Fact]
+    public async Task PollRequiredAsync_hard_timeout_cancels_blocked_get()
+    {
+        using var client = Client(
+            new SlowHandler(TimeSpan.FromMilliseconds(500)),
+            TimeSpan.FromMilliseconds(100));
+        var elapsed = Stopwatch.StartNew();
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            client.PollRequiredAsync(
+                Query() with { CashierKeyword = null },
+                new HashSet<Guid>(),
+                TimeSpan.FromSeconds(5),
+                CancellationToken.None));
+
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(1));
+        Assert.DoesNotContain("test-bearer-secret", error.Message);
+        Assert.DoesNotContain("cashier-secret", error.Message);
+        Assert.DoesNotContain("product-secret", error.Message);
+    }
+
+    [Fact]
     public async Task Detail_GET_requires_an_exact_product_identifier_match()
     {
         const string productBarcode = "test-product-secret";
@@ -269,6 +314,24 @@ public sealed class OperationAuditBackendClientTests
     }
 
     [Fact]
+    public async Task PollOrderAsync_hard_timeout_cancels_blocked_get()
+    {
+        using var client = Client(
+            new SlowHandler(TimeSpan.FromMilliseconds(500)),
+            TimeSpan.FromMilliseconds(100));
+        var elapsed = Stopwatch.StartNew();
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            client.PollOrderAsync(
+                Guid.Parse("30000000-0000-0000-0000-000000000001").ToString(),
+                "1042",
+                CancellationToken.None));
+
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(1));
+        Assert.DoesNotContain("test-bearer-secret", error.Message);
+    }
+
+    [Fact]
     public void Detail_selection_uses_only_new_ids_for_the_four_business_events()
     {
         var required = RequiredRows().ToList();
@@ -305,10 +368,13 @@ public sealed class OperationAuditBackendClientTests
         null,
         null);
 
-    private static OperationAuditBackendClient Client(HttpMessageHandler handler) => new(
+    private static OperationAuditBackendClient Client(
+        HttpMessageHandler handler,
+        TimeSpan? maxPollDuration = null) => new(
         new Uri("https://backend.example.test/"),
         "test-bearer-secret",
-        handler);
+        handler,
+        maxPollDuration);
 
     private static AuditQuery Query() => new(
         DateTimeOffset.Parse("2026-07-11T10:00:00Z", CultureInfo.InvariantCulture),
@@ -366,6 +432,17 @@ public sealed class OperationAuditBackendClientTests
         Uri Uri,
         string? AuthorizationScheme,
         string? AuthorizationParameter);
+
+    private sealed class SlowHandler(TimeSpan delay) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(delay, cancellationToken);
+            throw new HttpRequestException("测试 handler 已完成等待。");
+        }
+    }
 }
 
 public sealed class AuditSnapshotTests
@@ -409,6 +486,23 @@ public sealed class AuditSnapshotTests
         Assert.All(invalidSets, rows =>
             Assert.Throws<InvalidOperationException>(() =>
                 RequiredEventValidator.Validate(rows, "1042", "DEV-1")));
+    }
+
+    [Fact]
+    public void Required_events_must_share_a_non_empty_login_instance()
+    {
+        var valid = RequiredRows();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            RequiredEventValidator.Validate(
+                Replace(valid, 0, valid[0] with { InstanceId = null }),
+                "1042",
+                "DEV-1"));
+        Assert.Throws<InvalidOperationException>(() =>
+            RequiredEventValidator.Validate(
+                Replace(valid, 2, valid[2] with { InstanceId = "instance-2" }),
+                "1042",
+                "DEV-1"));
     }
 
     [Fact]
@@ -483,6 +577,124 @@ public sealed class WpfAppFixtureMessageTests
 
         Assert.Contains("收银员登录", error.Message);
         Assert.Contains("MissingControl", error.Message);
+    }
+
+    [Fact]
+    public void Capture_failure_redaction_error_does_not_replace_business_exception()
+    {
+        using var fixture = new WpfAppFixture();
+        var original = new InvalidOperationException("原业务异常");
+        var captured = false;
+
+        var evidence = fixture.CaptureFailure(
+            "失败步骤",
+            () => throw new InvalidOperationException("脱敏失败"),
+            _ => captured = true);
+        var reported = evidence.Wrap(original);
+
+        Assert.Same(original, reported.InnerException);
+        Assert.False(captured);
+        Assert.False(evidence.ScreenshotCaptured);
+        Assert.DoesNotContain("脱敏失败", reported.Message);
+    }
+
+    [Fact]
+    public void Failure_evidence_reports_redacted_screenshot_and_client_log_paths()
+    {
+        using var fixture = new WpfAppFixture();
+        var evidence = fixture.CaptureFailure("失败步骤", () => { }, _ => { });
+
+        var reported = evidence.Wrap(new InvalidOperationException("原业务异常"));
+
+        Assert.False(evidence.ScreenshotCaptured);
+        Assert.Contains(evidence.ScreenshotPath, reported.Message);
+        Assert.Contains(evidence.ClientLogPath, reported.Message);
+        Assert.Equal(
+            Path.Combine(fixture.EvidenceDirectory, "hbpos-client.log"),
+            evidence.ClientLogPath);
+        Assert.DoesNotContain("cashier-secret", reported.Message);
+        Assert.DoesNotContain("product-secret", reported.Message);
+        Assert.DoesNotContain("token-secret", reported.Message);
+    }
+
+    [Fact]
+    public void Failure_evidence_without_a_file_defaults_to_not_captured()
+    {
+        var missingPath = Path.Combine(
+            Path.GetTempPath(),
+            "hbpos-ui-tests",
+            Guid.NewGuid().ToString("N"),
+            "missing.png");
+
+        var evidence = new WpfFailureEvidence(missingPath, "client.log");
+
+        Assert.False(File.Exists(missingPath));
+        Assert.False(evidence.ScreenshotCaptured);
+    }
+
+    [Fact]
+    public void Submitted_sensitive_value_skips_window_screenshot()
+    {
+        using var fixture = new WpfAppFixture();
+        var redacted = false;
+        var captured = false;
+
+        var evidence = fixture.CaptureFailure(
+            "失败步骤",
+            allowScreenshot: false,
+            () => redacted = true,
+            _ => captured = true);
+
+        Assert.False(redacted);
+        Assert.False(captured);
+        Assert.False(evidence.ScreenshotCaptured);
+        Assert.Contains("未生成", evidence.Wrap(new InvalidOperationException("原业务异常")).Message);
+    }
+
+    [Fact]
+    public void Live_launch_preflight_rejects_existing_target_executable()
+    {
+        var executablePath = Path.GetFullPath("Hbpos.Client.Wpf.exe");
+        var inspected = 0;
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            WpfAppFixture.EnsureSafeToLaunch(executablePath, "--culture=en-AU", _ =>
+            {
+                inspected++;
+                return [executablePath];
+            }));
+
+        Assert.Equal(1, inspected);
+        Assert.Contains("已有进程", error.Message);
+    }
+
+    [Fact]
+    public void Live_launch_preflight_rejects_unreadable_same_name_process_path()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            WpfAppFixture.EnsureSafeToLaunch(
+                Path.GetFullPath("Hbpos.Client.Wpf.exe"),
+                "--culture=en-AU",
+                _ => [null]));
+
+        Assert.Contains("已有进程", error.Message);
+    }
+
+    [Fact]
+    public void Preview_launch_preflight_does_not_inspect_existing_processes()
+    {
+        var inspected = false;
+
+        WpfAppFixture.EnsureSafeToLaunch(
+            Path.GetFullPath("Hbpos.Client.Wpf.exe"),
+            "--preview --screen=pos",
+            _ =>
+            {
+                inspected = true;
+                return [Path.GetFullPath("Hbpos.Client.Wpf.exe")];
+            });
+
+        Assert.False(inspected);
     }
 }
 
@@ -748,6 +960,7 @@ public sealed class SaleFlowTests
     [Fact]
     public async Task Store_cash_sale_reaches_payment_success()
     {
+        var sensitiveValueSubmitted = false;
         try
         {
             // 关键门禁必须全部先于 WPF 启动，避免门店不匹配时产生任何业务操作。
@@ -778,6 +991,8 @@ public sealed class SaleFlowTests
 
             var login = _app.WaitForAutomationId("CashierLoginInput", step: "等待收银员登录输入框");
             login.Focus();
+            // 一旦开始输入任一受保护值，界面其他状态区域可能回显该值，后续失败必须跳过整窗截图。
+            sensitiveValueSubmitted = true;
             Keyboard.Type(config.CashierBarcode);
             Keyboard.Type(VirtualKeyShort.RETURN);
             WaitUntilHidden("CashierLoginOverlay");
@@ -808,9 +1023,9 @@ public sealed class SaleFlowTests
             Assert.NotEqual("-", _app.WaitForAutomationId(
                 "CompletedTransactionId",
                 step: "等待交易编号").Name);
-            var successScreenshot = _app.CaptureFailure(
+            var successEvidence = _app.CaptureFailure(
                 $"{nameof(Store_cash_sale_reaches_payment_success)}-success");
-            Assert.True(File.Exists(successScreenshot));
+            Assert.True(File.Exists(successEvidence.ScreenshotPath));
             // 成功页留证后优雅退出，让客户端执行最后一次 outbox flush。
             Assert.True(_app.CloseOwnedProcess(), "WPF 进程未能优雅关闭，无法确认最后一次 outbox flush。");
             EnsureAuditWindowOpen(DateTimeOffset.UtcNow, windowTo);
@@ -848,10 +1063,12 @@ public sealed class SaleFlowTests
                 AuditDetailValidator.AssertContainsProduct(detail, config.ProductBarcode);
             }
         }
-        catch
+        catch (Exception error)
         {
-            _app.CaptureFailure(nameof(Store_cash_sale_reaches_payment_success));
-            throw;
+            throw _app.CaptureFailure(
+                    nameof(Store_cash_sale_reaches_payment_success),
+                    allowScreenshot: !sensitiveValueSubmitted)
+                .Wrap(error);
         }
         finally
         {
@@ -1077,7 +1294,7 @@ internal sealed class OperationAuditBackendClient : IDisposable
 {
     private const int PageSize = 200;
     private const int MaxPageCount = 1_000;
-    private static readonly TimeSpan MaxPollDuration = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan DefaultMaxPollDuration = TimeSpan.FromSeconds(120);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -1085,14 +1302,19 @@ internal sealed class OperationAuditBackendClient : IDisposable
     };
     private readonly Uri _baseUrl;
     private readonly HttpClient _client;
+    private readonly TimeSpan _maxPollDuration;
 
     public OperationAuditBackendClient(
         Uri baseUrl,
         string bearerToken,
-        HttpMessageHandler? handler = null)
+        HttpMessageHandler? handler = null,
+        TimeSpan? maxPollDuration = null)
     {
         _baseUrl = baseUrl;
         _client = handler is null ? new HttpClient() : new HttpClient(handler);
+        _maxPollDuration = maxPollDuration ?? DefaultMaxPollDuration;
+        if (_maxPollDuration <= TimeSpan.Zero || _maxPollDuration > DefaultMaxPollDuration)
+            throw new ArgumentOutOfRangeException(nameof(maxPollDuration), "轮询上限必须大于 0 且不超过 120 秒。");
         // Bearer token 只进入 Authorization header，绝不拼接到 URI 或错误消息。
         _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
     }
@@ -1162,55 +1384,75 @@ internal sealed class OperationAuditBackendClient : IDisposable
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var effectiveTimeout = timeout > MaxPollDuration ? MaxPollDuration : timeout;
+        var effectiveTimeout = timeout > _maxPollDuration ? _maxPollDuration : timeout;
         var elapsed = Stopwatch.StartNew();
         var observed = new HashSet<string>(StringComparer.Ordinal);
+        var lastValidationReason = "尚未观察到当前运行的完整事件集合";
         string? cashierId = null;
+        string? instanceId = null;
+        if (effectiveTimeout <= TimeSpan.Zero)
+            throw CreateRequiredTimeout(observed, lastValidationReason);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(effectiveTimeout);
 
-        while (true)
+        try
         {
-            if (cashierId is null)
+            while (true)
             {
-                var loginRows = (await FetchAllAsync(
-                        query with { CashierKeyword = null },
-                        cancellationToken))
-                    .Where(row => !excludedEventIds.Contains(row.EventId))
-                    .ToArray();
-                observed.UnionWith(loginRows.Select(row => row.OperationType));
-                cashierId = loginRows
-                    .Where(row => row.OperationType == "CASHIER_LOGIN" &&
-                                  row.StoreCode == query.StoreCode &&
-                                  row.DeviceCode == query.DeviceCode &&
-                                  row.Outcome == "Succeeded" &&
-                                  !string.IsNullOrWhiteSpace(row.CashierId))
-                    .OrderByDescending(row => row.OccurredAtUtc)
-                    .Select(row => row.CashierId)
-                    .FirstOrDefault();
-            }
-
-            if (cashierId is not null)
-            {
-                var rows = (await FetchAllAsync(
-                        query with { CashierKeyword = cashierId },
-                        cancellationToken))
-                    .Where(row => !excludedEventIds.Contains(row.EventId))
-                    .ToArray();
-                observed.UnionWith(rows.Select(row => row.OperationType));
-                try
+                if (cashierId is null)
                 {
-                    _ = RequiredEventValidator.Validate(rows, query.StoreCode!, query.DeviceCode!);
-                    return rows;
+                    var loginRows = (await FetchAllAsync(
+                            query with { CashierKeyword = null },
+                            deadline.Token))
+                        .Where(row => !excludedEventIds.Contains(row.EventId))
+                        .ToArray();
+                    observed.UnionWith(loginRows.Select(row => row.OperationType));
+                    var login = loginRows
+                        .Where(row => row.OperationType == "CASHIER_LOGIN" &&
+                                      row.StoreCode == query.StoreCode &&
+                                      row.DeviceCode == query.DeviceCode &&
+                                      row.Outcome == "Succeeded" &&
+                                      !string.IsNullOrWhiteSpace(row.CashierId) &&
+                                      !string.IsNullOrWhiteSpace(row.InstanceId))
+                        .OrderByDescending(row => row.OccurredAtUtc)
+                        .FirstOrDefault();
+                    cashierId = login?.CashierId;
+                    instanceId = login?.InstanceId;
+                    if (login is null) lastValidationReason = "尚未找到带 InstanceId 的当前登录事件";
                 }
-                catch (InvalidOperationException)
-                {
-                    // 后台 outbox 可能尚未上传完整，继续在固定上限内轮询。
-                }
-            }
 
-            if (elapsed.Elapsed >= effectiveTimeout)
-                throw new TimeoutException(
-                    $"等待必需操作日志超时，已观察 OperationType={string.Join(",", observed.Order())}。");
-            await DelayAsync(elapsed.Elapsed, effectiveTimeout, cancellationToken);
+                if (cashierId is not null && instanceId is not null)
+                {
+                    var rows = (await FetchAllAsync(
+                            query with { CashierKeyword = cashierId },
+                            deadline.Token))
+                        // 后续事件必须与本次新登录的收银员和实例完全一致，禁止跨实例拼接。
+                        .Where(row =>
+                            !excludedEventIds.Contains(row.EventId) &&
+                            row.CashierId == cashierId &&
+                            row.InstanceId == instanceId)
+                        .ToArray();
+                    observed.UnionWith(rows.Select(row => row.OperationType));
+                    try
+                    {
+                        _ = RequiredEventValidator.Validate(rows, query.StoreCode!, query.DeviceCode!);
+                        return rows;
+                    }
+                    catch (InvalidOperationException error)
+                    {
+                        // 验证器只返回固定字段原因，不包含 token 或条码。
+                        lastValidationReason = error.Message;
+                    }
+                }
+
+                if (elapsed.Elapsed >= effectiveTimeout)
+                    throw CreateRequiredTimeout(observed, lastValidationReason);
+                await DelayAsync(elapsed.Elapsed, effectiveTimeout, deadline.Token);
+            }
+        }
+        catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw CreateRequiredTimeout(observed, lastValidationReason, error);
         }
     }
 
@@ -1239,39 +1481,59 @@ internal sealed class OperationAuditBackendClient : IDisposable
             _baseUrl,
             $"api/react/v1/posm-sales-orders/detail/{requestedOrderGuid:D}");
         var elapsed = Stopwatch.StartNew();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_maxPollDuration);
 
-        while (true)
+        try
         {
-            using var response = await _client.GetAsync(uri, cancellationToken);
-            if (response.StatusCode == HttpStatusCode.OK)
+            while (true)
             {
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-                var root = document.RootElement;
-                if (root.GetProperty("success").GetBoolean() &&
-                    root.TryGetProperty("data", out var data) &&
-                    data.ValueKind == JsonValueKind.Object &&
-                    data.TryGetProperty("order", out var order) &&
-                    order.ValueKind == JsonValueKind.Object)
+                using var response = await _client.GetAsync(uri, deadline.Token);
+                if (response.StatusCode == HttpStatusCode.OK)
                 {
-                    if (!TryGetPropertyIgnoreCase(order, "orderGuid", out var returnedOrderGuidValue) ||
-                        returnedOrderGuidValue.ValueKind != JsonValueKind.String ||
-                        !Guid.TryParse(returnedOrderGuidValue.GetString(), out var returnedOrderGuid) ||
-                        returnedOrderGuid != requestedOrderGuid)
-                        throw new InvalidOperationException("后台订单缺少匹配的 OrderGuid。");
-                    if (TryGetPropertyIgnoreCase(order, "branchCode", out var branchCode) &&
-                        branchCode.ValueKind == JsonValueKind.String &&
-                        !string.IsNullOrWhiteSpace(branchCode.GetString()) &&
-                        branchCode.GetString() != storeCode)
-                        throw new InvalidOperationException("后台订单门店与目标门店不一致。");
-                    return;
+                    await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
+                    using var document = await JsonDocument.ParseAsync(stream, cancellationToken: deadline.Token);
+                    var root = document.RootElement;
+                    if (root.GetProperty("success").GetBoolean() &&
+                        root.TryGetProperty("data", out var data) &&
+                        data.ValueKind == JsonValueKind.Object &&
+                        data.TryGetProperty("order", out var order) &&
+                        order.ValueKind == JsonValueKind.Object)
+                    {
+                        if (!TryGetPropertyIgnoreCase(order, "orderGuid", out var returnedOrderGuidValue) ||
+                            returnedOrderGuidValue.ValueKind != JsonValueKind.String ||
+                            !Guid.TryParse(returnedOrderGuidValue.GetString(), out var returnedOrderGuid) ||
+                            returnedOrderGuid != requestedOrderGuid)
+                            throw new InvalidOperationException("后台订单缺少匹配的 OrderGuid。");
+                        if (TryGetPropertyIgnoreCase(order, "branchCode", out var branchCode) &&
+                            branchCode.ValueKind == JsonValueKind.String &&
+                            !string.IsNullOrWhiteSpace(branchCode.GetString()) &&
+                            branchCode.GetString() != storeCode)
+                            throw new InvalidOperationException("后台订单门店与目标门店不一致。");
+                        return;
+                    }
                 }
-            }
 
-            if (elapsed.Elapsed >= MaxPollDuration)
-                throw new TimeoutException("等待后台订单处理超时。");
-            await DelayAsync(elapsed.Elapsed, MaxPollDuration, cancellationToken);
+                if (elapsed.Elapsed >= _maxPollDuration)
+                    throw new TimeoutException("等待后台订单处理超时。");
+                await DelayAsync(elapsed.Elapsed, _maxPollDuration, deadline.Token);
+            }
         }
+        catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("等待后台订单处理超时。", error);
+        }
+    }
+
+    private static TimeoutException CreateRequiredTimeout(
+        IEnumerable<string> observed,
+        string lastValidationReason,
+        Exception? inner = null)
+    {
+        var message =
+            $"等待必需操作日志超时，已观察 OperationType={string.Join(",", observed.Order())}；" +
+            $"最后验证原因={lastValidationReason}。";
+        return inner is null ? new TimeoutException(message) : new TimeoutException(message, inner);
     }
 
     private static bool TryGetPropertyIgnoreCase(
@@ -1295,7 +1557,10 @@ internal sealed class OperationAuditBackendClient : IDisposable
         CancellationToken cancellationToken)
     {
         var remaining = timeout - elapsed;
-        return Task.Delay(remaining < PollInterval ? remaining : PollInterval, cancellationToken);
+        var delay = remaining <= TimeSpan.Zero
+            ? TimeSpan.Zero
+            : remaining < PollInterval ? remaining : PollInterval;
+        return Task.Delay(delay, cancellationToken);
     }
 
     private Uri BuildListUri(AuditQuery query, int pageNumber)
@@ -1424,7 +1689,8 @@ internal static class RequiredEventValidator
                           row.StoreCode == storeCode &&
                           row.DeviceCode == deviceCode &&
                           row.Outcome == "Succeeded" &&
-                          !string.IsNullOrWhiteSpace(row.CashierId))
+                          !string.IsNullOrWhiteSpace(row.CashierId) &&
+                          !string.IsNullOrWhiteSpace(row.InstanceId))
             .OrderByDescending(row => row.OccurredAtUtc)
             .FirstOrDefault()
             ?? throw new InvalidOperationException("缺少有效的 CASHIER_LOGIN 事件。");
@@ -1438,8 +1704,9 @@ internal static class RequiredEventValidator
                     row.StoreCode != storeCode ||
                     row.DeviceCode != deviceCode ||
                     row.CashierId != login.CashierId ||
+                    row.InstanceId != login.InstanceId ||
                     row.Outcome != "Succeeded"))
-                throw new InvalidOperationException($"{operationType} 事件的门店、设备、收银员或结果不一致。");
+                throw new InvalidOperationException($"{operationType} 事件的门店、设备、收银员、实例或结果不一致。");
         }
 
         if (requiredRows.Where(row => row.OperationType == "PAYMENT_TENDER_ADD")

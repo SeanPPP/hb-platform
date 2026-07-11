@@ -91,10 +91,9 @@ public sealed class StartupSmokeTests
             Assert.False(pos.IsOffscreen);
             Assert.True(_app.CloseOwnedProcess());
         }
-        catch
+        catch (Exception error)
         {
-            _app.CaptureFailure(nameof(Preview_mode_shows_pos_screen_and_exits_cleanly));
-            throw;
+            throw _app.CaptureFailure(nameof(Preview_mode_shows_pos_screen_and_exits_cleanly)).Wrap(error);
         }
     }
 }

@@ -15,11 +15,14 @@
 - `HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED=false` 时必须在启动 WPF 前失败；测试子进程显式设置为 `true`。
 - 后台 bearer token 必须具备 `Permissions.PosTerminal.Audit.View` 和 Admin/SuperAdmin 全门店可见性；测试不输出 token、收银员条码或商品条码。
 - 本机 `DeviceCache` 的最新 `StoreCode` 必须与目标门店完全一致，`DeviceCode` 必须非空；测试不得注册、切换、重绑或修改设备授权。
+- 同一 DeviceCode 在现场必须由当前测试机器独占，禁止另一台机器并发复用；五类事件同 InstanceId 校验不能替代该机器级前提。
 - Preview 固定使用 `--preview --screen=pos --culture=en-AU`，不得连接真实业务数据库。
 - 只添加稳定英文 `AutomationProperties.AutomationId`；不改布局、样式、文案、Binding、Command 或业务行为。
 - UI 等待使用 FlaUI `Retry` 和明确超时，不使用固定长时间 `Thread.Sleep`。
 - 后台验证只使用 GET；不发送 DELETE、修改 SQL、测试数据重置或自动撤销销售。
 - 失败证据写入 `%TEMP%\hbpos-ui-tests\{run-id}`，仓库不跟踪截图和运行日志。
+- live 开始输入收银员条码或商品条码等任一受保护值后的失败不生成整窗截图，只报告未生成状态和客户端日志路径；支付成功页仍可截图。
+- 固定窗口内其他门店的正常并发审计视为窗口污染并令测试失败；这不表示测试修改了该门店。
 - 所有新增注释使用中文；提交信息使用中文并包含 `reasonix`。
 
 ---
@@ -575,9 +578,9 @@ private static readonly HashSet<string> RequiredOperationTypes =
 ];
 ```
 
-先按 `storeCode + deviceCode + fromUtc/toUtc` 找到本次 `CASHIER_LOGIN`，读取其 `cashierId`；再以该值作为 `cashierKeyword` 轮询。客户端必须再次精确验证所有五类事件的 StoreCode、DeviceCode、CashierId 和 `Outcome=Succeeded`。`PAYMENT_TENDER_ADD` 必须 `PaymentMethod=Cash`；`SALE_COMPLETE` 必须 `ReasonCode=SALE` 且 `OrderGuid` 为 GUID。
+先按 `storeCode + deviceCode + fromUtc/toUtc` 找到本次具有非空 `InstanceId` 的 `CASHIER_LOGIN`，读取其 `cashierId + InstanceId`；再以 `cashierId` 作为 `cashierKeyword` 轮询，并在客户端按该 `InstanceId` 精确过滤。客户端必须再次验证所有五类事件的 StoreCode、DeviceCode、CashierId、InstanceId 和 `Outcome=Succeeded`。`PAYMENT_TENDER_ADD` 必须 `PaymentMethod=Cash`；`SALE_COMPLETE` 必须 `ReasonCode=SALE` 且 `OrderGuid` 为 GUID。
 
-对本次新增的 `CART_ITEM_ADD`、`CART_ITEM_QUANTITY_CHANGE`、`PAYMENT_TENDER_ADD`、`SALE_COMPLETE` 调用详情 GET，断言至少一个 item 的 `productCode/itemNumber/referenceCode/lookupCode` 与测试商品条码完全匹配。轮询上限 120 秒，间隔 2 秒；超时时只输出已观察到的 OperationType，不输出条码或 token。
+对本次新增的 `CART_ITEM_ADD`、`CART_ITEM_QUANTITY_CHANGE`、`PAYMENT_TENDER_ADD`、`SALE_COMPLETE` 调用详情 GET，断言至少一个 item 的 `productCode/itemNumber/referenceCode/lookupCode` 与测试商品条码完全匹配。轮询使用 120 秒硬截止，间隔 2 秒；超时时只输出已观察到的 OperationType 和最后一个固定脱敏验证原因，不输出条码或 token。
 
 - [ ] **Step 5: 轮询后台 POSM 订单详情**
 
