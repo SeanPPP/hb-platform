@@ -25,6 +25,38 @@ public sealed class WpfAppFixtureMessageTests
     }
 }
 
+public sealed class SaleFlowWaitTests
+{
+    [Fact]
+    public void Waits_until_delayed_ui_element_is_available()
+    {
+        var expected = new object();
+        var attempts = 0;
+
+        var result = SaleFlowTests.WaitForUiElement(
+            () => ++attempts < 3 ? null : expected,
+            "等待购物车数量",
+            "CartLineQuantity",
+            TimeSpan.FromSeconds(1));
+
+        Assert.Same(expected, result);
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public void Delayed_ui_element_timeout_reports_step_and_automation_id()
+    {
+        var error = Assert.ThrowsAny<Exception>(() => SaleFlowTests.WaitForUiElement<object>(
+            () => null,
+            "等待购物车加号按钮",
+            "CartLineIncreaseButton",
+            TimeSpan.FromMilliseconds(1)));
+
+        Assert.Contains("等待购物车加号按钮", error.Message);
+        Assert.Contains("CartLineIncreaseButton", error.Message);
+    }
+}
+
 public sealed class LiveE2eConfigurationTests
 {
     [Theory]
@@ -40,8 +72,7 @@ public sealed class LiveE2eConfigurationTests
             LiveE2eConfiguration.FromEnvironment(name => values.GetValueOrDefault(name)));
 
         Assert.Contains("HBPOS_E2E_STORE_CODE", error.Message);
-        Assert.DoesNotContain(values["HBPOS_E2E_CASHIER_BARCODE"], error.Message);
-        Assert.DoesNotContain(values["HBPOS_E2E_BACKEND_BEARER_TOKEN"], error.Message);
+        AssertSecretsRedacted(error, values);
     }
 
     [Fact]
@@ -53,6 +84,90 @@ public sealed class LiveE2eConfigurationTests
 
         Assert.Equal("1042", result.StoreCode);
         Assert.Equal(new Uri("http://localhost:5159/"), result.PosApiBaseUrl);
+    }
+
+    [Fact]
+    public void Accepts_complete_1005_configuration()
+    {
+        var values = ValidValues();
+        values["HBPOS_E2E_STORE_CODE"] = "1005";
+
+        var result = LiveE2eConfiguration.FromEnvironment(name => values.GetValueOrDefault(name));
+
+        Assert.Equal("1005", result.StoreCode);
+    }
+
+    [Theory]
+    [InlineData("HBPOS_E2E_ENABLED", "false")]
+    [InlineData("HBPOS_E2E_ENABLED", "")]
+    [InlineData("HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED", "false")]
+    [InlineData("HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED", "")]
+    public void Rejects_each_confirmation_switch_unless_explicitly_true(string name, string value)
+    {
+        var values = ValidValues();
+        values[name] = value;
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            LiveE2eConfiguration.FromEnvironment(key => values.GetValueOrDefault(key)));
+
+        Assert.Contains(name, error.Message);
+        AssertSecretsRedacted(error, values);
+    }
+
+    [Theory]
+    [InlineData("HBPOS_E2E_STORE_CODE")]
+    [InlineData("HBPOS_E2E_CASHIER_BARCODE")]
+    [InlineData("HBPOS_E2E_PRODUCT_BARCODE")]
+    [InlineData("HBPOS_API_BASE_URL")]
+    [InlineData("HBPOS_E2E_BACKEND_BASE_URL")]
+    [InlineData("HBPOS_E2E_BACKEND_BEARER_TOKEN")]
+    public void Rejects_each_missing_required_value_without_exposing_secrets(string name)
+    {
+        var values = ValidValues();
+        values.Remove(name);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            LiveE2eConfiguration.FromEnvironment(key => values.GetValueOrDefault(key)));
+
+        Assert.Contains(name, error.Message);
+        AssertSecretsRedacted(error, values);
+    }
+
+    [Theory]
+    [InlineData("HBPOS_API_BASE_URL", "not-a-uri")]
+    [InlineData("HBPOS_API_BASE_URL", "/relative")]
+    [InlineData("HBPOS_API_BASE_URL", "ftp://localhost/")]
+    [InlineData("HBPOS_E2E_BACKEND_BASE_URL", "not-a-uri")]
+    [InlineData("HBPOS_E2E_BACKEND_BASE_URL", "/relative")]
+    [InlineData("HBPOS_E2E_BACKEND_BASE_URL", "ftp://backend.example.test/")]
+    public void Rejects_invalid_or_relative_uri_without_exposing_secrets(string name, string value)
+    {
+        var values = ValidValues();
+        values[name] = value;
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            LiveE2eConfiguration.FromEnvironment(key => values.GetValueOrDefault(key)));
+
+        Assert.Contains(name, error.Message);
+        AssertSecretsRedacted(error, values);
+    }
+
+    [Fact]
+    public void Reads_each_environment_value_once()
+    {
+        var values = ValidValues();
+        var readCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        _ = LiveE2eConfiguration.FromEnvironment(name =>
+        {
+            readCounts[name] = readCounts.GetValueOrDefault(name) + 1;
+            return values.GetValueOrDefault(name);
+        });
+
+        foreach (var name in values.Keys)
+        {
+            Assert.Equal(1, readCounts.GetValueOrDefault(name));
+        }
     }
 
     [Theory]
@@ -70,6 +185,22 @@ public sealed class LiveE2eConfigurationTests
     public void Rejects_ambiguous_or_outside_store_from_ui(string display)
     {
         Assert.Throws<InvalidOperationException>(() => SaleFlowTests.ExtractAllowedStore(display));
+    }
+
+    private static void AssertSecretsRedacted(
+        Exception error,
+        IReadOnlyDictionary<string, string> values)
+    {
+        foreach (var name in new[]
+                 {
+                     "HBPOS_E2E_CASHIER_BARCODE",
+                     "HBPOS_E2E_PRODUCT_BARCODE",
+                     "HBPOS_E2E_BACKEND_BEARER_TOKEN",
+                 })
+        {
+            if (values.TryGetValue(name, out var value) && !string.IsNullOrEmpty(value))
+                Assert.DoesNotContain(value, error.Message);
+        }
     }
 
     private static Dictionary<string, string> ValidValues() => new(StringComparer.Ordinal)
@@ -173,7 +304,12 @@ public sealed class SaleFlowTests
             var row = WaitForSingleCartRow("CartItemsGrid");
             var quantity = ReadQuantity(row, "CartLineQuantity");
             // 行模板中的 AutomationId 会重复，必须在目标行子树内定位。
-            row.FindFirstDescendant("CartLineIncreaseButton")!.AsButton().Invoke();
+            WaitForUiElement(
+                    () => row.FindFirstDescendant("CartLineIncreaseButton"),
+                    "等待购物车加号按钮",
+                    "CartLineIncreaseButton")
+                .AsButton()
+                .Invoke();
             WaitForQuantity(row, quantity + 1m);
 
             _app.WaitForAutomationId("OpenPaymentButton", step: "等待支付入口").AsButton().Invoke();
@@ -210,6 +346,21 @@ public sealed class SaleFlowTests
         return matches[0].Value;
     }
 
+    internal static T WaitForUiElement<T>(
+        Func<T?> find,
+        string step,
+        string automationId,
+        TimeSpan? timeout = null)
+        where T : class =>
+        Retry.WhileNull(
+            find,
+            timeout: timeout ?? TimeSpan.FromSeconds(10),
+            interval: TimeSpan.FromMilliseconds(100),
+            throwOnTimeout: true,
+            ignoreException: true,
+            timeoutMessage: $"{step}超时，AutomationId={automationId}。")
+        .Result!;
+
     private void WaitUntilHidden(string automationId)
     {
         Retry.WhileFalse(
@@ -244,8 +395,10 @@ public sealed class SaleFlowTests
 
     private static decimal ReadQuantity(AutomationElement row, string automationId)
     {
-        var quantity = row.FindFirstDescendant(automationId)
-            ?? throw new InvalidOperationException($"购物车行缺少 AutomationId={automationId}。");
+        var quantity = WaitForUiElement(
+            () => row.FindFirstDescendant(automationId),
+            "等待购物车数量控件",
+            automationId);
         return ReadNumber(quantity.Name, automationId);
     }
 
@@ -350,10 +503,13 @@ internal sealed record LiveE2eConfiguration(
             Required("HBPOS_E2E_BACKEND_BEARER_TOKEN", read));
     }
 
-    private static string Required(string name, Func<string, string?> read) =>
-        string.IsNullOrWhiteSpace(read(name))
+    private static string Required(string name, Func<string, string?> read)
+    {
+        var value = read(name);
+        return string.IsNullOrWhiteSpace(value)
             ? throw new InvalidOperationException($"缺少环境变量 {name}。")
-            : read(name)!.Trim();
+            : value.Trim();
+    }
 
     private static Uri RequiredUri(string name, Func<string, string?> read)
     {

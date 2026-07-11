@@ -45,6 +45,14 @@ public sealed class WpfAppFixture : IDisposable
             }
         }
 
+        // 测试专用门禁和密钥只留在测试进程，调用者也不能重新注入 WPF 子进程。
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(key => key.StartsWith("HBPOS_E2E_", StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
         // 宁可保守隔离，也不能因 Windows 命令行的引号或空白规则漏掉 Preview。
         var isPreview = arguments.Contains("--preview", StringComparison.OrdinalIgnoreCase) ||
                         arguments.Contains("--screen", StringComparison.OrdinalIgnoreCase);

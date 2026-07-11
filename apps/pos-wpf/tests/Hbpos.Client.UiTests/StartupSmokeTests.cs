@@ -40,6 +40,47 @@ public sealed class StartupSmokeTests
     }
 
     [Fact]
+    public void Live_child_removes_all_test_only_environment_from_parent_and_caller()
+    {
+        var inheritedKeys = new[]
+        {
+            "HBPOS_E2E_ENABLED",
+            "HBPOS_E2E_BACKEND_BEARER_TOKEN",
+            "HBPOS_E2E_PARENT_ONLY",
+        };
+        var originalValues = inheritedKeys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+
+        try
+        {
+            foreach (var key in inheritedKeys) Environment.SetEnvironmentVariable(key, "parent-test-secret");
+            var callerEnvironment = new Dictionary<string, string?>
+            {
+                ["HBPOS_E2E_CASHIER_BARCODE"] = "caller-cashier-secret",
+                ["HBPOS_E2E_PRODUCT_BARCODE"] = "caller-product-secret",
+                ["HBPOS_E2E_BACKEND_BEARER_TOKEN"] = "caller-token-secret",
+                ["hbpos_e2e_caller_only"] = "caller-only-secret",
+                ["HBPOS_API_BASE_URL"] = "http://localhost:5159/",
+                ["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "true",
+            };
+
+            var startInfo = _app.CreateStartInfo(
+                "Hbpos.Client.Wpf.exe",
+                "--culture=en-AU",
+                callerEnvironment);
+
+            Assert.DoesNotContain(
+                startInfo.Environment.Keys,
+                key => key.StartsWith("HBPOS_E2E_", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal("http://localhost:5159/", startInfo.Environment["HBPOS_API_BASE_URL"]);
+            Assert.Equal("true", startInfo.Environment["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"]);
+        }
+        finally
+        {
+            foreach (var pair in originalValues) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+        }
+    }
+
+    [Fact]
     public void Preview_mode_shows_pos_screen_and_exits_cleanly()
     {
         try
