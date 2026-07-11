@@ -6,6 +6,7 @@
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
+             AutomationProperties.AutomationId="PaymentSuccessScreen"
              d:DesignHeight="688"
              d:DesignWidth="1366"
              Background="{StaticResource PosSurfaceAltBrush}">
@@ -52,11 +53,11 @@
 
                             <StackPanel Grid.Column="2">
                                 <TextBlock Text="{loc:Loc success.transactionId}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock Text="{Binding TransactionIdDisplay}" Margin="0,4,0,0" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                                <TextBlock Text="{Binding TransactionIdDisplay}" AutomationProperties.AutomationId="CompletedTransactionId" Margin="0,4,0,0" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
                                 <TextBlock Text="{loc:Loc Time}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
                                 <TextBlock Text="{Binding SoldAtDisplay}" Margin="0,2,0,0" FontSize="12" Foreground="{StaticResource PosTextBrush}" />
                                 <TextBlock Text="{loc:Loc Terminal}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock FontSize="12" Foreground="{StaticResource PosTextBrush}">
+                                <TextBlock AutomationProperties.AutomationId="CompletedTransactionContext" FontSize="12" Foreground="{StaticResource PosTextBrush}">
                                     <Run Text="{Binding StoreCode, Mode=OneWay}" />
                                     <Run Text=" / " />
                                     <Run Text="{Binding DeviceCode, Mode=OneWay}" />

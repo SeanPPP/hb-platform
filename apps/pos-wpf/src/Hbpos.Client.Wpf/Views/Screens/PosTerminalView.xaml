@@ -372,6 +372,7 @@
                                                  VerticalAlignment="Center"
                                                  Margin="14,0,0,0" />
                         <TextBox Grid.Column="1"
+                                 AutomationProperties.AutomationId="ProductBarcodeInput"
                                  Text="{Binding ScanText, UpdateSourceTrigger=PropertyChanged}"
                                  materialDesign:HintAssist.Hint="{Binding SearchPlaceholderText}"
                                  Background="Transparent"
@@ -589,6 +590,7 @@
             <Grid Grid.Row="1" Margin="14,0,14,6">
                 <!-- 购物车列表使用像素级触屏滚动，保持 Win7/10/11 可用的 WPF 基础属性。 -->
                 <DataGrid ItemsSource="{Binding CartLines}"
+                          AutomationProperties.AutomationId="CartItemsGrid"
                           SelectedItem="{Binding SelectedCartLine, Mode=TwoWay}"
                           SelectionMode="Single"
                           SelectionUnit="FullRow"
@@ -723,6 +725,7 @@
                                             <materialDesign:PackIcon Kind="Minus" Width="18" Height="18" />
                                         </Button>
                                         <TextBlock Grid.Column="1"
+                                                   AutomationProperties.AutomationId="CartLineQuantity"
                                                    Text="{Binding SignedQuantity, StringFormat={}{0:0.##}}"
                                                    FontSize="20"
                                                    FontWeight="Black"
@@ -730,6 +733,7 @@
                                                    HorizontalAlignment="Stretch"
                                                    VerticalAlignment="Center" />
                                         <Button Grid.Column="2"
+                                                AutomationProperties.AutomationId="CartLineIncreaseButton"
                                                 Command="{Binding DataContext.IncreaseLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                 CommandParameter="{Binding}"
                                                 Style="{StaticResource CartQuantityIncreaseButtonStyle}"
@@ -840,6 +844,7 @@
                         </Grid>
                     </Grid>
                      <Button Grid.Row="1"
+                             AutomationProperties.AutomationId="OpenPaymentButton"
                              Command="{Binding OpenPaymentCommand}"
                              services:ButtonFeedback.Cue="Checkout"
                              Height="52"

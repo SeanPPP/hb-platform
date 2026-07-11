@@ -37,13 +37,16 @@
 每次测试运行只绑定一个门店，并由操作系统用户配置中现有的设备授权决定门店。测试入口必须同时满足：
 
 - `HBPOS_E2E_ENABLED=true`
+- `HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED=true`
 - `HBPOS_E2E_STORE_CODE` 为 `1042` 或 `1005`
 - `HBPOS_E2E_CASHIER_BARCODE` 提供专用测试收银员条码
 - `HBPOS_E2E_PRODUCT_BARCODE` 提供当前门店可销售的专用测试商品条码
 - `HBPOS_API_BASE_URL` 显式指向本次测试使用的 POS API
 - `HBPOS_E2E_BACKEND_BASE_URL` 指向后台查询 API
-- `HBPOS_E2E_BACKEND_BEARER_TOKEN` 提供可查询门店范围的只读操作日志权限
+- `HBPOS_E2E_BACKEND_BEARER_TOKEN` 提供全门店 Admin/SuperAdmin token，测试只用于只读查询操作日志
 - WPF 界面实际显示的门店代码与 `HBPOS_E2E_STORE_CODE` 完全一致
+
+`HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED=true` 只表示运行者已人工确认 token 属于全门店 Admin/SuperAdmin。该门禁用于在真实写入开始前阻止范围不明的 token，不替代后台的授权校验。
 
 首条完整业务场景为：
 
@@ -129,6 +132,7 @@ dotnet test apps/pos-wpf/tests/Hbpos.Client.UiTests/Hbpos.Client.UiTests.csproj 
 
 ```powershell
 $env:HBPOS_E2E_ENABLED='true'
+$env:HBPOS_E2E_ADMIN_AUDIT_SCOPE_CONFIRMED='true'
 $env:HBPOS_E2E_STORE_CODE='1042'
 dotnet test apps/pos-wpf/tests/Hbpos.Client.UiTests/Hbpos.Client.UiTests.csproj --filter FullyQualifiedName~SaleFlowTests
 ```

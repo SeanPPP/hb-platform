@@ -9,6 +9,7 @@
              xmlns:orders="clr-namespace:Hbpos.Contracts.Orders;assembly=Hbpos.Contracts"
              xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
+             AutomationProperties.AutomationId="PaymentScreen"
              d:DesignHeight="688"
              d:DesignWidth="1366"
              Background="{StaticResource PosSurfaceAltBrush}">
@@ -374,7 +375,7 @@
                 <Border Margin="0,0,4,0" Padding="16" Background="#FFE8F0FE" CornerRadius="12">
                     <StackPanel>
                         <TextBlock Text="{Binding RemainingAmountText}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" />
-                        <TextBlock Text="{Binding RemainingAmount, StringFormat={}{0:C2}}" FontSize="28" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Right" Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding RemainingAmount, StringFormat={}{0:C2}}" AutomationProperties.AutomationId="RemainingAmount" FontSize="28" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Right" Margin="0,4,0,0" />
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="1" Margin="4,0,0,0" Padding="16" Background="#FFFFDCC2" CornerRadius="12">
@@ -552,6 +553,7 @@
                     <TextBlock Text="{Binding CancelText}" FontWeight="Bold" HorizontalAlignment="Center" />
                 </Button>
                 <Button Command="{Binding ConfirmPaymentCommand}"
+                        AutomationProperties.AutomationId="ConfirmPaymentButton"
                         Height="50">
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
@@ -607,7 +609,7 @@
                         </Style.Triggers>
                     </Style>
                 </StackPanel.Style>
-                <Button Command="{Binding SelectCashCommand}" Style="{StaticResource CashMethodButtonStyle}">
+                <Button Command="{Binding SelectCashCommand}" AutomationProperties.AutomationId="AddCashTenderButton" Style="{StaticResource CashMethodButtonStyle}">
                     <Grid Style="{StaticResource PaymentMethodContentGridStyle}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="46" />
@@ -742,7 +744,7 @@
                             </TextBlock.Style>
                         </TextBlock>
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <ItemsControl ItemsSource="{Binding PaymentTenders}">
+                            <ItemsControl ItemsSource="{Binding PaymentTenders}" AutomationProperties.AutomationId="AppliedTendersList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Margin="0,0,0,8"

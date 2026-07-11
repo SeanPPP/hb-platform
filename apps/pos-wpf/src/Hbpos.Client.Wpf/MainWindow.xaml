@@ -195,6 +195,7 @@
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="{Binding StoreInfo}"
+                               AutomationProperties.AutomationId="CurrentStoreInfo"
                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                FontSize="11"
                                VerticalAlignment="Center"
@@ -202,6 +203,7 @@
                                MaxWidth="180"
                                TextTrimming="CharacterEllipsis" />
                     <TextBlock Text="{Binding CashierInfo}"
+                               AutomationProperties.AutomationId="CurrentCashierInfo"
                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                FontSize="11"
                                VerticalAlignment="Center"
@@ -707,6 +709,7 @@
 
         <!-- 收银员登录全局遮盖：未登录时盖住主窗口，扫码内容仍走现有登录命令。 -->
         <Grid Grid.RowSpan="3"
+              AutomationProperties.AutomationId="CashierLoginOverlay"
               Visibility="{Binding IsCashierLoginOverlayOpen, Converter={StaticResource BoolToVis}}"
               Background="#99000000"
               Panel.ZIndex="97"
@@ -809,6 +812,7 @@
                     </StackPanel>
 
                     <PasswordBox x:Name="CashierLoginOverlayPasswordBox"
+                                 AutomationProperties.AutomationId="CashierLoginInput"
                                  Grid.Row="1"
                                  Height="46"
                                  Padding="12,0"
@@ -883,6 +887,7 @@
                     </UniformGrid>
 
                     <Button Grid.Row="3"
+                            AutomationProperties.AutomationId="CashierLoginButton"
                             Command="{Binding LoginCashierCommand}"
                             Height="46"
                             Margin="0,14,0,0"

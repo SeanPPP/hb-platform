@@ -74,14 +74,17 @@ public sealed class WpfAppFixture : IDisposable
         return MainWindow;
     }
 
-    public AutomationElement WaitForAutomationId(string automationId, TimeSpan? timeout = null) =>
+    public AutomationElement WaitForAutomationId(
+        string automationId,
+        TimeSpan? timeout = null,
+        string step = "等待控件") =>
         Retry.WhileNull(
             () => MainWindow?.FindFirstDescendant(automationId),
             timeout: timeout ?? TimeSpan.FromSeconds(10),
             interval: TimeSpan.FromMilliseconds(100),
             throwOnTimeout: true,
             ignoreException: true,
-            timeoutMessage: $"未找到 AutomationId={automationId}。")
+            timeoutMessage: $"{step}超时，AutomationId={automationId}。")
         .Result!;
 
     public string CaptureFailure(string step)
