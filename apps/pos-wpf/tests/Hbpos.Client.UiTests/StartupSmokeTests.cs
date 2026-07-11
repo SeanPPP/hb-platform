@@ -10,6 +10,8 @@ public sealed class StartupSmokeTests
     [Theory]
     [InlineData("--preview")]
     [InlineData("--screen=pos")]
+    [InlineData("\"--preview\"")]
+    [InlineData("--culture=en-AU\t--screen=pos")]
     public void Preview_arguments_force_safe_environment_after_parent_and_caller_overrides(string arguments)
     {
         var keys = new[]

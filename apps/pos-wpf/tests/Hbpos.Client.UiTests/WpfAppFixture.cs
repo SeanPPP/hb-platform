@@ -45,11 +45,9 @@ public sealed class WpfAppFixture : IDisposable
             }
         }
 
-        var argumentTokens = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var isPreview = argumentTokens.Any(argument =>
-            argument.Equals("--preview", StringComparison.OrdinalIgnoreCase) ||
-            argument.Equals("--screen", StringComparison.OrdinalIgnoreCase) ||
-            argument.StartsWith("--screen=", StringComparison.OrdinalIgnoreCase));
+        // 宁可保守隔离，也不能因 Windows 命令行的引号或空白规则漏掉 Preview。
+        var isPreview = arguments.Contains("--preview", StringComparison.OrdinalIgnoreCase) ||
+                        arguments.Contains("--screen", StringComparison.OrdinalIgnoreCase);
         if (isPreview)
         {
             // 安全值必须最后写入，禁止父进程或调用者把 Preview 指向真实后台。
