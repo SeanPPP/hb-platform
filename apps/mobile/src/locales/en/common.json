@@ -107,6 +107,13 @@
       "revenue": "Revenue Report",
       "product": "Product Report"
     },
+    "freshness": {
+      "lastUpdated": "Latest statistics: {{time}}",
+      "running": "Updating",
+      "failed": "Update failed",
+      "noSuccess": "No successful statistics yet",
+      "unavailable": "Statistics time unavailable"
+    },
     "periods": {
       "day": "Day",
       "date": "Date",

@@ -125,6 +125,71 @@ namespace BlazorApp.Api.Services.Background
         }
 
         /// <summary>
+        /// 严格记录任务成功；任何持久化失败都向调用方抛出，供跨实例缓存版本依赖的统计任务使用。
+        /// </summary>
+        public async Task LogTaskSuccessStrictAsync(Guid taskId)
+        {
+            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+            if (taskLog == null)
+            {
+                throw new InvalidOperationException($"任务日志不存在，无法确认成功版本: {taskId}");
+            }
+
+            taskLog.Status = TaskStatus.Success;
+            taskLog.CompletedAt = DateTime.UtcNow;
+            taskLog.DurationMs = (int)(
+                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+            );
+
+            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+            if (!updated)
+            {
+                throw new InvalidOperationException($"任务成功状态未持久化: {taskId}");
+            }
+
+            _logger.LogInformation(
+                "任务成功完成并严格持久化: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
+                taskLog.TaskType,
+                taskLog.Id,
+                taskLog.DurationMs
+            );
+        }
+
+        /// <summary>
+        /// 严格记录统计任务失败，防止持久化异常被吞掉后长期残留 Running 状态。
+        /// </summary>
+        public async Task LogTaskFailureStrictAsync(Guid taskId, string errorMessage)
+        {
+            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+            if (taskLog == null)
+            {
+                throw new InvalidOperationException($"任务日志不存在，无法严格标记失败: {taskId}");
+            }
+
+            taskLog.Status = TaskStatus.Failed;
+            taskLog.CompletedAt = DateTime.UtcNow;
+            taskLog.DurationMs = (int)(
+                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+            );
+            taskLog.ErrorMessage = errorMessage;
+            taskLog.CanRetry = true;
+            taskLog.RetryCount++;
+
+            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+            if (!updated)
+            {
+                throw new InvalidOperationException($"任务失败状态未持久化: {taskId}");
+            }
+
+            _logger.LogError(
+                "任务失败状态已严格持久化: {TaskType}, TaskId: {TaskId}, 错误: {Error}",
+                taskLog.TaskType,
+                taskLog.Id,
+                errorMessage
+            );
+        }
+
+        /// <summary>
         /// 记录任务执行失败
         /// </summary>
         /// <param name="taskId">任务ID</param>

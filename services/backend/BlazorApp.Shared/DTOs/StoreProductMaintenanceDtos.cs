@@ -123,6 +123,32 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
     }
 
+    public class SyncStoreProductWarehousePriceRequestDto
+    {
+        public bool ConfirmRetailPrice { get; set; }
+        public decimal? ExpectedWarehousePurchasePrice { get; set; }
+        public decimal? ExpectedWarehouseRetailPrice { get; set; }
+        public decimal? ExpectedStorePurchasePrice { get; set; }
+        public decimal? ExpectedStoreRetailPrice { get; set; }
+        public decimal? ExpectedDiscountRate { get; set; }
+    }
+
+    public class SyncStoreProductWarehousePriceResultDto
+    {
+        public string Status { get; set; } = string.Empty;
+        public bool PurchaseUpdated { get; set; }
+        public bool RetailUpdated { get; set; }
+        public bool RetailConfirmationRequired { get; set; }
+        public StoreProductStorePriceDto? StorePrice { get; set; }
+        public decimal? WarehousePurchasePrice { get; set; }
+        public decimal? WarehouseRetailPrice { get; set; }
+        public decimal? PreviousStorePurchasePrice { get; set; }
+        public decimal? PreviousStoreRetailPrice { get; set; }
+        public decimal? DiscountRate { get; set; }
+        public decimal? PreviousDiscountedRetailPrice { get; set; }
+        public decimal? NewDiscountedRetailPrice { get; set; }
+    }
+
     public class EvaluateStoreProductAutoPricingDto
     {
         public string ProductCode { get; set; } = string.Empty;

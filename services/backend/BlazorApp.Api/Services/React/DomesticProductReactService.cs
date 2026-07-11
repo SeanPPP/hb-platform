@@ -25,6 +25,9 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<DomesticProductReactService> _logger;
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly HqSqlSugarContext _hqContext;
+        private const string HqProductNameSupplierCode = "200";
+        private const int HqProductNameQueryChunkSize = 1000;
+        private const int HqProductNameUpdateChunkSize = 200;
 
         public DomesticProductReactService(
             SqlSugarContext context,
@@ -1910,6 +1913,7 @@ namespace BlazorApp.Api.Services.React
                 var normalizedItems = (dto.Products ?? new List<HbwebProductNameUpdateItemDto>())
                     .Select(item => new HbwebProductNameUpdateItemDto
                     {
+                        SupplierCode = item?.SupplierCode?.Trim() ?? string.Empty,
                         ItemNumber = item?.ItemNumber?.Trim() ?? string.Empty,
                         ProductName = item?.ProductName?.Trim() ?? string.Empty,
                     })
@@ -1928,26 +1932,37 @@ namespace BlazorApp.Api.Services.React
                 foreach (var item in normalizedItems)
                 {
                     // 统一在服务层做写主表前校验，避免 ApiController 提前返回导致前端拿不到明细错误。
+                    if (string.IsNullOrWhiteSpace(item.SupplierCode))
+                    {
+                        invalidItemErrors.Add($"供应商代码不能为空: /{item.ItemNumber}");
+                        continue;
+                    }
+
                     if (string.IsNullOrWhiteSpace(item.ItemNumber))
                     {
-                        invalidItemErrors.Add("货号不能为空");
+                        invalidItemErrors.Add($"货号不能为空: {item.SupplierCode}/");
                         continue;
                     }
 
                     if (string.IsNullOrWhiteSpace(item.ProductName))
                     {
-                        invalidItemErrors.Add($"商品名称不能为空: {item.ItemNumber}");
+                        invalidItemErrors.Add($"商品名称不能为空: {item.SupplierCode}/{item.ItemNumber}");
                         continue;
                     }
 
                     if (item.ItemNumber.Length > 50)
                     {
-                        invalidItemErrors.Add($"货号不能超过50个字符: {item.ItemNumber}");
+                        invalidItemErrors.Add($"货号不能超过50个字符: {item.SupplierCode}/{item.ItemNumber}");
+                    }
+
+                    if (item.SupplierCode.Length > 50)
+                    {
+                        invalidItemErrors.Add($"供应商代码不能超过50个字符: {item.SupplierCode}/{item.ItemNumber}");
                     }
 
                     if (item.ProductName.Length > 200)
                     {
-                        invalidItemErrors.Add($"商品名称不能超过200个字符: {item.ItemNumber}");
+                        invalidItemErrors.Add($"商品名称不能超过200个字符: {item.SupplierCode}/{item.ItemNumber}");
                     }
                 }
 
@@ -1955,46 +1970,91 @@ namespace BlazorApp.Api.Services.React
                 {
                     result.Errors.AddRange(invalidItemErrors);
                     return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
-                        "存在无效货号或商品名称，请先修正后再更新",
+                        "存在无效供应商代码、货号或商品名称，请先修正后再更新",
                         "INVALID_HBWEB_PRODUCT_NAMES",
                         result
                     );
                 }
 
                 var duplicateRequestConflicts = normalizedItems
-                    .GroupBy(item => item.ItemNumber)
+                    .GroupBy(
+                        item => $"{item.SupplierCode}\u001f{item.ItemNumber}",
+                        StringComparer.OrdinalIgnoreCase
+                    )
                     .Where(group => group.Select(item => item.ProductName).Distinct(StringComparer.Ordinal).Count() > 1)
-                    .Select(group => group.Key)
+                    .Select(group => group.First())
                     .ToList();
 
                 if (duplicateRequestConflicts.Any())
                 {
-                    result.Errors.AddRange(duplicateRequestConflicts.Select(itemNumber => $"同一货号存在多个商品名称: {itemNumber}"));
+                    result.Errors.AddRange(duplicateRequestConflicts.Select(item => $"同一供应商/货号存在多个商品名称: {item.SupplierCode}/{item.ItemNumber}"));
                     return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
-                        "同一货号存在多个商品名称，请先修正后再更新",
+                        "同一供应商/货号存在多个商品名称，请先修正后再更新",
                         "DUPLICATE_ITEM_NUMBER_NAMES",
                         result
                     );
                 }
 
-                // 同货号同名称只需要写一次，避免重复行造成重复更新。
+                if (dto.SyncToHq)
+                {
+                    var hqRequestConflicts = normalizedItems
+                        .GroupBy(item => item.ItemNumber, StringComparer.OrdinalIgnoreCase)
+                        .Where(group => group.Select(item => item.ProductName).Distinct(StringComparer.Ordinal).Count() > 1)
+                        .Select(group => group.Key)
+                        .ToList();
+                    if (hqRequestConflicts.Any())
+                    {
+                        result.Errors.AddRange(hqRequestConflicts.Select(itemNumber => $"HQ 同一货号跨供应商存在多个商品名称: {itemNumber}"));
+                        return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                            "HQ 同一货号跨供应商存在多个商品名称，请先修正后再更新",
+                            "DUPLICATE_HQ_ITEM_NUMBER_NAMES",
+                            result
+                        );
+                    }
+                }
+
+                // 同一供应商和货号的同名请求只写一次，避免重复行造成重复更新。
                 var updates = normalizedItems
-                    .GroupBy(item => item.ItemNumber)
+                    .GroupBy(
+                        item => $"{item.SupplierCode}\u001f{item.ItemNumber}",
+                        StringComparer.OrdinalIgnoreCase
+                    )
                     .Select(group => group.First())
                     .ToList();
-                var itemNumbers = updates.Select(item => item.ItemNumber).ToList();
+                var supplierCodes = normalizedItems
+                    .Select(item => item.SupplierCode)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                var itemNumbers = normalizedItems
+                    .Select(item => item.ItemNumber)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
                 var db = _context.Db;
                 var products = await db.Queryable<Product>()
-                    .Where(product => product.ItemNumber != null && itemNumbers.Contains(product.ItemNumber) && !product.IsDeleted)
+                    .Where(product =>
+                        product.LocalSupplierCode != null
+                        && supplierCodes.Contains(product.LocalSupplierCode)
+                        && product.ItemNumber != null
+                        && itemNumbers.Contains(product.ItemNumber)
+                        && !product.IsDeleted
+                    )
                     .ToListAsync();
                 var productGroups = products
-                    .GroupBy(product => product.ItemNumber ?? string.Empty)
-                    .ToDictionary(group => group.Key, group => group.ToList());
+                    .GroupBy(
+                        product => $"{product.LocalSupplierCode?.Trim() ?? string.Empty}\u001f{product.ItemNumber?.Trim() ?? string.Empty}",
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.ToList(),
+                        StringComparer.OrdinalIgnoreCase
+                    );
                 var productsToUpdate = new List<Product>();
 
                 foreach (var update in updates)
                 {
-                    if (!productGroups.TryGetValue(update.ItemNumber, out var matchedProducts))
+                    var supplierItemKey = $"{update.SupplierCode}\u001f{update.ItemNumber}";
+                    if (!productGroups.TryGetValue(supplierItemKey, out var matchedProducts))
                     {
                         result.MissingItemNumbers.Add(update.ItemNumber);
                         continue;
@@ -2002,7 +2062,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (matchedProducts.Count > 1)
                     {
-                        result.Errors.Add($"HBweb 商品主表货号重复，已跳过: {update.ItemNumber}");
+                        result.Errors.Add($"HBweb 商品主表供应商/货号重复，已跳过: {update.SupplierCode}/{update.ItemNumber}");
                         continue;
                     }
 
@@ -2022,16 +2082,155 @@ namespace BlazorApp.Api.Services.React
 
                 if (productsToUpdate.Any())
                 {
-                    await db.Ado.UseTranAsync(async () =>
+                    var hbwebTransactionResult = await db.Ado.UseTranAsync(async () =>
                     {
                         await db.Updateable(productsToUpdate)
                             // 只允许写商品名称和审计字段，避免整实体更新覆盖价格、条码、图片等主表字段。
                             .UpdateColumns(product => new { product.ProductName, product.UpdatedAt, product.UpdatedBy })
                             .ExecuteCommandAsync();
                     });
+
+                    if (!hbwebTransactionResult.IsSuccess)
+                    {
+                        // 本地主表事务失败时必须立即停止，避免把未落库的名称继续同步到 HQ。
+                        _logger.LogError(
+                            hbwebTransactionResult.ErrorException,
+                            "批量更新 HBweb 商品主表商品名称事务失败"
+                        );
+                        return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                            "批量更新 HBweb 商品主表商品名称失败",
+                            "BATCH_UPDATE_HBWEB_PRODUCT_NAMES_ERROR",
+                            result
+                        );
+                    }
                 }
 
                 result.UpdatedCount = productsToUpdate.Count;
+
+                if (dto.SyncToHq)
+                {
+                    var hqResult = new HqProductNameSyncResultDto { Success = true };
+                    result.HqSyncResult = hqResult;
+                    var hqUpdates = updates
+                        .GroupBy(item => item.ItemNumber, StringComparer.OrdinalIgnoreCase)
+                        .Select(group => group.First())
+                        .ToList();
+                    var hqItemNumbers = hqUpdates.Select(item => item.ItemNumber).ToList();
+
+                    try
+                    {
+                        // HBweb 已在独立事务中提交；HQ 固定匹配供货商 200 和货号，单独开启 HQ 事务。
+                        var hqDb = _hqContext.Db;
+                        var hqProducts = new List<DIC_商品信息字典表>();
+
+                        // 单个 IN 最多 1000 个参数，避免触碰 SQL Server 参数上限；H货号 保持裸列比较以利用索引。
+                        foreach (var itemNumberChunk in hqItemNumbers.Chunk(HqProductNameQueryChunkSize))
+                        {
+                            var queryItemNumbers = itemNumberChunk.ToList();
+                            var hqProductChunk = await hqDb.Queryable<DIC_商品信息字典表>()
+                                .Where(product =>
+                                    product.H供货商编码 == HqProductNameSupplierCode
+                                    && product.H货号 != null
+                                    && queryItemNumbers.Contains(product.H货号)
+                                )
+                                .Select(product => new DIC_商品信息字典表
+                                {
+                                    ID = product.ID,
+                                    H供货商编码 = product.H供货商编码,
+                                    H货号 = product.H货号,
+                                    H商品名称 = product.H商品名称,
+                                })
+                                .ToListAsync();
+                            hqProducts.AddRange(hqProductChunk);
+                        }
+                        var hqProductGroups = hqProducts
+                            .GroupBy(
+                                product => $"{product.H供货商编码?.Trim() ?? string.Empty}\u001f{product.H货号?.Trim() ?? string.Empty}",
+                                StringComparer.OrdinalIgnoreCase
+                            )
+                            .ToDictionary(
+                                group => group.Key,
+                                group => group.ToList(),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                        var hqProductsToUpdate = new List<DIC_商品信息字典表>();
+                        var hqModifiedAt = DateTime.Now;
+
+                        foreach (var update in hqUpdates)
+                        {
+                            var hqSupplierItemKey = $"{HqProductNameSupplierCode}\u001f{update.ItemNumber}";
+                            if (!hqProductGroups.TryGetValue(hqSupplierItemKey, out var matchedHqProducts))
+                            {
+                                hqResult.MissingItemNumbers.Add(update.ItemNumber);
+                                continue;
+                            }
+
+                            if (matchedHqProducts.Count > 1)
+                            {
+                                hqResult.Errors.Add($"HQ 商品字典供应商/货号重复，已跳过: {HqProductNameSupplierCode}/{update.ItemNumber}");
+                                continue;
+                            }
+
+                            var hqProduct = matchedHqProducts[0];
+                            if (string.Equals(hqProduct.H商品名称?.Trim(), update.ProductName, StringComparison.Ordinal))
+                            {
+                                hqResult.UnchangedCount++;
+                                continue;
+                            }
+
+                            hqProduct.H商品名称 = update.ProductName;
+                            hqProduct.FGC_LastModifier = "HBweb";
+                            hqProduct.FGC_LastModifyDate = hqModifiedAt;
+                            hqProductsToUpdate.Add(hqProduct);
+                        }
+
+                        if (hqProductsToUpdate.Any())
+                        {
+                            var hqTransactionResult = await hqDb.Ado.UseTranAsync(async () =>
+                            {
+                                // 每块最多写 200 个实体，但所有写块共用同一个 HQ 事务，任一块失败则整体回滚。
+                                foreach (var hqProductChunk in hqProductsToUpdate.Chunk(HqProductNameUpdateChunkSize))
+                                {
+                                    await hqDb.Updateable(hqProductChunk.ToList())
+                                        // 跨库同步严格限定为商品名称和两个审计字段，禁止覆盖大写名、价格、条码、图片等字段。
+                                        .UpdateColumns(product => new
+                                        {
+                                            product.H商品名称,
+                                            product.FGC_LastModifier,
+                                            product.FGC_LastModifyDate,
+                                        })
+                                        .ExecuteCommandAsync();
+                                }
+                            });
+
+                            if (!hqTransactionResult.IsSuccess)
+                            {
+                                throw new InvalidOperationException(
+                                    hqTransactionResult.ErrorException?.Message ?? "HQ 商品名称更新事务失败",
+                                    hqTransactionResult.ErrorException
+                                );
+                            }
+                        }
+
+                        hqResult.UpdatedCount = hqProductsToUpdate.Count;
+                    }
+                    catch (Exception ex)
+                    {
+                        hqResult.Success = false;
+                        hqResult.Errors.Add("HQ 商品名称同步失败，请稍后重试");
+                        _logger.LogError(ex, "HQ 商品名称同步失败，HBweb 更新已提交");
+
+                        var partialFailure = ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                            "HBweb 商品名称已更新，但 HQ 商品名称同步失败",
+                            "HQ_PRODUCT_NAME_SYNC_FAILED",
+                            result
+                        );
+                        // 同时保留 Data 和 Details，确保服务调用方与控制器都能取得 HBweb 已完成的部分结果。
+                        partialFailure.Data = result;
+                        return partialFailure;
+                    }
+                }
+
                 var message = $"HBweb 商品主表名称更新完成：更新{result.UpdatedCount}条，无变化{result.UnchangedCount}条，未找到{result.MissingItemNumbers.Count}条";
                 if (result.Errors.Any())
                 {

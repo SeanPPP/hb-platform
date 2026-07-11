@@ -10,6 +10,10 @@ import {
   getNextRevenuePeriod,
   getPreviousRevenuePeriod,
   getYesterdayRevenuePeriod,
+  getRevenueDateBounds,
+  getRevenuePeriodForDate,
+  isRevenuePeriodAvailable,
+  refreshRevenueDateSelection,
 } from "./periods";
 
 const anchor = new Date(2026, 6, 4);
@@ -98,3 +102,39 @@ assert.deepEqual(getLastYearSameMonthPeriod(month), {
   endDate: "2025-03-31",
 });
 assert.deepEqual(getCompareRevenuePeriod(month, "lastYearSameMonth"), getLastYearSameMonthPeriod(month));
+
+assert.deepEqual(getRevenueDateBounds(new Date(2026, 6, 11)), {
+  minDate: "2025-07-11",
+  maxDate: "2026-07-11",
+});
+assert.deepEqual(getRevenueDateBounds(new Date(2024, 1, 29)), {
+  minDate: "2023-02-28",
+  maxDate: "2024-02-29",
+});
+assert.deepEqual(getRevenuePeriodForDate("week", "2026-07-08"), {
+  mode: "week",
+  startDate: "2026-07-06",
+  endDate: "2026-07-12",
+});
+assert.equal(
+  isRevenuePeriodAvailable(
+    { mode: "week", startDate: "2025-07-07", endDate: "2025-07-13" },
+    { minDate: "2025-07-11", maxDate: "2026-07-11" },
+  ),
+  true,
+);
+assert.equal(
+  isRevenuePeriodAvailable(
+    { mode: "week", startDate: "2026-07-13", endDate: "2026-07-19" },
+    { minDate: "2025-07-11", maxDate: "2026-07-11" },
+  ),
+  false,
+);
+assert.deepEqual(refreshRevenueDateSelection("2026-07-10", new Date(2026, 6, 12)), {
+  bounds: { minDate: "2025-07-12", maxDate: "2026-07-12" },
+  selectedDate: "2026-07-10",
+});
+assert.deepEqual(refreshRevenueDateSelection("2025-07-11", new Date(2026, 6, 12)), {
+  bounds: { minDate: "2025-07-12", maxDate: "2026-07-12" },
+  selectedDate: "2025-07-12",
+});

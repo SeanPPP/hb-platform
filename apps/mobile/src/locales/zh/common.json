@@ -107,6 +107,13 @@
       "revenue": "营业额报告",
       "product": "商品报告"
     },
+    "freshness": {
+      "lastUpdated": "最近统计：{{time}}",
+      "running": "更新中",
+      "failed": "更新失败",
+      "noSuccess": "尚无成功统计记录",
+      "unavailable": "统计时间暂不可用"
+    },
     "periods": {
       "day": "日",
       "date": "日期",

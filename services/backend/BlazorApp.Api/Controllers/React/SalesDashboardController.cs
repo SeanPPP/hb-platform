@@ -1130,6 +1130,26 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取销售统计最近成功时间和最新运行状态
+        /// GET api/react/v1/dashboard/statistics-freshness
+        /// </summary>
+        [HttpGet("statistics-freshness")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetStatisticsFreshness()
+        {
+            try
+            {
+                var result = await _service.GetStatisticsFreshnessAsync();
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetStatisticsFreshness failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取周业绩层级数据
         /// GET api/react/v1/dashboard/weekly-performance-hierarchy
         /// </summary>

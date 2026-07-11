@@ -1439,4 +1439,20 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public string? StatisticMessage { get; set; }
     }
+
+    /// <summary>
+    /// 销售统计新鲜度信息
+    /// </summary>
+    public class StatisticsFreshnessDto
+    {
+        /// <summary>
+        /// 最近一次成功统计完成时间（UTC）
+        /// </summary>
+        public DateTime? LastSuccessfulAtUtc { get; set; }
+
+        /// <summary>
+        /// 最近一次统计运行状态
+        /// </summary>
+        public string LatestRunStatus { get; set; } = "NeverRun";
+    }
 }

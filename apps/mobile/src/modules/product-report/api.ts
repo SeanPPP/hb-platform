@@ -1,11 +1,13 @@
 import type { ProductReportDateRange } from "./date-ranges";
 import { getDashboardCompareMode, getProductReportCompareRange } from "./date-ranges";
 import { PRODUCT_PAGE_SIZE } from "./pagination";
+import { REPORT_QUERY_TIMEOUT_MS } from "../reports/report-config";
 
 export type SupplierReportKind = "australia" | "china";
 
-// 商品报表是现场查询入口，超过 3 秒直接交给用户重试。
-const PRODUCT_REPORT_QUERY_TIMEOUT_MS = 3000;
+export function getProductReportRequestConfig() {
+  return { timeout: REPORT_QUERY_TIMEOUT_MS } as const;
+}
 
 export interface ProductReportDateQuery {
   startDate: string;
@@ -333,9 +335,7 @@ export function normalizeProductBranchRows(payload: unknown): ProductBranchBreak
 
 export async function fetchProductReportStoreOptions() {
   const apiClient = await getApiClient();
-  const response = await apiClient.get("/react/v1/product-movement-report/store-options", {
-    timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS,
-  });
+  const response = await apiClient.get("/react/v1/product-movement-report/store-options");
   return normalizeStoreOptions(response.data);
 }
 
@@ -343,7 +343,7 @@ export async function fetchProductReportTotalRevenue(query: ProductReportDateQue
   const apiClient = await getApiClient();
   const response = await apiClient.get("/react/v1/dashboard/executive-branch-performance", {
     params: buildBaseParams(query),
-    timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS,
+    ...getProductReportRequestConfig(),
   });
   return normalizeTotalRevenue(response.data);
 }
@@ -360,7 +360,7 @@ export async function fetchSupplierReportRows(
     kind === "china"
       ? "/react/v1/dashboard/china-supplier-sales-rank"
       : "/react/v1/dashboard/supplier-sales-rank";
-  const response = await apiClient.get(endpoint, { params, timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS });
+  const response = await apiClient.get(endpoint, { params, ...getProductReportRequestConfig() });
   return normalizeSupplierRows(response.data);
 }
 
@@ -376,7 +376,7 @@ export async function fetchProductReportProductRows(
   const params = buildProductReportProductParams(kind, query, supplierCodes, pageIndex, pageSize, productSearch);
   const response = await apiClient.get("/react/v1/dashboard/enhanced-sales-product-details", {
     params,
-    timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS,
+    ...getProductReportRequestConfig(),
   });
   return normalizeProductPage(response.data);
 }
@@ -412,7 +412,7 @@ export async function fetchSupplierBranchBreakdown(
     kind === "china"
       ? "/react/v1/dashboard/china-supplier-store-sales"
       : "/react/v1/dashboard/supplier-store-sales";
-  const response = await apiClient.get(endpoint, { params, timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS });
+  const response = await apiClient.get(endpoint, { params, ...getProductReportRequestConfig() });
   return normalizeSupplierBranchRows(response.data);
 }
 
@@ -425,7 +425,7 @@ export async function fetchProductBranchBreakdown(
   params.set("productCode", productCode);
   const response = await apiClient.get("/react/v1/dashboard/product-sales-by-branches", {
     params,
-    timeout: PRODUCT_REPORT_QUERY_TIMEOUT_MS,
+    ...getProductReportRequestConfig(),
   });
   return normalizeProductBranchRows(response.data);
 }

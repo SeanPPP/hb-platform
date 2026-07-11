@@ -44,6 +44,7 @@ import {
 } from "@/modules/product-report/date-ranges";
 import { formatMoney } from "@/modules/reports/format";
 import { GROWTH_COLORS, formatGrowthRate, getGrowthTone } from "@/modules/reports/growth-rate";
+import { REPORT_QUERY_OPTIONS } from "@/modules/reports/report-config";
 import { PRODUCT_PAGE_SIZE, SUPPLIER_PAGE_SIZE, getPageRows } from "@/modules/product-report/pagination";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
@@ -53,10 +54,9 @@ type Drilldown =
 
 interface ProductReportScreenProps {
   embedded?: boolean;
+  onRefreshFreshness?: () => Promise<unknown>;
+  onRefreshReport?: () => Promise<unknown>;
 }
-
-// 商品报表已在 API 层控制 3 秒超时，这里关闭自动重试，避免一次查询拖成两次。
-const PRODUCT_REPORT_QUERY_OPTIONS = { retry: false } as const;
 
 function formatCount(value: number) {
   return Math.round(value).toLocaleString("en-AU");
@@ -97,7 +97,11 @@ function TableCell({
   );
 }
 
-export function ProductReportScreen({ embedded = false }: ProductReportScreenProps) {
+export function ProductReportScreen({
+  embedded = false,
+  onRefreshFreshness,
+  onRefreshReport,
+}: ProductReportScreenProps) {
   const { t } = useAppTranslation("common");
   const { height } = useWindowDimensions();
   const [kind, setKind] = useState<SupplierReportKind>("australia");
@@ -141,21 +145,21 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
   const storeOptionsQuery = useQuery({
     queryKey: ["product-report", "stores"],
     queryFn: fetchProductReportStoreOptions,
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const totalRevenueQuery = useQuery({
     queryKey: ["product-report", "total-revenue", queryParams],
     queryFn: () => fetchProductReportTotalRevenue(queryParams!),
     enabled: Boolean(queryParams),
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const supplierQuery = useQuery({
     queryKey: ["product-report", "suppliers", kind, queryParams],
     queryFn: () => fetchSupplierReportRows(kind, queryParams!, 1000),
     enabled: Boolean(queryParams),
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const supplierRows = supplierQuery.data ?? [];
@@ -183,7 +187,7 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
         productSearch
       ),
     enabled: Boolean(queryParams),
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
   const productRows = productQuery.data?.rows ?? [];
   const productTotal = productQuery.data?.total ?? 0;
@@ -214,7 +218,7 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
         (drilldown as Extract<Drilldown, { type: "supplier" }>).supplier.supplierCode
       ),
     enabled: Boolean(supplierBranchQueryParams && drilldown?.type === "supplier"),
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const productBranchQuery = useQuery({
@@ -225,7 +229,7 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
         (drilldown as Extract<Drilldown, { type: "product" }>).product.productCode
       ),
     enabled: Boolean(productBranchQueryParams && drilldown?.type === "product"),
-    ...PRODUCT_REPORT_QUERY_OPTIONS,
+    ...REPORT_QUERY_OPTIONS,
   });
   const drilldownKind = drilldown?.type ?? null;
   // 弹窗状态按当前下钻类型取值，避免另一个禁用查询把内容渲染成空白。
@@ -314,6 +318,12 @@ export function ProductReportScreen({ embedded = false }: ProductReportScreenPro
   };
 
   const refresh = () => {
+    if (onRefreshReport) {
+      // 嵌入报告中心时统一走控制器，避免下拉与页头刷新并发。
+      void onRefreshReport();
+      return;
+    }
+    void onRefreshFreshness?.();
     storeOptionsQuery.refetch();
     if (queryParams) {
       totalRevenueQuery.refetch();

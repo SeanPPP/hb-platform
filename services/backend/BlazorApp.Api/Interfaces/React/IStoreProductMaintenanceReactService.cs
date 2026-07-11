@@ -59,6 +59,13 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
+        Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> SyncWarehousePriceAsync(
+            string uuid,
+            SyncStoreProductWarehousePriceRequestDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
         Task<ApiResponse<StoreProductMultiCodeDto>> UpdateMultiCodeAsync(
             string uuid,
             UpdateStoreProductMultiCodeDto request,

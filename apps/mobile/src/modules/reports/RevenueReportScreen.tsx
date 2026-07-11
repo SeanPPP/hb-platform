@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   FlatList,
   Pressable,
@@ -12,6 +13,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { ActivityIndicator, Button, Modal, Portal, SegmentedButtons, Text } from "react-native-paper";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { MonthDatePickerField } from "@/components/attendance/MonthDatePicker";
 import {
   BranchRevenueRow,
   DailyRevenueRow,
@@ -31,9 +33,14 @@ import {
   parseDateKey,
   getPreviousRevenuePeriod,
   getYesterdayRevenuePeriod,
+  getRevenueDateBounds,
+  getRevenuePeriodForDate,
+  isRevenuePeriodAvailable,
+  refreshRevenueDateSelection,
 } from "@/modules/reports/periods";
 import { formatMoney } from "@/modules/reports/format";
 import { GROWTH_COLORS, formatGrowthRate, getGrowthTone } from "@/modules/reports/growth-rate";
+import { REPORT_QUERY_OPTIONS } from "@/modules/reports/report-config";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type Drilldown =
@@ -44,6 +51,8 @@ type DetailRow = HourlyRevenueRow | DailyRevenueRow;
 
 interface RevenueReportScreenProps {
   embedded?: boolean;
+  onRefreshFreshness?: () => Promise<unknown>;
+  onRefreshReport?: () => Promise<unknown>;
 }
 
 function buildQuery(period: RevenuePeriod, branchCode?: string) {
@@ -139,17 +148,35 @@ function DetailPeriodText({
   );
 }
 
-export function RevenueReportScreen({ embedded = false }: RevenueReportScreenProps) {
+export function RevenueReportScreen({
+  embedded = false,
+  onRefreshFreshness,
+  onRefreshReport,
+}: RevenueReportScreenProps) {
   const { t } = useAppTranslation("common");
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<RevenuePeriodMode>("day");
   const [period, setPeriod] = useState(() => getDefaultRevenuePeriod("day"));
+  const [selectedDate, setSelectedDate] = useState(() => getDefaultRevenuePeriod("day").startDate);
   const [drilldown, setDrilldown] = useState<Drilldown | null>(null);
+  const [dateBounds, setDateBounds] = useState(() => getRevenueDateBounds());
+  useFocusEffect(
+    useCallback(() => {
+      const refreshed = refreshRevenueDateSelection(selectedDate);
+      setDateBounds(refreshed.bounds);
+      if (refreshed.selectedDate !== selectedDate) {
+        setSelectedDate(refreshed.selectedDate);
+        setPeriod(getRevenuePeriodForDate(mode, refreshed.selectedDate));
+        setDrilldown(null);
+      }
+    }, [mode, selectedDate]),
+  );
 
   const queryParams = useMemo(() => buildQuery(period), [period]);
   const summaryQuery = useQuery({
     queryKey: ["reports", "revenue-summary", queryParams],
     queryFn: () => fetchExecutiveBranchPerformance(queryParams),
+    ...REPORT_QUERY_OPTIONS,
   });
 
   const detailParams = useMemo(
@@ -165,19 +192,34 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
       return fetchBranchDailyPerformance(detailParams);
     },
     enabled: Boolean(drilldown),
+    ...REPORT_QUERY_OPTIONS,
   });
 
+  const refresh = () => {
+    if (onRefreshReport) {
+      // 嵌入报告中心时统一走控制器，避免下拉与页头刷新并发。
+      void onRefreshReport();
+      return;
+    }
+    void Promise.all([summaryQuery.refetch(), onRefreshFreshness?.()]);
+  };
+
   const setPeriodMode = (nextMode: RevenuePeriodMode) => {
+    const nextPeriod = getDefaultRevenuePeriod(nextMode);
     setMode(nextMode);
-    setPeriod(getDefaultRevenuePeriod(nextMode));
+    setPeriod(nextPeriod);
+    setSelectedDate(dateBounds.maxDate);
     setDrilldown(null);
   };
 
-  const setActivePeriod = (nextPeriod: RevenuePeriod) => {
+  const setActivePeriod = (nextPeriod: RevenuePeriod, anchorDate?: string) => {
     setMode(nextPeriod.mode);
     setPeriod(nextPeriod);
+    setSelectedDate(anchorDate ?? (nextPeriod.startDate < dateBounds.minDate ? dateBounds.minDate : nextPeriod.startDate));
     setDrilldown(null);
   };
+  const previousPeriod = getPreviousRevenuePeriod(period);
+  const nextPeriod = getNextRevenuePeriod(period);
 
   const currentShortcut =
     mode === "day"
@@ -305,14 +347,22 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
           ]}
         />
 
+        <MonthDatePickerField
+          value={selectedDate}
+          minDate={dateBounds.minDate}
+          maxDate={dateBounds.maxDate}
+          label={t("reports.periods.date")}
+          onChange={(date) => setActivePeriod(getRevenuePeriodForDate(mode, date), date)}
+        />
+
         <View style={styles.toolbar}>
-          <Button compact mode="outlined" icon="chevron-left" onPress={() => setActivePeriod(getPreviousRevenuePeriod(period))}>
+          <Button compact mode="outlined" icon="chevron-left" disabled={!isRevenuePeriodAvailable(previousPeriod, dateBounds)} onPress={() => setActivePeriod(previousPeriod)}>
             {t("reports.actions.previous")}
           </Button>
-          <Button compact mode="outlined" icon="chevron-right" onPress={() => setActivePeriod(getNextRevenuePeriod(period))}>
+          <Button compact mode="outlined" icon="chevron-right" disabled={!isRevenuePeriodAvailable(nextPeriod, dateBounds)} onPress={() => setActivePeriod(nextPeriod)}>
             {t("reports.actions.next")}
           </Button>
-          <Button compact onPress={() => setActivePeriod(getDefaultRevenuePeriod(mode))}>
+          <Button compact onPress={() => setActivePeriod(getDefaultRevenuePeriod(mode), dateBounds.maxDate)}>
             {currentShortcut}
           </Button>
           <Button compact onPress={() => setActivePeriod(previousShortcut.period())}>
@@ -351,7 +401,10 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
               style={styles.tableList}
               contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
               refreshControl={
-                <RefreshControl refreshing={summaryQuery.isRefetching} onRefresh={() => summaryQuery.refetch()} />
+                <RefreshControl
+                  refreshing={summaryQuery.isRefetching}
+                  onRefresh={refresh}
+                />
               }
               ListEmptyComponent={<StateBox label={t("reports.states.empty")} />}
             />

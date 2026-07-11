@@ -7,10 +7,12 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
+using ScheduledTaskStatus = BlazorApp.Shared.Models.HBweb.TaskStatus;
 
 namespace BlazorApp.Api.Services.React
 {
@@ -122,6 +124,7 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
         private static readonly TimeSpan REPORT_STATISTICS_REFRESH_WAIT = TimeSpan.FromMilliseconds(2200);
+        private static readonly TimeSpan STATISTICS_RUNNING_STALE_AFTER = TimeSpan.FromMinutes(90);
         private const int REPORT_STATISTICS_REFRESH_MAX_DAYS = 35;
         private const int LEGACY_CHINA_SUPPLIER_PRODUCT_FILTER_LIMIT = 2000;
         private const string CHINA_LOCAL_SUPPLIER_CODE = "200";
@@ -2849,8 +2852,9 @@ namespace BlazorApp.Api.Services.React
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var statisticsVersion = await GetStatisticsCacheVersionAsync();
                 var cacheKey =
-                    $"ExecutiveBranchPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", normalizedBranchCodes)}";
+                    $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", normalizedBranchCodes)}";
 
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
@@ -3024,8 +3028,9 @@ namespace BlazorApp.Api.Services.React
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var statisticsVersion = await GetStatisticsCacheVersionAsync();
                 var cacheKey =
-                    $"ExecutiveHourlyTraffic_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+                    $"ExecutiveHourlyTraffic_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
@@ -3195,8 +3200,9 @@ namespace BlazorApp.Api.Services.React
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var statisticsVersion = await GetStatisticsCacheVersionAsync();
                 var cacheKey =
-                    $"BranchDailyPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+                    $"BranchDailyPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
@@ -3313,6 +3319,51 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "GetBranchDailyPerformanceAsync failed");
                 throw;
             }
+        }
+
+        public async Task<StatisticsFreshnessDto> GetStatisticsFreshnessAsync()
+        {
+            var latestRun = await _context.Db.Queryable<ScheduledTaskLog>()
+                .Where(task => task.TaskType == TaskType.UpdateCurrentHourStatistics)
+                .OrderByDescending(task => task.StartedAt)
+                .FirstAsync();
+            var latestSuccess = await _context.Db.Queryable<ScheduledTaskLog>()
+                .Where(task =>
+                    task.TaskType == TaskType.UpdateCurrentHourStatistics
+                    && task.Status == ScheduledTaskStatus.Success
+                    && task.CompletedAt != null
+                )
+                .OrderByDescending(task => task.CompletedAt)
+                .FirstAsync();
+
+            var latestRunStatus = latestRun?.Status ?? "NeverRun";
+            if (
+                latestRun?.Status == ScheduledTaskStatus.Running
+                && latestRun.StartedAt <= DateTime.UtcNow.Subtract(STATISTICS_RUNNING_STALE_AFTER)
+            )
+            {
+                // 超时 Running 不能让客户端永久等待；对外降级为 Failed，并留下高等级告警供运维排查。
+                latestRunStatus = ScheduledTaskStatus.Failed;
+                _logger.LogError(
+                    "销售统计任务长时间停留 Running，按失败状态返回。TaskId={TaskId}, StartedAt={StartedAt}",
+                    latestRun.Id,
+                    latestRun.StartedAt
+                );
+            }
+
+            return new StatisticsFreshnessDto
+            {
+                LastSuccessfulAtUtc = latestSuccess?.CompletedAt is DateTime completedAt
+                    ? DateTime.SpecifyKind(completedAt, DateTimeKind.Utc)
+                    : null,
+                LatestRunStatus = latestRunStatus,
+            };
+        }
+
+        private async Task<string> GetStatisticsCacheVersionAsync()
+        {
+            var freshness = await GetStatisticsFreshnessAsync();
+            return freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
         }
 
         /// <summary>

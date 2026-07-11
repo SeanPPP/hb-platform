@@ -16,6 +16,7 @@ import {
   Text,
 } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { canNavigateToMonth, isMonthDateInRange } from "./month-date-picker-range";
 
 const GRID_DAYS = 42;
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -25,6 +26,8 @@ interface MonthDatePickerProps {
   defaultValue?: string;
   disabled?: boolean;
   allowEmpty?: boolean;
+  minDate?: string;
+  maxDate?: string;
   onChange?: (date: string) => void;
   style?: StyleProp<ViewStyle>;
 }
@@ -105,6 +108,8 @@ export function MonthDatePicker({
   defaultValue,
   disabled = false,
   allowEmpty = false,
+  minDate,
+  maxDate,
   onChange,
   style,
 }: MonthDatePickerProps) {
@@ -129,9 +134,11 @@ export function MonthDatePicker({
   const monthCells = useMemo(() => buildMonthGrid(displayMonth), [displayMonth]);
   const weeks = useMemo(() => chunkWeeks(monthCells), [monthCells]);
   const monthTitle = `${displayMonth.getFullYear()}-${pad2(displayMonth.getMonth() + 1)}`;
+  const previousMonth = addMonths(displayMonth, -1);
+  const nextMonth = addMonths(displayMonth, 1);
 
   const selectDate = (date: Date) => {
-    if (disabled) {
+    if (disabled || !isMonthDateInRange(formatMonthDate(date), minDate, maxDate)) {
       return;
     }
 
@@ -149,8 +156,8 @@ export function MonthDatePicker({
         <IconButton
           icon="chevron-left"
           size={22}
-          onPress={() => setDisplayMonth((current) => addMonths(current, -1))}
-          disabled={disabled}
+          onPress={() => setDisplayMonth(previousMonth)}
+          disabled={disabled || !canNavigateToMonth(previousMonth, minDate, maxDate)}
         />
         <Text variant="titleMedium" style={styles.monthTitle}>
           {monthTitle}
@@ -158,8 +165,8 @@ export function MonthDatePicker({
         <IconButton
           icon="chevron-right"
           size={22}
-          onPress={() => setDisplayMonth((current) => addMonths(current, 1))}
-          disabled={disabled}
+          onPress={() => setDisplayMonth(nextMonth)}
+          disabled={disabled || !canNavigateToMonth(nextMonth, minDate, maxDate)}
         />
       </View>
 
@@ -177,20 +184,21 @@ export function MonthDatePicker({
             {week.map((cell) => {
               const isSelected = cell.dateString === selectedDateString;
               const isToday = cell.dateString === today;
+              const isOutOfRange = !isMonthDateInRange(cell.dateString, minDate, maxDate);
               return (
                 <Pressable
                   key={cell.dateString}
                   accessibilityRole="button"
-                  accessibilityState={{ disabled, selected: isSelected }}
-                  disabled={disabled}
+                  accessibilityState={{ disabled: disabled || isOutOfRange, selected: isSelected }}
+                  disabled={disabled || isOutOfRange}
                   onPress={() => selectDate(cell.date)}
                   style={({ pressed }) => [
                     styles.dateCell,
                     !cell.isCurrentMonth ? styles.outsideDateCell : null,
                     isToday ? styles.todayCell : null,
                     isSelected ? styles.selectedDateCell : null,
-                    pressed && !disabled ? styles.pressedDateCell : null,
-                    disabled ? styles.disabledDateCell : null,
+                    pressed && !disabled && !isOutOfRange ? styles.pressedDateCell : null,
+                    disabled || isOutOfRange ? styles.disabledDateCell : null,
                   ]}
                 >
                   <Text
@@ -234,6 +242,8 @@ export function MonthDatePickerField({
   value,
   defaultValue,
   disabled = false,
+  minDate,
+  maxDate,
   label,
   placeholder,
   onChange,
@@ -318,6 +328,8 @@ export function MonthDatePickerField({
               value={selectedValue}
               onChange={handleChange}
               disabled={disabled}
+              minDate={minDate}
+              maxDate={maxDate}
             />
           </Surface>
         </Modal>

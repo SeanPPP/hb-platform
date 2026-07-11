@@ -24,7 +24,7 @@ namespace BlazorApp.Api.Services.Background
         public string? InstanceId { get; set; }
 
         /// <summary>
-        /// 每小时任务间隔分钟数（默认 60 分钟）
+        /// 同步和缓存预热任务间隔分钟数（默认 20 分钟）
         /// </summary>
         public int HourlyTaskIntervalMinutes { get; set; } = 20;
 
@@ -91,9 +91,12 @@ namespace BlazorApp.Api.Services.Background
         private readonly ScheduledTaskOptions _options;
         private readonly TimeZoneInfo _sydneyTimeZone;
         private Timer? _hourlyTimer;
+        private Timer? _salesStatisticsTimer;
+        private readonly object _salesStatisticsTimerLock = new();
         private Timer? _dailyTimer;
         private Timer? _weeklyTimer;
         private Timer? _monthlyTimer;
+        private bool _stopping;
 
         public ScheduledTaskService(
             IServiceScopeFactory scopeFactory,
@@ -136,11 +139,26 @@ namespace BlazorApp.Api.Services.Background
             }
 
             _hourlyTimer = new Timer(
-                async _ => await ExecuteHourlyTask(),
+                async _ => await ExecuteAutomaticMaintenanceTask(),
                 null,
                 TimeSpan.FromMinutes(nextHourlyMinutes),
                 TimeSpan.FromMinutes(_options.HourlyTaskIntervalMinutes)
             );
+
+            // 销售统计单独按悉尼时间整点、半点运行；使用一次性 Timer，完成后再计算下一边界，避免漂移和重叠。
+            lock (_salesStatisticsTimerLock)
+            {
+                if (!_stopping)
+                {
+                    _salesStatisticsTimer = new Timer(
+                        async _ => await ExecuteScheduledSalesStatisticsTask(),
+                        null,
+                        Timeout.InfiniteTimeSpan,
+                        Timeout.InfiniteTimeSpan
+                    );
+                }
+            }
+            ScheduleNextSalesStatisticsRun();
 
             // 计算到下一个每日任务执行时间的时间间隔
             var nextDaily = CalculateNextDailyRun(now);
@@ -170,7 +188,7 @@ namespace BlazorApp.Api.Services.Background
             );
 
             _logger.LogInformation(
-                "定时任务已注册 - 每小时任务将在 {Minutes} 分钟后开始{EnableJitter}，"
+                "定时任务已注册 - 维护任务将在 {Minutes} 分钟后开始{EnableJitter}，销售统计按整点和半点执行，"
                     + "每日任务将在 {Time} 开始，每周任务将在 {WeeklyTime} 开始，每月任务将在 {MonthlyTime} 开始",
                 (int)nextHourlyMinutes,
                 _options.EnableJitter ? $"（冗余偏移: ±{_options.JitterMaxMinutes}分钟）" : "",
@@ -182,6 +200,41 @@ namespace BlazorApp.Api.Services.Background
             while (!stoppingToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+            }
+        }
+
+        private static TimeSpan CalculateNextSalesStatisticsRun(DateTime now)
+        {
+            var nextMinute = now.Minute < 30 ? 30 : 60;
+            var next = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0)
+                .AddMinutes(nextMinute);
+            return next - now;
+        }
+
+        private void ScheduleNextSalesStatisticsRun()
+        {
+            lock (_salesStatisticsTimerLock)
+            {
+                if (_stopping || _salesStatisticsTimer == null)
+                    return;
+
+                var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
+                _salesStatisticsTimer.Change(
+                    CalculateNextSalesStatisticsRun(now),
+                    Timeout.InfiniteTimeSpan
+                );
+            }
+        }
+
+        private async Task ExecuteScheduledSalesStatisticsTask()
+        {
+            try
+            {
+                await ExecuteAutomaticSalesStatisticsTask();
+            }
+            finally
+            {
+                ScheduleNextSalesStatisticsRun();
             }
         }
 
@@ -291,10 +344,37 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         private async Task ExecuteHourlyTask()
         {
-            if (!await IsCurrentInstanceSchedulerEnabledAsync("每小时定时任务"))
+            if (!await CanRunHourlyTaskAsync("每小时定时任务"))
             {
                 return;
             }
+
+            await ExecuteMappingSyncTask();
+            await ExecuteSalesStatisticsTask();
+            await ExecuteStoreOrderCacheWarmUpTask();
+        }
+
+        private async Task ExecuteAutomaticMaintenanceTask()
+        {
+            if (!await CanRunHourlyTaskAsync("20分钟维护任务"))
+                return;
+
+            await ExecuteMappingSyncTask();
+            await ExecuteStoreOrderCacheWarmUpTask();
+        }
+
+        private async Task ExecuteAutomaticSalesStatisticsTask()
+        {
+            if (!await CanRunHourlyTaskAsync("整点半点销售统计任务"))
+                return;
+
+            await ExecuteSalesStatisticsTask();
+        }
+
+        private async Task<bool> CanRunHourlyTaskAsync(string taskName)
+        {
+            if (!await IsCurrentInstanceSchedulerEnabledAsync(taskName))
+                return false;
 
             var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
             var startHour = 7;
@@ -315,11 +395,15 @@ namespace BlazorApp.Api.Services.Background
                     startHour,
                     endHour
                 );
-                return;
+                return false;
             }
 
-            // 每个小时子任务都使用独立 scope，避免前一个任务的连接/上下文异常污染后续任务。
-            await ExecuteHourlyTaskWithIndependentScopeAsync(
+            return true;
+        }
+
+        private Task ExecuteMappingSyncTask()
+        {
+            return ExecuteHourlyTaskWithIndependentScopeAsync(
                 TaskType.SyncPosmProductSupplierMappingsIncremental,
                 "商品-供应商映射增量同步",
                 async serviceProvider =>
@@ -339,8 +423,11 @@ namespace BlazorApp.Api.Services.Background
                     }
                 }
             );
+        }
 
-            await ExecuteHourlyTaskWithIndependentScopeAsync(
+        private Task ExecuteSalesStatisticsTask()
+        {
+            return ExecuteHourlyTaskWithIndependentScopeAsync(
                 TaskType.UpdateCurrentHourStatistics,
                 "每小时统计任务",
                 async serviceProvider =>
@@ -348,10 +435,19 @@ namespace BlazorApp.Api.Services.Background
                     var statisticsJobService =
                         serviceProvider.GetRequiredService<SalesStatisticsJobService>();
                     await statisticsJobService.FullRefreshCurrentDay();
+
+                    // 本实例统计完成后立即清理看板缓存；其他实例通过成功时间版本自动绕过旧缓存。
+                    var dashboardCacheWarmer =
+                        serviceProvider.GetRequiredService<ISalesDashboardCacheWarmer>();
+                    await dashboardCacheWarmer.ClearCacheAsync();
                 }
             );
+        }
 
-            await ExecuteHourlyTaskWithIndependentScopeAsync(
+        private Task ExecuteStoreOrderCacheWarmUpTask()
+        {
+            // 每个子任务都使用独立 scope，避免前一个任务的连接/上下文异常污染后续任务。
+            return ExecuteHourlyTaskWithIndependentScopeAsync(
                 TaskType.WarmUpStoreOrderCache,
                 "商品列表缓存预热任务",
                 async serviceProvider =>
@@ -407,7 +503,15 @@ namespace BlazorApp.Api.Services.Background
 
                     if (taskLog != null && taskLogService != null)
                     {
-                        await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                        if (taskType == TaskType.UpdateCurrentHourStatistics)
+                        {
+                            // 跨实例缓存版本依赖成功日志时间，统计任务必须确认成功状态真正写入数据库。
+                            await taskLogService.LogTaskSuccessStrictAsync(taskLog.Id);
+                        }
+                        else
+                        {
+                            await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                        }
                     }
 
                     _logger.LogInformation("{TaskName}执行完成", taskName);
@@ -416,15 +520,26 @@ namespace BlazorApp.Api.Services.Background
                 {
                     if (taskLog != null && taskLogService != null)
                     {
-                        await TryLogTaskFailureAsync(
-                            () =>
-                                taskLogService.LogTaskFailureAsync(
-                                    taskLog.Id,
-                                    BuildTaskFailureMessage(ex)
-                                ),
-                            _logger,
-                            taskName
-                        );
+                        if (taskType == TaskType.UpdateCurrentHourStatistics)
+                        {
+                            // 成功版本发布失败时也必须严格落为 Failed，避免留下永久 Running 状态。
+                            await taskLogService.LogTaskFailureStrictAsync(
+                                taskLog.Id,
+                                BuildTaskFailureMessage(ex)
+                            );
+                        }
+                        else
+                        {
+                            await TryLogTaskFailureAsync(
+                                () =>
+                                    taskLogService.LogTaskFailureAsync(
+                                        taskLog.Id,
+                                        BuildTaskFailureMessage(ex)
+                                    ),
+                                _logger,
+                                taskName
+                            );
+                        }
                     }
 
                     _logger.LogError(ex, "{TaskName}执行失败", taskName);
@@ -757,6 +872,12 @@ namespace BlazorApp.Api.Services.Background
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("定时任务服务停止");
+            lock (_salesStatisticsTimerLock)
+            {
+                _stopping = true;
+                _salesStatisticsTimer?.Dispose();
+                _salesStatisticsTimer = null;
+            }
             _hourlyTimer?.Dispose();
             _dailyTimer?.Dispose();
             _weeklyTimer?.Dispose();

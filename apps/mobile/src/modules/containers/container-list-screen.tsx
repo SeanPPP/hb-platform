@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -219,6 +219,16 @@ export function ContainerListScreen() {
   const canCreateContainer = access.canCreateContainer;
   const canEditContainer = access.canEditContainer;
 
+  const handleBack = useCallback(() => {
+    // 深链直达时可能没有历史栈，此时回到货柜功能所属的仓库页。
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.navigate("/(tabs)/warehouse");
+  }, [router]);
+
   const invalidateList = () => queryClient.invalidateQueries({ queryKey: ["containers"] });
 
   const createMutation = useMutation({
@@ -317,6 +327,7 @@ export function ContainerListScreen() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={listQuery.isRefetching} onRefresh={() => listQuery.refetch()} />}
       >
+        <Button icon="arrow-left" onPress={handleBack}>返回</Button>
         <Surface style={styles.filterPanel} mode="flat">
           <SegmentedButtons
             value={filters.dateType ?? "预计到岸日期"}

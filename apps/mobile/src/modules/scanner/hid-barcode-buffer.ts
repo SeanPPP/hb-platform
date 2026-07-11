@@ -130,6 +130,8 @@ export function createHidBarcodeKeyBuffer({
     dispose() {
       clearIdleTimer();
       buffer = "";
+      lastSubmitted = "";
+      lastSubmittedAt = 0;
     },
   };
 }

@@ -626,6 +626,13 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             IsDeleted = false,
         }).ExecuteCommandAsync();
         await SeedSaleAsync("O-MARGIN", "D-MARGIN", "P-MARGIN", "S1", new DateTime(2026, 6, 1), 5, 25m);
+        // 明确订单支付金额，验证毛利仍按生产支付口径计算。
+        await _posmDb.Insertable(new PaymentDetail
+        {
+            PaymentGuid = "PAY-MARGIN",
+            OrderGuid = "O-MARGIN",
+            Amount = 25m,
+        }).ExecuteCommandAsync();
         await _localDb.Insertable(new StoreSalesStatistic
         {
             Date = new DateTime(2026, 6, 1),
@@ -644,6 +651,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             .Where(x => x.Date == new DateTime(2026, 6, 1) && x.ProductCode == "P-MARGIN")
             .FirstAsync();
         Assert.NotNull(stat);
+        Assert.Equal(25m, stat.TotalAmount);
         Assert.Equal("StoreRetailPrice", stat.CostSource);
         Assert.Equal(2m, stat.UnitCostSnapshot);
         Assert.Equal(10m, stat.TotalCost);

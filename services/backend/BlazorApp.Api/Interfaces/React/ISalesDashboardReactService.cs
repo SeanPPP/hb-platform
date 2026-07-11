@@ -126,6 +126,11 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 获取销售统计最近成功时间和最新运行状态
+        /// </summary>
+        Task<StatisticsFreshnessDto> GetStatisticsFreshnessAsync();
+
+        /// <summary>
         /// 获取周业绩层级数据
         /// 用于 Executive Sales Intelligence 页面的 Weekly Performance Hierarchy 组件
         /// 返回周→分店→日期三层嵌套结构

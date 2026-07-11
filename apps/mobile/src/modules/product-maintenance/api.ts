@@ -23,12 +23,15 @@ import type {
   UpdateMultiCodeRequest,
   UpdateStorePriceRequest,
   UpsertClearancePriceRequest,
+  WarehousePriceSyncRequest,
+  WarehousePriceSyncResult,
 } from "@/modules/product-maintenance/types";
 import {
   buildCreateProductWithPricesPayload,
   normalizeActiveLocalSuppliersResponse,
   normalizeCreateProductWithPricesResult,
 } from "@/modules/product-maintenance/api-normalization";
+import { normalizeWarehousePriceSyncResponse } from "@/modules/product-maintenance/warehouse-price-sync";
 
 const BASE_PATH = "/react/v1/store-product-maintenance";
 const PRODUCTS_PATH = "/react/v1/products";
@@ -381,6 +384,18 @@ export async function updateStorePrice(
     buildRequestConfig()
   );
   return normalizeStorePrice(response.data)!;
+}
+
+export async function syncWarehousePrice(
+  uuid: string,
+  payload: WarehousePriceSyncRequest
+): Promise<WarehousePriceSyncResult> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/store-prices/${encodeURIComponent(uuid)}/sync-warehouse`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeWarehousePriceSyncResponse(response.data);
 }
 
 export async function evaluateAutoPricing(

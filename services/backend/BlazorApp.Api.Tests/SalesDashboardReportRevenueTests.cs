@@ -10,9 +10,12 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -23,6 +26,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
 using Xunit;
+using ScheduledTaskStatus = BlazorApp.Shared.Models.HBweb.TaskStatus;
 
 namespace BlazorApp.Api.Tests;
 
@@ -58,6 +62,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             typeof(ChinaSupplier),
             typeof(Product)
         );
+        CreateScheduledTaskLogTable(_localDb);
         _posmDb.CodeFirst.InitTables(
             typeof(SalesOrder),
             typeof(SalesOrderDetail),
@@ -108,6 +113,96 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 Assert.Equal(8, row.OrderCountLY);
             }
         );
+    }
+
+    [Fact]
+    public async Task GetStatisticsFreshnessAsync_返回最近成功时间和最新运行状态()
+    {
+        var successfulAt = new DateTime(2026, 7, 10, 1, 30, 5, DateTimeKind.Utc);
+        await SeedStatisticsTaskLogAsync(ScheduledTaskStatus.Success, successfulAt.AddMinutes(-2), successfulAt);
+        await SeedStatisticsTaskLogAsync(
+            ScheduledTaskStatus.Failed,
+            successfulAt.AddMinutes(28),
+            successfulAt.AddMinutes(29)
+        );
+        var service = CreateService();
+
+        var result = await service.GetStatisticsFreshnessAsync();
+
+        Assert.Equal(successfulAt, result.LastSuccessfulAtUtc);
+        Assert.Equal(ScheduledTaskStatus.Failed, result.LatestRunStatus);
+    }
+
+    [Fact]
+    public async Task GetStatisticsFreshnessAsync_超时Running对外标记Failed()
+    {
+        await SeedStatisticsTaskLogAsync(
+            ScheduledTaskStatus.Running,
+            DateTime.UtcNow.AddHours(-2),
+            null
+        );
+        var service = CreateService();
+
+        var result = await service.GetStatisticsFreshnessAsync();
+
+        Assert.Equal(ScheduledTaskStatus.Failed, result.LatestRunStatus);
+    }
+
+    [Fact]
+    public async Task GetStatisticsFreshness_返回服务层新鲜度信息()
+    {
+        var expected = new StatisticsFreshnessDto
+        {
+            LastSuccessfulAtUtc = new DateTime(2026, 7, 10, 1, 30, 0, DateTimeKind.Utc),
+            LatestRunStatus = ScheduledTaskStatus.Success,
+        };
+        var service = new Mock<ISalesDashboardReactService>();
+        service.Setup(item => item.GetStatisticsFreshnessAsync()).ReturnsAsync(expected);
+        var controller = CreateController(service.Object, CreateUserService(Array.Empty<string>()));
+
+        var response = await controller.GetStatisticsFreshness();
+
+        Assert.Same(expected, ExtractAnonymousData<StatisticsFreshnessDto>(AssertOk(response).Value));
+    }
+
+    [Fact]
+    public void GetStatisticsFreshness_要求商品经营分析权限()
+    {
+        var method = typeof(SalesDashboardController).GetMethod(nameof(SalesDashboardController.GetStatisticsFreshness));
+
+        var authorize = Assert.Single(method!.GetCustomAttributes<AuthorizeAttribute>());
+
+        Assert.Equal(Permissions.Reports.ProductMovementView, authorize.Policy);
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_最近成功时间变化时绕过旧缓存()
+    {
+        var date = new DateTime(2026, 7, 10);
+        await SeedStoreSalesStatisticAsync(date, "S1", "分店一", 100m, 5);
+        await SeedStatisticsTaskLogAsync(
+            ScheduledTaskStatus.Success,
+            new DateTime(2026, 7, 10, 0, 29, 0, DateTimeKind.Utc),
+            new DateTime(2026, 7, 10, 0, 30, 0, DateTimeKind.Utc)
+        );
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+        var first = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        Assert.Equal(100m, Assert.Single(first).Revenue);
+
+        await _localDb.Updateable<StoreSalesStatistic>()
+            .SetColumns(row => row.TotalAmount == 200m)
+            .Where(row => row.Date == date && row.BranchCode == "S1")
+            .ExecuteCommandAsync();
+        await SeedStatisticsTaskLogAsync(
+            ScheduledTaskStatus.Success,
+            new DateTime(2026, 7, 10, 0, 59, 0, DateTimeKind.Utc),
+            new DateTime(2026, 7, 10, 1, 0, 0, DateTimeKind.Utc)
+        );
+
+        var second = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+
+        Assert.Equal(200m, Assert.Single(second).Revenue);
     }
 
     [Fact]
@@ -1780,6 +1875,50 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             CustomerCount = orderCount,
             UpdateTime = DateTime.UtcNow,
         }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStatisticsTaskLogAsync(
+        string status,
+        DateTime startedAtUtc,
+        DateTime? completedAtUtc
+    )
+    {
+        await _localDb.Insertable(new ScheduledTaskLog
+        {
+            TaskType = TaskType.UpdateCurrentHourStatistics,
+            Status = status,
+            StartedAt = startedAtUtc,
+            CompletedAt = completedAtUtc,
+            ScheduledTime = startedAtUtc,
+            TriggeredBy = TaskTrigger.Scheduled,
+        }).ExecuteCommandAsync();
+    }
+
+    private static void CreateScheduledTaskLogTable(ISqlSugarClient db)
+    {
+        db.Ado.ExecuteCommand(
+            """
+            CREATE TABLE IF NOT EXISTS ScheduledTaskLog (
+                Id TEXT PRIMARY KEY,
+                TaskType TEXT NOT NULL,
+                TaskParameters TEXT NULL,
+                Status TEXT NOT NULL,
+                StartedAt TEXT NOT NULL,
+                CompletedAt TEXT NULL,
+                DurationMs INTEGER NULL,
+                ErrorMessage TEXT NULL,
+                RetryCount INTEGER NOT NULL,
+                CanRetry INTEGER NOT NULL,
+                ScheduledTime TEXT NOT NULL,
+                TriggeredBy TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                CreatedBy TEXT NULL,
+                UpdatedAt TEXT NULL,
+                UpdatedBy TEXT NULL,
+                IsDeleted INTEGER NULL
+            );
+            """
+        );
     }
 
     private async Task SeedHourlySalesStatisticAsync(

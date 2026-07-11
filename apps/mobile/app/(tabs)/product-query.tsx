@@ -17,6 +17,7 @@ import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeC
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import { WarehousePriceSyncModal } from "@/components/product-maintenance/WarehousePriceSyncModal";
 import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
@@ -37,6 +38,7 @@ import {
   getProductCodes,
   getProductFastDetail,
   lookupProducts,
+  syncWarehousePrice,
   updateSetCode,
   updateProductType,
   updateStorePrice,
@@ -52,6 +54,20 @@ import type {
   ProductLookupItem,
   ProductSetCodeItem,
 } from "@/modules/product-maintenance/types";
+import {
+  buildWarehousePriceSyncRequest,
+  createWarehousePriceSyncState,
+  extractWarehousePriceSyncConflict,
+  getWarehousePriceSyncApplicability,
+  isProductQueryInteractionBlocked,
+  isWarehousePriceConflictSnapshotComplete,
+  isWarehousePriceInteractionLocked,
+  reduceWarehousePriceSyncState,
+  resolveWarehousePriceConfirmationFeedback,
+  shouldAutoPrintWarehousePrice,
+  type WarehousePriceLookupOrigin,
+  type WarehousePriceSyncState,
+} from "@/modules/product-maintenance/warehouse-price-sync";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { isAxiosError } from "axios";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
@@ -69,7 +85,7 @@ import {
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
 
-type LookupTrigger = "manual" | "scan";
+type LookupTrigger = "manual" | "scan" | "refresh" | "deep-link";
 
 function cloneDetail(detail: ProductDetail | null): ProductDetail | null {
   return detail ? JSON.parse(JSON.stringify(detail)) : null;
@@ -227,6 +243,24 @@ interface AutoPricingDialogResolution {
   updatedDetail?: ProductDetail | null;
 }
 
+interface DetailPostLoadOptions {
+  lookupOrigin: WarehousePriceLookupOrigin;
+  storeCodeOverride?: string;
+  scanSource?: ScanSource | null;
+  scanKeyword?: string;
+  autoPrintEnabled?: boolean;
+}
+
+interface WarehousePriceSyncContext {
+  detail: ProductDetail;
+  lookupOrigin: WarehousePriceLookupOrigin;
+  storeCodeOverride?: string;
+  scanSource: ScanSource | null;
+  scanKeyword: string;
+  autoPrintEnabled: boolean;
+  alreadyPrinted: boolean;
+}
+
 interface NumericInputModalState {
   key: string;
   title: string;
@@ -331,6 +365,11 @@ function ProductQueryContent() {
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
   const [autoPricingDialog, setAutoPricingDialog] = useState<AutoPricingDialogState | null>(null);
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
+  const [warehousePriceSyncState, setWarehousePriceSyncState] = useState<WarehousePriceSyncState>(
+    createWarehousePriceSyncState
+  );
+  const [warehousePriceSyncContext, setWarehousePriceSyncContext] =
+    useState<WarehousePriceSyncContext | null>(null);
   const [createProductVisible, setCreateProductVisible] = useState(false);
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] = useState(false);
   const [createProductSaving, setCreateProductSaving] = useState(false);
@@ -365,9 +404,42 @@ function ProductQueryContent() {
   ), [language, t]);
   const autoPricingDialogResolverRef = useRef<((result: AutoPricingDialogResolution) => void) | null>(null);
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
+  const lookupSelectionOpenRef = useRef(false);
+  const lookupRequestInFlightRef = useRef(false);
+  const storeSelectionInFlightRef = useRef(false);
+  const warehousePriceRequestInFlightRef = useRef(false);
+  const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputFocusedRef = useRef(false);
+  const processLoadedDetailRef = useRef<
+    ((targetDetail: ProductDetail, options: DetailPostLoadOptions) => Promise<LookupFlowResult>) | null
+  >(null);
   const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
   const handledExternalQueryRef = useRef<string | null>(null);
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
+  const warehousePriceInteractionLocked = isWarehousePriceInteractionLocked(
+    warehousePriceSyncState
+  );
+  const isProductQueryBusy = useCallback(
+    () =>
+      isProductQueryInteractionBlocked({
+        loading,
+        lookupVisible,
+        lookupSelectionOpen: lookupSelectionOpenRef.current,
+        autoPricingVisible: Boolean(autoPricingDialog),
+        autoPricingSaving: autoPricingDialogSaving,
+        warehouseLocked: warehousePriceInteractionLocked,
+        requestInFlight:
+          lookupRequestInFlightRef.current || warehousePriceRequestInFlightRef.current,
+        storeSelectionInFlight: storeSelectionInFlightRef.current,
+      }),
+    [
+      autoPricingDialog,
+      autoPricingDialogSaving,
+      loading,
+      lookupVisible,
+      warehousePriceInteractionLocked,
+    ]
+  );
   const invoiceReturnState = useMemo(
     () => decodeLocalSupplierInvoicesReturnParams(queryParams),
     [
@@ -512,14 +584,15 @@ function ProductQueryContent() {
   );
 
   const loadDetail = useCallback(
-    async (productCode: string) => {
-      if (!selectedStoreCode) {
+    async (productCode: string, storeCodeOverride?: string) => {
+      const targetStoreCode = storeCodeOverride ?? selectedStoreCode;
+      if (!targetStoreCode) {
         setSnackbarMessage(t("messages.selectStoreFirst"));
         return null;
       }
 
-      console.log("[product-query] load detail", { productCode, selectedStoreCode });
-      const payload = await getProductFastDetail(productCode, selectedStoreCode);
+      console.log("[product-query] load detail", { productCode, selectedStoreCode: targetStoreCode });
+      const payload = await getProductFastDetail(productCode, targetStoreCode);
       setDetail(payload);
       setInitialDetail(cloneDetail(payload));
       setSelectedLookupProductCode(productCode);
@@ -527,47 +600,51 @@ function ProductQueryContent() {
       setQueryFeedback({ type: "idle" });
       setCodePage(1);
       setCodesHasMore(false);
-      const detailWithCodes = await loadProductCodes(payload, 1, false);
+      const detailWithCodes = await loadProductCodes(payload, 1, false, targetStoreCode);
       return detailWithCodes ?? payload;
     },
     [loadProductCodes, selectedStoreCode, t]
   );
 
-  const canSelectStore = !isDeviceMode && stores.length > 0;
+  const canSelectStore = !isDeviceMode && stores.length > 0 && !isProductQueryBusy();
 
   const handleSelectStore = useCallback(
     async (store: Store | null) => {
-      if (!store) {
+      if (!store || isProductQueryBusy()) {
         return;
       }
 
+      storeSelectionInFlightRef.current = true;
+      setLoading(true);
       setStorePickerVisible(false);
-      await selectStore(store);
+      try {
+        await selectStore(store);
 
-      if (detail?.productCode) {
-        setLoading(true);
-        try {
-          const payload = await getProductFastDetail(detail.productCode, store.storeCode);
-          setDetail(payload);
-          setInitialDetail(cloneDetail(payload));
-          setLastHitLabel(`${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`);
-          setCodePage(1);
-          setCodesHasMore(false);
-          await loadProductCodes(payload, 1, false, store.storeCode);
-        } catch (error) {
+        if (detail?.productCode) {
+          const nextDetail = await loadDetail(detail.productCode, store.storeCode);
+          if (nextDetail) {
+            await processLoadedDetailRef.current?.(nextDetail, {
+              lookupOrigin: "refresh",
+              storeCodeOverride: store.storeCode,
+            });
+          }
+        }
+      } catch (error) {
+        if (detail?.productCode) {
           setDetail(null);
           setInitialDetail(null);
           setSelectedLookupProductCode(undefined);
           setCodePage(1);
           setCodesHasMore(false);
-          setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
-          playQueryFeedback("error");
-        } finally {
-          setLoading(false);
         }
+        setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
+        playQueryFeedback("error");
+      } finally {
+        storeSelectionInFlightRef.current = false;
+        setLoading(false);
       }
     },
-    [detail?.productCode, getErrorMessage, loadProductCodes, playQueryFeedback, selectStore]
+    [detail?.productCode, getErrorMessage, isProductQueryBusy, loadDetail, playQueryFeedback, selectStore]
   );
 
   const selectedCreateSupplier = useMemo(
@@ -827,20 +904,19 @@ function ProductQueryContent() {
         (item) => item.setBarcode?.trim() === kw,
       );
       if (setMatch?.setBarcode?.trim()) {
-        await sendProductLabel(targetDetail, {
+        return sendProductLabel(targetDetail, {
           barcode: setMatch.setBarcode.trim(),
           retailPrice: setMatch.setRetailPrice,
           action: `set:${setMatch.setCodeId}`,
           printType: smallLabel ? "small" : null,
         });
-        return;
       }
 
       const multiMatch = targetDetail.multiCodes.find(
         (item) => item.barcode?.trim() === kw,
       );
       if (multiMatch?.barcode?.trim()) {
-        await sendProductLabel(targetDetail, {
+        return sendProductLabel(targetDetail, {
           barcode: multiMatch.barcode.trim(),
           retailPrice:
             multiMatch.retailPrice ??
@@ -849,7 +925,6 @@ function ProductQueryContent() {
           action: `multi:${multiMatch.setCodeId}`,
           printType: smallLabel ? "small" : null,
         });
-        return;
       }
 
       if (
@@ -864,15 +939,16 @@ function ProductQueryContent() {
           if (quantitySingleUse && printQuantity > 1) {
             setPrintQuantity(1);
           }
+          return true;
         } catch (error) {
           setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
+          return false;
         } finally {
           setPrintingAction(null);
         }
-        return;
       }
 
-      await sendProductLabel(targetDetail);
+      return sendProductLabel(targetDetail);
     },
     [getErrorMessage, printQuantity, quantitySingleUse, sendProductLabel, smallLabel, t],
   );
@@ -952,12 +1028,144 @@ function ProductQueryContent() {
     [getErrorMessage, openAutoPricingDialog, persistStorePrice, playQueryFeedback, selectedStoreCode]
   );
 
+  const processLoadedDetail = useCallback(
+    async (
+      targetDetail: ProductDetail,
+      options: DetailPostLoadOptions
+    ): Promise<LookupFlowResult> => {
+      const applicability = getWarehousePriceSyncApplicability(
+        targetDetail.localSupplierCode,
+        targetDetail.storePrice?.uuid
+      );
+      if (applicability === "not_supplier") {
+        const autoPricingResult = await maybeHandleAutoPricing(targetDetail, {
+          scanSource: options.scanSource,
+        });
+        if (autoPricingResult.autoPricingStatus === "no_action") {
+          playQueryFeedback("found");
+          if (options.autoPrintEnabled && !autoPricingResult.labelPrinted) {
+            const labelPrinted = await smartAutoPrint(options.scanKeyword ?? "", targetDetail);
+            return { ...autoPricingResult, labelPrinted };
+          }
+        }
+        return autoPricingResult;
+      }
+
+      // 供应商 200 本轮只走仓库权威价对账，明确跳过现有自动定价评估。
+      const currentStorePrice = targetDetail.storePrice;
+      if (applicability === "missing_store_price" || !currentStorePrice?.uuid) {
+        playQueryFeedback("found");
+        // 缺少目标分店价时无法证明标签价格来自仓库，禁止自动打印旧标签。
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+
+      if (warehousePriceRequestInFlightRef.current) {
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+      warehousePriceRequestInFlightRef.current = true;
+
+      setWarehousePriceSyncState((current) =>
+        reduceWarehousePriceSyncState(current, { type: "preview_started" })
+      );
+      try {
+        const snapshot = await syncWarehousePrice(currentStorePrice.uuid, {
+          confirmRetailPrice: false,
+          expectedWarehousePurchasePrice: null,
+          expectedWarehouseRetailPrice: null,
+          expectedStorePurchasePrice: currentStorePrice.purchasePrice ?? null,
+          expectedStoreRetailPrice: currentStorePrice.retailPrice ?? null,
+          expectedDiscountRate: normalizeDiscountRateValue(currentStorePrice.discountRate),
+        });
+
+        let latestDetail = snapshot.storePrice
+          ? replaceStorePriceDetail(targetDetail, snapshot.storePrice)
+          : targetDetail;
+
+        if (snapshot.purchaseUpdated) {
+          // 后端同时更新派生条码价格；重新读取一次，确保主价和条码列表都使用同一新快照。
+          latestDetail =
+            (await loadDetail(targetDetail.productCode, options.storeCodeOverride)) ?? latestDetail;
+          setSnackbarMessage(t("warehousePriceSync.purchaseUpdated"));
+        } else if (snapshot.storePrice) {
+          setDetail(latestDetail);
+          setInitialDetail(cloneDetail(latestDetail));
+        }
+
+        setWarehousePriceSyncState((current) =>
+          reduceWarehousePriceSyncState(current, { type: "preview_succeeded", snapshot })
+        );
+
+        if (snapshot.retailConfirmationRequired) {
+          setWarehousePriceSyncContext({
+            detail: latestDetail,
+            lookupOrigin: options.lookupOrigin,
+            storeCodeOverride: options.storeCodeOverride,
+            scanSource: options.scanSource ?? null,
+            scanKeyword: options.scanKeyword ?? "",
+            autoPrintEnabled: options.autoPrintEnabled === true,
+            alreadyPrinted: false,
+          });
+          playQueryFeedback("price_update_required");
+          return DEFAULT_LOOKUP_FLOW_RESULT;
+        }
+
+        setWarehousePriceSyncContext(null);
+        playQueryFeedback("found");
+        const shouldPrint =
+          options.autoPrintEnabled === true &&
+          shouldAutoPrintWarehousePrice({
+            lookupOrigin: options.lookupOrigin,
+            stage: "preview_succeeded",
+            snapshot,
+            alreadyPrinted: false,
+          });
+        const labelPrinted = shouldPrint
+          ? await smartAutoPrint(options.scanKeyword ?? "", latestDetail)
+          : false;
+
+        return {
+          keepCameraOpen: false,
+          labelPrinted,
+          autoPricingStatus: "no_action",
+        };
+      } catch (error) {
+        const message = getErrorMessage(error, "warehousePriceSync.previewFailed");
+        setWarehousePriceSyncState((current) =>
+          reduceWarehousePriceSyncState(current, { type: "preview_failed", message })
+        );
+        setWarehousePriceSyncContext(null);
+        setSnackbarMessage(message);
+        playQueryFeedback("error");
+        return {
+          keepCameraOpen: false,
+          labelPrinted: false,
+          autoPricingStatus: "failed",
+        };
+      } finally {
+        warehousePriceRequestInFlightRef.current = false;
+      }
+    },
+    [
+      getErrorMessage,
+      loadDetail,
+      maybeHandleAutoPricing,
+      playQueryFeedback,
+      smartAutoPrint,
+      t,
+    ]
+  );
+  processLoadedDetailRef.current = processLoadedDetail;
+
   const handleLookup = useCallback(
     async (
       sourceKeyword?: string,
       trigger: LookupTrigger = "manual",
       scanSource?: ScanSource
     ): Promise<LookupFlowResult> => {
+      if (isProductQueryBusy()) {
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+
       const nextKeyword = (sourceKeyword ?? keyword).trim();
       if (!nextKeyword) {
         setSnackbarMessage(t("messages.keywordRequired"));
@@ -968,6 +1176,8 @@ function ProductQueryContent() {
         setSnackbarMessage(t("messages.storeUnavailable"));
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
+
+      lookupRequestInFlightRef.current = true;
 
       console.log("[product-query] lookup start", {
         keyword: nextKeyword,
@@ -992,6 +1202,7 @@ function ProductQueryContent() {
           setInitialDetail(null);
           setSelectedLookupProductCode(undefined);
           setLookupSelectionSource(null);
+          lookupSelectionOpenRef.current = false;
           setLookupVisible(false);
           setQueryFeedback({ type: "empty", query: nextKeyword });
           setSnackbarMessage(t("messages.notFound"));
@@ -1000,18 +1211,17 @@ function ProductQueryContent() {
         }
 
         if (items.length === 1) {
+          lookupSelectionOpenRef.current = false;
           setLookupVisible(false);
           setLookupSelectionSource(null);
           const nextDetail = await loadDetail(items[0].productCode);
           if (nextDetail) {
-            const autoPricingResult = await maybeHandleAutoPricing(nextDetail, { scanSource });
-            if (autoPricingResult.autoPricingStatus === "no_action") {
-              playQueryFeedback("found");
-              if (trigger === "scan" && continuousPrintEnabled && !autoPricingResult.labelPrinted) {
-                await smartAutoPrint(nextKeyword, nextDetail);
-              }
-            }
-            return autoPricingResult;
+            return processLoadedDetail(nextDetail, {
+              lookupOrigin: trigger,
+              scanSource,
+              scanKeyword: nextKeyword,
+              autoPrintEnabled: trigger === "scan" && continuousPrintEnabled,
+            });
           }
           return DEFAULT_LOOKUP_FLOW_RESULT;
         }
@@ -1019,6 +1229,7 @@ function ProductQueryContent() {
         setSelectedLookupProductCode(items[0].productCode);
         setAutoPrintOnLookupConfirm(trigger === "scan" && continuousPrintEnabled);
         setLookupSelectionSource(scanSource ?? null);
+        lookupSelectionOpenRef.current = true;
         setLookupVisible(true);
         playQueryFeedback("multiple");
         return DEFAULT_LOOKUP_FLOW_RESULT;
@@ -1045,23 +1256,25 @@ function ProductQueryContent() {
         });
         setDetail(null);
         setInitialDetail(null);
+        lookupSelectionOpenRef.current = false;
         setLookupVisible(false);
         setQueryFeedback({ type: "error", query: nextKeyword, message });
         setSnackbarMessage(message);
         playQueryFeedback("error");
         return DEFAULT_LOOKUP_FLOW_RESULT;
       } finally {
+        lookupRequestInFlightRef.current = false;
         setLoading(false);
       }
     },
     [
       continuousPrintEnabled,
+      isProductQueryBusy,
       keyword,
       loadDetail,
-      maybeHandleAutoPricing,
       playQueryFeedback,
+      processLoadedDetail,
       selectedStoreCode,
-      sendProductLabel,
       t,
     ]
   );
@@ -1085,6 +1298,10 @@ function ProductQueryContent() {
     let cancelled = false;
 
     async function applyExternalQuery() {
+      if (isProductQueryBusy()) {
+        return;
+      }
+
       const storeResolution = resolveExternalQueryStore({
         targetStoreCode: storeCodeParam,
         selectedStoreCode,
@@ -1097,7 +1314,7 @@ function ProductQueryContent() {
       }
 
       if (storeResolution.type === "select-store") {
-        await selectStore(storeResolution.store);
+        await handleSelectStore(storeResolution.store);
         return;
       }
 
@@ -1118,13 +1335,23 @@ function ProductQueryContent() {
       setKeyword(nextKeyword);
       try {
         if (productCodeParam) {
-          await loadDetail(productCodeParam);
+          lookupRequestInFlightRef.current = true;
+          setLoading(true);
+          const nextDetail = await loadDetail(productCodeParam);
+          if (nextDetail) {
+            await processLoadedDetail(nextDetail, { lookupOrigin: "deep-link" });
+          }
           return;
         }
-        await handleLookup(nextKeyword, "manual");
+        await handleLookup(nextKeyword, "deep-link");
       } catch (error) {
         setSnackbarMessage(getErrorMessage(error, "messages.lookupFailed"));
         playQueryFeedback("error");
+      } finally {
+        if (productCodeParam) {
+          lookupRequestInFlightRef.current = false;
+          setLoading(false);
+        }
       }
     }
 
@@ -1135,23 +1362,24 @@ function ProductQueryContent() {
     };
   }, [
     handleLookup,
+    handleSelectStore,
     isHydratingSelection,
+    isProductQueryBusy,
     loadDetail,
     playQueryFeedback,
+    processLoadedDetail,
     queryParams.keyword,
     queryParams.productCode,
     queryParams.source,
     queryParams.storeCode,
-    selectStore,
     selectedStoreCode,
     stores,
     storesLoading,
     t,
   ]);
 
-  const cameraScanDisabled =
-    cameraScanMode === "continuous" &&
-    (lookupVisible || Boolean(autoPricingDialog) || autoPricingDialogSaving);
+  const scannerInputBlocked = isProductQueryBusy();
+  const cameraScanDisabled = scannerInputBlocked;
   const cameraScan = useCameraScan({
     disabled: cameraScanDisabled,
     ignoreWhileProcessing: cameraScanMode === "continuous",
@@ -1163,6 +1391,9 @@ function ProductQueryContent() {
     ].join(":"),
     suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
+      if (isProductQueryBusy()) {
+        return;
+      }
       console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
       if (cameraScanMode === "single") {
@@ -1175,12 +1406,45 @@ function ProductQueryContent() {
     },
   });
   const hidScanner = useHidBarcodeScanner({
+    enabled: !scannerInputBlocked,
     onScan: async (barcode) => {
+      if (isProductQueryBusy()) {
+        return;
+      }
       console.log("[product-query] hid barcode scanned", { barcode });
       setKeyword(barcode);
       await handleLookup(barcode, "scan", "hid");
     },
   });
+  const pauseHiddenScannerFocus = useCallback(() => {
+    searchInputFocusedRef.current = true;
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+      resumeHiddenScannerFocusTimerRef.current = null;
+    }
+    hidScanner.pauseHiddenInputFocus();
+  }, [hidScanner.pauseHiddenInputFocus]);
+  const resumeHiddenScannerFocusLater = useCallback(() => {
+    searchInputFocusedRef.current = false;
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+    }
+    // 延迟恢复隐藏扫码输入框，避免搜索框失焦时两个输入框立刻互相抢焦点。
+    resumeHiddenScannerFocusTimerRef.current = setTimeout(() => {
+      resumeHiddenScannerFocusTimerRef.current = null;
+      // 若搜索框已再次聚焦，保留用户当前输入焦点，不恢复隐藏扫码输入框。
+      if (!searchInputFocusedRef.current) {
+        hidScanner.resumeHiddenInputFocus();
+      }
+    }, 250);
+  }, [hidScanner.resumeHiddenInputFocus]);
+
+  useEffect(() => () => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+      resumeHiddenScannerFocusTimerRef.current = null;
+    }
+  }, []);
 
   const shouldRestoreCameraScan = useCallback(
     (source?: ScanSource | null) => source === "camera" && cameraScanMode === "continuous",
@@ -1204,20 +1468,24 @@ function ProductQueryContent() {
 
   useFocusEffect(
     useCallback(() => {
-      if (hidScanner.focusHiddenInput) {
+      if (!isProductQueryBusy() && hidScanner.focusHiddenInput) {
         hidScanner.focusHiddenInput();
       }
-    }, [hidScanner.focusHiddenInput])
+    }, [hidScanner.focusHiddenInput, isProductQueryBusy])
   );
 
   const dirtyCount = useMemo(() => (isStorePriceDirty(detail, initialDetail) ? 1 : 0), [detail, initialDetail]);
 
   const handleRefresh = useCallback(async () => {
+    if (isProductQueryBusy()) {
+      return;
+    }
+
     if (!detail?.productCode) {
       if (keyword.trim()) {
         setRefreshing(true);
         try {
-          await handleLookup(keyword);
+          await handleLookup(keyword, "refresh");
         } finally {
           setRefreshing(false);
         }
@@ -1226,16 +1494,33 @@ function ProductQueryContent() {
     }
 
     setRefreshing(true);
+    lookupRequestInFlightRef.current = true;
     try {
-      await loadDetail(detail.productCode);
+      const nextDetail = await loadDetail(detail.productCode);
+      if (nextDetail) {
+        await processLoadedDetail(nextDetail, { lookupOrigin: "refresh" });
+      }
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
     } finally {
+      lookupRequestInFlightRef.current = false;
       setRefreshing(false);
     }
-  }, [detail?.productCode, handleLookup, keyword, loadDetail, t]);
+  }, [
+    detail?.productCode,
+    handleLookup,
+    isProductQueryBusy,
+    keyword,
+    loadDetail,
+    processLoadedDetail,
+  ]);
 
   const handleClear = useCallback(() => {
+    const wasLookupSelectionOpen = lookupSelectionOpenRef.current;
+    lookupSelectionOpenRef.current = false;
+    if (!wasLookupSelectionOpen && isProductQueryBusy()) {
+      return;
+    }
     setKeyword("");
     setLookupItems([]);
     setSelectedLookupProductCode(undefined);
@@ -1245,26 +1530,36 @@ function ProductQueryContent() {
     setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
-  }, []);
+    setWarehousePriceSyncContext(null);
+    setWarehousePriceSyncState(createWarehousePriceSyncState());
+  }, [isProductQueryBusy]);
 
   const handleConfirmLookup = useCallback(async () => {
-    if (!selectedLookupProductCode) {
+    if (
+      !selectedLookupProductCode ||
+      !lookupSelectionOpenRef.current ||
+      lookupRequestInFlightRef.current ||
+      storeSelectionInFlightRef.current ||
+      warehousePriceRequestInFlightRef.current ||
+      warehousePriceInteractionLocked ||
+      autoPricingDialogSaving
+    ) {
       return;
     }
 
+    lookupSelectionOpenRef.current = false;
+    lookupRequestInFlightRef.current = true;
+    setLoading(true);
     setLookupVisible(false);
     try {
       const nextDetail = await loadDetail(selectedLookupProductCode);
       if (nextDetail) {
-        const autoPricingResult = await maybeHandleAutoPricing(nextDetail, {
+        await processLoadedDetail(nextDetail, {
+          lookupOrigin: lookupSelectionSource ? "scan" : "manual",
           scanSource: lookupSelectionSource,
+          scanKeyword: keyword,
+          autoPrintEnabled: autoPrintOnLookupConfirm,
         });
-        if (autoPricingResult.autoPricingStatus === "no_action") {
-          playQueryFeedback("found");
-          if (autoPrintOnLookupConfirm && !autoPricingResult.labelPrinted) {
-            await smartAutoPrint(keyword, nextDetail);
-          }
-        }
       }
     } catch (error) {
       const message = getErrorMessage(error, "messages.lookupFailed");
@@ -1274,19 +1569,187 @@ function ProductQueryContent() {
       setSnackbarMessage(message);
       playQueryFeedback("error");
     } finally {
+      lookupSelectionOpenRef.current = false;
+      lookupRequestInFlightRef.current = false;
+      setLoading(false);
       setAutoPrintOnLookupConfirm(false);
       setLookupSelectionSource(null);
     }
   }, [
     autoPrintOnLookupConfirm,
+    autoPricingDialogSaving,
     keyword,
     loadDetail,
     lookupSelectionSource,
-    maybeHandleAutoPricing,
     playQueryFeedback,
+    processLoadedDetail,
     selectedLookupProductCode,
-    sendProductLabel,
     t,
+    warehousePriceInteractionLocked,
+  ]);
+
+  const handleCancelWarehousePriceSync = useCallback(() => {
+    if (warehousePriceSyncState.phase === "confirming") {
+      return;
+    }
+
+    const scanSource = warehousePriceSyncContext?.scanSource;
+    setWarehousePriceSyncState((current) =>
+      reduceWarehousePriceSyncState(current, { type: "cancelled" })
+    );
+    setWarehousePriceSyncContext(null);
+    // 取消只放弃零售价更新；首轮已同步的进货价继续保留。
+    restoreScanAbility(scanSource);
+  }, [restoreScanAbility, warehousePriceSyncContext?.scanSource, warehousePriceSyncState.phase]);
+
+  const handleConfirmWarehousePriceSync = useCallback(async () => {
+    const snapshot = warehousePriceSyncState.snapshot;
+    const context = warehousePriceSyncContext;
+    const storePriceUuid = snapshot?.storePrice?.uuid || context?.detail.storePrice?.uuid;
+    if (
+      !snapshot ||
+      !context ||
+      !storePriceUuid ||
+      warehousePriceRequestInFlightRef.current
+    ) {
+      return;
+    }
+    warehousePriceRequestInFlightRef.current = true;
+
+    setWarehousePriceSyncState((current) =>
+      reduceWarehousePriceSyncState(current, { type: "confirm_started" })
+    );
+    try {
+      const confirmed = await syncWarehousePrice(
+        storePriceUuid,
+        buildWarehousePriceSyncRequest(snapshot, true)
+      );
+      let latestDetail = confirmed.storePrice
+        ? replaceStorePriceDetail(context.detail, confirmed.storePrice)
+        : context.detail;
+
+      // 零售价确认会同步派生条码，成功后统一读取最终详情再决定打印。
+      latestDetail =
+        (await loadDetail(context.detail.productCode, context.storeCodeOverride)) ?? latestDetail;
+      const shouldPrint =
+        context.autoPrintEnabled &&
+        shouldAutoPrintWarehousePrice({
+          lookupOrigin: context.lookupOrigin,
+          stage: "confirmation_succeeded",
+          snapshot: confirmed,
+          alreadyPrinted: context.alreadyPrinted,
+        });
+      const labelPrinted = shouldPrint
+        ? await smartAutoPrint(context.scanKeyword, latestDetail)
+        : false;
+
+      setWarehousePriceSyncState((current) =>
+        reduceWarehousePriceSyncState(current, { type: "confirm_succeeded", snapshot: confirmed })
+      );
+      setWarehousePriceSyncContext(null);
+      const feedback = resolveWarehousePriceConfirmationFeedback({
+        retailUpdated: confirmed.retailUpdated,
+        printAttempted: shouldPrint,
+        labelPrinted,
+      });
+      if (feedback === "retail_updated_print_failed") {
+        setSnackbarMessage(t("warehousePriceSync.retailUpdatedPrintFailed"));
+      } else if (feedback === "retail_updated") {
+        setSnackbarMessage(t("warehousePriceSync.retailUpdated"));
+      }
+      restoreScanAbility(context.scanSource);
+    } catch (error) {
+      let latestSnapshot = extractWarehousePriceSyncConflict(error);
+      if (latestSnapshot) {
+        let latestDetail = latestSnapshot.storePrice
+          ? replaceStorePriceDetail(context.detail, latestSnapshot.storePrice)
+          : context.detail;
+
+        const snapshotComplete = isWarehousePriceConflictSnapshotComplete(latestSnapshot);
+        if (!snapshotComplete) {
+          const latestStorePrice = latestSnapshot.storePrice ?? latestDetail.storePrice;
+          if (latestStorePrice?.uuid) {
+            // 冲突响应缺字段时仅重新取一次预览，避免用户基于旧值确认。
+            try {
+              latestSnapshot = await syncWarehousePrice(latestStorePrice.uuid, {
+                confirmRetailPrice: false,
+                expectedWarehousePurchasePrice: null,
+                expectedWarehouseRetailPrice: null,
+                expectedStorePurchasePrice: latestStorePrice.purchasePrice ?? null,
+                expectedStoreRetailPrice: latestStorePrice.retailPrice ?? null,
+                expectedDiscountRate: normalizeDiscountRateValue(latestStorePrice.discountRate),
+              });
+              latestDetail = latestSnapshot.storePrice
+                ? replaceStorePriceDetail(latestDetail, latestSnapshot.storePrice)
+                : latestDetail;
+            } catch (refreshError) {
+              const message = getErrorMessage(refreshError, "warehousePriceSync.confirmFailed");
+              setWarehousePriceSyncState((current) =>
+                reduceWarehousePriceSyncState(current, { type: "confirm_failed", message })
+              );
+              return;
+            }
+          } else {
+            const message = t("warehousePriceSync.confirmFailed");
+            setWarehousePriceSyncState((current) =>
+              reduceWarehousePriceSyncState(current, { type: "confirm_failed", message })
+            );
+            return;
+          }
+        }
+
+        setDetail(latestDetail);
+        setInitialDetail(cloneDetail(latestDetail));
+        if (!latestSnapshot.retailConfirmationRequired) {
+          const shouldPrint =
+            context.autoPrintEnabled &&
+            shouldAutoPrintWarehousePrice({
+              lookupOrigin: context.lookupOrigin,
+              stage: "preview_succeeded",
+              snapshot: latestSnapshot,
+              alreadyPrinted: context.alreadyPrinted,
+            });
+          if (shouldPrint) {
+            await smartAutoPrint(context.scanKeyword, latestDetail);
+          }
+          setWarehousePriceSyncState((current) =>
+            reduceWarehousePriceSyncState(current, {
+              type: "confirm_succeeded",
+              snapshot: latestSnapshot!,
+            })
+          );
+          setWarehousePriceSyncContext(null);
+          restoreScanAbility(context.scanSource);
+          return;
+        }
+
+        const message = t("warehousePriceSync.conflict");
+        setWarehousePriceSyncContext({ ...context, detail: latestDetail });
+        setWarehousePriceSyncState((current) =>
+          reduceWarehousePriceSyncState(current, {
+            type: "conflict_received",
+            snapshot: latestSnapshot!,
+            message,
+          })
+        );
+        return;
+      }
+
+      const message = getErrorMessage(error, "warehousePriceSync.confirmFailed");
+      setWarehousePriceSyncState((current) =>
+        reduceWarehousePriceSyncState(current, { type: "confirm_failed", message })
+      );
+    } finally {
+      warehousePriceRequestInFlightRef.current = false;
+    }
+  }, [
+    getErrorMessage,
+    loadDetail,
+    restoreScanAbility,
+    smartAutoPrint,
+    t,
+    warehousePriceSyncContext,
+    warehousePriceSyncState.snapshot,
   ]);
 
   const handleChangeStorePrice = useCallback((patch: Partial<NonNullable<ProductDetail["storePrice"]>>) => {
@@ -1952,8 +2415,15 @@ function ProductQueryContent() {
       <QueryHeader
         storeName={selectedStore?.storeName}
         canSelectStore={canSelectStore}
-        onStorePress={() => setStorePickerVisible(true)}
+        onStorePress={() => {
+          if (!isProductQueryBusy()) {
+            setStorePickerVisible(true);
+          }
+        }}
         onScanPress={() => {
+          if (isProductQueryBusy()) {
+            return;
+          }
           if (cameraScanMode === "single") {
             setCameraVisible(true);
           }
@@ -1964,9 +2434,11 @@ function ProductQueryContent() {
 
       <SearchPanel
         value={keyword}
-        loading={loading || storesLoading}
+        loading={loading || storesLoading || scannerInputBlocked}
         lastHitLabel={detail ? undefined : lastHitLabel}
         onChangeText={setKeyword}
+        onFocus={pauseHiddenScannerFocus}
+        onBlur={resumeHiddenScannerFocusLater}
         onOpenPrintSettings={() => setPrintSettingsVisible(true)}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
@@ -1982,7 +2454,10 @@ function ProductQueryContent() {
         </View>
       ) : null}
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        pointerEvents={scannerInputBlocked ? "none" : "auto"}
+      >
         {access.canCreateStoreProducts ? (
           <View style={styles.createProductBar}>
             <Button icon="plus" mode="contained-tonal" onPress={openCreateProductModal}>
@@ -2139,7 +2614,7 @@ function ProductQueryContent() {
       </ScrollView>
 
       <StickyActionBar
-        visible={dirtyCount > 0}
+        visible={dirtyCount > 0 && !scannerInputBlocked}
         dirtyCount={dirtyCount}
         saving={saving}
         onReset={handleReset}
@@ -2152,8 +2627,25 @@ function ProductQueryContent() {
         items={lookupItems}
         selectedValue={selectedLookupProductCode}
         onSelect={setSelectedLookupProductCode}
-        onClose={() => setLookupVisible(false)}
+        onClose={() => {
+          lookupSelectionOpenRef.current = false;
+          setLookupVisible(false);
+        }}
         onConfirm={() => void handleConfirmLookup()}
+      />
+
+      <WarehousePriceSyncModal
+        visible={warehousePriceSyncState.phase === "confirmation" || warehousePriceSyncState.phase === "confirming"}
+        productName={warehousePriceSyncContext?.detail.productName}
+        productCode={
+          warehousePriceSyncContext?.detail.itemNumber ||
+          warehousePriceSyncContext?.detail.productCode
+        }
+        snapshot={warehousePriceSyncState.snapshot}
+        loading={warehousePriceSyncState.phase === "confirming"}
+        errorMessage={warehousePriceSyncState.errorMessage}
+        onCancel={handleCancelWarehousePriceSync}
+        onConfirm={() => void handleConfirmWarehousePriceSync()}
       />
 
       <Portal>
