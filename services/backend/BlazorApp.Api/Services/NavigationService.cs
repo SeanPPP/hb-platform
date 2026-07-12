@@ -139,6 +139,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/promotions",            TitleKey = "menu.promotions",             Icon = "GiftOutlined",               Permission = Permissions.Promotions.View },
                     new() { Path = "/pos-admin/advertisements",        TitleKey = "menu.advertisements",         Icon = "PictureOutlined",            Permission = Permissions.Advertisements.View },
                     new() { Path = "/pos-admin/cash-register-users",   TitleKey = "menu.cashRegisterUsers",      Icon = "UserOutlined",               Permission = Permissions.Store.ManageOperations },
+                    new() { Path = "/pos-admin/operation-logs",       TitleKey = "menu.operationLogs",          Icon = "FileTextOutlined",           Permission = Permissions.PosTerminal.Audit.View },
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
@@ -492,7 +493,8 @@ namespace BlazorApp.Api.Services
                 Permissions.Reports.ProductMovementView,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
-                Permissions.System.ManageAppDownloads
+                Permissions.System.ManageAppDownloads,
+                Permissions.PosTerminal.Audit.View
             );
         }
 
@@ -569,7 +571,7 @@ namespace BlazorApp.Api.Services
         {
             return new NavigationPermissionContext
             {
-                IsAdmin = user.IsInRole("Admin") || user.IsInRole("管理员"),
+                IsAdmin = Permissions.SuperAdminRoleNames.Any(user.IsInRole),
                 RoleNames = new HashSet<string>(
                     user.Claims
                         .Where(claim =>

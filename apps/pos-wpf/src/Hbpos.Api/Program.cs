@@ -45,6 +45,9 @@ using (var scope = app.Services.CreateScope())
 
     if (HasConnectionString(app.Configuration, "PosmConnection", "HBPOSMConnection"))
     {
+        var operationAuditSchemaInitializer = scope.ServiceProvider.GetRequiredService<IOperationAuditSchemaInitializer>();
+        await operationAuditSchemaInitializer.InitializeAsync();
+
         var deviceRuntimeStatusSchemaInitializer = scope.ServiceProvider.GetRequiredService<IDeviceRuntimeStatusSchemaInitializer>();
         await deviceRuntimeStatusSchemaInitializer.InitializeAsync();
 

@@ -165,6 +165,33 @@ assertEqual(
   'System.ViewLogs should unlock center log page visibility',
 )
 
+for (const roleName of ['SuperAdmin', '超级管理员']) {
+  const superAdminAccess = buildAccess(
+    createCurrentUser({
+      roleNames: [roleName],
+      permissions: [],
+    }),
+  )
+  assertEqual(superAdminAccess.isAdmin, true, `${roleName} should use the global admin access path`)
+  assertEqual(
+    superAdminAccess.canViewOperationAudits,
+    true,
+    `${roleName} should see employee operation audits without an explicit permission row`,
+  )
+}
+
+const operationAuditAccess = buildAccess(
+  createCurrentUser({
+    permissions: ['Permissions.PosTerminal.Audit.View'],
+  }),
+)
+
+assertEqual(
+  (operationAuditAccess as unknown as Record<string, unknown>).canViewOperationAudits,
+  true,
+  'PosTerminal.Audit.View should unlock employee operation audit visibility',
+)
+
 const appDownloadAccess = buildAccess(
   createCurrentUser({
     permissions: [P.System.ViewAppDownloads],

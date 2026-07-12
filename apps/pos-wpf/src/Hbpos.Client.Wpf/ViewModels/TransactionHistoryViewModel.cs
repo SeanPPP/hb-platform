@@ -64,6 +64,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
 
@@ -116,17 +117,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
     {
     }
 
@@ -143,8 +144,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
-        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, initialize: true)
+        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null,
+        IOperationAuditLogger? operationAuditLogger = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, initialize: true)
     {
     }
 
@@ -162,6 +164,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         bool enforcePermissionsWhenNoCashier,
         IInstallmentOrderService? installmentOrderService,
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync,
+        IOperationAuditLogger? operationAuditLogger,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -176,6 +179,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuditLogger = operationAuditLogger;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -665,9 +669,22 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        var recallCompleted = false;
         try
         {
-            await _suspendedOrderService.RecallOrderAsync(order!.OrderGuid);
+            var recalledOrder = await _suspendedOrderService.RecallOrderAsync(order!.OrderGuid);
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                OperationAuditTypes.OrderRecall,
+                Session,
+                new OperationAuditCartSnapshot(0m, 0m, 0m, []),
+                OperationAuditEvents.CaptureSuspendedOrder(recalledOrder),
+                reasonCode: "SUSPENDED_ORDER",
+                orderGuid: order.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            recallCompleted = true;
             if (_onSuspendedOrderRecalledAsync is not null)
             {
                 await _onSuspendedOrderRecalledAsync();
@@ -677,6 +694,25 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
         catch (Exception ex)
         {
+            if (!recallCompleted)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.OrderRecall,
+                    "Failed",
+                    Session,
+                    reasonCode: "SUSPENDED_ORDER",
+                    safeMessage: ex.GetType().Name,
+                    orderGuid: order?.OrderGuid.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"order recall failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             StatusMessage = ex.Message;
         }
     }
@@ -798,6 +834,24 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             _cashierSessionContext.RequirePermission(permissionCode, out var message))
         {
             return true;
+        }
+
+        var operationType = permissionCode switch
+        {
+            Permissions.PosTerminal.History.Recall => OperationAuditTypes.OrderRecall,
+            Permissions.PosTerminal.History.Reprint => OperationAuditTypes.ReceiptReprint,
+            _ => null
+        };
+        if (operationType is not null)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Denied",
+                Session,
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message,
+                orderGuid: SelectedOrder?.OrderGuid.ToString("D"));
         }
 
         StatusMessage = message;

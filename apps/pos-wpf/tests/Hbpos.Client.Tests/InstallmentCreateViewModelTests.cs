@@ -1,3 +1,4 @@
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -96,6 +97,7 @@ public sealed class InstallmentCreateViewModelTests
     [Fact]
     public async Task SubmitCommand_requires_voucher_reference_and_token_then_submits_request()
     {
+        var auditLogger = new RecordingOperationAuditLogger();
         var service = new FakeInstallmentOrderService();
         InstallmentOrderSummary? createdOrder = null;
         var viewModel = new InstallmentCreateViewModel(
@@ -106,7 +108,8 @@ public sealed class InstallmentCreateViewModelTests
                 createdOrder = order;
                 return Task.CompletedTask;
             },
-            () => { });
+            () => { },
+            operationAuditLogger: auditLogger);
 
         viewModel.Prepare(CreateSession(), CreateCartSnapshot());
         viewModel.CustomerName = "张三";
@@ -129,6 +132,13 @@ public sealed class InstallmentCreateViewModelTests
         Assert.Equal("LOCK-001", service.LastCreateRequest.DownPayment.ReservationToken);
         Assert.NotNull(createdOrder);
         Assert.Equal("Installment order created.", viewModel.StatusMessage);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("SALE_COMPLETE", auditEvent.OperationType);
+        Assert.Equal("Installment+Voucher", auditEvent.PaymentMethod);
+        Assert.Equal(30m, auditEvent.PaymentAmount);
+        Assert.Equal(120m, auditEvent.BeforeActual);
+        Assert.Equal(0m, auditEvent.AfterActual);
+        Assert.Equal(-120m, auditEvent.AmountDelta);
     }
 
     [Fact]
@@ -169,6 +179,16 @@ public sealed class InstallmentCreateViewModelTests
             [
                 new PosCartLineServiceSnapshot("SKU-001", null, "Premium Rice Cooker", "690001", "ITEM-001", 1m, totalAmount, discountAmount, actualAmount)
             ]);
+    }
+
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
+        }
     }
 
     private sealed class FakeInstallmentOrderService : IInstallmentOrderService

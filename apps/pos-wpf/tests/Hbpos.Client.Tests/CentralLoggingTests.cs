@@ -1,9 +1,14 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
+using System.Reflection;
+using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Orders;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Hbpos.Client.Tests;
 
@@ -28,9 +33,9 @@ public sealed class CentralLoggingTests
                 ["CentralLogging:Environment"] = "staging",
                 ["CentralLogging:SourceType"] = "POS",
                 ["CentralLogging:ServiceName"] = "Hbpos.Client.Wpf",
+                ["CentralLogging:IngestUrl"] = "https://logs.example.com/api/system/logs/ingest",
                 ["CentralLogging:BatchSize"] = "12",
-                ["CentralLogging:QueueCapacity"] = "80",
-                ["CentralLogging:LocalBufferPath"] = "C:\\temp\\hbpos-center-buffer.jsonl"
+                ["CentralLogging:QueueCapacity"] = "80"
             })
             .AddEnvironmentVariables()
             .Build();
@@ -47,8 +52,80 @@ public sealed class CentralLoggingTests
         Assert.Equal("Hbpos.Client.Wpf", options.ServiceName);
         Assert.Equal(12, options.BatchSize);
         Assert.Equal(25, options.QueueCapacity);
-        Assert.Equal("C:\\temp\\hbpos-center-buffer.jsonl", options.LocalBufferPath);
-        Assert.Equal(new Uri("https://pos-api.example.com/api/system/logs/ingest"), options.IngestUri);
+        Assert.Equal(new Uri("https://logs.example.com/api/system/logs/ingest"), options.IngestUri);
+        Assert.True(options.IsConfigured);
+    }
+
+    [Theory]
+    [InlineData("/api/system/logs/ingest")]
+    [InlineData("file:///C:/temp/logs.json")]
+    public void ApplicationLogOptions_rejects_non_http_ingest_url(string ingestUrl)
+    {
+        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["HBPOS_LOG_CENTER_INGEST_URL"] = null,
+            ["HBPOS_LOG_CENTER_API_KEY"] = null,
+            ["HBPOS_LOG_CENTER_ENABLED"] = null
+        });
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CentralLogging:Enabled"] = "true",
+                ["CentralLogging:ApiKey"] = "configured-key",
+                ["CentralLogging:IngestUrl"] = ingestUrl
+            })
+            .Build();
+
+        var options = ApplicationLogOptions.FromConfiguration(
+            configuration,
+            new Uri("https://pos-api.example.com/"));
+
+        Assert.Null(options.IngestUri);
+        Assert.False(options.IsConfigured);
+    }
+
+    [Fact]
+    public void ApplicationLogOptions_requires_explicit_enabled_true_even_when_key_and_url_exist()
+    {
+        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["HBPOS_LOG_CENTER_ENABLED"] = null,
+            ["HBPOS_LOG_CENTER_API_KEY"] = null,
+            ["HBPOS_LOG_CENTER_INGEST_URL"] = null
+        });
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CentralLogging:ApiKey"] = "configured-key",
+                ["CentralLogging:IngestUrl"] = "https://logs.example.com/api/system/logs/ingest"
+            })
+            .Build();
+
+        var options = ApplicationLogOptions.FromConfiguration(configuration, new Uri("https://pos-api.example.com/"));
+
+        Assert.False(options.Enabled);
+        Assert.False(options.IsConfigured);
+    }
+
+    [Fact]
+    public void OperationAuditUploadOptions_defaults_enabled_and_allows_environment_override()
+    {
+        var defaultOptions = OperationAuditUploadOptions.FromConfiguration(new ConfigurationBuilder().Build());
+        Assert.True(defaultOptions.Enabled);
+
+        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "false"
+        });
+        var overridden = OperationAuditUploadOptions.FromConfiguration(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["OperationAuditLogging:Enabled"] = "true"
+                })
+                .Build());
+
+        Assert.False(overridden.Enabled);
     }
 
     [Fact]
@@ -79,6 +156,68 @@ public sealed class CentralLoggingTests
             ConsoleLog.ConfigureCenterSink(null);
             ConsoleLog.ConfigureCenterDefaults(ApplicationLogDefaults.Default);
         }
+    }
+
+    [Fact]
+    public void Service_registration_uses_one_writer_for_runtime_and_operation_logging()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+        var writer = provider.GetRequiredService<ClientLogOutboxWriter>();
+
+        Assert.Same(writer, provider.GetRequiredService<IApplicationLogSink>());
+        Assert.Same(writer, provider.GetRequiredService<IOperationAuditLogger>());
+        Assert.Contains(writer, provider.GetServices<IHostedService>());
+        Assert.Contains(provider.GetServices<IHostedService>(), service => service is ApplicationLogUploadService);
+        Assert.Contains(provider.GetServices<IHostedService>(), service => service is OperationAuditUploadService);
+        Assert.StartsWith(Path.GetTempPath(), provider.GetRequiredService<ClientLogOutboxStore>().DatabasePath, StringComparison.OrdinalIgnoreCase);
+        var field = typeof(MainViewModel).GetField("_operationAuditLogger", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.Same(writer, field!.GetValue(provider.GetRequiredService<MainViewModel>()));
+        var authorizationField = typeof(OperationAuditUploadService)
+            .GetField("_authorizationState", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.Same(
+            provider.GetRequiredService<DeviceAuthorizationState>(),
+            authorizationField!.GetValue(provider.GetRequiredService<OperationAuditUploadService>()));
+    }
+
+    [Fact]
+    public void Hosted_service_registration_places_writer_last_so_host_stops_it_before_uploaders()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+        var hostedServices = provider.GetServices<IHostedService>().ToArray();
+
+        Assert.Collection(
+            hostedServices,
+            service => Assert.IsType<ApplicationLogUploadService>(service),
+            service => Assert.IsType<OperationAuditUploadService>(service),
+            service => Assert.IsType<ClientLogOutboxWriter>(service));
+    }
+
+    [Fact]
+    public void Service_registration_uses_expected_persistent_log_database_and_operation_upload_switch()
+    {
+        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["HBPOS_OPERATION_AUDIT_UPLOAD_ENABLED"] = "false"
+        });
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: false, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Hbpos.Client",
+                "hbpos_logs.db"),
+            provider.GetRequiredService<ClientLogOutboxStore>().DatabasePath);
+        Assert.False(provider.GetRequiredService<OperationAuditUploadOptions>().Enabled);
+        Assert.NotNull(provider.GetRequiredService<IOperationAuditLogger>());
     }
 
     [Fact]

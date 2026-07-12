@@ -112,7 +112,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _delayAsync = delayAsync ?? Task.Delay;
         _thumbnailPreloadAsync = thumbnailPreloadAsync ?? ProductThumbnailImageSourceConverter.PreloadAsync;
 
-        BackCommand = new RelayCommand(_onBack);
+        BackCommand = new RelayCommand(Back);
         SearchCommand = new RelayCommand(SearchCatalog);
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(SearchText));
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
@@ -495,7 +495,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         {
             var result = _workflowService.AddToCart(item);
             SetStatus("specialProducts.status.addedToCart", item.DisplayName);
-            _onBack();
+            Back();
             _onCartLineAdded?.Invoke(result.Line);
             stopwatch.Stop();
             Log($"operation=add-to-cart store={Session.StoreCode} productCode={item.ProductCode} lookupCode={item.LookupCode} success=true revealRequested={_onCartLineAdded is not null} cartLines={result.CartLineCount} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
@@ -983,6 +983,15 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _thumbnailEnableCts?.Dispose();
         _thumbnailEnableCts = null;
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    private void Back()
+    {
+        // 返回 POS 前停止仍在等待服务端的特殊商品请求，避免页面缓存后长期保持忙碌。
+        DownloadCommand.Cancel();
+        AddSpecialProductCommand.Cancel();
+        RemoveSpecialProductCommand.Cancel();
+        _onBack();
     }
 
     private void ApplyDownloadProgress(SpecialProductDownloadProgress progress)

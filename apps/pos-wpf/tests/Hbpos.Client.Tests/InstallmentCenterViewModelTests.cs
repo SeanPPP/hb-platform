@@ -1,3 +1,4 @@
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -7,6 +8,7 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(GlobalLoggingTestCollection.Name)]
 public sealed class InstallmentCenterViewModelTests
 {
     [Fact]
@@ -96,6 +98,7 @@ public sealed class InstallmentCenterViewModelTests
     [Fact]
     public async Task AddRepaymentCommand_requires_voucher_inputs_and_invokes_service()
     {
+        var auditLogger = new RecordingOperationAuditLogger();
         var targetOrder = CreateOrder("IO-001", "张三", "0400111222", "待补款", canAddRepayment: true, canCancelWithRefund: true, canVoidCancel: true);
         var service = new FakeInstallmentOrderService
         {
@@ -106,7 +109,8 @@ public sealed class InstallmentCenterViewModelTests
             service,
             CreateSession(),
             _ => Task.CompletedTask,
-            () => { });
+            () => { },
+            operationAuditLogger: auditLogger);
 
         await viewModel.LoadAsync();
         viewModel.RepaymentAmount = 40m;
@@ -138,6 +142,10 @@ public sealed class InstallmentCenterViewModelTests
         Assert.Equal("VIP001", service.LastRepaymentRequest.Payment.Reference);
         Assert.Equal("LOCK-001", service.LastRepaymentRequest.Payment.ReservationToken);
         Assert.Equal("补款完成", viewModel.StatusMessage);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("INSTALLMENT_REPAYMENT_COMPLETE", auditEvent.OperationType);
+        Assert.Equal("Voucher", auditEvent.PaymentMethod);
+        Assert.Equal(40m, auditEvent.PaymentAmount);
     }
 
     [Fact]
@@ -197,8 +205,80 @@ public sealed class InstallmentCenterViewModelTests
     }
 
     [Fact]
+    public async Task AddRepaymentCommand_records_denied_when_card_authorization_is_rejected()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var targetOrder = CreateOrder("IO-CARD-DENIED", "张三", "0400111222", "待补款", canAddRepayment: true);
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder] };
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { },
+            cardTerminalClient: new StubCardTerminalClient(new PaymentAuthorizationResult(false, Message: "Card declined")),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.LoadAsync();
+        viewModel.RepaymentAmount = 40m;
+        viewModel.RepaymentMethod = PaymentMethodKind.Card;
+        await viewModel.AddRepaymentCommand.ExecuteAsync(null);
+
+        Assert.Null(service.LastRepaymentRequest);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("INSTALLMENT_REPAYMENT_COMPLETE", auditEvent.OperationType);
+        Assert.Equal("Denied", auditEvent.Outcome);
+        Assert.Equal("CARD_NOT_AUTHORIZED", auditEvent.ReasonCode);
+        Assert.Equal("Card", auditEvent.PaymentMethod);
+        Assert.Equal(40m, auditEvent.PaymentAmount);
+        Assert.Equal(targetOrder.OrderId.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal("Card declined", auditEvent.SafeMessage);
+    }
+
+    [Fact]
+    public async Task AddRepaymentCommand_records_failed_and_shared_trace_when_card_authorization_throws()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var systemLog = new RecordingApplicationLogSink();
+        var targetOrder = CreateOrder("IO-CARD-ERROR", "张三", "0400111222", "待补款", canAddRepayment: true);
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder] };
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { },
+            cardTerminalClient: new StubCardTerminalClient(authorizeException: new InvalidOperationException("terminal unavailable")),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.LoadAsync();
+        viewModel.RepaymentAmount = 40m;
+        viewModel.RepaymentMethod = PaymentMethodKind.Card;
+
+        ConsoleLog.ConfigureCenterSink(systemLog);
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => viewModel.AddRepaymentCommand.ExecuteAsync(null));
+        }
+        finally
+        {
+            ConsoleLog.ConfigureCenterSink(null);
+        }
+
+        Assert.Null(service.LastRepaymentRequest);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("INSTALLMENT_REPAYMENT_COMPLETE", auditEvent.OperationType);
+        Assert.Equal("Failed", auditEvent.Outcome);
+        Assert.Equal("CARD_AUTHORIZATION_EXCEPTION", auditEvent.ReasonCode);
+        Assert.False(string.IsNullOrWhiteSpace(auditEvent.TraceId));
+        Assert.False(string.IsNullOrWhiteSpace(auditEvent.CorrelationId));
+        var systemEvent = Assert.Single(systemLog.Entries, entry => entry.Category == "InstallmentAudit");
+        Assert.Equal(auditEvent.TraceId, systemEvent.TraceId);
+    }
+
+    [Fact]
     public async Task Cancel_refund_and_void_commands_follow_button_state_and_invoke_service()
     {
+        var auditLogger = new RecordingOperationAuditLogger();
         var targetOrder = CreateOrder("IO-001", "张三", "0400111222", "待补款", canAddRepayment: true, canCancelWithRefund: true, canVoidCancel: true);
         var service = new FakeInstallmentOrderService
         {
@@ -210,7 +290,8 @@ public sealed class InstallmentCenterViewModelTests
             service,
             CreateSession(),
             _ => Task.CompletedTask,
-            () => { });
+            () => { },
+            operationAuditLogger: auditLogger);
 
         await viewModel.LoadAsync();
 
@@ -223,6 +304,12 @@ public sealed class InstallmentCenterViewModelTests
 
         Assert.Equal(targetOrder.OrderId, service.LastCancelOrderId);
         Assert.Equal(targetOrder.OrderId, service.LastVoidOrderId);
+        Assert.Equal(
+            ["INSTALLMENT_REPAYMENT_CANCEL", "INSTALLMENT_REPAYMENT_CANCEL"],
+            auditLogger.Events.Select(auditEvent => auditEvent.OperationType));
+        Assert.Equal(
+            ["CANCEL_WITH_REFUND", "VOID"],
+            auditLogger.Events.Select(auditEvent => auditEvent.ReasonCode));
         Assert.Equal("客户改主意", service.LastVoidReason);
     }
 
@@ -403,6 +490,16 @@ public sealed class InstallmentCenterViewModelTests
         }
     }
 
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
+        }
+    }
+
     private sealed class ApprovedCardTerminalClient(
         string reference,
         IReadOnlyList<CardTransactionDto>? cardTransactions = null) : ICardTerminalClient
@@ -422,6 +519,43 @@ public sealed class InstallmentCenterViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new PaymentAuthorizationResult(true, $"REFUND:{originalReference}", AuthorizedAmount: amount));
+        }
+    }
+
+    private sealed class StubCardTerminalClient(
+        PaymentAuthorizationResult? authorization = null,
+        Exception? authorizeException = null) : ICardTerminalClient
+    {
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            if (authorizeException is not null)
+            {
+                return Task.FromException<PaymentAuthorizationResult>(authorizeException);
+            }
+
+            return Task.FromResult(authorization ?? new PaymentAuthorizationResult(true, "CARD-OK", AuthorizedAmount: amount));
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingApplicationLogSink : IApplicationLogSink
+    {
+        public List<ApplicationLogEntry> Entries { get; } = [];
+
+        public void Enqueue(ApplicationLogEntry entry)
+        {
+            Entries.Add(entry);
         }
     }
 }

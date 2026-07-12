@@ -979,6 +979,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void ReturnToPos()
     {
+        // 离开设置页时取消目录维护请求，给无限 HTTP 超时提供真实的用户退出路径。
+        DownloadCatalogCommand.Cancel();
+        ResetCatalogCommand.Cancel();
         _returnToPos?.Invoke();
     }
 

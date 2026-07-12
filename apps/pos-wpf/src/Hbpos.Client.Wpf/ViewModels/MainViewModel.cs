@@ -79,6 +79,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly ICashierLoginService? _cashierLoginService;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly EmergencyOverridePasswordService? _emergencyOverridePasswordService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
     private readonly bool _enforceCashierPermissions;
@@ -106,6 +107,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private AppStartupOptions? _startupOptions;
     private bool _disposed;
     private bool _startupCardRecoveryPendingAfterCashierLogin;
+    private bool _shutdownLogoutRecorded;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -361,7 +363,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ICashierLoginService? cashierLoginService = null,
         EmergencyOverridePasswordService? emergencyOverridePasswordService = null,
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
-        bool enforceCashierPermissions = false)
+        bool enforceCashierPermissions = false,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _core = core;
         _infra = infra;
@@ -419,6 +422,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _linklyFallbackPromptCoordinator = paymentTerminal.LinklyFallbackPromptCoordinator;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _cashierLoginService = cashierLoginService;
+        _operationAuditLogger = operationAuditLogger;
         _emergencyOverridePasswordService = emergencyOverridePasswordService;
         _runtimeStatusApiClient = runtimeStatusApiClient;
         _enforceCashierPermissions = enforceCashierPermissions;
@@ -531,7 +535,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _cashierSessionContext,
             _enforceCashierPermissions,
             _checkForAppUpdateAsync,
-            _appUpdateChannelProvider);
+            _appUpdateChannelProvider,
+            _operationAuditLogger);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -561,6 +566,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _lastCompletedOrder = order;
                 PaymentSuccess.LoadFromOrder(order);
                 CurrentScreen = PaymentSuccess;
+                // 真实恢复订单完成后仅在首次进入成功页时播放一次结账成功音。
+                _userFeedbackService.Play(UserFeedbackCue.Checkout);
                 PosTerminal?.RefreshCart();
                 CashPayment?.RefreshCart();
             },
@@ -792,6 +799,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task InitializeAsync(AppStartupOptions startupOptions)
     {
         _startupOptions = startupOptions;
+        // 关键逻辑：重新初始化会创建新的页面实例，必须丢弃上一轮 post-show 任务，避免新注册页永久停在“正在加载门店”。
+        _deviceRegistrationStoreLoadTask = null;
+        _posPostShowStartupTask = null;
         await _schema.InitializeAsync();
         _schemaReady = true;
 
@@ -920,6 +930,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _emergencyOverridePasswordService.TryCreateOverride(input, Session.StoreCode, Session.DeviceCode, out var emergencySession, out var emergencyMessage))
         {
             ApplyCashierSession(emergencySession!);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.CashierLogin,
+                "Succeeded",
+                Session,
+                reasonCode: "EMERGENCY_OVERRIDE");
             StatusMessage = emergencyMessage;
             await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
             await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
@@ -931,9 +947,40 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        var result = await _cashierLoginService.LoginAsync(Session.StoreCode, Session.DeviceCode, input, cancellationToken);
+        CashierLoginResult result;
+        try
+        {
+            result = await _cashierLoginService.LoginAsync(Session.StoreCode, Session.DeviceCode, input, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.CashierLogin,
+                "Failed",
+                CreateCashierLoginAuditSession(),
+                reasonCode: "LOGIN_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "CashierLogin",
+                $"cashier login failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
+        }
+
         if (!result.Succeeded || result.Session is null)
         {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.CashierLogin,
+                "Denied",
+                CreateCashierLoginAuditSession(),
+                reasonCode: "LOGIN_REJECTED",
+                safeMessage: result.Message);
             if (updateFailureStatus)
             {
                 StatusMessage = result.Message;
@@ -943,12 +990,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         ApplyCashierSession(result.Session);
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashierLogin,
+            "Succeeded",
+            Session,
+            reasonCode: result.Session.IsOfflineCached ? "OFFLINE_CACHE" : "ONLINE");
         StatusMessage = result.Session.IsOfflineCached
             ? "已使用离线缓存登录收银员"
             : "收银员登录成功";
         await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
         await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
         return true;
+    }
+
+    private PosSessionState CreateCashierLoginAuditSession(CashierSessionDto? candidateSession = null)
+    {
+        // 登录尚未成功时不能使用 MainViewModel 的演示占位员工；仅保留已认证会话或明确候选身份。
+        var establishedSession = candidateSession ?? _cashierSessionContext.CurrentSession ?? Session.CashierSession;
+        return Session with
+        {
+            CashierId = establishedSession?.CashierId ?? string.Empty,
+            CashierName = establishedSession?.CashierName ?? string.Empty,
+            CashierSession = establishedSession
+        };
     }
 
     private static bool IsEmergencyPasswordCandidate(string input)
@@ -1777,9 +1842,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
     }
 
-    public Task ReportOfflineForShutdownAsync()
+    public async Task ReportOfflineForShutdownAsync()
     {
-        return ReportRuntimeStatusSafeAsync(false, CancellationToken.None, clearCashier: true);
+        if (!_shutdownLogoutRecorded && Session.CashierSession is not null)
+        {
+            _shutdownLogoutRecorded = true;
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.CashierLogout,
+                "Succeeded",
+                Session,
+                reasonCode: "APP_SHUTDOWN");
+        }
+
+        await ReportRuntimeStatusSafeAsync(false, CancellationToken.None, clearCashier: true);
     }
 
     private async Task ReportRuntimeStatusSafeAsync(
@@ -1833,11 +1909,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await RefreshPendingSyncAsync();
         await PaymentSuccess.LoadFromOrderAsync(e.Order);
         CurrentScreen = PaymentSuccess;
+        // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
+        _userFeedbackService.Play(UserFeedbackCue.Checkout);
 
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
         if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
         {
+            var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
             var cashDrawerResult = await OpenCashDrawerWithShellPermissionAsync();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.CashDrawerOpen,
+                cashDrawerResult.Succeeded ? "Succeeded" : drawerPermissionAllowed ? "Failed" : "Denied",
+                Session,
+                reasonCode: "PAYMENT_COMPLETE",
+                safeMessage: cashDrawerResult.Succeeded ? null : cashDrawerResult.Message,
+                paymentMethod: PaymentMethodKind.Cash.ToString(),
+                paymentAmount: e.Order.Payments
+                    .Where(payment => payment.Method == PaymentMethodKind.Cash)
+                    .Sum(payment => payment.Amount),
+                orderGuid: e.Order.OrderGuid.ToString("D"));
             if (!cashDrawerResult.Succeeded)
             {
                 StatusMessage = cashDrawerResult.Message;
@@ -2053,9 +2144,46 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task PrintSelectedHistoryReceiptAsync(TransactionHistoryViewModel history)
     {
-        if (history.SelectedOrder is not null)
+        var selectedOrder = history.SelectedOrder;
+        if (selectedOrder is null)
         {
-            await _receiptCoordinator.PrintHistoryAsync(history.SelectedOrder.OrderGuid);
+            return;
+        }
+
+        try
+        {
+            // 只有打印服务返回结果后才记录补打成功或失败，避免把点击动作误记成已打印。
+            var result = await _receiptCoordinator.PrintReceiptAsync(
+                selectedOrder.OrderGuid,
+                ReceiptPrintReason.Reprint);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.ReceiptReprint,
+                result.Succeeded ? "Succeeded" : "Failed",
+                Session,
+                reasonCode: "HISTORY",
+                safeMessage: result.Succeeded ? null : result.Message,
+                orderGuid: selectedOrder.OrderGuid.ToString("D"));
+        }
+        catch (Exception ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.ReceiptReprint,
+                "Failed",
+                Session,
+                reasonCode: "HISTORY_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                orderGuid: selectedOrder.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "ReceiptReprintAudit",
+                $"history receipt reprint failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
         }
     }
 

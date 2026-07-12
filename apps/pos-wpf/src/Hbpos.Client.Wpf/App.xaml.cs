@@ -16,12 +16,14 @@ public partial class App : Application
     private const int MainWindowPreparingPercent = 65;
     private const int MainWindowInitializedPercent = 85;
     private const int StartupCompletedPercent = 100;
+    private const int HostShutdownTimeoutSeconds = 2;
 
     private IHost? _host;
     private SingleInstanceStartupLease? _startupLease;
     private StartupSplashWindow? _startupSplashWindow;
     private StartupProgressState? _startupProgressState;
     private bool _startupGateReleaseScheduled;
+    private bool _globalExceptionObserversRegistered;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -55,6 +57,10 @@ public partial class App : Application
                     services.AddHbposClientServices(startupOptions);
                 })
                 .Build();
+            var applicationLogOptions = _host.Services.GetRequiredService<ApplicationLogOptions>();
+            ConsoleLog.ConfigureCenterDefaults(applicationLogOptions.ToDefaults());
+            ConsoleLog.ConfigureCenterSink(_host.Services.GetRequiredService<IApplicationLogSink>());
+            RegisterGlobalExceptionObservers();
             _startupProgressState?.SetStage(HostBuiltPercent, StartupText("startup.stage.initializingServices"));
 
             await _host.StartAsync();
@@ -110,6 +116,7 @@ public partial class App : Application
                 _host = null;
             }
 
+            ResetGlobalLogging();
             _startupLease?.Dispose();
             _startupLease = null;
             Shutdown(1);
@@ -133,7 +140,8 @@ public partial class App : Application
                     }
 
                     // 退出入口同样是 async void，StopAsync 失败时记录日志后继续释放资源。
-                    await _host.StopAsync(TimeSpan.FromSeconds(3));
+                    // 两条 uploader 与本地 writer 共享宿主的 2 秒退出总预算。
+                    await _host.StopAsync(TimeSpan.FromSeconds(HostShutdownTimeoutSeconds));
                 }
                 catch (Exception ex)
                 {
@@ -155,8 +163,73 @@ public partial class App : Application
         }
         finally
         {
+            ResetGlobalLogging();
             base.OnExit(e);
         }
+    }
+
+    private void RegisterGlobalExceptionObservers()
+    {
+        if (_globalExceptionObserversRegistered)
+        {
+            return;
+        }
+
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+        _globalExceptionObserversRegistered = true;
+    }
+
+    private void ResetGlobalLogging()
+    {
+        if (_globalExceptionObserversRegistered)
+        {
+            DispatcherUnhandledException -= OnDispatcherUnhandledException;
+            AppDomain.CurrentDomain.UnhandledException -= OnAppDomainUnhandledException;
+            TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+            _globalExceptionObserversRegistered = false;
+        }
+
+        ConsoleLog.ConfigureCenterSink(null);
+        ConsoleLog.ConfigureCenterDefaults(ApplicationLogDefaults.Default);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        _ = sender;
+        // 这里只观察并记录，不设置 Handled，保留 WPF 原有崩溃语义。
+        ConsoleLog.WriteError(
+            "UnhandledException",
+            $"dispatcher unhandled exception type={e.Exception.GetType().Name}",
+            exception: e.Exception);
+    }
+
+    private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        _ = sender;
+        if (e.ExceptionObject is Exception exception)
+        {
+            ConsoleLog.WriteError(
+                "UnhandledException",
+                $"app domain unhandled exception type={exception.GetType().Name} terminating={e.IsTerminating}",
+                exception: exception);
+            return;
+        }
+
+        ConsoleLog.WriteError(
+            "UnhandledException",
+            $"app domain unhandled non-exception object terminating={e.IsTerminating}");
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        _ = sender;
+        // 不调用 SetObserved，日志观察器不能改变 TaskScheduler 的既有异常策略。
+        ConsoleLog.WriteError(
+            "UnhandledException",
+            "unobserved task exception",
+            exception: e.Exception);
     }
 
     private void ScheduleStartupGateReleaseAfterClickGuardDelay()

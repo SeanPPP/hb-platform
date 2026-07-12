@@ -100,6 +100,7 @@ public sealed class RoleServicePermissionTests : IDisposable
             Permissions.PosTerminal.Receipt.PrintLast,
             Permissions.PosTerminal.CustomerDisplay.Manage,
             Permissions.PosTerminal.System.Sync,
+            "Permissions.PosTerminal.Audit.View",
         };
         var seedsByCode = PermissionSeedData.AllPermissions.ToDictionary(
             seed => seed.Code,
@@ -124,6 +125,24 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.OpenCashDrawer");
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.DailyClose");
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.ManageDevices");
+    }
+
+    [Fact]
+    public void PermissionSeedData_StoreManagerAliasesIncludeOperationAuditView()
+    {
+        foreach (var roleName in new[] { "StoreManager", "店长", "经理" })
+        {
+            var template = Assert.Single(
+                PermissionSeedData.RolePermissionTemplates,
+                item => item.RoleName.Equals(roleName, StringComparison.OrdinalIgnoreCase)
+            );
+
+            Assert.Contains("Permissions.PosTerminal.Audit.View", template.PermissionCodes);
+            if (!roleName.Equals("StoreManager", StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.DoesNotContain(Permissions.DeviceRegistration.Manage, template.PermissionCodes);
+            }
+        }
     }
 
     [Fact]
@@ -259,6 +278,8 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.NotNull(result.Data);
         Assert.Contains("Admin", result.Data.SuperAdminRoleNames);
         Assert.Contains("管理员", result.Data.SuperAdminRoleNames);
+        Assert.Contains("SuperAdmin", result.Data.SuperAdminRoleNames);
+        Assert.Contains("超级管理员", result.Data.SuperAdminRoleNames);
         Assert.Contains(
             result.Data.PermissionAliases,
             item =>

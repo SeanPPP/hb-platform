@@ -20,6 +20,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -65,7 +66,8 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         Action backToCenter,
         ILocalizationService? localization = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
@@ -74,6 +76,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         _localization = localization;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuditLogger = operationAuditLogger;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -244,19 +247,21 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
             return;
         }
 
-        if (CartSnapshot is null)
+        var cartSnapshot = CartSnapshot;
+        if (cartSnapshot is null)
         {
             SetStatusResource("installment.create.status.missingCart", "There is no current order available for installment creation.");
             return;
         }
 
         IsSubmitting = true;
+        var auditBefore = CaptureAuditSnapshot(cartSnapshot);
         try
         {
             // ViewModel 只收集 UI 输入，请求对象由客户端服务统一落地并提交。
             var request = new InstallmentOrderCreateRequest(
                 Session,
-                CartSnapshot,
+                cartSnapshot,
                 CustomerName.Trim(),
                 CustomerPhone.Trim(),
                 DownPaymentAmount,
@@ -271,11 +276,53 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
             SetLiteralStatus(result.Message);
             if (result.Succeeded && result.Order is not null)
             {
+                OperationAuditEvents.RecordCartChange(
+                    _operationAuditLogger,
+                    OperationAuditTypes.SaleComplete,
+                    Session,
+                    auditBefore,
+                    new OperationAuditCartSnapshot(0m, 0m, 0m, []),
+                    reasonCode: "INSTALLMENT_CREATE",
+                    paymentMethod: $"Installment+{DownPaymentMethod}",
+                    paymentAmount: DownPaymentAmount,
+                    orderGuid: result.Order.OrderId.ToString("D"));
+
                 await _onCreatedAsync(result.Order);
+            }
+            else
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.SaleComplete,
+                    "Failed",
+                    Session,
+                    auditBefore,
+                    reasonCode: "INSTALLMENT_CREATE",
+                    safeMessage: result.Message,
+                    paymentMethod: $"Installment+{DownPaymentMethod}",
+                    paymentAmount: DownPaymentAmount);
             }
         }
         catch (Exception ex)
         {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.SaleComplete,
+                "Failed",
+                Session,
+                auditBefore,
+                reasonCode: "INSTALLMENT_CREATE_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: $"Installment+{DownPaymentMethod}",
+                paymentAmount: DownPaymentAmount,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "InstallmentAudit",
+                $"installment create failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             SetLiteralStatus(ex.Message);
         }
         finally
@@ -428,8 +475,44 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
             return true;
         }
 
+        if (permissionCode == Permissions.PosTerminal.Installments.Create)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.SaleComplete,
+                "Denied",
+                Session,
+                CartSnapshot is null ? null : CaptureAuditSnapshot(CartSnapshot),
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message,
+                paymentMethod: $"Installment+{DownPaymentMethod}",
+                paymentAmount: DownPaymentAmount);
+        }
+
         SetLiteralStatus(message);
         return false;
+    }
+
+    private static OperationAuditCartSnapshot CaptureAuditSnapshot(PosCartServiceSnapshot snapshot)
+    {
+        var lines = snapshot.Lines.Select((line, index) => new OperationAuditCartLineSnapshot(
+            $"{line.ProductCode}|{line.ReferenceCode}|{line.LookupCode}|Sale|{index}",
+            line.ProductCode,
+            line.ItemNumber,
+            line.ReferenceCode,
+            line.LookupCode,
+            line.DisplayName,
+            "Sale",
+            decimal.Round(line.Quantity, 3, MidpointRounding.AwayFromZero),
+            decimal.Round(line.UnitPrice, 2, MidpointRounding.AwayFromZero),
+            decimal.Round(line.DiscountAmount, 2, MidpointRounding.AwayFromZero),
+            decimal.Round(line.Quantity * line.UnitPrice, 2, MidpointRounding.AwayFromZero),
+            decimal.Round(line.ActualAmount, 2, MidpointRounding.AwayFromZero))).ToList();
+        return new OperationAuditCartSnapshot(
+            decimal.Round(snapshot.TotalAmount, 2, MidpointRounding.AwayFromZero),
+            decimal.Round(snapshot.DiscountAmount, 2, MidpointRounding.AwayFromZero),
+            decimal.Round(snapshot.ActualAmount, 2, MidpointRounding.AwayFromZero),
+            lines);
     }
 
     private string FormatResource(string key, string fallback, object[] args)

@@ -18,6 +18,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private readonly ICardTerminalClient? _cardTerminalClient;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -43,7 +44,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         ILocalizationService? localization = null,
         ICardTerminalClient? cardTerminalClient = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
@@ -53,6 +55,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         _cardTerminalClient = cardTerminalClient;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuditLogger = operationAuditLogger;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -242,6 +245,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
         if (SelectedOrder is null) return;
 
+        var orderId = SelectedOrder.OrderId;
         var payment = new InstallmentPaymentDraft(
             Guid.NewGuid(),
             RepaymentMethod,
@@ -257,9 +261,46 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             }
 
             // 银行卡补款必须先由终端授权，API 只记录已授权的付款结果。
-            var authorization = await _cardTerminalClient.AuthorizeAsync(RepaymentAmount, Session);
+            PaymentAuthorizationResult authorization;
+            try
+            {
+                authorization = await _cardTerminalClient.AuthorizeAsync(RepaymentAmount, Session);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.InstallmentRepaymentComplete,
+                    "Failed",
+                    Session,
+                    reasonCode: "CARD_AUTHORIZATION_EXCEPTION",
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: PaymentMethodKind.Card.ToString(),
+                    paymentAmount: RepaymentAmount,
+                    orderGuid: orderId.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "InstallmentAudit",
+                    $"installment card authorization failed error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+                throw;
+            }
+
             if (!authorization.Approved)
             {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.InstallmentRepaymentComplete,
+                    "Denied",
+                    Session,
+                    reasonCode: "CARD_NOT_AUTHORIZED",
+                    safeMessage: authorization.Message,
+                    paymentMethod: PaymentMethodKind.Card.ToString(),
+                    paymentAmount: RepaymentAmount,
+                    orderGuid: orderId.ToString("D"));
                 SetLiteralStatus(authorization.Message ?? T("installment.center.status.cardNotAuthorized", "Card repayment was not authorized."));
                 return;
             }
@@ -272,7 +313,13 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             };
         }
 
-        await RunOrderActionAsync(() => _installmentOrderService.AddRepaymentAsync(new InstallmentOrderRepaymentRequest(SelectedOrder.OrderId, Session, payment)));
+        await RunOrderActionAsync(
+            () => _installmentOrderService.AddRepaymentAsync(new InstallmentOrderRepaymentRequest(orderId, Session, payment)),
+            OperationAuditTypes.InstallmentRepaymentComplete,
+            "REPAYMENT",
+            payment.Method.ToString(),
+            payment.Amount,
+            orderId);
     }
 
     private bool CanAddRepayment() => !IsBusy &&
@@ -291,7 +338,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
         if (SelectedOrder is not null)
         {
-            await RunOrderActionAsync(() => _installmentOrderService.CancelWithRefundAsync(SelectedOrder.OrderId, Session));
+            var orderId = SelectedOrder.OrderId;
+            await RunOrderActionAsync(
+                () => _installmentOrderService.CancelWithRefundAsync(orderId, Session),
+                OperationAuditTypes.InstallmentRepaymentCancel,
+                "CANCEL_WITH_REFUND",
+                orderGuid: orderId);
         }
     }
 
@@ -305,7 +357,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
         if (SelectedOrder is not null)
         {
-            await RunOrderActionAsync(() => _installmentOrderService.VoidCancelAsync(SelectedOrder.OrderId, Session, VoidReason));
+            var orderId = SelectedOrder.OrderId;
+            await RunOrderActionAsync(
+                () => _installmentOrderService.VoidCancelAsync(orderId, Session, VoidReason),
+                OperationAuditTypes.InstallmentRepaymentCancel,
+                "VOID",
+                orderGuid: orderId);
         }
     }
 
@@ -333,16 +390,54 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             return true;
         }
 
+        var operationType = permissionCode switch
+        {
+            Permissions.PosTerminal.Installments.AddRepayment => OperationAuditTypes.InstallmentRepaymentComplete,
+            Permissions.PosTerminal.Installments.Cancel => OperationAuditTypes.InstallmentRepaymentCancel,
+            _ => null
+        };
+        if (operationType is not null)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Denied",
+                Session,
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message,
+                orderGuid: SelectedOrder?.OrderId.ToString("D"));
+        }
+
         SetLiteralStatus(message);
         return false;
     }
 
-    private async Task RunOrderActionAsync(Func<Task<InstallmentOrderActionResult>> action)
+    private async Task RunOrderActionAsync(
+        Func<Task<InstallmentOrderActionResult>> action,
+        string? operationType = null,
+        string? reasonCode = null,
+        string? paymentMethod = null,
+        decimal? paymentAmount = null,
+        Guid? orderGuid = null)
     {
         IsBusy = true;
         try
         {
             var result = await action();
+            if (operationType is not null)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    operationType,
+                    result.Succeeded ? "Succeeded" : "Failed",
+                    Session,
+                    reasonCode: reasonCode,
+                    safeMessage: result.Succeeded ? null : result.Message,
+                    paymentMethod: paymentMethod,
+                    paymentAmount: paymentAmount,
+                    orderGuid: orderGuid?.ToString("D"));
+            }
+
             SetLiteralStatus(result.Message);
             if (result.Succeeded)
             {
@@ -351,6 +446,28 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         catch (Exception ex)
         {
+            if (operationType is not null)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    operationType,
+                    "Failed",
+                    Session,
+                    reasonCode: reasonCode,
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: paymentMethod,
+                    paymentAmount: paymentAmount,
+                    orderGuid: orderGuid?.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "InstallmentAudit",
+                    $"installment operation failed operation={operationType} error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+            }
+
             SetLiteralStatus(ex.Message);
         }
         finally

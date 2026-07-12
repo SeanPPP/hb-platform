@@ -1,3 +1,4 @@
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -128,6 +129,35 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal("Daily close archive sent to printer.", viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task Save_and_reprint_record_daily_close_operation_audits()
+    {
+        var logger = new RecordingOperationAuditLogger();
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            operationAuditLogger: logger);
+
+        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
+        await viewModel.LoadHistoryCommand.ExecuteAsync(null);
+        await viewModel.ReprintSelectedArchiveCommand.ExecuteAsync(null);
+
+        Assert.Collection(
+            logger.Events,
+            auditEvent =>
+            {
+                Assert.Equal("DAILY_CLOSE_SAVE", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+            },
+            auditEvent =>
+            {
+                Assert.Equal("DAILY_CLOSE_REPRINT", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+            });
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -245,6 +275,16 @@ public sealed class DailyCloseViewModelTests
             LastPrintedArchive = archive;
             LastPrintReason = reason;
             return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+        }
+    }
+
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
         }
     }
 }

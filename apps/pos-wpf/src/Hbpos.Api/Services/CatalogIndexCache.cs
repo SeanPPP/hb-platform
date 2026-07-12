@@ -57,13 +57,14 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 Log(IsBuildRunning(existing)
                     ? $"cache build wait store={key.StoreCode} since={FormatSince(key.Since)}"
                     : $"cache hit store={key.StoreCode} since={FormatSince(key.Since)}");
-                return await AwaitEntryAsync(key, existing, cancellationToken);
+                return await AwaitEntryAsync(key, existing, cancellationToken, allowWaitCancellation: true);
             }
 
             var newEntry = new CacheEntry(
                 now.Add(_ttl),
                 new Lazy<Task<CatalogIndexBuildResult?>>(
-                    () => buildAsync(cancellationToken),
+                    // 共享构建不能绑定任一调用方的取消令牌，由缓存统一持有到完成。
+                    () => buildAsync(CancellationToken.None),
                     LazyThreadSafetyMode.ExecutionAndPublication));
 
             if (existing is null)
@@ -71,7 +72,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 if (_entries.TryAdd(key, newEntry))
                 {
                     Log($"cache miss store={key.StoreCode} since={FormatSince(key.Since)} ttlSeconds={_ttl.TotalSeconds:0}");
-                    return await AwaitEntryAsync(key, newEntry, cancellationToken);
+                    return await AwaitEntryAsync(key, newEntry, cancellationToken, allowWaitCancellation: false);
                 }
 
                 continue;
@@ -80,7 +81,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             if (_entries.TryUpdate(key, newEntry, existing))
             {
                 Log($"cache expired store={key.StoreCode} since={FormatSince(key.Since)} ttlSeconds={_ttl.TotalSeconds:0}");
-                return await AwaitEntryAsync(key, newEntry, cancellationToken);
+                return await AwaitEntryAsync(key, newEntry, cancellationToken, allowWaitCancellation: false);
             }
         }
     }
@@ -100,11 +101,15 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private async Task<CatalogIndexBuildResult?> AwaitEntryAsync(
         CatalogIndexCacheKey key,
         CacheEntry entry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowWaitCancellation)
     {
         try
         {
-            var result = await entry.BuildTask.Value.WaitAsync(cancellationToken);
+            // 创建共享任务的 owner 必须维持请求作用域到构建结束；复用者才可独立取消等待。
+            var result = allowWaitCancellation
+                ? await entry.BuildTask.Value.WaitAsync(cancellationToken)
+                : await entry.BuildTask.Value;
             if (result is null)
             {
                 _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
@@ -114,7 +119,12 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         }
         catch
         {
-            _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
+            // 仅构建本身失败时清除缓存；单个等待者取消不能丢弃仍在运行的共享任务。
+            if (entry.BuildTask.Value.IsFaulted || entry.BuildTask.Value.IsCanceled)
+            {
+                _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
+            }
+
             throw;
         }
     }

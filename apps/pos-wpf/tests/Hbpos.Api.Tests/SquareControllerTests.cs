@@ -608,6 +608,9 @@ public sealed class SquareControllerTests
                 services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
                 services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOpDeviceRuntimeStatusSchemaInitializer());
 
+                services.RemoveAll<IOperationAuditSchemaInitializer>();
+                services.AddSingleton<IOperationAuditSchemaInitializer>(new TestNoOpOperationAuditSchemaInitializer());
+
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton(schemaInitializer ?? new NoOpSquareTokenSchemaInitializer());
 

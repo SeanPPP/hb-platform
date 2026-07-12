@@ -33,6 +33,8 @@ public static class ServiceRegistration
         }
 
         services.AddScoped<HbposSqlSugarContext>();
+        services.AddScoped<IOperationAuditIngestService, SqlSugarOperationAuditIngestService>();
+        services.AddScoped<IOperationAuditSchemaInitializer, SqlSugarOperationAuditSchemaInitializer>();
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();

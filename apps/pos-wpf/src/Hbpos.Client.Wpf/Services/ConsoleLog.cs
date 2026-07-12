@@ -44,6 +44,15 @@ internal static class ConsoleLog
         Write(category, message, "Error", context, exception);
     }
 
+    internal static void WriteCritical(
+        string category,
+        string message,
+        ApplicationLogContext? context = null,
+        Exception? exception = null)
+    {
+        Write(category, message, "Critical", context, exception);
+    }
+
     private static void Write(
         string category,
         string message,

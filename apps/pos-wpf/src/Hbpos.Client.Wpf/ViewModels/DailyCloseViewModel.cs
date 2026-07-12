@@ -18,6 +18,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly Action? _returnToPos;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private DailyCloseReport? _currentReport;
     private int _archivePreviewVersion;
 
@@ -63,7 +64,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         ILocalizationService? localization = null,
         Action? returnToPos = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
@@ -71,6 +73,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         _localization = localization;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuditLogger = operationAuditLogger;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -211,9 +214,21 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         IsBusy = true;
         StatusMessage = T("dailyClose.status.saving", "Saving and printing daily close...");
 
+        var auditRecorded = false;
+        var correlation = OperationAuditEvents.CreateCorrelation();
         try
         {
             var archive = await _dailyCloseService.SaveAsync(Session, BusinessDate, BuildCashCounts(), cancellationToken);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.DailyCloseSave,
+                "Succeeded",
+                Session,
+                reasonCode: "SAVED",
+                orderGuid: archive.DailyCloseGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            auditRecorded = true;
             _currentReport = archive.Report;
             var printResult = await _dailyClosePrintService.PrintAsync(archive, ReceiptPrintReason.Manual, cancellationToken);
             await RefreshArchivesAsync(cancellationToken);
@@ -226,6 +241,24 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (!auditRecorded)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.DailyCloseSave,
+                    "Failed",
+                    Session,
+                    reasonCode: "SAVE_FAILED",
+                    safeMessage: ex.GetType().Name,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+
+            ConsoleLog.WriteError(
+                "DailyCloseAudit",
+                $"daily close save/print failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             StatusMessage = ex.Message;
         }
         finally
@@ -291,9 +324,20 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         IsBusy = true;
         StatusMessage = T("dailyClose.status.reprinting", "Reprinting daily close archive...");
 
+        var correlation = OperationAuditEvents.CreateCorrelation();
         try
         {
             var result = await _dailyClosePrintService.PrintAsync(SelectedArchive!.Archive, ReceiptPrintReason.Reprint, cancellationToken);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.DailyCloseReprint,
+                result.Succeeded ? "Succeeded" : "Failed",
+                Session,
+                reasonCode: "REPRINT",
+                safeMessage: result.Succeeded ? null : result.Message,
+                orderGuid: SelectedArchive.Archive.DailyCloseGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
             StatusMessage = result.Succeeded
                 ? T("dailyClose.status.reprintPrinted", "Daily close archive sent to printer.")
                 : Format(
@@ -303,6 +347,21 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.DailyCloseReprint,
+                "Failed",
+                Session,
+                reasonCode: "REPRINT_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                orderGuid: SelectedArchive?.Archive.DailyCloseGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "DailyCloseAudit",
+                $"daily close reprint failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             StatusMessage = ex.Message;
         }
         finally
@@ -548,6 +607,23 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
 
         // 中文注释：日结保存会写本地归档，执行前必须再次校验权限。
+        var operationType = permissionCode switch
+        {
+            Permissions.PosTerminal.DailyClose.Save => OperationAuditTypes.DailyCloseSave,
+            Permissions.PosTerminal.DailyClose.Reprint => OperationAuditTypes.DailyCloseReprint,
+            _ => null
+        };
+        if (operationType is not null)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Denied",
+                Session,
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message);
+        }
+
         StatusMessage = message;
         return false;
     }

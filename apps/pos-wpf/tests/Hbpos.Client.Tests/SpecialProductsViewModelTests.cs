@@ -9,6 +9,89 @@ namespace Hbpos.Client.Tests;
 
 public sealed class SpecialProductsViewModelTests
 {
+    [Theory]
+    [InlineData("download", "back")]
+    [InlineData("add", "back")]
+    [InlineData("remove", "back")]
+    [InlineData("download", "add-to-cart")]
+    public async Task Navigation_cancels_running_remote_operation_before_leaving(string operation, string navigation)
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receivedToken = CancellationToken.None;
+        var navigated = false;
+        var cancellationRequestedBeforeNavigation = false;
+        async Task WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            receivedToken = cancellationToken;
+            using var registration = cancellationToken.Register(cancellationObserved.SetResult);
+            operationStarted.SetResult();
+            await Task.WhenAny(cancellationObserved.Task, releaseOperation.Task);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            DownloadAsyncOverride = async cancellationToken =>
+            {
+                await WaitForCancellationAsync(cancellationToken);
+                return new SpecialProductsDownloadWorkflowResult(
+                    new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0),
+                    []);
+            },
+            MarkAsyncOverride = async (isSpecialProduct, cancellationToken) =>
+            {
+                await WaitForCancellationAsync(cancellationToken);
+                return new SpecialProductsMutationWorkflowResult(
+                    "S001",
+                    "SKU-001",
+                    isSpecialProduct,
+                    []);
+            }
+        };
+        var viewModel = CreateViewModel(
+            workflow: workflow,
+            onBack: () =>
+            {
+                cancellationRequestedBeforeNavigation = receivedToken.IsCancellationRequested;
+                navigated = true;
+            });
+        var item = CreateItem("SKU-001", "Alpha", "930001", isSpecialProduct: operation == "remove");
+        if (operation != "download")
+        {
+            viewModel.ToggleEditModeCommand.Execute(null);
+        }
+
+        var execution = operation switch
+        {
+            "download" => viewModel.DownloadCommand.ExecuteAsync(null),
+            "add" => viewModel.AddSpecialProductCommand.ExecuteAsync(item),
+            _ => viewModel.RemoveSpecialProductCommand.ExecuteAsync(item)
+        };
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        if (navigation == "back")
+        {
+            Assert.True(viewModel.BackCommand.CanExecute(null));
+            viewModel.BackCommand.Execute(null);
+        }
+        else
+        {
+            Assert.True(viewModel.AddToCartCommand.CanExecute(item));
+            viewModel.AddToCartCommand.Execute(item);
+        }
+        var wasCancellationRequested = receivedToken.IsCancellationRequested;
+        releaseOperation.TrySetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(navigated);
+        Assert.True(cancellationRequestedBeforeNavigation);
+        Assert.True(receivedToken.CanBeCanceled);
+        Assert.True(wasCancellationRequested);
+        Assert.False(viewModel.IsBusy);
+    }
+
     [Fact]
     public async Task LoadAsync_shows_special_products_from_local_cache()
     {
@@ -1055,6 +1138,10 @@ public sealed class SpecialProductsViewModelTests
         public SpecialProductsDownloadWorkflowResult DownloadResult { get; init; } =
             new(new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0), []);
 
+        public Func<CancellationToken, Task<SpecialProductsDownloadWorkflowResult>>? DownloadAsyncOverride { get; init; }
+
+        public Func<bool, CancellationToken, Task<SpecialProductsMutationWorkflowResult>>? MarkAsyncOverride { get; init; }
+
         public Func<string, string, bool, SpecialProductsMutationWorkflowResult> MarkResultFactory { get; init; } =
             (storeCode, productCode, isSpecialProduct) => new SpecialProductsMutationWorkflowResult(
                 storeCode,
@@ -1100,6 +1187,11 @@ public sealed class SpecialProductsViewModelTests
             CancellationToken cancellationToken = default,
             IProgress<SpecialProductDownloadProgress>? progress = null)
         {
+            if (DownloadAsyncOverride is not null)
+            {
+                return DownloadAsyncOverride(cancellationToken);
+            }
+
             return Task.FromResult(DownloadResult);
         }
 
@@ -1111,6 +1203,11 @@ public sealed class SpecialProductsViewModelTests
         {
             MarkCallCount++;
             LastMarkCall = (storeCode, productCode, isSpecialProduct);
+            if (MarkAsyncOverride is not null)
+            {
+                return MarkAsyncOverride(isSpecialProduct, cancellationToken);
+            }
+
             return Task.FromResult(MarkResultFactory(storeCode, productCode, isSpecialProduct));
         }
 

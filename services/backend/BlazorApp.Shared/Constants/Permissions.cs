@@ -7,7 +7,8 @@ namespace BlazorApp.Shared.Constants
     /// </summary>
     public static class Permissions
     {
-        public static readonly string[] SuperAdminRoleNames = ["Admin", "管理员"];
+        public static readonly string[] SuperAdminRoleNames =
+            ["Admin", "管理员", "SuperAdmin", "超级管理员"];
 
         public static class Users
         {
@@ -154,6 +155,11 @@ namespace BlazorApp.Shared.Constants
             public static class System
             {
                 public const string Sync = "Permissions.PosTerminal.System.Sync";
+            }
+
+            public static class Audit
+            {
+                public const string View = "Permissions.PosTerminal.Audit.View";
             }
         }
 

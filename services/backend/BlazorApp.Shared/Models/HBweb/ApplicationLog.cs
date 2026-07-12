@@ -31,6 +31,18 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(Length = 120, IsNullable = true)]
         public string? InstanceId { get; set; }
 
+        [SugarColumn(IsNullable = true)]
+        public Guid? ClientEventId { get; set; }
+
+        [SugarColumn(Length = 80, IsNullable = true)]
+        public string? StoreCode { get; set; }
+
+        [SugarColumn(Length = 120, IsNullable = true)]
+        public string? DeviceCode { get; set; }
+
+        [SugarColumn(Length = 60, IsNullable = true)]
+        public string? AppVersion { get; set; }
+
         [SugarColumn(Length = 30, IsNullable = false)]
         public string Level { get; set; } = string.Empty;
 

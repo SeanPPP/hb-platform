@@ -39,6 +39,7 @@ internal sealed class MainChildViewModelFactory
     private readonly bool _enforceCashierPermissions;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -69,7 +70,8 @@ internal sealed class MainChildViewModelFactory
         ICashierSessionContext? cashierSessionContext = null,
         bool enforceCashierPermissions = false,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
-        IAppUpdateChannelProvider? appUpdateChannelProvider = null)
+        IAppUpdateChannelProvider? appUpdateChannelProvider = null,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -100,6 +102,7 @@ internal sealed class MainChildViewModelFactory
         _enforceCashierPermissions = enforceCashierPermissions;
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _appUpdateChannelProvider = appUpdateChannelProvider;
+        _operationAuditLogger = operationAuditLogger;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -135,7 +138,8 @@ internal sealed class MainChildViewModelFactory
             _cashierSessionContext,
             _enforceCashierPermissions,
             _installmentOrderService,
-            continueInstallmentPaymentAsync);
+            continueInstallmentPaymentAsync,
+            _operationAuditLogger);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }
@@ -153,7 +157,8 @@ internal sealed class MainChildViewModelFactory
             _localization,
             _cardTerminalClient,
             _cashierSessionContext,
-            _enforceCashierPermissions);
+            _enforceCashierPermissions,
+            _operationAuditLogger);
     }
 
     public InstallmentCreateViewModel CreateInstallmentCreateViewModel(
@@ -168,7 +173,8 @@ internal sealed class MainChildViewModelFactory
             backToCenter,
             _localization,
             _cashierSessionContext,
-            _enforceCashierPermissions);
+            _enforceCashierPermissions,
+            _operationAuditLogger);
     }
 
     public PaymentSuccessViewModel CreatePaymentSuccessViewModel()
@@ -227,7 +233,8 @@ internal sealed class MainChildViewModelFactory
             onExitApplicationAsync: onExitApplicationAsync,
             tryLoginCashierFromScannerFallbackAsync: tryLoginCashierFromScannerFallbackAsync,
             cashierSessionContext: _cashierSessionContext,
-            enforcePermissionsWhenNoCashier: _enforceCashierPermissions);
+            enforcePermissionsWhenNoCashier: _enforceCashierPermissions,
+            operationAuditLogger: _operationAuditLogger);
     }
 
     public SpecialProductsViewModel CreateSpecialProductsViewModel(
@@ -288,7 +295,8 @@ internal sealed class MainChildViewModelFactory
             _enforceCashierPermissions,
             _installmentOrderService,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPayment);
+            confirmInstallmentFullFirstPayment,
+            _operationAuditLogger);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(
@@ -302,7 +310,8 @@ internal sealed class MainChildViewModelFactory
             _localization,
             returnToPos,
             _cashierSessionContext,
-            _enforceCashierPermissions);
+            _enforceCashierPermissions,
+            _operationAuditLogger);
     }
 
     public SettingsViewModel CreateSettingsViewModel(

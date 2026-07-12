@@ -158,6 +158,55 @@ public sealed class SettingsViewModelTests
         Assert.Equal("Catalog data reset completed.", viewModel.StatusMessage);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BackCommand_cancels_running_catalog_operation(bool resetCatalog)
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receivedToken = CancellationToken.None;
+        var returnedToPos = false;
+        var cancellationRequestedBeforeNavigation = false;
+        async Task RunCatalogOperationAsync(CancellationToken cancellationToken)
+        {
+            receivedToken = cancellationToken;
+            using var registration = cancellationToken.Register(cancellationObserved.SetResult);
+            operationStarted.SetResult();
+            await Task.WhenAny(cancellationObserved.Task, releaseOperation.Task);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            downloadCatalogAsync: resetCatalog ? null : RunCatalogOperationAsync,
+            resetCatalogAsync: resetCatalog ? RunCatalogOperationAsync : null,
+            returnToPos: () =>
+            {
+                cancellationRequestedBeforeNavigation = receivedToken.IsCancellationRequested;
+                returnedToPos = true;
+            });
+        var catalogCommand = resetCatalog
+            ? viewModel.ResetCatalogCommand
+            : viewModel.DownloadCatalogCommand;
+
+        var execution = catalogCommand.ExecuteAsync(null);
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(viewModel.BackCommand.CanExecute(null));
+        viewModel.BackCommand.Execute(null);
+        var wasCancellationRequested = receivedToken.IsCancellationRequested;
+        releaseOperation.TrySetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(returnedToPos);
+        Assert.True(cancellationRequestedBeforeNavigation);
+        Assert.True(receivedToken.CanBeCanceled);
+        Assert.True(wasCancellationRequested);
+        Assert.Equal("Operation canceled.", viewModel.StatusMessage);
+    }
+
     [Fact]
     public void ResetTestSalesDataCommand_is_visible_and_enabled_in_debug_when_service_is_configured()
     {

@@ -127,6 +127,9 @@ export const P = {
     View: 'PosProducts.View',
     Manage: 'PosProducts.Manage',
   },
+  PosTerminal: {
+    AuditView: 'Permissions.PosTerminal.Audit.View',
+  },
   Dashboard: {
     View: 'Dashboard',
   },

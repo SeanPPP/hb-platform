@@ -20,8 +20,10 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { RangePickerProps } from 'antd/es/date-picker'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useKeepAliveContext } from 'keepalive-for-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { getCenterLogDetail, getCenterLogs, getCenterLogSummary } from '../../../services/centerLogService'
 import type { ApplicationLogItem, ApplicationLogQueryParams, ApplicationLogSummaryGroup } from '../../../types/centerLog'
@@ -35,6 +37,8 @@ import {
   type CenterLogQueryFormValues,
   buildCenterLogQueryParams,
   buildDefaultCenterLogQueryParams,
+  buildCenterLogFormValuesFromSearchParams,
+  shouldHydrateCenterLogQueryFromLocation,
 } from './query'
 
 function getLevelColor(level: string) {
@@ -98,6 +102,16 @@ function SummaryTagGroup({
 export default function SystemCenterLogsPage() {
   const { t } = useTranslation()
   const [form] = Form.useForm<CenterLogQueryFormValues>()
+  const [searchParams] = useSearchParams()
+  const location = useLocation()
+  const { active } = useKeepAliveContext()
+  const hydratedLocationKeyRef = useRef(location.key)
+  const initialFormValues = useMemo(
+    () => buildCenterLogFormValuesFromSearchParams(searchParams),
+    // 关联跳转参数只在页面首次打开时用于初始化查询。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [data, setData] = useState<ApplicationLogItem[]>([])
@@ -108,16 +122,34 @@ export default function SystemCenterLogsPage() {
   const [pageSize, setPageSize] = useState(DEFAULT_CENTER_LOG_PAGE_SIZE)
   const [total, setTotal] = useState(0)
   const [activeQuery, setActiveQuery] = useState<ApplicationLogQueryParams>(
-    buildDefaultCenterLogQueryParams(),
+    buildCenterLogQueryParams(initialFormValues),
   )
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ApplicationLogItem | null>(null)
 
   useEffect(() => {
-    form.setFieldsValue({
-      projectCodes: [DEFAULT_CENTER_LOG_PROJECT_CODE],
-    })
-  }, [form])
+    form.setFieldsValue(initialFormValues)
+  }, [form, initialFormValues])
+
+  useEffect(() => {
+    if (!shouldHydrateCenterLogQueryFromLocation(
+      active,
+      location.pathname,
+      location.search,
+      location.key,
+      hydratedLocationKeyRef.current,
+    )) {
+      return
+    }
+
+    // 保活页面重新激活时，以关联跳转 URL 为准覆盖旧筛选并立即查询。
+    const linkedValues = buildCenterLogFormValuesFromSearchParams(
+      new URLSearchParams(location.search),
+    )
+    hydratedLocationKeyRef.current = location.key
+    form.setFieldsValue(linkedValues)
+    setActiveQuery(buildCenterLogQueryParams(linkedValues, 1, pageSize))
+  }, [active, form, location.key, location.pathname, location.search, pageSize])
 
   const loadData = async (query: ApplicationLogQueryParams) => {
     setLoading(true)
@@ -158,6 +190,10 @@ export default function SystemCenterLogsPage() {
       category: undefined,
       requestPath: undefined,
       traceId: undefined,
+      storeCode: undefined,
+      deviceCode: undefined,
+      appVersion: undefined,
+      instanceId: undefined,
       keyword: undefined,
       timeRange: undefined,
     })
@@ -202,6 +238,30 @@ export default function SystemCenterLogsPage() {
         title: t('system.centerLogs.columns.project'),
         dataIndex: 'projectCode',
         width: 120,
+      },
+      {
+        title: t('system.centerLogs.columns.storeCode'),
+        dataIndex: 'storeCode',
+        width: 105,
+        ellipsis: true,
+      },
+      {
+        title: t('system.centerLogs.columns.deviceCode'),
+        dataIndex: 'deviceCode',
+        width: 125,
+        ellipsis: true,
+      },
+      {
+        title: t('system.centerLogs.columns.appVersion'),
+        dataIndex: 'appVersion',
+        width: 110,
+        ellipsis: true,
+      },
+      {
+        title: t('system.centerLogs.columns.instanceId'),
+        dataIndex: 'instanceId',
+        width: 145,
+        ellipsis: true,
       },
       {
         title: t('system.centerLogs.columns.level'),
@@ -352,6 +412,42 @@ export default function SystemCenterLogsPage() {
                   />
                 </Form.Item>
               </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.storeCode')} name="storeCode">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.storeCodePlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.deviceCode')} name="deviceCode">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.deviceCodePlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.appVersion')} name="appVersion">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.appVersionPlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label={t('system.centerLogs.filters.instanceId')} name="instanceId">
+                  <Input
+                    placeholder={t('system.centerLogs.filters.instanceIdPlaceholder')}
+                    allowClear
+                    onPressEnter={() => void handleQuery()}
+                  />
+                </Form.Item>
+              </Col>
             </Row>
             <Space>
               <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
@@ -385,7 +481,7 @@ export default function SystemCenterLogsPage() {
             loading={loading}
             columns={columns}
             dataSource={data}
-            scroll={{ x: 1380 }}
+            scroll={{ x: 1880 }}
             pagination={{
               current: pageNumber,
               pageSize,
@@ -425,6 +521,27 @@ export default function SystemCenterLogsPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('system.centerLogs.columns.project')}>
                 {detailRecord.projectCode}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.receivedAt')}>
+                {formatCenterLogTimestamp(detailRecord.createdAtUtc)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.storeCode')}>
+                {detailRecord.storeCode || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.deviceCode')}>
+                {detailRecord.deviceCode || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.appVersion')}>
+                {detailRecord.appVersion || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.instanceId')}>
+                {detailRecord.instanceId || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.eventId')}>
+                {detailRecord.eventId || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.columns.clientEventId')}>
+                {detailRecord.clientEventId || '-'}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.centerLogs.columns.sourceType')}>
                 {detailRecord.sourceType}
