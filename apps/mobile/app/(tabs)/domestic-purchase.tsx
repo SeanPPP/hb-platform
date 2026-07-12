@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, type ElementRef } from "react";
+import {
+  FlatList,
+  InputAccessoryView,
+  Keyboard,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 import { useRouter } from "expo-router";
@@ -44,6 +53,8 @@ import type {
 import { ProductCreationType } from "@/modules/domestic-purchase/types";
 
 const PAGE_SIZE = 20;
+const CREATE_COUNT_ACCESSORY_ID = "domestic-purchase-create-count-accessory";
+const CREATE_PRICE_ACCESSORY_ID = "domestic-purchase-create-price-accessory";
 
 type DomesticPurchaseTab = "creation" | "products";
 
@@ -158,6 +169,18 @@ export default function DomesticPurchaseScreen() {
   const [selectedPrefix, setSelectedPrefix] = useState<ProductPrefixOption | null>(null);
   const [createCount, setCreateCount] = useState("5");
   const [privateLabelPrice, setPrivateLabelPrice] = useState("");
+  const privateLabelPriceInputRef = useRef<ElementRef<typeof TextInput>>(null);
+
+  const focusPrivateLabelPriceInput = useCallback(() => {
+    privateLabelPriceInputRef.current?.focus();
+  }, []);
+
+  const finishPrivateLabelPriceEditing = useCallback(() => {
+    // 触摸“完成”时先主动失焦，再兜底收起键盘，避免 accessory 残留。
+    privateLabelPriceInputRef.current?.blur();
+    Keyboard.dismiss();
+  }, []);
+
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -615,20 +638,59 @@ export default function DomesticPurchaseScreen() {
             label={t("create.count")}
             value={createCount}
             keyboardType="number-pad"
+            returnKeyType={Platform.OS === "ios" ? "next" : undefined}
+            inputAccessoryViewID={Platform.OS === "ios" ? CREATE_COUNT_ACCESSORY_ID : undefined}
+            onSubmitEditing={Platform.OS === "ios" ? focusPrivateLabelPriceInput : undefined}
             onChangeText={setCreateCount}
             style={styles.input}
           />
           <TextInput
+            ref={(input: ElementRef<typeof TextInput> | null) => {
+              // Paper 输入框叠加了原生与组件 ref 类型，回调仅保留后续聚焦所需的句柄。
+              privateLabelPriceInputRef.current = input;
+            }}
             mode="outlined"
             label={t("create.privateLabelPrice")}
             value={privateLabelPrice}
             keyboardType="decimal-pad"
+            returnKeyType={Platform.OS === "ios" ? "done" : undefined}
+            inputAccessoryViewID={Platform.OS === "ios" ? CREATE_PRICE_ACCESSORY_ID : undefined}
+            onSubmitEditing={Platform.OS === "ios" ? finishPrivateLabelPriceEditing : undefined}
             onChangeText={setPrivateLabelPrice}
             style={styles.input}
           />
           <Text variant="bodySmall" style={styles.inputHelpText}>
             {t("create.privateLabelPriceHelp")}
           </Text>
+          {/* iOS 数字键盘没有提交键，补充“下一步/完成”保证创建流程可继续。 */}
+          {Platform.OS === "ios" ? (
+            <>
+              <InputAccessoryView nativeID={CREATE_COUNT_ACCESSORY_ID}>
+                <View style={styles.keyboardAccessory}>
+                  <Button
+                    compact
+                    contentStyle={styles.keyboardAccessoryButton}
+                    textColor="#0958D9"
+                    onPress={focusPrivateLabelPriceInput}
+                  >
+                    {t("create.next")}
+                  </Button>
+                </View>
+              </InputAccessoryView>
+              <InputAccessoryView nativeID={CREATE_PRICE_ACCESSORY_ID}>
+                <View style={styles.keyboardAccessory}>
+                  <Button
+                    compact
+                    contentStyle={styles.keyboardAccessoryButton}
+                    textColor="#0958D9"
+                    onPress={finishPrivateLabelPriceEditing}
+                  >
+                    {t("create.done")}
+                  </Button>
+                </View>
+              </InputAccessoryView>
+            </>
+          ) : null}
           <View style={styles.modalActions}>
             <Button onPress={() => setCreateVisible(false)}>{t("actions.cancel")}</Button>
             <Button mode="contained" loading={busy} disabled={busy} onPress={handleCreate}>
@@ -853,6 +915,18 @@ const styles = StyleSheet.create({
   },
   input: {
     marginTop: 10,
+  },
+  keyboardAccessory: {
+    minHeight: 44,
+    paddingHorizontal: 8,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#D0D5DD",
+    backgroundColor: "#F6F7F9",
+  },
+  keyboardAccessoryButton: {
+    minHeight: 44,
   },
   inputHelpText: {
     marginTop: 4,

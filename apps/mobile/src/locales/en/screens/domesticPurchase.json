@@ -28,6 +28,8 @@
     "noPrefix": "No prefix",
     "count": "Quantity",
     "privateLabelPrice": "Uniform RRP",
+    "next": "Next",
+    "done": "Done",
     "privateLabelPriceHelp": "Optional. Leave blank when prices differ, then edit each item in the detail dialog."
   },
   "fields": {
