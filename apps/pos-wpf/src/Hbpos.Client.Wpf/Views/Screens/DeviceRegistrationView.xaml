@@ -8,20 +8,19 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </UserControl.Resources>
     <Grid Background="{StaticResource PosScreenBackgroundBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <Border Grid.Row="1"
-                Width="620"
-                Background="White"
-                BorderBrush="#FFE0E3EA"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="28"
-                HorizontalAlignment="Center">
+        <ScrollViewer x:Name="RegistrationScrollViewer"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <Grid MinHeight="{Binding ElementName=RegistrationScrollViewer, Path=ViewportHeight}">
+                <Border Width="620"
+                        Margin="24"
+                        Background="White"
+                        BorderBrush="#FFE0E3EA"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Padding="28"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.12" />
             </Border.Effect>
@@ -149,6 +148,8 @@
                     </Button>
                 </Grid>
             </StackPanel>
-        </Border>
+                </Border>
+            </Grid>
+        </ScrollViewer>
     </Grid>
 </UserControl>

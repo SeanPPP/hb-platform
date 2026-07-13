@@ -9,13 +9,18 @@
             CornerRadius="8"
             Padding="16">
         <StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                <materialDesign:PackIcon Kind="ServerNetwork"
+            <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <materialDesign:PackIcon Grid.Column="0"
+                                         Kind="ServerNetwork"
                                          Width="22"
                                          Height="22"
                                          Foreground="{StaticResource PosPrimaryBrush}"
                                          Margin="0,0,10,0" />
-                <StackPanel>
+                <StackPanel Grid.Column="1">
                     <TextBlock Text="{loc:Loc settings.serverAddress.title}"
                                FontSize="16"
                                FontWeight="Black"
@@ -26,7 +31,7 @@
                                TextWrapping="Wrap"
                                Margin="0,3,0,0" />
                 </StackPanel>
-            </StackPanel>
+            </Grid>
 
             <TextBlock Text="{loc:Loc settings.serverAddress.address}"
                        FontSize="12"

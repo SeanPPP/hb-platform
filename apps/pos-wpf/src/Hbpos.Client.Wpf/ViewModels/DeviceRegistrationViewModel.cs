@@ -535,6 +535,11 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             // 保存新服务器地址后立即停止旧地址上的注册工作，重启前不允许继续提交或验证。
             StopApprovalPolling();
         }
+        else
+        {
+            // 用户撤销地址变更后，按现有 pending 状态恢复唯一的自动审批轮询。
+            RestartApprovalPollingIfNeeded();
+        }
 
         NotifyCommandState();
     }

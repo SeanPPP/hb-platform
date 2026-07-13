@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Xml.Linq;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -86,6 +87,65 @@ public sealed class DeviceRegistrationViewModelTests
         Assert.Contains(
             "SelectCategory(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration)",
             settingsViewModelSource);
+    }
+
+    [Fact]
+    public void Registration_view_wraps_centered_card_in_vertical_scroll_container()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var scrollViewer = Assert.Single(document.Descendants(presentation + "ScrollViewer").Where(
+            element => (string?)element.Attribute(x + "Name") == "RegistrationScrollViewer"));
+        Assert.Equal("Auto", (string?)scrollViewer.Attribute("VerticalScrollBarVisibility"));
+        Assert.Equal("Disabled", (string?)scrollViewer.Attribute("HorizontalScrollBarVisibility"));
+
+        var viewportGrid = Assert.Single(scrollViewer.Elements(presentation + "Grid"));
+        Assert.Equal(
+            "{Binding ElementName=RegistrationScrollViewer, Path=ViewportHeight}",
+            (string?)viewportGrid.Attribute("MinHeight"));
+        var card = Assert.Single(viewportGrid.Elements(presentation + "Border"));
+        Assert.Equal("Center", (string?)card.Attribute("VerticalAlignment"));
+        Assert.Equal(3, card.Descendants(presentation + "Button").Count());
+    }
+
+    [Fact]
+    public void Server_settings_header_uses_constrained_grid_for_wrapping_description()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Controls",
+            "ApiServerSettingsPanel.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var headerGrid = Assert.Single(document.Descendants(presentation + "Grid").Where(
+            element => (string?)element.Attribute("Margin") == "0,0,0,12"));
+        var columns = Assert.Single(headerGrid.Elements(presentation + "Grid.ColumnDefinitions"))
+            .Elements(presentation + "ColumnDefinition")
+            .ToArray();
+        Assert.Equal(["Auto", "*"], columns.Select(column => (string?)column.Attribute("Width")));
+
+        var icon = Assert.Single(headerGrid.Elements().Where(element => element.Name.LocalName == "PackIcon"));
+        Assert.Equal("0", (string?)icon.Attribute("Grid.Column"));
+        var textColumn = Assert.Single(headerGrid.Elements(presentation + "StackPanel"));
+        Assert.Equal("1", (string?)textColumn.Attribute("Grid.Column"));
+        var description = Assert.Single(textColumn.Elements(presentation + "TextBlock").Where(
+            element => ((string?)element.Attribute("Text"))?.Contains("settings.serverAddress.description", StringComparison.Ordinal) == true));
+        Assert.Equal("Wrap", (string?)description.Attribute("TextWrapping"));
     }
 
     private static ApiServerSettingsViewModel CreateApiServerSettings()

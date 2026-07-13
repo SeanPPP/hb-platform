@@ -460,6 +460,78 @@ public sealed class DeviceRegistrationTests
     }
 
     [Fact]
+    public async Task DeviceRegistrationViewModel_ClearingRestartRequired_ResumesPendingPolling()
+    {
+        var pollingStartCount = 0;
+        Task DelayFirstPollingUntilCancelled(TimeSpan _, CancellationToken cancellationToken)
+        {
+            return Interlocked.Increment(ref pollingStartCount) == 1
+                ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)
+                : Task.CompletedTask;
+        }
+
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                "POS-OLD",
+                true,
+                "Pending approval"),
+            VerifyResult = new DeviceRegistrationActionResult(
+                "POS-OLD",
+                "1002",
+                "Lutwyche",
+                "HW-001",
+                false,
+                "Device is enabled.",
+                "AUTH-001",
+                true,
+                false)
+        };
+        var apiServerSettings = CreateApiServerSettings();
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.FromMinutes(1),
+            delayAsync: DelayFirstPollingUntilCancelled,
+            apiServerSettings: apiServerSettings);
+        var cached = new LocalDeviceCache(
+            "POS-OLD",
+            "1002",
+            "Lutwyche",
+            "HW-001",
+            -1,
+            false,
+            "Pending approval",
+            DateTimeOffset.UtcNow);
+
+        await viewModel.InitializeAsync(cached);
+        var originalPollingTask = viewModel.ApprovalPollingTask;
+        Assert.NotNull(originalPollingTask);
+
+        try
+        {
+            apiServerSettings.ServerAddressText = "https://new.example.com";
+            await apiServerSettings.SaveCommand.ExecuteAsync(null);
+            await originalPollingTask!.WaitAsync(TimeSpan.FromSeconds(3));
+
+            apiServerSettings.ServerAddressText = "https://current.example.com/";
+            await apiServerSettings.SaveCommand.ExecuteAsync(null);
+            await workflow.WaitForVerifyStartedAsync().WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.False(apiServerSettings.RestartRequired);
+            Assert.NotSame(originalPollingTask, viewModel.ApprovalPollingTask);
+            Assert.Equal(2, Volatile.Read(ref pollingStartCount));
+            Assert.Equal(1, workflow.VerifyCallCount);
+        }
+        finally
+        {
+            viewModel.Prepare(cachedDevice: null);
+        }
+    }
+
+    [Fact]
     public async Task DeviceRegistrationViewModel_InFlightOldPollingResultDoesNotOverrideNewPendingRegistration()
     {
         var pendingOldVerifyResult = new TaskCompletionSource<DeviceRegistrationActionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
