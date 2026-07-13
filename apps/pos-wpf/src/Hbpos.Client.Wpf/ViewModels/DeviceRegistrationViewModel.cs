@@ -590,7 +590,12 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
     private void RestartApprovalPollingIfNeeded()
     {
         StopApprovalPolling();
-        if (IsReregisterMode || !HasPendingRegistration || SelectedStore is null || string.IsNullOrWhiteSpace(DeviceCode))
+        // 新地址仅在重启后生效，等待重启期间不能重新创建仍访问旧地址的审批轮询。
+        if (_apiServerSettings?.RestartRequired == true ||
+            IsReregisterMode ||
+            !HasPendingRegistration ||
+            SelectedStore is null ||
+            string.IsNullOrWhiteSpace(DeviceCode))
         {
             return;
         }
