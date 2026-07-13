@@ -2448,6 +2448,37 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Settings_and_device_registration_share_the_composed_api_server_settings()
+    {
+        var apiServerSettings = new ApiServerSettingsViewModel(
+            new ApiServerSettingsService(
+                new HttpClient(),
+                () => "https://current.example.com/",
+                _ => { }),
+            new LocalizationService());
+        var deviceApi = new FakeDeviceApiClient
+        {
+            Stores =
+            [
+                new StoreSelectionItem("1042", "Old Store", true),
+                new StoreSelectionItem("2042", "New Store", true)
+            ]
+        };
+        var viewModel = CreateAuthorizedMainViewModelWithSettings(
+            deviceApiClient: deviceApi,
+            apiServerSettings: apiServerSettings);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowSettingsCommand.ExecuteAsync(null);
+        var settings = Assert.IsType<SettingsViewModel>(viewModel.CurrentScreen);
+
+        await settings.ReregisterDeviceCommand.ExecuteAsync(null);
+
+        Assert.Same(apiServerSettings, settings.ApiServerSettings);
+        Assert.Same(apiServerSettings, Assert.IsType<DeviceRegistrationViewModel>(viewModel.DeviceRegistration).ApiServerSettings);
+    }
+
+    [Fact]
     public async Task Settings_ReregisterDeviceCommand_NotifiesDeviceRegistrationForDialogBinding()
     {
         var deviceApi = new FakeDeviceApiClient
@@ -4356,7 +4387,8 @@ public sealed class MainViewModelScannerTests
 
     private static MainViewModel CreateAuthorizedMainViewModelWithSettings(
         FakeDeviceApiClient? deviceApiClient = null,
-        FakeSyncQueueRepository? syncQueueRepository = null)
+        FakeSyncQueueRepository? syncQueueRepository = null,
+        ApiServerSettingsViewModel? apiServerSettings = null)
     {
         var settingsRepository = new FakeSettingsRepository();
         var catalogRepository = new FakeCatalogRepository();
@@ -4393,7 +4425,8 @@ public sealed class MainViewModelScannerTests
                 priceIndex,
                 cart,
                 remoteLookupRefreshAsync,
-                reloadCatalogAsync));
+                reloadCatalogAsync),
+            apiServerSettings: apiServerSettings);
     }
 
     private static SyncQueueListItem CreateSyncQueueItem(Guid entityId, string status, string? errorMessage = null)

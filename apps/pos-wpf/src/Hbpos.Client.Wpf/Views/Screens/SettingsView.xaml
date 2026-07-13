@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:converters="clr-namespace:Hbpos.Client.Wpf.Converters"
+             xmlns:controls="clr-namespace:Hbpos.Client.Wpf.Views.Controls"
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -1454,6 +1455,8 @@
                     </StackPanel>
 
                     <StackPanel Visibility="{Binding IsDeviceRegistrationSelected, Converter={StaticResource BoolToVis}}">
+                        <controls:ApiServerSettingsPanel DataContext="{Binding ApiServerSettings}"
+                                                         Margin="0,0,0,16" />
                         <Border Style="{StaticResource SettingsActionCardStyle}">
                             <DockPanel>
                                 <Border DockPanel.Dock="Left"

@@ -191,6 +191,11 @@
   <data name="settings.status.reregisterNotConfigured" xml:space="preserve"><value>Device reregistration service is not configured.</value></data>
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>Starting change store registration...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>Operation canceled.</value></data>
+  <data name="settings.serverAddress.title" xml:space="preserve"><value>API Server</value></data>
+  <data name="settings.serverAddress.description" xml:space="preserve"><value>Test and save the HBPOS API address. A changed address takes effect after restart.</value></data>
+  <data name="settings.serverAddress.address" xml:space="preserve"><value>Server Address</value></data>
+  <data name="settings.serverAddress.test" xml:space="preserve"><value>Test Connection</value></data>
+  <data name="settings.serverAddress.save" xml:space="preserve"><value>Save Address</value></data>
   <data name="settings.serverAddress.status.ready" xml:space="preserve"><value>Ready.</value></data>
   <data name="settings.serverAddress.status.testing" xml:space="preserve"><value>Testing connection...</value></data>
   <data name="settings.serverAddress.status.testSucceeded" xml:space="preserve"><value>Connection succeeded.</value></data>

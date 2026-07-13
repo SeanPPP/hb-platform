@@ -1,3 +1,4 @@
+using System.Reflection;
 using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -19,6 +20,13 @@ public sealed class ServiceRegistrationSquareClientTests
         Assert.NotNull(provider.GetRequiredService<ApiServerSettingsService>());
         var first = provider.GetRequiredService<ApiServerSettingsViewModel>();
         Assert.Same(first, provider.GetRequiredService<ApiServerSettingsViewModel>());
+
+        var mainViewModel = provider.GetRequiredService<MainViewModel>();
+        var field = typeof(MainViewModel).GetField(
+            "_apiServerSettings",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        Assert.Same(first, field!.GetValue(mainViewModel));
     }
 
     [Fact]

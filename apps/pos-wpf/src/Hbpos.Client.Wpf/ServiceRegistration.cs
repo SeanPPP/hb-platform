@@ -387,7 +387,8 @@ public static class ServiceRegistration
             emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
             enforceCashierPermissions: true,
-            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>()));
+            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
+            apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>()));
         services.AddSingleton<MainWindow>();
 
         return services;

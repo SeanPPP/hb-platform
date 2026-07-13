@@ -60,6 +60,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private readonly ICardTerminalSetupService _setupService;
     private readonly ILocalizationService? _localization;
+    private readonly ApiServerSettingsViewModel? _apiServerSettings;
     private readonly Func<CancellationToken, Task>? _downloadCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetTestSalesDataAsync;
@@ -205,10 +206,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
         string? appUpdateChannel = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        ApiServerSettingsViewModel? apiServerSettings = null)
     {
         _setupService = setupService;
         _localization = localization;
+        _apiServerSettings = apiServerSettings;
         _downloadCatalogAsync = downloadCatalogAsync;
         _resetCatalogAsync = resetCatalogAsync;
         _resetTestSalesDataAsync = resetTestSalesDataAsync;
@@ -310,6 +313,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ResetLinklyModePriority(CardTerminalConfiguration.Default.LinklyConnectionModePriority);
         RefreshLocalizedMessages();
     }
+
+    public ApiServerSettingsViewModel ApiServerSettings =>
+        _apiServerSettings ?? throw new InvalidOperationException("API server settings are not configured.");
 
     public void Dispose()
     {
@@ -543,6 +549,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task LoadAsync()
     {
+        // 设置页与设备注册页共享同一个单例；重复进入时由共享 VM 保留等待重启状态。
+        _apiServerSettings?.Load();
         await RunBusyAsync(async () =>
         {
             _loadedConfiguration = await _setupService.LoadConfigurationAsync();

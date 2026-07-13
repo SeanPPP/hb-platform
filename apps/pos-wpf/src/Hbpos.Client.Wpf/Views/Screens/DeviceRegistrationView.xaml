@@ -1,6 +1,7 @@
 <UserControl x:Class="Hbpos.Client.Wpf.Views.Screens.DeviceRegistrationView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Hbpos.Client.Wpf.Views.Controls"
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes">
     <UserControl.Resources>
@@ -45,6 +46,9 @@
                                    Margin="0,3,0,0" />
                     </StackPanel>
                 </StackPanel>
+
+                <controls:ApiServerSettingsPanel DataContext="{Binding ApiServerSettings}"
+                                                 Margin="0,0,0,18" />
 
                 <TextBlock Text="{loc:Loc deviceRegistration.store}"
                            FontSize="12"
