@@ -191,4 +191,11 @@
   <data name="settings.status.reregisterNotConfigured" xml:space="preserve"><value>Device reregistration service is not configured.</value></data>
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>Starting change store registration...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>Operation canceled.</value></data>
+  <data name="settings.serverAddress.status.ready" xml:space="preserve"><value>Ready.</value></data>
+  <data name="settings.serverAddress.status.testing" xml:space="preserve"><value>Testing connection...</value></data>
+  <data name="settings.serverAddress.status.testSucceeded" xml:space="preserve"><value>Connection succeeded.</value></data>
+  <data name="settings.serverAddress.status.testFailed" xml:space="preserve"><value>Connection failed. Check the address and try again.</value></data>
+  <data name="settings.serverAddress.status.invalid" xml:space="preserve"><value>Enter a valid HTTPS server address. HTTP is allowed only for localhost.</value></data>
+  <data name="settings.serverAddress.status.saved" xml:space="preserve"><value>Server address saved.</value></data>
+  <data name="settings.serverAddress.status.savedRestartRequired" xml:space="preserve"><value>Server address saved. Restart HBPOS to use the new address.</value></data>
 </root>

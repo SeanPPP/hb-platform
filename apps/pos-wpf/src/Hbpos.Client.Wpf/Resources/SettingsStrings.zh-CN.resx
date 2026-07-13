@@ -191,4 +191,11 @@
   <data name="settings.status.reregisterNotConfigured" xml:space="preserve"><value>&#x672A;&#x914D;&#x7F6E;&#x8BBE;&#x5907;&#x91CD;&#x65B0;&#x6CE8;&#x518C;&#x670D;&#x52A1;&#x3002;</value></data>
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>正在启动更换分店重新注册...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>&#x64CD;&#x4F5C;&#x5DF2;&#x53D6;&#x6D88;&#x3002;</value></data>
+  <data name="settings.serverAddress.status.ready" xml:space="preserve"><value>就绪。</value></data>
+  <data name="settings.serverAddress.status.testing" xml:space="preserve"><value>正在测试连接...</value></data>
+  <data name="settings.serverAddress.status.testSucceeded" xml:space="preserve"><value>连接成功。</value></data>
+  <data name="settings.serverAddress.status.testFailed" xml:space="preserve"><value>连接失败，请检查地址后重试。</value></data>
+  <data name="settings.serverAddress.status.invalid" xml:space="preserve"><value>请输入有效的 HTTPS 服务器地址；仅 localhost 可使用 HTTP。</value></data>
+  <data name="settings.serverAddress.status.saved" xml:space="preserve"><value>服务器地址已保存。</value></data>
+  <data name="settings.serverAddress.status.savedRestartRequired" xml:space="preserve"><value>服务器地址已保存，请重启 HBPOS 后使用新地址。</value></data>
 </root>
