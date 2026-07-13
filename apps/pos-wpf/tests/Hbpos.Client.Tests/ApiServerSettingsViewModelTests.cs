@@ -96,6 +96,23 @@ public sealed class ApiServerSettingsViewModelTests
     }
 
     [Fact]
+    public async Task SaveCommand_requires_restart_when_path_differs_only_by_case()
+    {
+        var savedAddresses = new List<string>();
+        var viewModel = CreateViewModel(
+            _ => OnlineResponse(),
+            currentAddress: "https://api.example.com/pos-api/",
+            savedAddresses: savedAddresses);
+        viewModel.ServerAddressText = "https://API.EXAMPLE.COM/POS-API/";
+
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("https://api.example.com/POS-API/", Assert.Single(savedAddresses));
+        Assert.True(viewModel.RestartRequired);
+        Assert.Equal("Server address saved. Restart HBPOS to use the new address.", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Load_preserves_pending_address_and_restart_requirement_after_save()
     {
         var viewModel = CreateViewModel(

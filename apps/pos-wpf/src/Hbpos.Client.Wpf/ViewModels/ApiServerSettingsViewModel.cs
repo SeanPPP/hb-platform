@@ -130,7 +130,7 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
             RestartRequired = !string.Equals(
                 normalized,
                 currentAddress,
-                StringComparison.OrdinalIgnoreCase);
+                StringComparison.Ordinal);
             SetStatus(RestartRequired
                 ? "settings.serverAddress.status.savedRestartRequired"
                 : "settings.serverAddress.status.saved");
