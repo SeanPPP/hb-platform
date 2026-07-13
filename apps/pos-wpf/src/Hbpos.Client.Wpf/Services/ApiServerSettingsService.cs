@@ -39,12 +39,21 @@ public sealed class ApiServerSettingsService
 
     public string GetCurrentAddress()
     {
-        return NormalizeAddress(_getCurrentAddress());
+        var currentAddress = _getCurrentAddress().Trim();
+        if (!Uri.TryCreate(currentAddress, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException("当前进程服务器地址必须是绝对地址。", nameof(currentAddress));
+        }
+
+        // 当前进程可能仍使用旧版允许的地址；只做格式统一，严格策略仅用于新保存值。
+        var normalized = uri.AbsoluteUri;
+        return normalized.EndsWith('/') ? normalized : normalized + "/";
     }
 
     public static string NormalizeAddress(string address)
     {
-        if (!Uri.TryCreate(address?.Trim(), UriKind.Absolute, out var uri) ||
+        var normalizedInput = address?.Trim();
+        if (!Uri.TryCreate(normalizedInput, UriKind.Absolute, out var uri) ||
             string.IsNullOrWhiteSpace(uri.Host))
         {
             throw new ArgumentException("服务器地址必须是绝对地址。", nameof(address));
@@ -62,6 +71,7 @@ public sealed class ApiServerSettingsService
         }
 
         if (!string.IsNullOrEmpty(uri.UserInfo) ||
+            HasUserInfoSeparator(normalizedInput) ||
             !string.IsNullOrEmpty(uri.Query) ||
             !string.IsNullOrEmpty(uri.Fragment))
         {
@@ -70,6 +80,14 @@ public sealed class ApiServerSettingsService
 
         var normalized = uri.AbsoluteUri;
         return normalized.EndsWith('/') ? normalized : normalized + "/";
+    }
+
+    private static bool HasUserInfoSeparator(string address)
+    {
+        var authorityStart = address.IndexOf("://", StringComparison.Ordinal) + 3;
+        var authorityEnd = address.IndexOfAny(['/', '?', '#'], authorityStart);
+        var authorityLength = (authorityEnd < 0 ? address.Length : authorityEnd) - authorityStart;
+        return address.IndexOf('@', authorityStart, authorityLength) >= 0;
     }
 
     public async Task<bool> TestConnectionAsync(string address, CancellationToken cancellationToken)

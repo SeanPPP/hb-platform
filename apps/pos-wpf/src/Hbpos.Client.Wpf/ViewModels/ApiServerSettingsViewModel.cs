@@ -38,6 +38,12 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
 
     public void Load()
     {
+        // 用户级地址要到重启后才生效；重启前再次进入页面必须保留待生效地址和阻断标记。
+        if (RestartRequired)
+        {
+            return;
+        }
+
         ServerAddressText = _settingsService.GetCurrentAddress();
         RestartRequired = false;
         SetStatus("settings.serverAddress.status.ready");
@@ -84,7 +90,17 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var normalized = ApiServerSettingsService.NormalizeAddress(ServerAddressText);
+            string normalized;
+            try
+            {
+                normalized = ApiServerSettingsService.NormalizeAddress(ServerAddressText);
+            }
+            catch (ArgumentException)
+            {
+                SetStatus("settings.serverAddress.status.invalid");
+                return;
+            }
+
             SetStatus("settings.serverAddress.status.testing");
 
             // 保存前先确认目标服务在线，避免把不可用地址写入用户环境变量。
@@ -95,7 +111,21 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
             }
 
             var currentAddress = _settingsService.GetCurrentAddress();
-            _settingsService.SaveUserAddress(normalized);
+            try
+            {
+                _settingsService.SaveUserAddress(normalized);
+            }
+            catch (Exception ex) when (ex is
+                ArgumentException or
+                System.IO.IOException or
+                UnauthorizedAccessException or
+                System.Security.SecurityException)
+            {
+                // 持久化失败不是地址校验失败，避免异步命令故障或误导用户修改合法地址。
+                SetStatus("settings.serverAddress.status.saveFailed");
+                return;
+            }
+
             ServerAddressText = normalized;
             RestartRequired = !string.Equals(
                 normalized,
@@ -104,10 +134,6 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
             SetStatus(RestartRequired
                 ? "settings.serverAddress.status.savedRestartRequired"
                 : "settings.serverAddress.status.saved");
-        }
-        catch (ArgumentException)
-        {
-            SetStatus("settings.serverAddress.status.invalid");
         }
         finally
         {

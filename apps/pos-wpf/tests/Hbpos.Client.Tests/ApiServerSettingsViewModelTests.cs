@@ -95,6 +95,57 @@ public sealed class ApiServerSettingsViewModelTests
         Assert.Equal("Server address saved.", viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task Load_preserves_pending_address_and_restart_requirement_after_save()
+    {
+        var viewModel = CreateViewModel(
+            _ => OnlineResponse(),
+            currentAddress: "https://current.example.com/");
+        viewModel.ServerAddressText = "https://new.example.com";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        viewModel.Load();
+
+        Assert.Equal("https://new.example.com/", viewModel.ServerAddressText);
+        Assert.True(viewModel.RestartRequired);
+        Assert.Equal("Server address saved. Restart HBPOS to use the new address.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveCommand_can_replace_legacy_process_address_rejected_for_new_saves()
+    {
+        var savedAddresses = new List<string>();
+        var viewModel = CreateViewModel(
+            _ => OnlineResponse(),
+            currentAddress: "http://10.0.0.5:5159/",
+            savedAddresses: savedAddresses);
+        viewModel.ServerAddressText = "https://new.example.com";
+
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal("https://new.example.com/", Assert.Single(savedAddresses));
+        Assert.True(viewModel.RestartRequired);
+        Assert.Equal("Server address saved. Restart HBPOS to use the new address.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveCommand_reports_save_failure_without_faulting_or_marking_restart()
+    {
+        var savedAddresses = new List<string>();
+        var viewModel = CreateViewModel(
+            _ => OnlineResponse(),
+            currentAddress: "https://current.example.com/",
+            savedAddresses: savedAddresses,
+            onSave: _ => throw new UnauthorizedAccessException("用户环境变量不可写。"));
+        viewModel.ServerAddressText = "https://new.example.com";
+
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(savedAddresses);
+        Assert.False(viewModel.RestartRequired);
+        Assert.Equal("Could not save the server address. Check Windows permissions and try again.", viewModel.StatusMessage);
+    }
+
     private static ApiServerSettingsViewModel CreateViewModel(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
         string currentAddress = "http://localhost:5159/",
@@ -107,8 +158,8 @@ public sealed class ApiServerSettingsViewModelTests
             () => currentAddress,
             address =>
             {
-                savedAddresses?.Add(address);
                 onSave?.Invoke(address);
+                savedAddresses?.Add(address);
             });
         return new ApiServerSettingsViewModel(service, new LocalizationService());
     }

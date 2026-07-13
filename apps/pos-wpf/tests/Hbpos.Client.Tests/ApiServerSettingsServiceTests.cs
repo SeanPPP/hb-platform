@@ -30,6 +30,7 @@ public sealed class ApiServerSettingsServiceTests
     [InlineData("ftp://localhost/")]
     [InlineData("http://api.example.com/")]
     [InlineData("https://user:password@api.example.com/")]
+    [InlineData("https://@api.example.com/")]
     [InlineData("https://api.example.com/?store=1")]
     [InlineData("https://api.example.com/#fragment")]
     public void NormalizeAddress_rejects_unsupported_server_addresses(string input)
@@ -99,6 +100,44 @@ public sealed class ApiServerSettingsServiceTests
         Assert.Equal("https://api.example.com/store/", service.GetCurrentAddress());
     }
 
+    [Fact]
+    public void GetCurrentAddress_preserves_legacy_absolute_process_address()
+    {
+        var service = CreateService(
+            new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)),
+            currentAddress: () => "http://10.0.0.5:5159");
+
+        Assert.Equal("http://10.0.0.5:5159/", service.GetCurrentAddress());
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_propagates_caller_cancellation()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateService(new WaitingHttpMessageHandler(started));
+        using var cancellation = new CancellationTokenSource();
+
+        var testTask = service.TestConnectionAsync("https://api.example.com", cancellation.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => testTask);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_returns_false_after_internal_timeout()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateService(new WaitingHttpMessageHandler(started));
+
+        var result = await service.TestConnectionAsync(
+                "https://api.example.com",
+                CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(8));
+
+        Assert.False(result);
+    }
+
     private static ApiServerSettingsService CreateService(
         HttpMessageHandler handler,
         Func<string>? currentAddress = null,
@@ -118,6 +157,18 @@ public sealed class ApiServerSettingsServiceTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(responder(request));
+        }
+    }
+
+    private sealed class WaitingHttpMessageHandler(TaskCompletionSource started) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("等待请求只能通过取消结束。");
         }
     }
 }
