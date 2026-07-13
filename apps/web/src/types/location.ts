@@ -6,6 +6,20 @@ export interface LocationProduct {
   productImage?: string
 }
 
+export interface LocationProductBinding {
+  locationGuid: string
+  productCode: string
+}
+
+export interface LocationProductUnbindFailure extends LocationProductBinding {
+  message: string
+}
+
+export interface BatchUnbindLocationProductsResult {
+  succeeded: LocationProductBinding[]
+  failed: LocationProductUnbindFailure[]
+}
+
 export interface LocationItem {
   locationGuid: string
   locationCode?: string

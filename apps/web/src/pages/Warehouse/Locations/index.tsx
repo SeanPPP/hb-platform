@@ -32,6 +32,7 @@ import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import './compact.css'
 import {
+  batchUnbindLocationProducts,
   createLocation,
   deleteLocation,
   getLocationList,
@@ -60,6 +61,11 @@ import {
   type TextFilterMode,
   type WarehouseLocationColumnFilters,
 } from './columnFilters'
+import {
+  buildSelectedLocationProductBindings,
+  coordinateBatchUnbindLocationProducts,
+  hasUnbindableProducts,
+} from './bulkUnbindSelection'
 
 interface LocationFormValues {
   locationCode: string
@@ -132,6 +138,8 @@ type LocationSortBy =
 
 const DEFAULT_LOCATION_SORT_BY: LocationSortBy = 'LocationCode'
 const DEFAULT_LOCATION_SORT_ORDER: SortOrder = 'ascend'
+const WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH = 56
+const WAREHOUSE_LOCATION_MIN_TABLE_SCROLL_X = 1480
 
 const LOCATION_SORT_FIELD_MAP: Record<string, LocationSortBy> = {
   locationCode: 'LocationCode',
@@ -296,6 +304,8 @@ export default function WarehouseLocationsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<LocationItem | null>(null)
   const [syncingFromHq, setSyncingFromHq] = useState(false)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [batchUnbinding, setBatchUnbinding] = useState(false)
   const [data, setData] = useState<LocationItem[]>([])
   const [locationCodeKeyword, setLocationCodeKeyword] = useState('')
   const [locationBarcodeKeyword, setLocationBarcodeKeyword] = useState('')
@@ -346,15 +356,26 @@ export default function WarehouseLocationsPage() {
       })
 
       setData(result.items)
+      // 翻页、筛选或刷新后，只保留当前结果中仍可解绑的货位，避免跨页误操作。
+      const selectableLocationGuids = new Set(
+        result.items
+          .filter(hasUnbindableProducts)
+          .map((item) => item.locationGuid),
+      )
+      setSelectedRowKeys((currentKeys) =>
+        currentKeys.filter((key) => selectableLocationGuids.has(String(key))),
+      )
       setTotal(result.total)
       setPage(result.pageNumber)
       setPageSize(result.pageSize)
       setSortBy(effectiveSortBy)
       setSortOrder(effectiveSortOrder)
       setColumnFilters(nextColumnFilters)
+      return result.items
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouseLocations.loadFailed'))
+      return undefined
     } finally {
       setLoading(false)
     }
@@ -471,6 +492,63 @@ export default function WarehouseLocationsPage() {
           message.error(error instanceof Error ? error.message : t('warehouseLocations.syncFromHqFailed'))
         } finally {
           setSyncingFromHq(false)
+        }
+      },
+    })
+  }
+
+  const selectedLocationGuidSet = new Set(selectedRowKeys.map((key) => String(key)))
+  const selectedLocations = data.filter((location) => selectedLocationGuidSet.has(location.locationGuid))
+  const selectedBindings = buildSelectedLocationProductBindings(data, selectedRowKeys)
+
+  const handleBatchUnbind = () => {
+    // 固定本次确认时的关联快照，防止弹窗打开后列表状态变化导致请求内容漂移。
+    const bindings = [...selectedBindings]
+    const locationCount = selectedLocations.length
+
+    Modal.confirm({
+      title: t('warehouseLocations.batchUnbindTitle'),
+      content: t('warehouseLocations.batchUnbindContent', {
+        locations: locationCount,
+        products: bindings.length,
+      }),
+      okText: t('warehouseLocations.batchUnbindConfirm'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setBatchUnbinding(true)
+        try {
+          const {
+            result,
+            nextSelectedRowKeys,
+            patchedData,
+            shouldApplyPatchedData,
+          } = await coordinateBatchUnbindLocationProducts({
+            bindings,
+            locations: data,
+            unbind: batchUnbindLocationProducts,
+            refresh: () => loadDataWithColumnFilters(page, pageSize),
+          })
+          const succeeded = result.succeeded.length
+          const failed = result.failed.length
+
+          if (failed === 0) {
+            message.success(t('warehouseLocations.batchUnbindSuccess', { succeeded }))
+          } else if (succeeded > 0) {
+            message.warning(t('warehouseLocations.batchUnbindPartialFailed', { succeeded, failed }))
+          } else {
+            message.error(t('warehouseLocations.batchUnbindFailed', { failed }))
+          }
+
+          if (shouldApplyPatchedData && patchedData) {
+            setData(patchedData)
+          }
+          setSelectedRowKeys(nextSelectedRowKeys)
+        } catch (error) {
+          console.error(error)
+          message.error(t('warehouseLocations.batchUnbindFailed', { failed: bindings.length }))
+        } finally {
+          setBatchUnbinding(false)
         }
       },
     })
@@ -648,11 +726,23 @@ export default function WarehouseLocationsPage() {
     void loadDataWithColumnFilters(1, pageSize, nextColumnFilters, sortBy, sortOrder)
   }
 
+  const rowSelection: TableProps<LocationItem>['rowSelection'] = {
+    // 显式固定选择列宽度，并与左侧序号列共同固定，避免虚拟横向滚动时两列叠在一起。
+    fixed: true,
+    columnWidth: WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH,
+    selectedRowKeys,
+    onChange: (nextSelectedRowKeys) => setSelectedRowKeys(nextSelectedRowKeys),
+    getCheckboxProps: (record) => ({
+      disabled: !hasUnbindableProducts(record),
+    }),
+  }
+
   const columns: ColumnsType<LocationItem> = [
     {
       title: t('column.index'),
       key: 'index',
       width: 56,
+      fixed: 'left',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
@@ -780,6 +870,17 @@ export default function WarehouseLocationsPage() {
     },
   ]
 
+  const selectionColumnWidth = access.canManageWarehouseLocations
+    ? WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH
+    : 0
+  const tableScrollX = Math.max(
+    WAREHOUSE_LOCATION_MIN_TABLE_SCROLL_X,
+    selectionColumnWidth + columns.reduce((total, column) => {
+      const width = typeof column.width === 'number' ? column.width : Number(column.width)
+      return total + (Number.isFinite(width) ? width : 0)
+    }, 0),
+  )
+
   return (
     <PageContainer
       title={t('warehouseLocations.title')}
@@ -873,15 +974,37 @@ export default function WarehouseLocationsPage() {
           </Button>
         </Space>
 
+        {access.canManageWarehouseLocations ? (
+          <Space size="small" wrap style={{ marginBottom: 12 }}>
+            <Typography.Text type="secondary">
+              {t('warehouseLocations.selectedLocations', {
+                locations: selectedLocations.length,
+                products: selectedBindings.length,
+              })}
+            </Typography.Text>
+            <Button
+              danger
+              size="small"
+              icon={<DeleteOutlined />}
+              disabled={!selectedBindings.length || loading || batchUnbinding}
+              loading={batchUnbinding}
+              onClick={handleBatchUnbind}
+            >
+              {t('warehouseLocations.batchUnbind')}
+            </Button>
+          </Space>
+        ) : null}
+
         <Table
           rowKey="locationGuid"
+          rowSelection={access.canManageWarehouseLocations ? rowSelection : undefined}
           className="warehouse-locations-compact-table"
           virtual
           loading={loading}
           columns={columns}
           dataSource={data}
           size="small"
-          scroll={{ x: 1480, y: 600 }}
+          scroll={{ x: tableScrollX, y: 600 }}
           onChange={handleTableChange}
           pagination={{
             current: page,

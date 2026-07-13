@@ -4,6 +4,20 @@
   vertical-align: middle;
 }
 
+/* 选择列必须覆盖紧凑 padding 后的完整点击区，避免复选框侵入相邻序号列。 */
+.warehouse-locations-compact-table .ant-table-selection-column {
+  width: 56px;
+  min-width: 56px;
+  max-width: 56px;
+  text-align: center;
+}
+
+.warehouse-locations-compact-table .ant-table-selection-column .ant-checkbox-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .warehouse-locations-compact-table .ant-table-column-title {
   display: -webkit-box;
   overflow: hidden;
