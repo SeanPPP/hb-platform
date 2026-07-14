@@ -26,8 +26,12 @@ public interface IEmergencyLoginPublicKeyApiClient
         long? currentVersion,
         CancellationToken cancellationToken = default);
 
-    Task AcknowledgeAsync(long version, CancellationToken cancellationToken = default);
+    Task<EmergencyLoginPublicKeyAckClientResult> AcknowledgeAsync(
+        long version,
+        CancellationToken cancellationToken = default);
 }
+
+public sealed record EmergencyLoginPublicKeyAckClientResult(bool Acknowledged, long Version);
 
 public sealed class EmergencyLoginPublicKeyApiClient(HttpClient httpClient)
     : IEmergencyLoginPublicKeyApiClient
@@ -62,14 +66,28 @@ public sealed class EmergencyLoginPublicKeyApiClient(HttpClient httpClient)
             : EmergencyLoginPublicKeyFetchResult.Changed(package);
     }
 
-    public async Task AcknowledgeAsync(long version, CancellationToken cancellationToken = default)
+    public async Task<EmergencyLoginPublicKeyAckClientResult> AcknowledgeAsync(
+        long version,
+        CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.PostAsJsonAsync(
             "api/v1/emergency-login/public-keys/ack",
             new EmergencyLoginPublicKeyAckRequest(version),
             JsonOptions,
             cancellationToken);
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var conflict = await response.Content.ReadFromJsonAsync<EmergencyLoginPublicKeyAckResponse>(
+                JsonOptions,
+                cancellationToken);
+            return new EmergencyLoginPublicKeyAckClientResult(false, conflict?.Version ?? version);
+        }
+
         response.EnsureSuccessStatusCode();
+        var acknowledged = await response.Content.ReadFromJsonAsync<EmergencyLoginPublicKeyAckResponse>(
+            JsonOptions,
+            cancellationToken);
+        return new EmergencyLoginPublicKeyAckClientResult(true, acknowledged?.Version ?? version);
     }
 }
 
@@ -151,8 +169,7 @@ public sealed class EmergencyLoginPublicKeySyncService(
                     return false;
                 }
 
-                await apiClient.AcknowledgeAsync(validCurrent.Version, cancellationToken);
-                return true;
+                return await AcknowledgeWithSingleRetryAsync(validCurrent.Version, cancellationToken);
             }
 
             var package = fetched.Package;
@@ -169,8 +186,7 @@ public sealed class EmergencyLoginPublicKeySyncService(
                 await cache.ReplaceAsync(package, cancellationToken);
             }
 
-            await apiClient.AcknowledgeAsync(package.Version, cancellationToken);
-            return true;
+            return await AcknowledgeWithSingleRetryAsync(package.Version, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -185,6 +201,31 @@ public sealed class EmergencyLoginPublicKeySyncService(
         {
             _syncGate.Release();
         }
+    }
+
+    private async Task<bool> AcknowledgeWithSingleRetryAsync(
+        long version,
+        CancellationToken cancellationToken)
+    {
+        var acknowledgement = await apiClient.AcknowledgeAsync(version, cancellationToken);
+        if (acknowledgement.Acknowledged && acknowledgement.Version == version)
+        {
+            return true;
+        }
+
+        // 仅允许一次无 ETag 即时重拉，持续轮换时返回失败交给后台重试节流处理。
+        var refreshed = await apiClient.GetAsync(null, cancellationToken);
+        if (refreshed.NotModified ||
+            refreshed.Package is null ||
+            !EmergencyLoginPublicKeyValidator.TryValidate(refreshed.Package) ||
+            refreshed.Package.Version < Math.Max(version, acknowledgement.Version))
+        {
+            return false;
+        }
+
+        await cache.ReplaceAsync(refreshed.Package, cancellationToken);
+        var retried = await apiClient.AcknowledgeAsync(refreshed.Package.Version, cancellationToken);
+        return retried.Acknowledged && retried.Version == refreshed.Package.Version;
     }
 }
 

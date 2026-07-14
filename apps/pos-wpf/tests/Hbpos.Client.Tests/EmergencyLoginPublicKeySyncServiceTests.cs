@@ -115,6 +115,41 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
     }
 
     [Fact]
+    public async Task Sync_stale_ack_immediately_refetches_without_etag_then_saves_and_acks_current_version()
+    {
+        using var oldKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var settings = new InMemorySettingsRepository();
+        var cache = new EmergencyLoginPublicKeyCache(settings, new PassthroughProtector());
+        await cache.ReplaceAsync(CreatePackage(7, "K7", oldKey));
+        var api = new RacingApiClient(CreatePackage(8, "K8", newKey), secondAckSucceeds: true);
+
+        var result = await new EmergencyLoginPublicKeySyncService(api, cache).SyncAsync();
+
+        Assert.True(result);
+        Assert.Equal([7L, null], api.RequestedVersions);
+        Assert.Equal([7L, 8L], api.AcknowledgedVersions);
+        Assert.Equal(8, (await cache.GetAsync())?.Version);
+    }
+
+    [Fact]
+    public async Task Sync_stops_after_one_immediate_retry_when_rotation_continues()
+    {
+        using var oldKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var settings = new InMemorySettingsRepository();
+        var cache = new EmergencyLoginPublicKeyCache(settings, new PassthroughProtector());
+        await cache.ReplaceAsync(CreatePackage(7, "K7", oldKey));
+        var api = new RacingApiClient(CreatePackage(8, "K8", newKey), secondAckSucceeds: false);
+
+        var result = await new EmergencyLoginPublicKeySyncService(api, cache).SyncAsync();
+
+        Assert.False(result);
+        Assert.Equal(2, api.RequestedVersions.Count);
+        Assert.Equal(2, api.AcknowledgedVersions.Count);
+    }
+
+    [Fact]
     public void Validator_rejects_non_es256_non_p256_and_invalid_kid()
     {
         using var p256 = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -227,11 +262,42 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
             return Task.FromResult(_fetchResult ?? EmergencyLoginPublicKeyFetchResult.Changed(_package!));
         }
 
-        public Task AcknowledgeAsync(long version, CancellationToken cancellationToken = default)
+        public Task<EmergencyLoginPublicKeyAckClientResult> AcknowledgeAsync(
+            long version,
+            CancellationToken cancellationToken = default)
         {
             Assert.True(_beforeAck?.Invoke() ?? true, "ACK 必须发生在缓存保存之后");
             AcknowledgedVersions.Add(version);
-            return Task.CompletedTask;
+            return Task.FromResult(new EmergencyLoginPublicKeyAckClientResult(true, version));
+        }
+    }
+
+    private sealed class RacingApiClient(
+        EmergencyLoginPublicKeyPackage currentPackage,
+        bool secondAckSucceeds) : IEmergencyLoginPublicKeyApiClient
+    {
+        public List<long?> RequestedVersions { get; } = [];
+        public List<long> AcknowledgedVersions { get; } = [];
+
+        public Task<EmergencyLoginPublicKeyFetchResult> GetAsync(
+            long? currentVersion,
+            CancellationToken cancellationToken = default)
+        {
+            RequestedVersions.Add(currentVersion);
+            return Task.FromResult(currentVersion is null
+                ? EmergencyLoginPublicKeyFetchResult.Changed(currentPackage)
+                : EmergencyLoginPublicKeyFetchResult.Unchanged());
+        }
+
+        public Task<EmergencyLoginPublicKeyAckClientResult> AcknowledgeAsync(
+            long version,
+            CancellationToken cancellationToken = default)
+        {
+            AcknowledgedVersions.Add(version);
+            var first = AcknowledgedVersions.Count == 1;
+            return Task.FromResult(first
+                ? new EmergencyLoginPublicKeyAckClientResult(false, currentPackage.Version)
+                : new EmergencyLoginPublicKeyAckClientResult(secondAckSucceeds, currentPackage.Version));
         }
     }
 

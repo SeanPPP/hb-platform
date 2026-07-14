@@ -47,6 +47,13 @@ public sealed class EmergencyLoginPublicKeysController(
         }
 
         var result = await service.AcknowledgeAsync(identity, request.Version, cancellationToken);
+        if (result == EmergencyLoginPublicKeyAckResult.StaleIgnored)
+        {
+            // 轮换恰好发生在 GET 与 ACK 之间时，明确告知客户端立即拉取当前版本。
+            var current = await service.GetAsync(cancellationToken);
+            return Conflict(new EmergencyLoginPublicKeyAckResponse(current.Version));
+        }
+
         return result switch
         {
             EmergencyLoginPublicKeyAckResult.FutureVersion => BadRequest(ApiResult<object>.Fail(

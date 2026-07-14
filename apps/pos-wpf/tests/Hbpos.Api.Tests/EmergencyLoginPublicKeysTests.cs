@@ -126,6 +126,24 @@ public sealed class EmergencyLoginPublicKeysTests
     }
 
     [Fact]
+    public async Task Ack_stale_version_returns_conflict_with_current_version()
+    {
+        var service = new StubService(CreatePackage(8))
+        {
+            AckResult = EmergencyLoginPublicKeyAckResult.StaleIgnored
+        };
+        var controller = CreateController(service);
+
+        var result = await controller.Acknowledge(
+            new EmergencyLoginPublicKeyAckRequest(7),
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
+        var response = Assert.IsType<EmergencyLoginPublicKeyAckResponse>(conflict.Value);
+        Assert.Equal(8, response.Version);
+    }
+
+    [Fact]
     public async Task Distribution_returns_only_non_retired_keys_and_ignores_stale_ack()
     {
         var repository = new InMemoryRepository
