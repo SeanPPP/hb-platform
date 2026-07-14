@@ -114,7 +114,31 @@ namespace BlazorApp.Shared.DTOs
         public List<ApplicationLogGroupCountDto> ByLevel { get; set; } = new();
         public List<ApplicationLogGroupCountDto> ByExceptionType { get; set; } = new();
         public List<ApplicationLogGroupCountDto> ByRequestPath { get; set; } = new();
+        public ApplicationLogStatusDto Status { get; set; } = new();
         public ApplicationLogPipelineRuntimeDto Pipeline { get; set; } = new();
+    }
+
+    public class ApplicationLogStatusDto
+    {
+        public bool BackendCaptureEnabled { get; set; }
+        public string BackendMinimumLevel { get; set; } = string.Empty;
+        public string DefaultProjectCode { get; set; } = string.Empty;
+        public string DefaultEnvironment { get; set; } = string.Empty;
+        public string ServiceName { get; set; } = string.Empty;
+        public List<ApplicationLogProjectStatusDto> Projects { get; set; } = new();
+    }
+
+    public class ApplicationLogProjectStatusDto
+    {
+        public string ProjectCode { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string Mode { get; set; } = string.Empty;
+        public bool ExplicitlyConfigured { get; set; }
+        public bool Enabled { get; set; }
+        public bool? CredentialConfigured { get; set; }
+        public string ConfigurationState { get; set; } = string.Empty;
+        public int EffectiveRetentionDays { get; set; }
+        public DateTime? LastReceivedAtUtc { get; set; }
     }
 
     public class ApplicationLogPipelineRuntimeDto

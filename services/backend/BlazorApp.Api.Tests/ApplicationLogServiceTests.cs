@@ -2,9 +2,11 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Net;
+using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Services.Logging;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -39,6 +41,48 @@ public class ApplicationLogServiceTests : IDisposable
         var options = new ApplicationLoggingOptions();
 
         Assert.Equal(7, options.DefaultRetentionDays);
+    }
+
+    [Fact]
+    public void 示例配置_中心日志完整保留五个已知项目且不包含真实密钥()
+    {
+        var configurationPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "../../../../BlazorApp.Api/appsettings.ApplicationLogging.example.json"
+            )
+        );
+        using var document = JsonDocument.Parse(File.ReadAllText(configurationPath));
+        var projects = document.RootElement
+            .GetProperty("ApplicationLogging")
+            .GetProperty("Projects")
+            .EnumerateArray()
+            .Select(project => new
+            {
+                ProjectCode = project.GetProperty("ProjectCode").GetString(),
+                DisplayName = project.GetProperty("DisplayName").GetString(),
+                Enabled = project.GetProperty("Enabled").GetBoolean(),
+                RetentionDays = project.GetProperty("RetentionDays").GetInt32(),
+                ApiKeyHash = project.TryGetProperty("ApiKeyHash", out var apiKeyHash)
+                    ? apiKeyHash.GetString()
+                    : null,
+            })
+            .ToArray();
+
+        Assert.Collection(
+            projects,
+            project => Assert.Equal(("HBBBackend", "Web/移动端后端", true, 7), (project.ProjectCode, project.DisplayName, project.Enabled, project.RetentionDays)),
+            project => Assert.Equal(("hbweb_rv", "Web前端", true, 7), (project.ProjectCode, project.DisplayName, project.Enabled, project.RetentionDays)),
+            project => Assert.Equal(("HbwebExpo", "移动端", false, 7), (project.ProjectCode, project.DisplayName, project.Enabled, project.RetentionDays)),
+            project => Assert.Equal(("hbpos_win", "WPF客户端", false, 30), (project.ProjectCode, project.DisplayName, project.Enabled, project.RetentionDays)),
+            project => Assert.Equal(("hbpos_api", "WPF收银后端", true, 7), (project.ProjectCode, project.DisplayName, project.Enabled, project.RetentionDays))
+        );
+        Assert.All(projects, project =>
+            Assert.True(
+                string.IsNullOrWhiteSpace(project.ApiKeyHash)
+                    || project.ApiKeyHash == "<sha256-lower-hex>"
+            )
+        );
     }
 
     [Fact]
@@ -80,6 +124,37 @@ public class ApplicationLogServiceTests : IDisposable
         var project = await service.AuthenticateProjectAsync(projectCode, apiKey);
 
         Assert.Null(project);
+    }
+
+    [Fact]
+    public async Task AuthenticateProjectAsync_配置项目码带首尾空格_与状态使用相同规范化项目码()
+    {
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            Projects =
+            [
+                new()
+                {
+                    ProjectCode = "  hbweb_rv  ",
+                    DisplayName = "Web前端",
+                    ApiKeyHash = Sha256("web-secret"),
+                    Enabled = true,
+                },
+            ],
+        };
+        var service = CreateService(options);
+
+        var authenticated = await service.AuthenticateProjectAsync("hbweb_rv", "web-secret");
+        var status = Assert.Single(
+            (await service.GetSummaryAsync(new ApplicationLogQueryDto())).Status.Projects,
+            project => project.Mode == "External"
+        );
+
+        Assert.NotNull(authenticated);
+        Assert.Equal("hbweb_rv", authenticated.ProjectCode);
+        Assert.Equal(authenticated.ProjectCode, status.ProjectCode);
+        Assert.Equal("Ready", status.ConfigurationState);
     }
 
     [Fact]
@@ -674,6 +749,281 @@ public class ApplicationLogServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSummaryAsync_默认内部项目_返回后端采集状态并保留管道指标()
+    {
+        var queue = new ApplicationLogQueue(capacity: 1);
+        queue.TryEnqueue(CreateIngestItem("第一条"));
+        queue.TryEnqueue(CreateIngestItem("触发丢弃"));
+        queue.RecordFlushFailure(3, "安全失败原因");
+        var options = new ApplicationLoggingOptions
+        {
+            Enabled = true,
+            DefaultProjectCode = "HBBBackend",
+            DefaultEnvironment = "Production",
+            ServiceName = "HBBBackend.Api",
+            MinimumLevel = "Warning",
+            DefaultRetentionDays = 7,
+            Projects = [],
+        };
+
+        var summary = await CreateService(options, queue).GetSummaryAsync(new ApplicationLogQueryDto());
+
+        Assert.True(summary.Status.BackendCaptureEnabled);
+        Assert.Equal("Warning", summary.Status.BackendMinimumLevel);
+        Assert.Equal("HBBBackend", summary.Status.DefaultProjectCode);
+        Assert.Equal("Production", summary.Status.DefaultEnvironment);
+        Assert.Equal("HBBBackend.Api", summary.Status.ServiceName);
+        var project = Assert.Single(summary.Status.Projects);
+        Assert.Equal("HBBBackend", project.ProjectCode);
+        Assert.Equal("HBBBackend", project.DisplayName);
+        Assert.Equal("Internal", project.Mode);
+        Assert.False(project.ExplicitlyConfigured);
+        Assert.True(project.Enabled);
+        Assert.Null(project.CredentialConfigured);
+        Assert.Equal("Ready", project.ConfigurationState);
+        Assert.Equal(7, project.EffectiveRetentionDays);
+        Assert.Null(project.LastReceivedAtUtc);
+        Assert.Equal(1, summary.Pipeline.DroppedOldestCount);
+        Assert.Equal(1, summary.Pipeline.FailedFlushBatchCount);
+        Assert.Equal(3, summary.Pipeline.FailedFlushLogCount);
+        Assert.Equal("安全失败原因", summary.Pipeline.LastFailedFlushReason);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_外部项目按启用状态和Hash合法性返回配置状态()
+    {
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            DefaultRetentionDays = 7,
+            Projects =
+            [
+                new() { ProjectCode = "ready", Enabled = true, ApiKeyHash = Sha256("ready") },
+                new() { ProjectCode = "empty", Enabled = true, ApiKeyHash = "" },
+                new() { ProjectCode = "invalid", Enabled = true, ApiKeyHash = "不是合法摘要" },
+                new() { ProjectCode = "disabled", Enabled = false, ApiKeyHash = Sha256("disabled") },
+            ],
+        };
+
+        var projects = (await CreateService(options).GetSummaryAsync(new ApplicationLogQueryDto()))
+            .Status.Projects;
+
+        AssertProjectStatus(projects, "ready", true, true, "Ready");
+        AssertProjectStatus(projects, "empty", true, false, "MissingCredential");
+        AssertProjectStatus(projects, "invalid", true, false, "MissingCredential");
+        AssertProjectStatus(projects, "disabled", false, true, "Disabled");
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_内部项目状态只由全局采集开关决定()
+    {
+        var options = new ApplicationLoggingOptions
+        {
+            Enabled = false,
+            DefaultProjectCode = "HBBBackend",
+            Projects =
+            [
+                new()
+                {
+                    ProjectCode = "HBBBackend",
+                    Enabled = true,
+                    ApiKeyHash = Sha256("内部项目不使用此摘要"),
+                },
+            ],
+        };
+
+        var project = Assert.Single(
+            (await CreateService(options).GetSummaryAsync(new ApplicationLogQueryDto()))
+                .Status.Projects
+        );
+
+        Assert.False(project.Enabled);
+        Assert.Null(project.CredentialConfigured);
+        Assert.Equal("Disabled", project.ConfigurationState);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_默认项目码为空白_内部项目不得显示Ready()
+    {
+        var options = new ApplicationLoggingOptions
+        {
+            Enabled = true,
+            DefaultProjectCode = "   ",
+            Projects = [],
+        };
+
+        var project = Assert.Single(
+            (await CreateService(options).GetSummaryAsync(new ApplicationLogQueryDto()))
+                .Status.Projects
+        );
+
+        Assert.False(project.Enabled);
+        Assert.Equal("Disabled", project.ConfigurationState);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_默认项目与显式项目重复_按项目码忽略大小写去重()
+    {
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            Projects =
+            [
+                new() { ProjectCode = "HBBBackend", DisplayName = "Web/移动端后端", RetentionDays = 7 },
+                new() { ProjectCode = "hbbbackend", DisplayName = "重复后端", RetentionDays = 30 },
+                new() { ProjectCode = "hbweb_rv", DisplayName = "Web前端", ApiKeyHash = Sha256("web") },
+                new() { ProjectCode = "HBWEB_RV", DisplayName = "重复前端", ApiKeyHash = Sha256("web-2") },
+            ],
+        };
+
+        var projects = (await CreateService(options).GetSummaryAsync(new ApplicationLogQueryDto()))
+            .Status.Projects;
+
+        Assert.Equal(2, projects.Count);
+        var backend = Assert.Single(projects, item => item.Mode == "Internal");
+        Assert.True(backend.ExplicitlyConfigured);
+        Assert.Equal("Web/移动端后端", backend.DisplayName);
+        Assert.Equal(7, backend.EffectiveRetentionDays);
+        var web = Assert.Single(projects, item => item.Mode == "External");
+        Assert.Equal("hbweb_rv", web.ProjectCode);
+        Assert.Equal("Web前端", web.DisplayName);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_最后接收时间按CreatedAt最大值且不受汇总筛选影响()
+    {
+        var earlierReceivedAt = new DateTime(2026, 7, 10, 1, 0, 0, DateTimeKind.Utc);
+        var latestReceivedAt = new DateTime(2026, 7, 10, 2, 0, 0, DateTimeKind.Utc);
+        await InsertLogAsync(
+            "hbpos_api",
+            "Error",
+            "/api/earlier",
+            "客户端时间较新但先接收",
+            "earlier",
+            latestReceivedAt.AddDays(2),
+            earlierReceivedAt
+        );
+        await InsertLogAsync(
+            "hbpos_api",
+            "Information",
+            "/api/latest",
+            "客户端时间较旧但后接收",
+            "latest",
+            earlierReceivedAt.AddDays(-2),
+            latestReceivedAt
+        );
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            Projects =
+            [
+                new()
+                {
+                    ProjectCode = "hbpos_api",
+                    DisplayName = "WPF收银后端",
+                    Enabled = true,
+                    ApiKeyHash = Sha256("pos-api"),
+                },
+            ],
+        };
+
+        var summary = await CreateService(options).GetSummaryAsync(
+            new ApplicationLogQueryDto { Level = "Critical", ProjectCode = "HBBBackend" }
+        );
+
+        Assert.Equal(0, summary.Total);
+        var project = Assert.Single(summary.Status.Projects, item => item.ProjectCode == "hbpos_api");
+        Assert.Equal(latestReceivedAt, project.LastReceivedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, project.LastReceivedAtUtc!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_响应模型不暴露项目Hash或Hash片段()
+    {
+        var keyHash = Sha256("绝不返回的项目密钥");
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            Projects =
+            [
+                new()
+                {
+                    ProjectCode = "hbweb_rv",
+                    ApiKeyHash = keyHash,
+                    Enabled = true,
+                },
+            ],
+        };
+
+        var summary = await CreateService(options).GetSummaryAsync(new ApplicationLogQueryDto());
+        var json = JsonSerializer.Serialize(
+            summary,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        );
+        using var document = JsonDocument.Parse(json);
+        var statusElement = document.RootElement.GetProperty("status");
+        var statusPropertyNames = statusElement
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var projectPropertyNames = statusElement
+            .GetProperty("projects")[1]
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(keyHash, json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ApiKey", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Hash", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Subset(
+            new HashSet<string>(
+                [
+                    "backendCaptureEnabled",
+                    "backendMinimumLevel",
+                    "defaultProjectCode",
+                    "defaultEnvironment",
+                    "serviceName",
+                    "projects",
+                ],
+                StringComparer.OrdinalIgnoreCase
+            ),
+            statusPropertyNames
+        );
+        Assert.Subset(
+            new HashSet<string>(
+                [
+                    "projectCode",
+                    "displayName",
+                    "mode",
+                    "explicitlyConfigured",
+                    "enabled",
+                    "credentialConfigured",
+                    "configurationState",
+                    "effectiveRetentionDays",
+                    "lastReceivedAtUtc",
+                ],
+                StringComparer.OrdinalIgnoreCase
+            ),
+            projectPropertyNames
+        );
+        Assert.DoesNotContain(projectPropertyNames, name =>
+            name.Contains("ApiKey", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Hash", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Fragment", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public void Summary_继续要求SystemViewLogs权限()
+    {
+        var method = typeof(SystemLogsController).GetMethod(nameof(SystemLogsController.Summary));
+        var authorize = Assert.Single(method!.GetCustomAttributes(typeof(AuthorizeAttribute), true)) as AuthorizeAttribute;
+
+        Assert.NotNull(authorize);
+        Assert.Equal("System.ViewLogs", authorize.Policy);
+    }
+
+    [Fact]
     public async Task CleanupExpiredLogsAsync_项目保留7天时删除8天前并保留7天内日志()
     {
         var now = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc);
@@ -696,6 +1046,56 @@ public class ApplicationLogServiceTests : IDisposable
         var remaining = await _db.Queryable<ApplicationLog>().OrderBy(x => x.TraceId).ToListAsync();
         var item = Assert.Single(remaining);
         Assert.Equal("kept", item.TraceId);
+    }
+
+    [Fact]
+    public async Task CleanupExpiredLogsAsync_配置项目码带空格_规范化写入并清理历史日志()
+    {
+        var now = DateTime.UtcNow;
+        await InsertLogAsync(
+            "hbweb_rv",
+            "Error",
+            "/api/expired",
+            "历史日志",
+            "expired-spaced-project",
+            now.AddDays(-8),
+            now.AddDays(-8)
+        );
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            DefaultRetentionDays = 7,
+            Projects =
+            [
+                new()
+                {
+                    ProjectCode = "  hbweb_rv  ",
+                    DisplayName = "Web前端",
+                    ApiKeyHash = Sha256("web-secret"),
+                    Enabled = true,
+                    RetentionDays = 7,
+                },
+                new() { ProjectCode = "   ", Enabled = true, RetentionDays = 1 },
+            ],
+        };
+        var service = CreateService(options);
+        var authenticated = await service.AuthenticateProjectAsync("hbweb_rv", "web-secret");
+        Assert.NotNull(authenticated);
+
+        var ingest = await service.IngestAsync(
+            authenticated.ProjectCode,
+            new ApplicationLogIngestRequestDto
+            {
+                Logs = [CreateIngestItem("新日志")],
+            }
+        );
+        var deleted = await service.CleanupExpiredLogsAsync(now);
+
+        Assert.Equal(1, ingest.AcceptedCount);
+        Assert.Equal(1, deleted);
+        var remaining = Assert.Single(await _db.Queryable<ApplicationLog>().ToListAsync());
+        Assert.Equal("hbweb_rv", remaining.ProjectCode);
+        Assert.Equal("新日志", remaining.Message);
     }
 
     [Fact]
@@ -797,9 +1197,67 @@ public class ApplicationLogServiceTests : IDisposable
         Assert.Equal("boundary", remaining.TraceId);
     }
 
+    [Fact]
+    public async Task CleanupExpiredLogsAsync_五个显式项目包含禁用项目_全部按各自保留天数清理()
+    {
+        var now = new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc);
+        await InsertLogAsync("HBBBackend", "Error", "/old", "旧日志", "backend", now.AddDays(-8), now.AddDays(-8));
+        await InsertLogAsync("hbweb_rv", "Error", "/old", "旧日志", "web", now.AddDays(-8), now.AddDays(-8));
+        await InsertLogAsync("HbwebExpo", "Error", "/old", "旧日志", "mobile", now.AddDays(-8), now.AddDays(-8));
+        await InsertLogAsync("hbpos_win", "Error", "/old", "旧日志", "pos", now.AddDays(-31), now.AddDays(-31));
+        await InsertLogAsync("hbpos_api", "Error", "/old", "旧日志", "pos-api", now.AddDays(-8), now.AddDays(-8));
+        var options = new ApplicationLoggingOptions
+        {
+            DefaultProjectCode = "HBBBackend",
+            DefaultRetentionDays = 7,
+            Projects =
+            [
+                new() { ProjectCode = "HBBBackend", Enabled = true, RetentionDays = 7 },
+                new() { ProjectCode = "hbweb_rv", Enabled = true, RetentionDays = 7 },
+                new() { ProjectCode = "HbwebExpo", Enabled = false, RetentionDays = 7 },
+                new() { ProjectCode = "hbpos_win", Enabled = false, RetentionDays = 30 },
+                new() { ProjectCode = "hbpos_api", Enabled = true, RetentionDays = 7 },
+            ],
+        };
+
+        var deleted = await CreateService(options).CleanupExpiredLogsAsync(now);
+
+        Assert.Equal(5, deleted);
+        Assert.Equal(0, await _db.Queryable<ApplicationLog>().CountAsync());
+    }
+
     private ApplicationLogService CreateService(params ApplicationLoggingProjectOptions[] projects)
     {
         return CreateService(_db, projects);
+    }
+
+    private ApplicationLogService CreateService(
+        ApplicationLoggingOptions options,
+        IApplicationLogQueue? queue = null
+    )
+    {
+        return new ApplicationLogService(
+            _db,
+            Options.Create(options),
+            NullLogger<ApplicationLogService>.Instance,
+            queue
+        );
+    }
+
+    private static void AssertProjectStatus(
+        IReadOnlyCollection<ApplicationLogProjectStatusDto> projects,
+        string projectCode,
+        bool enabled,
+        bool credentialConfigured,
+        string configurationState
+    )
+    {
+        var project = Assert.Single(projects, item => item.ProjectCode == projectCode);
+        Assert.Equal("External", project.Mode);
+        Assert.True(project.ExplicitlyConfigured);
+        Assert.Equal(enabled, project.Enabled);
+        Assert.Equal(credentialConfigured, project.CredentialConfigured);
+        Assert.Equal(configurationState, project.ConfigurationState);
     }
 
     private static ApplicationLogService CreateService(

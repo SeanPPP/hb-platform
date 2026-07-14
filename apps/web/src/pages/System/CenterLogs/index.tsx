@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   DatePicker,
   Descriptions,
   Drawer,
@@ -26,18 +27,27 @@ import { useTranslation } from 'react-i18next'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { getCenterLogDetail, getCenterLogs, getCenterLogSummary } from '../../../services/centerLogService'
-import type { ApplicationLogItem, ApplicationLogQueryParams, ApplicationLogSummaryGroup } from '../../../types/centerLog'
+import type {
+  ApplicationLogItem,
+  ApplicationLogProjectStatus,
+  ApplicationLogQueryParams,
+  ApplicationLogSummary,
+  ApplicationLogSummaryGroup,
+} from '../../../types/centerLog'
 import { formatCenterLogTimestamp } from './time'
 import {
   CENTER_LOG_LEVEL_OPTIONS,
-  CENTER_LOG_PROJECT_OPTIONS,
+  CENTER_LOG_PROJECT_DEFINITIONS,
   CENTER_LOG_SOURCE_TYPE_OPTIONS,
   DEFAULT_CENTER_LOG_PAGE_SIZE,
-  DEFAULT_CENTER_LOG_PROJECT_CODE,
   type CenterLogQueryFormValues,
   buildCenterLogQueryParams,
   buildDefaultCenterLogQueryParams,
   buildCenterLogFormValuesFromSearchParams,
+  buildCenterLogProjectChangeQuery,
+  buildCenterLogStatusOverview,
+  createLatestCenterLogRequestRunner,
+  resolveCenterLogConfigurationState,
   shouldHydrateCenterLogQueryFromLocation,
 } from './query'
 
@@ -75,9 +85,11 @@ function formatPropertiesJson(value?: string) {
 function SummaryTagGroup({
   items,
   onClick,
+  renderName,
 }: {
   items: ApplicationLogSummaryGroup[]
   onClick?: (name: string) => void
+  renderName?: (name: string) => string
 }) {
   if (!items.length) {
     return <Typography.Text type="secondary">-</Typography.Text>
@@ -92,7 +104,7 @@ function SummaryTagGroup({
           style={{ cursor: onClick ? 'pointer' : 'default' }}
           onClick={() => onClick?.(item.name)}
         >
-          {item.name || '-'} ({item.count})
+          {renderName?.(item.name) || item.name || '-'} ({item.count})
         </Tag>
       ))}
     </Space>
@@ -106,6 +118,7 @@ export default function SystemCenterLogsPage() {
   const location = useLocation()
   const { active } = useKeepAliveContext()
   const hydratedLocationKeyRef = useRef(location.key)
+  const requestRunnerRef = useRef(createLatestCenterLogRequestRunner())
   const initialFormValues = useMemo(
     () => buildCenterLogFormValuesFromSearchParams(searchParams),
     // 关联跳转参数只在页面首次打开时用于初始化查询。
@@ -118,6 +131,7 @@ export default function SystemCenterLogsPage() {
   const [summaryTotal, setSummaryTotal] = useState(0)
   const [summaryByLevel, setSummaryByLevel] = useState<ApplicationLogSummaryGroup[]>([])
   const [summaryByProject, setSummaryByProject] = useState<ApplicationLogSummaryGroup[]>([])
+  const [summaryStatus, setSummaryStatus] = useState<ApplicationLogSummary | null>(null)
   const [pageNumber, setPageNumber] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_CENTER_LOG_PAGE_SIZE)
   const [total, setTotal] = useState(0)
@@ -126,6 +140,7 @@ export default function SystemCenterLogsPage() {
   )
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ApplicationLogItem | null>(null)
+  const statusOverview = buildCenterLogStatusOverview(summaryStatus)
 
   useEffect(() => {
     form.setFieldsValue(initialFormValues)
@@ -152,25 +167,31 @@ export default function SystemCenterLogsPage() {
   }, [active, form, location.key, location.pathname, location.search, pageSize])
 
   const loadData = async (query: ApplicationLogQueryParams) => {
-    setLoading(true)
-    try {
-      const [listResult, summaryResult] = await Promise.all([
+    await requestRunnerRef.current.run(
+      () => Promise.all([
         getCenterLogs(query),
         getCenterLogSummary(query),
-      ])
-      setData(listResult.items)
-      setTotal(listResult.total)
-      setPageNumber(listResult.pageNumber)
-      setPageSize(listResult.pageSize)
-      setSummaryTotal(summaryResult.total)
-      setSummaryByLevel(summaryResult.byLevel ?? [])
-      setSummaryByProject(summaryResult.byProject ?? [])
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.centerLogs.loadListFailed'))
-    } finally {
-      setLoading(false)
-    }
+      ]),
+      {
+        onStart: () => setLoading(true),
+        // 快速切换项目时只允许最新请求落库到页面状态，防止慢响应覆盖新筛选结果。
+        onSuccess: ([listResult, summaryResult]) => {
+          setData(listResult.items)
+          setTotal(listResult.total)
+          setPageNumber(listResult.pageNumber)
+          setPageSize(listResult.pageSize)
+          setSummaryTotal(summaryResult.total)
+          setSummaryByLevel(summaryResult.byLevel ?? [])
+          setSummaryByProject(summaryResult.byProject ?? [])
+          setSummaryStatus(summaryResult)
+        },
+        onError: (error) => {
+          console.error(error)
+          message.error(t('system.centerLogs.loadListFailed'))
+        },
+        onSettled: () => setLoading(false),
+      },
+    )
   }
 
   useEffect(() => {
@@ -184,7 +205,7 @@ export default function SystemCenterLogsPage() {
 
   const handleReset = () => {
     form.setFieldsValue({
-      projectCodes: [DEFAULT_CENTER_LOG_PROJECT_CODE],
+      projectCodes: [],
       level: undefined,
       sourceType: undefined,
       category: undefined,
@@ -223,7 +244,15 @@ export default function SystemCenterLogsPage() {
   const handleProjectQuickFilter = (projectCode: string) => {
     const projectCodes = [projectCode]
     form.setFieldValue('projectCodes', projectCodes)
-    setActiveQuery(buildCenterLogQueryParams({ ...form.getFieldsValue(), projectCodes }, 1, pageSize))
+    setActiveQuery((currentQuery) => buildCenterLogProjectChangeQuery(
+      currentQuery,
+      projectCodes,
+    ))
+  }
+
+  const getProjectLabel = (projectCode: string, fallback?: string) => {
+    const definition = CENTER_LOG_PROJECT_DEFINITIONS.find((item) => item.projectCode === projectCode)
+    return definition ? t(definition.labelKey) : fallback || projectCode
   }
 
   const columns = useMemo<ColumnsType<ApplicationLogItem>>(
@@ -318,6 +347,71 @@ export default function SystemCenterLogsPage() {
     [t],
   )
 
+  const projectStatusColumns = useMemo<ColumnsType<ApplicationLogProjectStatus>>(
+    () => [
+      {
+        title: t('system.centerLogs.status.project'),
+        dataIndex: 'projectCode',
+        width: 180,
+        render: (projectCode: string, record) => (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{getProjectLabel(projectCode, record.displayName)}</Typography.Text>
+            <Typography.Text type="secondary">{projectCode}</Typography.Text>
+          </Space>
+        ),
+      },
+      {
+        title: t('system.centerLogs.status.mode'),
+        dataIndex: 'mode',
+        width: 110,
+        render: (mode: string) => t(`system.centerLogs.status.modes.${mode}`, { defaultValue: mode }),
+      },
+      {
+        title: t('system.centerLogs.status.configurationState'),
+        key: 'configurationState',
+        width: 150,
+        render: (_, record) => {
+          const state = resolveCenterLogConfigurationState(record)
+          const color = state === 'Ready' ? 'green' : state === 'Disabled' ? 'default' : 'gold'
+          return <Tag color={color}>{t(`system.centerLogs.status.states.${state}`)}</Tag>
+        },
+      },
+      {
+        title: t('system.centerLogs.status.explicitConfiguration'),
+        dataIndex: 'explicitlyConfigured',
+        width: 130,
+        render: (value: boolean) => value
+          ? t('system.centerLogs.status.configured')
+          : t('system.centerLogs.status.usingDefault'),
+      },
+      {
+        title: t('system.centerLogs.status.credential'),
+        dataIndex: 'credentialConfigured',
+        width: 120,
+        render: (value: boolean | null) => value === null
+          ? t('system.centerLogs.status.notRequired')
+          : value
+            ? t('system.centerLogs.status.configured')
+            : t('system.centerLogs.status.missingCredential'),
+      },
+      {
+        title: t('system.centerLogs.status.retention'),
+        dataIndex: 'effectiveRetentionDays',
+        width: 110,
+        render: (days: number) => t('system.centerLogs.status.retentionDays', { days }),
+      },
+      {
+        title: t('system.centerLogs.status.lastReceivedAt'),
+        dataIndex: 'lastReceivedAtUtc',
+        width: 180,
+        render: (value: string | null) => value
+          ? formatCenterLogTimestamp(value)
+          : t('system.centerLogs.status.notReceived'),
+      },
+    ],
+    [t],
+  )
+
   const timeRangePresets: RangePickerProps['presets'] = [
     { label: t('system.centerLogs.presets.lastHour'), value: [dayjs().subtract(1, 'hour'), dayjs()] },
     { label: t('system.centerLogs.presets.last24Hours'), value: [dayjs().subtract(24, 'hour'), dayjs()] },
@@ -342,10 +436,20 @@ export default function SystemCenterLogsPage() {
                 <Form.Item label={t('system.centerLogs.filters.projectCode')} name="projectCodes">
                   <Select
                     allowClear
-                    mode="tags"
+                    mode="multiple"
                     maxTagCount="responsive"
                     placeholder={t('system.centerLogs.filters.projectPlaceholder')}
-                    options={CENTER_LOG_PROJECT_OPTIONS.map((item) => ({ label: item, value: item }))}
+                    options={CENTER_LOG_PROJECT_DEFINITIONS.map((item) => ({
+                      label: `${t(item.labelKey)} (${item.projectCode})`,
+                      value: item.projectCode,
+                    }))}
+                    onChange={(projectCodes) => {
+                      // 项目是高频范围筛选，选择变化后立即应用；其他表单项仍由“查询”按钮提交。
+                      setActiveQuery((currentQuery) => buildCenterLogProjectChangeQuery(
+                        currentQuery,
+                        projectCodes,
+                      ))
+                    }}
                   />
                 </Form.Item>
               </Col>
@@ -458,6 +562,123 @@ export default function SystemCenterLogsPage() {
           </Form>
         </Card>
 
+        <Card title={t('system.centerLogs.status.title')}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
+              <Descriptions.Item label={t('system.centerLogs.status.backendCapture')}>
+                {summaryStatus?.status ? (
+                  <Space size={4}>
+                    <Tag color={summaryStatus?.status?.backendCaptureEnabled ? 'green' : 'default'}>
+                      {summaryStatus?.status?.backendCaptureEnabled
+                        ? t('system.centerLogs.status.captureEnabled')
+                        : t('system.centerLogs.status.captureDisabled')}
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      {summaryStatus?.status?.backendMinimumLevel || '-'}
+                    </Typography.Text>
+                  </Space>
+                ) : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.status.webBuildConfiguration')}>
+                <Tag color={__CENTER_LOG_BUILD_CONFIGURED__ ? 'green' : 'gold'}>
+                  {__CENTER_LOG_BUILD_CONFIGURED__
+                    ? t('system.centerLogs.status.webBuildConfigured')
+                  : t('system.centerLogs.status.webBuildIncomplete')}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.status.latestReceived')}>
+                {summaryStatus?.status
+                  ? statusOverview.latestReceivedAtUtc
+                    ? formatCenterLogTimestamp(statusOverview.latestReceivedAtUtc)
+                    : t('system.centerLogs.status.notReceived')
+                  : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.centerLogs.status.pipelineSummary')}>
+                {statusOverview.pipelineAnomalies === undefined ? '-' : (
+                  <Space wrap size={4}>
+                    <Tag color={statusOverview.pipelineAnomalies.hasRecordedAnomaly ? 'gold' : 'green'}>
+                      {statusOverview.pipelineAnomalies.hasRecordedAnomaly
+                        ? t('system.centerLogs.status.pipelineRecordedAnomaly')
+                        : t('system.centerLogs.status.pipelineNoRecordedAnomaly')}
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      {t('system.centerLogs.status.pipelineAnomalyDetails', {
+                        dropped: statusOverview.pipelineAnomalies.droppedOldestCount,
+                        enqueueFailures: statusOverview.pipelineAnomalies.enqueueFailureCount,
+                        failedBatches: statusOverview.pipelineAnomalies.failedFlushBatchCount,
+                        failedLogs: statusOverview.pipelineAnomalies.failedFlushLogCount,
+                      })}
+                    </Typography.Text>
+                  </Space>
+                )}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Typography.Text type="secondary">
+              {t('system.centerLogs.status.configurationNote')}
+            </Typography.Text>
+
+            <Collapse
+              size="small"
+              items={[{
+                key: 'diagnostics',
+                label: t('system.centerLogs.status.detailsTitle'),
+                children: (
+                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
+                      <Descriptions.Item label={t('system.centerLogs.status.defaultProject')}>
+                        {summaryStatus?.status?.defaultProjectCode || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.defaultEnvironment')}>
+                        {summaryStatus?.status?.defaultEnvironment || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.serviceName')}>
+                        {summaryStatus?.status?.serviceName || '-'}
+                      </Descriptions.Item>
+                    </Descriptions>
+
+                    <Table<ApplicationLogProjectStatus>
+                      rowKey="projectCode"
+                      size="small"
+                      loading={loading}
+                      columns={projectStatusColumns}
+                      dataSource={summaryStatus?.status?.projects ?? []}
+                      pagination={false}
+                      scroll={{ x: 980 }}
+                      locale={{ emptyText: t('system.centerLogs.status.noProjectStatus') }}
+                    />
+
+                    <Descriptions
+                      title={t('system.centerLogs.status.pipeline')}
+                      size="small"
+                      column={{ xs: 1, sm: 2, lg: 3 }}
+                    >
+                      <Descriptions.Item label={t('system.centerLogs.status.droppedOldestCount')}>
+                        {summaryStatus?.pipeline?.droppedOldestCount ?? '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.enqueueFailureCount')}>
+                        {summaryStatus?.pipeline?.enqueueFailureCount ?? '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.failedFlushBatchCount')}>
+                        {summaryStatus?.pipeline?.failedFlushBatchCount ?? '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.failedFlushLogCount')}>
+                        {summaryStatus?.pipeline?.failedFlushLogCount ?? '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.lastFailedFlushBatchSize')}>
+                        {summaryStatus?.pipeline?.lastFailedFlushBatchSize ?? '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('system.centerLogs.status.lastFailedFlushReason')}>
+                        {summaryStatus?.pipeline?.lastFailedFlushReason || '-'}
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </Space>
+                ),
+              }]}
+            />
+          </Space>
+        </Card>
+
         <Row gutter={16}>
           <Col xs={24} md={6}>
             <Card>
@@ -472,7 +693,11 @@ export default function SystemCenterLogsPage() {
         </Row>
 
         <Card title={t('system.centerLogs.summary.byProject')}>
-          <SummaryTagGroup items={summaryByProject} onClick={handleProjectQuickFilter} />
+          <SummaryTagGroup
+            items={summaryByProject}
+            onClick={handleProjectQuickFilter}
+            renderName={(projectCode) => getProjectLabel(projectCode)}
+          />
         </Card>
 
         <Card>
@@ -482,6 +707,16 @@ export default function SystemCenterLogsPage() {
             columns={columns}
             dataSource={data}
             scroll={{ x: 1880 }}
+            locale={{
+              emptyText: (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{t('system.centerLogs.empty.title')}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {t('system.centerLogs.empty.description')}
+                  </Typography.Text>
+                </Space>
+              ),
+            }}
             pagination={{
               current: pageNumber,
               pageSize,

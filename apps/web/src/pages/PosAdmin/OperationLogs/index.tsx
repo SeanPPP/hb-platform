@@ -1,9 +1,26 @@
 import {
   EyeOutlined,
+  HolderOutlined,
   ReloadOutlined,
   SearchOutlined,
   ToolOutlined,
 } from '@ant-design/icons'
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   Alert,
   Button,
@@ -23,9 +40,17 @@ import {
   message,
 } from 'antd'
 import type { RangePickerProps } from 'antd/es/date-picker'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableProps } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type HTMLAttributes,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -40,6 +65,7 @@ import type {
   OperationAuditDetailItem,
   OperationAuditListItem,
   OperationAuditOutcome,
+  OperationAuditSortField,
 } from '../../../types/operationAudit'
 import {
   buildStoreOptionsFromUserStores,
@@ -47,12 +73,25 @@ import {
 } from '../../../utils/managedStoreScope'
 import {
   OPERATION_TYPE_KEYS,
+  DEFAULT_OPERATION_AUDIT_SORT,
   buildOperationAuditQuery,
   buildSystemLogLink,
+  createLatestOperationAuditRequestGuard,
   formatMoney,
   formatSignedMoney,
+  resolveOperationAuditTableChange,
   summarizeProducts,
+  type OperationAuditTableSortOrder,
 } from './operationLogsLogic'
+import {
+  DEFAULT_OPERATION_LOG_COLUMN_ORDER,
+  createOperationLogDndAccessibility,
+  dispatchOperationLogDragHandleKeyDown,
+  isOperationLogColumnOrderCustomized,
+  moveOperationLogColumnOrder,
+  parseOperationLogColumnOrder,
+  type OperationLogColumnKey,
+} from './operationLogColumnOrder'
 
 interface OperationAuditFormValues {
   timeRange: [Dayjs, Dayjs]
@@ -67,6 +106,83 @@ interface OperationAuditFormValues {
 }
 
 const DEFAULT_PAGE_SIZE = 20
+const OPERATION_LOG_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.operationLogs.columnOrder.v1'
+// 连续编号通常没有空格，允许在任意位置折行，避免终端号等内容被省略。
+const WRAPPED_TABLE_CELL_STYLE: CSSProperties = {
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+}
+
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+  'data-drag-label'?: string
+}
+
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  const dragLabel = props['data-drag-label']
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey ?? '__operation-log-static-column__',
+    disabled: !columnKey,
+  })
+
+  if (!columnKey) return <th style={style} {...props}>{children}</th>
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.8 : style?.opacity,
+  }
+  const { onKeyDown: dndKeyDownListener, ...pointerListeners } = listeners ?? {}
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%' }}>
+        <button
+          type="button"
+          aria-label={dragLabel}
+          title={dragLabel}
+          style={{
+            display: 'inline-flex',
+            flex: '0 0 auto',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 20,
+            height: 20,
+            padding: 0,
+            color: 'rgba(0, 0, 0, 0.45)',
+            cursor: isDragging ? 'grabbing' : 'grab',
+            touchAction: 'none',
+            background: 'transparent',
+            border: 0,
+          }}
+          {...attributes}
+          {...pointerListeners}
+          // 只有把手接收拖拽监听；鼠标松手和键盘操作都不能冒泡触发表头排序。
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            dispatchOperationLogDragHandleKeyDown(event, (dragEvent) => {
+              dndKeyDownListener?.(dragEvent)
+            })
+          }}
+        >
+          <HolderOutlined />
+        </button>
+        <div style={{ minWidth: 0 }}>{children}</div>
+      </div>
+    </th>
+  )
+}
 
 function getDefaultTimeRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(7, 'day'), dayjs()]
@@ -118,9 +234,25 @@ export default function PosAdminOperationLogsPage() {
   const [total, setTotal] = useState(0)
   const [pageNumber, setPageNumber] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [sortBy, setSortBy] = useState<OperationAuditSortField>(
+    DEFAULT_OPERATION_AUDIT_SORT.sortBy,
+  )
+  const [sortOrder, setSortOrder] = useState<OperationAuditTableSortOrder>(
+    DEFAULT_OPERATION_AUDIT_SORT.sortOrder,
+  )
+  const [columnOrder, setColumnOrder] = useState<OperationLogColumnKey[]>(() => {
+    if (typeof window === 'undefined') return [...DEFAULT_OPERATION_LOG_COLUMN_ORDER]
+    try {
+      const saved = localStorage.getItem(OPERATION_LOG_COLUMN_ORDER_STORAGE_KEY)
+      return parseOperationLogColumnOrder(saved)
+    } catch {
+      return [...DEFAULT_OPERATION_LOG_COLUMN_ORDER]
+    }
+  })
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailRecord, setDetailRecord] = useState<OperationAuditDetail | null>(null)
+  const requestGuardRef = useRef(createLatestOperationAuditRequestGuard())
 
   const visibleStoreOptions = useMemo(
     () => filterStoreOptionsByManagedCodes(storeOptions, managedStoreCodes),
@@ -153,7 +285,14 @@ export default function PosAdminOperationLogsPage() {
   }, [currentUser?.stores, managedStoreCodeKey, t])
 
   const loadData = useCallback(
-    async (nextPage = pageNumber, nextPageSize = pageSize) => {
+    async (
+      nextPage = pageNumber,
+      nextPageSize = pageSize,
+      nextSortBy = sortBy,
+      nextSortOrder = sortOrder,
+    ) => {
+      // 只有最新查询可提交结果，避免旧页码或旧排序请求晚到后覆盖当前表格。
+      const requestId = requestGuardRef.current.begin()
       const values = form.getFieldsValue()
       const [from, to] = values.timeRange ?? getDefaultTimeRange()
       setLoading(true)
@@ -174,26 +313,35 @@ export default function PosAdminOperationLogsPage() {
             keyword: values.keyword ?? '',
             page: nextPage,
             pageSize: nextPageSize,
+            sortBy: nextSortBy,
+            sortOrder: nextSortOrder === 'descend' ? 'desc' : 'asc',
           }),
         )
+        if (!requestGuardRef.current.isLatest(requestId)) return
         setData(result.items)
         setTotal(result.total)
         setPageNumber(result.pageNumber)
         setPageSize(result.pageSize)
       } catch (error) {
+        if (!requestGuardRef.current.isLatest(requestId)) return
         console.error(error)
         setLoadError(true)
         message.error(t('operationLogs.loadFailed'))
       } finally {
-        setLoading(false)
+        if (requestGuardRef.current.isLatest(requestId)) setLoading(false)
       }
     },
-    [form, pageNumber, pageSize, t],
+    [form, pageNumber, pageSize, sortBy, sortOrder, t],
   )
 
   useEffect(() => {
     form.setFieldsValue({ timeRange: getDefaultTimeRange() })
-    void loadData(1, DEFAULT_PAGE_SIZE)
+    void loadData(
+      1,
+      DEFAULT_PAGE_SIZE,
+      DEFAULT_OPERATION_AUDIT_SORT.sortBy,
+      DEFAULT_OPERATION_AUDIT_SORT.sortOrder,
+    )
     // 首次加载只执行一次，后续查询由用户或分页动作触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -201,7 +349,21 @@ export default function PosAdminOperationLogsPage() {
   const handleReset = () => {
     form.resetFields()
     form.setFieldsValue({ timeRange: getDefaultTimeRange() })
-    void loadData(1, DEFAULT_PAGE_SIZE)
+    setPageNumber(1)
+    setPageSize(DEFAULT_PAGE_SIZE)
+    setSortBy(DEFAULT_OPERATION_AUDIT_SORT.sortBy)
+    setSortOrder(DEFAULT_OPERATION_AUDIT_SORT.sortOrder)
+    void loadData(
+      1,
+      DEFAULT_PAGE_SIZE,
+      DEFAULT_OPERATION_AUDIT_SORT.sortBy,
+      DEFAULT_OPERATION_AUDIT_SORT.sortOrder,
+    )
+  }
+
+  const handleQuery = () => {
+    setPageNumber(1)
+    void loadData(1, pageSize, sortBy, sortOrder)
   }
 
   const handleOpenDetail = async (record: OperationAuditListItem) => {
@@ -231,56 +393,116 @@ export default function PosAdminOperationLogsPage() {
     [t],
   )
 
-  const columns = useMemo<ColumnsType<OperationAuditListItem>>(
+  const columnDragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const operationLogColumnLabels = useMemo<Record<OperationLogColumnKey, string>>(
+    () => ({
+      occurredAtUtc: t('operationLogs.columns.time'),
+      storeCode: t('operationLogs.columns.store'),
+      employee: t('operationLogs.columns.employee'),
+      operationType: t('operationLogs.columns.operation'),
+      products: t('operationLogs.columns.products'),
+      amountDelta: t('operationLogs.columns.amountChange'),
+      deviceCode: t('operationLogs.columns.device'),
+      outcome: t('operationLogs.columns.outcome'),
+    }),
+    [t],
+  )
+
+  const dndAccessibility = useMemo(
+    () => createOperationLogDndAccessibility(operationLogColumnLabels, {
+      instructions: t('operationLogs.dnd.instructions'),
+      unknownColumn: t('operationLogs.dnd.unknownColumn'),
+      dragStart: (column) => t('operationLogs.dnd.dragStart', { column }),
+      dragOver: (column, overColumn) =>
+        t('operationLogs.dnd.dragOver', { column, overColumn }),
+      dragOverNone: (column) => t('operationLogs.dnd.dragOverNone', { column }),
+      dragEnd: (column, overColumn) =>
+        t('operationLogs.dnd.dragEnd', { column, overColumn }),
+      dragCancel: (column) => t('operationLogs.dnd.dragCancel', { column }),
+    }),
+    [operationLogColumnLabels, t],
+  )
+
+  const baseColumns = useMemo<ColumnsType<OperationAuditListItem>>(
     () => [
       {
         title: t('operationLogs.columns.time'),
         dataIndex: 'occurredAtUtc',
+        key: 'occurredAtUtc',
         width: 175,
+        sorter: true,
+        sortOrder: sortBy === 'occurredAtUtc' ? sortOrder : null,
         render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm:ss'),
       },
       {
         title: t('operationLogs.columns.store'),
         dataIndex: 'storeCode',
+        key: 'storeCode',
         width: 100,
+        sorter: true,
+        sortOrder: sortBy === 'storeCode' ? sortOrder : null,
       },
       {
         title: t('operationLogs.columns.employee'),
         key: 'employee',
         width: 150,
-        ellipsis: true,
-        render: (_, record) => record.cashierName || record.cashierId || record.userGuid || '-',
+        render: (_, record) => (
+          <span style={WRAPPED_TABLE_CELL_STYLE}>
+            {record.cashierName || record.cashierId || record.userGuid || '-'}
+          </span>
+        ),
       },
       {
         title: t('operationLogs.columns.operation'),
         dataIndex: 'operationType',
+        key: 'operationType',
         width: 185,
+        sorter: true,
+        sortOrder: sortBy === 'operationType' ? sortOrder : null,
         render: (value: string) => operationLabel(value),
       },
       {
         title: t('operationLogs.columns.products'),
         key: 'products',
         minWidth: 180,
-        ellipsis: true,
-        render: (_, record) => summarizeProducts(record, t('operationLogs.detail.productFallback')),
+        render: (_, record) => (
+          <span style={WRAPPED_TABLE_CELL_STYLE}>
+            {summarizeProducts(record, t('operationLogs.detail.productFallback'))}
+          </span>
+        ),
       },
       {
         title: t('operationLogs.columns.amountChange'),
+        dataIndex: 'amountDelta',
         key: 'amountDelta',
         width: 120,
         align: 'right',
+        sorter: true,
+        sortOrder: sortBy === 'amountDelta' ? sortOrder : null,
         render: (_, record) => formatSignedMoney(record.amountDelta, record.currencyCode || 'AUD'),
       },
       {
         title: t('operationLogs.columns.device'),
         dataIndex: 'deviceCode',
+        key: 'deviceCode',
         width: 125,
-        ellipsis: true,
+        sorter: true,
+        sortOrder: sortBy === 'deviceCode' ? sortOrder : null,
+        render: (value: string) => (
+          <span style={WRAPPED_TABLE_CELL_STYLE}>{value || '-'}</span>
+        ),
       },
       {
         title: t('operationLogs.columns.outcome'),
         dataIndex: 'outcome',
+        key: 'outcome',
         width: 105,
+        sorter: true,
+        sortOrder: sortBy === 'outcome' ? sortOrder : null,
         render: (value: OperationAuditOutcome) => (
           <Tag color={getOutcomeColor(value)}>{outcomeLabel(value)}</Tag>
         ),
@@ -297,8 +519,85 @@ export default function PosAdminOperationLogsPage() {
         ),
       },
     ],
-    [operationLabel, outcomeLabel, t],
+    [operationLabel, outcomeLabel, sortBy, sortOrder, t],
   )
+
+  const isColumnOrderCustomized = isOperationLogColumnOrderCustomized(columnOrder)
+
+  const columns = useMemo<ColumnsType<OperationAuditListItem>>(() => {
+    const businessColumnMap = new Map(
+      baseColumns
+        .filter((column) => column.key !== 'actions')
+        .map((column) => [String(column.key), column]),
+    )
+    const actionColumn = baseColumns.find((column) => column.key === 'actions')
+    const orderedBusinessColumns = columnOrder
+      .map((key) => businessColumnMap.get(key))
+      .filter((column): column is ColumnsType<OperationAuditListItem>[number] => Boolean(column))
+      .map((column) => ({
+        ...column,
+        onHeaderCell: () => ({
+          'data-column-key': String(column.key),
+          'data-drag-label': t('operationLogs.dragColumn', { column: String(column.title) }),
+        } as DraggableHeaderCellProps),
+      }))
+
+    return actionColumn ? [...orderedBusinessColumns, actionColumn] : orderedBusinessColumns
+  }, [baseColumns, columnOrder, t])
+
+  const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    setColumnOrder((current) => {
+      const nextOrder = moveOperationLogColumnOrder(current, active.id, over.id)
+      try {
+        localStorage.setItem(OPERATION_LOG_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(nextOrder))
+      } catch {
+        // localStorage 不可用时仍保留当前页面内的列顺序。
+      }
+      return nextOrder
+    })
+  }
+
+  const resetColumnOrder = () => {
+    setColumnOrder([...DEFAULT_OPERATION_LOG_COLUMN_ORDER])
+    try {
+      localStorage.removeItem(OPERATION_LOG_COLUMN_ORDER_STORAGE_KEY)
+    } catch {
+      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+    }
+    message.success(t('operationLogs.columnOrderReset'))
+  }
+
+  const handleTableChange: NonNullable<TableProps<OperationAuditListItem>['onChange']> = (
+    pagination,
+    _filters,
+    sorter,
+    extra,
+  ) => {
+    const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    const nextState = resolveOperationAuditTableChange(
+      { page: pageNumber, pageSize, sortBy, sortOrder },
+      {
+        action: extra.action === 'sort' ? 'sort' : 'paginate',
+        page: pagination.current ?? pageNumber,
+        pageSize: pagination.pageSize ?? pageSize,
+        sortBy: nextSorter?.field,
+        sortOrder: nextSorter?.order,
+      },
+    )
+
+    setPageNumber(nextState.page)
+    setPageSize(nextState.pageSize)
+    setSortBy(nextState.sortBy)
+    setSortOrder(nextState.sortOrder)
+    // 将本次表格状态显式传入请求，避免 setState 异步导致请求仍使用旧排序。
+    void loadData(
+      nextState.page,
+      nextState.pageSize,
+      nextState.sortBy,
+      nextState.sortOrder,
+    )
+  }
 
   const itemColumns = useMemo<ColumnsType<OperationAuditDetailItem>>(
     () => [
@@ -366,14 +665,21 @@ export default function PosAdminOperationLogsPage() {
       title={t('operationLogs.pageTitle')}
       subtitle={t('operationLogs.pageSubtitle')}
       extra={
-        <Button icon={<ReloadOutlined />} onClick={() => void loadData(pageNumber, pageSize)}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => void loadData(pageNumber, pageSize, sortBy, sortOrder)}
+        >
           {t('common.refresh')}
         </Button>
       }
     >
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Card>
-          <Form form={form} layout="vertical" onFinish={() => void loadData(1, pageSize)}>
+          <Form
+            form={form}
+            layout="vertical"
+            onFinish={handleQuery}
+          >
             <Row gutter={16}>
               <Col xs={24} lg={8}>
                 <Form.Item label={t('operationLogs.filters.timeRange')} name="timeRange">
@@ -459,28 +765,50 @@ export default function PosAdminOperationLogsPage() {
             type="error"
             showIcon
             message={t('operationLogs.loadFailed')}
-            action={<Button onClick={() => void loadData(pageNumber, pageSize)}>{t('operationLogs.retry')}</Button>}
+            action={(
+              <Button onClick={() => void loadData(pageNumber, pageSize, sortBy, sortOrder)}>
+                {t('operationLogs.retry')}
+              </Button>
+            )}
           />
         ) : null}
 
         <Card>
-          <Table<OperationAuditListItem>
-            rowKey="eventId"
-            loading={loading}
-            columns={columns}
-            dataSource={data}
-            scroll={{ x: 1280 }}
-            locale={{ emptyText: t('operationLogs.empty') }}
-            pagination={{
-              current: pageNumber,
-              pageSize,
-              total,
-              showSizeChanger: true,
-              pageSizeOptions: [20, 50, 100, 200],
-              showTotal: (value) => t('operationLogs.paginationTotal', { total: value }),
-              onChange: (nextPage, nextPageSize) => void loadData(nextPage, nextPageSize),
-            }}
-          />
+          {isColumnOrderCustomized ? (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+              <Button size="small" icon={<ReloadOutlined />} onClick={resetColumnOrder}>
+                {t('operationLogs.resetColumns')}
+              </Button>
+            </div>
+          ) : null}
+          <DndContext
+            sensors={columnDragSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleColumnDragEnd}
+            accessibility={dndAccessibility}
+          >
+            <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+              <Table<OperationAuditListItem>
+                rowKey="eventId"
+                loading={loading}
+                components={{ header: { cell: DraggableHeaderCell } }}
+                columns={columns}
+                dataSource={data}
+                scroll={{ x: 1280 }}
+                locale={{ emptyText: t('operationLogs.empty') }}
+                sortDirections={['descend', 'ascend', 'descend']}
+                pagination={{
+                  current: pageNumber,
+                  pageSize,
+                  total,
+                  showSizeChanger: true,
+                  pageSizeOptions: [20, 50, 100, 200],
+                  showTotal: (value) => t('operationLogs.paginationTotal', { total: value }),
+                }}
+                onChange={handleTableChange}
+              />
+            </SortableContext>
+          </DndContext>
         </Card>
       </Space>
 

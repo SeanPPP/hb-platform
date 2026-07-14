@@ -155,8 +155,7 @@ public sealed class OperationAuditQueryService
         }
 
         var total = await query.CountAsync();
-        var rows = await query
-            .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+        var rows = await ApplySort(query, request.SortBy, request.SortOrder)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
@@ -167,6 +166,55 @@ public sealed class OperationAuditQueryService
             Total = total,
             PageNumber = pageNumber,
             PageSize = pageSize,
+        };
+    }
+
+    private static ISugarQueryable<PosOperationAudit> ApplySort(
+        ISugarQueryable<PosOperationAudit> query,
+        string? sortBy,
+        string? sortOrder
+    )
+    {
+        var normalizedField = TrimToNull(sortBy)?.ToLowerInvariant();
+        var normalizedOrder = TrimToNull(sortOrder)?.ToLowerInvariant();
+        if (normalizedOrder is not ("asc" or "desc"))
+        {
+            normalizedField = null;
+        }
+
+        var orderByType = normalizedOrder == "asc" ? OrderByType.Asc : OrderByType.Desc;
+
+        // 排序字段固定白名单并由表达式生成 SQL；任何非法组合都回退到默认时间倒序。
+        return normalizedField switch
+        {
+            "occurredatutc" => query
+                .OrderBy(item => item.OccurredAtUtc, orderByType)
+                .OrderBy(item => item.EventId, orderByType),
+            "storecode" => query
+                .OrderBy(item => item.StoreCode, orderByType)
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
+            "operationtype" => query
+                .OrderBy(item => item.OperationType, orderByType)
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
+            "amountdelta" => query
+                // 金额为空始终排在末尾，升降序只影响非空金额。
+                .OrderBy(item => item.AmountDelta == null ? 1 : 0, OrderByType.Asc)
+                .OrderBy(item => item.AmountDelta, orderByType)
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
+            "devicecode" => query
+                .OrderBy(item => item.DeviceCode, orderByType)
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
+            "outcome" => query
+                .OrderBy(item => item.Outcome, orderByType)
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
+            _ => query
+                .OrderBy(item => item.OccurredAtUtc, OrderByType.Desc)
+                .OrderBy(item => item.EventId, OrderByType.Desc),
         };
     }
 

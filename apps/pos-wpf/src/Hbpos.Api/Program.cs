@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.AddHbposFileLogging(builder.Configuration, builder.Environment);
+builder.Services.AddHbposCentralLogging(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddSwaggerGen();

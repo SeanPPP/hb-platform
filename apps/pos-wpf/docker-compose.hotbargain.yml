@@ -17,6 +17,14 @@ services:
       - ConnectionStrings__HBPOSMConnection=${CONNECTION_STRING_POSM}
       - ConnectionStrings__PosmConnection=${CONNECTION_STRING_POSM}
       - FileLogging__Path=/app/logs/hbpos-api.log
+      - CentralLogging__Enabled=true
+      - CentralLogging__IngestUrl=http://hb-platform-vite-api:5002/api/system/logs/ingest
+      - CentralLogging__ApiKey=${CENTER_LOG_HBPOS_API_KEY:?required}
+      - CentralLogging__ProjectCode=hbpos_api
+      - CentralLogging__Environment=Production
+      - CentralLogging__SourceType=Backend
+      - CentralLogging__ServiceName=Hbpos.Api
+      - CentralLogging__MinimumLevel=Warning
       # Linkly 回调必须是公网 HTTPS；服务会在该 base 后拼接 api/v1/linkly/cloud-notifications/...
       - LinklyCloudBackendAsync__PublicNotificationBaseUrl=https://hotbargain.vip/pos-api/
       - LinklyCloudBackendAsync__ProductionNotificationBearer=${LINKLY_CLOUD_PRODUCTION_NOTIFICATION_BEARER:-}

@@ -59,6 +59,60 @@ export interface PosmSalesOrderQueryParams {
   deviceCode?: string
   orderType?: OrderType
   keyword?: string
+  orderGuidKeyword?: string
+  deviceCodeKeyword?: string
+  timeStart?: string
+  timeEnd?: string
+  skuCountMin?: number
+  skuCountMax?: number
+  itemCountMin?: number
+  itemCountMax?: number
+  totalAmountMin?: number
+  totalAmountMax?: number
+  discountAmountMin?: number
+  discountAmountMax?: number
+  actualPayMin?: number
+  actualPayMax?: number
+  sortField?: PosmSalesOrderSortField
+  sortDirection?: PosmSalesOrderSortDirection
   pageNumber?: number
   pageSize?: number
+}
+
+export type PosmSalesOrderSortField =
+  | 'orderGuid'
+  | 'branchCode'
+  | 'deviceCode'
+  | 'orderTime'
+  | 'skuCount'
+  | 'itemCount'
+  | 'totalAmount'
+  | 'discountAmount'
+  | 'actualPay'
+
+export type PosmSalesOrderSortDirection = 'asc' | 'desc'
+
+export interface PosmSalesOrderSortState {
+  field: PosmSalesOrderSortField
+  direction: PosmSalesOrderSortDirection
+}
+
+export interface PosmSalesOrderColumnFilters {
+  orderGuidKeyword?: string
+  branchCode?: string
+  deviceCodeKeyword?: string
+  startDate?: string
+  endDate?: string
+  timeStart?: string
+  timeEnd?: string
+  skuCountMin?: number
+  skuCountMax?: number
+  itemCountMin?: number
+  itemCountMax?: number
+  totalAmountMin?: number
+  totalAmountMax?: number
+  discountAmountMin?: number
+  discountAmountMax?: number
+  actualPayMin?: number
+  actualPayMax?: number
 }

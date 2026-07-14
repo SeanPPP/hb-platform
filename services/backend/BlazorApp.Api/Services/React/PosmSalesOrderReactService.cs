@@ -33,6 +33,9 @@ namespace BlazorApp.Api.Services.React
             PosmSalesOrderQueryParams queryParams
         )
         {
+            var pageNumber = Math.Max(1, queryParams.PageNumber);
+            // 限制单页上限，避免异常请求生成过大的 SQL Take 和响应体。
+            var pageSize = queryParams.PageSize > 0 ? Math.Min(queryParams.PageSize, 1000) : 20;
             var baseQuery = _posmContext
                 .Db.Queryable<SalesOrder>()
                 .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid);
@@ -44,8 +47,31 @@ namespace BlazorApp.Api.Services.React
             }
             if (queryParams.EndDate.HasValue)
             {
-                var end = queryParams.EndDate.Value.Date.AddDays(1).AddMilliseconds(-1);
-                baseQuery = baseQuery.Where(o => o.OrderTime <= end);
+                var endExclusive = queryParams.EndDate.Value.Date.AddDays(1);
+                baseQuery = baseQuery.Where(o => o.OrderTime < endExclusive);
+            }
+
+            if (queryParams.TimeStart.HasValue)
+            {
+                var startSeconds = (int)queryParams.TimeStart.Value.TotalSeconds;
+                baseQuery = baseQuery.Where(o =>
+                    o.OrderTime.HasValue
+                    && o.OrderTime.Value.Hour * 3600
+                            + o.OrderTime.Value.Minute * 60
+                            + o.OrderTime.Value.Second
+                        >= startSeconds
+                );
+            }
+            if (queryParams.TimeEnd.HasValue)
+            {
+                var endSeconds = (int)queryParams.TimeEnd.Value.TotalSeconds;
+                baseQuery = baseQuery.Where(o =>
+                    o.OrderTime.HasValue
+                    && o.OrderTime.Value.Hour * 3600
+                            + o.OrderTime.Value.Minute * 60
+                            + o.OrderTime.Value.Second
+                        <= endSeconds
+                );
             }
 
             if (!string.IsNullOrWhiteSpace(queryParams.BranchCode))
@@ -65,9 +91,77 @@ namespace BlazorApp.Api.Services.React
                 baseQuery = baseQuery.Where(o => o.DeviceCode == queryParams.DeviceCode);
             }
 
+            if (!string.IsNullOrWhiteSpace(queryParams.OrderGuidKeyword))
+            {
+                var orderGuidKeyword = queryParams.OrderGuidKeyword.Trim();
+                baseQuery = baseQuery.Where(o =>
+                    o.OrderGuid != null && o.OrderGuid.Contains(orderGuidKeyword)
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(queryParams.DeviceCodeKeyword))
+            {
+                var deviceCodeKeyword = queryParams.DeviceCodeKeyword.Trim();
+                baseQuery = baseQuery.Where(o =>
+                    o.DeviceCode != null && o.DeviceCode.Contains(deviceCodeKeyword)
+                );
+            }
+
             if (queryParams.OrderType.HasValue && queryParams.OrderType.Value != OrderType.All)
             {
                 baseQuery = baseQuery.Where(o => o.Status == (int)queryParams.OrderType.Value);
+            }
+
+            if (queryParams.ItemCountMin.HasValue)
+                baseQuery = baseQuery.Where(o => o.ItemCount >= queryParams.ItemCountMin.Value);
+            if (queryParams.ItemCountMax.HasValue)
+                baseQuery = baseQuery.Where(o => o.ItemCount <= queryParams.ItemCountMax.Value);
+            if (queryParams.TotalAmountMin.HasValue)
+                baseQuery = baseQuery.Where(o => o.TotalAmount >= queryParams.TotalAmountMin.Value);
+            if (queryParams.TotalAmountMax.HasValue)
+                baseQuery = baseQuery.Where(o => o.TotalAmount <= queryParams.TotalAmountMax.Value);
+            if (queryParams.DiscountAmountMin.HasValue)
+                baseQuery = baseQuery.Where(o =>
+                    o.DiscountAmount >= queryParams.DiscountAmountMin.Value
+                );
+            if (queryParams.DiscountAmountMax.HasValue)
+                baseQuery = baseQuery.Where(o =>
+                    o.DiscountAmount <= queryParams.DiscountAmountMax.Value
+                );
+            if (queryParams.ActualPayMin.HasValue)
+            {
+                if (_posmContext.Db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+                {
+                    // SQLite 的 decimal 表达式参数会按文本绑定；仅测试 provider 转 double，SQL Server 保持 decimal 精度。
+                    var actualPayMin = (double)queryParams.ActualPayMin.Value;
+                    baseQuery = baseQuery.Where(o =>
+                        SqlFunc.ToDouble(o.TotalAmount) - SqlFunc.ToDouble(o.DiscountAmount)
+                            >= actualPayMin
+                    );
+                }
+                else
+                {
+                    baseQuery = baseQuery.Where(o =>
+                        o.TotalAmount - o.DiscountAmount >= queryParams.ActualPayMin.Value
+                    );
+                }
+            }
+            if (queryParams.ActualPayMax.HasValue)
+            {
+                if (_posmContext.Db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+                {
+                    var actualPayMax = (double)queryParams.ActualPayMax.Value;
+                    baseQuery = baseQuery.Where(o =>
+                        SqlFunc.ToDouble(o.TotalAmount) - SqlFunc.ToDouble(o.DiscountAmount)
+                            <= actualPayMax
+                    );
+                }
+                else
+                {
+                    baseQuery = baseQuery.Where(o =>
+                        o.TotalAmount - o.DiscountAmount <= queryParams.ActualPayMax.Value
+                    );
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(queryParams.Keyword))
@@ -75,8 +169,21 @@ namespace BlazorApp.Api.Services.React
                 var keyword = queryParams.Keyword.Trim();
                 baseQuery = baseQuery.Where((o, d) =>
                     (o.OrderGuid != null && o.OrderGuid.Contains(keyword))
-                    || (d != null && d.ProductName != null && d.ProductName.Contains(keyword))
-                    || (d != null && d.Barcode != null && d.Barcode.Contains(keyword))
+                    || (o.DeviceCode != null && o.DeviceCode.Contains(keyword))
+                    || SqlFunc
+                        .Subqueryable<SalesOrderDetail>()
+                        .Where(detail =>
+                            detail.OrderGuid == o.OrderGuid
+                            && (
+                                detail.ProductCode.Contains(keyword)
+                                || (detail.Barcode != null && detail.Barcode.Contains(keyword))
+                                || (
+                                    detail.ProductName != null
+                                    && detail.ProductName.Contains(keyword)
+                                )
+                            )
+                        )
+                        .Any()
                 );
             }
 
@@ -112,12 +219,49 @@ namespace BlazorApp.Api.Services.React
                             SkuCount = SqlFunc.AggregateDistinctCount(d.ProductCode),
                         }
                 )
-                .OrderBy(o => o.OrderTime, OrderByType.Asc);
+                .MergeTable();
+
+            // SKU 是明细聚合值，必须在 GroupBy/Select 之后过滤，避免改变完整订单的聚合口径。
+            if (queryParams.SkuCountMin.HasValue)
+                q = q.Where(o => o.SkuCount >= queryParams.SkuCountMin.Value);
+            if (queryParams.SkuCountMax.HasValue)
+                q = q.Where(o => o.SkuCount <= queryParams.SkuCountMax.Value);
 
             var total = await q.CountAsync();
 
-            var items = await q.Skip((queryParams.PageNumber - 1) * queryParams.PageSize)
-                .Take(queryParams.PageSize)
+            var sortField = queryParams.SortField?.Trim().ToLowerInvariant();
+            var sortDirection = queryParams.SortDirection?.Trim().ToLowerInvariant();
+            if (sortDirection is not ("asc" or "desc"))
+            {
+                sortField = "ordertime";
+                sortDirection = "asc";
+            }
+
+            var orderByType = sortDirection == "desc" ? OrderByType.Desc : OrderByType.Asc;
+            // 排序字段仅允许以下白名单，非法字段统一回退到下单时间升序，避免动态 SQL 注入。
+            q = sortField switch
+            {
+                "orderguid" => q.OrderBy(o => o.OrderGuid, orderByType),
+                "branchcode" => q.OrderBy(o => o.BranchCode, orderByType),
+                "devicecode" => q.OrderBy(o => o.DeviceCode, orderByType),
+                "ordertime" => q.OrderBy(o => o.OrderTime, orderByType),
+                "skucount" => q.OrderBy(o => o.SkuCount, orderByType),
+                "itemcount" => q.OrderBy(o => o.ItemCount, orderByType),
+                "totalamount" => q.OrderBy(o => o.TotalAmount, orderByType),
+                "discountamount" => q.OrderBy(o => o.DiscountAmount, orderByType),
+                "actualpay" => q.OrderBy(
+                    o => o.TotalAmount - o.DiscountAmount,
+                    orderByType
+                ),
+                _ => q.OrderBy(o => o.OrderTime, OrderByType.Asc),
+            };
+            q = q.OrderBy(o => o.OrderGuid, OrderByType.Asc);
+
+            // 先用 long 计算再限制到 SqlSugar 的 int Skip 上限，避免极大页码乘法溢出为负数。
+            var requestedSkip = ((long)pageNumber - 1L) * pageSize;
+            var safeSkip = (int)Math.Min(requestedSkip, int.MaxValue);
+            var items = await q.Skip(safeSkip)
+                .Take(pageSize)
                 .ToListAsync();
 
             try
@@ -166,8 +310,8 @@ namespace BlazorApp.Api.Services.React
             {
                 Items = items,
                 Total = total,
-                PageNumber = queryParams.PageNumber,
-                PageSize = queryParams.PageSize,
+                PageNumber = pageNumber,
+                PageSize = pageSize,
             };
         }
 
