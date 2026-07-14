@@ -428,20 +428,65 @@ public sealed class CatalogService(
             .ToList();
 
         stepStopwatch.Restart();
-        var storeRetailPriceEntities = await dbContext.MainDb.Queryable<StoreRetailPrice>()
-            .Where(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted)
-            .ToListAsync(cancellationToken);
-        stepStopwatch.Stop();
-        Log($"store retail prices query store={normalizedStoreCode} count={storeRetailPriceEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
-        var storeRetailPrices = storeRetailPriceEntities
-            .Select(x => new StoreRetailPriceRecord(
+        const int storeRetailPriceBatchSize = 20_000;
+        var storeRetailPrices = new List<StoreRetailPriceRecord>();
+        string? lastProductCode = null;
+        string? lastUuid = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var storeRetailPriceQuery = dbContext.MainDb.Queryable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == normalizedStoreCode
+                    && x.IsActive
+                    && !x.IsDeleted
+                    && x.ProductCode != null);
+
+            if (lastProductCode is not null && lastUuid is not null)
+            {
+                // 沿用现有复合索引顺序做键集分页，避免越往后的 OFFSET 扫描越慢。
+                storeRetailPriceQuery = storeRetailPriceQuery.Where(
+                    "(([ProductCode] > @lastProductCode) OR ([ProductCode] = @lastProductCode AND [UUID] > @lastUuid))",
+                    new { lastProductCode, lastUuid });
+            }
+
+            // 只从数据库读取目录构建实际使用的字段，减少大门店的数据传输和实体映射成本。
+            var storeRetailPriceBatch = await storeRetailPriceQuery
+                .OrderBy(x => x.ProductCode)
+                .OrderBy(x => x.UUID)
+                .Select(x => new StoreRetailPrice
+                {
+                    ProductCode = x.ProductCode,
+                    StoreRetailPriceValue = x.StoreRetailPriceValue,
+                    UpdatedAt = x.UpdatedAt,
+                    CreatedAt = x.CreatedAt,
+                    UUID = x.UUID,
+                    DiscountRate = x.DiscountRate,
+                    IsSpecialProduct = x.IsSpecialProduct
+                })
+                .Take(storeRetailPriceBatchSize)
+                .ToListAsync(cancellationToken);
+
+            storeRetailPrices.AddRange(storeRetailPriceBatch.Select(x => new StoreRetailPriceRecord(
                 x.ProductCode,
                 x.StoreRetailPriceValue,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
                 x.UUID,
                 x.DiscountRate,
-                x.IsSpecialProduct))
-            .ToList();
+                x.IsSpecialProduct)));
+
+            if (storeRetailPriceBatch.Count < storeRetailPriceBatchSize)
+            {
+                break;
+            }
+
+            var lastStoreRetailPrice = storeRetailPriceBatch[^1];
+            lastProductCode = lastStoreRetailPrice.ProductCode;
+            lastUuid = lastStoreRetailPrice.UUID;
+        }
+
+        stepStopwatch.Stop();
+        Log($"store retail prices query store={normalizedStoreCode} count={storeRetailPrices.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
 
         stepStopwatch.Restart();
         var multiCodeProductEntities = await dbContext.MainDb.Queryable<StoreMultiCodeProduct>()
