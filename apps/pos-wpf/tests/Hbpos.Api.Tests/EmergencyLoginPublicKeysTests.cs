@@ -180,6 +180,19 @@ public sealed class EmergencyLoginPublicKeysTests
     }
 
     [Fact]
+    public void Package_read_contract_locks_state_and_keys_in_one_transaction()
+    {
+        var sql = SqlSugarEmergencyLoginPublicKeyRepository.PackageReadSqlForTests;
+
+        Assert.Contains("BEGIN TRANSACTION", sql);
+        Assert.Contains("POSM_EmergencyLoginKeySetState] AS state WITH (UPDLOCK, HOLDLOCK)", sql);
+        Assert.Contains("POSM_EmergencyLoginKey] AS [key] WITH (HOLDLOCK)", sql);
+        Assert.Contains("COMMIT TRANSACTION", sql);
+        Assert.Contains("state.[Version]", sql);
+        Assert.Contains("[key].[KeyId]", sql);
+    }
+
+    [Fact]
     public async Task Public_key_provider_uses_time_provider_for_60_second_cache_expiry()
     {
         var repository = new InMemoryRepository { Snapshot = CreateSnapshot(1, "K1") };

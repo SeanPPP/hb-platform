@@ -93,30 +93,51 @@ public sealed class EmergencyLoginPublicKeyDistributionService(
 public sealed class SqlSugarEmergencyLoginPublicKeyRepository(HbposSqlSugarContext dbContext)
     : IEmergencyLoginPublicKeyRepository
 {
+    internal const string PackageReadSqlForTests = """
+        SET NOCOUNT ON;
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+
+        SELECT
+            state.[Version],
+            state.[ActiveKeyId],
+            state.[UpdatedAtUtc],
+            [key].[KeyId],
+            [key].[PublicKeyPem],
+            [key].[PublicKeyFingerprint],
+            [key].[Status]
+        FROM [dbo].[POSM_EmergencyLoginKeySetState] AS state WITH (UPDLOCK, HOLDLOCK)
+        LEFT JOIN [dbo].[POSM_EmergencyLoginKey] AS [key] WITH (HOLDLOCK)
+          ON [key].[Status] IN (N'Staged', N'Active', N'Retiring')
+        WHERE state.[StateId] = 1
+        ORDER BY [key].[CreatedAtUtc];
+
+        COMMIT TRANSACTION;
+        """;
+
     public async Task<EmergencyLoginPublicKeySetSnapshot> GetKeySetAsync(CancellationToken cancellationToken)
     {
-        var state = await dbContext.PosmDb.Queryable<EmergencyLoginKeySetStateEntity>()
-            .Where(item => item.StateId == 1)
-            .FirstAsync(cancellationToken)
-            ?? throw new InvalidOperationException("紧急登录公钥版本状态不存在。");
-        var keys = await dbContext.PosmDb.Queryable<EmergencyLoginKeyEntity>()
-            .Where(item =>
-                item.Status == EmergencyLoginKeyStatuses.Staged ||
-                item.Status == EmergencyLoginKeyStatuses.Active ||
-                item.Status == EmergencyLoginKeyStatuses.Retiring)
-            .OrderBy(item => item.CreatedAtUtc, OrderByType.Asc)
-            .ToListAsync(cancellationToken);
+        // 关键逻辑：state 与 keys 必须在同一事务快照中读取，并持有 state 锁直至 keys 完成。
+        var rows = await dbContext.PosmDb.Ado.SqlQueryAsync<EmergencyLoginPublicKeyPackageRow>(
+            PackageReadSqlForTests);
+        if (rows.Count == 0)
+        {
+            throw new InvalidOperationException("紧急登录公钥版本状态不存在。");
+        }
+
+        var state = rows[0];
 
         return new EmergencyLoginPublicKeySetSnapshot(
             state.Version,
             state.ActiveKeyId,
             state.UpdatedAtUtc,
-            keys.Select(item => new EmergencyLoginPublicKeyRecord(
-                item.KeyId,
+            rows.Where(item => !string.IsNullOrWhiteSpace(item.KeyId))
+                .Select(item => new EmergencyLoginPublicKeyRecord(
+                item.KeyId!,
                 "ES256",
-                item.PublicKeyPem,
-                item.PublicKeyFingerprint,
-                item.Status)).ToArray());
+                item.PublicKeyPem!,
+                item.PublicKeyFingerprint!,
+                item.Status!)).ToArray());
     }
 
     internal const string AckSqlForTests = """
@@ -214,6 +235,17 @@ public sealed class SqlSugarEmergencyLoginPublicKeyRepository(HbposSqlSugarConte
     private sealed class EmergencyLoginPublicKeyAckSqlResult
     {
         public int ResultCode { get; set; }
+    }
+
+    private sealed class EmergencyLoginPublicKeyPackageRow
+    {
+        public long Version { get; set; }
+        public string? ActiveKeyId { get; set; }
+        public DateTime UpdatedAtUtc { get; set; }
+        public string? KeyId { get; set; }
+        public string? PublicKeyPem { get; set; }
+        public string? PublicKeyFingerprint { get; set; }
+        public string? Status { get; set; }
     }
 }
 
