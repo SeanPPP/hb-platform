@@ -212,6 +212,8 @@ async function main() {
     const barcodeContentRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .warehouse-locations-barcode-content')
     const copyButtonRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .warehouse-locations-copy-button')
     const barcodePreviewRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .warehouse-locations-product-barcode-preview canvas')
+    const selectionColumnRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .ant-table-selection-column')
+    const selectionCheckboxRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .ant-table-selection-column .ant-checkbox-wrapper')
 
     assert(/-webkit-line-clamp:\s*2/.test(headerRule), '列头应最多显示两行')
     assert(/white-space:\s*nowrap/.test(nowrapRule), '关键字段应保持单行')
@@ -226,6 +228,12 @@ async function main() {
     assert(/width:\s*20px/.test(copyButtonRule), '复制图标按钮应收窄')
     assert(/max-width:\s*74px/.test(barcodePreviewRule), '商品条码图应控制最大宽度')
     assert(/height:\s*18px/.test(barcodePreviewRule), '商品条码图高度应控制到 18px')
+    assert(/width:\s*56px/.test(selectionColumnRule), '选择列应显式占用 56px')
+    assert(/min-width:\s*56px/.test(selectionColumnRule), '选择列应保留 56px 最小宽度，避免紧凑 padding 挤压')
+    assert(/max-width:\s*56px/.test(selectionColumnRule), '选择列应锁定 56px 最大宽度')
+    assert(/text-align:\s*center/.test(selectionColumnRule), '选择列复选框应居中')
+    assert(/display:\s*inline-flex/.test(selectionCheckboxRule), '选择列复选框 wrapper 应使用 inline-flex')
+    assert(/justify-content:\s*center/.test(selectionCheckboxRule), '选择列复选框 wrapper 应水平居中')
     assert(!/^\.warehouse-locations-nowrap/m.test(compactCssSource), 'nowrap 样式必须限定到仓库标签表格下')
     assert(!/^\.warehouse-locations-two-line-text/m.test(compactCssSource), '两行样式必须限定到仓库标签表格下')
   })
@@ -238,7 +246,7 @@ async function main() {
     const productNameColumn = readColumnBlock(locationsPageSource, "key: 'productNames'")
     const imageColumn = readColumnBlock(locationsPageSource, "key: 'productImages'")
     const actionColumn = readColumnBlock(locationsPageSource, "key: 'action'")
-    const scrollX = readNumericValue(locationsPageSource, /scroll=\{\{\s*x:\s*(\d+)/)
+    const selectionColumnWidth = readNumericValue(locationsPageSource, /WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH\s*=\s*(\d+)/)
 
     assert(readNumericValue(indexColumn, /width:\s*(\d+)/) <= 56, '序号列应压到 56 以内')
     assert(readNumericValue(itemNumberColumn, /width:\s*(\d+)/) <= 118, '货号列应压到 118 以内')
@@ -246,9 +254,50 @@ async function main() {
     assert(readNumericValue(productNameColumn, /width:\s*(\d+)/) >= 190, '商品名称列应保留至少 190 宽度')
     assert(readNumericValue(imageColumn, /width:\s*(\d+)/) <= 112, '图片列应压到 112 以内')
     assert(readNumericValue(actionColumn, /width:\s*(\d+)/) <= 132, '操作列应压到 132 以内')
-    assert(scrollX >= 1460 && scrollX <= 1500, 'scroll.x 应设置到 1460-1500')
+    assert(selectionColumnWidth === 56, '选择列 TypeScript 与 CSS 应统一为 56px')
+    assert(indexColumn.includes("fixed: 'left'"), '序号列应固定在选择列右侧，避免横向滚动时重叠')
+    assert(locationsPageSource.includes('columnWidth: WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH'), 'rowSelection 应复用统一选择列宽度')
+    assert(
+      locationsPageSource.includes('const selectionColumnWidth = access.canManageWarehouseLocations\n    ? WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH\n    : 0'),
+      'scroll.x 选择列预算应按货位管理权限为 56 或 0',
+    )
+    assert(locationsPageSource.includes('selectionColumnWidth + columns.reduce'), 'scroll.x 应包含当前可见选择列和全部业务列宽度预算')
+    assert(locationsPageSource.includes('scroll={{ x: tableScrollX, y: 600 }}'), 'Table 应使用包含选择列预算的动态 scroll.x')
   })
   if (layoutFailure) failures.push(layoutFailure)
+
+  const batchUnbindFailure = await runTest('仓库标签页应按所选货位批量解绑有效商品关联', () => {
+    assert(locationsPageSource.includes('batchUnbindLocationProducts'), '页面应复用批量解绑服务')
+    assert(locationsPageSource.includes('const [selectedRowKeys, setSelectedRowKeys] = useState'), '页面缺少受控行选择状态')
+    assert(locationsPageSource.includes('const [batchUnbinding, setBatchUnbinding] = useState(false)'), '页面缺少批量解绑 loading 状态')
+    assert(locationsPageSource.includes('selectedBindings'), '页面应从所选货位展开商品关联')
+    assert(locationsPageSource.includes('buildSelectedLocationProductBindings'), '页面应复用纯函数展开并去重商品关联')
+    assert(locationsPageSource.includes('hasUnbindableProducts'), '页面应复用纯函数判断货位能否解绑')
+    assert(locationsPageSource.includes('coordinateBatchUnbindLocationProducts'), '页面应复用异步协调函数管理解绑和刷新状态流')
+    assert(locationsPageSource.includes('const rowSelection'), '页面应配置 Table rowSelection')
+    assert(locationsPageSource.includes('selectedRowKeys,'), 'rowSelection 应受控')
+    assert(locationsPageSource.includes('getCheckboxProps:'), 'rowSelection 应配置空货位禁选')
+    assert(locationsPageSource.includes('disabled: !hasUnbindableProducts(record)'), '没有有效 productCode 的货位应禁选')
+    assert(locationsPageSource.includes('rowSelection={access.canManageWarehouseLocations ? rowSelection : undefined}'), '仅货位管理权限用户可选择批量解绑货位')
+    assert(locationsPageSource.includes('setSelectedRowKeys((currentKeys)'), '列表刷新后应清理当前页不存在的选择')
+    assert(locationsPageSource.includes('danger'), '批量解绑按钮应使用危险操作样式')
+    assert(locationsPageSource.includes("t('warehouseLocations.batchUnbind')"), '批量按钮应使用国际化文案')
+    assert(locationsPageSource.includes("t('warehouseLocations.selectedLocations'"), '操作条应展示货位数和商品关联数')
+    assert(locationsPageSource.includes('disabled={!selectedBindings.length || loading || batchUnbinding}'), '按钮应在无选择、加载或执行中禁用')
+    assert(locationsPageSource.includes('loading={batchUnbinding}'), '按钮应绑定批量解绑 loading')
+    assert(locationsPageSource.includes('const handleBatchUnbind = () => {'), '页面缺少批量解绑处理函数')
+    assert(locationsPageSource.includes('Modal.confirm({'), '批量解绑应二次确认')
+    assert(locationsPageSource.includes("t('warehouseLocations.batchUnbindContent'"), '确认正文应说明数量和不可恢复')
+    assert(locationsPageSource.includes('setBatchUnbinding(true)'), '确认后应进入执行状态')
+    assert(locationsPageSource.includes('unbind: batchUnbindLocationProducts'), '异步协调函数应调用批量解绑服务')
+    assert(locationsPageSource.includes("message.success(t('warehouseLocations.batchUnbindSuccess'"), '全成功应展示 success')
+    assert(locationsPageSource.includes("message.warning(t('warehouseLocations.batchUnbindPartialFailed'"), '部分失败应展示 warning')
+    assert(locationsPageSource.includes("message.error(t('warehouseLocations.batchUnbindFailed'"), '全失败应展示 error')
+    assert(locationsPageSource.includes('refresh: () => loadDataWithColumnFilters(page, pageSize)'), '异步协调函数应注入当前列表刷新')
+    assert(locationsPageSource.includes('shouldApplyPatchedData'), '页面应按协调结果判断是否写回本地补丁')
+    assert(locationsPageSource.includes('setData(patchedData)'), '刷新失败时应写入剔除成功关联后的本地数据')
+  })
+  if (batchUnbindFailure) failures.push(batchUnbindFailure)
 
   const localeAndScriptFailure = await runTest('商品条码文案和测试脚本应接入项目', () => {
     assert(zhLocaleSource.includes('"productBarcode": "商品条码"'), '中文列名缺少商品条码')
@@ -260,6 +309,36 @@ async function main() {
     assert(packageSource.includes('"test:warehouse-locations"'), 'package.json 缺少 test:warehouse-locations 脚本')
     assert(packageSource.includes('warehouseLocationsCompactUi.logic.test.ts'), '测试脚本未运行仓库标签紧凑 UI 约束')
     assert(packageSource.includes('locationService.hqSync.test.ts'), '测试脚本未运行仓库标签 HQ 同步服务行为测试')
+
+    const expectedZhCopy = [
+      '"batchUnbind": "批量解绑"',
+      '"selectedLocations": "已选 {{locations}} 个货位，共 {{products}} 个商品关联"',
+      '"batchUnbindTitle": "批量解绑商品关联"',
+      '"batchUnbindContent": "将解绑所选 {{locations}} 个货位中的 {{products}} 个商品关联，此操作不可恢复。"',
+      '"batchUnbindConfirm": "确认解绑"',
+      '"batchUnbindSuccess": "已成功解绑 {{succeeded}} 个商品关联"',
+      '"batchUnbindPartialFailed": "成功解绑 {{succeeded}} 个商品关联，{{failed}} 个失败"',
+      '"batchUnbindFailed": "批量解绑失败，共 {{failed}} 个商品关联未解绑"',
+    ]
+    const expectedEnCopy = [
+      '"batchUnbind": "Batch Unbind"',
+      '"selectedLocations": "Selected locations: {{locations}}; product links: {{products}}"',
+      '"batchUnbindTitle": "Batch Unbind Product Links"',
+      '"batchUnbindContent": "Selected locations: {{locations}}. Product links to unbind: {{products}}. This action cannot be undone."',
+      '"batchUnbindConfirm": "Unbind"',
+      '"batchUnbindSuccess": "Product links unbound: {{succeeded}}"',
+      '"batchUnbindPartialFailed": "Product links unbound: {{succeeded}}. Failed: {{failed}}"',
+      '"batchUnbindFailed": "No product links were unbound. Failed: {{failed}}"',
+    ]
+
+    for (const copy of expectedZhCopy) {
+      assert(zhLocaleSource.includes(copy), `中文批量解绑文案缺失: ${copy}`)
+    }
+    for (const copy of expectedEnCopy) {
+      assert(enLocaleSource.includes(copy), `英文批量解绑文案缺失: ${copy}`)
+    }
+    assert(!expectedZhCopy.some((copy) => copy.includes('—') || copy.includes('–')), '中文批量解绑文案不能使用破折号')
+    assert(!expectedEnCopy.some((copy) => copy.includes('—') || copy.includes('–')), '英文批量解绑文案不能使用破折号')
   })
   if (localeAndScriptFailure) failures.push(localeAndScriptFailure)
 

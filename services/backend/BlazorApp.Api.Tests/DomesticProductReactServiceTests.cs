@@ -1,8 +1,11 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using AutoMapper;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Mappings.Profiles;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
@@ -48,7 +51,12 @@ public sealed class DomesticProductReactServiceTests : IDisposable
         _hbSalesDb = new SqlSugarScope(CreateConnectionConfig(_hbSalesConnection.ConnectionString));
         _hqDb = new SqlSugarClient(CreateConnectionConfig(_hqConnection.ConnectionString));
 
-        _localDb.CodeFirst.InitTables(typeof(DomesticProduct), typeof(DomesticSetProduct), typeof(Product));
+        _localDb.CodeFirst.InitTables(
+            typeof(DomesticProduct),
+            typeof(DomesticSetProduct),
+            typeof(Product),
+            typeof(ChinaSupplier)
+        );
         _hbSalesDb.CodeFirst.InitTables(
             typeof(CPT_DIC_商品信息字典表),
             typeof(CPT_DIC_商品套装信息表)
@@ -717,6 +725,186 @@ public sealed class DomesticProductReactServiceTests : IDisposable
     }
 
     [Fact]
+    public void 单条创建_控制器使用根POST和商品创建权限()
+    {
+        var method = typeof(ReactDomesticProductsController).GetMethod("CreateDomesticProduct");
+
+        Assert.NotNull(method);
+        var route = method!.GetCustomAttribute<HttpPostAttribute>();
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.NotNull(route);
+        Assert.Null(route!.Template);
+        Assert.Equal(Permissions.Products.Create, authorize?.Policy);
+    }
+
+    [Fact]
+    public async Task 单条创建_控制器成功返回201和统一响应契约()
+    {
+        var response = ApiResponse<DomesticProductDto>.OK(new DomesticProductDto
+        {
+            ProductCode = "DP-CREATED",
+            SupplierCode = "HB001",
+            HBProductNo = "HB001-EXPLICIT",
+            Barcode = "9527999900001",
+        });
+        var service = new Mock<IDomesticProductService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CreateDomesticProductAsync(It.IsAny<CreateDomesticProductDto>()))
+            .ReturnsAsync(response);
+        var controller = CreateReactController(service.Object);
+
+        var actionResult = await InvokeCreateDomesticProductAsync(
+            controller,
+            CreateDomesticProductRequest()
+        );
+
+        var created = Assert.IsAssignableFrom<ObjectResult>(actionResult);
+        Assert.Equal(201, created.StatusCode);
+        Assert.Same(response, created.Value);
+        service.VerifyAll();
+    }
+
+    [Theory]
+    [InlineData("SUPPLIER_NOT_FOUND", "供应商不存在")]
+    [InlineData("CREATE_PRODUCT_ERROR", "创建国内商品失败")]
+    public async Task 单条创建_控制器供应商或普通业务错误返回400(
+        string errorCode,
+        string message
+    )
+    {
+        var response = ApiResponse<DomesticProductDto>.Error(message, errorCode);
+        var service = new Mock<IDomesticProductService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CreateDomesticProductAsync(It.IsAny<CreateDomesticProductDto>()))
+            .ReturnsAsync(response);
+        var controller = CreateReactController(service.Object);
+
+        var actionResult = await InvokeCreateDomesticProductAsync(
+            controller,
+            CreateDomesticProductRequest()
+        );
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult);
+        Assert.Same(response, badRequest.Value);
+        service.VerifyAll();
+    }
+
+    [Theory]
+    [InlineData("HB_PRODUCT_NO_EXISTS", "HB货号已存在")]
+    [InlineData("BARCODE_EXISTS", "条形码已存在")]
+    public async Task 单条创建_控制器重复货号或条码返回409(
+        string errorCode,
+        string message
+    )
+    {
+        var response = ApiResponse<DomesticProductDto>.Error(message, errorCode);
+        var service = new Mock<IDomesticProductService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CreateDomesticProductAsync(It.IsAny<CreateDomesticProductDto>()))
+            .ReturnsAsync(response);
+        var controller = CreateReactController(service.Object);
+
+        var actionResult = await InvokeCreateDomesticProductAsync(
+            controller,
+            CreateDomesticProductRequest()
+        );
+
+        var conflict = Assert.IsType<ConflictObjectResult>(actionResult);
+        Assert.Same(response, conflict.Value);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task 单条创建_控制器模型验证失败返回400且不调用服务()
+    {
+        var service = new Mock<IDomesticProductService>(MockBehavior.Strict);
+        var controller = CreateReactController(service.Object);
+        controller.ModelState.AddModelError(nameof(CreateDomesticProductDto.SupplierCode), "供应商编码不能为空");
+
+        var actionResult = await InvokeCreateDomesticProductAsync(
+            controller,
+            CreateDomesticProductRequest()
+        );
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult);
+        var response = Assert.IsType<ApiResponse<object>>(badRequest.Value);
+        Assert.Equal("VALIDATION_ERROR", response.ErrorCode);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task 单条创建_控制器未预期异常返回500()
+    {
+        var service = new Mock<IDomesticProductService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CreateDomesticProductAsync(It.IsAny<CreateDomesticProductDto>()))
+            .ThrowsAsync(new InvalidOperationException("unexpected"));
+        var controller = CreateReactController(service.Object);
+
+        var actionResult = await InvokeCreateDomesticProductAsync(
+            controller,
+            CreateDomesticProductRequest()
+        );
+
+        var serverError = Assert.IsAssignableFrom<ObjectResult>(actionResult);
+        Assert.Equal(500, serverError.StatusCode);
+        var response = Assert.IsType<ApiResponse<object>>(serverError.Value);
+        Assert.Equal("INTERNAL_SERVER_ERROR", response.ErrorCode);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task 单条创建_真实服务保留显式货号和条码并去除首尾空白()
+    {
+        await SeedChinaSupplierAsync();
+        var service = CreateDomesticProductService();
+        var request = CreateDomesticProductRequest();
+        request.HBProductNo = "  HB001-EXPLICIT  ";
+        request.Barcode = "  9527999900001  ";
+
+        var result = await service.CreateDomesticProductAsync(request);
+
+        Assert.True(result.Success);
+        Assert.Equal("HB001-EXPLICIT", result.Data!.HBProductNo);
+        Assert.Equal("9527999900001", result.Data.Barcode);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal("HB001-EXPLICIT", product.HBProductNo);
+        Assert.Equal("9527999900001", product.Barcode);
+    }
+
+    [Theory]
+    [InlineData("HB001-EXISTS", "9527999900002", "HB_PRODUCT_NO_EXISTS", "HB货号已存在")]
+    [InlineData("HB001-NEW", "9527999900001", "BARCODE_EXISTS", "条形码已存在")]
+    public async Task 单条创建_真实服务重复货号或条码时不新增记录(
+        string hbProductNo,
+        string barcode,
+        string expectedErrorCode,
+        string expectedMessage
+    )
+    {
+        await SeedChinaSupplierAsync();
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DP-EXISTING",
+            SupplierCode = "HB001",
+            ProductName = "已存在商品",
+            HBProductNo = "HB001-EXISTS",
+            Barcode = "9527999900001",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var request = CreateDomesticProductRequest();
+        request.HBProductNo = hbProductNo;
+        request.Barcode = barcode;
+
+        var result = await CreateDomesticProductService().CreateDomesticProductAsync(request);
+
+        Assert.False(result.Success);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(expectedMessage, result.Message);
+        Assert.Equal(1, await _localDb.Queryable<DomesticProduct>().CountAsync());
+    }
+
+    [Fact]
     public void HbwebProductNames_控制器使用国内采购商品管理权限()
     {
         var method = typeof(ReactDomesticProductsController).GetMethod(
@@ -745,6 +933,7 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             ));
         var controller = new ReactDomesticProductsController(
             service.Object,
+            Mock.Of<IDomesticProductService>(),
             NullLogger<ReactDomesticProductsController>.Instance
         );
 
@@ -780,6 +969,7 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             ));
         var controller = new ReactDomesticProductsController(
             service.Object,
+            Mock.Of<IDomesticProductService>(),
             NullLogger<ReactDomesticProductsController>.Instance
         );
 
@@ -1005,6 +1195,75 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             itemBarcodeService,
             hqContext ?? CreateHqSqlSugarContext(_hqDb)
         );
+    }
+
+    private DomesticProductService CreateDomesticProductService()
+    {
+        var configuration = new ConfigurationBuilder().Build();
+        var localContext = CreateSqlSugarContext(_localDb);
+        var itemBarcodeService = new ItemBarcodeService(
+            localContext,
+            NullLogger<ItemBarcodeService>.Instance,
+            configuration
+        );
+
+        return new DomesticProductService(
+            localContext,
+            CreateDomesticProductMapper(),
+            NullLogger<DomesticProductService>.Instance,
+            itemBarcodeService
+        );
+    }
+
+    private static IMapper CreateDomesticProductMapper()
+    {
+        return new MapperConfiguration(
+            cfg => cfg.AddProfile<DomesticProductMappingProfile>(),
+            NullLoggerFactory.Instance
+        ).CreateMapper();
+    }
+
+    private static ReactDomesticProductsController CreateReactController(
+        IDomesticProductService domesticProductService
+    )
+    {
+        return new ReactDomesticProductsController(
+            Mock.Of<IDomesticProductReactService>(),
+            domesticProductService,
+            NullLogger<ReactDomesticProductsController>.Instance
+        );
+    }
+
+    private static async Task<IActionResult> InvokeCreateDomesticProductAsync(
+        ReactDomesticProductsController controller,
+        CreateDomesticProductDto dto
+    )
+    {
+        return await controller.CreateDomesticProduct(dto);
+    }
+
+    private static CreateDomesticProductDto CreateDomesticProductRequest()
+    {
+        return new CreateDomesticProductDto
+        {
+            SupplierCode = "HB001",
+            ProductName = "单条创建测试商品",
+            HBProductNo = "HB001-EXPLICIT",
+            Barcode = "9527999900001",
+            ProductType = 0,
+            IsActive = true,
+        };
+    }
+
+    private async Task SeedChinaSupplierAsync()
+    {
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "supplier-hb001",
+            SupplierCode = "HB001",
+            SupplierName = "测试供应商",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
     }
 
     private async Task SeedHbwebProductAsync(string itemNumber, string productName)

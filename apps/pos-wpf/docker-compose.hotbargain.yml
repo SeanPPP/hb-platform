@@ -1,0 +1,50 @@
+services:
+  hbpos-api:
+    build:
+      context: ../..
+      dockerfile: apps/pos-wpf/src/Hbpos.Api/Dockerfile
+    image: hbpos-api:local
+    container_name: hbpos-api
+    ports:
+      - "5003:5003"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5003
+      - ASPNETCORE_HTTP_PORTS=5003
+      # WPF API 主库与 POSM 库复用服务器 .env，仓库内不保存连接串明文。
+      - ConnectionStrings__MainConnection=${CONNECTION_STRING_DEFAULT}
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+      - ConnectionStrings__HBPOSMConnection=${CONNECTION_STRING_POSM}
+      - ConnectionStrings__PosmConnection=${CONNECTION_STRING_POSM}
+      - FileLogging__Path=/app/logs/hbpos-api.log
+      # Linkly 回调必须是公网 HTTPS；服务会在该 base 后拼接 api/v1/linkly/cloud-notifications/...
+      - LinklyCloudBackendAsync__PublicNotificationBaseUrl=https://hotbargain.vip/pos-api/
+      - LinklyCloudBackendAsync__ProductionNotificationBearer=${LINKLY_CLOUD_PRODUCTION_NOTIFICATION_BEARER:-}
+      - LinklyCloudBackendAsync__SandboxNotificationBearer=${LINKLY_CLOUD_SANDBOX_NOTIFICATION_BEARER:-}
+      - LinklyCloudBackendAsync__ProductionPosVendorId=${LINKLY_CLOUD_PRODUCTION_POS_VENDOR_ID:-}
+      - LinklyCloudBackendAsync__SandboxPosVendorId=${LINKLY_CLOUD_SANDBOX_POS_VENDOR_ID:-11111111-1111-4111-8111-111111111111}
+      # Square Dashboard 需要登记同一个公网 URL；签名密钥只从服务器 .env 注入。
+      - Square__WebhookNotificationUrls__Production=https://hotbargain.vip/pos-api/api/v1/square/webhooks
+      - Square__WebhookNotificationUrls__Sandbox=https://hotbargain.vip/pos-api/api/v1/square/webhooks
+      - Square__WebhookSignatureKeys__Production=${SQUARE_WEBHOOK_SIGNATURE_KEY_PRODUCTION:-}
+      - Square__WebhookSignatureKeys__Sandbox=${SQUARE_WEBHOOK_SIGNATURE_KEY_SANDBOX:-}
+    volumes:
+      - hbpos-api-logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - hb-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5003/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  hb-network:
+    external: true
+    name: hb-network
+
+volumes:
+  hbpos-api-logs:
+    driver: local

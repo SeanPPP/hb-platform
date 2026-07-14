@@ -18,14 +18,17 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactDomesticProductsController : ControllerBase
     {
         private readonly IDomesticProductReactService _domesticProductReactService;
+        private readonly IDomesticProductService _domesticProductService;
         private readonly ILogger<ReactDomesticProductsController> _logger;
 
         public ReactDomesticProductsController(
             IDomesticProductReactService domesticProductReactService,
+            IDomesticProductService domesticProductService,
             ILogger<ReactDomesticProductsController> logger
         )
         {
             _domesticProductReactService = domesticProductReactService;
+            _domesticProductService = domesticProductService;
             _logger = logger;
         }
 
@@ -67,6 +70,58 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "Grid 获取数据失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建单个国内商品（React专用）
+        /// </summary>
+        /// <param name="dto">创建国内商品DTO</param>
+        /// <returns>创建的国内商品</returns>
+        [HttpPost]
+        [Authorize(Policy = Permissions.Products.Create)]
+        public async Task<IActionResult> CreateDomesticProduct(
+            [FromBody] CreateDomesticProductDto dto
+        )
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(
+                        ApiResponse<object>.Error(
+                            "请求参数验证失败",
+                            "VALIDATION_ERROR",
+                            ModelState
+                        )
+                    );
+                }
+
+                // 单条创建统一复用国内商品服务，避免在 React 控制器复制业务规则。
+                var result = await _domesticProductService.CreateDomesticProductAsync(dto);
+
+                if (result.Success)
+                {
+                    return StatusCode(StatusCodes.Status201Created, result);
+                }
+
+                if (
+                    result.ErrorCode == "HB_PRODUCT_NO_EXISTS"
+                    || result.ErrorCode == "BARCODE_EXISTS"
+                )
+                {
+                    return Conflict(result);
+                }
+
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "创建国内商品失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<object>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
             }
         }
 

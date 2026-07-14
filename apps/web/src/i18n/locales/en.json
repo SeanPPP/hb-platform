@@ -4340,7 +4340,15 @@
     "syncFromHqFailed": "Failed to update locations from HQ",
     "locationSyncResult": "Locations",
     "productLocationSyncResult": "Product locations",
-    "syncResultStats": "Added {{added}}, updated {{updated}}, errors {{errors}}"
+    "syncResultStats": "Added {{added}}, updated {{updated}}, errors {{errors}}",
+    "batchUnbind": "Batch Unbind",
+    "selectedLocations": "Selected locations: {{locations}}; product links: {{products}}",
+    "batchUnbindTitle": "Batch Unbind Product Links",
+    "batchUnbindContent": "Selected locations: {{locations}}. Product links to unbind: {{products}}. This action cannot be undone.",
+    "batchUnbindConfirm": "Unbind",
+    "batchUnbindSuccess": "Product links unbound: {{succeeded}}",
+    "batchUnbindPartialFailed": "Product links unbound: {{succeeded}}. Failed: {{failed}}",
+    "batchUnbindFailed": "No product links were unbound. Failed: {{failed}}"
   },
   "productGrade": {
     "allGrades": "All Grades",
