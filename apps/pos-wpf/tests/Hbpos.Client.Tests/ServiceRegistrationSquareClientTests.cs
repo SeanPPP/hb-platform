@@ -1,5 +1,7 @@
+using System.Reflection;
 using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http;
 
@@ -7,6 +9,26 @@ namespace Hbpos.Client.Tests;
 
 public sealed class ServiceRegistrationSquareClientTests
 {
+    [Fact]
+    public void AddHbposClientServices_registers_shared_api_server_settings_services()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredService<ApiServerSettingsService>());
+        var first = provider.GetRequiredService<ApiServerSettingsViewModel>();
+        Assert.Same(first, provider.GetRequiredService<ApiServerSettingsViewModel>());
+
+        var mainViewModel = provider.GetRequiredService<MainViewModel>();
+        var field = typeof(MainViewModel).GetField(
+            "_apiServerSettings",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        Assert.Same(first, field!.GetValue(mainViewModel));
+    }
+
     [Fact]
     public void AddHbposClientServices_configures_square_terminal_clients_with_hbpos_api_base_and_device_auth_handler()
     {

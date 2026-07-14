@@ -199,28 +199,266 @@ public sealed class CatalogService(
     {
         var stopwatch = Stopwatch.StartNew();
         Log($"lookup service start store={storeCode} lookupCode={lookupCode ?? "<null>"} lookupCodeNormalized={lookupCodeNormalized ?? "<null>"}");
-        var index = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
-        if (index is null)
+        var directResult = await LookupSellableItemDirectAsync(
+            storeCode,
+            lookupCode,
+            lookupCodeNormalized,
+            cancellationToken);
+        if (directResult is null)
         {
             stopwatch.Stop();
             Log($"lookup service completed store={storeCode} status=store-not-found elapsedMs={stopwatch.ElapsedMilliseconds}");
             return null;
         }
 
-        var response = index.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
+        var response = directResult.Response;
         if (response is { Found: true, Item.PriceSource: PriceSourceKind.ProductBase })
         {
             response = await EnsureStoreRetailPriceAndLookupAsync(
-                index.StoreCode,
+                response.StoreCode,
                 lookupCode,
                 lookupCodeNormalized,
                 response,
+                directResult.Product,
                 cancellationToken);
         }
 
         stopwatch.Stop();
         Log($"lookup service completed store={storeCode} status=ok found={response.Found} lookupCodeNormalized={response.LookupCodeNormalized} productCode={response.Item?.ProductCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
         return response;
+    }
+
+    private async Task<CatalogDirectLookupResult?> LookupSellableItemDirectAsync(
+        string storeCode,
+        string? lookupCode,
+        string? lookupCodeNormalized,
+        CancellationToken cancellationToken)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        var lookupCandidates = BuildLookupCandidates(lookupCode, lookupCodeNormalized);
+
+        var store = await dbContext.MainDb.Queryable<Store>()
+            .FirstAsync(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (store is null)
+        {
+            totalStopwatch.Stop();
+            Log($"lookup direct store not found store={normalizedStoreCode} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+            return null;
+        }
+
+        var candidates = new List<CatalogLookupCandidate>();
+        if (lookupCandidates.Count > 0)
+        {
+            // 四类扫码来源投影为同一形状，一次 UNION 查询即可保留全部价格候选。
+            var clearanceQuery = dbContext.MainDb.Queryable<StoreClearancePrice>()
+                .Where(x =>
+                    x.StoreCode == normalizedStoreCode &&
+                    !x.IsDeleted &&
+                    x.ClearanceBarcode != null &&
+                    lookupCandidates.Contains(x.ClearanceBarcode))
+                .Select(x => new CatalogLookupCandidate
+                {
+                    SourceKind = (int)PriceSourceKind.StoreClearancePrice,
+                    ProductCode = x.ProductCode,
+                    RelatedCode = null,
+                    LookupCode = x.ClearanceBarcode,
+                    RetailPrice = x.ClearancePrice,
+                    DiscountRate = null,
+                    ReferenceCode = x.UUID,
+                    CreatedAt = x.CreatedAt,
+                    UpdatedAt = x.UpdatedAt
+                });
+            var multiQuery = dbContext.MainDb.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == normalizedStoreCode &&
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    x.MultiBarcode != null &&
+                    lookupCandidates.Contains(x.MultiBarcode))
+                .Select(x => new CatalogLookupCandidate
+                {
+                    SourceKind = (int)PriceSourceKind.StoreMultiCodeProduct,
+                    ProductCode = x.ProductCode,
+                    RelatedCode = x.MultiCodeProductCode,
+                    LookupCode = x.MultiBarcode,
+                    RetailPrice = x.MultiCodeRetailPrice,
+                    DiscountRate = x.DiscountRate,
+                    ReferenceCode = x.UUID,
+                    CreatedAt = x.CreatedAt,
+                    UpdatedAt = x.UpdatedAt
+                });
+            var setQuery = dbContext.MainDb.Queryable<ProductSetCode>()
+                .Where(x =>
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    x.SetBarcode != null &&
+                    lookupCandidates.Contains(x.SetBarcode))
+                .Select(x => new CatalogLookupCandidate
+                {
+                    SourceKind = (int)PriceSourceKind.ProductSetCode,
+                    ProductCode = x.ProductCode,
+                    RelatedCode = x.SetProductCode,
+                    LookupCode = x.SetBarcode,
+                    RetailPrice = x.SetRetailPrice,
+                    DiscountRate = null,
+                    ReferenceCode = x.SetCodeId,
+                    CreatedAt = x.CreatedAt,
+                    UpdatedAt = x.UpdatedAt
+                });
+            var productQuery = dbContext.MainDb.Queryable<Product>()
+                .Where(x =>
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    ((x.Barcode != null && lookupCandidates.Contains(x.Barcode)) ||
+                     (x.ItemNumber != null && lookupCandidates.Contains(x.ItemNumber))))
+                .Select(x => new CatalogLookupCandidate
+                {
+                    SourceKind = (int)PriceSourceKind.ProductBase,
+                    ProductCode = x.ProductCode,
+                    RelatedCode = null,
+                    LookupCode = x.Barcode,
+                    RetailPrice = x.RetailPrice,
+                    DiscountRate = null,
+                    ReferenceCode = x.UUID,
+                    CreatedAt = x.CreatedAt,
+                    UpdatedAt = x.UpdatedAt
+                });
+
+            candidates = await dbContext.MainDb
+                .UnionAll(clearanceQuery, multiQuery, setQuery, productQuery)
+                .ToListAsync(cancellationToken);
+        }
+
+        var setProductCodes = candidates
+            .Where(x => x.SourceKind == (int)PriceSourceKind.ProductSetCode)
+            .Select(x => x.RelatedCode)
+            .Where(HasText)
+            .Select(x => x!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var setMultiCodeProductEntities = setProductCodes.Length == 0
+            ? []
+            : await dbContext.MainDb.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == normalizedStoreCode &&
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    x.MultiCodeProductCode != null &&
+                    setProductCodes.Contains(x.MultiCodeProductCode))
+                .ToListAsync(cancellationToken);
+
+        var relatedProductCodes = candidates
+            .Select(x => x.ProductCode)
+            .Concat(setMultiCodeProductEntities.Select(x => x.ProductCode))
+            .Where(HasText)
+            .Select(x => x!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var productEntities = relatedProductCodes.Length == 0
+            ? []
+            : await dbContext.MainDb.Queryable<Product>()
+                .Where(x =>
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    x.ProductCode != null &&
+                    relatedProductCodes.Contains(x.ProductCode))
+                .ToListAsync(cancellationToken);
+
+        var productCodes = productEntities
+            .Select(x => x.ProductCode)
+            .Where(HasText)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var storeRetailPriceEntities = productCodes.Length == 0
+            ? []
+            : await dbContext.MainDb.Queryable<StoreRetailPrice>()
+                .Where(x =>
+                    x.StoreCode == normalizedStoreCode &&
+                    x.IsActive &&
+                    !x.IsDeleted &&
+                    x.ProductCode != null &&
+                    productCodes.Contains(x.ProductCode))
+                .ToListAsync(cancellationToken);
+
+        var multiCodeRecords = candidates
+            .Where(x => x.SourceKind == (int)PriceSourceKind.StoreMultiCodeProduct)
+            .Select(x => new StoreMultiCodeProductRecord(
+                x.ProductCode,
+                x.RelatedCode,
+                x.LookupCode,
+                x.RetailPrice,
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.ReferenceCode,
+                x.DiscountRate))
+            .Concat(setMultiCodeProductEntities.Select(x => new StoreMultiCodeProductRecord(
+                x.ProductCode,
+                x.MultiCodeProductCode,
+                x.MultiBarcode,
+                x.MultiCodeRetailPrice,
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.UUID,
+                x.DiscountRate)))
+            .GroupBy(x => x.ReferenceCode ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.First())
+            .ToList();
+
+        var input = new PriceIndexInput(
+            Since: null,
+            productEntities
+                .Select(x => new ProductPriceRecord(
+                    x.ProductCode,
+                    x.ProductName,
+                    x.ItemNumber,
+                    x.Barcode,
+                    x.RetailPrice,
+                    ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                    x.ProductImage,
+                    x.UUID))
+                .ToList(),
+            storeRetailPriceEntities
+                .Select(x => new StoreRetailPriceRecord(
+                    x.ProductCode,
+                    x.StoreRetailPriceValue,
+                    ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                    x.UUID,
+                    x.DiscountRate,
+                    x.IsSpecialProduct))
+                .ToList(),
+            multiCodeRecords,
+            candidates
+                .Where(x => x.SourceKind == (int)PriceSourceKind.StoreClearancePrice)
+                .Select(x => new StoreClearancePriceRecord(
+                    x.ProductCode,
+                    x.LookupCode,
+                    x.RetailPrice,
+                    ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                    x.ReferenceCode))
+                .ToList(),
+            candidates
+                .Where(x => x.SourceKind == (int)PriceSourceKind.ProductSetCode)
+                .Select(x => new ProductSetCodeRecord(
+                    x.ProductCode ?? string.Empty,
+                    x.RelatedCode ?? string.Empty,
+                    x.LookupCode,
+                    x.RetailPrice,
+                    ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                    x.ReferenceCode))
+                .ToList());
+
+        var generatedAt = DateTimeOffset.UtcNow;
+        var items = priceIndexBuilder.Build(store.StoreCode, input);
+        var response = new CatalogSellableIndex(store.StoreCode, generatedAt, items)
+            .Lookup(lookupCode, lookupCodeNormalized);
+
+        totalStopwatch.Stop();
+        Log($"lookup direct completed store={store.StoreCode} found={response.Found} candidates={candidates.Count} products={productEntities.Count} storePrices={storeRetailPriceEntities.Count} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        var matchedProduct = response.Item is null
+            ? null
+            : productEntities.FirstOrDefault(x =>
+                StringComparer.OrdinalIgnoreCase.Equals(x.ProductCode, response.Item.ProductCode));
+        return new CatalogDirectLookupResult(response, matchedProduct);
     }
 
     public async Task<CatalogSpecialProductsPageResponse?> GetSpecialProductsPageAsync(
@@ -410,13 +648,45 @@ public sealed class CatalogService(
         }
 
         stepStopwatch.Restart();
-        var productEntities = await dbContext.MainDb.Queryable<Product>()
-            .Where(x => x.IsActive && !x.IsDeleted)
-            .ToListAsync(cancellationToken);
-        stepStopwatch.Stop();
-        Log($"products query store={normalizedStoreCode} count={productEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
-        var products = productEntities
-            .Select(x => new ProductPriceRecord(
+        const int productBatchSize = 20_000;
+        var products = new List<ProductPriceRecord>();
+        string? lastProductCode = null;
+        string? lastProductUuid = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batchStopwatch = Stopwatch.StartNew();
+            var productQuery = dbContext.MainDb.Queryable<Product>()
+                .Where(x => x.IsActive && !x.IsDeleted && x.ProductCode != null && x.UUID != null);
+
+            if (lastProductCode is not null && lastProductUuid is not null)
+            {
+                // 按 ProductCode + UUID 键集翻页，避免完整目录后段产生 OFFSET 扫描。
+                productQuery = productQuery.Where(
+                    "(([ProductCode] > @lastProductCode) OR ([ProductCode] = @lastProductCode AND [UUID] > @lastUuid))",
+                    new { lastProductCode, lastUuid = lastProductUuid });
+            }
+
+            var productBatch = await productQuery
+                .OrderBy(x => x.ProductCode)
+                .OrderBy(x => x.UUID)
+                .Select(x => new Product
+                {
+                    ProductCode = x.ProductCode,
+                    ProductName = x.ProductName,
+                    ItemNumber = x.ItemNumber,
+                    Barcode = x.Barcode,
+                    RetailPrice = x.RetailPrice,
+                    UpdatedAt = x.UpdatedAt,
+                    CreatedAt = x.CreatedAt,
+                    ProductImage = x.ProductImage,
+                    UUID = x.UUID
+                })
+                .Take(productBatchSize)
+                .ToListAsync(cancellationToken);
+
+            products.AddRange(productBatch.Select(x => new ProductPriceRecord(
                 x.ProductCode,
                 x.ProductName,
                 x.ItemNumber,
@@ -424,28 +694,101 @@ public sealed class CatalogService(
                 x.RetailPrice,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
                 x.ProductImage,
-                x.UUID))
-            .ToList();
+                x.UUID)));
+            batchStopwatch.Stop();
+            Log($"products batch query store={normalizedStoreCode} rows={productBatch.Count} total={products.Count} elapsedMs={batchStopwatch.ElapsedMilliseconds}");
+
+            if (productBatch.Count < productBatchSize)
+            {
+                break;
+            }
+
+            var lastProduct = productBatch[^1];
+            lastProductCode = lastProduct.ProductCode;
+            lastProductUuid = lastProduct.UUID;
+        }
+
+        stepStopwatch.Stop();
+        Log($"products query store={normalizedStoreCode} count={products.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
 
         stepStopwatch.Restart();
-        var storeRetailPriceEntities = await dbContext.MainDb.Queryable<StoreRetailPrice>()
-            .Where(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted)
-            .ToListAsync(cancellationToken);
-        stepStopwatch.Stop();
-        Log($"store retail prices query store={normalizedStoreCode} count={storeRetailPriceEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
-        var storeRetailPrices = storeRetailPriceEntities
-            .Select(x => new StoreRetailPriceRecord(
+        const int storeRetailPriceBatchSize = 20_000;
+        var storeRetailPrices = new List<StoreRetailPriceRecord>();
+        lastProductCode = null;
+        string? lastUuid = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batchStopwatch = Stopwatch.StartNew();
+            var storeRetailPriceQuery = dbContext.MainDb.Queryable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == normalizedStoreCode
+                    && x.IsActive
+                    && !x.IsDeleted
+                    && x.ProductCode != null);
+
+            if (lastProductCode is not null && lastUuid is not null)
+            {
+                // 沿用现有复合索引顺序做键集分页，避免越往后的 OFFSET 扫描越慢。
+                storeRetailPriceQuery = storeRetailPriceQuery.Where(
+                    "(([ProductCode] > @lastProductCode) OR ([ProductCode] = @lastProductCode AND [UUID] > @lastUuid))",
+                    new { lastProductCode, lastUuid });
+            }
+
+            // 只从数据库读取目录构建实际使用的字段，减少大门店的数据传输和实体映射成本。
+            var storeRetailPriceBatch = await storeRetailPriceQuery
+                .OrderBy(x => x.ProductCode)
+                .OrderBy(x => x.UUID)
+                .Select(x => new StoreRetailPrice
+                {
+                    ProductCode = x.ProductCode,
+                    StoreRetailPriceValue = x.StoreRetailPriceValue,
+                    UpdatedAt = x.UpdatedAt,
+                    CreatedAt = x.CreatedAt,
+                    UUID = x.UUID,
+                    DiscountRate = x.DiscountRate,
+                    IsSpecialProduct = x.IsSpecialProduct
+                })
+                .Take(storeRetailPriceBatchSize)
+                .ToListAsync(cancellationToken);
+
+            storeRetailPrices.AddRange(storeRetailPriceBatch.Select(x => new StoreRetailPriceRecord(
                 x.ProductCode,
                 x.StoreRetailPriceValue,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
                 x.UUID,
                 x.DiscountRate,
-                x.IsSpecialProduct))
-            .ToList();
+                x.IsSpecialProduct)));
+            batchStopwatch.Stop();
+            Log($"store retail prices batch query store={normalizedStoreCode} rows={storeRetailPriceBatch.Count} total={storeRetailPrices.Count} elapsedMs={batchStopwatch.ElapsedMilliseconds}");
+
+            if (storeRetailPriceBatch.Count < storeRetailPriceBatchSize)
+            {
+                break;
+            }
+
+            var lastStoreRetailPrice = storeRetailPriceBatch[^1];
+            lastProductCode = lastStoreRetailPrice.ProductCode;
+            lastUuid = lastStoreRetailPrice.UUID;
+        }
+
+        stepStopwatch.Stop();
+        Log($"store retail prices query store={normalizedStoreCode} count={storeRetailPrices.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
 
         stepStopwatch.Restart();
         var multiCodeProductEntities = await dbContext.MainDb.Queryable<StoreMultiCodeProduct>()
             .Where(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted)
+            .Select(x => new StoreMultiCodeProduct
+            {
+                ProductCode = x.ProductCode,
+                MultiCodeProductCode = x.MultiCodeProductCode,
+                MultiBarcode = x.MultiBarcode,
+                MultiCodeRetailPrice = x.MultiCodeRetailPrice,
+                UpdatedAt = x.UpdatedAt,
+                CreatedAt = x.CreatedAt,
+                UUID = x.UUID,
+                DiscountRate = x.DiscountRate
+            })
             .ToListAsync(cancellationToken);
         stepStopwatch.Stop();
         Log($"multi code products query store={normalizedStoreCode} count={multiCodeProductEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
@@ -463,6 +806,15 @@ public sealed class CatalogService(
         stepStopwatch.Restart();
         var clearancePriceEntities = await dbContext.MainDb.Queryable<StoreClearancePrice>()
             .Where(x => x.StoreCode == normalizedStoreCode && !x.IsDeleted)
+            .Select(x => new StoreClearancePrice
+            {
+                ProductCode = x.ProductCode,
+                ClearanceBarcode = x.ClearanceBarcode,
+                ClearancePrice = x.ClearancePrice,
+                UpdatedAt = x.UpdatedAt,
+                CreatedAt = x.CreatedAt,
+                UUID = x.UUID
+            })
             .ToListAsync(cancellationToken);
         stepStopwatch.Stop();
         Log($"clearance prices query store={normalizedStoreCode} count={clearancePriceEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
@@ -478,6 +830,16 @@ public sealed class CatalogService(
         stepStopwatch.Restart();
         var setCodeEntities = await dbContext.MainDb.Queryable<ProductSetCode>()
             .Where(x => x.IsActive && !x.IsDeleted)
+            .Select(x => new ProductSetCode
+            {
+                ProductCode = x.ProductCode,
+                SetProductCode = x.SetProductCode,
+                SetBarcode = x.SetBarcode,
+                SetRetailPrice = x.SetRetailPrice,
+                UpdatedAt = x.UpdatedAt,
+                CreatedAt = x.CreatedAt,
+                SetCodeId = x.SetCodeId
+            })
             .ToListAsync(cancellationToken);
         stepStopwatch.Stop();
         Log($"set codes query store={normalizedStoreCode} count={setCodeEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
@@ -517,6 +879,7 @@ public sealed class CatalogService(
         string? lookupCode,
         string? lookupCodeNormalized,
         CatalogLookupResponse currentResponse,
+        Product? product,
         CancellationToken cancellationToken)
     {
         var productCode = NormalizeProductCode(currentResponse.Item?.ProductCode);
@@ -525,11 +888,9 @@ public sealed class CatalogService(
             return currentResponse;
         }
 
-        var product = await dbContext.MainDb.Queryable<Product>()
-            .FirstAsync(x => x.ProductCode == productCode && x.IsActive && !x.IsDeleted, cancellationToken);
         if (product is null)
         {
-            Log($"lookup store retail ensure skipped store={normalizedStoreCode} product={productCode} reason=product-not-found");
+            Log($"lookup store retail ensure skipped store={normalizedStoreCode} product={productCode} reason=product-not-loaded");
             return currentResponse;
         }
 
@@ -541,10 +902,11 @@ public sealed class CatalogService(
         {
             var now = DateTime.UtcNow;
             var writeAction = "none";
+            StoreRetailPrice? storeRetailPrice = null;
             await dbContext.MainDb.Ado.BeginTranAsync();
             try
             {
-                var storeRetailPrice = await dbContext.MainDb.Queryable<StoreRetailPrice>()
+                storeRetailPrice = await dbContext.MainDb.Queryable<StoreRetailPrice>()
                     .FirstAsync(x =>
                         x.StoreCode == normalizedStoreCode &&
                         x.ProductCode == productCode &&
@@ -611,10 +973,39 @@ public sealed class CatalogService(
             }
 
             catalogIndexCache.InvalidateStore(normalizedStoreCode);
-            var refreshedIndex = await BuildSellableIndexAsync(normalizedStoreCode, since: null, cancellationToken);
-            var refreshedResponse = refreshedIndex?.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
-            Log($"lookup store retail ensured store={normalizedStoreCode} product={productCode} action={writeAction} refreshed={refreshedResponse?.Found.ToString() ?? "<null>"}");
-            return refreshedResponse ?? currentResponse;
+            if (storeRetailPrice is null)
+            {
+                return currentResponse;
+            }
+
+            // 复用本次 lookup 已读取的商品和刚写入的门店价，避免再次执行候选 UNION。
+            var input = new PriceIndexInput(
+                Since: null,
+                [new ProductPriceRecord(
+                    product.ProductCode,
+                    product.ProductName,
+                    product.ItemNumber,
+                    product.Barcode,
+                    product.RetailPrice,
+                    ToOffset(product.UpdatedAt ?? product.CreatedAt),
+                    product.ProductImage,
+                    product.UUID)],
+                [new StoreRetailPriceRecord(
+                    storeRetailPrice.ProductCode,
+                    storeRetailPrice.StoreRetailPriceValue,
+                    ToOffset(storeRetailPrice.UpdatedAt ?? storeRetailPrice.CreatedAt),
+                    storeRetailPrice.UUID,
+                    storeRetailPrice.DiscountRate,
+                    storeRetailPrice.IsSpecialProduct)],
+                [],
+                [],
+                []);
+            var generatedAt = DateTimeOffset.UtcNow;
+            var items = priceIndexBuilder.Build(normalizedStoreCode, input);
+            var refreshedResponse = new CatalogSellableIndex(normalizedStoreCode, generatedAt, items)
+                .Lookup(lookupCode, lookupCodeNormalized);
+            Log($"lookup store retail ensured store={normalizedStoreCode} product={productCode} action={writeAction} refreshed={refreshedResponse.Found}");
+            return refreshedResponse;
         }
         finally
         {
@@ -637,6 +1028,57 @@ public sealed class CatalogService(
     private static string NormalizeProductCode(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static bool HasText(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static IReadOnlyList<string> BuildLookupCandidates(string? lookupCode, string? lookupCodeNormalized)
+    {
+        var candidates = new HashSet<string>(StringComparer.Ordinal);
+        AddLookupCandidate(candidates, lookupCode);
+        AddLookupCandidate(candidates, lookupCodeNormalized);
+        return candidates.ToArray();
+    }
+
+    private static void AddLookupCandidate(HashSet<string> candidates, string? value)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return;
+        }
+
+        candidates.Add(trimmed);
+        candidates.Add(trimmed.ToUpperInvariant());
+        candidates.Add(trimmed.ToLowerInvariant());
+    }
+
+    private sealed record CatalogDirectLookupResult(
+        CatalogLookupResponse Response,
+        Product? Product);
+
+    private sealed class CatalogLookupCandidate
+    {
+        public int SourceKind { get; set; }
+
+        public string? ProductCode { get; set; }
+
+        public string? RelatedCode { get; set; }
+
+        public string? LookupCode { get; set; }
+
+        public decimal? RetailPrice { get; set; }
+
+        public decimal? DiscountRate { get; set; }
+
+        public string? ReferenceCode { get; set; }
+
+        public DateTime CreatedAt { get; set; }
+
+        public DateTime? UpdatedAt { get; set; }
     }
 
     private static string StoreRetailPriceEnsureLockKey(string storeCode, string productCode)

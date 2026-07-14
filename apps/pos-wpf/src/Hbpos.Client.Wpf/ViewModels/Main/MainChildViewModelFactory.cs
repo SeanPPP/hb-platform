@@ -40,6 +40,7 @@ internal sealed class MainChildViewModelFactory
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly ApiServerSettingsViewModel? _apiServerSettings;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -71,7 +72,8 @@ internal sealed class MainChildViewModelFactory
         bool enforceCashierPermissions = false,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
         IAppUpdateChannelProvider? appUpdateChannelProvider = null,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        ApiServerSettingsViewModel? apiServerSettings = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -103,6 +105,7 @@ internal sealed class MainChildViewModelFactory
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _appUpdateChannelProvider = appUpdateChannelProvider;
         _operationAuditLogger = operationAuditLogger;
+        _apiServerSettings = apiServerSettings;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -111,7 +114,10 @@ internal sealed class MainChildViewModelFactory
         Action cancelDeviceReregistration)
     {
         // 中文说明：工厂只负责组装依赖和绑定回调，真正的状态切换仍由 MainViewModel 提供的委托处理。
-        var viewModel = new DeviceRegistrationViewModel(_deviceRegistrationWorkflowService, _localization);
+        var viewModel = new DeviceRegistrationViewModel(
+            _deviceRegistrationWorkflowService,
+            _localization,
+            apiServerSettings: _apiServerSettings);
         viewModel.DeviceActivatedAsync += (_, args) => activateDeviceAsync(args);
         viewModel.DeviceReregistered += (_, _) => applyDeviceReregistered();
         viewModel.CancelRequested += (_, _) => cancelDeviceReregistration();
@@ -338,7 +344,8 @@ internal sealed class MainChildViewModelFactory
             checkForAppUpdateAsync: checkForAppUpdateAsync ?? _checkForAppUpdateAsync,
             appUpdateChannel: _appUpdateChannelProvider?.CurrentChannel,
             cashierSessionContext: _cashierSessionContext,
-            enforcePermissionsWhenNoCashier: _enforceCashierPermissions);
+            enforcePermissionsWhenNoCashier: _enforceCashierPermissions,
+            apiServerSettings: _apiServerSettings);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

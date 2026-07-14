@@ -21,6 +21,11 @@ public static class ServiceRegistration
     {
         services.AddSingleton(startupOptions);
         services.AddSingleton<ILocalizationService, LocalizationService>();
+        services.AddHttpClient<ApiServerSettingsService>(client =>
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        });
+        services.AddSingleton<ApiServerSettingsViewModel>();
         services.AddSingleton<LocalSqliteStore>(_ =>
         {
             if (!startupOptions.PreviewMode)
@@ -382,7 +387,8 @@ public static class ServiceRegistration
             emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
             enforceCashierPermissions: true,
-            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>()));
+            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
+            apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>()));
         services.AddSingleton<MainWindow>();
 
         return services;
@@ -392,7 +398,11 @@ public static class ServiceRegistration
     {
         var configuredBaseUrl = Environment.GetEnvironmentVariable("HBPOS_API_BASE_URL");
         var baseUrl = string.IsNullOrWhiteSpace(configuredBaseUrl)
-            ? "http://localhost:5159/"
+#if DEBUG
+            ? ApiServerSettingsService.DevelopmentApiBaseAddress
+#else
+            ? ApiServerSettingsService.ReleaseApiBaseAddress
+#endif
             : configuredBaseUrl.Trim();
 
         if (!baseUrl.EndsWith('/'))

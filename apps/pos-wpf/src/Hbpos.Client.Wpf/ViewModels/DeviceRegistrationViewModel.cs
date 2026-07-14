@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -14,6 +15,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     private readonly IDeviceRegistrationWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
+    private readonly ApiServerSettingsViewModel? _apiServerSettings;
     private readonly TimeSpan _approvalPollingInterval;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private string? _excludedStoreCode;
@@ -55,12 +57,14 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         IDeviceFingerprintService fingerprintService,
         ILocalizationService? localization = null,
         TimeSpan? approvalPollingInterval = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        ApiServerSettingsViewModel? apiServerSettings = null)
         : this(
             new DeviceRegistrationWorkflowService(deviceApiClient, deviceRepository, fingerprintService, localization),
             localization,
             approvalPollingInterval,
-            delayAsync)
+            delayAsync,
+            apiServerSettings)
     {
     }
 
@@ -68,12 +72,15 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         IDeviceRegistrationWorkflowService workflowService,
         ILocalizationService? localization = null,
         TimeSpan? approvalPollingInterval = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        ApiServerSettingsViewModel? apiServerSettings = null)
     {
         _workflowService = workflowService;
         _localization = localization;
+        _apiServerSettings = apiServerSettings;
         _approvalPollingInterval = approvalPollingInterval ?? DefaultApprovalPollingInterval;
         _delayAsync = delayAsync ?? Task.Delay;
+        _apiServerSettings?.Load();
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -82,6 +89,13 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         RegisterCommand = new AsyncRelayCommand(RegisterAsync, CanRegister);
         VerifyCommand = new AsyncRelayCommand(VerifyAsync, CanVerify);
         CancelCommand = new RelayCommand(Cancel, CanExecuteCancel);
+        if (_apiServerSettings is not null)
+        {
+            PropertyChangedEventManager.AddHandler(
+                _apiServerSettings,
+                OnApiServerSettingsPropertyChanged,
+                nameof(ApiServerSettingsViewModel.RestartRequired));
+        }
     }
 
     public ObservableCollection<StoreSelectionItem> Stores { get; } = [];
@@ -91,6 +105,9 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
     public IAsyncRelayCommand VerifyCommand { get; }
 
     public IRelayCommand CancelCommand { get; }
+
+    public ApiServerSettingsViewModel ApiServerSettings =>
+        _apiServerSettings ?? throw new InvalidOperationException("API server settings are not configured.");
 
     internal Task? ApprovalPollingTask => _approvalPollingTask;
 
@@ -222,6 +239,11 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     private async Task RegisterAsync()
     {
+        if (!CanRegister())
+        {
+            return;
+        }
+
         if (IsReregisterMode)
         {
             await ReregisterAsync();
@@ -345,7 +367,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     private async Task VerifyAsync()
     {
-        if (SelectedStore is null || string.IsNullOrWhiteSpace(DeviceCode))
+        if (!CanVerify() || SelectedStore is null || string.IsNullOrWhiteSpace(DeviceCode))
         {
             return;
         }
@@ -492,12 +514,34 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     private bool CanRegister()
     {
-        return !IsBusy && SelectedStore is not null && !HasPendingRegistration;
+        return !IsBusy &&
+               SelectedStore is not null &&
+               !HasPendingRegistration &&
+               _apiServerSettings?.RestartRequired != true;
     }
 
     private bool CanVerify()
     {
-        return !IsBusy && SelectedStore is not null && !string.IsNullOrWhiteSpace(DeviceCode);
+        return !IsBusy &&
+               SelectedStore is not null &&
+               !string.IsNullOrWhiteSpace(DeviceCode) &&
+               _apiServerSettings?.RestartRequired != true;
+    }
+
+    private void OnApiServerSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_apiServerSettings?.RestartRequired == true)
+        {
+            // 保存新服务器地址后立即停止旧地址上的注册工作，重启前不允许继续提交或验证。
+            StopApprovalPolling();
+        }
+        else
+        {
+            // 用户撤销地址变更后，按现有 pending 状态恢复唯一的自动审批轮询。
+            RestartApprovalPollingIfNeeded();
+        }
+
+        NotifyCommandState();
     }
 
     private bool CanExecuteCancel()
@@ -551,7 +595,12 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
     private void RestartApprovalPollingIfNeeded()
     {
         StopApprovalPolling();
-        if (IsReregisterMode || !HasPendingRegistration || SelectedStore is null || string.IsNullOrWhiteSpace(DeviceCode))
+        // 新地址仅在重启后生效，等待重启期间不能重新创建仍访问旧地址的审批轮询。
+        if (_apiServerSettings?.RestartRequired == true ||
+            IsReregisterMode ||
+            !HasPendingRegistration ||
+            SelectedStore is null ||
+            string.IsNullOrWhiteSpace(DeviceCode))
         {
             return;
         }
