@@ -14,8 +14,9 @@ import {
   Tag,
   message,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableRef } from 'antd/es/table'
 import dayjs from 'dayjs'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -45,6 +46,11 @@ import {
   shouldSkipScopedStoreQuery,
 } from '../../../utils/managedStoreScope'
 import ImportInvoiceModal from './ImportInvoiceModal'
+import {
+  getNextInvoiceTableScrollTop,
+  scheduleInvoiceTableScrollRestore,
+  shouldRestoreInvoiceTableScroll,
+} from './invoiceTableScroll'
 
 const SORT_FIELD_MAP: Record<string, string> = {
   storeName: 'storeName',
@@ -103,6 +109,7 @@ function getHqSyncResultFromError(error: unknown) {
 export default function LocalSupplierInvoicesPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const { active } = useKeepAliveContext()
   const { access, currentUser } = useAuthStore()
   const isAdmin = access.isAdmin
   const managedStoreCodes = access.managedStoreCodes()
@@ -147,6 +154,10 @@ export default function LocalSupplierInvoicesPage() {
   const tableRegionRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
+  // KeepAlive 切换业务 Tab 时保留表体纵向位置，避免返回列表后跳回第一行。
+  const invoiceTableRef = useRef<TableRef | null>(null)
+  const lastInvoiceTableScrollTopRef = useRef(0)
+  const wasInvoiceListTabActiveRef = useRef(active)
 
   const loadData = async () => {
     if (shouldSkipScopedStoreQuery(managedStoreCodes)) {
@@ -260,6 +271,30 @@ export default function LocalSupplierInvoicesPage() {
       observer.disconnect()
     }
   }, [data.length, pageSize, total])
+
+  useEffect(() => {
+    const wasActive = wasInvoiceListTabActiveRef.current
+    wasInvoiceListTabActiveRef.current = active
+
+    if (!shouldRestoreInvoiceTableScroll(wasActive, active)) {
+      return
+    }
+
+    const scrollTop = lastInvoiceTableScrollTopRef.current
+    return scheduleInvoiceTableScrollRestore({
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (frameId) => window.cancelAnimationFrame(frameId),
+      restore: () => invoiceTableRef.current?.scrollTo?.({ top: scrollTop }),
+    })
+  }, [active])
+
+  const handleInvoiceTableScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    lastInvoiceTableScrollTopRef.current = getNextInvoiceTableScrollTop(
+      active,
+      lastInvoiceTableScrollTopRef.current,
+      event.currentTarget.scrollTop,
+    )
+  }
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -774,6 +809,7 @@ export default function LocalSupplierInvoicesPage() {
 
         <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Table
+            ref={invoiceTableRef}
             rowKey="invoiceGUID"
             loading={loading}
             dataSource={data}
@@ -789,6 +825,7 @@ export default function LocalSupplierInvoicesPage() {
                 : undefined
             }
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
+            onScroll={handleInvoiceTableScroll}
             onChange={(_pagination, _filters, sorter) => {
               const s = Array.isArray(sorter) ? sorter[0] : sorter
               const field = s?.field || s?.column?.dataIndex

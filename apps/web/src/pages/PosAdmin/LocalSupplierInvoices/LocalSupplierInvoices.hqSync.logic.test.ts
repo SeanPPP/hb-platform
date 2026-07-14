@@ -42,6 +42,11 @@ import {
   constrainSelectedRowKeysToVisibleDetails,
   countSelectedBatchExecuteActions,
 } from './InvoiceEdit/batchExecuteConfirm'
+import {
+  getNextInvoiceTableScrollTop,
+  scheduleInvoiceTableScrollRestore,
+  shouldRestoreInvoiceTableScroll,
+} from './invoiceTableScroll'
 import { DetailAction, type LocalSupplierInvoiceItemDto } from '../../../types/localSupplierInvoice'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -92,6 +97,34 @@ async function assertRequestErrorPayload(
   }
 
   throw new Error(`${message}。Expected promise to reject`)
+}
+
+function createFakeAnimationFrames() {
+  let nextFrameId = 1
+  const callbacks = new Map<number, () => void>()
+
+  return {
+    requestFrame(callback: () => void) {
+      const frameId = nextFrameId
+      nextFrameId += 1
+      callbacks.set(frameId, callback)
+      return frameId
+    },
+    cancelFrame(frameId: number) {
+      callbacks.delete(frameId)
+    },
+    flushNext() {
+      const entry = callbacks.entries().next().value as [number, () => void] | undefined
+      if (!entry) return false
+      const [frameId, callback] = entry
+      callbacks.delete(frameId)
+      callback()
+      return true
+    },
+    pendingCount() {
+      return callbacks.size
+    },
+  }
 }
 
 async function runTest(name: string, execute: () => void | Promise<void>): Promise<string | null> {
@@ -239,6 +272,98 @@ async function main() {
     )
   })
   if (invoiceDetailKeepAliveFailure) failures.push(invoiceDetailKeepAliveFailure)
+
+  const invoiceListScrollStateFailure = await runTest('分店进货单列表只在活动 Tab 记录滚动并仅在重新激活时恢复', () => {
+    assertEqual(getNextInvoiceTableScrollTop(true, 120, 360), 360, '活动 Tab 应记录最新表体滚动位置')
+    assertEqual(getNextInvoiceTableScrollTop(false, 360, 0), 360, '隐藏 Tab 的归零滚动事件不应覆盖已保存位置')
+    assert(shouldRestoreInvoiceTableScroll(false, true), '隐藏 Tab 重新激活时应恢复滚动位置')
+    assert(!shouldRestoreInvoiceTableScroll(true, true), '持续活动时不应重复恢复滚动位置')
+    assert(!shouldRestoreInvoiceTableScroll(true, false), '切到隐藏状态时不应恢复滚动位置')
+    assert(!shouldRestoreInvoiceTableScroll(false, false), '持续隐藏时不应恢复滚动位置')
+  })
+  if (invoiceListScrollStateFailure) failures.push(invoiceListScrollStateFailure)
+
+  const invoiceListScrollScheduleFailure = await runTest('分店进货单列表应等待两帧且只恢复一次滚动位置', () => {
+    const frames = createFakeAnimationFrames()
+    let restoreCount = 0
+    const cleanup = scheduleInvoiceTableScrollRestore({
+      requestFrame: frames.requestFrame,
+      cancelFrame: frames.cancelFrame,
+      restore: () => {
+        restoreCount += 1
+      },
+    })
+
+    assertEqual(frames.pendingCount(), 1, '调度后应只等待第一帧')
+    assert(frames.flushNext(), '第一帧应存在')
+    assertEqual(restoreCount, 0, '第一帧只等待布局，不应立即恢复')
+    assertEqual(frames.pendingCount(), 1, '第一帧结束后应等待第二帧')
+    assert(frames.flushNext(), '第二帧应存在')
+    assertEqual(restoreCount, 1, '第二帧应且只应恢复一次')
+    assertEqual(frames.pendingCount(), 0, '恢复后不应遗留待执行帧')
+    cleanup()
+  })
+  if (invoiceListScrollScheduleFailure) failures.push(invoiceListScrollScheduleFailure)
+
+  const invoiceListScrollCancelFailure = await runTest('分店进货单列表快速切换时应取消旧的滚动恢复', () => {
+    const beforeFirstFrame = createFakeAnimationFrames()
+    let cancelledBeforeFirstFrameCount = 0
+    const cancelBeforeFirstFrame = scheduleInvoiceTableScrollRestore({
+      requestFrame: beforeFirstFrame.requestFrame,
+      cancelFrame: beforeFirstFrame.cancelFrame,
+      restore: () => {
+        cancelledBeforeFirstFrameCount += 1
+      },
+    })
+    cancelBeforeFirstFrame()
+    assertEqual(beforeFirstFrame.pendingCount(), 0, '第一帧前清理应取消当前待执行帧')
+    assertEqual(cancelledBeforeFirstFrameCount, 0, '第一帧前清理不应恢复滚动位置')
+
+    const rapidSwitchFrames = createFakeAnimationFrames()
+    let rapidSwitchRestoreCount = 0
+    const cancelOldRestore = scheduleInvoiceTableScrollRestore({
+      requestFrame: rapidSwitchFrames.requestFrame,
+      cancelFrame: rapidSwitchFrames.cancelFrame,
+      restore: () => {
+        rapidSwitchRestoreCount += 1
+      },
+    })
+    assert(rapidSwitchFrames.flushNext(), '旧恢复的第一帧应存在')
+    cancelOldRestore()
+    assertEqual(rapidSwitchFrames.pendingCount(), 0, '第一帧后清理应取消旧恢复的第二帧')
+
+    const cleanupLatestRestore = scheduleInvoiceTableScrollRestore({
+      requestFrame: rapidSwitchFrames.requestFrame,
+      cancelFrame: rapidSwitchFrames.cancelFrame,
+      restore: () => {
+        rapidSwitchRestoreCount += 1
+      },
+    })
+    assert(rapidSwitchFrames.flushNext(), '最新恢复的第一帧应存在')
+    assert(rapidSwitchFrames.flushNext(), '最新恢复的第二帧应存在')
+    assertEqual(rapidSwitchRestoreCount, 1, '快速切换后只能执行最新一次恢复')
+    cleanupLatestRestore()
+  })
+  if (invoiceListScrollCancelFailure) failures.push(invoiceListScrollCancelFailure)
+
+  const invoiceListScrollRestoreFailure = await runTest('分店进货单列表页应接入可测试的滚动恢复策略', () => {
+    assert(
+      pageSource.includes("import { useKeepAliveContext } from 'keepalive-for-react'") &&
+        pageSource.includes('const { active } = useKeepAliveContext()') &&
+        pageSource.includes('const invoiceTableRef = useRef<TableRef | null>(null)') &&
+        pageSource.includes('ref={invoiceTableRef}') &&
+        pageSource.includes('onScroll={handleInvoiceTableScroll}'),
+      '列表页应接入 KeepAlive active 状态、AntD TableRef 和表体滚动事件',
+    )
+    assert(
+      pageSource.includes("from './invoiceTableScroll'") &&
+        pageSource.includes('getNextInvoiceTableScrollTop(') &&
+        pageSource.includes('shouldRestoreInvoiceTableScroll(wasActive, active)') &&
+        pageSource.includes('return scheduleInvoiceTableScrollRestore({'),
+      '列表页应调用已通过行为测试的滚动保存、激活判断和双帧恢复策略',
+    )
+  })
+  if (invoiceListScrollRestoreFailure) failures.push(invoiceListScrollRestoreFailure)
 
   const jobTypeFailure = await runTest('更新到分店和更新HQ商品应声明后台 Job 契约字段', () => {
     assert(typeSource.includes('export interface LocalSupplierInvoiceJobBase'), '应声明本地进货单后台 Job 基础类型')
