@@ -12,6 +12,40 @@ public sealed class EmergencyLoginKeyManagementService
 {
     internal const string PrivateKeyProtectionPurpose =
         "Hbweb.EmergencyLogin.SigningPrivateKey.v1";
+    private const string LockExpectedVersionSql = """
+        SELECT [StateId], [Version], [ActiveKeyId], [UpdatedAtUtc]
+        FROM [dbo].[POSM_EmergencyLoginKeySetState] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [StateId] = 1 AND [Version] = @ExpectedVersion;
+        """;
+    private const string LockEnabledPosDevicesSql = """
+        SELECT
+            [ID] AS [DeviceRegistrationId],
+            [分店代码] AS [StoreCode],
+            [系统设备编号] AS [DeviceNumber],
+            [设备硬件识别码] AS [HardwareId],
+            [最后心跳时间] AS [LastOnlineAtUtc]
+        FROM [dbo].[POSM_设备注册信息表] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [设备状态] = 1 AND [设备类型] = N'POS';
+        """;
+    private const string LockDeviceAcknowledgementsSql = """
+        SELECT
+            [DeviceRegistrationId],
+            [KeySetVersion],
+            [KeyId],
+            [AcknowledgedAtUtc],
+            [LastSeenAtUtc],
+            CASE
+                WHEN [KeySetVersion] = @KeySetVersion AND [KeyId] = @KeyId THEN 1
+                ELSE 0
+            END AS [IsCurrent]
+        FROM [dbo].[POSM_EmergencyLoginKeyDeviceSync] WITH (UPDLOCK, HOLDLOCK);
+        """;
+    internal static IReadOnlyList<string> ActivationLockSqlForTests { get; } =
+    [
+        LockExpectedVersionSql,
+        LockEnabledPosDevicesSql,
+        LockDeviceAcknowledgementsSql,
+    ];
     private const int MaxReasonLength = 200;
     private const int MaxActorLength = 128;
     private readonly ISqlSugarClient _db;
@@ -200,31 +234,30 @@ public sealed class EmergencyLoginKeyManagementService
             );
         }
 
-        var coverage = await GetCoverageAsync(state.Version, staged.KeyId);
-        if (coverage.MissingDevices.Count > 0 && !request.Force)
-        {
-            return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
-                "仍有已启用 POS 设备未确认当前密钥版本",
-                "EMERGENCY_KEY_DEVICE_ACK_INCOMPLETE",
-                coverage.MissingDevices
-            );
-        }
-
         var now = UtcNow();
         var normalizedActor = NormalizeActor(actor);
         var resultVersion = expectedVersion + 1;
-        var auditDetails = coverage.MissingDevices.Count == 0
-            ? null
-            : JsonSerializer.Serialize(coverage.MissingDevices.Select(device => new
-            {
-                device.DeviceRegistrationId,
-                device.StoreCode,
-                device.DeviceNumber,
-                device.LastOnlineAtUtc,
-                device.LastSyncAtUtc,
-            }));
+        CoverageResult? coverage = null;
         var transaction = await _db.Ado.UseTranAsync(async () =>
         {
+            // 关键逻辑：版本、启用 POS 范围和 ACK 范围必须在同一事务内锁定并重算，关闭检查后启用设备的竞态窗口。
+            await LockExpectedVersionAsync(expectedVersion);
+            coverage = await GetLockedActivationCoverageAsync(expectedVersion, staged.KeyId);
+            if (coverage.MissingDevices.Count > 0 && !request.Force)
+            {
+                throw new EmergencyLoginKeyCoverageException(coverage.MissingDevices);
+            }
+
+            var auditDetails = coverage.MissingDevices.Count == 0
+                ? null
+                : JsonSerializer.Serialize(coverage.MissingDevices.Select(device => new
+                {
+                    device.DeviceRegistrationId,
+                    device.StoreCode,
+                    device.DeviceNumber,
+                    device.LastOnlineAtUtc,
+                    device.LastSyncAtUtc,
+                }));
             await AdvanceVersionAsync(expectedVersion, resultVersion, staged.KeyId, now);
             // 关键逻辑：先让旧活动密钥进入退役中，再激活新密钥，满足活动密钥唯一索引。
             await _db.Updateable<EmergencyLoginKeyEntity>()
@@ -257,9 +290,19 @@ public sealed class EmergencyLoginKeyManagementService
         });
         if (!transaction.IsSuccess)
         {
+            if (transaction.ErrorException is EmergencyLoginKeyCoverageException coverageException)
+            {
+                return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
+                    "仍有已启用 POS 设备未确认当前密钥版本",
+                    "EMERGENCY_KEY_DEVICE_ACK_INCOMPLETE",
+                    coverageException.MissingDevices
+                );
+            }
+
             return HandleMutationFailure(transaction.ErrorException, "激活");
         }
 
+        coverage ??= new CoverageResult(0, 0, []);
         staged.Status = EmergencyLoginKeyStatus.Active;
         staged.ActivatedAtUtc = now;
         staged.ActivatedBy = normalizedActor;
@@ -413,10 +456,85 @@ public sealed class EmergencyLoginKeyManagementService
             .Where(device => device.设备状态 == 1 && device.设备类型 == "POS")
             .ToListAsync();
         var syncRows = await _db.Queryable<EmergencyLoginKeyDeviceSyncEntity>().ToListAsync();
+        return BuildCoverage(
+            devices.Select(device => new ActivationDeviceRow
+            {
+                DeviceRegistrationId = device.ID,
+                StoreCode = device.分店代码,
+                DeviceNumber = device.系统设备编号,
+                HardwareId = device.设备硬件识别码,
+                LastOnlineAtUtc = device.最后心跳时间,
+            }).ToList(),
+            syncRows.Select(sync => new ActivationSyncRow
+            {
+                DeviceRegistrationId = sync.DeviceRegistrationId,
+                KeySetVersion = sync.KeySetVersion,
+                KeyId = sync.KeyId,
+                AcknowledgedAtUtc = sync.AcknowledgedAtUtc,
+                LastSeenAtUtc = sync.LastSeenAtUtc,
+                IsCurrent = sync.KeySetVersion == version && sync.KeyId == keyId ? 1 : 0,
+            }).ToList(),
+            version,
+            keyId
+        );
+    }
+
+    private async Task LockExpectedVersionAsync(long expectedVersion)
+    {
+        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var rows = await _db.Ado.SqlQueryAsync<EmergencyLoginKeySetStateEntity>(
+                LockExpectedVersionSql,
+                new SugarParameter("@ExpectedVersion", expectedVersion)
+            );
+            if (rows.Count != 1)
+            {
+                throw new EmergencyLoginKeyConcurrencyException();
+            }
+
+            return;
+        }
+
+        var state = await GetStateAsync();
+        if (state.Version != expectedVersion)
+        {
+            throw new EmergencyLoginKeyConcurrencyException();
+        }
+    }
+
+    private async Task<CoverageResult> GetLockedActivationCoverageAsync(
+        long version,
+        string keyId
+    )
+    {
+        if (_db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+        {
+            return await GetCoverageAsync(version, keyId);
+        }
+
+        var devices = await _db.Ado.SqlQueryAsync<ActivationDeviceRow>(
+            LockEnabledPosDevicesSql
+        );
+        var syncRows = await _db.Ado.SqlQueryAsync<ActivationSyncRow>(
+            LockDeviceAcknowledgementsSql,
+            new SugarParameter("@KeySetVersion", version),
+            new SugarParameter("@KeyId", keyId)
+        );
+        return BuildCoverage(devices, syncRows, version, keyId);
+    }
+
+    private static CoverageResult BuildCoverage(
+        List<ActivationDeviceRow> devices,
+        List<ActivationSyncRow> syncRows,
+        long version,
+        string? keyId
+    )
+    {
         var acknowledgedIds = string.IsNullOrWhiteSpace(keyId)
             ? []
             : syncRows
-                .Where(sync => sync.KeySetVersion == version && sync.KeyId == keyId)
+                .Where(sync => sync.IsCurrent == 1
+                    || (sync.KeySetVersion == version && sync.KeyId == keyId))
                 .Select(sync => sync.DeviceRegistrationId)
                 .ToHashSet();
         var lastSyncByDevice = syncRows
@@ -426,15 +544,15 @@ public sealed class EmergencyLoginKeyManagementService
                 group => group.Max(sync => (DateTime?)sync.AcknowledgedAtUtc)
             );
         var missing = devices
-            .Where(device => !acknowledgedIds.Contains(device.ID))
+            .Where(device => !acknowledgedIds.Contains(device.DeviceRegistrationId))
             .Select(device => new EmergencyLoginKeyMissingDeviceDto
             {
-                DeviceRegistrationId = device.ID,
-                StoreCode = device.分店代码,
-                DeviceNumber = device.系统设备编号,
-                HardwareId = device.设备硬件识别码,
-                LastOnlineAtUtc = device.最后心跳时间,
-                LastSyncAtUtc = lastSyncByDevice.GetValueOrDefault(device.ID),
+                DeviceRegistrationId = device.DeviceRegistrationId,
+                StoreCode = device.StoreCode,
+                DeviceNumber = device.DeviceNumber,
+                HardwareId = device.HardwareId,
+                LastOnlineAtUtc = device.LastOnlineAtUtc,
+                LastSyncAtUtc = lastSyncByDevice.GetValueOrDefault(device.DeviceRegistrationId),
             })
             .OrderBy(device => device.StoreCode)
             .ThenBy(device => device.DeviceNumber)
@@ -581,6 +699,32 @@ public sealed class EmergencyLoginKeyManagementService
         int AcknowledgedDevices,
         List<EmergencyLoginKeyMissingDeviceDto> MissingDevices
     );
+
+    private sealed class ActivationDeviceRow
+    {
+        public int DeviceRegistrationId { get; set; }
+        public string? StoreCode { get; set; }
+        public string DeviceNumber { get; set; } = string.Empty;
+        public string HardwareId { get; set; } = string.Empty;
+        public DateTime? LastOnlineAtUtc { get; set; }
+    }
+
+    private sealed class ActivationSyncRow
+    {
+        public int DeviceRegistrationId { get; set; }
+        public long KeySetVersion { get; set; }
+        public string KeyId { get; set; } = string.Empty;
+        public DateTime AcknowledgedAtUtc { get; set; }
+        public DateTime? LastSeenAtUtc { get; set; }
+        public int IsCurrent { get; set; }
+    }
+
+    private sealed class EmergencyLoginKeyCoverageException(
+        List<EmergencyLoginKeyMissingDeviceDto> missingDevices
+    ) : Exception
+    {
+        internal List<EmergencyLoginKeyMissingDeviceDto> MissingDevices { get; } = missingDevices;
+    }
 
     private sealed class EmergencyLoginKeyConcurrencyException : Exception;
 }

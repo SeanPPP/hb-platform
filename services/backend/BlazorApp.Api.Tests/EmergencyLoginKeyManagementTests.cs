@@ -63,6 +63,23 @@ public sealed class EmergencyLoginKeySchemaMigratorTests
 public sealed class EmergencyLoginKeyManagementContractTests
 {
     [Fact]
+    public void Activate_UsesSqlServerRangeLocksForVersionDevicesAndAcknowledgements()
+    {
+        var scripts = EmergencyLoginKeyManagementService.ActivationLockSqlForTests;
+
+        Assert.Equal(3, scripts.Count);
+        Assert.All(scripts, sql => Assert.Contains("UPDLOCK, HOLDLOCK", sql));
+        Assert.Contains("POSM_EmergencyLoginKeySetState", scripts[0]);
+        Assert.Contains("[Version] = @ExpectedVersion", scripts[0]);
+        Assert.Contains("POSM_设备注册信息表", scripts[1]);
+        Assert.Contains("[设备状态] = 1", scripts[1]);
+        Assert.Contains("[设备类型] = N'POS'", scripts[1]);
+        Assert.Contains("POSM_EmergencyLoginKeyDeviceSync", scripts[2]);
+        Assert.Contains("[KeySetVersion] = @KeySetVersion", scripts[2]);
+        Assert.Contains("[KeyId] = @KeyId", scripts[2]);
+    }
+
+    [Fact]
     public void ResponseDtos_NeverExposeProtectedOrPrivateKeyMaterial()
     {
         var exposedNames = typeof(EmergencyLoginKeyListDto)
@@ -271,6 +288,12 @@ public sealed class EmergencyLoginKeyManagementServiceTests : IDisposable
         var missing = Assert.IsType<List<EmergencyLoginKeyMissingDeviceDto>>(blocked.Details);
         Assert.Single(missing);
         Assert.Equal("POS-002", missing[0].DeviceNumber);
+        var stateAfterRollback = await _db.Queryable<EmergencyLoginKeySetStateEntity>().SingleAsync();
+        var keyAfterRollback = await _db.Queryable<EmergencyLoginKeyEntity>().SingleAsync();
+        Assert.Equal(1, stateAfterRollback.Version);
+        Assert.Equal("Staged", keyAfterRollback.Status);
+        Assert.False(await _db.Queryable<EmergencyLoginKeyAuditEntity>()
+            .AnyAsync(item => item.Action == "Activate"));
 
         var forced = await service.ActivateAsync(
             keyId,
