@@ -2,6 +2,9 @@ using System.Security.Cryptography;
 using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.EmergencyLogin;
+using Hbpos.Client.Wpf;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Hbpos.Client.Tests;
 
@@ -78,6 +81,77 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
     }
 
     [Fact]
+    public async Task Sync_invalid_cached_package_does_not_send_etag_and_forces_full_replacement()
+    {
+        using var oldKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var settings = new InMemorySettingsRepository();
+        var cache = new EmergencyLoginPublicKeyCache(settings, new PassthroughProtector());
+        await cache.ReplaceAsync(CreatePackage(9, "BAD-KID", oldKey));
+        var api = new StubApiClient(CreatePackage(10, "K10", newKey));
+
+        var result = await new EmergencyLoginPublicKeySyncService(api, cache).SyncAsync();
+
+        Assert.True(result);
+        Assert.Null(Assert.Single(api.RequestedVersions));
+        Assert.Equal(10, (await cache.GetAsync())?.Version);
+        Assert.Single(api.AcknowledgedVersions, 10);
+    }
+
+    [Fact]
+    public async Task Sync_304_never_acknowledges_invalid_cached_package()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var settings = new InMemorySettingsRepository();
+        var cache = new EmergencyLoginPublicKeyCache(settings, new PassthroughProtector());
+        await cache.ReplaceAsync(CreatePackage(9, "BAD-KID", key));
+        var api = new StubApiClient(EmergencyLoginPublicKeyFetchResult.Unchanged());
+
+        var result = await new EmergencyLoginPublicKeySyncService(api, cache).SyncAsync();
+
+        Assert.False(result);
+        Assert.Null(Assert.Single(api.RequestedVersions));
+        Assert.Empty(api.AcknowledgedVersions);
+    }
+
+    [Fact]
+    public void Validator_rejects_non_es256_non_p256_and_invalid_kid()
+    {
+        using var p256 = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var p384 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        var nonEs256 = CreatePackage(1, "K1", p256) with
+        {
+            Keys = [CreatePackage(1, "K1", p256).Keys[0] with { Algorithm = "ES384" }]
+        };
+        var nonP256 = CreatePackage(1, "K1", p384);
+        var invalidKid = CreatePackage(1, "BAD-KID", p256);
+
+        Assert.False(EmergencyLoginPublicKeyValidator.TryValidate(nonEs256));
+        Assert.False(EmergencyLoginPublicKeyValidator.TryValidate(nonP256));
+        Assert.False(EmergencyLoginPublicKeyValidator.TryValidate(invalidKid));
+    }
+
+    [Fact]
+    public void Hosted_sync_contract_registers_and_runs_on_first_authorization_then_every_six_hours()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        using var provider = services.BuildServiceProvider();
+
+        var hostedDescriptor = services.First(descriptor => descriptor.ServiceType == typeof(IHostedService));
+        var hostedService = hostedDescriptor.ImplementationFactory?.Invoke(provider);
+        Assert.IsType<EmergencyLoginPublicKeySyncHostedService>(hostedService);
+        var now = DateTimeOffset.Parse("2026-07-15T03:00:00Z");
+        Assert.True(EmergencyLoginPublicKeySyncHostedService.ShouldSyncForTests(
+            now, null, null, newlyAuthorized: true));
+        Assert.False(EmergencyLoginPublicKeySyncHostedService.ShouldSyncForTests(
+            now.AddHours(5).AddMinutes(59), now, now, newlyAuthorized: false));
+        Assert.True(EmergencyLoginPublicKeySyncHostedService.ShouldSyncForTests(
+            now.AddHours(6), now, now, newlyAuthorized: false));
+        Assert.Equal(TimeSpan.FromHours(6), EmergencyLoginPublicKeySyncHostedService.SyncIntervalForTests);
+    }
+
+    [Fact]
     public async Task Emergency_login_unknown_kid_syncs_once_then_retries_cached_keys()
     {
         using var oldKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -125,6 +199,7 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
         private readonly EmergencyLoginPublicKeyPackage? _package;
         private readonly Exception? _exception;
         private readonly Func<bool>? _beforeAck;
+        private readonly EmergencyLoginPublicKeyFetchResult? _fetchResult;
 
         public StubApiClient(EmergencyLoginPublicKeyPackage package, Func<bool>? beforeAck = null)
         {
@@ -134,18 +209,22 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
 
         public StubApiClient(Exception exception) => _exception = exception;
 
+        public StubApiClient(EmergencyLoginPublicKeyFetchResult fetchResult) => _fetchResult = fetchResult;
+
         public List<long> AcknowledgedVersions { get; } = [];
+        public List<long?> RequestedVersions { get; } = [];
 
         public Task<EmergencyLoginPublicKeyFetchResult> GetAsync(
             long? currentVersion,
             CancellationToken cancellationToken = default)
         {
+            RequestedVersions.Add(currentVersion);
             if (_exception is not null)
             {
                 throw _exception;
             }
 
-            return Task.FromResult(EmergencyLoginPublicKeyFetchResult.Changed(_package!));
+            return Task.FromResult(_fetchResult ?? EmergencyLoginPublicKeyFetchResult.Changed(_package!));
         }
 
         public Task AcknowledgeAsync(long version, CancellationToken cancellationToken = default)

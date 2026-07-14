@@ -139,27 +139,31 @@ public sealed class EmergencyLoginPublicKeySyncService(
         try
         {
             var current = await cache.GetAsync(cancellationToken);
-            var fetched = await apiClient.GetAsync(current?.Version, cancellationToken);
+            var validCurrent = current is not null && EmergencyLoginPublicKeyValidator.TryValidate(current)
+                ? current
+                : null;
+            // 坏缓存不得参与条件请求，否则错误 304 会让客户端永远无法恢复。
+            var fetched = await apiClient.GetAsync(validCurrent?.Version, cancellationToken);
             if (fetched.NotModified)
             {
-                if (current is null)
+                if (validCurrent is null)
                 {
                     return false;
                 }
 
-                await apiClient.AcknowledgeAsync(current.Version, cancellationToken);
+                await apiClient.AcknowledgeAsync(validCurrent.Version, cancellationToken);
                 return true;
             }
 
             var package = fetched.Package;
             if (package is null ||
                 !EmergencyLoginPublicKeyValidator.TryValidate(package) ||
-                current is not null && package.Version < current.Version)
+                validCurrent is not null && package.Version < validCurrent.Version)
             {
                 return false;
             }
 
-            if (current is null || package.Version > current.Version)
+            if (validCurrent is null || package.Version > validCurrent.Version)
             {
                 // 关键逻辑：整包校验通过后才原子替换缓存；ACK 必须晚于持久化成功。
                 await cache.ReplaceAsync(package, cancellationToken);
@@ -251,6 +255,25 @@ public sealed class EmergencyLoginPublicKeySyncHostedService(
     private static readonly TimeSpan SyncInterval = TimeSpan.FromHours(6);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
+    internal static TimeSpan SyncIntervalForTests => SyncInterval;
+
+    internal static bool ShouldSyncForTests(
+        DateTimeOffset now,
+        DateTimeOffset? lastAttempt,
+        DateTimeOffset? lastSuccess,
+        bool newlyAuthorized)
+    {
+        if (newlyAuthorized)
+        {
+            return true;
+        }
+
+        return lastSuccess is null
+            ? lastAttempt is null || now - lastAttempt >= RetryInterval
+            : now - lastSuccess >= SyncInterval &&
+                (lastAttempt is null || lastAttempt <= lastSuccess || now - lastAttempt >= RetryInterval);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         DateTimeOffset? lastAttempt = null;
@@ -266,10 +289,7 @@ public sealed class EmergencyLoginPublicKeySyncHostedService(
                 : $"{authorization.StoreCode}\u001f{authorization.DeviceCode}\u001f{authorization.HardwareId}";
             var newlyAuthorized = authorizedDevice is not null &&
                 !string.Equals(lastAuthorizedDevice, authorizedDevice, StringComparison.Ordinal);
-            var due = lastSuccess is null
-                ? lastAttempt is null || now - lastAttempt >= RetryInterval
-                : now - lastSuccess >= SyncInterval &&
-                    (lastAttempt is null || lastAttempt <= lastSuccess || now - lastAttempt >= RetryInterval);
+            var due = ShouldSyncForTests(now, lastAttempt, lastSuccess, newlyAuthorized: false);
 
             if (authorization is not null && (newlyAuthorized || due))
             {

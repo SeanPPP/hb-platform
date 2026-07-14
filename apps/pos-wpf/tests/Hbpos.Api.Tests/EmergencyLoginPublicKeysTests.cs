@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Encodings.Web;
 using BlazorApp.Shared.Security;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
@@ -10,9 +12,16 @@ using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.EmergencyLogin;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Api.Tests;
 
@@ -25,12 +34,19 @@ public sealed class EmergencyLoginPublicKeysTests
         Assert.Equal(
             "api/v1/emergency-login/public-keys",
             controllerType.GetCustomAttribute<RouteAttribute>()?.Template);
-        Assert.NotNull(controllerType.GetCustomAttribute<AuthorizeAttribute>());
+        var authorize = Assert.IsType<AuthorizeAttribute>(
+            controllerType.GetCustomAttribute<AuthorizeAttribute>());
+        Assert.Equal(DeviceAuthConstants.Scheme, authorize.AuthenticationSchemes);
+        Assert.Null(controllerType.GetCustomAttribute<AllowAnonymousAttribute>());
 
         Assert.Equal("", controllerType.GetMethod(nameof(EmergencyLoginPublicKeysController.Get))?
             .GetCustomAttribute<HttpGetAttribute>()?.Template);
         Assert.Equal("ack", controllerType.GetMethod(nameof(EmergencyLoginPublicKeysController.Acknowledge))?
             .GetCustomAttribute<HttpPostAttribute>()?.Template);
+        Assert.Null(controllerType.GetMethod(nameof(EmergencyLoginPublicKeysController.Get))?
+            .GetCustomAttribute<AllowAnonymousAttribute>());
+        Assert.Null(controllerType.GetMethod(nameof(EmergencyLoginPublicKeysController.Acknowledge))?
+            .GetCustomAttribute<AllowAnonymousAttribute>());
 
         var responseProperties = typeof(EmergencyLoginPublicKeyPackage).GetProperties()
             .Concat(typeof(EmergencyLoginPublicKey).GetProperties())
@@ -43,6 +59,15 @@ public sealed class EmergencyLoginPublicKeysTests
     }
 
     [Fact]
+    public void Public_key_json_uses_pem_wire_name()
+    {
+        var json = JsonSerializer.Serialize(CreatePackage(7), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"pem\":\"pem\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("publicKeyPem", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Get_returns_304_for_matching_etag()
     {
         var package = CreatePackage(7);
@@ -52,6 +77,32 @@ public sealed class EmergencyLoginPublicKeysTests
         var result = await controller.Get(CancellationToken.None);
 
         Assert.Equal(StatusCodes.Status304NotModified, Assert.IsType<StatusCodeResult>(result.Result).StatusCode);
+    }
+
+    [Fact]
+    public async Task Unauthenticated_http_request_is_rejected_by_authorization_middleware()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddControllers().AddApplicationPart(typeof(EmergencyLoginPublicKeysController).Assembly);
+        builder.Services
+            .AddAuthentication(DeviceAuthConstants.Scheme)
+            .AddScheme<AuthenticationSchemeOptions, UnauthenticatedHandler>(
+                DeviceAuthConstants.Scheme,
+                _ => { });
+        builder.Services.AddAuthorization();
+        builder.Services.AddSingleton<IEmergencyLoginPublicKeyDistributionService>(
+            new StubService(CreatePackage(7)));
+        await using var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapControllers();
+        await app.StartAsync();
+
+        using var response = await app.GetTestClient().GetAsync(
+            "/api/v1/emergency-login/public-keys");
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, (int)response.StatusCode);
     }
 
     [Fact]
@@ -99,7 +150,52 @@ public sealed class EmergencyLoginPublicKeysTests
 
         Assert.Equal(["KSTAGED", "KACTIVE"], package.Keys.Select(key => key.Kid));
         Assert.Equal(EmergencyLoginPublicKeyAckResult.StaleIgnored, ack);
-        Assert.Empty(repository.Acknowledgements);
+        Assert.Single(repository.AckRequests);
+        Assert.Equal(3, repository.AckRequests[0].Version);
+    }
+
+    [Fact]
+    public async Task Ack_delegates_current_version_check_and_idempotency_to_atomic_repository_operation()
+    {
+        var repository = new InMemoryRepository
+        {
+            Snapshot = CreateSnapshot(7),
+            AckResult = EmergencyLoginPublicKeyAckResult.Acknowledged
+        };
+        var service = new EmergencyLoginPublicKeyDistributionService(repository, new FixedTimeProvider());
+        var device = new EmergencyLoginDeviceIdentity("POS-01", "S001", "hardware-1");
+
+        var first = await service.AcknowledgeAsync(device, 7, CancellationToken.None);
+        var second = await service.AcknowledgeAsync(device, 7, CancellationToken.None);
+
+        Assert.Equal(EmergencyLoginPublicKeyAckResult.Acknowledged, first);
+        Assert.Equal(EmergencyLoginPublicKeyAckResult.Acknowledged, second);
+        Assert.Equal(2, repository.AckRequests.Count);
+        Assert.All(repository.AckRequests, request => Assert.Equal(7, request.Version));
+        Assert.Contains("BEGIN TRANSACTION", SqlSugarEmergencyLoginPublicKeyRepository.AckSqlForTests);
+        Assert.Contains("UPDLOCK, HOLDLOCK", SqlSugarEmergencyLoginPublicKeyRepository.AckSqlForTests);
+        Assert.Contains("@RequestedVersion > @CurrentVersion", SqlSugarEmergencyLoginPublicKeyRepository.AckSqlForTests);
+        Assert.Contains("@RequestedVersion < @CurrentVersion", SqlSugarEmergencyLoginPublicKeyRepository.AckSqlForTests);
+        Assert.Contains("MERGE [dbo].[POSM_EmergencyLoginKeyDeviceSync]", SqlSugarEmergencyLoginPublicKeyRepository.AckSqlForTests);
+    }
+
+    [Fact]
+    public async Task Public_key_provider_uses_time_provider_for_60_second_cache_expiry()
+    {
+        var repository = new InMemoryRepository { Snapshot = CreateSnapshot(1, "K1") };
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var time = new MutableTimeProvider(DateTimeOffset.Parse("2026-07-15T02:00:00Z"));
+        var provider = new EmergencyLoginPublicKeyProvider(repository, memoryCache, time);
+
+        Assert.Contains("K1", await provider.GetKeysAsync(false, CancellationToken.None));
+        repository.Snapshot = CreateSnapshot(2, "K2");
+        time.UtcNow = time.UtcNow.AddSeconds(59);
+        Assert.Contains("K1", await provider.GetKeysAsync(false, CancellationToken.None));
+        time.UtcNow = time.UtcNow.AddSeconds(2);
+        var refreshed = await provider.GetKeysAsync(false, CancellationToken.None);
+
+        Assert.Contains("K2", refreshed);
+        Assert.DoesNotContain("K1", refreshed);
     }
 
     [Fact]
@@ -164,6 +260,12 @@ public sealed class EmergencyLoginPublicKeysTests
         DateTime.Parse("2026-07-15T01:00:00Z").ToUniversalTime(),
         [new("K1", "ES256", "pem", "AA")]);
 
+    private static EmergencyLoginPublicKeySetSnapshot CreateSnapshot(long version, string kid = "K1") => new(
+        version,
+        kid,
+        DateTime.Parse("2026-07-15T01:00:00Z").ToUniversalTime(),
+        [new(kid, "ES256", "pem", "AA", "Active")]);
+
     private sealed class StubService(EmergencyLoginPublicKeyPackage package)
         : IEmergencyLoginPublicKeyDistributionService
     {
@@ -186,30 +288,34 @@ public sealed class EmergencyLoginPublicKeysTests
     private sealed class InMemoryRepository : IEmergencyLoginPublicKeyRepository
     {
         public required EmergencyLoginPublicKeySetSnapshot Snapshot { get; set; }
-        public List<(int DeviceId, long Version, string KeyId)> Acknowledgements { get; } = [];
+        public EmergencyLoginPublicKeyAckResult AckResult { get; set; } =
+            EmergencyLoginPublicKeyAckResult.StaleIgnored;
+        public List<(EmergencyLoginDeviceIdentity Device, long Version)> AckRequests { get; } = [];
 
         public Task<EmergencyLoginPublicKeySetSnapshot> GetKeySetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Snapshot);
 
-        public Task<int?> FindDeviceRegistrationIdAsync(
+        public Task<EmergencyLoginPublicKeyAckResult> AcknowledgeAsync(
             EmergencyLoginDeviceIdentity device,
-            CancellationToken cancellationToken) => Task.FromResult<int?>(42);
-
-        public Task UpsertAcknowledgementAsync(
-            int deviceRegistrationId,
             long version,
-            string keyId,
             DateTime acknowledgedAtUtc,
             CancellationToken cancellationToken)
         {
-            Acknowledgements.Add((deviceRegistrationId, version, keyId));
-            return Task.CompletedTask;
+            AckRequests.Add((device, version));
+            return Task.FromResult(AckResult);
         }
     }
 
     private sealed class FixedTimeProvider : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.Parse("2026-07-15T02:00:00Z");
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 
     private sealed class RefreshingPublicKeyProvider(
@@ -225,5 +331,14 @@ public sealed class EmergencyLoginPublicKeysTests
             ForceRefreshCalls.Add(forceRefresh);
             return Task.FromResult(forceRefresh ? refreshed : cached);
         }
+    }
+
+    private sealed class UnauthenticatedHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
+            Task.FromResult(AuthenticateResult.NoResult());
     }
 }

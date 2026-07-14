@@ -77,6 +77,29 @@ public sealed class EmergencyLoginTokenServiceTests
         Assert.Equal(0, emergency.CallCount);
     }
 
+    [Fact]
+    public async Task No_cached_public_keys_fail_only_emergency_login_and_normal_login_still_uses_api()
+    {
+        var settings = new InMemorySettingsRepository();
+        var protector = new PassthroughProtector();
+        var emergency = new EmergencyLoginTokenService(
+            new EmergencyLoginPublicKeyCache(settings, protector),
+            new NoOpPublicKeySyncService(),
+            settings,
+            protector);
+        var emergencyResult = await emergency.LoginAsync(
+            "HBPOSE1-K1-00-00",
+            "S001",
+            "POS-01");
+        var api = new CountingCashierLoginApiClient();
+        var normal = await new CashierLoginService(api, settings, protector, emergency)
+            .LoginAsync("S001", "POS-01", "10001");
+
+        Assert.False(emergencyResult.Succeeded);
+        Assert.False(normal.Succeeded);
+        Assert.Equal(1, api.CallCount);
+    }
+
     private static Fixture CreateFixture()
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);

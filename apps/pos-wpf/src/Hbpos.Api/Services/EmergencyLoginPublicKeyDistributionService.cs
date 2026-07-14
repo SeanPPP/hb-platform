@@ -1,4 +1,3 @@
-using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.EmergencyLogin;
 using SqlSugar;
@@ -35,14 +34,9 @@ public interface IEmergencyLoginPublicKeyRepository
 {
     Task<EmergencyLoginPublicKeySetSnapshot> GetKeySetAsync(CancellationToken cancellationToken);
 
-    Task<int?> FindDeviceRegistrationIdAsync(
+    Task<EmergencyLoginPublicKeyAckResult> AcknowledgeAsync(
         EmergencyLoginDeviceIdentity device,
-        CancellationToken cancellationToken);
-
-    Task UpsertAcknowledgementAsync(
-        int deviceRegistrationId,
         long version,
-        string keyId,
         DateTime acknowledgedAtUtc,
         CancellationToken cancellationToken);
 }
@@ -87,41 +81,12 @@ public sealed class EmergencyLoginPublicKeyDistributionService(
         long version,
         CancellationToken cancellationToken)
     {
-        var snapshot = await repository.GetKeySetAsync(cancellationToken);
-        if (version > snapshot.Version)
-        {
-            return EmergencyLoginPublicKeyAckResult.FutureVersion;
-        }
-
-        // 关键逻辑：旧版本确认不写库，避免落后的客户端干扰当前密钥覆盖率。
-        if (version < snapshot.Version)
-        {
-            return EmergencyLoginPublicKeyAckResult.StaleIgnored;
-        }
-
-        var coverageKeyId = snapshot.Keys
-            .FirstOrDefault(key => string.Equals(key.Status, EmergencyLoginKeyStatuses.Staged, StringComparison.Ordinal))
-            ?.KeyId
-            ?? snapshot.Keys.FirstOrDefault(key =>
-                string.Equals(key.Status, EmergencyLoginKeyStatuses.Active, StringComparison.Ordinal))?.KeyId;
-        if (string.IsNullOrWhiteSpace(coverageKeyId))
-        {
-            throw new InvalidOperationException("当前公钥包没有可确认的 Staged 或 Active 密钥。");
-        }
-
-        var deviceRegistrationId = await repository.FindDeviceRegistrationIdAsync(device, cancellationToken);
-        if (deviceRegistrationId is null)
-        {
-            return EmergencyLoginPublicKeyAckResult.DeviceNotFound;
-        }
-
-        await repository.UpsertAcknowledgementAsync(
-            deviceRegistrationId.Value,
+        // 版本、覆盖密钥和写入必须由仓储在同一数据库事务内完成，避免轮换期间 TOCTOU。
+        return await repository.AcknowledgeAsync(
+            device,
             version,
-            coverageKeyId,
             _timeProvider.GetUtcNow().UtcDateTime,
             cancellationToken);
-        return EmergencyLoginPublicKeyAckResult.Acknowledged;
     }
 }
 
@@ -154,50 +119,101 @@ public sealed class SqlSugarEmergencyLoginPublicKeyRepository(HbposSqlSugarConte
                 item.Status)).ToArray());
     }
 
-    public async Task<int?> FindDeviceRegistrationIdAsync(
-        EmergencyLoginDeviceIdentity device,
-        CancellationToken cancellationToken)
-    {
-        var registration = await dbContext.PosmDb.Queryable<POSM_设备注册信息表>()
-            .Where(item =>
-                item.系统设备编号 == device.DeviceCode &&
-                item.分店代码 == device.StoreCode &&
-                item.设备硬件识别码 == device.HardwareId)
-            .Select(item => new POSM_设备注册信息表 { ID = item.ID })
-            .FirstAsync(cancellationToken);
-        return registration?.ID;
-    }
+    internal const string AckSqlForTests = """
+        SET NOCOUNT ON;
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
 
-    public async Task UpsertAcknowledgementAsync(
-        int deviceRegistrationId,
+        DECLARE @CurrentVersion BIGINT;
+        DECLARE @CoverageKeyId NVARCHAR(32);
+        DECLARE @DeviceRegistrationId INT;
+        DECLARE @ResultCode INT;
+
+        SELECT @CurrentVersion = [Version]
+        FROM [dbo].[POSM_EmergencyLoginKeySetState] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [StateId] = 1;
+
+        IF @CurrentVersion IS NULL
+            SET @ResultCode = 4;
+        ELSE IF @RequestedVersion > @CurrentVersion
+            SET @ResultCode = 2;
+        ELSE IF @RequestedVersion < @CurrentVersion
+            SET @ResultCode = 1;
+        ELSE
+        BEGIN
+            SELECT @DeviceRegistrationId = [ID]
+            FROM [dbo].[POSM_设备注册信息表] WITH (HOLDLOCK)
+            WHERE [系统设备编号] = @DeviceCode
+              AND [分店代码] = @StoreCode
+              AND [设备硬件识别码] = @HardwareId;
+
+            IF @DeviceRegistrationId IS NULL
+                SET @ResultCode = 3;
+            ELSE
+            BEGIN
+                SELECT TOP (1) @CoverageKeyId = [KeyId]
+                FROM [dbo].[POSM_EmergencyLoginKey] WITH (HOLDLOCK)
+                WHERE [Status] IN (N'Staged', N'Active')
+                ORDER BY CASE WHEN [Status] = N'Staged' THEN 0 ELSE 1 END;
+
+                IF @CoverageKeyId IS NULL
+                    SET @ResultCode = 4;
+                ELSE
+                BEGIN
+                    MERGE [dbo].[POSM_EmergencyLoginKeyDeviceSync] WITH (HOLDLOCK) AS target
+                    USING (VALUES (
+                        @DeviceRegistrationId,
+                        @RequestedVersion,
+                        @CoverageKeyId,
+                        @AcknowledgedAtUtc))
+                        AS source ([DeviceRegistrationId], [KeySetVersion], [KeyId], [AcknowledgedAtUtc])
+                    ON target.[DeviceRegistrationId] = source.[DeviceRegistrationId]
+                       AND target.[KeySetVersion] = source.[KeySetVersion]
+                    WHEN MATCHED THEN
+                        UPDATE SET
+                            [KeyId] = source.[KeyId],
+                            [AcknowledgedAtUtc] = source.[AcknowledgedAtUtc],
+                            [LastSeenAtUtc] = source.[AcknowledgedAtUtc]
+                    WHEN NOT MATCHED THEN
+                        INSERT ([DeviceRegistrationId], [KeySetVersion], [KeyId], [AcknowledgedAtUtc], [LastSeenAtUtc])
+                        VALUES (source.[DeviceRegistrationId], source.[KeySetVersion], source.[KeyId],
+                            source.[AcknowledgedAtUtc], source.[AcknowledgedAtUtc]);
+                    SET @ResultCode = 0;
+                END
+            END
+        END
+
+        COMMIT TRANSACTION;
+        SELECT @ResultCode AS [ResultCode];
+        """;
+
+    public async Task<EmergencyLoginPublicKeyAckResult> AcknowledgeAsync(
+        EmergencyLoginDeviceIdentity device,
         long version,
-        string keyId,
         DateTime acknowledgedAtUtc,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            MERGE [dbo].[POSM_EmergencyLoginKeyDeviceSync] WITH (HOLDLOCK) AS target
-            USING (VALUES (@DeviceRegistrationId, @KeySetVersion, @KeyId, @AcknowledgedAtUtc))
-                AS source ([DeviceRegistrationId], [KeySetVersion], [KeyId], [AcknowledgedAtUtc])
-            ON target.[DeviceRegistrationId] = source.[DeviceRegistrationId]
-               AND target.[KeySetVersion] = source.[KeySetVersion]
-            WHEN MATCHED THEN
-                UPDATE SET
-                    [KeyId] = source.[KeyId],
-                    [AcknowledgedAtUtc] = source.[AcknowledgedAtUtc],
-                    [LastSeenAtUtc] = source.[AcknowledgedAtUtc]
-            WHEN NOT MATCHED THEN
-                INSERT ([DeviceRegistrationId], [KeySetVersion], [KeyId], [AcknowledgedAtUtc], [LastSeenAtUtc])
-                VALUES (source.[DeviceRegistrationId], source.[KeySetVersion], source.[KeyId],
-                    source.[AcknowledgedAtUtc], source.[AcknowledgedAtUtc]);
-            """;
-        // 关键逻辑：HOLDLOCK 让同设备同版本并发 ACK 保持幂等，避免复合主键竞争。
-        await dbContext.PosmDb.Ado.ExecuteCommandAsync(
-            sql,
-            new SugarParameter("@DeviceRegistrationId", deviceRegistrationId),
-            new SugarParameter("@KeySetVersion", version),
-            new SugarParameter("@KeyId", keyId),
+        // 关键逻辑：锁定版本状态至 ACK 完成，保证版本、覆盖 KeyId 和幂等写入属于同一快照。
+        var result = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<EmergencyLoginPublicKeyAckSqlResult>(
+            AckSqlForTests,
+            new SugarParameter("@RequestedVersion", version),
+            new SugarParameter("@DeviceCode", device.DeviceCode),
+            new SugarParameter("@StoreCode", device.StoreCode),
+            new SugarParameter("@HardwareId", device.HardwareId),
             new SugarParameter("@AcknowledgedAtUtc", acknowledgedAtUtc));
+        return result?.ResultCode switch
+        {
+            0 => EmergencyLoginPublicKeyAckResult.Acknowledged,
+            1 => EmergencyLoginPublicKeyAckResult.StaleIgnored,
+            2 => EmergencyLoginPublicKeyAckResult.FutureVersion,
+            3 => EmergencyLoginPublicKeyAckResult.DeviceNotFound,
+            _ => throw new InvalidOperationException("紧急登录公钥 ACK 无法取得一致的版本与覆盖密钥。")
+        };
+    }
+
+    private sealed class EmergencyLoginPublicKeyAckSqlResult
+    {
+        public int ResultCode { get; set; }
     }
 }
 

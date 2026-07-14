@@ -1,8 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace Hbpos.Contracts.EmergencyLogin;
 
 public sealed record EmergencyLoginPublicKey(
     string Kid,
     string Algorithm,
+    [property: JsonPropertyName("pem")]
     string PublicKeyPem,
     string Fingerprint);
 
