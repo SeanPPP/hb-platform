@@ -164,6 +164,75 @@ public sealed class CatalogServiceTests
         Assert.Single(await fixture.LoadStoreRetailPricesAsync());
     }
 
+    [Fact]
+    public async Task GetSellableItemsAsync_reads_store_retail_prices_in_projected_keyset_batches()
+    {
+        const int storeRetailPriceCount = 20_001;
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-UUID-END",
+            ProductCode = "P20000",
+            ProductName = "Batch End Product",
+            Barcode = "BATCH-END",
+            RetailPrice = 1m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreRetailPricesAsync("S01", storeRetailPriceCount);
+        fixture.ExecutedCommands.Clear();
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var response = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+
+        var item = Assert.Single(response!.Items);
+        Assert.Equal(987.65m, item.RetailPrice);
+        Assert.Equal("PRICE-UUID-20000", item.ReferenceCode);
+
+        var priceSelects = fixture.ExecutedCommands
+            .Where(command => command.Sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && command.Sql.Contains("StoreRetailPrice", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.True(priceSelects.Count >= 2, $"预期至少两条门店价分批查询，实际为 {priceSelects.Count} 条。\n{string.Join("\n---\n", priceSelects.Select(command => command.Sql))}");
+
+        Assert.All(priceSelects, command =>
+        {
+            var sql = command.Sql;
+            Assert.Matches(@"(?is)\bORDER\s+BY\b.*\bProductCode\b.*\bASC\b.*\bUUID\b.*\bASC\b", sql);
+            Assert.Contains("20000", sql, StringComparison.Ordinal);
+
+            var fromIndex = sql.IndexOf("FROM", StringComparison.OrdinalIgnoreCase);
+            Assert.True(fromIndex > 0, $"门店价查询缺少 FROM：{sql}");
+            var selectList = sql[..fromIndex];
+            Assert.DoesNotContain("*", selectList, StringComparison.Ordinal);
+            Assert.DoesNotContain("StoreProductCode", selectList, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SupplierCode", selectList, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("PurchasePrice", selectList, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("IsAutoPricing", selectList, StringComparison.OrdinalIgnoreCase);
+        });
+
+        var secondCommand = priceSelects[1];
+        var secondQuery = secondCommand.Sql;
+        var whereIndex = secondQuery.IndexOf("WHERE", StringComparison.OrdinalIgnoreCase);
+        var orderByIndex = secondQuery.IndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase);
+        Assert.True(whereIndex >= 0 && orderByIndex > whereIndex, $"第二批查询缺少游标条件：{secondQuery}");
+        var cursorPredicate = secondQuery[whereIndex..orderByIndex];
+        Assert.Matches(
+            @"(?is)\bAND\s*\({2}\s*\[ProductCode\]\s*>\s*@lastProductCode\s*\)\s+OR\s+\(\s*\[ProductCode\]\s*=\s*@lastProductCode\s+AND\s+\[UUID\]\s*>\s*@lastUuid\s*\)\s*\)",
+            cursorPredicate);
+        Assert.DoesNotContain("CASE WHEN", cursorPredicate, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("OFFSET 20000", secondQuery, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("LIMIT 20000,", secondQuery, StringComparison.OrdinalIgnoreCase);
+
+        var productCodeCursor = Assert.Single(secondCommand.Parameters, parameter =>
+            string.Equals(parameter.ParameterName, "@lastProductCode", StringComparison.Ordinal));
+        var uuidCursor = Assert.Single(secondCommand.Parameters, parameter =>
+            string.Equals(parameter.ParameterName, "@lastUuid", StringComparison.Ordinal));
+        Assert.Equal("P20000", productCodeCursor.Value);
+        Assert.Equal("PRICE-UUID-19999", uuidCursor.Value);
+    }
+
     private sealed class CatalogSqliteFixture : IAsyncDisposable
     {
         private readonly string databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-catalog-{Guid.NewGuid():N}.db");
@@ -181,10 +250,14 @@ public sealed class CatalogServiceTests
 
             client.CodeFirst.InitTables<Store, Product, StoreRetailPrice>();
             client.CodeFirst.InitTables<StoreMultiCodeProduct, StoreClearancePrice, ProductSetCode>();
+            client.Aop.OnLogExecuting = (sql, parameters) =>
+                ExecutedCommands.Add((sql, parameters.ToArray()));
             DbContext = CreateDbContext(client);
         }
 
         public HbposSqlSugarContext DbContext { get; }
+
+        public List<(string Sql, SugarParameter[] Parameters)> ExecutedCommands { get; } = [];
 
         public static Task<CatalogSqliteFixture> CreateAsync()
         {
@@ -230,6 +303,44 @@ public sealed class CatalogServiceTests
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             }).ExecuteCommandAsync();
+        }
+
+        public async Task SeedStoreRetailPricesAsync(string storeCode, int count)
+        {
+            const int insertBatchSize = 100;
+            var batch = new List<StoreRetailPrice>(insertBatchSize);
+            var createdAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+            for (var index = 0; index < count; index++)
+            {
+                batch.Add(new StoreRetailPrice
+                {
+                    UUID = $"PRICE-UUID-{index:D5}",
+                    StoreCode = storeCode,
+                    ProductCode = "P20000",
+                    StoreProductCode = $"{storeCode}-P20000-{index:D5}",
+                    SupplierCode = "UNUSED-SUPPLIER",
+                    PurchasePrice = 2m,
+                    StoreRetailPriceValue = index == count - 1 ? 987.65m : index,
+                    IsActive = true,
+                    IsAutoPricing = true,
+                    IsSpecialProduct = index == count - 1,
+                    IsDeleted = false,
+                    CreatedAt = createdAt,
+                    UpdatedAt = createdAt.AddSeconds(index)
+                });
+
+                if (batch.Count == insertBatchSize)
+                {
+                    await client.Insertable(batch).ExecuteCommandAsync();
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                await client.Insertable(batch).ExecuteCommandAsync();
+            }
         }
 
         public async Task<List<StoreRetailPrice>> LoadStoreRetailPricesAsync()
