@@ -89,6 +89,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IWindowOwnerProvider? _windowOwnerProvider;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
+    private readonly ApiServerSettingsViewModel? _apiServerSettings;
     private readonly CustomerDisplayShellController _customerDisplayShellController;
     private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
     private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
@@ -364,7 +365,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         EmergencyOverridePasswordService? emergencyOverridePasswordService = null,
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         bool enforceCashierPermissions = false,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        ApiServerSettingsViewModel? apiServerSettings = null)
     {
         _core = core;
         _infra = infra;
@@ -430,6 +432,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         AppUpdate = appUpdateState ?? new AppUpdateState();
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _appUpdateChannelProvider = appUpdateChannelProvider;
+        _apiServerSettings = apiServerSettings;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
         _mainChildViewModelFactory = CreateMainChildViewModelFactory();
 
@@ -536,7 +539,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _enforceCashierPermissions,
             _checkForAppUpdateAsync,
             _appUpdateChannelProvider,
-            _operationAuditLogger);
+            _operationAuditLogger,
+            // 中文说明：组合根只转交 DI 单例，确保注册页与设置页共享同一份重启状态。
+            apiServerSettings: _apiServerSettings);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(

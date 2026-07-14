@@ -45,6 +45,25 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public async Task LoadAsync_loads_shared_api_server_settings()
+    {
+        var apiServerSettings = new ApiServerSettingsViewModel(
+            new ApiServerSettingsService(
+                new HttpClient(),
+                () => "https://settings.example.com/base",
+                _ => { }),
+            new LocalizationService());
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            apiServerSettings: apiServerSettings);
+
+        await viewModel.LoadAsync();
+
+        Assert.Same(apiServerSettings, viewModel.ApiServerSettings);
+        Assert.Equal("https://settings.example.com/base/", apiServerSettings.ServerAddressText);
+    }
+
+    [Fact]
     public void Category_commands_switch_selected_category()
     {
         var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService());
