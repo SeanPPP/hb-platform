@@ -64,6 +64,7 @@ import LocalSupplierPurchaseSalesAnalysisPage from '../pages/PosAdmin/LocalSuppl
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
+import EmergencyLoginKeysPage from '../pages/System/EmergencyLoginKeys'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
 import PaymentTerminalSettingsPage from '../pages/System/PaymentTerminalSettings'
 import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
@@ -212,6 +213,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageSystemSettings',
         },
         element: <PaymentTerminalSettingsPage />,
+      },
+      {
+        path: '/system/emergency-login-keys',
+        meta: {
+          title: 'menu.emergencyLoginKeys',
+          icon: 'KeyOutlined',
+          keepAlive: true,
+          accessKey: 'canManageSystemSettings',
+        },
+        element: <EmergencyLoginKeysPage />,
       },
       {
         path: '/system/users',
