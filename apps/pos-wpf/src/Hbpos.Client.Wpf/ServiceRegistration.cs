@@ -43,6 +43,10 @@ public static class ServiceRegistration
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
+        services.AddSingleton<IEmergencyLoginTokenService>(sp => new EmergencyLoginTokenService(
+            sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build(),
+            sp.GetRequiredService<ILocalAppSettingsRepository>(),
+            sp.GetRequiredService<IDeviceAuthorizationProtector>()));
         services.AddSingleton(_ => new ClientLogOutboxStore(GetLogDatabasePath(startupOptions)));
         services.AddSingleton(_ => ClientLogIdentity.CreateCurrent());
         services.AddSingleton(sp =>
@@ -85,8 +89,11 @@ public static class ServiceRegistration
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<OperationAuditUploadService>());
         // Generic Host 按注册逆序停止：writer 最后注册，退出时先落库，再由 uploader 做最终上传。
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ClientLogOutboxWriter>());
-        services.AddSingleton<EmergencyOverridePasswordService>();
-        services.AddSingleton<ICashierLoginService, CashierLoginService>();
+        services.AddSingleton<ICashierLoginService>(sp => new CashierLoginService(
+            sp.GetRequiredService<ICashierLoginApiClient>(),
+            sp.GetRequiredService<ILocalAppSettingsRepository>(),
+            sp.GetRequiredService<IDeviceAuthorizationProtector>(),
+            sp.GetRequiredService<IEmergencyLoginTokenService>()));
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
@@ -386,7 +393,6 @@ public static class ServiceRegistration
             checkForAppUpdateAsync: cancellationToken => sp.GetRequiredService<IAppUpdateCoordinator>().CheckForUpdatesAsync(manual: true, cancellationToken),
             cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
             cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
-            emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
             enforceCashierPermissions: true,
             operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),

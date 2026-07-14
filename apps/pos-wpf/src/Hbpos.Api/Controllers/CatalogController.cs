@@ -188,6 +188,7 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             : Ok(ApiResult<CatalogLookupResponse>.Ok(response));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.SpecialProductsView)]
     [HttpGet("special-products/page")]
     public async Task<ActionResult<ApiResult<CatalogSpecialProductsPageResponse>>> GetSpecialProductsPage(
         [FromQuery] string storeCode,
@@ -227,6 +228,7 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             : Ok(ApiResult<CatalogSpecialProductsPageResponse>.Ok(response));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.SpecialProductsManage)]
     [HttpPost("special-products/mark")]
     public async Task<ActionResult<ApiResult<CatalogSpecialProductMarkResponse>>> MarkSpecialProduct(
         [FromBody] CatalogSpecialProductMarkRequest? request,

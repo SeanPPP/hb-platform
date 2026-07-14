@@ -260,7 +260,8 @@ public sealed class ReceiptPrintingTests
     [Fact]
     public void Receipt_text_formatter_prints_emergency_override_username_without_password_label()
     {
-        var session = CashierSessionContext.CreateEmergencyOverride("S001", "POS-01", new DateOnly(2026, 6, 27));
+        var session = CashierSessionContext.CreateEmergencyOverride(
+            "S001", "POS-01", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1), "token");
         var receipt = CreateReceipt(Guid.NewGuid(), cashierName: session.CashierName);
         var formatter = new ReceiptTextFormatter();
 

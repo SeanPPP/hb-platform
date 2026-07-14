@@ -4,6 +4,7 @@ using Hbpos.Api.Logging;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,7 +18,9 @@ builder.Services
     .AddScheme<AuthenticationSchemeOptions, DeviceAuthenticationHandler>(
         DeviceAuthConstants.Scheme,
         options => { });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(CashierAuthorizationPolicies.AddPolicies);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IAuthorizationHandler, CashierPermissionAuthorizationHandler>();
 builder.Services.AddHbposApiServices(builder.Configuration);
 
 var app = builder.Build();

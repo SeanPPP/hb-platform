@@ -79,6 +79,7 @@
     <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
     <Compile Include="PaymentTerminalSettingsServiceTests.cs" />
     <Compile Include="PaymentTerminalSettingsSchemaMigratorTests.cs" />
+    <Compile Include="EmergencyLoginGrantTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
     <Compile Include="CashRegisterUserReactServiceTests.cs" />

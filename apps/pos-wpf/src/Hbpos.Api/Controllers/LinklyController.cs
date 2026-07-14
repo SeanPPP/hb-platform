@@ -31,6 +31,7 @@ public sealed class LinklyController(
     private const string CloudBackendNotFoundCode = "LINKLY_CLOUD_BACKEND_SESSION_NOT_FOUND";
     private const string CloudBackendFailedCode = "LINKLY_CLOUD_BACKEND_FAILED";
 
+    [Authorize(Policy = CashierAuthorizationPolicies.TakeCard)]
     [HttpGet("cloud-credential")]
     public async Task<ActionResult<ApiResult<LinklyCloudCredentialResponse>>> GetCloudCredential(
         [FromQuery] string? environment,
@@ -84,6 +85,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPut("cloud-credential")]
     public async Task<ActionResult<ApiResult<LinklyCloudCredentialUpsertResponse>>> UpsertCloudCredential(
         [FromBody] LinklyCloudCredentialUpsertRequest request,
@@ -140,6 +142,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.TakeCard)]
     [HttpPost("cloud-backend/transactions")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> StartCloudBackendTransaction(
         [FromBody] LinklyCloudBackendTransactionRequest request,
@@ -185,6 +188,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPut("cloud-backend/terminal")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendTerminalCredentialResponse>>> UpsertCloudBackendTerminalCredential(
         [FromBody] LinklyCloudBackendTerminalCredentialUpsertRequest request,
@@ -294,6 +298,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("cloud-backend/health")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendHealthResponse>>> GetCloudBackendHealth(
         [FromQuery] string? environment,
@@ -322,6 +327,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPost("cloud-backend/status-test")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendStatusTestResponse>>> RunCloudBackendStatusTest(
         [FromQuery] string? environment,
@@ -359,6 +365,7 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPost("cloud-backend/logon-test")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendLogonTestResponse>>> RunCloudBackendLogonTest(
         [FromQuery] string? environment,

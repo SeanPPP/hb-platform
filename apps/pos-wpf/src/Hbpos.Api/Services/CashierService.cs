@@ -1,5 +1,6 @@
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Constants;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Cashiers;
 
@@ -10,9 +11,17 @@ public interface ICashierService
     Task<CashierSessionDto?> BarcodeLoginAsync(
         CashierBarcodeLoginRequest request,
         CancellationToken cancellationToken);
+
+    Task<bool> HasAnyPermissionAsync(
+        string userGuid,
+        string storeCode,
+        IReadOnlyCollection<string> permissionCodes,
+        CancellationToken cancellationToken);
 }
 
-public sealed class CashierService(HbposSqlSugarContext dbContext) : ICashierService
+public sealed class CashierService(
+    HbposSqlSugarContext dbContext,
+    ICashierAuthorizationTicketService ticketService) : ICashierService
 {
     public async Task<CashierSessionDto?> BarcodeLoginAsync(
         CashierBarcodeLoginRequest request,
@@ -63,9 +72,11 @@ public sealed class CashierService(HbposSqlSugarContext dbContext) : ICashierSer
         }
 
         var snapshot = await GetPermissionSnapshotAsync(user.UserGUID, cancellationToken);
+        var cashierId = string.IsNullOrWhiteSpace(cashier.HGUID) ? cashier.Id.ToString() : cashier.HGUID;
+        var authorization = ticketService.Issue(cashierId, cashierUserGuid, storeCode, deviceCode);
 
         return new CashierSessionDto(
-            string.IsNullOrWhiteSpace(cashier.HGUID) ? cashier.Id.ToString() : cashier.HGUID,
+            cashierId,
             cashierUserGuid,
             string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName,
             storeCode,
@@ -75,7 +86,49 @@ public sealed class CashierService(HbposSqlSugarContext dbContext) : ICashierSer
             allowedStoreCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             snapshot.IsSuperAdmin,
             IsOfflineCached: false,
-            IsEmergencyOverride: false);
+            IsEmergencyOverride: false,
+            AuthorizationToken: authorization.Token,
+            AuthorizationExpiresAtUtc: authorization.ExpiresAtUtc);
+    }
+
+    public async Task<bool> HasAnyPermissionAsync(
+        string userGuid,
+        string storeCode,
+        IReadOnlyCollection<string> permissionCodes,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(userGuid) ||
+            string.IsNullOrWhiteSpace(storeCode) ||
+            permissionCodes.Count == 0)
+        {
+            return false;
+        }
+
+        var user = await dbContext.MainDb.Queryable<User>()
+            .FirstAsync(x => x.UserGUID == userGuid && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (user is null)
+        {
+            return false;
+        }
+
+        var allowedStoreCodes = await dbContext.MainDb.Queryable<UserStore>()
+            .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+            .Where((us, s) =>
+                us.UserGUID == userGuid &&
+                !us.IsDeleted &&
+                s.IsActive &&
+                !s.IsDeleted)
+            .Select((us, s) => s.StoreCode)
+            .ToListAsync(cancellationToken);
+        if (!allowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // 每次敏感请求都重新读取角色和权限，停用、调店或撤权立即生效。
+        var snapshot = await GetPermissionSnapshotAsync(userGuid, cancellationToken);
+        return snapshot.IsSuperAdmin ||
+            snapshot.PermissionCodes.Intersect(permissionCodes, StringComparer.OrdinalIgnoreCase).Any();
     }
 
     private async Task<CashierPermissionSnapshot> GetPermissionSnapshotAsync(

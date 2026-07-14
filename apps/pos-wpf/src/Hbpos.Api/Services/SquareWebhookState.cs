@@ -67,6 +67,8 @@ public sealed class SqlSugarSquareWebhookSchemaInitializer(
                 [Currency] NVARCHAR(16) NULL,
                 [DeviceId] NVARCHAR(128) NULL,
                 [LocationId] NVARCHAR(128) NULL,
+                [OriginStoreCode] NVARCHAR(50) NULL,
+                [OriginDeviceCode] NVARCHAR(128) NULL,
                 [PaymentId] NVARCHAR(128) NULL,
                 [PaymentIdsJson] NVARCHAR(MAX) NULL,
                 [RawCheckoutJson] NVARCHAR(MAX) NOT NULL,
@@ -74,6 +76,21 @@ public sealed class SqlSugarSquareWebhookSchemaInitializer(
                 [UpdatedAt] DATETIME2(7) NOT NULL CONSTRAINT [DF_POSM_SquareCheckoutSession_UpdatedAt] DEFAULT (SYSUTCDATETIME()),
                 CONSTRAINT [CK_POSM_SquareCheckoutSession_Environment] CHECK ([Environment] IN (N'Production', N'Sandbox'))
             );
+        END;
+
+        -- 兼容已存在的会话表，发布时只做幂等加列，不重建也不改写历史数据。
+        IF OBJECT_ID(N'[dbo].[POSM_SquareCheckoutSession]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'dbo.POSM_SquareCheckoutSession', N'OriginStoreCode') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_SquareCheckoutSession]
+                ADD [OriginStoreCode] NVARCHAR(50) NULL;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_SquareCheckoutSession]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'dbo.POSM_SquareCheckoutSession', N'OriginDeviceCode') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_SquareCheckoutSession]
+                ADD [OriginDeviceCode] NVARCHAR(128) NULL;
         END;
         """;
 
@@ -143,9 +160,21 @@ public interface ISquareCheckoutSessionRepository
         SquareCheckoutSessionRecord session,
         CancellationToken cancellationToken);
 
+    Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
+        string environment,
+        string checkoutId,
+        string originStoreCode,
+        string originDeviceCode,
+        CancellationToken cancellationToken);
+
     Task<SquareCheckoutSessionRecord?> GetCheckoutSessionAsync(
         string environment,
         string checkoutId,
+        CancellationToken cancellationToken);
+
+    Task<SquareCheckoutSessionRecord?> GetCheckoutSessionByPaymentIdAsync(
+        string environment,
+        string paymentId,
         CancellationToken cancellationToken);
 }
 
@@ -190,6 +219,9 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
                 [Currency] = @Currency,
                 [DeviceId] = @DeviceId,
                 [LocationId] = @LocationId,
+                -- webhook 不携带 POS 来源；空值不得覆盖创建 checkout 时保存的设备边界。
+                [OriginStoreCode] = COALESCE(target.[OriginStoreCode], @OriginStoreCode),
+                [OriginDeviceCode] = COALESCE(target.[OriginDeviceCode], @OriginDeviceCode),
                 [PaymentId] = @PaymentId,
                 [PaymentIdsJson] = @PaymentIdsJson,
                 [RawCheckoutJson] = @RawCheckoutJson,
@@ -198,10 +230,12 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
         WHEN NOT MATCHED THEN
             INSERT (
                 [Environment], [CheckoutId], [Status], [Amount], [Currency], [DeviceId], [LocationId],
+                [OriginStoreCode], [OriginDeviceCode],
                 [PaymentId], [PaymentIdsJson], [RawCheckoutJson], [LastEventId], [UpdatedAt]
             )
             VALUES (
                 @Environment, @CheckoutId, @Status, @Amount, @Currency, @DeviceId, @LocationId,
+                @OriginStoreCode, @OriginDeviceCode,
                 @PaymentId, @PaymentIdsJson, @RawCheckoutJson, @LastEventId, @UpdatedAt
             );
         """;
@@ -234,6 +268,38 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
         return UpsertCheckoutSessionCoreAsync(session, retryOnUniqueConflict: true);
     }
 
+    public async Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
+        string environment,
+        string checkoutId,
+        string originStoreCode,
+        string originDeviceCode,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            -- 来源只允许首次补齐；后续相同 checkout 的重试不能把会话转移到另一台 POS。
+            UPDATE [dbo].[POSM_SquareCheckoutSession]
+            SET [OriginStoreCode] = COALESCE([OriginStoreCode], @OriginStoreCode),
+                [OriginDeviceCode] = COALESCE([OriginDeviceCode], @OriginDeviceCode)
+            WHERE [Environment] = @Environment
+              AND [CheckoutId] = @CheckoutId;
+
+            SELECT TOP 1
+                [Id], [Environment], [CheckoutId], [Status], [Amount], [Currency], [DeviceId], [LocationId],
+                [OriginStoreCode], [OriginDeviceCode],
+                [PaymentId], [PaymentIdsJson], [RawCheckoutJson], [LastEventId], [UpdatedAt]
+            FROM [dbo].[POSM_SquareCheckoutSession]
+            WHERE [Environment] = @Environment
+              AND [CheckoutId] = @CheckoutId;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<SquareCheckoutSessionRecord>(
+            sql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@CheckoutId", checkoutId),
+            new SugarParameter("@OriginStoreCode", originStoreCode),
+            new SugarParameter("@OriginDeviceCode", originDeviceCode));
+    }
+
     private async Task UpsertCheckoutSessionCoreAsync(
         SquareCheckoutSessionRecord session,
         bool retryOnUniqueConflict)
@@ -249,6 +315,8 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
                 new SugarParameter("@Currency", session.Currency),
                 new SugarParameter("@DeviceId", session.DeviceId),
                 new SugarParameter("@LocationId", session.LocationId),
+                new SugarParameter("@OriginStoreCode", session.OriginStoreCode),
+                new SugarParameter("@OriginDeviceCode", session.OriginDeviceCode),
                 new SugarParameter("@PaymentId", session.PaymentId),
                 new SugarParameter("@PaymentIdsJson", session.PaymentIdsJson),
                 new SugarParameter("@RawCheckoutJson", session.RawCheckoutJson),
@@ -270,6 +338,7 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [CheckoutId], [Status], [Amount], [Currency], [DeviceId], [LocationId],
+                [OriginStoreCode], [OriginDeviceCode],
                 [PaymentId], [PaymentIdsJson], [RawCheckoutJson], [LastEventId], [UpdatedAt]
             FROM [dbo].[POSM_SquareCheckoutSession]
             WHERE [Environment] = @Environment
@@ -281,6 +350,35 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
             sql,
             new SugarParameter("@Environment", environment),
             new SugarParameter("@CheckoutId", checkoutId));
+    }
+
+    public async Task<SquareCheckoutSessionRecord?> GetCheckoutSessionByPaymentIdAsync(
+        string environment,
+        string paymentId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP 1
+                [Id], [Environment], [CheckoutId], [Status], [Amount], [Currency], [DeviceId], [LocationId],
+                [OriginStoreCode], [OriginDeviceCode],
+                [PaymentId], [PaymentIdsJson], [RawCheckoutJson], [LastEventId], [UpdatedAt]
+            FROM [dbo].[POSM_SquareCheckoutSession]
+            WHERE [Environment] = @Environment
+              AND (
+                  [PaymentId] = @PaymentId
+                  OR EXISTS (
+                      SELECT 1
+                      FROM OPENJSON(CASE WHEN ISJSON([PaymentIdsJson]) = 1 THEN [PaymentIdsJson] ELSE N'[]' END)
+                      WHERE [value] = @PaymentId
+                  )
+              )
+            ORDER BY [UpdatedAt] DESC, [Id] DESC;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<SquareCheckoutSessionRecord>(
+            sql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@PaymentId", paymentId));
     }
 }
 
@@ -319,6 +417,10 @@ public sealed class SquareCheckoutSessionRecord
     public string? DeviceId { get; set; }
 
     public string? LocationId { get; set; }
+
+    public string? OriginStoreCode { get; set; }
+
+    public string? OriginDeviceCode { get; set; }
 
     public string? PaymentId { get; set; }
 

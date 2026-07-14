@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -8,6 +9,8 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
+  QRCode,
   Row,
   Segmented,
   Select,
@@ -23,14 +26,17 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   activateDevice,
+  createEmergencyLoginGrant,
   disableDevice,
   getAppDeviceStatuses,
   getAppDeviceStatusSummary,
   getDeviceRegistrationDetail,
   getDeviceRegistrations,
+  getEmergencyLoginGrant,
   getStoreOptions,
   isDeviceRuntimeOnline,
   lockDevice,
+  revokeEmergencyLoginGrant,
   updateDeviceRegistration,
 } from '../../../services/deviceRegistrationService'
 import type {
@@ -39,6 +45,7 @@ import type {
   AppDeviceStatusSummary,
   DeviceRegistrationDetail,
   DeviceRegistrationItem,
+  EmergencyLoginGrantSummary,
   StoreOption,
   UpdateDeviceRegistrationPayload,
 } from '../../../types/deviceRegistration'
@@ -203,11 +210,13 @@ function renderCashierStatus(record: DeviceRegistrationItem, t: ReturnType<typeo
 }
 
 type DeviceEditFormValues = UpdateDeviceRegistrationPayload
+type EmergencyGrantFormValues = { reason: string }
 
 export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
   const [editForm] = Form.useForm<DeviceEditFormValues>()
+  const [emergencyForm] = Form.useForm<EmergencyGrantFormValues>()
   const [viewMode, setViewMode] = useState<DeviceRegistrationViewMode>('registered')
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [appItems, setAppItems] = useState<AppDeviceStatus[]>([])
@@ -232,6 +241,12 @@ export default function DeviceRegistrationPage() {
   const [editLoading, setEditLoading] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
   const [editingDevice, setEditingDevice] = useState<DeviceRegistrationDetail | null>(null)
+  const [emergencyOpen, setEmergencyOpen] = useState(false)
+  const [emergencyLoading, setEmergencyLoading] = useState(false)
+  const [emergencySaving, setEmergencySaving] = useState(false)
+  const [emergencyRevoking, setEmergencyRevoking] = useState(false)
+  const [emergencyGrant, setEmergencyGrant] = useState<EmergencyLoginGrantSummary | null>(null)
+  const [emergencyToken, setEmergencyToken] = useState<string | null>(null)
 
   async function loadStores() {
     try {
@@ -404,6 +419,108 @@ export default function DeviceRegistrationPage() {
     } finally {
       setEditSaving(false)
     }
+  }
+
+  async function openEmergencyModal() {
+    if (
+      !selectedStoreCode ||
+      !access.canManageDeviceRegistration ||
+      !access.canManageSystemSettings
+    ) {
+      return
+    }
+
+    setEmergencyOpen(true)
+    setEmergencyLoading(true)
+    setEmergencyGrant(null)
+    setEmergencyToken(null)
+    emergencyForm.resetFields()
+    try {
+      setEmergencyGrant(await getEmergencyLoginGrant(selectedStoreCode))
+    } catch (error) {
+      console.error(t('posAdmin.devices.emergencyLoadFailed'), error)
+      message.error(t('posAdmin.devices.emergencyLoadFailed'))
+    } finally {
+      setEmergencyLoading(false)
+    }
+  }
+
+  function closeEmergencyModal() {
+    setEmergencyOpen(false)
+    setEmergencyGrant(null)
+    setEmergencyToken(null)
+    emergencyForm.resetFields()
+  }
+
+  async function submitEmergencyGrant() {
+    if (!selectedStoreCode) {
+      return
+    }
+
+    try {
+      const values = await emergencyForm.validateFields()
+      setEmergencySaving(true)
+      const result = await createEmergencyLoginGrant(selectedStoreCode, values.reason)
+      setEmergencyGrant(result.grant)
+      setEmergencyToken(result.token)
+      message.success(t('posAdmin.devices.emergencyCreateSuccess'))
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+        return
+      }
+      console.error(t('posAdmin.devices.emergencyCreateFailed'), error)
+      message.error(t('posAdmin.devices.emergencyCreateFailed'))
+    } finally {
+      setEmergencySaving(false)
+    }
+  }
+
+  async function revokeEmergencyGrant() {
+    if (!emergencyGrant) {
+      return
+    }
+
+    try {
+      setEmergencyRevoking(true)
+      const revoked = await revokeEmergencyLoginGrant(
+        emergencyGrant.grantId,
+        t('posAdmin.devices.emergencyRevokeReason')
+      )
+      setEmergencyGrant(revoked)
+      setEmergencyToken(null)
+      message.success(t('posAdmin.devices.emergencyRevokeSuccess'))
+    } catch (error) {
+      console.error(t('posAdmin.devices.emergencyRevokeFailed'), error)
+      message.error(t('posAdmin.devices.emergencyRevokeFailed'))
+    } finally {
+      setEmergencyRevoking(false)
+    }
+  }
+
+  async function copyEmergencyToken() {
+    if (!emergencyToken) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(emergencyToken)
+      message.success(t('posAdmin.devices.emergencyCopySuccess'))
+    } catch (error) {
+      console.error(t('posAdmin.devices.emergencyCopyFailed'), error)
+      message.error(t('posAdmin.devices.emergencyCopyFailed'))
+    }
+  }
+
+  function downloadEmergencyQrCode() {
+    const canvas = document.querySelector<HTMLCanvasElement>('#emergency-login-qr canvas')
+    if (!canvas || !emergencyGrant) {
+      message.error(t('posAdmin.devices.emergencyDownloadFailed'))
+      return
+    }
+
+    const link = document.createElement('a')
+    link.download = `hbpos-emergency-${emergencyGrant.storeCode}-${emergencyGrant.businessDate}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.click()
   }
 
   const storeNameMap = useMemo(
@@ -701,6 +818,21 @@ export default function DeviceRegistrationPage() {
                 />
               </>
             ) : null}
+            {viewMode === 'registered' &&
+            access.canManageDeviceRegistration &&
+            access.canManageSystemSettings ? (
+              <Tooltip
+                title={!selectedStoreCode ? t('posAdmin.devices.emergencySelectStoreFirst') : undefined}
+              >
+                <Button
+                  danger
+                  disabled={!selectedStoreCode}
+                  onClick={() => void openEmergencyModal()}
+                >
+                  {t('posAdmin.devices.emergencyAction')}
+                </Button>
+              </Tooltip>
+            ) : null}
             <Button onClick={refreshCurrentView}>{t('common.refresh')}</Button>
           </Space>
         }
@@ -830,6 +962,118 @@ export default function DeviceRegistrationPage() {
             </Form>
           </Space>
           ) : null}
+        </Spin>
+      </Modal>
+
+      <Modal
+        open={emergencyOpen}
+        title={t('posAdmin.devices.emergencyTitle')}
+        onCancel={closeEmergencyModal}
+        destroyOnHidden
+        width={680}
+        footer={
+          emergencyToken ? (
+            <Space>
+              <Button onClick={() => void copyEmergencyToken()}>
+                {t('posAdmin.devices.emergencyCopy')}
+              </Button>
+              <Button onClick={downloadEmergencyQrCode}>
+                {t('posAdmin.devices.emergencyDownload')}
+              </Button>
+              <Button type="primary" onClick={closeEmergencyModal}>
+                {t('common.close')}
+              </Button>
+            </Space>
+          ) : emergencyGrant?.status === 'Active' ? (
+            <Space>
+              <Popconfirm
+                title={t('posAdmin.devices.emergencyRevokeConfirm')}
+                onConfirm={() => void revokeEmergencyGrant()}
+              >
+                <Button danger loading={emergencyRevoking}>
+                  {t('posAdmin.devices.emergencyRevoke')}
+                </Button>
+              </Popconfirm>
+              <Button onClick={closeEmergencyModal}>{t('common.close')}</Button>
+            </Space>
+          ) : (
+            <Space>
+              <Button onClick={closeEmergencyModal}>{t('common.cancel')}</Button>
+              <Button
+                danger
+                type="primary"
+                loading={emergencySaving}
+                disabled={emergencyLoading}
+                onClick={() => void submitEmergencyGrant()}
+              >
+                {t('posAdmin.devices.emergencyCreate')}
+              </Button>
+            </Space>
+          )
+        }
+      >
+        <Spin spinning={emergencyLoading}>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              message={t('posAdmin.devices.emergencyWarningTitle')}
+              description={t('posAdmin.devices.emergencyWarningDescription')}
+            />
+            <Descriptions bordered column={1} size="small">
+              <Descriptions.Item label={t('column.store')}>
+                {selectedStoreCode
+                  ? `${selectedStoreCode}${storeNameMap[selectedStoreCode] ? ` / ${storeNameMap[selectedStoreCode]}` : ''}`
+                  : EMPTY_VALUE}
+              </Descriptions.Item>
+              {emergencyGrant ? (
+                <>
+                  <Descriptions.Item label={t('posAdmin.devices.emergencyStatus')}>
+                    <Tag color={emergencyGrant.status === 'Active' ? 'red' : 'default'}>
+                      {t(`posAdmin.devices.emergencyStatuses.${emergencyGrant.status}`)}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('posAdmin.devices.emergencyGrantId')}>
+                    <Typography.Text copyable>{emergencyGrant.grantId}</Typography.Text>
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('posAdmin.devices.emergencyExpiresAt')}>
+                    {formatDateTime(emergencyGrant.expiresAtUtc)}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('posAdmin.devices.emergencyReason')}>
+                    {emergencyGrant.reason || EMPTY_VALUE}
+                  </Descriptions.Item>
+                </>
+              ) : null}
+            </Descriptions>
+
+            {emergencyToken ? (
+              <Space direction="vertical" align="center" size={12} style={{ width: '100%' }}>
+                <div id="emergency-login-qr">
+                  <QRCode value={emergencyToken} size={320} errorLevel="M" />
+                </div>
+                <Alert
+                  type="info"
+                  showIcon
+                  message={t('posAdmin.devices.emergencyTokenOneTime')}
+                />
+              </Space>
+            ) : emergencyGrant?.status === 'Active' ? (
+              <Alert type="info" showIcon message={t('posAdmin.devices.emergencyActiveSummary')} />
+            ) : (
+              <Form form={emergencyForm} layout="vertical">
+                <Form.Item
+                  name="reason"
+                  label={t('posAdmin.devices.emergencyReason')}
+                  rules={[
+                    { required: true, message: t('posAdmin.devices.emergencyReasonRequired') },
+                    { max: 200, message: t('posAdmin.devices.emergencyReasonTooLong') },
+                  ]}
+                >
+                  <Input.TextArea rows={3} maxLength={200} showCount />
+                </Form.Item>
+              </Form>
+            )}
+          </Space>
         </Spin>
       </Modal>
     </>

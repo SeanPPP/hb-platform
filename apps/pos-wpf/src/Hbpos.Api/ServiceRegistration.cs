@@ -1,5 +1,7 @@
+using Hbpos.Api.Auth;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace Hbpos.Api;
 
@@ -9,6 +11,27 @@ public static class ServiceRegistration
         this IServiceCollection services,
         IConfiguration? configuration = null)
     {
+        var dataProtection = services.AddDataProtection();
+        if (configuration is not null)
+        {
+            var keysPath = configuration["DataProtection:KeysPath"];
+            if (string.IsNullOrWhiteSpace(keysPath))
+            {
+                keysPath = Path.Combine(AppContext.BaseDirectory, "App_Data", "DataProtectionKeys");
+            }
+            else if (!Path.IsPathRooted(keysPath))
+            {
+                keysPath = Path.GetFullPath(keysPath, AppContext.BaseDirectory);
+            }
+
+            Directory.CreateDirectory(keysPath);
+            // 关键逻辑：24 小时收银员票据必须跨进程重启、多实例共用同一密钥环。
+            dataProtection
+                .SetApplicationName(configuration["DataProtection:ApplicationName"] ?? "Hbpos.Api")
+                .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+        }
+        services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
+        services.AddScoped<IEmergencyGrantAuthorizationService, EmergencyGrantAuthorizationService>();
         services.AddOptions<SquareWebhookOptions>();
         services.AddOptions<AppUpdateOptions>();
         services.AddOptions<SquareTerminalRestOptions>()

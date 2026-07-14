@@ -13,7 +13,7 @@ public sealed class InstallmentsController(
     IInstallmentService installmentService,
     IInstallmentHistoryService historyService) : ControllerBase
 {
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentCreate)]
     [HttpPost]
     public async Task<ActionResult<ApiResult<InstallmentCreateResponse>>> Create(
         [FromBody] InstallmentCreateRequest request,
@@ -35,7 +35,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentPayment)]
     [HttpPost("{installmentGuid:guid}/payments")]
     public async Task<ActionResult<ApiResult<InstallmentAppendPaymentResponse>>> AppendPayment(
         Guid installmentGuid,
@@ -63,7 +63,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentPickup)]
     [HttpPost("{installmentGuid:guid}/pickup")]
     public async Task<ActionResult<ApiResult<InstallmentConfirmPickupResponse>>> ConfirmPickup(
         Guid installmentGuid,
@@ -91,7 +91,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentCancel)]
     [HttpPost("{installmentGuid:guid}/cancel")]
     public async Task<ActionResult<ApiResult<InstallmentCancelResponse>>> Cancel(
         Guid installmentGuid,
@@ -119,7 +119,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentCancel)]
     [HttpPost("{installmentGuid:guid}/void")]
     public async Task<ActionResult<ApiResult<InstallmentVoidResponse>>> Void(
         Guid installmentGuid,
@@ -147,7 +147,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentView)]
     [HttpGet("history")]
     public async Task<ActionResult<ApiResult<InstallmentHistoryQueryResponse>>> History(
         [FromQuery] string storeCode,
@@ -175,7 +175,7 @@ public sealed class InstallmentsController(
         return Ok(ApiResult<InstallmentHistoryQueryResponse>.Ok(response));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentView)]
     [HttpGet("{installmentGuid:guid}")]
     public async Task<ActionResult<ApiResult<InstallmentDetailsDto?>>> Details(
         Guid installmentGuid,

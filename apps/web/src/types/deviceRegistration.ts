@@ -87,3 +87,24 @@ export interface StoreOption {
   storeCode: string
   storeName: string
 }
+
+export interface EmergencyLoginGrantSummary {
+  grantId: string
+  storeCode: string
+  businessDate: string
+  keyId: string
+  permissionProfile: 'AllPosTerminal'
+  issuedBy: string
+  reason: string
+  issuedAtUtc: string
+  expiresAtUtc: string
+  revokedBy?: string | null
+  revokedAtUtc?: string | null
+  revokeReason?: string | null
+  status: 'Active' | 'Expired' | 'Revoked'
+}
+
+export interface EmergencyLoginGrantCreateResponse {
+  grant: EmergencyLoginGrantSummary
+  token: string
+}

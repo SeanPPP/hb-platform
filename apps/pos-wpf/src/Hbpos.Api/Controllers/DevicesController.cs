@@ -1,3 +1,4 @@
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
@@ -36,7 +37,7 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
         return Ok(ApiResult<DeviceVerifyResponse>.Ok(response));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.DeviceRegistration)]
     [HttpPost("reregister")]
     public async Task<ActionResult<ApiResult<DeviceReregisterResponse>>> Reregister(
         [FromBody] DeviceReregisterRequest request,
@@ -61,7 +62,7 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
         return Ok(ApiResult<DeviceReregisterResponse>.Ok(response));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.DeviceRegistration)]
     [HttpPost("runtime-status")]
     public async Task<ActionResult<ApiResult<object>>> ReportRuntimeStatus(
         [FromBody] DeviceRuntimeStatusRequest request,

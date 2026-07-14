@@ -1,15 +1,18 @@
 import {
   activateDevice,
   buildUpdateDeviceRegistrationPayload,
+  createEmergencyLoginGrant,
   disableDevice,
   getAppDeviceStatuses,
   getAppDeviceStatusSummary,
   getDeviceRegistrations,
+  getEmergencyLoginGrant,
   isDeviceRuntimeOnline,
   lockDevice,
   normalizeAppDeviceStatusListResponse,
   normalizeAppDeviceStatusSummary,
   normalizeDeviceRegistrationDetail,
+  revokeEmergencyLoginGrant,
 } from './deviceRegistrationService'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
@@ -265,6 +268,31 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     })
   }
 
+  if (url.includes('/api/react/v1/emergency-login-grants')) {
+    const revoked = url.endsWith('/revoke')
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+    const grant = {
+      grantId: 'grant-1',
+      storeCode: 'S01',
+      businessDate: '2026-07-14',
+      keyId: 'KEY1',
+      permissionProfile: 'AllPosTerminal',
+      issuedBy: 'admin',
+      reason: String(body.reason ?? 'outage'),
+      issuedAtUtc: '2026-07-14T01:00:00Z',
+      expiresAtUtc: '2026-07-14T14:00:00Z',
+      status: revoked ? 'Revoked' : 'Active',
+    }
+    const data = init?.method === 'POST' && !revoked
+      ? { grant, token: 'HBPOSE1-KEY1-PAYLOAD-SIGNATURE' }
+      : grant
+
+    return new Response(JSON.stringify({ success: true, data }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   return new Response(JSON.stringify({
     success: true,
     data: {
@@ -306,6 +334,9 @@ try {
     deviceSystem: 'Android',
     keyword: 'Ada',
   })
+  const grant = await getEmergencyLoginGrant('S01')
+  const createdGrant = await createEmergencyLoginGrant('S01', ' network outage ')
+  const revokedGrant = await revokeEmergencyLoginGrant('grant-1', ' resolved ')
 
   assertEqual(
     calls[0]?.url,
@@ -341,6 +372,29 @@ try {
     'App device summary should use mobile app-device-status summary API',
   )
   assertEqual(calls[5]?.method, 'GET', 'App device summary should use GET')
+  assertEqual(
+    calls[6]?.url,
+    '/api/react/v1/emergency-login-grants?storeCode=S01',
+    'Emergency grant summary should use the store query route',
+  )
+  assertEqual(grant?.status, 'Active', 'Emergency grant summary should be normalized')
+  assertEqual(calls[7]?.method, 'POST', 'Emergency grant creation should use POST')
+  assertEqual(
+    calls[7]?.body,
+    JSON.stringify({ storeCode: 'S01', reason: 'network outage' }),
+    'Emergency grant creation should trim its reason',
+  )
+  assertEqual(
+    createdGrant.token,
+    'HBPOSE1-KEY1-PAYLOAD-SIGNATURE',
+    'Emergency grant creation should return the one-time token',
+  )
+  assertEqual(
+    calls[8]?.url,
+    '/api/react/v1/emergency-login-grants/grant-1/revoke',
+    'Emergency grant revocation should use the grant route',
+  )
+  assertEqual(revokedGrant.status, 'Revoked', 'Emergency grant revocation should return its status')
 } finally {
   globalThis.fetch = originalFetch
 }

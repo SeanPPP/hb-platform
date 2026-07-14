@@ -7,6 +7,8 @@ import type {
   DeviceRegistrationDetail,
   DeviceRegistrationItem,
   DeviceRegistrationPagedResult,
+  EmergencyLoginGrantCreateResponse,
+  EmergencyLoginGrantSummary,
   StoreOption,
   UpdateDeviceRegistrationApiPayload,
   UpdateDeviceRegistrationPayload,
@@ -15,6 +17,7 @@ import request, { unwrapApiData } from '../utils/request'
 
 const DEVICE_API_BASE = '/api'
 const REACT_API_BASE = '/api/react/v1/device-registration'
+const EMERGENCY_LOGIN_GRANT_API_BASE = '/api/react/v1/emergency-login-grants'
 export const DEVICE_RUNTIME_ONLINE_STALE_MS = 45_000
 const APP_DEVICE_API_BASE = '/api/mobile/app-device-status'
 
@@ -405,4 +408,87 @@ export async function getStoreOptions(): Promise<StoreOption[]> {
   )
   const payload = Array.isArray(response) ? response : response.data
   return Array.isArray(payload) ? payload : []
+}
+
+function normalizeEmergencyLoginGrant(value: unknown): EmergencyLoginGrantSummary | null {
+  const raw = asRecord(value)
+  if (!raw) {
+    return null
+  }
+
+  const grantId = asString(pick(raw, 'grantId', 'GrantId'))
+  const storeCode = asString(pick(raw, 'storeCode', 'StoreCode'))
+  if (!grantId || !storeCode) {
+    return null
+  }
+
+  const rawStatus = asString(pick(raw, 'status', 'Status'))?.toLowerCase()
+  const status: EmergencyLoginGrantSummary['status'] =
+    rawStatus === 'active' ? 'Active' : rawStatus === 'revoked' ? 'Revoked' : 'Expired'
+
+  return {
+    grantId,
+    storeCode,
+    businessDate: asString(pick(raw, 'businessDate', 'BusinessDate')) ?? '',
+    keyId: asString(pick(raw, 'keyId', 'KeyId')) ?? '',
+    permissionProfile: 'AllPosTerminal',
+    issuedBy: asString(pick(raw, 'issuedBy', 'IssuedBy')) ?? '',
+    reason: asString(pick(raw, 'reason', 'Reason', 'issuedReason', 'IssuedReason')) ?? '',
+    issuedAtUtc: asString(pick(raw, 'issuedAtUtc', 'IssuedAtUtc')) ?? '',
+    expiresAtUtc: asString(pick(raw, 'expiresAtUtc', 'ExpiresAtUtc')) ?? '',
+    revokedBy: asString(pick(raw, 'revokedBy', 'RevokedBy')) ?? null,
+    revokedAtUtc: asString(pick(raw, 'revokedAtUtc', 'RevokedAtUtc')) ?? null,
+    revokeReason: asString(
+      pick(raw, 'revokeReason', 'RevokeReason', 'revokedReason', 'RevokedReason')
+    ) ?? null,
+    status,
+  }
+}
+
+export async function getEmergencyLoginGrant(
+  storeCode: string
+): Promise<EmergencyLoginGrantSummary | null> {
+  const response = await request.get<ApiResponse<unknown>>(EMERGENCY_LOGIN_GRANT_API_BASE, {
+    params: { storeCode },
+  })
+  const data = unwrapApiData(response)
+  if (Array.isArray(data)) {
+    const grants = data
+      .map(normalizeEmergencyLoginGrant)
+      .filter((grant): grant is EmergencyLoginGrantSummary => Boolean(grant))
+    return grants.find((grant) => grant.status === 'Active') ?? grants[0] ?? null
+  }
+  return normalizeEmergencyLoginGrant(data)
+}
+
+export async function createEmergencyLoginGrant(
+  storeCode: string,
+  reason: string
+): Promise<EmergencyLoginGrantCreateResponse> {
+  const response = await request.post<ApiResponse<unknown>>(EMERGENCY_LOGIN_GRANT_API_BASE, {
+    storeCode,
+    reason: reason.trim(),
+  })
+  const data = asRecord(unwrapApiData(response))
+  const grant = normalizeEmergencyLoginGrant(data ? pick(data, 'grant', 'Grant') : null)
+  const token = data ? asString(pick(data, 'token', 'Token')) : undefined
+  if (!grant || !token) {
+    throw new Error('紧急登录授权响应无效')
+  }
+  return { grant, token }
+}
+
+export async function revokeEmergencyLoginGrant(
+  grantId: string,
+  reason: string
+): Promise<EmergencyLoginGrantSummary> {
+  const response = await request.post<ApiResponse<unknown>>(
+    `${EMERGENCY_LOGIN_GRANT_API_BASE}/${encodeURIComponent(grantId)}/revoke`,
+    { reason: reason.trim() }
+  )
+  const grant = normalizeEmergencyLoginGrant(unwrapApiData(response))
+  if (!grant) {
+    throw new Error('紧急登录授权响应无效')
+  }
+  return grant
 }

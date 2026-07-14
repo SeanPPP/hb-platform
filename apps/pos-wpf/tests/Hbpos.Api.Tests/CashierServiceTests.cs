@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using Hbpos.Api.Data;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Cashiers;
 using Microsoft.Data.Sqlite;
@@ -88,6 +89,8 @@ public sealed class CashierServiceTests : IDisposable
         Assert.False(session.IsSuperAdmin);
         Assert.False(session.IsOfflineCached);
         Assert.False(session.IsEmergencyOverride);
+        Assert.Equal("test-ticket", session.AuthorizationToken);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-15T00:00:00Z"), session.AuthorizationExpiresAtUtc);
     }
 
     [Fact]
@@ -130,7 +133,20 @@ public sealed class CashierServiceTests : IDisposable
         }
     }
 
-    private CashierService CreateService() => new(CreateHbposContext(_db));
+    private CashierService CreateService() => new(CreateHbposContext(_db), new FakeTicketService());
+
+    private sealed class FakeTicketService : ICashierAuthorizationTicketService
+    {
+        private static readonly DateTimeOffset ExpiresAtUtc = DateTimeOffset.Parse("2026-07-15T00:00:00Z");
+
+        public (string Token, DateTimeOffset ExpiresAtUtc) Issue(
+            string cashierId,
+            string userGuid,
+            string storeCode,
+            string deviceCode) => ("test-ticket", ExpiresAtUtc);
+
+        public CashierAuthorizationTicket? Validate(string? token) => null;
+    }
 
     private async Task SeedStoreAsync(string storeGuid, string storeCode)
     {

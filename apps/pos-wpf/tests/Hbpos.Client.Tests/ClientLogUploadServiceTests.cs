@@ -236,7 +236,7 @@ public sealed class ClientLogUploadServiceTests
                 results = eventIds.Select(eventId => new { eventId, status = "accepted" })
             }));
         });
-        var authHandler = new DeviceAuthorizationMessageHandler(authorizationState) { InnerHandler = terminal };
+        var authHandler = new DeviceAuthorizationMessageHandler(authorizationState, new CashierSessionContext()) { InnerHandler = terminal };
         using var client = new HttpClient(authHandler) { BaseAddress = new Uri("https://pos-api.example.com/") };
         var services = new ServiceCollection().AddSingleton(authorizationState);
         using var provider = services.BuildServiceProvider();
@@ -422,7 +422,7 @@ public sealed class ClientLogUploadServiceTests
                   "results": [{ "eventId": "{{eventId:D}}", "status": "accepted" }] }
                 """));
         });
-        var authHandler = new DeviceAuthorizationMessageHandler(authorizationState) { InnerHandler = terminal };
+        var authHandler = new DeviceAuthorizationMessageHandler(authorizationState, new CashierSessionContext()) { InnerHandler = terminal };
         var client = new HttpClient(authHandler) { BaseAddress = new Uri("https://pos-api.example.com/") };
         var service = new OperationAuditUploadService(
             store,

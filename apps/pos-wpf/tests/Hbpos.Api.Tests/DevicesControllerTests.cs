@@ -1,3 +1,4 @@
+using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
@@ -17,10 +18,13 @@ public sealed class DevicesControllerTests
         Assert.Equal("verify", GetHttpPostTemplate(nameof(DevicesController.Verify)));
         Assert.Equal("reregister", GetHttpPostTemplate(nameof(DevicesController.Reregister)));
         Assert.Equal("runtime-status", GetHttpPostTemplate(nameof(DevicesController.ReportRuntimeStatus)));
-        Assert.NotNull(typeof(DevicesController)
-            .GetMethod(nameof(DevicesController.Reregister))?
-            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
-            .SingleOrDefault());
+        Assert.Equal(
+            CashierAuthorizationPolicies.DeviceRegistration,
+            typeof(DevicesController).GetMethod(nameof(DevicesController.Reregister))?
+                .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+                .Cast<AuthorizeAttribute>()
+                .Single()
+                .Policy);
         Assert.NotNull(typeof(DevicesController)
             .GetMethod(nameof(DevicesController.ReportRuntimeStatus))?
             .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)

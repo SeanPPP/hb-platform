@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Health;
@@ -736,7 +737,11 @@ public sealed class CatalogSyncServiceTests
         HttpRequestMessage? capturedRequest = null;
         var state = new DeviceAuthorizationState();
         state.Set(new DeviceAuthorizationContext("POS-001", "S01", "HW-001", "AUTH-001"));
-        var handler = new DeviceAuthorizationMessageHandler(state)
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(new CashierSessionDto(
+            "C001", "U001", "Alice", "S01", "POS-001", [], [], ["S01"],
+            false, false, false, "CASHIER-TICKET", DateTimeOffset.UtcNow.AddHours(1)));
+        var handler = new DeviceAuthorizationMessageHandler(state, cashierContext)
         {
             InnerHandler = new StubHttpMessageHandler((request, _) =>
             {
@@ -764,6 +769,30 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal("POS-001", capturedRequest?.Headers.GetValues(DeviceAuthConstants.DeviceCodeHeader).Single());
         Assert.Equal("S01", capturedRequest?.Headers.GetValues(DeviceAuthConstants.StoreCodeHeader).Single());
         Assert.Equal("HW-001", capturedRequest?.Headers.GetValues(DeviceAuthConstants.HardwareIdHeader).Single());
+        Assert.Equal(
+            "CASHIER-TICKET",
+            capturedRequest?.Headers.GetValues(CashierAuthorizationConstants.HeaderName).Single());
+    }
+
+    [Fact]
+    public async Task DeviceAuthorizationMessageHandler_clears_emergency_session_after_online_forbidden()
+    {
+        var state = new DeviceAuthorizationState();
+        state.Set(new DeviceAuthorizationContext("POS-001", "S01", "HW-001", "AUTH-001"));
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CashierSessionContext.CreateEmergencyOverride(
+            "S01", "POS-001", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1), "HBPOSE1-token"));
+        var handler = new DeviceAuthorizationMessageHandler(state, cashierContext)
+        {
+            InnerHandler = new StubHttpMessageHandler((_, _) =>
+                new HttpResponseMessage(HttpStatusCode.Forbidden))
+        };
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+
+        using var response = await client.GetAsync("api/v1/orders/history");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Null(cashierContext.CurrentSession);
     }
 
     [Fact]

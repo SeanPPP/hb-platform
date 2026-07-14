@@ -25,6 +25,28 @@ namespace Hbpos.Client.Tests;
 public sealed class MainViewModelScannerTests
 {
     [Fact]
+    public void Expired_emergency_session_is_cleared_by_clock_guard()
+    {
+        var context = new CashierSessionContext();
+        context.SetCurrent(CashierSessionContext.CreateEmergencyOverride(
+            "1042",
+            "POS-01",
+            Guid.NewGuid(),
+            DateTimeOffset.Parse("2026-07-14T03:00:00Z"),
+            "token"));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierSessionContext: context);
+
+        viewModel.ExpireEmergencySessionIfNeeded(DateTimeOffset.Parse("2026-07-14T03:00:01Z"));
+
+        Assert.Null(context.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+        Assert.Equal(string.Empty, viewModel.Session.CashierId);
+        Assert.Equal("紧急登录已到期，请重新登录", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Active_page_title_tracks_navigation_and_culture()
     {
         var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -13,6 +14,9 @@ public interface IOrderUploadService
 {
     Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 }
+
+public sealed class OrderUploadAuthorizationRequiredException(string message, Exception innerException)
+    : Exception(message, innerException);
 
 public interface IOrderUploadExecutionService
 {
@@ -49,6 +53,14 @@ public sealed class OrderUploadService(
             Log(
                 $"upload completed orderGuid={orderGuid:D} accepted={response.Accepted} alreadySynced={response.AlreadySynced} " +
                 $"message={response.Message ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+        }
+        catch (CatalogApiException ex) when (
+            ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            // 收银员票据缺失或过期不是订单失败；恢复 Pending，等待下一次有效登录。
+            await uploadRepository.MarkPendingAsync(orderGuid, cancellationToken);
+            Log($"upload deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+            throw new OrderUploadAuthorizationRequiredException("需要有效收银员授权后再上传订单。", ex);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -148,6 +160,11 @@ public sealed class OrderUploadExecutionService(
             Log($"execute one canceled orderGuid={orderGuid:D} elapsedMs={stopwatch.ElapsedMilliseconds}");
             throw;
         }
+        catch (OrderUploadAuthorizationRequiredException)
+        {
+            Log($"execute one deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+            return new OrderUploadExecutionResult(1, 0, 0);
+        }
         catch (Exception ex)
         {
             Log($"execute one failed orderGuid={orderGuid:D} error={ex.GetType().Name} message={ex.Message} elapsedMs={stopwatch.ElapsedMilliseconds}");
@@ -179,6 +196,10 @@ public sealed class OrderUploadExecutionService(
                     $"execute pending canceled orderGuid={orderGuid:D} attempted={orderGuids.Count} uploaded={uploadedCount} " +
                     $"failed={failedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
                 throw;
+            }
+            catch (OrderUploadAuthorizationRequiredException)
+            {
+                Log($"execute pending item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
             }
             catch (Exception ex)
             {
@@ -289,6 +310,8 @@ public interface ILocalOrderUploadRepository
 
     Task MarkSyncingAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
+    Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default);
+
     Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
     Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default);
@@ -326,6 +349,11 @@ public sealed class LocalOrderUploadRepository(LocalSqliteStore store) : ILocalO
     public Task MarkSyncingAsync(Guid orderGuid, CancellationToken cancellationToken = default)
     {
         return UpdateStatusAsync(orderGuid, "Syncing", null, cancellationToken);
+    }
+
+    public Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+    {
+        return UpdateStatusAsync(orderGuid, "Pending", null, cancellationToken);
     }
 
     public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default)

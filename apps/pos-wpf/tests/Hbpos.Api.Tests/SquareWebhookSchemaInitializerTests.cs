@@ -24,6 +24,10 @@ public sealed class SquareWebhookSchemaInitializerTests
         Assert.Contains("[Currency] NVARCHAR(16) NULL", combinedSql);
         Assert.Contains("[DeviceId] NVARCHAR(128) NULL", combinedSql);
         Assert.Contains("[LocationId] NVARCHAR(128) NULL", combinedSql);
+        Assert.Contains("[OriginStoreCode] NVARCHAR(50) NULL", combinedSql);
+        Assert.Contains("[OriginDeviceCode] NVARCHAR(128) NULL", combinedSql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_SquareCheckoutSession', N'OriginStoreCode') IS NULL", combinedSql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_SquareCheckoutSession', N'OriginDeviceCode') IS NULL", combinedSql);
         Assert.Contains("[PaymentId] NVARCHAR(128) NULL", combinedSql);
         Assert.Contains("[PaymentIdsJson] NVARCHAR(MAX) NULL", combinedSql);
         Assert.Contains("[RawCheckoutJson] NVARCHAR(MAX) NOT NULL", combinedSql);
@@ -32,6 +36,18 @@ public sealed class SquareWebhookSchemaInitializerTests
         Assert.Contains("UX_POSM_SquareCheckoutSession_Environment_CheckoutId", combinedSql);
         Assert.Contains("UX_POSM_SquareWebhookEvent_Environment_EventId", combinedSql);
         Assert.Contains("CHECK ([Environment] IN (N'Production', N'Sandbox'))", combinedSql);
+    }
+
+    [Fact]
+    public void Checkout_upsert_preserves_existing_origin_when_webhook_has_no_origin()
+    {
+        var sql = (string?)typeof(SqlSugarSquareCheckoutSessionRepository)
+            .GetField("UpsertCheckoutSessionSql", BindingFlags.Static | BindingFlags.NonPublic)?
+            .GetRawConstantValue();
+
+        Assert.NotNull(sql);
+        Assert.Contains("[OriginStoreCode] = COALESCE(target.[OriginStoreCode], @OriginStoreCode)", sql);
+        Assert.Contains("[OriginDeviceCode] = COALESCE(target.[OriginDeviceCode], @OriginDeviceCode)", sql);
     }
 
     [Theory]

@@ -11,7 +11,7 @@ namespace Hbpos.Api.Controllers;
 [Route("api/v1/vouchers")]
 public sealed class VouchersController(IStoreVoucherService voucherService) : ControllerBase
 {
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.Voucher)]
     [HttpGet("{voucherCode}")]
     public async Task<ActionResult<ApiResult<StoreVoucherQueryResponse>>> Get(
         string voucherCode,
@@ -42,7 +42,7 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
         return Ok(ApiResult<StoreVoucherQueryResponse>.Ok(response));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.Voucher)]
     [HttpPost("lock")]
     public async Task<ActionResult<ApiResult<StoreVoucherLockResponse>>> Lock(
         [FromBody] StoreVoucherLockRequest request,
@@ -79,7 +79,7 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.Voucher)]
     [HttpPost("release")]
     public async Task<ActionResult<ApiResult<StoreVoucherReleaseResponse>>> Release(
         [FromBody] StoreVoucherReleaseRequest request,
@@ -116,7 +116,7 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.VoucherRefund)]
     [HttpPost("refund")]
     public async Task<ActionResult<ApiResult<StoreVoucherIssueRefundResponse>>> IssueRefund(
         [FromBody] StoreVoucherIssueRefundRequest request,
@@ -154,7 +154,12 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
 
         try
         {
-            var response = await voucherService.IssueRefundAsync(request, cancellationToken);
+            var authorizedCashierId = HttpContext.Items[CashierAuthorizationContext.CashierIdItemKey] as string;
+            // Audit 阶段兼容旧客户端；Enforce 阶段授权处理器一定会覆盖客户端传入的收银员身份。
+            var authorizedRequest = string.IsNullOrWhiteSpace(authorizedCashierId)
+                ? request
+                : request with { CashierId = authorizedCashierId };
+            var response = await voucherService.IssueRefundAsync(authorizedRequest, cancellationToken);
             return Ok(ApiResult<StoreVoucherIssueRefundResponse>.Ok(response));
         }
         catch (InvalidOperationException ex)
@@ -163,45 +168,18 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
         }
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.VoucherRefund)]
     [HttpPost("issue")]
     public async Task<ActionResult<ApiResult<StoreVoucherIssueResponse>>> Issue(
         [FromBody] StoreVoucherIssueRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.StoreCode))
-        {
-            return BadRequest(ApiResult<StoreVoucherIssueResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
-        }
-
-        if (request.Amount <= 0)
-        {
-            return BadRequest(ApiResult<StoreVoucherIssueResponse>.Fail("AMOUNT_INVALID", "amount must be greater than zero"));
-        }
-
-        if (string.IsNullOrWhiteSpace(request.CashierId))
-        {
-            return BadRequest(ApiResult<StoreVoucherIssueResponse>.Fail("CASHIER_ID_REQUIRED", "cashierId is required"));
-        }
-
-        if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
-        {
-            return BadRequest(ApiResult<StoreVoucherIssueResponse>.Fail("IDEMPOTENCY_KEY_REQUIRED", "idempotencyKey is required"));
-        }
-
-        if (!this.IsDeviceScopeAllowed(request.StoreCode!))
-        {
-            return DeviceAuthorizationExtensions.DeviceScopeForbidden<StoreVoucherIssueResponse>("Device is not authorized for this store.");
-        }
-
-        try
-        {
-            var response = await voucherService.IssueAsync(request, cancellationToken);
-            return Ok(ApiResult<StoreVoucherIssueResponse>.Ok(response));
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(ApiResult<StoreVoucherIssueResponse>.Fail("VOUCHER_ISSUE_INVALID", ex.Message));
-        }
+        // 通用签发入口没有可由服务端核验的原始业务单据，保留路由但永久禁用，避免任意金额铸券。
+        await Task.CompletedTask;
+        return StatusCode(
+            StatusCodes.Status410Gone,
+            ApiResult<StoreVoucherIssueResponse>.Fail(
+                "VOUCHER_ISSUE_DISABLED",
+                "Direct voucher issuing is disabled."));
     }
 }

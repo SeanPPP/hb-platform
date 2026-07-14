@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -27,12 +28,27 @@ public sealed class CashierPermissionTests
     {
         var context = new CashierSessionContext();
 
-        context.SetCurrent(CashierSessionContext.CreateEmergencyOverride("S001", "POS-01", new DateOnly(2026, 6, 27)));
+        context.SetCurrent(CashierSessionContext.CreateEmergencyOverride(
+            "S001", "POS-01", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1), "token"));
 
         Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.ChangePrice));
         Assert.True(context.HasPermission(Permissions.PosTerminal.Payment.Confirm));
         Assert.True(context.CurrentSession!.IsEmergencyOverride);
         Assert.Contains(Permissions.PosTerminal.CashDrawer.Open, context.CurrentSession.PermissionCodes);
+    }
+
+    [Fact]
+    public void Emergency_override_is_cleared_when_permission_is_checked_after_expiry()
+    {
+        var time = new MutableTimeProvider(DateTimeOffset.Parse("2026-07-14T03:00:00Z"));
+        var context = new CashierSessionContext(time);
+        context.SetCurrent(CashierSessionContext.CreateEmergencyOverride(
+            "S001", "POS-01", Guid.NewGuid(), time.UtcNow.AddMinutes(1), "token"));
+
+        time.UtcNow = time.UtcNow.AddMinutes(2);
+
+        Assert.False(context.HasPermission(Permissions.PosTerminal.Payment.Confirm));
+        Assert.Null(context.CurrentSession);
     }
 
     [Fact]
@@ -46,7 +62,8 @@ public sealed class CashierPermissionTests
             new SequenceCashierLoginApiClient(
                 CashierLoginAttempt.OnlineAccepted(onlineSession),
                 CashierLoginAttempt.ApiUnavailable()),
-            settings);
+            settings,
+            new PassthroughProtector());
 
         var first = await service.LoginAsync("S001", "POS-01", "BAR-1");
         var second = await service.LoginAsync("S001", "POS-01", "BAR-1");
@@ -56,10 +73,12 @@ public sealed class CashierPermissionTests
         Assert.False(first.Session!.IsOfflineCached);
         Assert.True(second.Session!.IsOfflineCached);
         Assert.Equal("C001", second.Session.CashierId);
+        Assert.DoesNotContain(settings.Keys, key => key.Contains("BAR-1", StringComparison.Ordinal));
+        Assert.All(settings.Values, value => Assert.StartsWith("protected:", value, StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task Cashier_login_does_not_use_cache_after_online_rejection()
+    public async Task Cashier_login_keeps_cache_after_online_rejection_but_does_not_fallback_for_that_attempt()
     {
         var settings = new InMemoryAppSettingsRepository();
         var service = new CashierLoginService(
@@ -67,7 +86,8 @@ public sealed class CashierPermissionTests
                 CashierLoginAttempt.OnlineAccepted(CreateSession()),
                 CashierLoginAttempt.OnlineRejected("条码无效"),
                 CashierLoginAttempt.ApiUnavailable()),
-            settings);
+            settings,
+            new PassthroughProtector());
 
         await service.LoginAsync("S001", "POS-01", "BAR-1");
         var rejected = await service.LoginAsync("S001", "POS-01", "BAR-1");
@@ -76,9 +96,75 @@ public sealed class CashierPermissionTests
         Assert.False(rejected.Succeeded);
         Assert.Null(rejected.Session);
         Assert.Equal("条码无效", rejected.Message);
-        Assert.False(unavailable.Succeeded);
-        Assert.Null(unavailable.Session);
-        Assert.Equal("收银员登录服务不可用", unavailable.Message);
+        Assert.True(unavailable.Succeeded);
+        Assert.True(unavailable.Session!.IsOfflineCached);
+        Assert.Equal("C001", unavailable.Session.CashierId);
+    }
+
+    [Fact]
+    public async Task Cashier_login_ignores_legacy_plaintext_cache_until_next_online_success_removes_it()
+    {
+        var settings = new InMemoryAppSettingsRepository();
+        const string legacyKey = "cashier-session:S001:POS-01:BAR-1";
+        await settings.SetValueAsync(
+            legacyKey,
+            JsonSerializer.Serialize(CreateSession(), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var service = new CashierLoginService(
+            new SequenceCashierLoginApiClient(
+                CashierLoginAttempt.ApiUnavailable(),
+                CashierLoginAttempt.OnlineAccepted(CreateSession())),
+            settings,
+            new PassthroughProtector());
+
+        var offline = await service.LoginAsync("S001", "POS-01", "BAR-1");
+        var online = await service.LoginAsync("S001", "POS-01", "BAR-1");
+
+        Assert.False(offline.Succeeded);
+        Assert.True(online.Succeeded);
+        Assert.DoesNotContain(legacyKey, settings.Keys);
+        Assert.Single(settings.Keys);
+        Assert.DoesNotContain(settings.Keys, key => key.Contains("BAR-1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Expired_online_authorization_ticket_does_not_expire_offline_cashier_cache()
+    {
+        var expiredOnlineSession = CreateSession() with
+        {
+            AuthorizationToken = "expired-ticket",
+            AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(-1)
+        };
+        var service = new CashierLoginService(
+            new SequenceCashierLoginApiClient(
+                CashierLoginAttempt.OnlineAccepted(expiredOnlineSession),
+                CashierLoginAttempt.ApiUnavailable()),
+            new InMemoryAppSettingsRepository(),
+            new PassthroughProtector());
+
+        Assert.True((await service.LoginAsync("S001", "POS-01", "BAR-1")).Succeeded);
+        var offline = await service.LoginAsync("S001", "POS-01", "BAR-1");
+
+        Assert.True(offline.Succeeded);
+        Assert.True(offline.Session!.IsOfflineCached);
+        Assert.Equal("expired-ticket", offline.Session.AuthorizationToken);
+    }
+
+    [Fact]
+    public void Windows_dpapi_protector_round_trips_for_current_user()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var protector = new WindowsDpapiDeviceAuthorizationProtector();
+        const string plaintext = "cashier-cache-secret";
+
+        var protectedValue = protector.Protect(plaintext);
+
+        Assert.NotNull(protectedValue);
+        Assert.NotEqual(plaintext, protectedValue);
+        Assert.Equal(plaintext, protector.Unprotect(protectedValue));
     }
 
     [Fact]
@@ -269,6 +355,30 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
+    public async Task Pos_terminal_routes_emergency_token_before_product_workflow()
+    {
+        var workflow = new FakePosTerminalWorkflowService();
+        var scanned = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow,
+            tryLoginCashierFromScannerFallbackAsync: (barcode, _) =>
+            {
+                scanned.TrySetResult(barcode);
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: false);
+
+        Assert.True(viewModel.ProcessScannerBarcode("HBPOSE1-K1-AA-BB", "scanner", "raw"));
+        Assert.Equal("HBPOSE1-K1-AA-BB", await scanned.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(0, workflow.ProcessScanAsyncCalls);
+    }
+
+    [Fact]
     public async Task Pos_terminal_scanner_with_cashier_without_add_permission_tries_cashier_login_fallback_when_not_catalog_match()
     {
         var cart = new PosCartService();
@@ -456,6 +566,10 @@ public sealed class CashierPermissionTests
     {
         private readonly Dictionary<string, string> _values = [];
 
+        public IEnumerable<string> Keys => _values.Keys;
+
+        public IEnumerable<string> Values => _values.Values;
+
         public Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
         {
             _values.TryGetValue(key, out var value);
@@ -473,6 +587,23 @@ public sealed class CashierPermissionTests
             _values.Remove(key);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class PassthroughProtector : IDeviceAuthorizationProtector
+    {
+        public string? Protect(string? value) => value is null ? null : $"protected:{value}";
+
+        public string? Unprotect(string? protectedValue) =>
+            protectedValue?.StartsWith("protected:", StringComparison.Ordinal) == true
+                ? protectedValue["protected:".Length..]
+                : null;
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 
     private sealed class SequenceCashierLoginApiClient(params CashierLoginAttempt[] attempts) : ICashierLoginApiClient

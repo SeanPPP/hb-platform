@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Reflection;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
@@ -28,6 +29,10 @@ public sealed class VouchersControllerTests
             .GetMethod(nameof(VouchersController.Get))?
             .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
             .SingleOrDefault());
+        Assert.Equal(
+            CashierAuthorizationPolicies.VoucherRefund,
+            typeof(VouchersController).GetMethod(nameof(VouchersController.IssueRefund))?
+                .GetCustomAttribute<AuthorizeAttribute>()?.Policy);
     }
 
     [Fact]
@@ -131,8 +136,9 @@ public sealed class VouchersControllerTests
     [Fact]
     public async Task IssueRefund_ReturnsWrappedVoucherResponse()
     {
-        var controller = new VouchersController(new FakeStoreVoucherService());
-        SetAuthenticatedDevice(controller, "S01", "POS-01");
+        var service = new FakeStoreVoucherService();
+        var controller = new VouchersController(service);
+        SetAuthenticatedDevice(controller, "S01", "POS-01", "AUTHORIZED-CASHIER");
 
         var result = await controller.IssueRefund(
             new StoreVoucherIssueRefundRequest("S01", 15m, "C001", IdempotencyKey: "ORDER-1:PAY-1", OrderReference: "ORDER-1", Reason: "Refund"),
@@ -143,6 +149,7 @@ public sealed class VouchersControllerTests
         Assert.True(apiResult.Success);
         Assert.NotNull(apiResult.Data);
         Assert.Equal("RF001", apiResult.Data.VoucherCode);
+        Assert.Equal("AUTHORIZED-CASHIER", service.RefundRequest?.CashierId);
     }
 
     [Fact]
@@ -162,7 +169,7 @@ public sealed class VouchersControllerTests
     }
 
     [Fact]
-    public async Task Issue_ReturnsWrappedVoucherResponse()
+    public async Task Issue_ReturnsGoneBecauseDirectIssuingIsDisabled()
     {
         var controller = new VouchersController(new FakeStoreVoucherService());
         SetAuthenticatedDevice(controller, "S01", "POS-01");
@@ -171,61 +178,11 @@ public sealed class VouchersControllerTests
             new StoreVoucherIssueRequest("S01", 20m, "C001", "ISSUE-1", CustomerCode: "CUS001", Reason: "Manual issue"),
             CancellationToken.None);
 
-        var ok = Assert.IsType<OkObjectResult>(result.Result);
-        var apiResult = Assert.IsType<ApiResult<StoreVoucherIssueResponse>>(ok.Value);
-        Assert.True(apiResult.Success);
-        Assert.NotNull(apiResult.Data);
-        Assert.Equal("VC001", apiResult.Data.VoucherCode);
-        Assert.Equal("CUS001", apiResult.Data.CustomerCode);
-    }
-
-    [Fact]
-    public async Task Issue_ReturnsForbiddenWhenDeviceStoreDoesNotMatch()
-    {
-        var controller = new VouchersController(new FakeStoreVoucherService());
-        SetAuthenticatedDevice(controller, "S02", "POS-02");
-
-        var result = await controller.Issue(
-            new StoreVoucherIssueRequest("S01", 20m, "C001", "ISSUE-1"),
-            CancellationToken.None);
-
-        var forbidden = Assert.IsType<ObjectResult>(result.Result);
-        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
-        var apiResult = Assert.IsType<ApiResult<StoreVoucherIssueResponse>>(forbidden.Value);
+        var gone = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status410Gone, gone.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<StoreVoucherIssueResponse>>(gone.Value);
         Assert.False(apiResult.Success);
-        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
-    }
-
-    [Fact]
-    public async Task Issue_ReturnsBadRequestWhenIdempotencyKeyMissing()
-    {
-        var controller = new VouchersController(new FakeStoreVoucherService());
-        SetAuthenticatedDevice(controller, "S01", "POS-01");
-
-        var result = await controller.Issue(
-            new StoreVoucherIssueRequest("S01", 20m, "C001", string.Empty),
-            CancellationToken.None);
-
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
-        var apiResult = Assert.IsType<ApiResult<StoreVoucherIssueResponse>>(badRequest.Value);
-        Assert.False(apiResult.Success);
-        Assert.Equal("IDEMPOTENCY_KEY_REQUIRED", apiResult.ErrorCode);
-    }
-
-    [Fact]
-    public async Task Issue_ReturnsBadRequestWhenStoreCodeMissing()
-    {
-        var controller = new VouchersController(new FakeStoreVoucherService());
-        SetAuthenticatedDevice(controller, "S01", "POS-01");
-
-        var result = await controller.Issue(
-            new StoreVoucherIssueRequest(string.Empty, 20m, "C001", "ISSUE-1"),
-            CancellationToken.None);
-
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
-        var apiResult = Assert.IsType<ApiResult<StoreVoucherIssueResponse>>(badRequest.Value);
-        Assert.False(apiResult.Success);
-        Assert.Equal("STORE_CODE_REQUIRED", apiResult.ErrorCode);
+        Assert.Equal("VOUCHER_ISSUE_DISABLED", apiResult.ErrorCode);
     }
 
     private static string? GetHttpGetTemplate(string methodName)
@@ -251,7 +208,8 @@ public sealed class VouchersControllerTests
     private static void SetAuthenticatedDevice(
         ControllerBase controller,
         string storeCode,
-        string deviceCode)
+        string deviceCode,
+        string? authorizedCashierId = null)
     {
         var identity = new ClaimsIdentity(
         [
@@ -267,6 +225,10 @@ public sealed class VouchersControllerTests
                 User = new ClaimsPrincipal(identity)
             }
         };
+        if (!string.IsNullOrWhiteSpace(authorizedCashierId))
+        {
+            controller.HttpContext.Items[CashierAuthorizationContext.CashierIdItemKey] = authorizedCashierId;
+        }
     }
 
     private sealed class FakeStoreVoucherService : IStoreVoucherService
@@ -283,6 +245,8 @@ public sealed class VouchersControllerTests
 
         public StoreVoucherIssueRefundResponse RefundResponse { get; init; } =
             new("RF001", 15m, 15m, "1", DateTimeOffset.UtcNow.AddMonths(12));
+
+        public StoreVoucherIssueRefundRequest? RefundRequest { get; private set; }
 
         public StoreVoucherIssueResponse IssueResponse { get; init; } =
             new("VC001", 20m, 20m, "1", DateTimeOffset.UtcNow.AddMonths(12), "S01", "CUS001");
@@ -314,6 +278,7 @@ public sealed class VouchersControllerTests
             StoreVoucherIssueRefundRequest request,
             CancellationToken cancellationToken)
         {
+            RefundRequest = request;
             return Task.FromResult(RefundResponse);
         }
 

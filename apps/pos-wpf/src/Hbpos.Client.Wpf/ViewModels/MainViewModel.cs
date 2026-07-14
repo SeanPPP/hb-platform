@@ -5,6 +5,7 @@ using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -80,7 +81,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly ICashierLoginService? _cashierLoginService;
     private readonly IOperationAuditLogger? _operationAuditLogger;
-    private readonly EmergencyOverridePasswordService? _emergencyOverridePasswordService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
     private readonly bool _enforceCashierPermissions;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
@@ -363,7 +363,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IAppUpdateChannelProvider? appUpdateChannelProvider = null,
         ICashierSessionContext? cashierSessionContext = null,
         ICashierLoginService? cashierLoginService = null,
-        EmergencyOverridePasswordService? emergencyOverridePasswordService = null,
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         bool enforceCashierPermissions = false,
         IOperationAuditLogger? operationAuditLogger = null,
@@ -428,7 +427,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _cashierLoginService = cashierLoginService;
         _operationAuditLogger = operationAuditLogger;
-        _emergencyOverridePasswordService = emergencyOverridePasswordService;
         _runtimeStatusApiClient = runtimeStatusApiClient;
         _enforceCashierPermissions = enforceCashierPermissions;
         _windowOwnerProvider = windowOwnerProvider;
@@ -853,6 +851,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool TryProcessKeyboardScannerInput(string barcode)
     {
+        if (barcode.Trim().StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal) &&
+            TryProcessCashierLoginInput(barcode))
+        {
+            // 紧急令牌优先于当前商品页，禁止进入商品查询和页面日志。
+            return true;
+        }
+
         if (CurrentScreen is IScannerInputTarget scannerInputTarget)
         {
             return scannerInputTarget.ProcessScannerBarcode(
@@ -886,8 +891,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private bool CanLoginCashierFromInput()
     {
-        return !string.IsNullOrWhiteSpace(CashierBarcodeInput) &&
-            (_cashierLoginService is not null || _emergencyOverridePasswordService is not null);
+        return !string.IsNullOrWhiteSpace(CashierBarcodeInput) && _cashierLoginService is not null;
     }
 
     private async Task LoginCashierFromInputAsync()
@@ -895,7 +899,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var input = CashierBarcodeInput.Trim();
         if (input.Length == 0)
         {
-            StatusMessage = "请输入收银员条码或超级密码";
+            StatusMessage = "请输入收银员条码或紧急二维码";
             return;
         }
 
@@ -905,7 +909,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private bool TryProcessCashierLoginInput(string barcode)
     {
-        if (_cashierLoginService is null && _emergencyOverridePasswordService is null)
+        if (_cashierLoginService is null)
         {
             return false;
         }
@@ -936,23 +940,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (input.Length == 0)
         {
             return false;
-        }
-
-        if (_emergencyOverridePasswordService is not null &&
-            IsEmergencyPasswordCandidate(input) &&
-            _emergencyOverridePasswordService.TryCreateOverride(input, Session.StoreCode, Session.DeviceCode, out var emergencySession, out var emergencyMessage))
-        {
-            ApplyCashierSession(emergencySession!);
-            OperationAuditEvents.RecordAction(
-                _operationAuditLogger,
-                OperationAuditTypes.CashierLogin,
-                "Succeeded",
-                Session,
-                reasonCode: "EMERGENCY_OVERRIDE");
-            StatusMessage = emergencyMessage;
-            await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
-            await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
-            return true;
         }
 
         if (_cashierLoginService is null)
@@ -1029,14 +1016,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         };
     }
 
-    private static bool IsEmergencyPasswordCandidate(string input)
-    {
-        return input.Length == 9 && input.All(char.IsDigit);
-    }
-
     private void ApplyCashierSession(CashierSessionDto cashierSession)
     {
-        // 中文注释：切换收银员时只更新当前 POS 会话，超级密码不写入本地缓存。
+        // 切换收银员时只更新当前 POS 会话；紧急授权由专用登录服务验证，不写普通缓存。
         _cashierSessionContext.SetCurrent(cashierSession);
         Session = CashierSessionContext.ApplyToSession(Session, cashierSession);
     }
@@ -1848,6 +1830,38 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void OnClockTimerTick(object? sender, EventArgs e)
     {
         RefreshClock();
+        ExpireEmergencySessionIfNeeded(DateTimeOffset.UtcNow);
+    }
+
+    internal void ExpireEmergencySessionIfNeeded(DateTimeOffset now)
+    {
+        var contextCashier = _cashierSessionContext.CurrentSession;
+        var cashier = contextCashier ?? Session.CashierSession;
+        var rejectedByServer = contextCashier is null && cashier?.IsEmergencyOverride == true;
+        if (cashier?.IsEmergencyOverride != true ||
+            (!rejectedByServer && cashier.AuthorizationExpiresAtUtc > now))
+        {
+            return;
+        }
+
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashierLogout,
+            "Succeeded",
+            Session,
+            reasonCode: "EMERGENCY_EXPIRED");
+        _cashierSessionContext.Clear();
+        Session = Session with
+        {
+            CashierId = string.Empty,
+            CashierName = string.Empty,
+            CashierSession = null
+        };
+        _screenNavigator.ApplySessionToScreens();
+        OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
+        StatusMessage = rejectedByServer
+            ? "紧急登录已被服务端拒绝，请重新登录"
+            : "紧急登录已到期，请重新登录";
     }
 
     private async void OnConnectivityTimerTick(object? sender, EventArgs e)

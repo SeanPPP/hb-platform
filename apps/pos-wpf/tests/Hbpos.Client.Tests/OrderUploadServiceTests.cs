@@ -1,3 +1,4 @@
+using System.Net;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
@@ -254,6 +255,51 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task Order_upload_execution_service_keeps_order_pending_when_cashier_authorization_is_missing()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-auth-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var syncQueue = new SyncQueueRepository(store);
+            var order = CreateLocalOrder();
+
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(order);
+
+            var uploadService = new OrderUploadService(
+                orders,
+                new UnauthorizedOrderSyncApiClient(),
+                uploadRepository);
+            var executor = new OrderUploadExecutionService(uploadService, uploadRepository);
+
+            var result = await executor.ExecutePendingAsync();
+            var summary = Assert.Single(await orders.GetRecentOrdersAsync());
+            var savedOrder = await orders.GetOrderAsync(order.OrderGuid);
+            var activeItem = Assert.Single(await syncQueue.GetActiveItemsAsync());
+
+            Assert.Equal(1, result.AttemptedCount);
+            Assert.Equal(0, result.UploadedCount);
+            Assert.Equal(0, result.FailedCount);
+            Assert.Equal("Pending", summary.SyncStatus);
+            Assert.Equal("Pending", activeItem.Status);
+            Assert.Equal(order.CashierId, savedOrder!.CashierId);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task UploadOrderAsync_ignores_voucher_balance_suffix_when_mapping_payment()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-voucher-upload-{Guid.NewGuid():N}.db");
@@ -378,6 +424,16 @@ public sealed class OrderUploadServiceTests
         public Task<OrderSyncResponse> SyncAsync(OrderSyncRequest request, CancellationToken cancellationToken = default)
         {
             throw new InvalidOperationException(message);
+        }
+    }
+
+    private sealed class UnauthorizedOrderSyncApiClient : IOrderSyncApiClient
+    {
+        public Task<OrderSyncResponse> SyncAsync(
+            OrderSyncRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new CatalogApiException("forbidden", HttpStatusCode.Forbidden);
         }
     }
 }

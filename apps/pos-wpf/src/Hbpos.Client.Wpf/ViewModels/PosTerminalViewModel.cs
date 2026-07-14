@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -979,6 +980,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     {
         try
         {
+            if (barcode.Trim().StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal) &&
+                _tryLoginCashierFromScannerFallbackAsync is not null)
+            {
+                // 原始扫描枪也必须在商品工作流前分流，令牌不得触发本地或远程商品查询。
+                await _tryLoginCashierFromScannerFallbackAsync(barcode, CancellationToken.None);
+                return;
+            }
+
             await ProcessScannerBarcodeAsync(barcode, devicePath, source, scannedAt);
         }
         catch (Exception ex)

@@ -695,9 +695,27 @@ public sealed class SquareTerminalBackendService(
 
     private sealed class NullSquareCheckoutSessionRepository : ISquareCheckoutSessionRepository
     {
+        public Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
+            string environment,
+            string checkoutId,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<SquareCheckoutSessionRecord?>(null);
+        }
+
         public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionAsync(
             string environment,
             string checkoutId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<SquareCheckoutSessionRecord?>(null);
+        }
+
+        public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionByPaymentIdAsync(
+            string environment,
+            string paymentId,
             CancellationToken cancellationToken)
         {
             return Task.FromResult<SquareCheckoutSessionRecord?>(null);

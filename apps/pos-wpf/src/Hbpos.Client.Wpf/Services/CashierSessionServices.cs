@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Common;
@@ -22,8 +25,9 @@ public interface ICashierSessionContext
     bool RequirePermission(string permissionCode, out string message);
 }
 
-public sealed class CashierSessionContext : ICashierSessionContext
+public sealed class CashierSessionContext(TimeProvider? timeProvider = null) : ICashierSessionContext
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private static readonly string[] AllPosTerminalPermissions = Permissions.GetAllPermissions()
         .Select(permission => permission.Code)
         .Where(code => code.StartsWith("Permissions.PosTerminal.", StringComparison.Ordinal))
@@ -49,7 +53,14 @@ public sealed class CashierSessionContext : ICashierSessionContext
             return false;
         }
 
-        // 中文注释：超级密码和后台超管只在本机上下文授予 POS 端权限，不落库。
+        if (CurrentSession.IsEmergencyOverride &&
+            CurrentSession.AuthorizationExpiresAtUtc <= _timeProvider.GetUtcNow())
+        {
+            CurrentSession = null;
+            return false;
+        }
+
+        // 紧急授权和后台超管只在本机上下文授予 POS 端权限，不扩展为后台权限。
         if (CurrentSession.IsEmergencyOverride || CurrentSession.IsSuperAdmin)
         {
             return permissionCode.StartsWith("Permissions.PosTerminal.", StringComparison.Ordinal);
@@ -71,21 +82,29 @@ public sealed class CashierSessionContext : ICashierSessionContext
         return false;
     }
 
-    public static CashierSessionDto CreateEmergencyOverride(string storeCode, string deviceCode, DateOnly businessDate)
+    public static CashierSessionDto CreateEmergencyOverride(
+        string storeCode,
+        string deviceCode,
+        Guid grantId,
+        DateTimeOffset expiresAtUtc,
+        string authorizationToken)
     {
-        // 小票和历史直接使用 CashierName，超级密码只保留权限标记，名称使用固定用户标识。
+        // 小票和历史直接使用 CashierName；紧急授权使用固定名称和可审计的 GrantId。
         return new CashierSessionDto(
-            "EMERGENCY",
-            "EMERGENCY",
+            $"EMERGENCY:{grantId:N}",
+            $"EMERGENCY:{grantId:N}",
             "EMERGENCY",
             storeCode,
             deviceCode,
             ["EmergencyOverride"],
             AllPosTerminalPermissions,
             [storeCode],
-            IsSuperAdmin: true,
+            IsSuperAdmin: false,
             IsOfflineCached: false,
-            IsEmergencyOverride: true);
+            IsEmergencyOverride: true,
+            AuthorizationToken: authorizationToken,
+            AuthorizationExpiresAtUtc: expiresAtUtc,
+            EmergencyGrantId: grantId.ToString("D"));
     }
 
     public static PosSessionState ApplyToSession(PosSessionState state, CashierSessionDto cashier)
@@ -152,54 +171,6 @@ public sealed class CashierSessionContext : ICashierSessionContext
             Permissions.PosTerminal.System.Sync => "当前收银员没有手动同步权限",
             _ => "当前收银员没有权限"
         };
-    }
-}
-
-public sealed class EmergencyOverridePasswordService(TimeProvider? timeProvider = null)
-{
-    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
-    private int _failedAttempts;
-    private DateTimeOffset? _lockedUntil;
-
-    public bool TryCreateOverride(
-        string input,
-        string storeCode,
-        string deviceCode,
-        out CashierSessionDto? session,
-        out string message)
-    {
-        var now = _timeProvider.GetLocalNow();
-        if (_lockedUntil is not null && now < _lockedUntil.Value)
-        {
-            session = null;
-            message = "超级密码失败次数过多，请稍后再试";
-            return false;
-        }
-
-        if (string.Equals(input.Trim(), BuildPassword(now.Date), StringComparison.Ordinal))
-        {
-            _failedAttempts = 0;
-            _lockedUntil = null;
-            session = CashierSessionContext.CreateEmergencyOverride(storeCode, deviceCode, DateOnly.FromDateTime(now.Date));
-            message = "已启用超级密码权限";
-            return true;
-        }
-
-        _failedAttempts++;
-        if (_failedAttempts >= 5)
-        {
-            _lockedUntil = now.AddSeconds(60);
-        }
-
-        session = null;
-        message = "超级密码错误";
-        return false;
-    }
-
-    private static string BuildPassword(DateTime date)
-    {
-        var isoDay = date.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)date.DayOfWeek;
-        return $"{date:yyyyMMdd}{isoDay}";
     }
 }
 
@@ -294,7 +265,9 @@ public interface ICashierLoginService
 
 public sealed class CashierLoginService(
     ICashierLoginApiClient apiClient,
-    ILocalAppSettingsRepository settingsRepository) : ICashierLoginService
+    ILocalAppSettingsRepository settingsRepository,
+    IDeviceAuthorizationProtector protector,
+    IEmergencyLoginTokenService? emergencyLoginTokenService = null) : ICashierLoginService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -304,11 +277,23 @@ public sealed class CashierLoginService(
         string userBarcode,
         CancellationToken cancellationToken = default)
     {
+        if (userBarcode.StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal))
+        {
+            // 紧急二维码必须在普通条码 API 和商品查询之前分流，避免令牌外泄。
+            return emergencyLoginTokenService is null
+                ? CashierLoginResult.Fail("紧急登录服务不可用")
+                : await emergencyLoginTokenService.LoginAsync(
+                    userBarcode,
+                    storeCode,
+                    deviceCode,
+                    cancellationToken);
+        }
+
         var request = new CashierBarcodeLoginRequest(storeCode, userBarcode, deviceCode);
         var attempt = await apiClient.LoginAsync(request, cancellationToken);
         if (attempt.IsOnlineRejected)
         {
-            await settingsRepository.DeleteValueAsync(BuildCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
+            // 在线明确拒绝只影响本次登录；保留旧缓存供后续真正断网时继续营业。
             return CashierLoginResult.Fail(attempt.Message);
         }
 
@@ -336,10 +321,16 @@ public sealed class CashierLoginService(
         CashierSessionDto session,
         CancellationToken cancellationToken)
     {
+        var json = JsonSerializer.Serialize(session with { IsOfflineCached = false }, JsonOptions);
+        var protectedJson = protector.Protect(json)
+            ?? throw new InvalidOperationException("无法保护收银员离线缓存。");
         await settingsRepository.SetValueAsync(
             BuildCacheKey(storeCode, deviceCode, userBarcode),
-            JsonSerializer.Serialize(session with { IsOfflineCached = false }, JsonOptions),
+            protectedJson,
             cancellationToken);
+
+        // 新格式写入成功后再清理同一身份的旧明文缓存，避免迁移期间丢失可用登录。
+        await settingsRepository.DeleteValueAsync(BuildLegacyCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
     }
 
     private async Task<CashierSessionDto?> ReadCachedSessionAsync(
@@ -348,13 +339,22 @@ public sealed class CashierLoginService(
         string userBarcode,
         CancellationToken cancellationToken)
     {
-        var json = await settingsRepository.GetValueAsync(BuildCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
+        var protectedJson = await settingsRepository.GetValueAsync(BuildCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
+        var json = protector.Unprotect(protectedJson);
         if (string.IsNullOrWhiteSpace(json))
         {
             return null;
         }
 
-        var session = JsonSerializer.Deserialize<CashierSessionDto>(json, JsonOptions);
+        CashierSessionDto? session;
+        try
+        {
+            session = JsonSerializer.Deserialize<CashierSessionDto>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
         if (session?.AllowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase) != true)
         {
             return null;
@@ -371,6 +371,13 @@ public sealed class CashierLoginService(
     }
 
     private static string BuildCacheKey(string storeCode, string deviceCode, string userBarcode)
+    {
+        // 键名也不能泄露收银员条码；摘要只用于定位，不承担密码学认证。
+        var scope = $"{storeCode.Trim()}\n{deviceCode.Trim()}\n{userBarcode.Trim()}";
+        return $"cashier-session:v2:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(scope)))}";
+    }
+
+    private static string BuildLegacyCacheKey(string storeCode, string deviceCode, string userBarcode)
     {
         return $"cashier-session:{storeCode.Trim()}:{deviceCode.Trim()}:{userBarcode.Trim()}";
     }

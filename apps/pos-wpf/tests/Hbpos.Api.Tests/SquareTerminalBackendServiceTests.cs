@@ -971,12 +971,41 @@ public sealed class SquareTerminalBackendServiceTests
 
         public int UpsertCheckoutCallCount { get; private set; }
 
+        public Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
+            string environment,
+            string checkoutId,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            Sessions.TryGetValue($"{environment}::{checkoutId}", out var session);
+            if (session is not null)
+            {
+                session.OriginStoreCode ??= originStoreCode;
+                session.OriginDeviceCode ??= originDeviceCode;
+            }
+
+            return Task.FromResult(session);
+        }
+
         public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionAsync(
             string environment,
             string checkoutId,
             CancellationToken cancellationToken)
         {
             Sessions.TryGetValue($"{environment}::{checkoutId}", out var session);
+            return Task.FromResult(session);
+        }
+
+        public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionByPaymentIdAsync(
+            string environment,
+            string paymentId,
+            CancellationToken cancellationToken)
+        {
+            var session = Sessions.Values.FirstOrDefault(candidate =>
+                string.Equals(candidate.Environment, environment, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(candidate.PaymentId, paymentId, StringComparison.OrdinalIgnoreCase) ||
+                 candidate.PaymentIdsJson?.Contains(paymentId, StringComparison.OrdinalIgnoreCase) == true));
             return Task.FromResult(session);
         }
 

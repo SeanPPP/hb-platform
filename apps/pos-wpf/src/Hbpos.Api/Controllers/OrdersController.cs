@@ -17,7 +17,7 @@ public sealed class OrdersController(
     IOrderReturnService orderReturnService,
     ILogger<OrdersController>? logger = null) : ControllerBase
 {
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.OrderSync)]
     [HttpPost("sync")]
     public async Task<ActionResult<ApiResult<OrderSyncResponse>>> Sync(
         [FromBody] OrderSyncRequest request,
@@ -67,7 +67,7 @@ public sealed class OrdersController(
         logger?.LogInformation("OrderSyncController {Message}", message);
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.History)]
     [HttpGet("history")]
     public async Task<ActionResult<ApiResult<OrderHistoryQueryResponse>>> History(
         [FromQuery] string storeCode,
@@ -94,7 +94,7 @@ public sealed class OrdersController(
         return Ok(ApiResult<OrderHistoryQueryResponse>.Ok(response));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.History)]
     [HttpGet("history/{orderGuid:guid}")]
     public async Task<ActionResult<ApiResult<OrderHistoryDetailsDto?>>> HistoryDetails(
         Guid orderGuid,
@@ -114,7 +114,7 @@ public sealed class OrdersController(
         return Ok(ApiResult<OrderHistoryDetailsDto?>.Ok(details));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.Returns)]
     [HttpGet("history/{orderGuid:guid}/return-context")]
     public async Task<ActionResult<ApiResult<OrderReturnContextDto?>>> ReturnContext(
         Guid orderGuid,
@@ -134,7 +134,7 @@ public sealed class OrdersController(
         return Ok(ApiResult<OrderReturnContextDto?>.Ok(context));
     }
 
-    [Authorize]
+    [Authorize(Policy = CashierAuthorizationPolicies.Returns)]
     [HttpPost("returns")]
     public async Task<ActionResult<ApiResult<OrderReturnRecordCreateResponse>>> CreateReturns(
         [FromBody] OrderReturnRecordCreateRequest request,

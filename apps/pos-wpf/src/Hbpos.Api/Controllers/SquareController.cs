@@ -1,9 +1,14 @@
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.Square;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Net;
+using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Hbpos.Api.Controllers;
@@ -14,7 +19,8 @@ namespace Hbpos.Api.Controllers;
 public sealed class SquareController(
     ISquareTokenService squareTokenService,
     ISquareTerminalBackendService backendService,
-    ILogger<SquareController> logger) : ControllerBase
+    ILogger<SquareController> logger,
+    ISquareCheckoutSessionRepository? checkoutSessionRepository = null) : ControllerBase
 {
     private const string InvalidEnvironmentCode = "SQUARE_ENVIRONMENT_INVALID";
     private const string InvalidEnvironmentMessage = "environment must be Production or Sandbox";
@@ -44,6 +50,7 @@ public sealed class SquareController(
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(100));
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("token")]
     public async Task<ActionResult<ApiResult<SquareTokenStatusResponse>>> GetToken(
         [FromQuery] string environment,
@@ -67,6 +74,7 @@ public sealed class SquareController(
             validation.Token!.UpdatedAt)));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("locations")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SquareLocationDto>>>> GetLocations(
         [FromQuery] string environment,
@@ -87,6 +95,7 @@ public sealed class SquareController(
             backendService => backendService.GetLocationsAsync(validation.Environment!, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("devices")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SquareDeviceDto>>>> GetDevices(
         [FromQuery] string environment,
@@ -108,6 +117,7 @@ public sealed class SquareController(
             backendService => backendService.GetDevicesAsync(validation.Environment!, locationId, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("device-codes")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SquareDeviceCodeDto>>>> GetDeviceCodes(
         [FromQuery] string environment,
@@ -129,6 +139,7 @@ public sealed class SquareController(
             backendService => backendService.GetDeviceCodesAsync(validation.Environment!, locationId, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPost("device-codes")]
     public async Task<ActionResult<ApiResult<SquareDeviceCodeDto>>> CreateDeviceCode(
         [FromBody] SquareCreateDeviceCodeRequest request,
@@ -155,6 +166,7 @@ public sealed class SquareController(
             backendService => backendService.CreateDeviceCodeAsync(request with { Environment = validation.Environment! }, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpGet("device-codes/{deviceCodeId}")]
     public async Task<ActionResult<ApiResult<SquareDeviceCodeDto?>>> GetDeviceCode(
         string deviceCodeId,
@@ -176,6 +188,7 @@ public sealed class SquareController(
             backendService => backendService.GetDeviceCodeAsync(validation.Environment!, deviceCodeId, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.TakeCard)]
     [HttpPost("checkouts")]
     public async Task<ActionResult<ApiResult<SquareCheckoutStatusResponse>>> CreateCheckout(
         [FromBody] SquareCreateCheckoutRequest request,
@@ -185,6 +198,12 @@ public sealed class SquareController(
         if (idempotencyValidation is not null)
         {
             return idempotencyValidation;
+        }
+
+        var scope = GetAuthenticatedDeviceScope<SquareCheckoutStatusResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
         }
 
         var validation = await ValidateEnvironmentAndTokenAsync<SquareCheckoutStatusResponse>(
@@ -199,7 +218,18 @@ public sealed class SquareController(
 
         return await ExecuteBackendAsync(
             "create-checkout",
-            backendService => backendService.CreateCheckoutAsync(request with { Environment = validation.Environment! }, cancellationToken));
+            async backendService =>
+            {
+                var response = await backendService.CreateCheckoutAsync(
+                    request with { Environment = validation.Environment! },
+                    cancellationToken);
+                await PersistCheckoutOriginAsync(
+                    response,
+                    scope.StoreCode!,
+                    scope.DeviceCode!,
+                    cancellationToken);
+                return response;
+            });
     }
 
     [HttpGet("checkouts/{checkoutId}")]
@@ -216,6 +246,16 @@ public sealed class SquareController(
         if (validation.Result is not null)
         {
             return validation.Result;
+        }
+
+        var scopeResult = await ValidateCheckoutDeviceScopeAsync<SquareCheckoutStatusResponse?>(
+            validation.Environment!,
+            checkoutId,
+            paymentId: null,
+            cancellationToken);
+        if (scopeResult is not null)
+        {
+            return scopeResult;
         }
 
         return await ExecuteBackendAsync(
@@ -239,6 +279,16 @@ public sealed class SquareController(
             return validation.Result;
         }
 
+        var scopeResult = await ValidateCheckoutDeviceScopeAsync<SquarePaymentStatusDto?>(
+            validation.Environment!,
+            checkoutId: null,
+            paymentId,
+            cancellationToken);
+        if (scopeResult is not null)
+        {
+            return scopeResult;
+        }
+
         return await ExecuteBackendAsync(
             "payment",
             backendService => backendService.GetPaymentAsync(validation.Environment!, paymentId, cancellationToken));
@@ -258,6 +308,16 @@ public sealed class SquareController(
         if (validation.Result is not null)
         {
             return validation.Result;
+        }
+
+        var scopeResult = await ValidateCheckoutDeviceScopeAsync<SquareCheckoutStatusResponse>(
+            validation.Environment!,
+            checkoutId,
+            paymentId: null,
+            cancellationToken);
+        if (scopeResult is not null)
+        {
+            return scopeResult;
         }
 
         return await ExecuteBackendAsync(
@@ -281,11 +341,22 @@ public sealed class SquareController(
             return validation.Result;
         }
 
+        var scopeResult = await ValidateCheckoutDeviceScopeAsync<SquareCheckoutStatusResponse>(
+            validation.Environment!,
+            checkoutId,
+            paymentId: null,
+            cancellationToken);
+        if (scopeResult is not null)
+        {
+            return scopeResult;
+        }
+
         return await ExecuteBackendAsync(
             "dismiss-checkout",
             backendService => backendService.DismissCheckoutAsync(checkoutId, request with { Environment = validation.Environment! }, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.Returns)]
     [HttpPost("refunds")]
     public async Task<ActionResult<ApiResult<SquareRefundResponse>>> CreateRefund(
         [FromBody] SquareRefundRequest request,
@@ -414,6 +485,107 @@ public sealed class SquareController(
         Func<ISquareTerminalBackendService, Task<T>> executeAsync)
     {
         return ExecuteBackendCoreAsync(operationName, backendService, executeAsync);
+    }
+
+    private (string? StoreCode, string? DeviceCode, ActionResult<ApiResult<T>>? Result) GetAuthenticatedDeviceScope<T>()
+    {
+        var storeCode = User.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
+        var deviceCode = User.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
+        if (string.IsNullOrWhiteSpace(storeCode) || string.IsNullOrWhiteSpace(deviceCode))
+        {
+            return (null, null, DeviceAuthorizationExtensions.DeviceScopeForbidden<T>(
+                "Device store and terminal scope are unavailable."));
+        }
+
+        // Square 会话来源只相信设备认证声明，不读取请求中的门店或设备字段。
+        return (storeCode.Trim(), deviceCode.Trim(), null);
+    }
+
+    private async Task PersistCheckoutOriginAsync(
+        SquareCheckoutStatusResponse checkout,
+        string originStoreCode,
+        string originDeviceCode,
+        CancellationToken cancellationToken)
+    {
+        if (checkoutSessionRepository is null)
+        {
+            throw new InvalidOperationException("Square checkout session repository is unavailable.");
+        }
+
+        var paymentIds = checkout.PaymentIds?
+            .Where(paymentId => !string.IsNullOrWhiteSpace(paymentId))
+            .Select(paymentId => paymentId.Trim())
+            .ToArray() ?? [];
+        await checkoutSessionRepository.UpsertCheckoutSessionAsync(
+            new SquareCheckoutSessionRecord
+            {
+                Environment = checkout.Environment,
+                CheckoutId = checkout.CheckoutId,
+                Status = checkout.Status ?? string.Empty,
+                Amount = checkout.AmountMoney?.Amount,
+                Currency = checkout.AmountMoney?.Currency,
+                DeviceId = checkout.DeviceId,
+                LocationId = checkout.LocationId,
+                OriginStoreCode = originStoreCode,
+                OriginDeviceCode = originDeviceCode,
+                PaymentId = checkout.Payment?.PaymentId ?? paymentIds.FirstOrDefault(),
+                PaymentIdsJson = paymentIds.Length == 0 ? null : JsonSerializer.Serialize(paymentIds),
+                RawCheckoutJson = "{}",
+                UpdatedAt = checkout.UpdatedAt ?? DateTimeOffset.UtcNow
+            },
+            cancellationToken);
+
+        var boundSession = await checkoutSessionRepository.BindCheckoutOriginAsync(
+            checkout.Environment,
+            checkout.CheckoutId,
+            originStoreCode,
+            originDeviceCode,
+            cancellationToken);
+        if (boundSession is null ||
+            !string.Equals(boundSession.OriginStoreCode, originStoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(boundSession.OriginDeviceCode, originDeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SquareTerminalBackendException(
+                "SQUARE_CHECKOUT_SCOPE_CONFLICT",
+                "Square checkout is already bound to a different POS device.",
+                HttpStatusCode.Forbidden);
+        }
+    }
+
+    private async Task<ActionResult<ApiResult<T>>?> ValidateCheckoutDeviceScopeAsync<T>(
+        string environment,
+        string? checkoutId,
+        string? paymentId,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<T>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        if (checkoutSessionRepository is null)
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<T>(
+                "Square checkout scope is unavailable.");
+        }
+
+        var session = checkoutId is not null
+            ? await checkoutSessionRepository.GetCheckoutSessionAsync(environment, checkoutId, cancellationToken)
+            : await checkoutSessionRepository.GetCheckoutSessionByPaymentIdAsync(environment, paymentId!, cancellationToken);
+
+        // 历史无来源行必须关闭续接权限；不能用当前收银员身份猜测或补写来源。
+        if (session is null ||
+            string.IsNullOrWhiteSpace(session.OriginStoreCode) ||
+            string.IsNullOrWhiteSpace(session.OriginDeviceCode) ||
+            !string.Equals(session.OriginStoreCode, scope.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(session.OriginDeviceCode, scope.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<T>(
+                "Square checkout belongs to a different POS device or has no trusted origin scope.");
+        }
+
+        return null;
     }
 
     private async Task<ActionResult<ApiResult<T>>> ExecuteBackendCoreAsync<T>(

@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Encodings.Web;
 using Hbpos.Api;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
@@ -14,6 +15,7 @@ using Hbpos.Contracts.Square;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -63,6 +65,23 @@ public sealed class SquareControllerTests
             .GetMethod("ReceiveWebhook")?
             .GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: false)
             .SingleOrDefault());
+    }
+
+    [Theory]
+    [InlineData(nameof(SquareController.GetCheckout))]
+    [InlineData(nameof(SquareController.GetPayment))]
+    [InlineData(nameof(SquareController.CancelCheckout))]
+    [InlineData(nameof(SquareController.DismissCheckout))]
+    public void SquareContinuationEndpoints_UseDeviceScopeInsteadOfStartingNewCashierOperation(string methodName)
+    {
+        var policies = typeof(SquareController)
+            .GetMethod(methodName)!
+            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            .Cast<AuthorizeAttribute>()
+            .Select(attribute => attribute.Policy)
+            .ToArray();
+
+        Assert.DoesNotContain(CashierAuthorizationPolicies.TakeCard, policies);
     }
 
     [Fact]
@@ -423,6 +442,89 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
+    public async Task CreateCheckout_PersistsAuthenticatedDeviceOrigin()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.CreateCheckout(
+            new SquareCreateCheckoutRequest(
+                "Production",
+                "idem-origin-001",
+                "square-device-001",
+                "location-001",
+                new SquareMoneyDto(1299, "AUD")),
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        var session = Assert.Single(repository.Sessions);
+        Assert.Equal("S01", session.OriginStoreCode);
+        Assert.Equal("POS-01", session.OriginDeviceCode);
+    }
+
+    [Fact]
+    public async Task CreateCheckout_WhenIdempotentCheckoutBelongsToAnotherDevice_DoesNotMoveOrigin()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession("S01", "POS-02"),
+            CancellationToken.None);
+        var controller = CreateController(repository, new CapturingSquareTerminalBackendService());
+
+        var result = await controller.CreateCheckout(
+            new SquareCreateCheckoutRequest(
+                "Production",
+                "idem-origin-conflict",
+                "square-device-001",
+                "location-001",
+                new SquareMoneyDto(1299, "AUD")),
+            CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        Assert.Equal("POS-02", Assert.Single(repository.Sessions).OriginDeviceCode);
+    }
+
+    [Fact]
+    public async Task GetCheckout_WithSameDeviceClaimsAndNoCashierToken_AllowsContinuation()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession("S01", "POS-01"),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.GetCheckout("checkout-001", "Production", CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        Assert.Equal(1, backendService.GetCheckoutCalls);
+    }
+
+    [Theory]
+    [InlineData("S02", "POS-01")]
+    [InlineData("S01", "POS-02")]
+    [InlineData(null, null)]
+    public async Task GetCheckout_WithDifferentOrLegacyMissingOrigin_ReturnsForbidden(
+        string? originStoreCode,
+        string? originDeviceCode)
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession(originStoreCode, originDeviceCode),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.GetCheckout("checkout-001", "Production", CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        Assert.Equal(0, backendService.GetCheckoutCalls);
+    }
+
+    [Fact]
     public async Task CreateRefund_ReturnsBadRequestBeforeReadingTokenWhenIdempotencyKeyIsMissing()
     {
         var tokenRequested = false;
@@ -550,11 +652,56 @@ public sealed class SquareControllerTests
         Assert.Equal(expectedTemplate, attribute!.Template);
     }
 
+    private static SquareController CreateController(
+        ISquareCheckoutSessionRepository repository,
+        ISquareTerminalBackendService backendService)
+    {
+        var token = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero));
+        var controller = new SquareController(
+            new StubSquareTokenService(_ => Task.FromResult<SquareTokenResponse?>(token)),
+            backendService,
+            new RecordingLogger<SquareController>(),
+            repository);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(DeviceAuthConstants.StoreCodeClaim, "S01"),
+                    new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS-01")
+                ],
+                TestAuthHandler.SchemeName))
+            }
+        };
+        return controller;
+    }
+
+    private static SquareCheckoutSessionRecord CreateCheckoutSession(
+        string? originStoreCode,
+        string? originDeviceCode)
+    {
+        return new SquareCheckoutSessionRecord
+        {
+            Environment = "Production",
+            CheckoutId = "checkout-001",
+            Status = "PENDING",
+            RawCheckoutJson = "{}",
+            OriginStoreCode = originStoreCode,
+            OriginDeviceCode = originDeviceCode,
+            UpdatedAt = new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)
+        };
+    }
+
     private sealed class SquareApiFactory(
         ISquareTokenService? squareTokenService = null,
         ISquareTokenSchemaInitializer? schemaInitializer = null,
         ISquareWebhookSchemaInitializer? webhookSchemaInitializer = null,
         ISquareTerminalBackendService? backendService = null,
+        ISquareCheckoutSessionRepository? checkoutSessionRepository = null,
         string? posmConnectionString = null,
         string? squareApiVersion = null,
         RecordingLogger<SquareController>? squareLogger = null,
@@ -564,26 +711,26 @@ public sealed class SquareControllerTests
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
             builder.UseEnvironment("Production");
-            if (!string.IsNullOrWhiteSpace(posmConnectionString) || squareApiVersion is not null)
+            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
             {
-                builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+                // Square 控制器旧行为测试运行在发布 Audit 阶段，不要求构造真实收银员数据库服务。
+                var settings = new Dictionary<string, string?>
                 {
-                    // 测试配置只覆盖显式传入项，避免改变默认启动路径。
-                    var settings = new Dictionary<string, string?>();
-                    if (!string.IsNullOrWhiteSpace(posmConnectionString))
-                    {
-                        settings["ConnectionStrings:MainConnection"] = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-main-test;Trusted_Connection=True;";
-                        settings["ConnectionStrings:PosmConnection"] = posmConnectionString;
-                    }
+                    ["CashierAuthorization:Mode"] = "Audit"
+                };
+                if (!string.IsNullOrWhiteSpace(posmConnectionString))
+                {
+                    settings["ConnectionStrings:MainConnection"] = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-main-test;Trusted_Connection=True;";
+                    settings["ConnectionStrings:PosmConnection"] = posmConnectionString;
+                }
 
-                    if (squareApiVersion is not null)
-                    {
-                        settings["Square:ApiVersion"] = squareApiVersion;
-                    }
+                if (squareApiVersion is not null)
+                {
+                    settings["Square:ApiVersion"] = squareApiVersion;
+                }
 
-                    configurationBuilder.AddInMemoryCollection(settings);
-                });
-            }
+                configurationBuilder.AddInMemoryCollection(settings);
+            });
 
             builder.ConfigureServices(services =>
             {
@@ -633,6 +780,9 @@ public sealed class SquareControllerTests
                 {
                     services.AddSingleton(backendService ?? new CapturingSquareTerminalBackendService());
                 }
+
+                services.RemoveAll<ISquareCheckoutSessionRepository>();
+                services.AddSingleton(checkoutSessionRepository ?? new InMemorySquareCheckoutSessionRepository());
 
                 if (squareLogger is not null)
                 {
@@ -862,6 +1012,8 @@ public sealed class SquareControllerTests
 
         public int CreateCheckoutCalls { get; private set; }
 
+        public int GetCheckoutCalls { get; private set; }
+
         public int CreateRefundCalls { get; private set; }
 
         public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(string environment, CancellationToken cancellationToken)
@@ -909,7 +1061,11 @@ public sealed class SquareControllerTests
 
         public Task<SquareCheckoutStatusResponse?> GetCheckoutAsync(string environment, string checkoutId, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            GetCheckoutCalls++;
+            return Task.FromResult<SquareCheckoutStatusResponse?>(new SquareCheckoutStatusResponse(
+                checkoutId,
+                environment,
+                Status: "PENDING"));
         }
 
         public Task<SquarePaymentStatusDto?> GetPaymentAsync(string environment, string paymentId, CancellationToken cancellationToken)
@@ -942,6 +1098,75 @@ public sealed class SquareControllerTests
         {
             LastWebhookRequest = request;
             return Task.FromResult(new SquareWebhookAcceptedResponse("accepted", Message: "captured"));
+        }
+    }
+
+    private sealed class InMemorySquareCheckoutSessionRepository : ISquareCheckoutSessionRepository
+    {
+        private readonly Dictionary<string, SquareCheckoutSessionRecord> sessions =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyCollection<SquareCheckoutSessionRecord> Sessions => sessions.Values;
+
+        public Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
+            string environment,
+            string checkoutId,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            sessions.TryGetValue($"{environment}::{checkoutId}", out var session);
+            if (session is not null)
+            {
+                session.OriginStoreCode ??= originStoreCode;
+                session.OriginDeviceCode ??= originDeviceCode;
+            }
+
+            return Task.FromResult(session);
+        }
+
+        public Task<bool> TryAddWebhookEventAsync(
+            SquareWebhookEventRecord webhookEvent,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(true);
+        }
+
+        public Task UpsertCheckoutSessionAsync(
+            SquareCheckoutSessionRecord session,
+            CancellationToken cancellationToken)
+        {
+            var key = $"{session.Environment}::{session.CheckoutId}";
+            if (sessions.TryGetValue(key, out var existing))
+            {
+                // 模拟生产 MERGE：webhook 空来源不能覆盖创建时写入的设备边界。
+                session.OriginStoreCode = existing.OriginStoreCode ?? session.OriginStoreCode;
+                session.OriginDeviceCode = existing.OriginDeviceCode ?? session.OriginDeviceCode;
+            }
+
+            sessions[key] = session;
+            return Task.CompletedTask;
+        }
+
+        public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionAsync(
+            string environment,
+            string checkoutId,
+            CancellationToken cancellationToken)
+        {
+            sessions.TryGetValue($"{environment}::{checkoutId}", out var session);
+            return Task.FromResult(session);
+        }
+
+        public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionByPaymentIdAsync(
+            string environment,
+            string paymentId,
+            CancellationToken cancellationToken)
+        {
+            var session = sessions.Values.FirstOrDefault(candidate =>
+                string.Equals(candidate.Environment, environment, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(candidate.PaymentId, paymentId, StringComparison.OrdinalIgnoreCase) ||
+                 candidate.PaymentIdsJson?.Contains(paymentId, StringComparison.OrdinalIgnoreCase) == true));
+            return Task.FromResult(session);
         }
     }
 }

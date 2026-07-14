@@ -343,7 +343,7 @@
   <data name="shell.cashierLogin.overlayMessage" xml:space="preserve"><value>Scan a cashier barcode to continue.</value></data>
   <data name="shell.cashierLogin.overlayAction" xml:space="preserve"><value>Log in cashier</value></data>
   <data name="shell.cashierLogin.inputHint" xml:space="preserve"><value>Cashier barcode</value></data>
-  <data name="shell.cashierLogin.tooltip" xml:space="preserve"><value>Scan or enter cashier barcode / emergency password</value></data>
+  <data name="shell.cashierLogin.tooltip" xml:space="preserve"><value>Scan or enter cashier barcode / emergency QR code</value></data>
   <data name="shell.scannerBinding" xml:space="preserve"><value>Scanner</value></data>
   <data name="shell.scannerBinding.resetTooltip" xml:space="preserve"><value>Reset scanner binding</value></data>
   <data name="shell.window.minimize" xml:space="preserve"><value>Minimize</value></data>
