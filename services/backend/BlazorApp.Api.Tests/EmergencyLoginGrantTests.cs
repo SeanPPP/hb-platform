@@ -12,9 +12,9 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using BlazorApp.Shared.Security;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Moq;
 using SqlSugar;
 using Xunit;
@@ -289,6 +289,8 @@ public sealed class EmergencyLoginGrantServiceTests : IDisposable
     private readonly SqlSugarClient _db;
     private readonly DateTime _now = new(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
     private readonly string _privateKeyPem;
+    private readonly IDataProtectionProvider _dataProtectionProvider =
+        new EphemeralDataProtectionProvider();
 
     public EmergencyLoginGrantServiceTests()
     {
@@ -322,6 +324,53 @@ public sealed class EmergencyLoginGrantServiceTests : IDisposable
             """);
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         _privateKeyPem = key.ExportPkcs8PrivateKeyPem();
+        var protectedPrivateKey = _dataProtectionProvider
+            .CreateProtector(EmergencyLoginKeyManagementService.PrivateKeyProtectionPurpose)
+            .Protect(_privateKeyPem);
+        _db.Ado.ExecuteCommand("""
+            CREATE TABLE POSM_EmergencyLoginKey (
+                KeyId TEXT PRIMARY KEY,
+                Status TEXT NOT NULL,
+                PublicKeyPem TEXT NOT NULL,
+                PublicKeyFingerprint TEXT NOT NULL,
+                ProtectedPrivateKey TEXT NULL,
+                CreatedAtUtc TEXT NOT NULL,
+                CreatedBy TEXT NOT NULL,
+                CreatedReason TEXT NOT NULL,
+                ActivatedAtUtc TEXT NULL,
+                ActivatedBy TEXT NULL,
+                RetiredAtUtc TEXT NULL,
+                RetiredBy TEXT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+            CREATE TABLE POSM_EmergencyLoginKeySetState (
+                StateId INTEGER PRIMARY KEY,
+                Version INTEGER NOT NULL,
+                ActiveKeyId TEXT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+            """);
+        _db.Insertable(new EmergencyLoginKeyEntity
+        {
+            KeyId = "K1",
+            Status = EmergencyLoginKeyStatus.Active,
+            PublicKeyPem = key.ExportSubjectPublicKeyInfoPem(),
+            PublicKeyFingerprint = Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo())),
+            ProtectedPrivateKey = protectedPrivateKey,
+            CreatedAtUtc = _now,
+            CreatedBy = "admin",
+            CreatedReason = "测试密钥",
+            ActivatedAtUtc = _now,
+            ActivatedBy = "admin",
+            UpdatedAtUtc = _now,
+        }).ExecuteCommand();
+        _db.Insertable(new EmergencyLoginKeySetStateEntity
+        {
+            StateId = 1,
+            Version = 1,
+            ActiveKeyId = "K1",
+            UpdatedAtUtc = _now,
+        }).ExecuteCommand();
     }
 
     [Fact]
@@ -390,6 +439,43 @@ public sealed class EmergencyLoginGrantServiceTests : IDisposable
         Assert.Equal("EMERGENCY_GRANT_REASON_INVALID", result.ErrorCode);
     }
 
+    [Fact]
+    public async Task Create_FailsClosedWhenNoActiveDatabaseKeyExists()
+    {
+        await AddEnabledPosAsync();
+        await _db.Deleteable<EmergencyLoginKeyEntity>().ExecuteCommandAsync();
+        await _db.Updateable<EmergencyLoginKeySetStateEntity>()
+            .SetColumns(item => item.ActiveKeyId == null)
+            .Where(item => item.StateId == 1)
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().CreateAsync(
+            new EmergencyLoginGrantCreateRequestDto { StoreCode = "001", Reason = "网络中断" },
+            "admin"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("EMERGENCY_GRANT_ACTIVE_SIGNING_KEY_UNAVAILABLE", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Create_FailsClosedWhenActivePrivateKeyCannotBeDecrypted()
+    {
+        await AddEnabledPosAsync();
+        await _db.Updateable<EmergencyLoginKeyEntity>()
+            .SetColumns(item => item.ProtectedPrivateKey == "not-a-data-protection-payload")
+            .Where(item => item.KeyId == "K1")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().CreateAsync(
+            new EmergencyLoginGrantCreateRequestDto { StoreCode = "001", Reason = "网络中断" },
+            "admin"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("EMERGENCY_GRANT_SIGNING_KEY_DECRYPT_FAILED", result.ErrorCode);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -413,15 +499,22 @@ public sealed class EmergencyLoginGrantServiceTests : IDisposable
         return new EmergencyLoginGrantService(
             context,
             scope.Object,
-            Options.Create(new EmergencyLoginSigningOptions
-            {
-                ActiveKeyId = "K1",
-                PrivateKeys = new Dictionary<string, string> { ["K1"] = _privateKeyPem },
-            }),
+            _dataProtectionProvider,
             NullLogger<EmergencyLoginGrantService>.Instance,
             new FixedTimeProvider(_now)
         );
     }
+
+    private Task<int> AddEnabledPosAsync() => _db.Insertable(new POSM_设备注册信息表
+    {
+        设备硬件识别码 = Guid.NewGuid().ToString("N"),
+        系统设备编号 = $"POS-{Guid.NewGuid():N}",
+        分店代码 = "001",
+        设备类型 = "POS",
+        设备系统 = "Windows",
+        设备状态 = 1,
+        设备授权码 = "authorization-code",
+    }).ExecuteReturnIdentityAsync();
 
     private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
     {

@@ -4,16 +4,10 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using BlazorApp.Shared.Security;
-using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.DataProtection;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React;
-
-public sealed class EmergencyLoginSigningOptions
-{
-    public string ActiveKeyId { get; set; } = string.Empty;
-    public Dictionary<string, string> PrivateKeys { get; set; } = new(StringComparer.Ordinal);
-}
 
 public sealed class EmergencyLoginGrantService
 {
@@ -21,21 +15,23 @@ public sealed class EmergencyLoginGrantService
     private const int MaxActorLength = 128;
     private readonly ISqlSugarClient _db;
     private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
-    private readonly EmergencyLoginSigningOptions _signingOptions;
+    private readonly IDataProtector _privateKeyProtector;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EmergencyLoginGrantService> _logger;
 
     public EmergencyLoginGrantService(
         POSMSqlSugarContext context,
         ICurrentUserManageableStoreScopeService storeScopeService,
-        IOptions<EmergencyLoginSigningOptions> signingOptions,
+        IDataProtectionProvider dataProtectionProvider,
         ILogger<EmergencyLoginGrantService> logger,
         TimeProvider? timeProvider = null
     )
     {
         _db = context.Db;
         _storeScopeService = storeScopeService;
-        _signingOptions = signingOptions.Value;
+        _privateKeyProtector = dataProtectionProvider.CreateProtector(
+            EmergencyLoginKeyManagementService.PrivateKeyProtectionPurpose
+        );
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -126,19 +122,57 @@ public sealed class EmergencyLoginGrantService
             );
         }
 
-        var keyId = (_signingOptions.ActiveKeyId ?? string.Empty).Trim();
-        if (
-            string.IsNullOrWhiteSpace(keyId)
-            || !_signingOptions.PrivateKeys.TryGetValue(keyId, out var privateKeyPem)
-            || string.IsNullOrWhiteSpace(privateKeyPem)
-        )
+        var keySetState = await _db.Queryable<EmergencyLoginKeySetStateEntity>()
+            .FirstAsync(item => item.StateId == 1);
+        var activeKey = string.IsNullOrWhiteSpace(keySetState?.ActiveKeyId)
+            ? null
+            : await _db.Queryable<EmergencyLoginKeyEntity>().FirstAsync(item =>
+                item.KeyId == keySetState.ActiveKeyId
+                && item.Status == EmergencyLoginKeyStatus.Active);
+        if (activeKey == null || string.IsNullOrWhiteSpace(activeKey.ProtectedPrivateKey))
         {
-            _logger.LogError("紧急登录签名密钥未配置或活动 KeyId 不存在，KeyId={KeyId}", keyId);
+            _logger.LogError(
+                "紧急登录数据库活动签名密钥不存在，KeyId={KeyId}",
+                keySetState?.ActiveKeyId
+            );
             return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "紧急登录签名密钥未配置",
-                "EMERGENCY_GRANT_SIGNING_KEY_UNAVAILABLE"
+                "当前没有可用的紧急登录活动签名密钥",
+                "EMERGENCY_GRANT_ACTIVE_SIGNING_KEY_UNAVAILABLE"
             );
         }
+
+        string privateKeyPem;
+        try
+        {
+            // 关键逻辑：只从中央密钥表读取活动密钥，并在签名瞬间解密；失败时必须关闭签发。
+            privateKeyPem = _privateKeyProtector.Unprotect(activeKey.ProtectedPrivateKey);
+        }
+        catch (CryptographicException ex)
+        {
+            _logger.LogError(
+                ex,
+                "紧急登录活动签名密钥解密失败，KeyId={KeyId}",
+                activeKey.KeyId
+            );
+            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                "紧急登录活动签名密钥无法解密，请检查 Data Protection key ring",
+                "EMERGENCY_GRANT_SIGNING_KEY_DECRYPT_FAILED"
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "紧急登录签发时 Data Protection 不可用，KeyId={KeyId}",
+                activeKey.KeyId
+            );
+            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                "Data Protection 当前不可用，紧急登录授权未签发",
+                "EMERGENCY_GRANT_DATA_PROTECTION_UNAVAILABLE"
+            );
+        }
+
+        var keyId = activeKey.KeyId;
 
         var normalizedActor = NormalizeActor(actor);
         var entity = new EmergencyLoginGrantEntity
