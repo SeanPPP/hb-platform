@@ -61,7 +61,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             }
 
             var newEntry = new CacheEntry(
-                now.Add(_ttl),
+                // 构建完成前使用永不过期占位，避免长构建刚完成就被判定过期。
+                DateTimeOffset.MaxValue,
                 new Lazy<Task<CatalogIndexBuildResult?>>(
                     // 共享构建不能绑定任一调用方的取消令牌，由缓存统一持有到完成。
                     () => buildAsync(CancellationToken.None),
@@ -113,6 +114,12 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             if (result is null)
             {
                 _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
+            }
+            else if (!allowWaitCancellation)
+            {
+                // 仅 build owner 从成功完成时起算 TTL；等待者不得延长缓存寿命。
+                var completedEntry = entry with { ExpiresAt = _timeProvider.GetUtcNow().Add(_ttl) };
+                _entries.TryUpdate(key, completedEntry, entry);
             }
 
             return result;
