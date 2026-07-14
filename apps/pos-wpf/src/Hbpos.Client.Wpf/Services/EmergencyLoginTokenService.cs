@@ -1,7 +1,6 @@
 using System.Globalization;
 using BlazorApp.Shared.Security;
 using Hbpos.Contracts.Cashiers;
-using Microsoft.Extensions.Configuration;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -15,7 +14,8 @@ public interface IEmergencyLoginTokenService
 }
 
 public sealed class EmergencyLoginTokenService(
-    IConfiguration configuration,
+    IEmergencyLoginPublicKeyCache publicKeyCache,
+    IEmergencyLoginPublicKeySyncService publicKeySyncService,
     ILocalAppSettingsRepository settingsRepository,
     IDeviceAuthorizationProtector protector,
     TimeProvider? timeProvider = null) : IEmergencyLoginTokenService
@@ -41,18 +41,43 @@ public sealed class EmergencyLoginTokenService(
             return CashierLoginResult.Fail("系统时间早于可信时间，请联网校时后重试");
         }
 
-        var publicKeys = configuration.GetSection("EmergencyLogin:PublicKeys")
-            .GetChildren()
-            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
-            .ToDictionary(item => item.Key, item => item.Value!, StringComparer.Ordinal);
-        if (!EmergencyLoginTokenCodec.TryVerify(
+        EmergencyLoginTokenPayload? payload;
+        string errorCode;
+        try
+        {
+            var publicKeys = await ReadPublicKeysAsync(cancellationToken);
+            var verified = EmergencyLoginTokenCodec.TryVerify(
                 token,
                 publicKeys,
                 now.UtcDateTime,
-                out var payload,
-                out var errorCode))
+                out payload,
+                out errorCode);
+            if (!verified && string.Equals(errorCode, "EMERGENCY_TOKEN_KEY_UNKNOWN", StringComparison.Ordinal))
+            {
+                // 关键逻辑：轮换期间只在未知 KID 时立即联网同步一次，再用新缓存重验。
+                _ = await publicKeySyncService.SyncAsync(cancellationToken);
+                publicKeys = await ReadPublicKeysAsync(cancellationToken);
+                verified = EmergencyLoginTokenCodec.TryVerify(
+                    token,
+                    publicKeys,
+                    now.UtcDateTime,
+                    out payload,
+                    out errorCode);
+            }
+
+            if (!verified)
+            {
+                return CashierLoginResult.Fail(MapError(errorCode));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return CashierLoginResult.Fail(MapError(errorCode));
+            throw;
+        }
+        catch (Exception)
+        {
+            // 公钥缓存或同步不可用只影响紧急登录，不得抛出并干扰普通收银员登录链路。
+            return CashierLoginResult.Fail(MapError("EMERGENCY_TOKEN_KEY_UNKNOWN"));
         }
 
         if (!string.Equals(payload!.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
@@ -86,6 +111,18 @@ public sealed class EmergencyLoginTokenService(
         var protectedValue = protector.Protect(now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))
             ?? throw new InvalidOperationException("无法保护紧急登录可信时间。");
         return settingsRepository.SetValueAsync(TrustedTimeKey, protectedValue, cancellationToken);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadPublicKeysAsync(
+        CancellationToken cancellationToken)
+    {
+        var package = await publicKeyCache.GetAsync(cancellationToken);
+        if (package is null || !EmergencyLoginPublicKeyValidator.TryValidate(package))
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        return package.Keys.ToDictionary(key => key.Kid, key => key.PublicKeyPem, StringComparer.Ordinal);
     }
 
     private static string MapError(string errorCode) => errorCode switch

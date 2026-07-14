@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Cashiers;
-using Microsoft.Extensions.Configuration;
+using Hbpos.Contracts.EmergencyLogin;
 
 namespace Hbpos.Client.Tests;
 
@@ -92,17 +92,24 @@ public sealed class EmergencyLoginTokenServiceTests
             ExpiresAtUtc = now.AddHours(2).UtcDateTime
         };
         var token = EmergencyLoginTokenCodec.Sign(payload, "K1", key.ExportECPrivateKeyPem());
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["EmergencyLogin:PublicKeys:K1"] = key.ExportSubjectPublicKeyInfoPem()
-            })
-            .Build();
         var time = new MutableTimeProvider(now);
+        var settings = new InMemorySettingsRepository();
+        var protector = new PassthroughProtector();
+        var cache = new EmergencyLoginPublicKeyCache(settings, protector);
+        cache.ReplaceAsync(new EmergencyLoginPublicKeyPackage(
+            1,
+            "K1",
+            now.UtcDateTime,
+            [new EmergencyLoginPublicKey(
+                "K1",
+                "ES256",
+                key.ExportSubjectPublicKeyInfoPem(),
+                Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo())))])).GetAwaiter().GetResult();
         var service = new EmergencyLoginTokenService(
-            configuration,
-            new InMemorySettingsRepository(),
-            new PassthroughProtector(),
+            cache,
+            new NoOpPublicKeySyncService(),
+            settings,
+            protector,
             time);
         return new Fixture(service, token, time);
     }
@@ -147,6 +154,12 @@ public sealed class EmergencyLoginTokenServiceTests
             protectedValue?.StartsWith("protected:", StringComparison.Ordinal) == true
                 ? protectedValue["protected:".Length..]
                 : null;
+    }
+
+    private sealed class NoOpPublicKeySyncService : IEmergencyLoginPublicKeySyncService
+    {
+        public Task<bool> SyncAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
     }
 
     private sealed class CountingCashierLoginApiClient : ICashierLoginApiClient
