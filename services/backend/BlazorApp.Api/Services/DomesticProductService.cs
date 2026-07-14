@@ -1699,6 +1699,13 @@ namespace BlazorApp.Api.Services
 
                 // 创建新商品
                 var product = _mapper.Map<DomesticProduct>(dto);
+                // 映射配置会忽略自动生成字段；显式输入必须规范化后回填，空白值继续走自动生成。
+                product.HBProductNo = string.IsNullOrWhiteSpace(dto.HBProductNo)
+                    ? null
+                    : dto.HBProductNo.Trim();
+                product.Barcode = string.IsNullOrWhiteSpace(dto.Barcode)
+                    ? null
+                    : dto.Barcode.Trim();
                 product.ProductCode = UuidHelper.GenerateUuid7();
 
                 // 生成HB货号（如果未提供）
