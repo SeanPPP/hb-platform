@@ -3,6 +3,7 @@ using System.Windows;
 using System.Globalization;
 using System.Reflection;
 using System.Windows.Media.Imaging;
+using CommunityToolkit.Mvvm.Input;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Constants;
 using Hbpos.Client.Wpf;
@@ -1177,6 +1178,7 @@ public sealed class MainViewModelScannerTests
 
         await viewModel.PosTerminal!.ExitApplicationCommand.ExecuteAsync(null);
 
+        Assert.Same(confirmationDialog, viewModel.ConfirmationDialog);
         Assert.Equal(1, confirmationDialog.ConfirmExitApplicationCallCount);
         Assert.Equal(1, exitService.ExitCallCount);
         Assert.Equal(CustomerDisplayWindowMode.Closed, customerDisplayWindow.LastSetMode);
@@ -1200,6 +1202,25 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(1, confirmationDialog.ConfirmExitApplicationCallCount);
         Assert.Equal(0, exitService.ExitCallCount);
         Assert.Equal(setModeCallCount, customerDisplayWindow.SetModeCallCount);
+    }
+
+    [Fact]
+    public async Task Main_and_pos_exit_commands_share_one_exit_flow()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var exitService = new RecordingApplicationExitService();
+        var confirmationDialog = new FakeConfirmationDialogService { ConfirmExitApplicationResult = true };
+        var viewModel = CreateAuthorizedMainViewModel(
+            customerDisplayWindow,
+            applicationExitService: exitService,
+            confirmationDialogService: confirmationDialog);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        await Task.WhenAll(
+            viewModel.ExitApplicationCommand.ExecuteAsync(null),
+            viewModel.PosTerminal!.ExitApplicationCommand.ExecuteAsync(null));
+
+        Assert.Equal(1, exitService.ExitCallCount);
     }
 
     [Fact]
@@ -4612,6 +4633,10 @@ public sealed class MainViewModelScannerTests
             IsActive = false;
         }
 
+        public void ClearPendingInput()
+        {
+        }
+
         public Task ResetBindingAsync(CancellationToken cancellationToken = default)
         {
             ResetCount++;
@@ -5571,7 +5596,7 @@ public sealed class MainViewModelScannerTests
         }
     }
 
-    private sealed class FakeConfirmationDialogService : IConfirmationDialogService
+    private sealed class FakeConfirmationDialogService : IConfirmationDialogService, IConfirmationDialogPresenter
     {
         public bool ConfirmExitApplicationResult { get; init; }
 
@@ -5585,27 +5610,43 @@ public sealed class MainViewModelScannerTests
 
         public int ConfirmInstallmentPickupAfterPaidOffCallCount { get; private set; }
 
-        public bool ConfirmExitApplication()
+        public bool IsOpen => false;
+
+        public string TitleText => string.Empty;
+
+        public string MessageText => string.Empty;
+
+        public string ConfirmButtonText => string.Empty;
+
+        public string CancelButtonText => string.Empty;
+
+        public bool IsDestructive => false;
+
+        public IRelayCommand ConfirmCommand { get; } = new RelayCommand(() => { });
+
+        public IRelayCommand CancelCommand { get; } = new RelayCommand(() => { });
+
+        public Task<bool> ConfirmExitApplicationAsync()
         {
             ConfirmExitApplicationCallCount++;
-            return ConfirmExitApplicationResult;
+            return Task.FromResult(ConfirmExitApplicationResult);
         }
 
-        public bool ConfirmResetTestSalesData()
+        public Task<bool> ConfirmResetTestSalesDataAsync()
         {
-            return false;
+            return Task.FromResult(false);
         }
 
-        public bool ConfirmInstallmentFullFirstPayment(string title, string message)
+        public Task<bool> ConfirmInstallmentFullFirstPaymentAsync()
         {
             ConfirmInstallmentFullFirstPaymentCallCount++;
-            return ConfirmInstallmentFullFirstPaymentResult;
+            return Task.FromResult(ConfirmInstallmentFullFirstPaymentResult);
         }
 
-        public bool ConfirmInstallmentPickupAfterPaidOff(string title, string message)
+        public Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync()
         {
             ConfirmInstallmentPickupAfterPaidOffCallCount++;
-            return ConfirmInstallmentPickupAfterPaidOffResult;
+            return Task.FromResult(ConfirmInstallmentPickupAfterPaidOffResult);
         }
     }
 

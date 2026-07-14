@@ -294,7 +294,7 @@ internal sealed class ScreenNavigator
         }
 
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null;
-        Func<bool>? confirmResetTestSalesData = null;
+        Func<Task<bool>>? confirmResetTestSalesDataAsync = null;
 #if DEBUG
         resetTestSalesDataAsync = async cancellationToken =>
         {
@@ -305,7 +305,7 @@ internal sealed class ScreenNavigator
 
             await _testSalesDataResetService.ResetAsync(cancellationToken);
         };
-        confirmResetTestSalesData = _confirmationDialogService.ConfirmResetTestSalesData;
+        confirmResetTestSalesDataAsync = _confirmationDialogService.ConfirmResetTestSalesDataAsync;
 #endif
 
         Settings ??= _factory.CreateSettingsViewModel(
@@ -320,7 +320,7 @@ internal sealed class ScreenNavigator
             reregisterDeviceAsync: _beginDeviceReregistrationAsync,
             returnToPos: ShowPos,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
-            confirmResetTestSalesData: confirmResetTestSalesData,
+            confirmResetTestSalesDataAsync: confirmResetTestSalesDataAsync,
             checkForAppUpdateAsync: _checkForAppUpdateAsync);
         await Settings.LoadAsync();
         SetCurrentScreen(Settings);
@@ -421,7 +421,7 @@ internal sealed class ScreenNavigator
                 _recoverActiveCardPaymentSessionFromPaymentAsync,
                 _linklyFallbackPromptCoordinator,
                 _onInstallmentOrderCreatedAsync,
-                ConfirmInstallmentFullFirstPayment);
+                ConfirmInstallmentFullFirstPaymentAsync);
             _onPaymentCreated(CashPayment);
         }
 
@@ -433,12 +433,8 @@ internal sealed class ScreenNavigator
         _cachedCashPaymentScreen = CashPayment;
     }
 
-    private bool ConfirmInstallmentFullFirstPayment()
-    {
-        return _confirmationDialogService.ConfirmInstallmentFullFirstPayment(
-            _localization.T("payment.installment.confirmFullFirstPayment.title"),
-            _localization.T("payment.installment.confirmFullFirstPayment.message"));
-    }
+    private Task<bool> ConfirmInstallmentFullFirstPaymentAsync() =>
+        _confirmationDialogService.ConfirmInstallmentFullFirstPaymentAsync();
 
     public void PrepareCachedSpecialProductsScreen()
     {

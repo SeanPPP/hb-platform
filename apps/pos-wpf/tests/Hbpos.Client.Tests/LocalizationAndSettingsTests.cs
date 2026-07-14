@@ -269,6 +269,37 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public void Localization_has_confirmation_overlay_text_in_english_and_chinese()
+    {
+        string[] keys =
+        [
+            "common.confirm",
+            "confirmation.exit.message",
+            "settings.testSalesData.confirm.title",
+            "settings.testSalesData.confirm.message",
+            "settings.testSalesData.confirm.action"
+        ];
+        var localization = new LocalizationService();
+
+        foreach (var key in keys)
+        {
+            Assert.False(localization.T(key).StartsWith("[[", StringComparison.Ordinal), key);
+        }
+
+        Assert.Equal("Confirm", localization.T("common.confirm"));
+        Assert.Equal("Are you sure you want to exit the POS application?", localization.T("confirmation.exit.message"));
+        localization.SetCulture("zh-CN");
+
+        foreach (var key in keys)
+        {
+            Assert.False(localization.T(key).StartsWith("[[", StringComparison.Ordinal), key);
+        }
+
+        Assert.Equal("确认", localization.T("common.confirm"));
+        Assert.Equal("确定要退出收银软件吗？", localization.T("confirmation.exit.message"));
+    }
+
+    [Fact]
     public void Localization_has_navigation_and_history_text()
     {
         var localization = new LocalizationService();

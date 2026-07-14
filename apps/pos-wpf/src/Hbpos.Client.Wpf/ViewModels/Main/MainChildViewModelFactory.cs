@@ -286,7 +286,7 @@ internal sealed class MainChildViewModelFactory
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<bool>? confirmInstallmentFullFirstPayment = null)
+        Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null)
     {
         return new PaymentViewModel(
             _cart,
@@ -301,7 +301,7 @@ internal sealed class MainChildViewModelFactory
             _enforceCashierPermissions,
             _installmentOrderService,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPayment,
+            confirmInstallmentFullFirstPaymentAsync,
             _operationAuditLogger);
     }
 
@@ -326,7 +326,7 @@ internal sealed class MainChildViewModelFactory
         Func<Task<DeviceReregistrationStartResult>>? reregisterDeviceAsync = null,
         Action? returnToPos = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
-        Func<bool>? confirmResetTestSalesData = null,
+        Func<Task<bool>>? confirmResetTestSalesDataAsync = null,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null)
     {
         return new SettingsViewModel(
@@ -339,7 +339,7 @@ internal sealed class MainChildViewModelFactory
             _receiptPrinterSettingsStore,
             _receiptPrintService,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
-            confirmResetTestSalesData: confirmResetTestSalesData,
+            confirmResetTestSalesDataAsync: confirmResetTestSalesDataAsync,
             cardRecoveryResultDialogService: _cardRecoveryResultDialogService,
             checkForAppUpdateAsync: checkForAppUpdateAsync ?? _checkForAppUpdateAsync,
             appUpdateChannel: _appUpdateChannelProvider?.CurrentChannel,

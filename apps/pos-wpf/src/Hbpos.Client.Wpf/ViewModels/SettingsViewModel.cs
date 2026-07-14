@@ -64,7 +64,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly Func<CancellationToken, Task>? _downloadCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetTestSalesDataAsync;
-    private readonly Func<bool>? _confirmResetTestSalesData;
+    private readonly Func<Task<bool>>? _confirmResetTestSalesDataAsync;
     private readonly Func<Task<DeviceReregistrationStartResult>>? _reregisterDeviceAsync;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly Action? _returnToPos;
@@ -201,7 +201,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
         IReceiptPrintService? receiptPrintService = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
-        Func<bool>? confirmResetTestSalesData = null,
+        Func<Task<bool>>? confirmResetTestSalesDataAsync = null,
         ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
         string? appUpdateChannel = null,
@@ -215,7 +215,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _downloadCatalogAsync = downloadCatalogAsync;
         _resetCatalogAsync = resetCatalogAsync;
         _resetTestSalesDataAsync = resetTestSalesDataAsync;
-        _confirmResetTestSalesData = confirmResetTestSalesData;
+        _confirmResetTestSalesDataAsync = confirmResetTestSalesDataAsync;
         _reregisterDeviceAsync = reregisterDeviceAsync;
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _returnToPos = returnToPos;
@@ -232,7 +232,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             DownloadCatalogAsync: _downloadCatalogAsync,
             ResetCatalogAsync: _resetCatalogAsync,
             ResetTestSalesDataAsync: _resetTestSalesDataAsync,
-            ConfirmResetTestSalesData: _confirmResetTestSalesData,
+            ConfirmResetTestSalesDataAsync: _confirmResetTestSalesDataAsync,
             ReregisterDeviceAsync: _reregisterDeviceAsync,
             CheckForAppUpdateAsync: _checkForAppUpdateAsync,
             RunBusyAsync: (action, operationName) => RunBusyAsync(action, operationName),

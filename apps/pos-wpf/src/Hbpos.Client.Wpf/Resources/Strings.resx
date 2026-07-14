@@ -102,6 +102,11 @@
   <data name="Void" xml:space="preserve"><value>Void</value></data>
 
   <data name="common.cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="common.confirm" xml:space="preserve"><value>Confirm</value></data>
+  <data name="confirmation.exit.message" xml:space="preserve"><value>Are you sure you want to exit the POS application?</value></data>
+  <data name="settings.testSalesData.confirm.title" xml:space="preserve"><value>Reset test sales data</value></data>
+  <data name="settings.testSalesData.confirm.message" xml:space="preserve"><value>Delete all test sales data? This action cannot be undone.</value></data>
+  <data name="settings.testSalesData.confirm.action" xml:space="preserve"><value>Reset</value></data>
   <data name="common.load" xml:space="preserve"><value>Load</value></data>
   <data name="common.space" xml:space="preserve"><value>Space</value></data>
   <data name="common.status" xml:space="preserve"><value>Status</value></data>

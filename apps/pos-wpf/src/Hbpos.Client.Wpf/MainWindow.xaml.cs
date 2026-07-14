@@ -322,6 +322,7 @@ public partial class MainWindow : Window
     {
         return ProcessRawScannerWindowMessage(
             _viewModel.AppUpdate.IsForceUpdateBlocking,
+            _viewModel.ConfirmationDialog.IsOpen,
             msg,
             hwnd,
             wParam,
@@ -333,12 +334,19 @@ public partial class MainWindow : Window
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
         _uiPriorityCoordinator.NotifyUserInput();
-        if (IsKeyboardScannerFallbackBlocked())
+        var isForceUpdateBlocking = _viewModel.AppUpdate.IsForceUpdateBlocking;
+        var isConfirmationDialogOpen = _viewModel.ConfirmationDialog.IsOpen;
+        if (IsKeyboardScannerFallbackBlocked(isForceUpdateBlocking, isConfirmationDialogOpen))
         {
             _keyboardScannerFallback.Clear();
-            if (_viewModel.AppUpdate.IsForceUpdateBlocking)
+            if (!isForceUpdateBlocking && isConfirmationDialogOpen && IsAltF4(e))
             {
-                // 强制更新期间必须阻断键盘扫码兜底，避免遮罩背后的收银界面继续被条码修改。
+                // 关键逻辑：普通确认不改变 Alt+F4 的窗口关闭语义，强制更新遮罩仍吞掉全部按键。
+                return;
+            }
+
+            if (ShouldConsumeBlockedKeyboardInput(isForceUpdateBlocking, isConfirmationDialogOpen, e.Key))
+            {
                 e.Handled = true;
             }
 
@@ -371,21 +379,23 @@ public partial class MainWindow : Window
         _uiPriorityCoordinator.NotifyUserInput();
     }
 
-    private bool IsKeyboardScannerFallbackBlocked()
+    private bool IsKeyboardScannerFallbackBlocked(bool isForceUpdateBlocking, bool isConfirmationDialogOpen)
     {
         var focusedElement = Keyboard.FocusedElement;
         return ShouldBlockKeyboardScannerFallback(
-            _viewModel.AppUpdate.IsForceUpdateBlocking,
+            isForceUpdateBlocking,
+            isConfirmationDialogOpen,
             IsTextInputElement(focusedElement),
             IsFocusedElementVisible(focusedElement));
     }
 
     internal static bool ShouldBlockKeyboardScannerFallback(
         bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
         bool isTextInputFocused,
         bool isFocusedElementVisible)
     {
-        return isForceUpdateBlocking ||
+        return isForceUpdateBlocking || isConfirmationDialogOpen ||
             ShouldBlockKeyboardScannerFallback(isTextInputFocused, isFocusedElementVisible);
     }
 
@@ -396,13 +406,17 @@ public partial class MainWindow : Window
         return isTextInputFocused && isFocusedElementVisible;
     }
 
-    internal static bool ShouldBlockRawScannerWindowMessage(bool isForceUpdateBlocking, int messageId)
+    internal static bool ShouldBlockRawScannerWindowMessage(
+        bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
+        int messageId)
     {
-        return isForceUpdateBlocking && messageId == RawInputMessageId;
+        return (isForceUpdateBlocking || isConfirmationDialogOpen) && messageId == RawInputMessageId;
     }
 
     internal static IntPtr ProcessRawScannerWindowMessage(
         bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
         int messageId,
         IntPtr hwnd,
         IntPtr wParam,
@@ -410,14 +424,54 @@ public partial class MainWindow : Window
         WindowMessageProcessor processWindowMessage,
         ref bool handled)
     {
-        if (ShouldBlockRawScannerWindowMessage(isForceUpdateBlocking, messageId))
+        if (ShouldBlockRawScannerWindowMessage(isForceUpdateBlocking, isConfirmationDialogOpen, messageId))
         {
-            // 中文注释：强更阻断遮罩打开后连 WM_INPUT 也要吞掉，避免 raw scanner 绕过键盘兜底限制。
+            // 关键逻辑：全局遮罩打开时吞掉 WM_INPUT，避免 raw scanner 绕过界面门禁修改订单。
             handled = true;
             return IntPtr.Zero;
         }
 
         return processWindowMessage(hwnd, messageId, wParam, lParam, ref handled);
+    }
+
+    internal static bool ShouldConsumeBlockedKeyboardInput(
+        bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
+        Key key)
+    {
+        if (isForceUpdateBlocking)
+        {
+            return true;
+        }
+
+        return isConfirmationDialogOpen && key is not Key.Escape and not Key.Tab and not Key.Enter;
+    }
+
+    private static bool IsAltF4(KeyEventArgs e)
+    {
+        return e.SystemKey == Key.F4 ||
+            e.Key == Key.F4 && Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
+    }
+
+    private void ConfirmationDialogIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is not true)
+        {
+            return;
+        }
+
+        // 关键逻辑：确认遮罩打开时同时清空键盘兜底与 Raw Input 残留，避免超时派发修改购物车。
+        _keyboardScannerFallback.Clear();
+        _rawScannerService.ClearPendingInput();
+
+        // 关键逻辑：遮罩出现后默认聚焦取消按钮，Enter 默认走安全分支，Tab 仍可在两按钮间循环。
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                ConfirmationCancelButton.Focus();
+                Keyboard.Focus(ConfirmationCancelButton);
+            }));
     }
 
     private static bool IsTextInputElement(object? focusedElement)
@@ -454,11 +508,6 @@ public partial class MainWindow : Window
     private void MaximizeButton_Click(object sender, RoutedEventArgs e)
     {
         ToggleWindowState();
-    }
-
-    private void CloseButton_Click(object sender, RoutedEventArgs e)
-    {
-        Close();
     }
 
     private void ToggleWindowState()

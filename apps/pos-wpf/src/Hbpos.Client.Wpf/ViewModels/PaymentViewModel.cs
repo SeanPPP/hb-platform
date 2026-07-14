@@ -127,7 +127,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<bool>? confirmInstallmentFullFirstPayment = null,
+        Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null)
         : this(
             cart,
@@ -142,7 +142,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             enforcePermissionsWhenNoCashier,
             installmentOrderService,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPayment,
+            confirmInstallmentFullFirstPaymentAsync,
             operationAuditLogger)
     {
     }
@@ -160,7 +160,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<bool>? confirmInstallmentFullFirstPayment = null,
+        Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null)
     {
         _cart = cart;
@@ -181,7 +181,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPayment);
+            confirmInstallmentFullFirstPaymentAsync);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _cardSession = new CardPaymentSession(this);
         _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
@@ -1586,7 +1586,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
             var cartSnapshot = CreateInstallmentCartSnapshot();
             if (appliedTender.Amount >= GetPaymentTargetAmount() &&
-                _navigationActions.ConfirmInstallmentFullFirstPayment?.Invoke() == false)
+                _navigationActions.ConfirmInstallmentFullFirstPaymentAsync is { } confirmAsync &&
+                !await confirmAsync())
             {
                 OperationAuditEvents.RecordAction(
                     _operationAuditLogger,

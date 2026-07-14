@@ -1,4 +1,7 @@
 using System.Windows;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Hbpos.Client.Wpf.Localization;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -9,13 +12,32 @@ public interface IApplicationExitService
 
 public interface IConfirmationDialogService
 {
-    bool ConfirmExitApplication();
+    Task<bool> ConfirmExitApplicationAsync();
 
-    bool ConfirmResetTestSalesData();
+    Task<bool> ConfirmResetTestSalesDataAsync();
 
-    bool ConfirmInstallmentFullFirstPayment(string title, string message);
+    Task<bool> ConfirmInstallmentFullFirstPaymentAsync();
 
-    bool ConfirmInstallmentPickupAfterPaidOff(string title, string message);
+    Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync();
+}
+
+public interface IConfirmationDialogPresenter
+{
+    bool IsOpen { get; }
+
+    string TitleText { get; }
+
+    string MessageText { get; }
+
+    string ConfirmButtonText { get; }
+
+    string CancelButtonText { get; }
+
+    bool IsDestructive { get; }
+
+    IRelayCommand ConfirmCommand { get; }
+
+    IRelayCommand CancelCommand { get; }
 }
 
 public sealed class WpfApplicationExitService : IApplicationExitService
@@ -38,61 +60,156 @@ public sealed class WpfApplicationExitService : IApplicationExitService
     }
 }
 
-public sealed class WpfConfirmationDialogService : IConfirmationDialogService
+public sealed class WpfConfirmationDialogService :
+    ObservableObject,
+    IConfirmationDialogService,
+    IConfirmationDialogPresenter
 {
-    public bool ConfirmExitApplication()
-    {
-        var owner = Application.Current?.MainWindow;
-        var result = MessageBox.Show(
-            owner,
-            "确定要退出收银软件吗？",
-            "退出软件",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
+    private readonly ILocalizationService _localization;
+    private TaskCompletionSource<bool>? _completionSource;
+    private string _titleKey = string.Empty;
+    private string _messageKey = string.Empty;
+    private string _confirmButtonKey = string.Empty;
+    private bool _isOpen;
+    private string _titleText = string.Empty;
+    private string _messageText = string.Empty;
+    private string _confirmButtonText = string.Empty;
+    private string _cancelButtonText = string.Empty;
+    private bool _isDestructive;
 
-        return result == MessageBoxResult.Yes;
+    public WpfConfirmationDialogService(ILocalizationService localization)
+    {
+        _localization = localization;
+        ConfirmCommand = new RelayCommand(() => Complete(true), () => IsOpen);
+        CancelCommand = new RelayCommand(() => Complete(false), () => IsOpen);
+        _localization.CultureChanged += OnCultureChanged;
     }
 
-    public bool ConfirmResetTestSalesData()
+    public bool IsOpen
     {
-        var owner = Application.Current?.MainWindow;
-        var result = MessageBox.Show(
-            owner,
-            "确定要删除全部测试销售数据吗？此操作无法恢复。",
-            "重置测试销售数据",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
+        get => _isOpen;
+        private set
+        {
+            if (!SetProperty(ref _isOpen, value))
+            {
+                return;
+            }
 
-        return result == MessageBoxResult.Yes;
+            ConfirmCommand.NotifyCanExecuteChanged();
+            CancelCommand.NotifyCanExecuteChanged();
+        }
     }
 
-    public bool ConfirmInstallmentFullFirstPayment(string title, string message)
+    public string TitleText
     {
-        var owner = Application.Current?.MainWindow;
-        var result = MessageBox.Show(
-            owner,
-            message,
-            title,
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-
-        return result == MessageBoxResult.Yes;
+        get => _titleText;
+        private set => SetProperty(ref _titleText, value);
     }
 
-    public bool ConfirmInstallmentPickupAfterPaidOff(string title, string message)
+    public string MessageText
     {
-        var owner = Application.Current?.MainWindow;
-        var result = MessageBox.Show(
-            owner,
-            message,
-            title,
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question,
-            MessageBoxResult.No);
+        get => _messageText;
+        private set => SetProperty(ref _messageText, value);
+    }
 
-        return result == MessageBoxResult.Yes;
+    public string ConfirmButtonText
+    {
+        get => _confirmButtonText;
+        private set => SetProperty(ref _confirmButtonText, value);
+    }
+
+    public string CancelButtonText
+    {
+        get => _cancelButtonText;
+        private set => SetProperty(ref _cancelButtonText, value);
+    }
+
+    public bool IsDestructive
+    {
+        get => _isDestructive;
+        private set => SetProperty(ref _isDestructive, value);
+    }
+
+    public IRelayCommand ConfirmCommand { get; }
+
+    public IRelayCommand CancelCommand { get; }
+
+    public Task<bool> ConfirmExitApplicationAsync() =>
+        ShowAsync(
+            "pos.terminal.actions.exitApplication",
+            "confirmation.exit.message",
+            "pos.terminal.actions.exitApplication",
+            isDestructive: true);
+
+    public Task<bool> ConfirmResetTestSalesDataAsync() =>
+        ShowAsync(
+            "settings.testSalesData.confirm.title",
+            "settings.testSalesData.confirm.message",
+            "settings.testSalesData.confirm.action",
+            isDestructive: true);
+
+    public Task<bool> ConfirmInstallmentFullFirstPaymentAsync() =>
+        ShowAsync(
+            "payment.installment.confirmFullFirstPayment.title",
+            "payment.installment.confirmFullFirstPayment.message",
+            "common.confirm",
+            isDestructive: false);
+
+    public Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync() =>
+        ShowAsync(
+            "payment.installment.confirmPickupAfterPaidOff.title",
+            "payment.installment.confirmPickupAfterPaidOff.message",
+            "common.confirm",
+            isDestructive: false);
+
+    private Task<bool> ShowAsync(
+        string titleKey,
+        string messageKey,
+        string confirmButtonKey,
+        bool isDestructive)
+    {
+        var completionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref _completionSource, completionSource, null) is not null)
+        {
+            // 关键逻辑：确认框不排队，已有确认时直接拒绝，避免后来的操作覆盖当前文案。
+            return Task.FromResult(false);
+        }
+
+        _titleKey = titleKey;
+        _messageKey = messageKey;
+        _confirmButtonKey = confirmButtonKey;
+        IsDestructive = isDestructive;
+        RefreshLocalizedText();
+        IsOpen = true;
+        return completionSource.Task;
+    }
+
+    private void Complete(bool result)
+    {
+        var completionSource = Interlocked.Exchange(ref _completionSource, null);
+        if (completionSource is null)
+        {
+            return;
+        }
+
+        // 关键逻辑：先关闭展示并清空待完成引用，重复点击只能命中一次结果。
+        IsOpen = false;
+        completionSource.TrySetResult(result);
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        if (IsOpen)
+        {
+            RefreshLocalizedText();
+        }
+    }
+
+    private void RefreshLocalizedText()
+    {
+        TitleText = _localization.T(_titleKey);
+        MessageText = _localization.T(_messageKey);
+        ConfirmButtonText = _localization.T(_confirmButtonKey);
+        CancelButtonText = _localization.T("common.cancel");
     }
 }

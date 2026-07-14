@@ -232,7 +232,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(
             new FakeCardTerminalSetupService(),
             resetTestSalesDataAsync: _ => Task.CompletedTask,
-            confirmResetTestSalesData: () => true);
+            confirmResetTestSalesDataAsync: () => Task.FromResult(true));
 
         Assert.True(viewModel.IsDebugTestSalesDataResetVisible);
         Assert.True(viewModel.ResetTestSalesDataCommand.CanExecute(null));
@@ -250,10 +250,10 @@ public sealed class SettingsViewModelTests
                 resetCallCount++;
                 return Task.CompletedTask;
             },
-            confirmResetTestSalesData: () =>
+            confirmResetTestSalesDataAsync: () =>
             {
                 confirmCallCount++;
-                return false;
+                return Task.FromResult(false);
             });
 
         await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
@@ -275,12 +275,30 @@ public sealed class SettingsViewModelTests
                 resetCallCount++;
                 return Task.CompletedTask;
             },
-            confirmResetTestSalesData: () => true);
+            confirmResetTestSalesDataAsync: () => Task.FromResult(true));
 
         await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
 
         Assert.Equal(1, resetCallCount);
         Assert.Equal("Local test sales data deleted.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task ResetTestSalesDataCommand_does_not_call_reset_without_confirmation_delegate()
+    {
+        var resetCallCount = 0;
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            resetTestSalesDataAsync: _ =>
+            {
+                resetCallCount++;
+                return Task.CompletedTask;
+            });
+
+        await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, resetCallCount);
+        Assert.Equal("Ready.", viewModel.StatusMessage);
     }
 
     [Fact]

@@ -279,6 +279,21 @@
   <data name="common.cancel" xml:space="preserve">
     <value>取消</value>
   </data>
+  <data name="common.confirm" xml:space="preserve">
+    <value>确认</value>
+  </data>
+  <data name="confirmation.exit.message" xml:space="preserve">
+    <value>确定要退出收银软件吗？</value>
+  </data>
+  <data name="settings.testSalesData.confirm.title" xml:space="preserve">
+    <value>重置测试销售数据</value>
+  </data>
+  <data name="settings.testSalesData.confirm.message" xml:space="preserve">
+    <value>确定要删除全部测试销售数据吗？此操作无法恢复。</value>
+  </data>
+  <data name="settings.testSalesData.confirm.action" xml:space="preserve">
+    <value>重置</value>
+  </data>
   <data name="common.load" xml:space="preserve">
     <value>加载</value>
   </data>

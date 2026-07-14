@@ -13,7 +13,7 @@ public sealed partial class SettingsViewModel
         Func<CancellationToken, Task>? DownloadCatalogAsync,
         Func<CancellationToken, Task>? ResetCatalogAsync,
         Func<CancellationToken, Task>? ResetTestSalesDataAsync,
-        Func<bool>? ConfirmResetTestSalesData,
+        Func<Task<bool>>? ConfirmResetTestSalesDataAsync,
         Func<Task<DeviceReregistrationStartResult>>? ReregisterDeviceAsync,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? CheckForAppUpdateAsync,
         Func<Func<Task>, string?, Task> RunBusyAsync,
@@ -101,7 +101,8 @@ public sealed partial class SettingsViewModel
                 return;
             }
 
-            if (_context.ConfirmResetTestSalesData?.Invoke() != true)
+            if (_context.ConfirmResetTestSalesDataAsync is null ||
+                !await _context.ConfirmResetTestSalesDataAsync())
             {
                 return;
             }

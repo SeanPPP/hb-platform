@@ -93,6 +93,31 @@ public sealed class RawScannerServiceTests
         Assert.Contains(logs.Lines, line => line.Contains("raw input key ignored because it cannot be mapped key=LeftCtrl", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ClearPendingInput_prevents_timeout_flush_from_dispatching_buffered_barcode()
+    {
+        var processor = new RawScannerInputProcessor(TimeSpan.FromMilliseconds(120), minBarcodeLength: 3);
+        var service = new RawScannerService(new FakeScannerBindingService(), processor);
+        var now = DateTimeOffset.UtcNow;
+        var deliveryCount = 0;
+        service.Subscribe("pos", _ => deliveryCount++);
+        service.SetActivePage("pos");
+
+        Assert.Null(service.ProcessScannerKeyForDiagnostics("scanner-device", Key.D9, now));
+        Assert.Null(service.ProcessScannerKeyForDiagnostics("scanner-device", Key.D3, now.AddMilliseconds(10)));
+        Assert.Null(service.ProcessScannerKeyForDiagnostics("scanner-device", Key.D0, now.AddMilliseconds(20)));
+
+        service.ClearPendingInput();
+        var expiredResults = processor.FlushExpired(now.AddMilliseconds(200), boundDevicePath: null);
+        foreach (var result in expiredResults)
+        {
+            service.DispatchResultForDiagnostics(result);
+        }
+
+        Assert.Empty(expiredResults);
+        Assert.Equal(0, deliveryCount);
+    }
+
     private sealed class FakeScannerBindingService : IScannerBindingService
     {
         public string? BoundDevicePath { get; set; }

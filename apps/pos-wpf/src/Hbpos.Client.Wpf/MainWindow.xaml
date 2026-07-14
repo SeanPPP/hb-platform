@@ -116,6 +116,10 @@
         </DataTemplate>
     </Window.Resources>
 
+    <Window.InputBindings>
+        <KeyBinding Key="Escape" Command="{Binding ConfirmationDialog.CancelCommand}" />
+    </Window.InputBindings>
+
     <Grid Background="{StaticResource PosScreenBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
@@ -270,7 +274,7 @@
                             Margin="2,0,0,0">
                         <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16" />
                     </Button>
-                    <Button Click="CloseButton_Click"
+                    <Button Command="{Binding ExitApplicationCommand}"
                             Style="{StaticResource TitleBarCloseButtonStyle}"
                             ToolTip="{loc:Loc shell.window.close}"
                             Margin="2,0,0,0">
@@ -1538,6 +1542,120 @@
                 </Button>
             </Grid>
         </Border>
+
+        <!-- 全局确认遮罩：统一承接退出、测试数据与分期确认，背景点击不关闭。 -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="99"
+              Background="#66000000"
+              Visibility="{Binding ConfirmationDialog.IsOpen, Converter={StaticResource BoolToVis}}"
+              IsVisibleChanged="ConfirmationDialogIsVisibleChanged"
+              FocusManager.IsFocusScope="True"
+              FocusManager.FocusedElement="{Binding ElementName=ConfirmationCancelButton}"
+              KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="Cycle">
+            <Border Width="520"
+                    Padding="24"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding ConfirmationDialog}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.22" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,18">
+                        <Border Width="54"
+                                Height="54"
+                                CornerRadius="12"
+                                Margin="0,0,14,0">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="#FFE8F0FE" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                            <Setter Property="Background" Value="#FFFFEEF0" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <materialDesign:PackIcon Width="34"
+                                                     Height="34"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center">
+                                <materialDesign:PackIcon.Style>
+                                    <Style TargetType="materialDesign:PackIcon">
+                                        <Setter Property="Kind" Value="InformationOutline" />
+                                        <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                                <Setter Property="Kind" Value="AlertCircleOutline" />
+                                                <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </materialDesign:PackIcon.Style>
+                            </materialDesign:PackIcon>
+                        </Border>
+                        <TextBlock Text="{Binding TitleText}"
+                                   FontSize="22"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosTextBrush}"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1"
+                               Text="{Binding MessageText}"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,22" />
+
+                    <StackPanel Grid.Row="2"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                KeyboardNavigation.TabNavigation="Cycle">
+                        <Button x:Name="ConfirmationCancelButton"
+                                Command="{Binding CancelCommand}"
+                                MinWidth="112"
+                                Height="44"
+                                Margin="0,0,10,0"
+                                IsTabStop="True"
+                                KeyboardNavigation.TabIndex="0"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <TextBlock Text="{Binding CancelButtonText}" FontWeight="Bold" />
+                        </Button>
+                        <Button Command="{Binding ConfirmCommand}"
+                                MinWidth="112"
+                                Height="44"
+                                IsTabStop="True"
+                                KeyboardNavigation.TabIndex="1">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource PosDangerBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="{Binding ConfirmButtonText}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
 
         <!-- 强制更新全局遮罩：打开后覆盖整个 MainWindow，只保留继续更新按钮。 -->
         <Border Grid.RowSpan="3"

@@ -4358,10 +4358,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
             workflow,
             Session,
             installmentOrderService: installmentService,
-            confirmInstallmentFullFirstPayment: () =>
+            confirmInstallmentFullFirstPaymentAsync: () =>
             {
                 confirmCallCount++;
-                return false;
+                return Task.FromResult(false);
             })
         {
             IsInstallmentPaymentEnabled = true,
@@ -4383,6 +4383,32 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_new_installment_full_payment_without_confirmation_delegate_continues()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-FULL-NO-PROMPT", "Full No Prompt Tea", "939011", PriceSourceKind.StoreRetailPrice, 80m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            installmentOrderService: installmentService)
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "80"
+        };
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.NotNull(installmentService.LastCreateRequest);
+        Assert.Equal(80m, installmentService.LastCreateRequest!.DownPaymentAmount);
+    }
+
+    [Fact]
     public async Task Payment_page_new_installment_allows_cash_overpay_with_change_and_applies_order_amount()
     {
         var cart = new PosCartService();
@@ -4395,10 +4421,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
             workflow,
             Session,
             installmentOrderService: installmentService,
-            confirmInstallmentFullFirstPayment: () =>
+            confirmInstallmentFullFirstPaymentAsync: () =>
             {
                 confirmCallCount++;
-                return true;
+                return Task.FromResult(true);
             })
         {
             IsInstallmentPaymentEnabled = true,
@@ -4509,7 +4535,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             workflow,
             Session,
             installmentOrderService: installmentService,
-            confirmInstallmentFullFirstPayment: () => throw new InvalidOperationException("Repayments must not show first-payment confirmation."));
+            confirmInstallmentFullFirstPaymentAsync: () => throw new InvalidOperationException("Repayments must not show first-payment confirmation."));
 
         viewModel.PrepareForInstallmentRepayment(Session, order);
         viewModel.TenderAmountText = "50";
@@ -5229,6 +5255,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public void Stop()
         {
             IsActive = false;
+        }
+
+        public void ClearPendingInput()
+        {
         }
 
         public Task ResetBindingAsync(CancellationToken cancellationToken = default)

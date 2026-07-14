@@ -84,10 +84,12 @@ public sealed class KeyboardScannerFallbackBufferTests
     }
 
     [Theory]
-    [InlineData(true, false, false, true)]
-    [InlineData(false, false, false, false)]
-    public void ShouldBlockKeyboardScannerFallback_blocks_when_force_update_overlay_is_active(
+    [InlineData(true, false, false, false, true)]
+    [InlineData(false, true, false, false, true)]
+    [InlineData(false, false, false, false, false)]
+    public void ShouldBlockKeyboardScannerFallback_blocks_when_global_overlay_is_active(
         bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
         bool isTextInputFocused,
         bool isFocusedElementVisible,
         bool expected)
@@ -96,32 +98,40 @@ public sealed class KeyboardScannerFallbackBufferTests
             expected,
             MainWindow.ShouldBlockKeyboardScannerFallback(
                 isForceUpdateBlocking,
+                isConfirmationDialogOpen,
                 isTextInputFocused,
                 isFocusedElementVisible));
     }
 
     [Theory]
-    [InlineData(true, 0x00FF, true)]
-    [InlineData(true, 0x0100, false)]
-    [InlineData(false, 0x00FF, false)]
-    public void ShouldBlockKeyboardScannerFallback_blocks_raw_scanner_window_message_when_force_update_overlay_is_active(
+    [InlineData(true, false, 0x00FF, true)]
+    [InlineData(false, true, 0x00FF, true)]
+    [InlineData(true, true, 0x0100, false)]
+    [InlineData(false, false, 0x00FF, false)]
+    public void ShouldBlockRawScannerWindowMessage_blocks_when_global_overlay_is_active(
         bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
         int messageId,
         bool expected)
     {
         Assert.Equal(
             expected,
-            MainWindow.ShouldBlockRawScannerWindowMessage(isForceUpdateBlocking, messageId));
+            MainWindow.ShouldBlockRawScannerWindowMessage(isForceUpdateBlocking, isConfirmationDialogOpen, messageId));
     }
 
-    [Fact]
-    public void ProcessRawScannerWindowMessage_marks_handled_and_skips_dispatch_when_force_update_overlay_is_active()
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ProcessRawScannerWindowMessage_marks_handled_and_skips_dispatch_when_global_overlay_is_active(
+        bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen)
     {
         var handled = false;
         var dispatchCalled = false;
 
         var result = MainWindow.ProcessRawScannerWindowMessage(
-            isForceUpdateBlocking: true,
+            isForceUpdateBlocking,
+            isConfirmationDialogOpen,
             messageId: 0x00FF,
             hwnd: IntPtr.Zero,
             wParam: IntPtr.Zero,
@@ -146,6 +156,7 @@ public sealed class KeyboardScannerFallbackBufferTests
 
         var result = MainWindow.ProcessRawScannerWindowMessage(
             isForceUpdateBlocking: false,
+            isConfirmationDialogOpen: false,
             messageId: 0x00FF,
             hwnd: IntPtr.Zero,
             wParam: IntPtr.Zero,
@@ -161,6 +172,54 @@ public sealed class KeyboardScannerFallbackBufferTests
         Assert.Equal(new IntPtr(42), result);
         Assert.True(handled);
         Assert.True(dispatchCalled);
+    }
+
+    [Fact]
+    public void Confirmation_dialog_opening_clears_keyboard_and_raw_scanner_pending_input()
+    {
+        var sourcePath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml.cs");
+        var source = File.ReadAllText(sourcePath);
+        var handlerStart = source.IndexOf(
+            "private void ConfirmationDialogIsVisibleChanged",
+            StringComparison.Ordinal);
+        var handlerEnd = source.IndexOf(
+            "private static bool IsTextInputElement",
+            handlerStart,
+            StringComparison.Ordinal);
+
+        Assert.True(handlerStart >= 0);
+        Assert.True(handlerEnd > handlerStart);
+        var handlerSource = source[handlerStart..handlerEnd];
+        Assert.Contains("_keyboardScannerFallback.Clear();", handlerSource, StringComparison.Ordinal);
+        Assert.Contains("_rawScannerService.ClearPendingInput();", handlerSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, true, Key.Escape, true)]
+    [InlineData(true, true, Key.Tab, true)]
+    [InlineData(true, true, Key.Enter, true)]
+    [InlineData(false, true, Key.Escape, false)]
+    [InlineData(false, true, Key.Tab, false)]
+    [InlineData(false, true, Key.Enter, false)]
+    [InlineData(false, true, Key.A, true)]
+    public void ShouldConsumeBlockedKeyboardInput_preserves_confirmation_keys_only(
+        bool isForceUpdateBlocking,
+        bool isConfirmationDialogOpen,
+        Key key,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            MainWindow.ShouldConsumeBlockedKeyboardInput(
+                isForceUpdateBlocking,
+                isConfirmationDialogOpen,
+                key));
     }
 
     [Theory]

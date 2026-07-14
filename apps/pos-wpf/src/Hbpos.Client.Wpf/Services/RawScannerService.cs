@@ -21,6 +21,8 @@ public interface IRawScannerService : IDisposable
 
     void Stop();
 
+    void ClearPendingInput();
+
     Task ResetBindingAsync(CancellationToken cancellationToken = default);
 
     IntPtr ProcessWindowMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled);
@@ -185,6 +187,12 @@ public sealed class RawScannerService(
         inputProcessor.Clear();
         IsActive = false;
         ConsoleLog.Write("RawScanner", "raw input scanner service stopped");
+    }
+
+    public void ClearPendingInput()
+    {
+        // 关键逻辑：仅丢弃尚未完成的扫码字符，不改变设备绑定和服务启停状态。
+        inputProcessor.Clear();
     }
 
     public async Task ResetBindingAsync(CancellationToken cancellationToken = default)

@@ -109,6 +109,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private bool _startupCardRecoveryPendingAfterCashierLogin;
     private bool _shutdownLogoutRecorded;
+    private int _applicationExitStarted;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -416,7 +417,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dailyClosePrintService = dailyClosePrintService ?? NoopDailyClosePrintService.Instance;
         _cashDrawerService = cashDrawerService ?? new NoopCashDrawerService(_localization);
         _applicationExitService = infra.ApplicationExitService ?? new WpfApplicationExitService();
-        _confirmationDialogService = infra.ConfirmationDialogService ?? new WpfConfirmationDialogService();
+        _confirmationDialogService = infra.ConfirmationDialogService ?? new WpfConfirmationDialogService(_localization);
+        ConfirmationDialog = _confirmationDialogService as IConfirmationDialogPresenter ??
+            throw new InvalidOperationException("The confirmation dialog service must expose its presenter.");
         _testSalesDataResetService = testSalesDataResetService;
         _linklyTerminalDialogPresenter = paymentTerminal.LinklyTerminalDialogPresenter;
         _cardPaymentRecoveryService = paymentTerminal.CardPaymentRecoveryService;
@@ -495,6 +498,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
         ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
         LoginCashierCommand = new AsyncRelayCommand(LoginCashierFromInputAsync, CanLoginCashierFromInput);
+        ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync);
         CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
         PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
         RetryActiveSessionRecoveryCommand = _cardRecoveryPresenter.RetryActiveSessionRecoveryCommand;
@@ -705,6 +709,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public ILinklyTerminalDialogPresenter? LinklyTerminalDialog => _linklyTerminalDialogPresenter;
 
+    public IConfirmationDialogPresenter ConfirmationDialog { get; }
+
     public bool IsPosTerminalScreenActive => ReferenceEquals(CurrentScreen, CachedPosTerminalScreen);
 
     public bool IsCashPaymentScreenActive => ReferenceEquals(CurrentScreen, CachedCashPaymentScreen);
@@ -771,6 +777,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand ResetScannerBindingCommand { get; }
 
     public IAsyncRelayCommand LoginCashierCommand { get; }
+
+    public IAsyncRelayCommand ExitApplicationCommand { get; }
 
     public void Dispose()
     {
@@ -2047,9 +2055,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return localOrder;
         }
 
-        var confirmed = _confirmationDialogService.ConfirmInstallmentPickupAfterPaidOff(
-            _localization.T("payment.installment.confirmPickupAfterPaidOff.title"),
-            _localization.T("payment.installment.confirmPickupAfterPaidOff.message"));
+        var confirmed = await _confirmationDialogService.ConfirmInstallmentPickupAfterPaidOffAsync();
         if (!confirmed)
         {
             return localOrder;
@@ -2127,16 +2133,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         return await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
     }
 
-    private Task ExitApplicationAsync()
+    private async Task ExitApplicationAsync()
     {
-        if (!_confirmationDialogService.ConfirmExitApplication())
+        if (!await _confirmationDialogService.ConfirmExitApplicationAsync())
         {
-            return Task.CompletedTask;
+            return;
         }
 
+        if (Interlocked.Exchange(ref _applicationExitStarted, 1) != 0)
+        {
+            return;
+        }
+
+        // 关键逻辑：两处退出入口共用本方法，只有首次确认成功才关闭客显并退出应用。
         SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
         _applicationExitService.Exit();
-        return Task.CompletedTask;
     }
 
     private async Task PrintPaymentSuccessReceiptAsync()

@@ -295,7 +295,9 @@ public static class ServiceRegistration
         services.AddSingleton<ICustomerDisplayOrchestrator, CustomerDisplayOrchestrator>();
         services.AddSingleton<IUserFeedbackService, WpfAudioUserFeedbackService>();
         services.AddSingleton<IApplicationExitService, WpfApplicationExitService>();
-        services.AddSingleton<IConfirmationDialogService, WpfConfirmationDialogService>();
+        services.AddSingleton<WpfConfirmationDialogService>();
+        services.AddSingleton<IConfirmationDialogService>(sp => sp.GetRequiredService<WpfConfirmationDialogService>());
+        services.AddSingleton<IConfirmationDialogPresenter>(sp => sp.GetRequiredService<WpfConfirmationDialogService>());
         services.AddSingleton<ICardRecoveryResultDialogService, CardRecoveryResultDialogService>();
         services.AddSingleton<WpfLinklyTerminalDialogService>();
         services.AddSingleton<ILinklyTerminalDialogService>(sp => sp.GetRequiredService<WpfLinklyTerminalDialogService>());
