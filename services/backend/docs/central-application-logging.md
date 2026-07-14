@@ -65,13 +65,22 @@ Content-Type: application/json
 
 `ApiKeyHash` 是项目日志密钥的 SHA-256 小写十六进制摘要。明文密钥只放部署环境变量或服务器配置，不提交仓库。
 
-环境变量示例：
+生产 compose 已连续配置五个项目。只有已启用的外部项目需要注入合法的 64 位十六进制 SHA-256 摘要：
 
 ```bash
-ApplicationLogging__Projects__1__ApiKeyHash=<sha256-lower-hex>
-ApplicationLogging__Projects__2__ApiKeyHash=<sha256-lower-hex>
-ApplicationLogging__Projects__3__ApiKeyHash=<sha256-lower-hex>
+CENTER_LOG_HBWEB_RV_KEY_SHA256=<sha256-lower-hex>
+CENTER_LOG_HBPOS_API_KEY_SHA256=<sha256-lower-hex>
 ```
+
+项目清单和默认保留期：
+
+- `HBBBackend`：内部项目，启用，7 天，不配置外部写入摘要。
+- `hbweb_rv`：Web 前端，启用，7 天。
+- `HbwebExpo`：移动端，禁用，7 天。
+- `hbpos_win`：WPF 客户端，禁用，30 天。
+- `hbpos_api`：WPF 收银后端，启用，7 天。
+
+清理任务会覆盖 `Projects` 中的全部项目，包括已禁用项目，避免停用后遗留日志无限保留。
 
 ## 查询接口
 
@@ -85,12 +94,15 @@ GET /api/system/logs/summary?startUtc=2026-06-05T00:00:00Z
 
 常用查询参数：`projectCode`、`environment`、`sourceType`、`level`、`category`、`requestPath`、`traceId`、`userId`、`userName`、`keyword`、`startUtc`、`endUtc`。
 
+`summary` 在原有统计和 `pipeline` 指标之外返回 `status`：后端采集开关、最低等级、默认项目/环境、服务名，以及各项目的启用状态、配置状态、有效保留天数和最后接收时间。内部项目的 `credentialConfigured` 固定为 `null`；外部项目只有启用且摘要合法时为 `Ready`。响应绝不返回密钥、摘要或摘要片段。`lastReceivedAtUtc` 按服务端 `CreatedAt` 的项目最大值计算，不受当前统计筛选影响。
+
 ## 各端项目码
 
 - 后端：`HBBBackend`，`sourceType=Backend`
 - Web 后台：`hbweb_rv`，`sourceType=Web`
 - 移动端：`HbwebExpo`，`sourceType=Mobile`
 - 收银端：`hbpos_win`，`sourceType=POS`
+- 收银后端：`hbpos_api`，`sourceType=Backend`
 
 ## 上报原则
 

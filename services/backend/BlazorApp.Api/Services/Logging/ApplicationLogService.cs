@@ -232,6 +232,7 @@ namespace BlazorApp.Api.Services.Logging
                 ByLevel = await QueryGroupAsync(query, "Level"),
                 ByExceptionType = await QueryGroupAsync(query, "ExceptionType"),
                 ByRequestPath = await QueryGroupAsync(query, "RequestPath"),
+                Status = await GetStatusAsync(),
                 Pipeline = new ApplicationLogPipelineRuntimeDto
                 {
                     DroppedOldestCount = runtimeSnapshot.DroppedOldestCount,
@@ -242,6 +243,129 @@ namespace BlazorApp.Api.Services.Logging
                     LastFailedFlushReason = runtimeSnapshot.LastFailedFlushReason,
                 },
             };
+        }
+
+        private async Task<ApplicationLogStatusDto> GetStatusAsync()
+        {
+            // 最后接收时间只看服务端 CreatedAt，不能继承当前汇总页的筛选条件。
+            var receivedGroups = await _db
+                .Queryable<ApplicationLog>()
+                .GroupBy(log => log.ProjectCode)
+                .Select(log => new ApplicationLogProjectStatusDto
+                {
+                    ProjectCode = log.ProjectCode,
+                    LastReceivedAtUtc = SqlFunc.AggregateMax(log.CreatedAt),
+                })
+                .ToListAsync();
+            var lastReceivedByProject = receivedGroups
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProjectCode))
+                .GroupBy(item => item.ProjectCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Where(item => item.LastReceivedAtUtc.HasValue)
+                        .Select(item => AsUtc(item.LastReceivedAtUtc!.Value))
+                        .Cast<DateTime?>()
+                        .Max(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var configuredProjects = _options.Projects
+                .Where(project => NormalizeProjectCode(project.ProjectCode) != null)
+                .GroupBy(
+                    project => NormalizeProjectCode(project.ProjectCode)!,
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .Select(group => group.First())
+                .ToList();
+            var defaultProjectCode = NormalizeProjectCode(_options.DefaultProjectCode) ?? string.Empty;
+            var defaultProject = configuredProjects.FirstOrDefault(project =>
+                string.Equals(
+                    NormalizeProjectCode(project.ProjectCode),
+                    defaultProjectCode,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            );
+
+            var projects = new List<ApplicationLogProjectStatusDto>
+            {
+                BuildProjectStatus(
+                    defaultProjectCode,
+                    defaultProject,
+                    isInternal: true,
+                    lastReceivedByProject
+                ),
+            };
+            projects.AddRange(
+                configuredProjects
+                    .Where(project =>
+                        !string.Equals(
+                            NormalizeProjectCode(project.ProjectCode),
+                            defaultProjectCode,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    .Select(project =>
+                        BuildProjectStatus(
+                            NormalizeProjectCode(project.ProjectCode)!,
+                            project,
+                            isInternal: false,
+                            lastReceivedByProject
+                        )
+                    )
+            );
+
+            return new ApplicationLogStatusDto
+            {
+                BackendCaptureEnabled = _options.Enabled,
+                BackendMinimumLevel = _options.MinimumLevel,
+                DefaultProjectCode = _options.DefaultProjectCode,
+                DefaultEnvironment = _options.DefaultEnvironment,
+                ServiceName = _options.ServiceName,
+                Projects = projects,
+            };
+        }
+
+        private ApplicationLogProjectStatusDto BuildProjectStatus(
+            string projectCode,
+            ApplicationLoggingProjectOptions? project,
+            bool isInternal,
+            IReadOnlyDictionary<string, DateTime?> lastReceivedByProject
+        )
+        {
+            var enabled = isInternal
+                ? _options.Enabled && !string.IsNullOrWhiteSpace(projectCode)
+                : project?.Enabled == true;
+            bool? credentialConfigured = isInternal
+                ? null
+                : IsValidSha256Hash(project?.ApiKeyHash);
+            var configurationState = !enabled
+                ? "Disabled"
+                : isInternal || credentialConfigured == true
+                    ? "Ready"
+                    : "MissingCredential";
+            lastReceivedByProject.TryGetValue(projectCode, out var lastReceivedAtUtc);
+
+            return new ApplicationLogProjectStatusDto
+            {
+                ProjectCode = projectCode,
+                DisplayName = string.IsNullOrWhiteSpace(project?.DisplayName)
+                    ? projectCode
+                    : project.DisplayName.Trim(),
+                Mode = isInternal ? "Internal" : "External",
+                ExplicitlyConfigured = project != null,
+                Enabled = enabled,
+                CredentialConfigured = credentialConfigured,
+                ConfigurationState = configurationState,
+                EffectiveRetentionDays = project?.RetentionDays ?? _options.DefaultRetentionDays,
+                LastReceivedAtUtc = lastReceivedAtUtc,
+            };
+        }
+
+        private static bool IsValidSha256Hash(string? value)
+        {
+            var hash = value?.Trim();
+            return hash is { Length: 64 } && hash.All(Uri.IsHexDigit);
         }
 
         public async Task<int> CleanupExpiredLogsAsync(DateTime nowUtc)
@@ -259,13 +383,18 @@ namespace BlazorApp.Api.Services.Logging
                     },
                 };
 
-            foreach (var project in projects.Where(x => !string.IsNullOrWhiteSpace(x.ProjectCode)))
+            foreach (var project in projects)
             {
+                var projectCode = NormalizeProjectCode(project.ProjectCode);
+                if (projectCode == null)
+                    // 空白项目码不能形成有效清理条件，必须安全跳过。
+                    continue;
+
                 var retentionDays = project.RetentionDays ?? _options.DefaultRetentionDays;
                 var cutoff = nowUtc.AddDays(-retentionDays);
                 deleted += await _db
                     .Deleteable<ApplicationLog>()
-                    .Where(x => x.ProjectCode == project.ProjectCode && x.CreatedAt < cutoff)
+                    .Where(x => x.ProjectCode == projectCode && x.CreatedAt < cutoff)
                     .ExecuteCommandAsync();
             }
 
@@ -427,9 +556,34 @@ namespace BlazorApp.Api.Services.Logging
 
         private ApplicationLoggingProjectOptions? FindProject(string? projectCode)
         {
-            return _options.Projects.FirstOrDefault(project =>
-                string.Equals(project.ProjectCode, projectCode, StringComparison.OrdinalIgnoreCase)
+            var normalizedProjectCode = NormalizeProjectCode(projectCode);
+            if (normalizedProjectCode == null)
+                return null;
+
+            var project = _options.Projects.FirstOrDefault(item =>
+                string.Equals(
+                    NormalizeProjectCode(item.ProjectCode),
+                    normalizedProjectCode,
+                    StringComparison.OrdinalIgnoreCase
+                )
             );
+            if (project == null)
+                return null;
+
+            // 统一去除配置项目码首尾空白，确保鉴权、写入和状态接口返回同一项目码。
+            return new ApplicationLoggingProjectOptions
+            {
+                ProjectCode = NormalizeProjectCode(project.ProjectCode)!,
+                DisplayName = project.DisplayName,
+                ApiKeyHash = project.ApiKeyHash,
+                Enabled = project.Enabled,
+                RetentionDays = project.RetentionDays,
+            };
+        }
+
+        private static string? NormalizeProjectCode(string? projectCode)
+        {
+            return string.IsNullOrWhiteSpace(projectCode) ? null : projectCode.Trim();
         }
 
         private static bool IsAsc(ApplicationLogQueryDto query)

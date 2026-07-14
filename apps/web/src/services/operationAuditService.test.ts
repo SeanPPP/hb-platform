@@ -29,11 +29,13 @@ async function run() {
     storeCode: 'S01',
     pageNumber: 2,
     pageSize: 20,
+    sortBy: 'amountDelta',
+    sortOrder: 'asc',
   })
 
   assertEqual(
     calls[0],
-    '/api/react/pos-operation-audits?fromUtc=2026-07-01T00%3A00%3A00.000Z&toUtc=2026-07-08T00%3A00%3A00.000Z&storeCode=S01&pageNumber=2&pageSize=20',
+    '/api/react/pos-operation-audits?fromUtc=2026-07-01T00%3A00%3A00.000Z&toUtc=2026-07-08T00%3A00%3A00.000Z&storeCode=S01&pageNumber=2&pageSize=20&sortBy=amountDelta&sortOrder=asc',
     '列表接口应使用只读 GET 查询参数',
   )
   assertEqual(page.total, 1, '列表接口应兼容 totalCount')

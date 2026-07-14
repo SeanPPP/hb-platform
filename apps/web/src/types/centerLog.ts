@@ -101,10 +101,44 @@ export interface ApplicationLogSummaryGroup {
   count: number
 }
 
+export type ApplicationLogConfigurationState = 'Ready' | 'Disabled' | 'MissingCredential'
+
+export interface ApplicationLogProjectStatus {
+  projectCode: string
+  displayName: string
+  mode: string
+  explicitlyConfigured: boolean
+  enabled: boolean
+  credentialConfigured: boolean | null
+  configurationState: ApplicationLogConfigurationState
+  effectiveRetentionDays: number
+  lastReceivedAtUtc: string | null
+}
+
+export interface ApplicationLogStatus {
+  backendCaptureEnabled: boolean
+  backendMinimumLevel: string
+  defaultProjectCode: string
+  defaultEnvironment: string
+  serviceName: string
+  projects: ApplicationLogProjectStatus[]
+}
+
+export interface ApplicationLogPipelineStatus {
+  droppedOldestCount: number
+  enqueueFailureCount: number
+  failedFlushBatchCount: number
+  failedFlushLogCount: number
+  lastFailedFlushBatchSize: number
+  lastFailedFlushReason?: string | null
+}
+
 export interface ApplicationLogSummary {
   total: number
   byProject: ApplicationLogSummaryGroup[]
   byLevel: ApplicationLogSummaryGroup[]
   byExceptionType: ApplicationLogSummaryGroup[]
   byRequestPath: ApplicationLogSummaryGroup[]
+  status?: ApplicationLogStatus
+  pipeline?: ApplicationLogPipelineStatus
 }

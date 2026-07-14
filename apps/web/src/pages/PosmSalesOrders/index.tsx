@@ -2,6 +2,7 @@ import {
   DownloadOutlined,
   FilePdfOutlined,
   ReloadOutlined,
+  SearchOutlined,
   ShopOutlined,
 } from '@ant-design/icons'
 import {
@@ -10,29 +11,50 @@ import {
   DatePicker,
   Image,
   Input,
+  InputNumber,
   Modal,
   Pagination,
   Select,
   Space,
   Table,
   Tag,
+  TimePicker,
   Typography,
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { FilterDropdownProps } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../../store/auth'
 import { getActiveStores } from '../../services/storeService'
-import { buildPosmSalesOrderListQuery } from './posmSalesOrdersLogic'
+import {
+  applyPosmSalesOrderColumnFilterDraft,
+  applyPosmSalesOrderQueryChange,
+  applyPosmSalesOrderTopFilterDraft,
+  buildPosmSalesOrderListQuery,
+  createPosmSalesOrderColumnFilterDraft,
+  createResetPosmSalesOrderState,
+  mapPosmSalesOrderSortState,
+  normalizePosmSalesOrderFilterNumber,
+  isLatestPosmSalesOrderRequest,
+  syncColumnFiltersToTopFilters,
+  validatePosmSalesOrderNumberRanges,
+} from './posmSalesOrdersLogic'
 import {
   fetchTaxInvoicePdf,
   getSalesOrderDetail,
   getSalesOrderList,
   getTaxInvoicePdfUrl,
 } from '../../services/posmSalesOrderService'
-import type { PosmSalesOrder, PosmSalesOrderDetailResponse } from '../../types/posmSalesOrder'
+import type {
+  PosmSalesOrder,
+  PosmSalesOrderColumnFilters,
+  PosmSalesOrderDetailResponse,
+  PosmSalesOrderSortField,
+  PosmSalesOrderSortState,
+} from '../../types/posmSalesOrder'
 import { OrderType } from '../../types/posmSalesOrder'
 
 const { Text } = Typography
@@ -77,10 +99,27 @@ export default function PosmSalesOrdersPage() {
   const [filterBranchCode, setFilterBranchCode] = useState('')
   const [filterOrderType, setFilterOrderType] = useState<OrderType>(OrderType.All)
   const [filterKeyword, setFilterKeyword] = useState('')
+  const [appliedOrderType, setAppliedOrderType] = useState<OrderType>(OrderType.All)
+  const [appliedKeyword, setAppliedKeyword] = useState('')
   const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>([
     dayjs(),
     dayjs(),
   ])
+  const [columnFilters, setColumnFilters] = useState<PosmSalesOrderColumnFilters>({
+    startDate: dayjs().format('YYYY-MM-DD'),
+    endDate: dayjs().format('YYYY-MM-DD'),
+    branchCode: '',
+  })
+  const [columnFilterDraft, setColumnFilterDraft] = useState<PosmSalesOrderColumnFilters>({
+    startDate: dayjs().format('YYYY-MM-DD'),
+    endDate: dayjs().format('YYYY-MM-DD'),
+    branchCode: '',
+  })
+  const [sort, setSort] = useState<PosmSalesOrderSortState>({
+    field: 'orderTime',
+    direction: 'asc',
+  })
+  const [sortColumnKey, setSortColumnKey] = useState('date')
 
   const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([])
   const [detailData, setDetailData] = useState<Record<string, PosmSalesOrderDetailResponse>>({})
@@ -93,6 +132,7 @@ export default function PosmSalesOrdersPage() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const skipNextPageLoadRef = useRef(false)
+  const latestRequestIdRef = useRef(0)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
 
   const [storesLoaded, setStoresLoaded] = useState(false)
@@ -110,27 +150,40 @@ export default function PosmSalesOrdersPage() {
   )
 
   const getCurrentQueryState = () => ({
-    startDate:
-      filterDateRange?.[0]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
-    endDate:
-      filterDateRange?.[1]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
-    branchCode: filterBranchCode,
-    orderType: filterOrderType,
-    keyword: filterKeyword,
+    startDate: columnFilters.startDate || '',
+    endDate: columnFilters.endDate || '',
+    branchCode: columnFilters.branchCode || '',
+    orderType: appliedOrderType,
+    keyword: appliedKeyword,
     page,
     pageSize,
+    columnFilters,
+    sort,
   })
 
   const loadData = async (overrides: Partial<ReturnType<typeof getCurrentQueryState>> = {}) => {
+    const nextColumnFilters = { ...columnFilters, ...overrides.columnFilters }
+    if (!validatePosmSalesOrderNumberRanges(nextColumnFilters).isValid) {
+      message.error(t('posmOrders.invalidRange'))
+      return
+    }
+    const requestId = ++latestRequestIdRef.current
     setLoading(true)
     try {
       const result = await getSalesOrderList(buildPosmSalesOrderListQuery(getCurrentQueryState(), overrides))
-      setData(result?.items ?? [])
-      setTotal(result?.total ?? 0)
+      // 只允许最后一次请求更新列表，避免慢响应覆盖用户刚应用的新条件。
+      if (isLatestPosmSalesOrderRequest(requestId, latestRequestIdRef.current)) {
+        setData(result?.items ?? [])
+        setTotal(result?.total ?? 0)
+      }
     } catch {
-      message.error(t('posmOrders.loadFailed'))
+      if (isLatestPosmSalesOrderRequest(requestId, latestRequestIdRef.current)) {
+        message.error(t('posmOrders.loadFailed'))
+      }
     } finally {
-      setLoading(false)
+      if (isLatestPosmSalesOrderRequest(requestId, latestRequestIdRef.current)) {
+        setLoading(false)
+      }
     }
   }
 
@@ -146,6 +199,8 @@ export default function PosmSalesOrdersPage() {
         setStores(visible)
         if (visible.length >= 1 && !filterBranchCode) {
           setFilterBranchCode(visible[0].value)
+          setColumnFilters((current) => ({ ...current, branchCode: visible[0].value }))
+          setColumnFilterDraft((current) => ({ ...current, branchCode: visible[0].value }))
         }
       } else {
         setStores([])
@@ -197,31 +252,52 @@ export default function PosmSalesOrdersPage() {
   }, [pageSize, total])
 
   const handleSearch = () => {
+    const topFilters = {
+      startDate: filterDateRange?.[0]?.format('YYYY-MM-DD') || '',
+      endDate: filterDateRange?.[1]?.format('YYYY-MM-DD') || '',
+      branchCode: filterBranchCode,
+      orderType: filterOrderType,
+      keyword: filterKeyword,
+    }
+    const nextState = applyPosmSalesOrderTopFilterDraft(getCurrentQueryState(), topFilters)
+    if (!validatePosmSalesOrderNumberRanges(nextState.columnFilters).isValid) {
+      message.error(t('posmOrders.invalidRange'))
+      return
+    }
+    // 顶部查询是同步点：日期、分店同时写入列头受控状态。
+    setColumnFilters(nextState.columnFilters)
+    setColumnFilterDraft(nextState.columnFilters)
+    setAppliedOrderType(nextState.orderType)
+    setAppliedKeyword(nextState.keyword)
     if (page !== 1) {
       skipNextPageLoadRef.current = true
     }
     setPage(1)
-    void loadData({ page: 1 })
+    void loadData(nextState)
+  }
+
+  const handleRefresh = () => {
+    void loadData()
   }
 
   const handleReset = () => {
     const today = dayjs()
+    const resetState = createResetPosmSalesOrderState(today.format('YYYY-MM-DD'), pageSize)
     if (page !== 1) {
       skipNextPageLoadRef.current = true
     }
-    setFilterBranchCode('')
-    setFilterOrderType(OrderType.All)
-    setFilterKeyword('')
+    setFilterBranchCode(resetState.branchCode)
+    setFilterOrderType(resetState.orderType)
+    setFilterKeyword(resetState.keyword)
+    setAppliedOrderType(resetState.orderType)
+    setAppliedKeyword(resetState.keyword)
     setFilterDateRange([today, today])
-    setPage(1)
-    void loadData({
-      startDate: today.format('YYYY-MM-DD'),
-      endDate: today.format('YYYY-MM-DD'),
-      branchCode: '',
-      orderType: OrderType.All,
-      keyword: '',
-      page: 1,
-    })
+    setColumnFilters(resetState.columnFilters)
+    setColumnFilterDraft(resetState.columnFilters)
+    setSort(resetState.sort)
+    setSortColumnKey('date')
+    setPage(resetState.page)
+    void loadData(resetState)
   }
 
   const handlePreviewPdf = async (orderGuid: string) => {
@@ -250,6 +326,288 @@ export default function PosmSalesOrdersPage() {
     document.body.removeChild(a)
   }
 
+  const updateColumnFilterDraft = (changes: Partial<PosmSalesOrderColumnFilters>) => {
+    setColumnFilterDraft((current) =>
+      createPosmSalesOrderColumnFilterDraft(current, changes),
+    )
+  }
+
+  const applyColumnFilters = (
+    confirm: FilterDropdownProps['confirm'],
+    nextFilters: PosmSalesOrderColumnFilters = columnFilterDraft,
+  ) => {
+    if (!validatePosmSalesOrderNumberRanges(nextFilters).isValid) {
+      message.error(t('posmOrders.invalidRange'))
+      return
+    }
+
+    const nextState = applyPosmSalesOrderColumnFilterDraft(
+      getCurrentQueryState(),
+      nextFilters,
+    )
+    const topFilters = syncColumnFiltersToTopFilters(nextState.columnFilters)
+    // 列头日期和分店与顶部控件共用查询语义，应用时双向对齐。
+    setColumnFilters(nextFilters)
+    setColumnFilterDraft(nextFilters)
+    setFilterBranchCode(topFilters.branchCode)
+    setFilterDateRange(
+      topFilters.startDate && topFilters.endDate
+        ? [dayjs(topFilters.startDate), dayjs(topFilters.endDate)]
+        : null,
+    )
+    if (page !== 1) {
+      skipNextPageLoadRef.current = true
+    }
+    setPage(1)
+    confirm({ closeDropdown: true })
+    void loadData(nextState)
+  }
+
+  const clearColumnFilters = (
+    keys: Array<keyof PosmSalesOrderColumnFilters>,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    const nextFilters = createPosmSalesOrderColumnFilterDraft(columnFilters)
+    keys.forEach((key) => {
+      nextFilters[key] = undefined
+    })
+    applyColumnFilters(confirm, nextFilters)
+  }
+
+  const initializeColumnFilterDraft = (open: boolean) => {
+    if (open) {
+      // 每次打开都从已应用条件创建草稿，取消关闭不会污染后续请求。
+      setColumnFilterDraft(createPosmSalesOrderColumnFilterDraft(columnFilters))
+    }
+  }
+
+  const filterIcon = (active?: boolean) => (
+    <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
+  )
+  const filterDropdownStyle = { padding: 8, width: 250 }
+
+  const makeTextFilterDropdown = (
+    key: 'orderGuidKeyword' | 'deviceCodeKeyword',
+    placeholder: string,
+    ariaLabel: string,
+  ) =>
+    ({ confirm }: FilterDropdownProps) => (
+      <div
+        style={filterDropdownStyle}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input
+            autoFocus
+            allowClear
+            aria-label={ariaLabel}
+            value={columnFilterDraft[key] ?? ''}
+            placeholder={placeholder}
+            onChange={(event) => updateColumnFilterDraft({ [key]: event.target.value })}
+            onPressEnter={() => applyColumnFilters(confirm)}
+          />
+          <Space>
+            <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+              {t('posmOrders.applyFilter')}
+            </Button>
+            <Button size="small" onClick={() => clearColumnFilters([key], confirm)}>
+              {t('posmOrders.resetFilter')}
+            </Button>
+          </Space>
+        </Space>
+      </div>
+    )
+
+  const makeBranchFilterDropdown = ({ confirm }: FilterDropdownProps) => (
+    <div
+      style={filterDropdownStyle}
+      onKeyDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Select
+          allowClear
+          aria-label={t('posmOrders.filterBranchAria')}
+          showSearch
+          value={columnFilterDraft.branchCode || undefined}
+          placeholder={t('posmOrders.filterBranch')}
+          style={{ width: '100%' }}
+          options={stores}
+          filterOption={(input, option) =>
+            String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+          }
+          onChange={(value) => {
+            updateColumnFilterDraft({ branchCode: value || '' })
+          }}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('posmOrders.applyFilter')}
+          </Button>
+          <Button size="small" onClick={() => clearColumnFilters(['branchCode'], confirm)}>
+            {t('posmOrders.resetFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeDateFilterDropdown = ({ confirm }: FilterDropdownProps) => (
+    <div
+      style={{ ...filterDropdownStyle, width: 290 }}
+      onKeyDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <DatePicker.RangePicker
+          aria-label={t('posmOrders.filterDateRangeAria')}
+          value={
+            columnFilterDraft.startDate && columnFilterDraft.endDate
+              ? [dayjs(columnFilterDraft.startDate), dayjs(columnFilterDraft.endDate)]
+              : null
+          }
+          placeholder={[t('posmOrders.filterDateStart'), t('posmOrders.filterDateEnd')]}
+          onChange={(dates) => {
+            const nextRange = dates?.[0] && dates?.[1] ? [dates[0], dates[1]] as [dayjs.Dayjs, dayjs.Dayjs] : null
+            updateColumnFilterDraft({
+              startDate: nextRange?.[0].format('YYYY-MM-DD'),
+              endDate: nextRange?.[1].format('YYYY-MM-DD'),
+            })
+          }}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('posmOrders.applyFilter')}
+          </Button>
+          <Button
+            size="small"
+            onClick={() => clearColumnFilters(['startDate', 'endDate'], confirm)}
+          >
+            {t('posmOrders.resetFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeTimeFilterDropdown = ({ confirm }: FilterDropdownProps) => (
+    <div
+      style={{ ...filterDropdownStyle, width: 260 }}
+      onKeyDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <TimePicker.RangePicker
+          aria-label={t('posmOrders.filterTimeRangeAria')}
+          value={
+            columnFilterDraft.timeStart && columnFilterDraft.timeEnd
+              ? [
+                  dayjs(`2000-01-01T${columnFilterDraft.timeStart}`),
+                  dayjs(`2000-01-01T${columnFilterDraft.timeEnd}`),
+                ]
+              : null
+          }
+          format="HH:mm:ss"
+          placeholder={[t('posmOrders.filterTimeStart'), t('posmOrders.filterTimeEnd')]}
+          onChange={(times) =>
+            updateColumnFilterDraft({
+              timeStart: times?.[0]?.format('HH:mm:ss'),
+              timeEnd: times?.[1]?.format('HH:mm:ss'),
+            })
+          }
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('posmOrders.applyFilter')}
+          </Button>
+          <Button
+            size="small"
+            onClick={() => clearColumnFilters(['timeStart', 'timeEnd'], confirm)}
+          >
+            {t('posmOrders.resetFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeNumberFilterDropdown = (
+    minKey: keyof PosmSalesOrderColumnFilters,
+    maxKey: keyof PosmSalesOrderColumnFilters,
+    columnLabel: string,
+    integer = false,
+  ) =>
+    ({ confirm }: FilterDropdownProps) => (
+      <div
+        style={filterDropdownStyle}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Space.Compact style={{ width: '100%' }}>
+            <InputNumber
+              aria-label={t('posmOrders.filterMinAria', { column: columnLabel })}
+              min={0}
+              precision={integer ? 0 : undefined}
+              step={integer ? 1 : undefined}
+              controls={false}
+              value={columnFilterDraft[minKey] as number | undefined}
+              placeholder={t('posmOrders.minValue')}
+              style={{ width: '50%' }}
+              onChange={(value) =>
+                updateColumnFilterDraft({
+                  [minKey]: normalizePosmSalesOrderFilterNumber(value, integer),
+                })
+              }
+            />
+            <InputNumber
+              aria-label={t('posmOrders.filterMaxAria', { column: columnLabel })}
+              min={0}
+              precision={integer ? 0 : undefined}
+              step={integer ? 1 : undefined}
+              controls={false}
+              value={columnFilterDraft[maxKey] as number | undefined}
+              placeholder={t('posmOrders.maxValue')}
+              style={{ width: '50%' }}
+              onChange={(value) =>
+                updateColumnFilterDraft({
+                  [maxKey]: normalizePosmSalesOrderFilterNumber(value, integer),
+                })
+              }
+            />
+          </Space.Compact>
+          <Space>
+            <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+              {t('posmOrders.applyFilter')}
+            </Button>
+            <Button size="small" onClick={() => clearColumnFilters([minKey, maxKey], confirm)}>
+              {t('posmOrders.resetFilter')}
+            </Button>
+          </Space>
+        </Space>
+      </div>
+    )
+
+  const sortOrderFor = (field: PosmSalesOrderSortField, columnKey?: string) =>
+    sort.field === field && (!columnKey || sortColumnKey === columnKey)
+      ? sort.direction === 'asc'
+        ? 'ascend' as const
+        : 'descend' as const
+      : null
+
+  const numberFilterProps = (
+    minKey: keyof PosmSalesOrderColumnFilters,
+    maxKey: keyof PosmSalesOrderColumnFilters,
+    columnLabel: string,
+    integer = false,
+  ) => ({
+    filterDropdown: makeNumberFilterDropdown(minKey, maxKey, columnLabel, integer),
+    onFilterDropdownOpenChange: initializeColumnFilterDraft,
+    filterIcon,
+    filtered: typeof columnFilters[minKey] === 'number' || typeof columnFilters[maxKey] === 'number',
+  })
+
   const columns: ColumnsType<PosmSalesOrder> = [
     {
       title: t('posmOrders.serialNo'),
@@ -258,17 +616,35 @@ export default function PosmSalesOrdersPage() {
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     {
+      key: 'orderGuid',
       title: t('posmOrders.orderNo'),
       dataIndex: 'orderGuid',
       width: 120,
+      sorter: true,
+      sortOrder: sortOrderFor('orderGuid'),
+      filterDropdown: makeTextFilterDropdown(
+        'orderGuidKeyword',
+        t('posmOrders.filterOrderGuid'),
+        t('posmOrders.filterOrderGuidAria'),
+      ),
+      onFilterDropdownOpenChange: initializeColumnFilterDraft,
+      filterIcon,
+      filtered: Boolean(columnFilters.orderGuidKeyword?.trim()),
       render: (_, record) => (
         <Text ellipsis={{ tooltip: record.orderGuid }}>{record.orderGuid?.slice(-6) || '-'}</Text>
       ),
     },
     {
+      key: 'branchName',
       title: t('posmOrders.branch'),
       dataIndex: 'branchName',
       width: 140,
+      sorter: true,
+      sortOrder: sortOrderFor('branchCode'),
+      filterDropdown: makeBranchFilterDropdown,
+      onFilterDropdownOpenChange: initializeColumnFilterDraft,
+      filterIcon,
+      filtered: Boolean(columnFilters.branchCode),
       render: (_, record) => (
         <Tag icon={<ShopOutlined />} color={getBranchColor(record.branchCode)}>
           {record.branchName || '-'}
@@ -276,58 +652,111 @@ export default function PosmSalesOrdersPage() {
       ),
     },
     {
+      key: 'deviceCode',
       title: t('posmOrders.device'),
       dataIndex: 'deviceCode',
       width: 110,
+      sorter: true,
+      sortOrder: sortOrderFor('deviceCode'),
+      filterDropdown: makeTextFilterDropdown(
+        'deviceCodeKeyword',
+        t('posmOrders.filterDevice'),
+        t('posmOrders.filterDeviceAria'),
+      ),
+      onFilterDropdownOpenChange: initializeColumnFilterDraft,
+      filterIcon,
+      filtered: Boolean(columnFilters.deviceCodeKeyword?.trim()),
       render: (value) => value || '-',
     },
     {
+      key: 'date',
       title: t('posmOrders.date'),
       dataIndex: 'orderTime',
       width: 110,
+      sorter: true,
+      sortOrder: sortOrderFor('orderTime', 'date'),
+      filterDropdown: makeDateFilterDropdown,
+      onFilterDropdownOpenChange: initializeColumnFilterDraft,
+      filterIcon,
+      filtered: Boolean(columnFilters.startDate || columnFilters.endDate),
       render: (_, record) =>
         record.orderTime ? dayjs(record.orderTime).format('YYYY-MM-DD') : '-',
     },
     {
+      key: 'time',
       title: t('posmOrders.time'),
       dataIndex: 'orderTime',
       width: 90,
+      sorter: true,
+      sortOrder: sortOrderFor('orderTime', 'time'),
+      filterDropdown: makeTimeFilterDropdown,
+      onFilterDropdownOpenChange: initializeColumnFilterDraft,
+      filterIcon,
+      filtered: Boolean(columnFilters.timeStart || columnFilters.timeEnd),
       render: (_, record) =>
         record.orderTime ? dayjs(record.orderTime).format('HH:mm:ss') : '-',
     },
     {
+      key: 'skuCount',
       title: t('posmOrders.skuCount'),
       dataIndex: 'skuCount',
       width: 80,
       align: 'right',
+      sorter: true,
+      sortOrder: sortOrderFor('skuCount'),
+      ...numberFilterProps('skuCountMin', 'skuCountMax', t('posmOrders.skuCount'), true),
     },
     {
+      key: 'itemCount',
       title: t('posmOrders.itemCount'),
       dataIndex: 'itemCount',
       width: 80,
       align: 'right',
+      sorter: true,
+      sortOrder: sortOrderFor('itemCount'),
+      ...numberFilterProps('itemCountMin', 'itemCountMax', t('posmOrders.itemCount'), true),
     },
     {
+      key: 'totalAmount',
       title: t('posmOrders.totalAmount'),
       dataIndex: 'totalAmount',
       width: 110,
       align: 'right',
+      sorter: true,
+      sortOrder: sortOrderFor('totalAmount'),
+      ...numberFilterProps(
+        'totalAmountMin',
+        'totalAmountMax',
+        t('posmOrders.totalAmount'),
+      ),
       render: (_, record) => <Text>${(record.totalAmount || 0).toFixed(2)}</Text>,
     },
     {
+      key: 'discountAmount',
       title: t('posmOrders.discount'),
       dataIndex: 'discountAmount',
       width: 100,
       align: 'right',
+      sorter: true,
+      sortOrder: sortOrderFor('discountAmount'),
+      ...numberFilterProps(
+        'discountAmountMin',
+        'discountAmountMax',
+        t('posmOrders.discount'),
+      ),
       render: (_, record) => (
         <Text type="secondary">${(record.discountAmount || 0).toFixed(2)}</Text>
       ),
     },
     {
+      key: 'actualAmount',
       title: t('posmOrders.actualPay'),
       dataIndex: 'actualAmount',
       width: 110,
       align: 'right',
+      sorter: true,
+      sortOrder: sortOrderFor('actualPay'),
+      ...numberFilterProps('actualPayMin', 'actualPayMax', t('posmOrders.actualPay')),
       render: (_, record) => (
         <Text type="danger" strong>
           ${((record.totalAmount || 0) - (record.discountAmount || 0)).toFixed(2)}
@@ -364,7 +793,7 @@ export default function PosmSalesOrdersPage() {
       title={t('posmOrders.cashierRecords')}
       extra={
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={handleSearch}>
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             {t('common.refresh')}
           </Button>
         </Space>
@@ -382,16 +811,20 @@ export default function PosmSalesOrdersPage() {
       >
         <DatePicker.RangePicker
           value={filterDateRange}
-          onChange={(dates) =>
-            setFilterDateRange(dates?.[0] && dates?.[1] ? [dates[0], dates[1]] : null)
-          }
+          onChange={(dates) => {
+            const nextRange =
+              dates?.[0] && dates?.[1] ? [dates[0], dates[1]] as [dayjs.Dayjs, dayjs.Dayjs] : null
+            setFilterDateRange(nextRange)
+          }}
           format="YYYY-MM-DD"
           style={{ width: 260 }}
         />
         <Select
           placeholder={t('posmOrders.branch')}
           value={filterBranchCode || undefined}
-          onChange={setFilterBranchCode}
+          onChange={(value) => {
+            setFilterBranchCode(value || '')
+          }}
           style={{ width: 180 }}
           allowClear
           showSearch
@@ -439,6 +872,28 @@ export default function PosmSalesOrdersPage() {
             dataSource={data}
             columns={columns}
             pagination={false}
+            onChange={(_pagination, _filters, sorter, extra) => {
+              if (extra.action !== 'sort') return
+              const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
+              const nextSort = mapPosmSalesOrderSortState(
+                activeSorter?.columnKey,
+                activeSorter?.order,
+              )
+              const nextState = applyPosmSalesOrderQueryChange(getCurrentQueryState(), {
+                sort: nextSort,
+              })
+              setSort(nextSort)
+              setSortColumnKey(
+                nextSort.field === 'orderTime'
+                  ? String(activeSorter?.columnKey || 'date')
+                  : String(activeSorter?.columnKey || nextSort.field),
+              )
+              if (page !== 1) {
+                skipNextPageLoadRef.current = true
+              }
+              setPage(1)
+              void loadData(nextState)
+            }}
             scroll={tableScrollY ? { y: tableScrollY } : undefined}
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
             expandable={{

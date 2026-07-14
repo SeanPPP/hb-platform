@@ -186,6 +186,206 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("storeCode", "asc", "value-a,value-b,value-c")]
+    [InlineData("storeCode", "desc", "value-c,value-b,value-a")]
+    [InlineData("operationType", "asc", "value-a,value-b,value-c")]
+    [InlineData("operationType", "desc", "value-c,value-b,value-a")]
+    [InlineData("amountDelta", "asc", "value-a,value-b,value-c")]
+    [InlineData("amountDelta", "desc", "value-c,value-b,value-a")]
+    [InlineData("deviceCode", "asc", "value-a,value-b,value-c")]
+    [InlineData("deviceCode", "desc", "value-c,value-b,value-a")]
+    [InlineData("outcome", "asc", "value-a,value-b,value-c")]
+    [InlineData("outcome", "desc", "value-c,value-b,value-a")]
+    public async Task QueryAsync_SortsByAllowedNonTimeFieldBeforeStableTieBreakers(
+        string sortBy,
+        string sortOrder,
+        string expectedReceiptOrder
+    )
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            CreateAudit("value-a", "BRI", now.AddMinutes(-2)),
+            CreateAudit("value-b", "BRI", now.AddMinutes(-1)),
+            CreateAudit("value-c", "BRI", now.AddMinutes(-3)),
+        };
+        rows[0].EventId = Guid.Parse("00000000-0000-0000-0000-000000000003");
+        rows[1].EventId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        rows[2].EventId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var stringValues = new[] { "A-VALUE", "B-VALUE", "C-VALUE" };
+        for (var index = 0; index < rows.Length; index++)
+        {
+            switch (sortBy)
+            {
+                case "storeCode":
+                    rows[index].StoreCode = stringValues[index];
+                    break;
+                case "operationType":
+                    rows[index].OperationType = stringValues[index];
+                    break;
+                case "amountDelta":
+                    rows[index].AmountDelta = index + 1;
+                    break;
+                case "deviceCode":
+                    rows[index].DeviceCode = stringValues[index];
+                    break;
+                case "outcome":
+                    rows[index].Outcome = stringValues[index];
+                    break;
+            }
+        }
+
+        await _db.Insertable(rows).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var result = await service.QueryAsync(
+            new OperationAuditQueryDto { SortBy = sortBy, SortOrder = sortOrder },
+            now
+        );
+
+        Assert.Equal(
+            expectedReceiptOrder.Split(','),
+            result.Items.Select(item => item.ReceiptNumber)
+        );
+    }
+
+    [Theory]
+    [InlineData("asc", "oldest,middle,newest")]
+    [InlineData("desc", "newest,middle,oldest")]
+    public async Task QueryAsync_SortsByOccurredTimeBeforeEventId(
+        string sortOrder,
+        string expectedReceiptOrder
+    )
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            CreateAudit("middle", "BRI", now.AddMinutes(-2)),
+            CreateAudit("newest", "BRI", now.AddMinutes(-1)),
+            CreateAudit("oldest", "BRI", now.AddMinutes(-3)),
+        };
+        await _db.Insertable(rows).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var result = await service.QueryAsync(
+            new OperationAuditQueryDto { SortBy = "occurredAtUtc", SortOrder = sortOrder },
+            now
+        );
+
+        Assert.Equal(
+            expectedReceiptOrder.Split(','),
+            result.Items.Select(item => item.ReceiptNumber)
+        );
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("storeCode", null)]
+    [InlineData(null, "asc")]
+    [InlineData("unsupported", "asc")]
+    [InlineData("storeCode", "unsupported")]
+    public async Task QueryAsync_InvalidOrIncompleteSortFallsBackToOccurredTimeDescending(
+        string? sortBy,
+        string? sortOrder
+    )
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        await InsertAuditAsync("older", "Z-STORE", now.AddMinutes(-2));
+        await InsertAuditAsync("newer", "A-STORE", now.AddMinutes(-1));
+        var service = CreateService("Admin");
+
+        var result = await service.QueryAsync(
+            new OperationAuditQueryDto { SortBy = sortBy, SortOrder = sortOrder },
+            now
+        );
+
+        Assert.Equal("newer", result.Items[0].ReceiptNumber);
+    }
+
+    [Theory]
+    [InlineData("asc")]
+    [InlineData("desc")]
+    public async Task QueryAsync_AmountSortAlwaysPlacesNullLast(string sortOrder)
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        var first = CreateAudit("first", "BRI", now.AddMinutes(-3));
+        first.AmountDelta = 1m;
+        var second = CreateAudit("second", "BRI", now.AddMinutes(-2));
+        second.AmountDelta = 2m;
+        var missing = CreateAudit("missing", "BRI", now.AddMinutes(-1));
+        missing.AmountDelta = null;
+        await _db.Insertable(new[] { first, second, missing }).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var result = await service.QueryAsync(
+            new OperationAuditQueryDto { SortBy = "amountDelta", SortOrder = sortOrder },
+            now
+        );
+
+        Assert.Equal("missing", result.Items[^1].ReceiptNumber);
+    }
+
+    [Theory]
+    [InlineData("asc", "00000000-0000-0000-0000-000000000001")]
+    [InlineData("desc", "00000000-0000-0000-0000-000000000002")]
+    public async Task QueryAsync_OccurredTimeSortUsesEventIdInSameDirection(
+        string sortOrder,
+        string expectedFirstEventId
+    )
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        var first = CreateAudit("first", "BRI", now.AddMinutes(-1));
+        first.EventId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var second = CreateAudit("second", "BRI", first.OccurredAtUtc);
+        second.EventId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        await _db.Insertable(new[] { first, second }).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var result = await service.QueryAsync(
+            new OperationAuditQueryDto { SortBy = "occurredAtUtc", SortOrder = sortOrder },
+            now
+        );
+
+        Assert.Equal(Guid.Parse(expectedFirstEventId), result.Items[0].EventId);
+    }
+
+    [Fact]
+    public async Task QueryAsync_NonTimeSortUsesOccurredTimeAndEventIdDescendingForStablePages()
+    {
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        var older = CreateAudit("older", "BRI", now.AddMinutes(-2));
+        older.EventId = Guid.Parse("00000000-0000-0000-0000-000000000999");
+        var newerFirst = CreateAudit("newer-first", "BRI", now.AddMinutes(-1));
+        newerFirst.EventId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var newerSecond = CreateAudit("newer-second", "BRI", newerFirst.OccurredAtUtc);
+        newerSecond.EventId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var rows = new[] { older, newerFirst, newerSecond };
+        await _db.Insertable(rows).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var eventIds = new List<Guid>();
+        for (var pageNumber = 1; pageNumber <= 3; pageNumber++)
+        {
+            var page = await service.QueryAsync(
+                new OperationAuditQueryDto
+                {
+                    SortBy = "storeCode",
+                    SortOrder = "asc",
+                    PageNumber = pageNumber,
+                    PageSize = 1,
+                },
+                now
+            );
+            eventIds.Add(Assert.Single(page.Items).EventId);
+        }
+
+        Assert.Equal(
+            new[] { newerSecond.EventId, newerFirst.EventId, older.EventId },
+            eventIds
+        );
+    }
+
     [Fact]
     public async Task GetDetailAsync_ReturnsItemsForAccessibleEvent()
     {

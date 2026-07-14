@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import dayjs from 'dayjs'
 import {
   CENTER_LOG_PATH,
-  DEFAULT_CENTER_LOG_PROJECT_CODE,
   DEFAULT_CENTER_LOG_PAGE_SIZE,
   buildCenterLogQueryParams,
   buildDefaultCenterLogQueryParams,
@@ -59,8 +58,16 @@ assertEqual(query.sortBy, 'TimestampUtc', 'sort field defaults to timestamp')
 assertEqual(query.sortDirection, 'desc', 'sort direction defaults to descending')
 
 const defaultQuery = buildDefaultCenterLogQueryParams()
-assertEqual(defaultQuery.projectCodes?.join(','), DEFAULT_CENTER_LOG_PROJECT_CODE, 'default query keeps default project')
-assertEqual(defaultQuery.projectCode, DEFAULT_CENTER_LOG_PROJECT_CODE, 'default query keeps legacy project code fallback')
+assertEqual(
+  Object.prototype.hasOwnProperty.call(defaultQuery, 'projectCodes'),
+  false,
+  'default query omits project codes to query all projects',
+)
+assertEqual(
+  Object.prototype.hasOwnProperty.call(defaultQuery, 'projectCode'),
+  false,
+  'default query omits legacy project code to query all projects',
+)
 assertEqual(defaultQuery.pageNumber, 1, 'default query resets page number')
 assertEqual(defaultQuery.pageSize, DEFAULT_CENTER_LOG_PAGE_SIZE, 'default query keeps default page size')
 assertEqual(defaultQuery.level, undefined, 'default query clears level')
@@ -69,6 +76,127 @@ assertEqual(defaultQuery.category, undefined, 'default query clears category')
 assertEqual(defaultQuery.requestPath, undefined, 'default query clears request path')
 assertEqual(defaultQuery.traceId, undefined, 'default query clears trace id')
 assertEqual(defaultQuery.keyword, undefined, 'default query clears keyword')
+
+const emptyUrlValues = (
+  queryModule as unknown as {
+    buildCenterLogFormValuesFromSearchParams: (params: URLSearchParams) => { projectCodes?: string[] }
+  }
+).buildCenterLogFormValuesFromSearchParams(new URLSearchParams())
+assertEqual(emptyUrlValues.projectCodes?.length, 0, 'plain URL defaults to all projects')
+
+const buildProjectChangeQuery = (
+  queryModule as unknown as {
+    buildCenterLogProjectChangeQuery?: (
+      values: ReturnType<typeof buildCenterLogQueryParams>,
+      projectCodes: string[],
+    ) => ReturnType<typeof buildCenterLogQueryParams>
+  }
+).buildCenterLogProjectChangeQuery
+assertEqual(typeof buildProjectChangeQuery, 'function', 'project selection should expose immediate query builder')
+const changedProjectQuery = buildProjectChangeQuery?.(
+  {
+    projectCodes: ['HBBBackend'],
+    projectCode: 'HBBBackend',
+    level: 'Error',
+    startUtc: '2026-07-14T00:00:00.000Z',
+    pageNumber: 5,
+    pageSize: 50,
+  },
+  ['HbwebExpo', 'hbpos_api'],
+)
+assertEqual(changedProjectQuery?.projectCodes?.join(','), 'HbwebExpo,hbpos_api', 'project change applies multiple values immediately')
+assertEqual(changedProjectQuery?.projectCode, 'HbwebExpo', 'project change keeps legacy first-project fallback')
+assertEqual(changedProjectQuery?.level, 'Error', 'project change preserves active non-project filters')
+assertEqual(
+  changedProjectQuery?.startUtc,
+  '2026-07-14T00:00:00.000Z',
+  'project change preserves active date filters instead of applying unrelated form edits',
+)
+assertEqual(changedProjectQuery?.pageNumber, 1, 'project change resets page number')
+assertEqual(changedProjectQuery?.pageSize, 50, 'project change preserves the active page size')
+
+const buildStatusOverview = (
+  queryModule as unknown as {
+    buildCenterLogStatusOverview?: (summary: {
+      status?: { projects: Array<{ lastReceivedAtUtc: string | null }> }
+      pipeline?: {
+        droppedOldestCount: number
+        enqueueFailureCount: number
+        failedFlushBatchCount: number
+        failedFlushLogCount: number
+      }
+    }) => {
+      latestReceivedAtUtc?: string
+      pipelineAnomalies?: {
+        droppedOldestCount: number
+        enqueueFailureCount: number
+        failedFlushBatchCount: number
+        failedFlushLogCount: number
+        hasRecordedAnomaly: boolean
+      }
+    }
+  }
+).buildCenterLogStatusOverview
+assertEqual(typeof buildStatusOverview, 'function', 'center logs should expose compact status overview logic')
+const statusOverview = buildStatusOverview?.({
+  status: {
+    projects: [
+      { lastReceivedAtUtc: '2026-07-14T01:00:00.000Z' },
+      { lastReceivedAtUtc: '2026-07-14T03:00:00.000Z' },
+      { lastReceivedAtUtc: null },
+    ],
+  },
+  pipeline: {
+    droppedOldestCount: 1,
+    enqueueFailureCount: 2,
+    failedFlushBatchCount: 4,
+    failedFlushLogCount: 3,
+  },
+})
+assertEqual(statusOverview?.latestReceivedAtUtc, '2026-07-14T03:00:00.000Z', 'status overview keeps latest received time')
+assertEqual(statusOverview?.pipelineAnomalies?.droppedOldestCount, 1, 'status overview preserves dropped count')
+assertEqual(statusOverview?.pipelineAnomalies?.enqueueFailureCount, 2, 'status overview preserves enqueue failure count')
+assertEqual(statusOverview?.pipelineAnomalies?.failedFlushBatchCount, 4, 'status overview preserves failed batch count')
+assertEqual(statusOverview?.pipelineAnomalies?.failedFlushLogCount, 3, 'status overview preserves failed log count')
+assertEqual(statusOverview?.pipelineAnomalies?.hasRecordedAnomaly, true, 'status overview marks historical anomalies without summing unlike counters')
+
+const projectDefinitions = (
+  queryModule as unknown as {
+    CENTER_LOG_PROJECT_DEFINITIONS?: Array<{ projectCode: string; labelKey: string }>
+  }
+).CENTER_LOG_PROJECT_DEFINITIONS
+assertEqual(projectDefinitions?.length, 5, 'center logs should define all five projects')
+assertEqual(
+  projectDefinitions?.map((item) => item.projectCode).join(','),
+  'HBBBackend,hbweb_rv,HbwebExpo,hbpos_win,hbpos_api',
+  'project definitions should keep the supported project order',
+)
+
+const resolveConfigurationState = (
+  queryModule as unknown as {
+    resolveCenterLogConfigurationState?: (status: {
+      configurationState?: string
+      enabled: boolean
+      credentialConfigured: boolean | null
+    }) => string
+  }
+).resolveCenterLogConfigurationState
+assertEqual(typeof resolveConfigurationState, 'function', 'center logs should expose project configuration state mapping')
+assertEqual(
+  resolveConfigurationState?.({ configurationState: 'Ready', enabled: true, credentialConfigured: true }),
+  'Ready',
+  'ready project state is preserved',
+)
+assertEqual(
+  resolveConfigurationState?.({ configurationState: '', enabled: false, credentialConfigured: true }),
+  'Disabled',
+  'disabled project state is derived when backend state is absent',
+)
+assertEqual(
+  resolveConfigurationState?.({ configurationState: '', enabled: true, credentialConfigured: false }),
+  'MissingCredential',
+  'missing credential project state is derived when backend state is absent',
+)
 
 assertEqual(
   typeof (queryModule as Record<string, unknown>).buildCenterLogFormValuesFromSearchParams,
@@ -128,9 +256,64 @@ assertEqual(
 )
 assertEqual(
   shouldHydrateCenterLogQueryFromLocation(true, CENTER_LOG_PATH, '', 'tab-key', 'audit-link-key'),
-  false,
-  'plain keep-alive tab restore should preserve cached filters',
+  true,
+  'plain keep-alive re-entry should hydrate all-project defaults for a new navigation',
 )
+
+const createLatestRequestRunner = (
+  queryModule as unknown as {
+    createLatestCenterLogRequestRunner?: () => {
+      run: <T>(
+        operation: () => Promise<T>,
+        handlers: {
+          onStart?: () => void
+          onSuccess: (value: T) => void
+          onError?: (error: unknown) => void
+          onSettled?: () => void
+        },
+      ) => Promise<void>
+    }
+  }
+).createLatestCenterLogRequestRunner
+assertEqual(typeof createLatestRequestRunner, 'function', 'center logs should expose a latest-request runner')
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
+const requestRunner = createLatestRequestRunner?.()
+const firstDeferred = createDeferred<string>()
+const secondDeferred = createDeferred<string>()
+const appliedResults: string[] = []
+let loading = false
+const firstRun = requestRunner?.run(
+  () => firstDeferred.promise,
+  {
+    onStart: () => { loading = true },
+    onSuccess: (value) => { appliedResults.push(value) },
+    onSettled: () => { loading = false },
+  },
+)
+const secondRun = requestRunner?.run(
+  () => secondDeferred.promise,
+  {
+    onStart: () => { loading = true },
+    onSuccess: (value) => { appliedResults.push(value) },
+    onSettled: () => { loading = false },
+  },
+)
+firstDeferred.resolve('stale')
+await firstRun
+assertEqual(appliedResults.length, 0, 'stale response should not update center-log state')
+assertEqual(loading, true, 'stale response should not finish loading while latest request is pending')
+secondDeferred.resolve('latest')
+await secondRun
+assertEqual(appliedResults.join(','), 'latest', 'latest response should update center-log state')
+assertEqual(loading, false, 'latest response should finish loading')
 
 const centerLogsPageSource = readFileSync('src/pages/System/CenterLogs/index.tsx', 'utf8')
 assertEqual(
@@ -143,5 +326,130 @@ assertEqual(
   true,
   'center logs page should rehydrate changed audit-link query',
 )
+assertEqual(
+  centerLogsPageSource.includes('mode="multiple"'),
+  true,
+  'project selector should use fixed multiple mode',
+)
+assertEqual(
+  centerLogsPageSource.includes('buildCenterLogProjectChangeQuery('),
+  true,
+  'project selector should apply project changes immediately',
+)
+assertEqual(
+  centerLogsPageSource.includes('setActiveQuery((currentQuery) => buildCenterLogProjectChangeQuery('),
+  true,
+  'project selector should update projects from active query without applying other form edits',
+)
+assertEqual(
+  centerLogsPageSource.includes('summaryStatus?.status?.projects'),
+  true,
+  'center logs page should safely read project status during staggered backend rollout',
+)
+assertEqual(
+  centerLogsPageSource.includes('summaryStatus.status.'),
+  false,
+  'center logs page should not require status from an older backend response',
+)
+assertEqual(
+  centerLogsPageSource.includes('{summaryStatus?.status ? ('),
+  true,
+  'missing status should render unknown instead of reporting backend capture as disabled',
+)
+assertEqual(
+  centerLogsPageSource.includes('createLatestCenterLogRequestRunner()'),
+  true,
+  'center logs page should create a latest-request runner',
+)
+assertEqual(
+  centerLogsPageSource.includes('requestRunnerRef.current.run('),
+  true,
+  'center logs page should execute requests through latest-response coordination',
+)
+assertEqual(centerLogsPageSource.includes('Collapse,'), true, 'status details should use existing Ant Design Collapse')
+assertEqual(centerLogsPageSource.includes('defaultActiveKey'), false, 'diagnostic details should be collapsed by default')
+assertEqual(
+  centerLogsPageSource.includes('buildCenterLogStatusOverview(summaryStatus)'),
+  true,
+  'status area should render a compact always-visible overview',
+)
+assertEqual(
+  centerLogsPageSource.includes('<Tag color={color}>{state}</Tag>'),
+  false,
+  'project status should not duplicate raw and localized state labels',
+)
+
+const zhCenterLogs = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8')).system.centerLogs
+const enCenterLogs = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8')).system.centerLogs
+assertEqual(zhCenterLogs.filters.projectPlaceholder, '全部项目（可多选）', 'Chinese project placeholder explains empty selection means all projects')
+assertEqual(enCenterLogs.filters.projectPlaceholder, 'All projects (multiple selection)', 'English project placeholder explains empty selection means all projects')
+assertEqual(zhCenterLogs.projects.HBBBackend, 'Web/移动端后端', 'Chinese backend project label is defined')
+assertEqual(enCenterLogs.projects.HBBBackend, 'Web/Mobile Backend', 'English backend project label is defined')
+assertEqual(zhCenterLogs.projects.hbweb_rv, 'Web前端', 'Chinese web project label is defined')
+assertEqual(enCenterLogs.projects.hbweb_rv, 'Web Frontend', 'English web project label is defined')
+assertEqual(zhCenterLogs.projects.HbwebExpo, '移动端', 'Chinese mobile project label is defined')
+assertEqual(enCenterLogs.projects.HbwebExpo, 'Mobile App', 'English mobile project label is defined')
+assertEqual(zhCenterLogs.projects.hbpos_win, 'WPF客户端', 'Chinese WPF client label is defined')
+assertEqual(enCenterLogs.projects.hbpos_win, 'WPF Client', 'English WPF client label is defined')
+assertEqual(zhCenterLogs.projects.hbpos_api, 'WPF收银后端', 'Chinese POS backend label is defined')
+assertEqual(enCenterLogs.projects.hbpos_api, 'WPF POS Backend', 'English POS backend label is defined')
+assertEqual(zhCenterLogs.status.modes.Internal, '内部采集', 'Chinese internal mode label is defined')
+assertEqual(zhCenterLogs.status.modes.External, '外部接入', 'Chinese external mode label is defined')
+assertEqual(enCenterLogs.status.modes.Internal, 'Internal', 'English internal mode label is defined')
+assertEqual(enCenterLogs.status.modes.External, 'External', 'English external mode label is defined')
+assertEqual(zhCenterLogs.status.states.Ready, '配置齐全', 'Chinese ready copy describes configuration')
+assertEqual(zhCenterLogs.status.webBuildConfigured, '已配置', 'Chinese web build copy describes configuration')
+assertEqual(
+  zhCenterLogs.status.configurationNote.includes('配置不等于已收到日志'),
+  true,
+  'status note distinguishes configuration from received logs',
+)
+assertEqual(
+  zhCenterLogs.empty.description,
+  '当前筛选下没有日志不代表采集链路故障，请结合配置状态、最近接收时间和 Pipeline 计数判断。',
+  'Chinese empty copy should describe all logs rather than error logs only',
+)
+assertEqual(
+  enCenterLogs.empty.description,
+  'No logs for the current filters does not mean the capture pipeline is broken. Check configuration, last received time, and Pipeline counters together.',
+  'English empty copy should describe all logs rather than error logs only',
+)
+assertEqual(
+  JSON.stringify(zhCenterLogs.status).includes('已连接') || JSON.stringify(zhCenterLogs.status).includes('在线'),
+  false,
+  'status copy must not imply connection or online state',
+)
+
+const productionEnvExample = readFileSync('.env.production.example', 'utf8')
+assertEqual(
+  productionEnvExample.includes('.env.production.local'),
+  true,
+  'production example should direct local secrets to the ignored production-local file',
+)
+assertEqual(
+  productionEnvExample.includes('复制为 .env.production '),
+  false,
+  'production example should not direct secrets to the shared production env file',
+)
+assertEqual(
+  productionEnvExample.includes('公开低权限写入 token'),
+  true,
+  'production example should explain the public low-privilege ingest token architecture',
+)
+assertEqual(
+  productionEnvExample.includes('不得复用其他 secret'),
+  true,
+  'production example should forbid reusing other secrets',
+)
+
+const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
+assertEqual(packageJson.scripts.dev.includes('--config vite.config.ts'), true, 'dev script should select TypeScript Vite config')
+assertEqual(packageJson.scripts.build.includes('--config vite.config.ts'), true, 'build script should select TypeScript Vite config')
+assertEqual(packageJson.scripts.preview.includes('--config vite.config.ts'), true, 'preview script should select TypeScript Vite config')
+
+const nodeTsConfig = JSON.parse(readFileSync('tsconfig.node.json', 'utf8'))
+assertEqual(nodeTsConfig.compilerOptions.noEmit, true, 'node TypeScript config should never regenerate Vite config artifacts')
+assertEqual(existsSync('vite.config.js'), false, 'tracked generated Vite JavaScript should be removed')
+assertEqual(existsSync('vite.config.d.ts'), false, 'tracked generated Vite declaration should be removed')
 
 console.log('centerLogs.query.test: ok')

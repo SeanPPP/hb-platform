@@ -24,6 +24,36 @@ services:
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
       - Cookie__Secure=${COOKIE_SECURE:-true}
       - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
+      # 中心日志状态与保留策略显式写入生产 compose，外部项目摘要只从 .env 注入。
+      - ApplicationLogging__Enabled=true
+      - ApplicationLogging__DefaultProjectCode=HBBBackend
+      - ApplicationLogging__DefaultEnvironment=Production
+      - ApplicationLogging__DefaultSourceType=Backend
+      - ApplicationLogging__ServiceName=HBBBackend.Api
+      - ApplicationLogging__MinimumLevel=Warning
+      - ApplicationLogging__DefaultRetentionDays=7
+      - ApplicationLogging__Projects__0__ProjectCode=HBBBackend
+      - ApplicationLogging__Projects__0__DisplayName=Web/移动端后端
+      - ApplicationLogging__Projects__0__Enabled=true
+      - ApplicationLogging__Projects__0__RetentionDays=7
+      - ApplicationLogging__Projects__1__ProjectCode=hbweb_rv
+      - ApplicationLogging__Projects__1__DisplayName=Web前端
+      - ApplicationLogging__Projects__1__Enabled=true
+      - ApplicationLogging__Projects__1__RetentionDays=7
+      - ApplicationLogging__Projects__1__ApiKeyHash=${CENTER_LOG_HBWEB_RV_KEY_SHA256:?required}
+      - ApplicationLogging__Projects__2__ProjectCode=HbwebExpo
+      - ApplicationLogging__Projects__2__DisplayName=移动端
+      - ApplicationLogging__Projects__2__Enabled=false
+      - ApplicationLogging__Projects__2__RetentionDays=7
+      - ApplicationLogging__Projects__3__ProjectCode=hbpos_win
+      - ApplicationLogging__Projects__3__DisplayName=WPF客户端
+      - ApplicationLogging__Projects__3__Enabled=false
+      - ApplicationLogging__Projects__3__RetentionDays=30
+      - ApplicationLogging__Projects__4__ProjectCode=hbpos_api
+      - ApplicationLogging__Projects__4__DisplayName=WPF收银后端
+      - ApplicationLogging__Projects__4__Enabled=true
+      - ApplicationLogging__Projects__4__RetentionDays=7
+      - ApplicationLogging__Projects__4__ApiKeyHash=${CENTER_LOG_HBPOS_API_KEY_SHA256:?required}
       # SMTP 密码密文依赖 DataProtection key ring，必须落到宿主机目录以跨容器重建保留。
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       # EAS webhook secret 只从服务器 .env 注入；profile 白名单固定允许生产与预览构建回写。

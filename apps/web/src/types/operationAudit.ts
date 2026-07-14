@@ -1,4 +1,12 @@
 export type OperationAuditOutcome = 'Succeeded' | 'Denied' | 'Failed'
+export type OperationAuditSortField =
+  | 'occurredAtUtc'
+  | 'storeCode'
+  | 'operationType'
+  | 'amountDelta'
+  | 'deviceCode'
+  | 'outcome'
+export type OperationAuditSortOrder = 'asc' | 'desc'
 
 export interface OperationAuditQueryParams {
   fromUtc: string
@@ -13,6 +21,8 @@ export interface OperationAuditQueryParams {
   keyword?: string
   pageNumber: number
   pageSize: number
+  sortBy?: OperationAuditSortField
+  sortOrder?: OperationAuditSortOrder
 }
 
 export interface OperationAuditListItem {

@@ -1,5 +1,5 @@
 import dayjs, { type Dayjs } from 'dayjs'
-import type { ApplicationLogQueryParams } from '../../../types/centerLog'
+import type { ApplicationLogQueryParams, ApplicationLogSummary } from '../../../types/centerLog'
 
 export interface CenterLogQueryFormValues {
   projectCodes?: string[]
@@ -16,13 +16,20 @@ export interface CenterLogQueryFormValues {
   timeRange?: [Dayjs, Dayjs]
 }
 
-export const DEFAULT_CENTER_LOG_PROJECT_CODE = 'hbweb_rv'
 export const DEFAULT_CENTER_LOG_PAGE_SIZE = 20
 export const CENTER_LOG_PATH = '/system/center-logs'
 
-export const CENTER_LOG_PROJECT_OPTIONS = ['HBBBackend', 'hbweb_rv', 'HbwebExpo', 'hbpos_win']
+export const CENTER_LOG_PROJECT_DEFINITIONS = [
+  { projectCode: 'HBBBackend', labelKey: 'system.centerLogs.projects.HBBBackend' },
+  { projectCode: 'hbweb_rv', labelKey: 'system.centerLogs.projects.hbweb_rv' },
+  { projectCode: 'HbwebExpo', labelKey: 'system.centerLogs.projects.HbwebExpo' },
+  { projectCode: 'hbpos_win', labelKey: 'system.centerLogs.projects.hbpos_win' },
+  { projectCode: 'hbpos_api', labelKey: 'system.centerLogs.projects.hbpos_api' },
+] as const
 export const CENTER_LOG_LEVEL_OPTIONS = ['Trace', 'Debug', 'Information', 'Warning', 'Error', 'Critical']
 export const CENTER_LOG_SOURCE_TYPE_OPTIONS = ['Backend', 'Web', 'Mobile', 'POS']
+
+export type CenterLogConfigurationState = 'Ready' | 'Disabled' | 'MissingCredential'
 
 function normalizeProjectCodes(projectCodes?: string[]) {
   const normalized = projectCodes
@@ -40,9 +47,8 @@ export function buildCenterLogQueryParams(
   const projectCodes = normalizeProjectCodes(values.projectCodes)
 
   return {
-    // 新后端使用 projectCodes 多选；projectCode 兜底兼容前后端非同步发布。
-    projectCode: projectCodes?.[0],
-    projectCodes,
+    // 空项目表示查询全部，必须省略两个项目参数；有选择时保留单项目参数兼容非同步发布。
+    ...(projectCodes ? { projectCode: projectCodes[0], projectCodes } : {}),
     level: values.level || undefined,
     sourceType: values.sourceType || undefined,
     category: values.category?.trim() || undefined,
@@ -64,10 +70,121 @@ export function buildCenterLogQueryParams(
 
 export function buildDefaultCenterLogQueryParams(pageSize = DEFAULT_CENTER_LOG_PAGE_SIZE) {
   return buildCenterLogQueryParams(
-    { projectCodes: [DEFAULT_CENTER_LOG_PROJECT_CODE] },
+    { projectCodes: [] },
     1,
     pageSize,
   )
+}
+
+export function buildCenterLogProjectChangeQuery(
+  activeQuery: ApplicationLogQueryParams,
+  projectCodes: string[],
+) {
+  const normalizedProjectCodes = normalizeProjectCodes(projectCodes)
+  const nextQuery: ApplicationLogQueryParams = {
+    ...activeQuery,
+    pageNumber: 1,
+    pageSize: activeQuery.pageSize ?? DEFAULT_CENTER_LOG_PAGE_SIZE,
+  }
+
+  // 仅替换已应用查询中的项目范围，避免顺带提交表单里尚未点击“查询”的其他改动。
+  delete nextQuery.projectCode
+  delete nextQuery.projectCodes
+  if (normalizedProjectCodes) {
+    nextQuery.projectCode = normalizedProjectCodes[0]
+    nextQuery.projectCodes = normalizedProjectCodes
+  }
+
+  return nextQuery
+}
+
+export function resolveCenterLogConfigurationState(status: {
+  configurationState?: string
+  enabled: boolean
+  credentialConfigured: boolean | null
+}): CenterLogConfigurationState {
+  if (status.configurationState === 'Ready' ||
+    status.configurationState === 'Disabled' ||
+    status.configurationState === 'MissingCredential') {
+    return status.configurationState
+  }
+
+  if (!status.enabled) {
+    return 'Disabled'
+  }
+
+  return status.credentialConfigured === false ? 'MissingCredential' : 'Ready'
+}
+
+export interface LatestCenterLogRequestHandlers<T> {
+  onStart?: () => void
+  onSuccess: (value: T) => void
+  onError?: (error: unknown) => void
+  onSettled?: () => void
+}
+
+export function createLatestCenterLogRequestRunner() {
+  let latestRequestId = 0
+
+  return {
+    async run<T>(
+      operation: () => Promise<T>,
+      handlers: LatestCenterLogRequestHandlers<T>,
+    ) {
+      latestRequestId += 1
+      const requestId = latestRequestId
+      handlers.onStart?.()
+
+      try {
+        const value = await operation()
+        if (requestId !== latestRequestId) {
+          return
+        }
+
+        handlers.onSuccess(value)
+      } catch (error) {
+        if (requestId !== latestRequestId) {
+          return
+        }
+
+        handlers.onError?.(error)
+      } finally {
+        // 旧请求完成时不能关闭新请求的 loading，只由最新请求收尾。
+        if (requestId === latestRequestId) {
+          handlers.onSettled?.()
+        }
+      }
+    },
+  }
+}
+
+export function buildCenterLogStatusOverview(
+  summary?: Pick<ApplicationLogSummary, 'status' | 'pipeline'> | null,
+) {
+  const latestReceivedAtUtc = summary?.status?.projects.reduce<string | undefined>(
+    (latest, project) => {
+      const current = project.lastReceivedAtUtc ?? undefined
+      return current && (!latest || current > latest) ? current : latest
+    },
+    undefined,
+  )
+  const pipelineAnomalies = summary?.pipeline
+    ? {
+        droppedOldestCount: summary.pipeline.droppedOldestCount,
+        enqueueFailureCount: summary.pipeline.enqueueFailureCount,
+        failedFlushBatchCount: summary.pipeline.failedFlushBatchCount,
+        failedFlushLogCount: summary.pipeline.failedFlushLogCount,
+        // 四个计数口径不同，只判断是否曾记录异常，不能相加成一个总数。
+        hasRecordedAnomaly: [
+          summary.pipeline.droppedOldestCount,
+          summary.pipeline.enqueueFailureCount,
+          summary.pipeline.failedFlushBatchCount,
+          summary.pipeline.failedFlushLogCount,
+        ].some((count) => count > 0),
+      }
+    : undefined
+
+  return { latestReceivedAtUtc, pipelineAnomalies }
 }
 
 export function buildCenterLogFormValuesFromSearchParams(
@@ -76,7 +193,7 @@ export function buildCenterLogFormValuesFromSearchParams(
   const projectCodes = normalizeProjectCodes([
     ...searchParams.getAll('projectCodes'),
     searchParams.get('projectCode') ?? '',
-  ]) ?? [DEFAULT_CENTER_LOG_PROJECT_CODE]
+  ]) ?? []
   const fromUtc = searchParams.get('fromUtc')
   const toUtc = searchParams.get('toUtc')
   const from = fromUtc ? dayjs(fromUtc) : null
@@ -102,12 +219,11 @@ export function buildCenterLogFormValuesFromSearchParams(
 export function shouldHydrateCenterLogQueryFromLocation(
   active: boolean,
   pathname: string,
-  nextSearch: string,
+  _nextSearch: string,
   locationKey: string,
   hydratedLocationKey: string,
 ) {
   return active &&
     pathname === CENTER_LOG_PATH &&
-    nextSearch.length > 1 &&
     locationKey !== hydratedLocationKey
 }

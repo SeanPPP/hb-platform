@@ -2,8 +2,12 @@ import { readFileSync } from 'node:fs'
 import {
   buildOperationAuditQuery,
   buildSystemLogLink,
+  DEFAULT_OPERATION_AUDIT_SORT,
+  createLatestOperationAuditRequestGuard,
   formatMoney,
   formatSignedMoney,
+  OPERATION_AUDIT_SORT_FIELDS,
+  resolveOperationAuditTableChange,
   summarizeProducts,
 } from './operationLogsLogic'
 import * as operationLogsLogic from './operationLogsLogic'
@@ -36,6 +40,8 @@ assertDeepEqual(
     keyword: ' trace ',
     page: 2,
     pageSize: 50,
+    sortBy: 'amountDelta',
+    sortOrder: 'asc',
   }),
   {
     fromUtc: '2026-07-01T00:00:00.000Z',
@@ -50,8 +56,37 @@ assertDeepEqual(
     keyword: 'trace',
     pageNumber: 2,
     pageSize: 50,
+    sortBy: 'amountDelta',
+    sortOrder: 'asc',
   },
   '查询参数应裁剪文本并映射分页字段',
+)
+
+assertDeepEqual(
+  OPERATION_AUDIT_SORT_FIELDS,
+  ['occurredAtUtc', 'storeCode', 'operationType', 'amountDelta', 'deviceCode', 'outcome'],
+  '员工操作日志仅允许六个服务端排序字段',
+)
+assertDeepEqual(
+  DEFAULT_OPERATION_AUDIT_SORT,
+  { sortBy: 'occurredAtUtc', sortOrder: 'descend' },
+  '员工操作日志默认按发生时间倒序',
+)
+assertDeepEqual(
+  resolveOperationAuditTableChange(
+    { page: 4, pageSize: 20, sortBy: 'occurredAtUtc', sortOrder: 'descend' },
+    { action: 'sort', page: 4, pageSize: 20, sortBy: 'storeCode', sortOrder: 'ascend' },
+  ),
+  { page: 1, pageSize: 20, sortBy: 'storeCode', sortOrder: 'ascend' },
+  '切换排序时应回到第一页并采用表头排序状态',
+)
+assertDeepEqual(
+  resolveOperationAuditTableChange(
+    { page: 1, pageSize: 20, sortBy: 'storeCode', sortOrder: 'ascend' },
+    { action: 'paginate', page: 3, pageSize: 50 },
+  ),
+  { page: 3, pageSize: 50, sortBy: 'storeCode', sortOrder: 'ascend' },
+  '分页时应保留当前排序状态',
 )
 
 assertEqual(formatSignedMoney(12.3, 'AUD'), '+$12.30', '正金额应显示加号')
@@ -138,6 +173,8 @@ assertDeepEqual(
 )
 
 const operationLogsPageSource = readFileSync('src/pages/PosAdmin/OperationLogs/index.tsx', 'utf8')
+const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
+const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
 assertEqual(
   operationLogsPageSource.includes('formatMoney(item.beforeUnitPrice'),
   true,
@@ -158,6 +195,128 @@ assertEqual(
     operationLogsPageSource.includes('detailRecord.isEmergencyOverride'),
   true,
   '员工详情应显示离线缓存和紧急授权快照',
+)
+assertEqual(
+  operationLogsPageSource.includes('KeyboardSensor') &&
+    operationLogsPageSource.includes('sortableKeyboardCoordinates') &&
+    operationLogsPageSource.includes('HolderOutlined'),
+  true,
+  '主表列拖拽应提供专用把手并支持键盘传感器',
+)
+assertEqual(
+  operationLogsPageSource.includes('onKeyDown={(event) =>') &&
+    operationLogsPageSource.includes('dispatchOperationLogDragHandleKeyDown'),
+  true,
+  '拖拽把手应显式组合 dnd 键盘监听并阻止事件冒泡',
+)
+assertEqual(
+  operationLogsPageSource.includes("overflowWrap: 'anywhere'") &&
+    operationLogsPageSource.includes("whiteSpace: 'normal'"),
+  true,
+  '终端编号等连续长文本应在表格单元格内自动换行',
+)
+const deviceColumnSource = operationLogsPageSource.slice(
+  operationLogsPageSource.indexOf("title: t('operationLogs.columns.device')"),
+  operationLogsPageSource.indexOf("title: t('operationLogs.columns.outcome')"),
+)
+assertEqual(
+  deviceColumnSource.includes('style={WRAPPED_TABLE_CELL_STYLE}') &&
+    !deviceColumnSource.includes('ellipsis:'),
+  true,
+  '终端列应使用自动换行样式且不再截断内容',
+)
+assertEqual(
+  zhLocale.operationLogs.dragColumn,
+  '拖动调整列顺序：{{column}}',
+  '中文拖拽把手标签应包含列名占位符',
+)
+assertEqual(
+  enLocale.operationLogs.dragColumn,
+  'Drag to reorder column: {{column}}',
+  '英文拖拽把手标签应包含列名占位符',
+)
+assertEqual(
+  typeof zhLocale.operationLogs.dnd.instructions === 'string' &&
+    zhLocale.operationLogs.dnd.dragOver.includes('{{column}}') &&
+    zhLocale.operationLogs.dnd.dragOver.includes('{{overColumn}}'),
+  true,
+  '中文读屏配置应包含键盘说明和本地化源列/目标列占位符',
+)
+assertEqual(
+  typeof enLocale.operationLogs.dnd.instructions === 'string' &&
+    enLocale.operationLogs.dnd.dragOver.includes('{{column}}') &&
+    enLocale.operationLogs.dnd.dragOver.includes('{{overColumn}}'),
+  true,
+  '英文读屏配置应包含键盘说明和本地化源列/目标列占位符',
+)
+assertEqual(
+  operationLogsPageSource.includes("t('operationLogs.dragColumn', { column: String(column.title) })"),
+  true,
+  '每个业务列应使用自身本地化标题生成拖拽把手标签',
+)
+assertEqual(
+  operationLogsPageSource.includes("<div style={{ display: 'inline-flex'") &&
+    operationLogsPageSource.includes('<div style={{ minWidth: 0 }}>{children}</div>') &&
+    !operationLogsPageSource.includes('<span style={{ minWidth: 0 }}>{children}</span>'),
+  true,
+  '可拖拽表头应使用 div 容纳 AntD sorter，避免 span 包含 div 的无效 DOM',
+)
+assertEqual(
+  operationLogsPageSource.includes('requestGuardRef.current.begin()') &&
+    (operationLogsPageSource.match(/requestGuardRef\.current\.isLatest\(requestId\)/g)?.length ?? 0) >= 3,
+  true,
+  '页面数据、错误与 loading 更新都应受最新请求序号保护',
+)
+assertEqual(
+  operationLogsPageSource.includes('accessibility={dndAccessibility}') &&
+    operationLogsPageSource.includes('const dndAccessibility = useMemo('),
+  true,
+  'DndContext 应使用稳定的本地化读屏说明和播报配置',
+)
+assertEqual(
+  operationLogsPageSource.includes("key: 'actions'") &&
+    operationLogsPageSource.includes("fixed: 'right'"),
+  true,
+  '操作列应固定在右侧且不进入业务列拖拽顺序',
+)
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+const requestGuard = createLatestOperationAuditRequestGuard()
+const requestState = { data: '', loadError: false, loading: false }
+async function settleRequest(requestId: number, request: Promise<string>) {
+  try {
+    const result = await request
+    if (requestGuard.isLatest(requestId)) requestState.data = result
+  } catch {
+    if (requestGuard.isLatest(requestId)) requestState.loadError = true
+  } finally {
+    if (requestGuard.isLatest(requestId)) requestState.loading = false
+  }
+}
+
+const olderRequest = createDeferred<string>()
+requestState.loading = true
+const olderTask = settleRequest(requestGuard.begin(), olderRequest.promise)
+const latestRequest = createDeferred<string>()
+requestState.loading = true
+const latestTask = settleRequest(requestGuard.begin(), latestRequest.promise)
+latestRequest.resolve('latest-sort-result')
+await latestTask
+olderRequest.reject(new Error('stale request failed later'))
+await olderTask
+assertDeepEqual(
+  requestState,
+  { data: 'latest-sort-result', loadError: false, loading: false },
+  '旧请求晚完成或失败时不得覆盖最新数据、错误和 loading 状态',
 )
 
 console.log('operationLogsLogic.test: ok')

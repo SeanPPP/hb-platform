@@ -33,6 +33,22 @@ namespace BlazorApp.Shared.DTOs
         public string? DeviceCode { get; set; }
         public OrderType? OrderType { get; set; }
         public string? Keyword { get; set; }
+        public string? OrderGuidKeyword { get; set; }
+        public string? DeviceCodeKeyword { get; set; }
+        public TimeSpan? TimeStart { get; set; }
+        public TimeSpan? TimeEnd { get; set; }
+        public int? SkuCountMin { get; set; }
+        public int? SkuCountMax { get; set; }
+        public int? ItemCountMin { get; set; }
+        public int? ItemCountMax { get; set; }
+        public decimal? TotalAmountMin { get; set; }
+        public decimal? TotalAmountMax { get; set; }
+        public decimal? DiscountAmountMin { get; set; }
+        public decimal? DiscountAmountMax { get; set; }
+        public decimal? ActualPayMin { get; set; }
+        public decimal? ActualPayMax { get; set; }
+        public string? SortField { get; set; }
+        public string? SortDirection { get; set; }
         public int PageNumber { get; set; } = 1;
         public int PageSize { get; set; } = 20;
     }

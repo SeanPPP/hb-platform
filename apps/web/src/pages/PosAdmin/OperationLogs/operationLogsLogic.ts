@@ -1,3 +1,10 @@
+import type {
+  OperationAuditSortField,
+  OperationAuditSortOrder,
+} from '../../../types/operationAudit'
+
+export type OperationAuditTableSortOrder = 'ascend' | 'descend'
+
 export interface OperationAuditQueryState {
   startUtc: string
   endUtc: string
@@ -11,6 +18,8 @@ export interface OperationAuditQueryState {
   keyword: string
   page: number
   pageSize: number
+  sortBy: OperationAuditSortField
+  sortOrder: OperationAuditSortOrder
 }
 
 export interface OperationAuditQueryParams {
@@ -26,6 +35,82 @@ export interface OperationAuditQueryParams {
   keyword?: string
   pageNumber: number
   pageSize: number
+  sortBy: OperationAuditSortField
+  sortOrder: OperationAuditSortOrder
+}
+
+export const OPERATION_AUDIT_SORT_FIELDS = [
+  'occurredAtUtc',
+  'storeCode',
+  'operationType',
+  'amountDelta',
+  'deviceCode',
+  'outcome',
+] as const satisfies readonly OperationAuditSortField[]
+
+export const DEFAULT_OPERATION_AUDIT_SORT = {
+  sortBy: 'occurredAtUtc',
+  sortOrder: 'descend',
+} as const satisfies {
+  sortBy: OperationAuditSortField
+  sortOrder: OperationAuditTableSortOrder
+}
+
+export interface OperationAuditTableState {
+  page: number
+  pageSize: number
+  sortBy: OperationAuditSortField
+  sortOrder: OperationAuditTableSortOrder
+}
+
+export function createLatestOperationAuditRequestGuard() {
+  let latestRequestId = 0
+  return {
+    begin() {
+      latestRequestId += 1
+      return latestRequestId
+    },
+    isLatest(requestId: number) {
+      return requestId === latestRequestId
+    },
+  }
+}
+
+export function isOperationAuditSortField(value: unknown): value is OperationAuditSortField {
+  return (
+    typeof value === 'string'
+    && OPERATION_AUDIT_SORT_FIELDS.includes(value as OperationAuditSortField)
+  )
+}
+
+export function resolveOperationAuditTableChange(
+  current: OperationAuditTableState,
+  change: {
+    action: 'paginate' | 'sort'
+    page: number
+    pageSize: number
+    sortBy?: unknown
+    sortOrder?: unknown
+  },
+): OperationAuditTableState {
+  if (change.action === 'sort') {
+    return {
+      page: 1,
+      pageSize: change.pageSize,
+      sortBy: isOperationAuditSortField(change.sortBy) ? change.sortBy : current.sortBy,
+      sortOrder:
+        change.sortOrder === 'ascend' || change.sortOrder === 'descend'
+          ? change.sortOrder
+          : current.sortOrder,
+    }
+  }
+
+  return {
+    page: change.page,
+    pageSize: change.pageSize,
+    sortBy: current.sortBy,
+    sortOrder: current.sortOrder,
+  }
 }
 
 export const OPERATION_TYPE_KEYS: Record<string, string> = {
@@ -87,6 +172,8 @@ export function buildOperationAuditQuery(_state: OperationAuditQueryState): Oper
     keyword: trim(_state.keyword),
     pageNumber: _state.page,
     pageSize: _state.pageSize,
+    sortBy: _state.sortBy,
+    sortOrder: _state.sortOrder,
   }
 }
 
