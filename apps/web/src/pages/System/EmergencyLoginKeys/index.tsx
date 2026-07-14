@@ -34,6 +34,7 @@ import type {
 } from '../../../types/emergencyLoginKey'
 import {
   getEmergencyLoginKeyActionState,
+  getEmergencyLoginKeyConflictRefreshFeedback,
   getEmergencyLoginKeyDataProtectionStatusKey,
   getLatestEmergencyLoginKeyOperator,
   getShortEmergencyLoginKeyFingerprint,
@@ -93,6 +94,7 @@ export default function EmergencyLoginKeysPage() {
     try {
       const result = await getEmergencyLoginKeys()
       setKeyset(result)
+      return true
     } catch (error) {
       console.error('Failed to load emergency login keys', error)
       setLoadError(resolveEmergencyLoginKeyErrorMessage(
@@ -101,6 +103,7 @@ export default function EmergencyLoginKeysPage() {
         t('emergencyLoginKeys.loadFailed'),
         localizedErrors,
       ))
+      return false
     } finally {
       setLoading(false)
     }
@@ -191,11 +194,20 @@ export default function EmergencyLoginKeysPage() {
         localizedErrors,
       )
       if (conflict) {
-        // 关键并发处理：发生 409 时先刷新版本，再提示管理员重新确认，禁止复用旧 expectedVersion。
+        // 关键并发处理：发生 409 时先关闭旧操作，再按真实刷新结果反馈，禁止误报“已刷新”。
         setMutationOperation(null)
         mutationForm.resetFields()
-        await loadKeyset()
-        message.warning(errorMessage)
+        const refreshed = await loadKeyset()
+        const feedback = getEmergencyLoginKeyConflictRefreshFeedback(
+          refreshed,
+          errorMessage,
+          t('emergencyLoginKeys.versionConflictRefreshFailed'),
+        )
+        if (feedback.type === 'warning') {
+          message.warning(feedback.message)
+        } else {
+          message.error(feedback.message)
+        }
       } else {
         message.error(errorMessage)
       }

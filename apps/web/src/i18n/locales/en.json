@@ -633,6 +633,7 @@
     "loadFailed": "Failed to load emergency login keys",
     "mutationFailed": "Emergency login key operation failed",
     "versionConflict": "The keyset was updated by another administrator. The page has been refreshed. Review it and try again.",
+    "versionConflictRefreshFailed": "The keyset changed, but the latest data could not be loaded. Refresh the page manually and try again.",
     "mutationSuccess": "Operation completed",
     "activeKid": "Active KID",
     "version": "Keyset version",
@@ -643,6 +644,7 @@
     "dataProtectionStatuses": {
       "Healthy": "Encryption keys are available",
       "StoredKeyDecryptFailed": "A stored signing key cannot be decrypted",
+      "RoundTripFailed": "Encryption round-trip verification failed",
       "Unavailable": "Encryption service is unavailable",
       "Unknown": "Status unavailable"
     },

@@ -72,9 +72,20 @@ export function getEmergencyLoginKeyDataProtectionStatusKey(status: string) {
   switch (status) {
     case 'Healthy':
     case 'StoredKeyDecryptFailed':
+    case 'RoundTripFailed':
     case 'Unavailable':
       return status
     default:
       return 'Unknown'
   }
+}
+
+export function getEmergencyLoginKeyConflictRefreshFeedback(
+  refreshSucceeded: boolean,
+  refreshedMessage: string,
+  refreshFailedMessage: string,
+) {
+  return refreshSucceeded
+    ? { type: 'warning' as const, message: refreshedMessage }
+    : { type: 'error' as const, message: refreshFailedMessage }
 }

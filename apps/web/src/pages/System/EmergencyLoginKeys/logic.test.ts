@@ -4,6 +4,7 @@ import zhLocale from '../../../i18n/locales/zh.json'
 import { RequestError } from '../../../utils/request'
 import {
   getEmergencyLoginKeyActionState,
+  getEmergencyLoginKeyConflictRefreshFeedback,
   getEmergencyLoginKeyDataProtectionStatusKey,
   getLatestEmergencyLoginKeyOperator,
   getShortEmergencyLoginKeyFingerprint,
@@ -80,9 +81,34 @@ assertEqual(
   'Known Data Protection status should map to its localization key',
 )
 assertEqual(
+  getEmergencyLoginKeyDataProtectionStatusKey('RoundTripFailed'),
+  'RoundTripFailed',
+  'Round-trip verification failure should map to its dedicated localization key',
+)
+assertEqual(
   getEmergencyLoginKeyDataProtectionStatusKey('future-status'),
   'Unknown',
   'Unknown Data Protection status should use a safe localized fallback',
+)
+
+const refreshedFeedback = getEmergencyLoginKeyConflictRefreshFeedback(
+  true,
+  'Page refreshed',
+  'Refresh failed, retry manually',
+)
+assertEqual(refreshedFeedback.type, 'warning', 'Successful conflict refresh should use warning feedback')
+assertEqual(refreshedFeedback.message, 'Page refreshed', 'Successful conflict refresh should confirm refresh')
+
+const refreshFailedFeedback = getEmergencyLoginKeyConflictRefreshFeedback(
+  false,
+  'Page refreshed',
+  'Refresh failed, retry manually',
+)
+assertEqual(refreshFailedFeedback.type, 'error', 'Failed conflict refresh should use error feedback')
+assertEqual(
+  refreshFailedFeedback.message,
+  'Refresh failed, retry manually',
+  'Failed conflict refresh must not claim the page was refreshed',
 )
 
 assertEqual(
@@ -112,16 +138,45 @@ assert(
   typeof zhLocale.emergencyLoginKeys.dataProtectionStatuses.StoredKeyDecryptFailed === 'string',
   'Chinese Data Protection status localization should exist',
 )
+assert(
+  typeof enLocale.emergencyLoginKeys.dataProtectionStatuses.RoundTripFailed === 'string',
+  'English round-trip failure localization should exist',
+)
+assert(
+  typeof zhLocale.emergencyLoginKeys.dataProtectionStatuses.RoundTripFailed === 'string',
+  'Chinese round-trip failure localization should exist',
+)
+assert(
+  typeof enLocale.emergencyLoginKeys.versionConflictRefreshFailed === 'string',
+  'English conflict refresh failure localization should exist',
+)
+assert(
+  typeof zhLocale.emergencyLoginKeys.versionConflictRefreshFailed === 'string',
+  'Chinese conflict refresh failure localization should exist',
+)
 
 const pageSource = readFileSync('src/pages/System/EmergencyLoginKeys/index.tsx', 'utf8')
 const conflictBranchStart = pageSource.indexOf('if (conflict)')
-const conflictBranch = pageSource.slice(conflictBranchStart, conflictBranchStart + 500)
+const conflictBranch = pageSource.slice(conflictBranchStart, conflictBranchStart + 900)
 assert(conflictBranch.includes('setMutationOperation(null)'), '409 recovery should close the stale operation modal')
 assert(conflictBranch.includes('mutationForm.resetFields()'), '409 recovery should clear stale reason and KID confirmation')
 assert(
   conflictBranch.indexOf('setMutationOperation(null)') < conflictBranch.indexOf('await loadKeyset()'),
   '409 recovery should clear stale operation context before refreshing the new version',
 )
+assert(
+  conflictBranch.includes('const refreshed = await loadKeyset()'),
+  '409 recovery should inspect whether reloading the current keyset succeeded',
+)
+assert(
+  conflictBranch.includes('getEmergencyLoginKeyConflictRefreshFeedback'),
+  '409 recovery should choose feedback from the actual refresh result',
+)
+
+const loadKeysetStart = pageSource.indexOf('const loadKeyset = useCallback')
+const loadKeysetSource = pageSource.slice(loadKeysetStart, loadKeysetStart + 1000)
+assert(loadKeysetSource.includes('return true'), 'Keyset reload should report success')
+assert(loadKeysetSource.includes('return false'), 'Keyset reload should report failure')
 assert(
   pageSource.includes("getEmergencyLoginKeyDataProtectionStatusKey(keyset.dataProtectionStatus)"),
   'Page should localize Data Protection status instead of rendering the raw code',

@@ -633,6 +633,7 @@
     "loadFailed": "加载紧急登录密钥失败",
     "mutationFailed": "紧急登录密钥操作失败",
     "versionConflict": "密钥版本已被其他管理员更新，页面已刷新，请重新确认后操作。",
+    "versionConflictRefreshFailed": "密钥版本已变化，但最新数据加载失败。请手动刷新页面后重试。",
     "mutationSuccess": "操作已完成",
     "activeKid": "激活 KID",
     "version": "密钥集版本",
@@ -643,6 +644,7 @@
     "dataProtectionStatuses": {
       "Healthy": "加密密钥可用",
       "StoredKeyDecryptFailed": "已保存的签名密钥无法解密",
+      "RoundTripFailed": "加密往返校验失败",
       "Unavailable": "加密服务不可用",
       "Unknown": "状态不可用"
     },
