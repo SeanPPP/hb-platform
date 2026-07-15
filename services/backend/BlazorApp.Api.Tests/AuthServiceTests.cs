@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Text;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
@@ -436,6 +437,52 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GenerateTokensAsync_WhenUserHasManyDirectPermissions_KeepsSessionAccessTokensUnderCookieLimit()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("many-permissions-user");
+            var directPermissions = Enumerable.Range(1, 150)
+                .Select(index => new SysUserPermission
+                {
+                    Id = $"{user.UserGUID}-permission-{index:D3}",
+                    UserGuid = user.UserGUID,
+                    PermissionCode = $"Regression.LargePermissionSet.Permission{index:D3}.View",
+                    IsDeleted = false,
+                })
+                .ToList();
+            await _db.Insertable(directPermissions).ExecuteCommandAsync();
+
+            var dbContext = CreateSqlSugarContext(_db);
+            var service = new AuthService(
+                dbContext,
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+            var validator = new AuthSessionValidator(dbContext);
+
+            var generatedTokens = await service.GenerateTokensAsync(user, "8.8.8.8", "xunit");
+            await AssertCompactSessionAccessTokenAsync(
+                generatedTokens.AccessToken,
+                user.UserGUID,
+                validator
+            );
+
+            var refreshedTokens = await service.RefreshTokensAsync(
+                generatedTokens.AccessToken,
+                generatedTokens.RefreshToken,
+                "8.8.8.8",
+                "xunit-refresh"
+            );
+
+            Assert.NotNull(refreshedTokens);
+            await AssertCompactSessionAccessTokenAsync(
+                refreshedTokens!.AccessToken,
+                user.UserGUID,
+                validator
+            );
+        }
+
+        [Fact]
         public async Task LoginAsync_WhenUserHasDirectDashboardPermission_AddsPermissionClaim()
         {
             await CreateCurrentAuthSchemaAsync();
@@ -689,6 +736,36 @@ namespace BlazorApp.Api.Tests
         {
             var claims = new JwtSecurityTokenHandler().ReadJwtToken(accessToken).Claims;
             return new ClaimsPrincipal(new ClaimsIdentity(claims, "jwt"));
+        }
+
+        private static async Task AssertCompactSessionAccessTokenAsync(
+            string accessToken,
+            string userGuid,
+            AuthSessionValidator validator
+        )
+        {
+            var context = new DefaultHttpContext();
+            CookieHelper.SetAccessToken(context.Response, accessToken);
+            var setCookieHeader = Assert.Single(context.Response.Headers["Set-Cookie"]);
+            var cookieSize = Encoding.UTF8.GetByteCount(setCookieHeader!);
+            var principal = CreatePrincipalFromAccessToken(accessToken);
+            var claims = principal.Claims.ToList();
+
+            Assert.True(
+                cookieSize < 4096,
+                $"完整 access Set-Cookie 为 {cookieSize} UTF-8 字节，必须小于 4096 字节。"
+            );
+            Assert.DoesNotContain(claims, claim => claim.Type == "permission");
+            Assert.Contains(claims, claim =>
+                claim.Type == "userId" && claim.Value == userGuid
+            );
+            Assert.Contains(claims, claim =>
+                claim.Type == ClaimTypes.Role || claim.Type == "role"
+            );
+            Assert.Contains(claims, claim =>
+                claim.Type == "sessionId" && !string.IsNullOrWhiteSpace(claim.Value)
+            );
+            Assert.True(await validator.IsAccessSessionActiveAsync(userGuid, principal));
         }
 
         private static IConfiguration CreateJwtConfiguration()

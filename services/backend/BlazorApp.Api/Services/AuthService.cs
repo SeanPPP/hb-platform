@@ -321,8 +321,6 @@ namespace BlazorApp.Api.Services
         {
             var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
 
-            var permissions = await GetEffectivePermissionCodesAsync(user);
-
             // 🔄 生成刷新令牌（长令牌，7天有效）
             // 刷新令牌用于获取新的访问令牌，有效期长以改善用户体验
             var refreshToken = GenerateRefreshToken();
@@ -347,7 +345,8 @@ namespace BlazorApp.Api.Services
             // 📊 将刷新令牌实体保存到数据库
             await _dbContext.Db.Insertable(refreshTokenEntity).ExecuteCommandAsync();
 
-            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions, refreshTokenGuid);
+            // access JWT 只保留身份、角色和会话声明；权限由授权链路实时查库，避免大权限账号的 Cookie 超过 4KB 限制。
+            var accessToken = GenerateAccessToken(user, jwtSettings!, refreshTokenGuid);
 
             // 📤 返回令牌响应对象
             return new TokenResponse
@@ -537,7 +536,7 @@ namespace BlazorApp.Api.Services
                 permissions.AddRange(rolePermissions);
             }
 
-            // 直接授权是权限管理页的真实保存结果之一，登录和刷新令牌必须一起写入权限 claim。
+            // 直接授权是权限管理页的真实保存结果之一；legacy LoginAsync/GenerateJwtToken 仍需聚合这份权限快照。
             if (HasUserPermissionTable())
             {
                 var directPermissions = await _dbContext.Db.Queryable<SysUserPermission>()
@@ -595,13 +594,11 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="user">用户对象</param>
         /// <param name="jwtSettings">JWT配置设置</param>
-        /// <param name="permissions">用户权限代码列表</param>
         /// <param name="sessionId">刷新令牌会话 ID，用于 JWT 中绑定当前会话</param>
         /// <returns>JWT访问令牌字符串</returns>
         private string GenerateAccessToken(
             User user,
             Models.JwtSettings jwtSettings,
-            List<string>? permissions = null,
             string? sessionId = null
         )
         {
@@ -653,14 +650,6 @@ namespace BlazorApp.Api.Services
                     // 👤 其他用户默认获得Manager角色（只读权限）
                     // Manager角色只能查看数据，不能修改系统配置
                     claims.Add(new Claim(ClaimTypes.Role, "Manager"));
-                }
-            }
-
-            if (permissions != null && permissions.Any())
-            {
-                foreach (var perm in Permissions.ExpandPermissionCodes(permissions))
-                {
-                    claims.Add(new Claim("permission", perm));
                 }
             }
 
