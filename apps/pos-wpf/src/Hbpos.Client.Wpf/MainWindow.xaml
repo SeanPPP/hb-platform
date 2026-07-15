@@ -1008,7 +1008,7 @@
                                            TextWrapping="Wrap">
                                     <Run Text="{loc:Loc shell.operationAuthorization.screenLabel}" />
                                     <Run Text=" " />
-                                    <Run Text="{Binding OperationAuthorization.Screen}" />
+                                    <Run Text="{Binding OperationAuthorization.Screen, Mode=OneWay}" />
                                 </TextBlock>
                             </StackPanel>
                         </Grid>
@@ -1027,7 +1027,7 @@
                                        Foreground="#FF8F4E00">
                                 <Run Text="{loc:Loc shell.operationAuthorization.permissionLabel}" />
                                 <Run Text=" " />
-                                <Run Text="{Binding OperationAuthorization.PermissionCode}" />
+                                <Run Text="{Binding OperationAuthorization.PermissionCode, Mode=OneWay}" />
                             </TextBlock>
                         </StackPanel>
                     </Border>

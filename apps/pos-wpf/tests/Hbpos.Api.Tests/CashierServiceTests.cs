@@ -97,6 +97,30 @@ public sealed class CashierServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BarcodeLoginAsync_普通登录最多执行五次查询()
+    {
+        await SeedStoreAsync("store-query-count", "S-QUERY");
+        await SeedUserAsync("user-query-count", "Query Count Cashier");
+        await SeedUserStoreAsync("user-query-count", "store-query-count");
+        await SeedCashierAsync("cashier-query-count", "user-query-count", "S-OLD", "QUERY-CODE");
+        await SeedRoleAsync("role-query-count", "Cashier");
+        await SeedUserRoleAsync("user-query-count", "role-query-count");
+        await SeedRolePermissionAsync("role-query-count", Permissions.PosTerminal.Sales.AddItem);
+        await SeedUserPermissionAsync("user-query-count", Permissions.PosTerminal.CashDrawer.Open);
+        var selectCount = 0;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)) selectCount++;
+        };
+        var session = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-QUERY", "QUERY-CODE", "POS-1"), CancellationToken.None);
+        Assert.NotNull(session);
+        Assert.Contains(Permissions.PosTerminal.Sales.AddItem, session.PermissionCodes);
+        Assert.Contains(Permissions.PosTerminal.CashDrawer.Open, session.PermissionCodes);
+        Assert.True(selectCount <= 5, $"普通登录执行了 {selectCount} 次 SELECT，预期不超过 5 次。");
+    }
+
+    [Fact]
     public async Task BarcodeLoginAsync_管理员返回全部权限且拒绝未授权门店()
     {
         await SeedStoreAsync("store-allowed", "S-ALLOWED");
@@ -437,6 +461,18 @@ public sealed class CashierServiceTests : IDisposable
         {
             Id = $"{roleGuid}-{permissionCode}",
             RoleGuid = roleGuid,
+            PermissionCode = permissionCode,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedUserPermissionAsync(string userGuid, string permissionCode)
+    {
+        await SeedPermissionAsync(permissionCode);
+        await _db.Insertable(new SysUserPermission
+        {
+            Id = $"{userGuid}-{permissionCode}",
+            UserGuid = userGuid,
             PermissionCode = permissionCode,
             IsDeleted = false,
         }).ExecuteCommandAsync();

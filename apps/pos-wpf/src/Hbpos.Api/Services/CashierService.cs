@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Constants;
 using Hbpos.Api.Auth;
@@ -62,15 +63,37 @@ public sealed class CashierService(
             return null;
         }
 
-        var cashier = await dbContext.MainDb.Queryable<CashRegisterUser>()
-            .FirstAsync(
-                x => x.UserBarcode == userBarcode && x.Status,
-                cancellationToken);
+        var totalStopwatch = Stopwatch.StartNew();
+        var timings = new CashierLoginTimings();
+        try
+        {
+        var identityStopwatch = Stopwatch.StartNew();
+        var legacyQuery = dbContext.MainDb.Queryable<CashRegisterUser>()
+            .Where(x => x.UserBarcode == userBarcode && x.Status)
+            .Select(x => new CashierIdentityCandidate
+            {
+                SourceKind = 1,
+                HGUID = x.HGUID,
+                Id = x.Id,
+                UserGUID = x.UserGUID,
+            });
+        var employeeQuery = dbContext.MainDb.Queryable<EmployeeCashierBarcode>()
+            .Where(x => x.Barcode == userBarcode && x.Status)
+            .Select(x => new CashierIdentityCandidate
+            {
+                SourceKind = 2,
+                HGUID = x.HGUID,
+                Id = 0,
+                UserGUID = x.UserGUID,
+            });
 
-        var employeeCashier = await dbContext.MainDb.Queryable<EmployeeCashierBarcode>()
-            .FirstAsync(
-                x => x.Barcode == userBarcode && x.Status,
-                cancellationToken);
+        // 关键逻辑：一次往返同时查询两种收银身份，仍严格拒绝双表冲突。
+        var identityCandidates = await dbContext.MainDb
+            .UnionAll(legacyQuery, employeeQuery)
+            .ToListAsync(cancellationToken);
+        timings.IdentityMs = identityStopwatch.ElapsedMilliseconds;
+        var cashier = identityCandidates.FirstOrDefault(x => x.SourceKind == 1);
+        var employeeCashier = identityCandidates.FirstOrDefault(x => x.SourceKind == 2);
         if (cashier is not null && employeeCashier is not null)
         {
             // 关键逻辑：双表同时有效表示数据唯一性已损坏，禁止任意选择身份继续授权。
@@ -95,7 +118,18 @@ public sealed class CashierService(
             cashierUserGuid,
             storeCode,
             deviceCode,
-            cancellationToken);
+            cancellationToken,
+            timings);
+        }
+        finally
+        {
+            logger.LogInformation(
+                "收银扫码登录耗时。IdentityMs={IdentityMs}, StoreMs={StoreMs}, PermissionMs={PermissionMs}, TotalMs={TotalMs}",
+                timings.IdentityMs,
+                timings.StoreMs,
+                timings.PermissionMs,
+                totalStopwatch.ElapsedMilliseconds);
+        }
     }
 
     public Task<CashierSessionDto?> RefreshSessionAsync(
@@ -188,20 +222,28 @@ public sealed class CashierService(
                 .Select(x => x.RoleGUID)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            var rolePermissionCodes = roleGuids.Count == 0
-                ? []
-                : await dbContext.MainDb.Queryable<SysRolePermission>()
-                    .Where(x => roleGuids.Contains(x.RoleGuid) && !x.IsDeleted)
-                    .Select(x => x.PermissionCode)
-                    .ToListAsync(cancellationToken);
-            var directPermissionCodes = await dbContext.MainDb.Queryable<SysUserPermission>()
+            var directPermissionQuery = dbContext.MainDb.Queryable<SysUserPermission>()
                 .Where(x => x.UserGuid == userGuid && !x.IsDeleted)
-                .Select(x => x.PermissionCode)
-                .ToListAsync(cancellationToken);
+                .Select(x => new CashierPermissionCandidate { PermissionCode = x.PermissionCode });
+            List<CashierPermissionCandidate> permissionEntries;
+            if (roleGuids.Count == 0)
+            {
+                permissionEntries = await directPermissionQuery.ToListAsync(cancellationToken);
+            }
+            else
+            {
+                var rolePermissionQuery = dbContext.MainDb.Queryable<SysRolePermission>()
+                    .Where(x => roleGuids.Contains(x.RoleGuid) && !x.IsDeleted)
+                    .Select(x => new CashierPermissionCandidate { PermissionCode = x.PermissionCode });
+                // 关键逻辑：角色权限与用户直授权限合并为一次数据库往返。
+                permissionEntries = await dbContext.MainDb
+                    .UnionAll(rolePermissionQuery, directPermissionQuery)
+                    .ToListAsync(cancellationToken);
+            }
 
             // 关键逻辑：权限别名展开保持和后台 RoleService 快照一致。
             permissionCodes = Permissions.ExpandPermissionCodes(
-                    rolePermissionCodes.Concat(directPermissionCodes))
+                    permissionEntries.Select(x => x.PermissionCode))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
@@ -248,34 +290,37 @@ public sealed class CashierService(
         string userGuid,
         string storeCode,
         string deviceCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CashierLoginTimings? timings = null)
     {
-        var user = await dbContext.MainDb.Queryable<User>()
-            .FirstAsync(
-                x => x.UserGUID == userGuid && x.IsActive && !x.IsDeleted,
-                cancellationToken);
-        if (user is null)
-        {
-            return null;
-        }
-
-        var allowedStores = await dbContext.MainDb.Queryable<UserStore>()
-            .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-            .Where((us, s) =>
-                us.UserGUID == userGuid &&
-                !us.IsDeleted &&
-                s.IsActive &&
-                !s.IsDeleted)
-            .Select((us, s) => new { s.StoreGUID, s.StoreCode })
+        var storeStopwatch = Stopwatch.StartNew();
+        // 关键逻辑：用户状态与全部允许门店一次读取，减少远程数据库往返。
+        var userStores = await dbContext.MainDb.Queryable<User>()
+            .InnerJoin<UserStore>((user, userStore) => user.UserGUID == userStore.UserGUID)
+            .InnerJoin<Store>((user, userStore, store) => userStore.StoreGUID == store.StoreGUID)
+            .Where((user, userStore, store) =>
+                user.UserGUID == userGuid && user.IsActive && !user.IsDeleted &&
+                !userStore.IsDeleted && store.IsActive && !store.IsDeleted)
+            .Select((user, userStore, store) => new CashierUserStoreCandidate
+            {
+                Username = user.Username,
+                FullName = user.FullName,
+                StoreGuid = store.StoreGUID,
+                StoreCode = store.StoreCode,
+            })
             .ToListAsync(cancellationToken);
-        var currentStore = allowedStores.FirstOrDefault(store =>
+        if (timings is not null) timings.StoreMs = storeStopwatch.ElapsedMilliseconds;
+        var currentStore = userStores.FirstOrDefault(store =>
             string.Equals(store.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
         if (currentStore is null)
         {
             return null;
         }
 
-        var snapshot = await GetPermissionSnapshotAsync(userGuid, currentStore.StoreGUID, cancellationToken);
+        var permissionStopwatch = Stopwatch.StartNew();
+        var snapshot = await GetPermissionSnapshotAsync(userGuid, currentStore.StoreGuid, cancellationToken);
+        if (timings is not null) timings.PermissionMs = permissionStopwatch.ElapsedMilliseconds;
+        var user = userStores[0];
         var authorization = ticketService.Issue(cashierId, userGuid, storeCode, deviceCode);
         return new CashierSessionDto(
             cashierId,
@@ -285,7 +330,7 @@ public sealed class CashierService(
             deviceCode,
             snapshot.RoleNames,
             snapshot.PermissionCodes,
-            allowedStores
+            userStores
                 .Select(store => store.StoreCode)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
@@ -316,4 +361,32 @@ public sealed class CashierService(
         string[] RoleNames,
         string[] PermissionCodes,
         bool IsSuperAdmin);
+
+    private sealed class CashierIdentityCandidate
+    {
+        public int SourceKind { get; set; }
+        public string HGUID { get; set; } = string.Empty;
+        public int Id { get; set; }
+        public string? UserGUID { get; set; }
+    }
+
+    private sealed class CashierUserStoreCandidate
+    {
+        public string Username { get; set; } = string.Empty;
+        public string? FullName { get; set; }
+        public string StoreGuid { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+    }
+
+    private sealed class CashierPermissionCandidate
+    {
+        public string PermissionCode { get; set; } = string.Empty;
+    }
+
+    private sealed class CashierLoginTimings
+    {
+        public long IdentityMs { get; set; }
+        public long StoreMs { get; set; }
+        public long PermissionMs { get; set; }
+    }
 }

@@ -261,6 +261,28 @@ public sealed class KeyboardScannerFallbackBufferTests
         Assert.Contains("InputMethod.PreferredImeState=\"Off\"", textBoxMarkup, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OperationAuthorization_read_only_run_bindings_are_one_way()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains(
+            "<Run Text=\"{Binding OperationAuthorization.Screen, Mode=OneWay}\" />",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "<Run Text=\"{Binding OperationAuthorization.PermissionCode, Mode=OneWay}\" />",
+            xaml,
+            StringComparison.Ordinal);
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
