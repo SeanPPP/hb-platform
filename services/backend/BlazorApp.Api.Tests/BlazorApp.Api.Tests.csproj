@@ -34,6 +34,7 @@
     <Compile Include="DomesticProductReactServiceTests.cs" />
     <Compile Include="EmployeeProfileServiceTests.cs" />
     <Compile Include="EmployeeProfileSelfServiceTests.cs" />
+    <Compile Include="EmployeeProfileSensitiveChangeServiceTests.cs" />
     <Compile Include="StoreUsersReactServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />

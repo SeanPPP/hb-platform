@@ -5,6 +5,24 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task StartupSchemaMigrator_创建员工敏感审批表和Pending过滤唯一索引()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains("EnsureEmployeeProfileSensitiveChangeSchemaAsync", migrator);
+        Assert.Contains("EmployeeProfileSensitiveChangeRequest", migrator);
+        Assert.Contains("SensitiveRevision", migrator);
+        Assert.Contains("UX_EmployeeProfileSensitiveChangeRequest_User_Pending", migrator);
+        Assert.Contains("WHERE [Status] = 0", migrator);
+        Assert.Contains("SensitiveChangeRequestId", migrator);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建用户分店Pos权限表和唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(

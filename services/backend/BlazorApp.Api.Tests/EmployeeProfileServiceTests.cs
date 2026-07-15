@@ -43,7 +43,8 @@ namespace BlazorApp.Api.Tests
             _db.CodeFirst.InitTables(
                 typeof(User), typeof(EmployeeProfile), typeof(CashRegisterUser),
                 typeof(CashierBarcodeReservation), typeof(EmployeeCashierBarcode),
-                typeof(EmployeeCashierBarcodePrintAttempt), typeof(EmployeeImageUploadTicket)
+                typeof(EmployeeCashierBarcodePrintAttempt), typeof(EmployeeImageUploadTicket),
+                typeof(EmployeeProfileSensitiveChangeRequest)
             );
         }
 

@@ -1,0 +1,563 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Security.Claims;
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Controllers;
+using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Models;
+using BlazorApp.Api.Services;
+using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
+using SqlSugar;
+using Xunit;
+
+namespace BlazorApp.Api.Tests;
+
+public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
+{
+    private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+    private readonly SqliteConnection _connection;
+    private readonly SqlSugarClient _db;
+
+    public EmployeeProfileSensitiveChangeServiceTests()
+    {
+        _connection = new SqliteConnection($"Data Source={_dbPath}");
+        _connection.Open();
+        _db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = _connection.ConnectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        _db.CodeFirst.InitTables(
+            typeof(User),
+            typeof(EmployeeProfile),
+            typeof(EmployeeProfileSensitiveChangeRequest),
+            typeof(EmployeeImageUploadTicket)
+        );
+    }
+
+    [Fact]
+    public async Task UpsertSelfAsync_ReplacingPending_PreservesSupersededHistoryAndOnePending()
+    {
+        await SeedAsync();
+        var service = CreateService("user-self", "self_user");
+
+        var first = await service.UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+        {
+            BankBsb = "111-222",
+            BankAccountNumber = "12345678",
+        });
+        var second = await service.UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+        {
+            BankBsb = "333-444",
+            BankAccountNumber = "87654321",
+        });
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        var rows = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .OrderBy(item => item.RequestId)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Superseded, rows[0].Status);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, rows[1].Status);
+        Assert.Equal("87654321", rows[1].BankAccountNumber);
+        Assert.Equal(1, rows.Count(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending));
+    }
+
+    [Fact]
+    public async Task ApproveAsync_WhenRevisionChanged_ReturnsConflictWithoutOverwritingFormalData()
+    {
+        await SeedAsync();
+        var service = CreateService("user-self", "self_user");
+        var submitted = await service.UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+        {
+            BankAccountNumber = "99990000",
+        });
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "admin-new";
+        profile.SensitiveRevision++;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+
+        var result = await CreateService("admin-user", "admin").ApproveAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT", result.ErrorCode);
+        Assert.Equal("admin-new", (await _db.Queryable<EmployeeProfile>().FirstAsync()).BankACC);
+        Assert.Equal(
+            EmployeeProfileSensitiveChangeStatus.Pending,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+        );
+    }
+
+    [Fact]
+    public async Task AdminListAsync_MasksAccountsButDetailReturnsAuthorizedFullValues()
+    {
+        await SeedAsync();
+        var service = CreateService("user-self", "self_user");
+        var submitted = await service.UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+        {
+            BankAccountNumber = "123456789",
+            SuperannuationAccountNumber = "SUPER98765",
+        });
+
+        var list = await service.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto());
+        var detail = await service.GetAdminDetailAsync(submitted.Data!.RequestId);
+
+        var listItems = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeProfileSensitiveChangeSummaryDto>>(
+            list.Data!.Items
+        );
+        Assert.Equal("****6789", listItems.Single().BankAccountSummary);
+        Assert.Equal("****8765", listItems.Single().SuperannuationAccountSummary);
+        Assert.Equal("123456789", detail.Data!.BankAccountNumber);
+        Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
+    }
+
+    [Fact]
+    public async Task ApproveAndRejectAsync_ApplyOnlyApprovedSnapshotAndRequireRejectReason()
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankBsb = "555-666",
+            BankAccountNumber = "approved-account",
+            IdentityType = "passport",
+            IdentityId = "P123",
+        });
+
+        var approved = await CreateService("admin-user", "admin").ApproveAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto { Reason = "资料已核验" }
+        );
+
+        Assert.True(approved.Success);
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        Assert.Equal("approved-account", profile.BankACC);
+        Assert.Equal(4, profile.SensitiveRevision);
+
+        var second = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "must-not-apply",
+        });
+        var missingReason = await CreateService("admin-user", "admin").RejectAsync(
+            second.Data!.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = " " }
+        );
+        var rejected = await CreateService("admin-user", "admin").RejectAsync(
+            second.Data.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "无法核验" }
+        );
+
+        Assert.False(missingReason.Success);
+        Assert.Equal("VALIDATION_ERROR", missingReason.ErrorCode);
+        Assert.True(rejected.Success);
+        Assert.Equal("无法核验", rejected.Data!.ReviewReason);
+        Assert.Equal("approved-account", (await _db.Queryable<EmployeeProfile>().FirstAsync()).BankACC);
+    }
+
+    [Fact]
+    public async Task LegacySelfPut_CannotWriteSensitiveFields_AndAdminDirectChangeSupersedesPending()
+    {
+        await SeedAsync();
+        var seededProfile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        seededProfile.IdentityPhotoObjectKey = "employee-profiles/user-self/identity/formal-preserved.png";
+        await _db.Updateable(seededProfile).ExecuteCommandAsync();
+        var storage = new FakeStorage();
+        var selfSensitive = CreateService("user-self", "self_user", storage);
+        var selfProfile = CreateProfileService("user-self", "self_user", selfSensitive);
+
+        var selfResult = await selfProfile.UpsertSelfAsync(new EmployeeProfileUpsertDto
+        {
+            Address = "new address",
+            BankAccountNumber = "pending-from-old-app",
+            IdentityId = "NEW-ID",
+        });
+
+        Assert.True(selfResult.Success);
+        var afterSelf = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        Assert.Equal("formal-old", afterSelf.BankACC);
+        Assert.Equal("new address", afterSelf.Address);
+        var pending = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
+        Assert.Equal("pending-from-old-app", pending.BankAccountNumber);
+        Assert.Equal("employee-profiles/user-self/identity/formal-preserved.png", pending.IdentityPhotoObjectKey);
+
+        var adminSensitive = CreateService("admin-user", "admin", storage);
+        var adminResult = await CreateProfileService("admin-user", "admin", adminSensitive)
+            .UpsertAdminAsync("user-self", new EmployeeProfileUpsertDto
+            {
+                Address = "admin address",
+                BankAccountNumber = "admin-direct",
+                IdentityId = "ADMIN-ID",
+            });
+
+        Assert.True(adminResult.Success);
+        var afterAdmin = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        Assert.Equal("admin-direct", afterAdmin.BankACC);
+        Assert.Equal(4, afterAdmin.SensitiveRevision);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Superseded,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status);
+        Assert.DoesNotContain("employee-profiles/user-self/identity/formal-preserved.png", storage.DeletedKeys);
+    }
+
+    [Fact]
+    public async Task IdentityPhoto_IsPendingUntilApprove_AndReplaceRejectCleanPendingObjects()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = "employee-profiles/user-self/identity/formal.png";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var storage = new FakeStorage();
+        var sensitive = CreateService("user-self", "self_user", storage);
+
+        var first = await sensitive.ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/pending-one.png"
+        );
+        var second = await sensitive.ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/pending-two.png"
+        );
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal("employee-profiles/user-self/identity/formal.png",
+            (await _db.Queryable<EmployeeProfile>().FirstAsync()).IdentityPhotoObjectKey);
+        Assert.Contains("employee-profiles/user-self/identity/pending-one.png", storage.DeletedKeys);
+
+        var rejected = await CreateService("admin-user", "admin", storage).RejectAsync(
+            second.Data!.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "照片不清晰" }
+        );
+        Assert.True(rejected.Success);
+        Assert.Contains("employee-profiles/user-self/identity/pending-two.png", storage.DeletedKeys);
+        Assert.Equal("employee-profiles/user-self/identity/formal.png",
+            (await _db.Queryable<EmployeeProfile>().FirstAsync()).IdentityPhotoObjectKey);
+
+        var third = await CreateService("user-self", "self_user", storage).ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/approved.png"
+        );
+        Assert.Equal("employee-profiles/user-self/identity/approved.png",
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.RequestId == third.Data!.RequestId)).IdentityPhotoObjectKey);
+        var approved = await CreateService("admin-user", "admin", storage).ApproveAsync(
+            third.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+        Assert.True(approved.Success);
+        Assert.Equal("employee-profiles/user-self/identity/approved.png",
+            (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self"))
+                .IdentityPhotoObjectKey);
+        Assert.Contains("employee-profiles/user-self/identity/formal.png", storage.DeletedKeys);
+    }
+
+    [Fact]
+    public async Task CompleteIdentityUpload_AssociatesTicketAndPendingRequestWithoutChangingFormalPhoto()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = "employee-profiles/user-self/identity/formal.png";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        );
+        const string pendingKey = "pending/employee-profiles/user-self/identity/upload.png";
+        await _db.Insertable(new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = pendingKey,
+            FinalObjectKey = pendingKey["pending/".Length..],
+            UserGUID = "user-self",
+            Kind = "identity",
+            ContentType = "image/png",
+            FileSize = png.Length,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            Status = EmployeeImageUploadStatus.Pending,
+        }).ExecuteCommandAsync();
+        var storage = new FakeStorage { Bytes = png };
+        var sensitive = CreateService("user-self", "self_user", storage);
+        var media = CreateMediaService("user-self", "self_user", storage, sensitive);
+
+        var result = await media.CompleteAsync(new EmployeeImageCompleteRequest
+        {
+            Kind = "identity",
+            ObjectKey = pendingKey,
+        });
+
+        Assert.True(result.Success);
+        var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
+        var ticket = await _db.Queryable<EmployeeImageUploadTicket>()
+            .FirstAsync(item => item.PendingObjectKey == pendingKey);
+        Assert.Equal("employee-profiles/user-self/identity/upload.png", request.IdentityPhotoObjectKey);
+        Assert.Equal(request.RequestId, ticket.SensitiveChangeRequestId);
+        Assert.Equal(EmployeeImageUploadStatus.Completed, ticket.Status);
+        Assert.Equal("employee-profiles/user-self/identity/formal.png",
+            (await _db.Queryable<EmployeeProfile>().FirstAsync()).IdentityPhotoObjectKey);
+    }
+
+    [Fact]
+    public async Task ExpiredCleanup_DoesNotDeleteIdentityObjectReferencedByPendingApproval()
+    {
+        await SeedAsync();
+        const string finalKey = "employee-profiles/user-self/identity/recover.png";
+        var submitted = await CreateService("user-self", "self_user")
+            .ReplacePendingIdentityPhotoAsync(finalKey);
+        var now = DateTime.UtcNow;
+        await _db.Insertable(new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = "pending/" + finalKey,
+            FinalObjectKey = finalKey,
+            UserGUID = "user-self",
+            Kind = "identity",
+            ContentType = "image/png",
+            FileSize = 10,
+            CreatedAt = now.AddHours(-1),
+            ExpiresAt = now.AddMinutes(-30),
+            Status = EmployeeImageUploadStatus.Promoted,
+            StageChangedAt = now.AddMinutes(-30),
+            SensitiveChangeRequestId = submitted.Data!.RequestId,
+        }).ExecuteCommandAsync();
+        var storage = new FakeStorage();
+
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            now,
+            CancellationToken.None
+        );
+
+        Assert.DoesNotContain(finalKey, storage.DeletedKeys);
+        Assert.Equal(EmployeeImageUploadStatus.Completed,
+            (await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync()).Status);
+    }
+
+    [Fact]
+    public async Task ApproveController_MapsRevisionConflictTo409_AndAdminEndpointsRequireRoleAndEditPolicy()
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "stale",
+        });
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.SensitiveRevision++;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var storage = new FakeStorage();
+        var sensitive = CreateService("admin-user", "admin", storage);
+        var current = CreateCurrentUser("admin-user", "admin");
+        var context = CreateContext(_db);
+        var controller = new EmployeeProfilesController(
+            new Mock<IEmployeeProfileService>().Object,
+            NullLogger<EmployeeProfilesController>.Instance,
+            new EmployeeProfileMediaService(
+                context,
+                current,
+                storage,
+                NullLogger<EmployeeProfileMediaService>.Instance,
+                sensitive
+            ),
+            new EmployeeCashierBarcodeService(context, current),
+            sensitive
+        );
+
+        var action = await controller.ApproveSensitiveChangeRequest(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+
+        Assert.IsType<ConflictObjectResult>(action);
+        foreach (var methodName in new[]
+        {
+            nameof(EmployeeProfilesController.GetAdminSensitiveChangeRequests),
+            nameof(EmployeeProfilesController.GetAdminSensitiveChangeRequest),
+            nameof(EmployeeProfilesController.ApproveSensitiveChangeRequest),
+            nameof(EmployeeProfilesController.RejectSensitiveChangeRequest),
+        })
+        {
+            var attributes = typeof(EmployeeProfilesController).GetMethod(methodName)!
+                .GetCustomAttributes<AuthorizeAttribute>()
+                .ToList();
+            Assert.Contains(attributes, item => item.Roles == "Admin,管理员");
+            Assert.Contains(attributes, item => item.Policy == "EmployeeProfiles.Edit");
+        }
+    }
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        _connection.Dispose();
+        SqliteTempFileCleanup.DeleteIfExists(_dbPath);
+    }
+
+    private async Task SeedAsync()
+    {
+        var now = DateTime.UtcNow;
+        await _db.Insertable(new User
+        {
+            UserGUID = "user-self",
+            Username = "self_user",
+            Email = "self@example.com",
+            PasswordHash = "hashed",
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new EmployeeProfile
+        {
+            UserGUID = "user-self",
+            BankACC = "formal-old",
+            SensitiveRevision = 3,
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ExecuteCommandAsync();
+    }
+
+    private EmployeeProfileSensitiveChangeService CreateService(
+        string userGuid,
+        string username,
+        TencentCloudUploadService? storage = null
+    )
+    {
+        return new EmployeeProfileSensitiveChangeService(
+            CreateContext(_db),
+            CreateCurrentUser(userGuid, username),
+            NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
+            storage
+        );
+    }
+
+    private EmployeeProfileMediaService CreateMediaService(
+        string userGuid,
+        string username,
+        TencentCloudUploadService storage,
+        EmployeeProfileSensitiveChangeService sensitive
+    ) => new(
+        CreateContext(_db),
+        CreateCurrentUser(userGuid, username),
+        storage,
+        NullLogger<EmployeeProfileMediaService>.Instance,
+        sensitive
+    );
+
+    private static CurrentUserService CreateCurrentUser(string userGuid, string username)
+    {
+        var accessor = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                {
+                    new Claim("userGuid", userGuid),
+                    new Claim("userId", userGuid),
+                    new Claim(ClaimTypes.NameIdentifier, userGuid),
+                    new Claim(ClaimTypes.Name, username),
+                }, "TestAuth")),
+            },
+        };
+        return new CurrentUserService(accessor);
+    }
+
+    private EmployeeProfileService CreateProfileService(
+        string userGuid,
+        string username,
+        EmployeeProfileSensitiveChangeService sensitive
+    )
+    {
+        var accessor = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                {
+                    new Claim("userId", userGuid),
+                    new Claim(ClaimTypes.NameIdentifier, userGuid),
+                    new Claim(ClaimTypes.Name, username),
+                }, "TestAuth")),
+            },
+        };
+        return new EmployeeProfileService(
+            CreateContext(_db),
+            new CurrentUserService(accessor),
+            NullLogger<EmployeeProfileService>.Instance,
+            null,
+            sensitive
+        );
+    }
+
+    private static SqlSugarContext CreateContext(ISqlSugarClient db)
+    {
+        var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
+        typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(context, db);
+        return context;
+    }
+
+    private sealed class FakeStorage : TencentCloudUploadService
+    {
+        public List<string> DeletedKeys { get; } = new();
+        public byte[] Bytes { get; set; } = Array.Empty<byte>();
+
+        public FakeStorage()
+            : base(
+                Options.Create(new TencentCloudSettings
+                {
+                    SecretId = "id",
+                    SecretKey = "key",
+                    BucketName = "bucket",
+                    Region = "region",
+                }),
+                NullLogger<TencentCloudUploadService>.Instance,
+                new HttpClient()
+            )
+        {
+        }
+
+        public override Task<ApiResponse<bool>> DeleteObjectAsync(
+            string objectKey,
+            CancellationToken cancellationToken = default
+        )
+        {
+            DeletedKeys.Add(objectKey);
+            return Task.FromResult(ApiResponse<bool>.OK(true));
+        }
+
+        public override Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(
+            string objectKey,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(ApiResponse<CosObjectMetadata>.OK(new()
+        {
+            ContentLength = Bytes.Length,
+            ContentType = "image/png",
+            Owner = "user-self",
+            Kind = "identity",
+            DeclaredContentType = "image/png",
+            DeclaredFileSize = Bytes.Length,
+        }));
+
+        public override Task<ApiResponse<byte[]>> DownloadObjectBytesAsync(
+            string objectKey,
+            int maximumBytes,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(ApiResponse<byte[]>.OK(Bytes));
+
+        public override Task<ApiResponse<bool>> PromoteObjectAsync(
+            string sourceObjectKey,
+            string targetObjectKey,
+            string contentType,
+            bool isPublic,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(ApiResponse<bool>.OK(true));
+    }
+}

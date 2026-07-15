@@ -485,6 +485,7 @@ builder.Services.AddScoped<
     UserStorePosTerminalPermissionService
 >();
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
+builder.Services.AddScoped<EmployeeProfileSensitiveChangeService>();
 builder.Services.AddScoped<EmployeeProfileMediaService>();
 builder.Services.AddScoped<EmployeeCashierBarcodeService>();
 builder.Services.AddHostedService<EmployeeImageUploadCleanupBackgroundService>();

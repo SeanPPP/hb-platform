@@ -49,6 +49,23 @@ namespace BlazorApp.Api.Services
                 }
                 var profile = await db.Queryable<EmployeeProfile>()
                     .FirstAsync(item => item.UserGUID == ticket.UserGUID && !item.IsDeleted);
+                EmployeeProfileSensitiveChangeRequest? sensitiveRequest = null;
+                if (ticket.SensitiveChangeRequestId.HasValue)
+                {
+                    sensitiveRequest = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                        .FirstAsync(item => item.RequestId == ticket.SensitiveChangeRequestId.Value
+                            && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
+                }
+                if (sensitiveRequest is null
+                    && ticket.Kind == "identity"
+                    && !string.IsNullOrWhiteSpace(ticket.FinalObjectKey))
+                {
+                    // 崩溃可能发生在申请已落库、票据关联尚未写回之间，按对象键兜底保护。
+                    sensitiveRequest = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                        .FirstAsync(item => item.UserGUID == ticket.UserGUID
+                            && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
+                            && item.IdentityPhotoObjectKey == ticket.FinalObjectKey);
+                }
 
                 if (ticket.Status == EmployeeImageUploadStatus.Completed)
                 {
@@ -74,6 +91,7 @@ namespace BlazorApp.Api.Services
 
                 var finalIsReferenced = IsObjectReferenced(
                     profile,
+                    sensitiveRequest,
                     storage,
                     ticket.Kind,
                     ticket.FinalObjectKey
@@ -208,7 +226,7 @@ namespace BlazorApp.Api.Services
             {
                 return;
             }
-            if (IsObjectReferenced(profile, storage, ticket.Kind, ticket.PreviousObjectKey))
+            if (IsObjectReferenced(profile, null, storage, ticket.Kind, ticket.PreviousObjectKey))
             {
                 await MarkPreviousCleanupAsync(
                     db,
@@ -259,24 +277,24 @@ namespace BlazorApp.Api.Services
 
         private static bool IsObjectReferenced(
             EmployeeProfile? profile,
+            EmployeeProfileSensitiveChangeRequest? sensitiveRequest,
             TencentCloudUploadService storage,
             string kind,
             string? objectKey
         )
         {
-            if (profile is null || string.IsNullOrWhiteSpace(objectKey))
+            if (string.IsNullOrWhiteSpace(objectKey))
             {
                 return false;
             }
             if (kind == "identity")
             {
-                return string.Equals(
-                    profile.IdentityPhotoObjectKey,
-                    objectKey,
-                    StringComparison.Ordinal
-                );
+                // 待审证件照已经完成 promote 后也属于稳定引用，过期清理不能误删。
+                return string.Equals(profile?.IdentityPhotoObjectKey, objectKey, StringComparison.Ordinal)
+                    || string.Equals(sensitiveRequest?.IdentityPhotoObjectKey, objectKey, StringComparison.Ordinal);
             }
-            return storage.TryGetPublicObjectKey(profile.AvatarUrl, out var currentObjectKey)
+            return profile is not null
+                && storage.TryGetPublicObjectKey(profile.AvatarUrl, out var currentObjectKey)
                 && string.Equals(currentObjectKey, objectKey, StringComparison.Ordinal);
         }
     }
