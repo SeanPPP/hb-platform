@@ -272,20 +272,28 @@ public sealed record CashierLoginAttempt(
     bool IsOnlineRejected,
     bool IsApiUnavailable,
     CashierSessionDto? Session,
-    string Message)
+    string Message,
+    string? ErrorCode = null)
 {
     public static CashierLoginAttempt OnlineAccepted(CashierSessionDto session) => new(false, false, session, string.Empty);
 
-    public static CashierLoginAttempt OnlineRejected(string message) => new(true, false, null, message);
+    public static CashierLoginAttempt OnlineRejected(string message, string? errorCode = null) =>
+        new(true, false, null, message, errorCode ?? "CASHIER_LOGIN_FAILED");
 
-    public static CashierLoginAttempt ApiUnavailable() => new(false, true, null, "收银员登录服务不可用");
+    public static CashierLoginAttempt ApiUnavailable() =>
+        new(false, true, null, "收银员登录服务不可用", "CASHIER_LOGIN_API_UNAVAILABLE");
 }
 
-public sealed record CashierLoginResult(bool Succeeded, CashierSessionDto? Session, string Message)
+public sealed record CashierLoginResult(
+    bool Succeeded,
+    CashierSessionDto? Session,
+    string Message,
+    string? ErrorCode = null)
 {
     public static CashierLoginResult Success(CashierSessionDto session) => new(true, session, string.Empty);
 
-    public static CashierLoginResult Fail(string message) => new(false, null, message);
+    public static CashierLoginResult Fail(string message, string? errorCode = null) =>
+        new(false, null, message, errorCode ?? "CASHIER_LOGIN_FAILED");
 }
 
 public interface ICashierLoginApiClient
@@ -321,13 +329,17 @@ public sealed class CashierLoginApiClient(HttpClient httpClient) : ICashierLogin
                     return CashierLoginAttempt.OnlineRejected("收银员条码无效或已停用");
                 }
 
-                return CashierLoginAttempt.OnlineRejected(failed?.Message ?? "收银员条码无效或已停用");
+                return CashierLoginAttempt.OnlineRejected(
+                    failed?.Message ?? "收银员条码无效或已停用",
+                    failed?.ErrorCode);
             }
 
             var result = await response.Content.ReadFromJsonAsync<ApiResult<CashierSessionDto>>(cancellationToken);
             return result?.Success == true && result.Data is not null
                 ? CashierLoginAttempt.OnlineAccepted(result.Data)
-                : CashierLoginAttempt.OnlineRejected(result?.Message ?? "收银员条码无效或已停用");
+                : CashierLoginAttempt.OnlineRejected(
+                    result?.Message ?? "收银员条码无效或已停用",
+                    result?.ErrorCode);
         }
         catch (JsonException)
         {
@@ -390,7 +402,7 @@ public sealed class CashierLoginService(
         {
             // 紧急二维码必须在普通条码 API 和商品查询之前分流，避免令牌外泄。
             return emergencyLoginTokenService is null
-                ? CashierLoginResult.Fail("紧急登录服务不可用")
+                ? CashierLoginResult.Fail("紧急登录服务不可用", "EMERGENCY_LOGIN_SERVICE_UNAVAILABLE")
                 : await emergencyLoginTokenService.LoginAsync(
                     userBarcode,
                     storeCode,
@@ -402,9 +414,8 @@ public sealed class CashierLoginService(
         var attempt = await apiClient.LoginAsync(request, cancellationToken);
         if (attempt.IsOnlineRejected)
         {
-            // 关键逻辑：在线明确拒绝表示条码已刷新、停用或失效，必须同步清除离线缓存，避免旧码断网复用。
-            await RemoveLoginCacheAsync(storeCode, deviceCode, userBarcode, cancellationToken);
-            return CashierLoginResult.Fail(attempt.Message);
+            // 在线明确拒绝只影响本次登录；保留旧缓存供后续真正断网时继续营业。
+            return CashierLoginResult.Fail(attempt.Message, attempt.ErrorCode);
         }
 
         if (attempt.Session is not null)
@@ -415,12 +426,12 @@ public sealed class CashierLoginService(
 
         if (!attempt.IsApiUnavailable)
         {
-            return CashierLoginResult.Fail(attempt.Message);
+            return CashierLoginResult.Fail(attempt.Message, attempt.ErrorCode);
         }
 
         var cached = await ReadCachedSessionAsync(storeCode, deviceCode, userBarcode, cancellationToken);
         return cached is null
-            ? CashierLoginResult.Fail(attempt.Message)
+            ? CashierLoginResult.Fail(attempt.Message, attempt.ErrorCode)
             : CashierLoginResult.Success(cached);
     }
 
@@ -547,37 +558,6 @@ public sealed class CashierLoginService(
 
             _cacheKeysBySessionIdentity.TryRemove(identity, out _);
             await settingsRepository.DeleteValueAsync(cacheReference.CacheKey, cancellationToken);
-        }
-        finally
-        {
-            _cacheGate.Release();
-        }
-    }
-
-    private async Task RemoveLoginCacheAsync(
-        string storeCode,
-        string deviceCode,
-        string userBarcode,
-        CancellationToken cancellationToken)
-    {
-        var cacheKey = BuildCacheKey(storeCode, deviceCode, userBarcode);
-        await _cacheGate.WaitAsync(cancellationToken);
-        try
-        {
-            await settingsRepository.DeleteValueAsync(cacheKey, cancellationToken);
-            await settingsRepository.DeleteValueAsync(
-                BuildLegacyCacheKey(storeCode, deviceCode, userBarcode),
-                cancellationToken);
-            foreach (var identity in _cacheKeysBySessionIdentity
-                         .Where(entry => string.Equals(
-                             entry.Value.CacheKey,
-                             cacheKey,
-                             StringComparison.Ordinal))
-                         .Select(entry => entry.Key)
-                         .ToArray())
-            {
-                _cacheKeysBySessionIdentity.TryRemove(identity, out _);
-            }
         }
         finally
         {

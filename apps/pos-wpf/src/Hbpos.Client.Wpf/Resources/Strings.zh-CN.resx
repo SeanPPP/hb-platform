@@ -966,6 +966,54 @@
   <data name="shell.cashierLogin.tooltip" xml:space="preserve">
     <value>扫描或输入收银员条码 / 紧急二维码</value>
   </data>
+  <data name="shell.cashierLogin.changeServerAddress" xml:space="preserve">
+    <value>修改服务器地址</value>
+  </data>
+  <data name="shell.cashierLogin.status.required" xml:space="preserve">
+    <value>请输入或扫描收银员条码或紧急二维码。</value>
+  </data>
+  <data name="shell.cashierLogin.status.failed" xml:space="preserve">
+    <value>收银员登录失败。</value>
+  </data>
+  <data name="shell.cashierLogin.status.invalidOrDisabled" xml:space="preserve">
+    <value>收银员条码无效或已停用。</value>
+  </data>
+  <data name="shell.cashierLogin.status.apiUnavailable" xml:space="preserve">
+    <value>收银员登录服务不可用。</value>
+  </data>
+  <data name="shell.cashierLogin.status.success" xml:space="preserve">
+    <value>收银员登录成功。</value>
+  </data>
+  <data name="shell.cashierLogin.status.locked" xml:space="preserve">
+    <value>已锁屏，请重新登录。</value>
+  </data>
+  <data name="shell.cashierLogin.status.offlineSuccess" xml:space="preserve">
+    <value>已使用离线收银员缓存登录。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyExpired" xml:space="preserve">
+    <value>紧急登录二维码已过期。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyNotActive" xml:space="preserve">
+    <value>紧急登录二维码尚未生效。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyKeyUnknown" xml:space="preserve">
+    <value>紧急登录签名密钥未知，请更新 POS 后重试。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyInvalid" xml:space="preserve">
+    <value>紧急登录二维码无效。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyTooLong" xml:space="preserve">
+    <value>紧急登录二维码过长。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyClockRollback" xml:space="preserve">
+    <value>系统时间早于可信时间，请联网校时后重试。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyWrongStore" xml:space="preserve">
+    <value>紧急登录二维码不属于当前门店。</value>
+  </data>
+  <data name="shell.cashierLogin.status.emergencyServiceUnavailable" xml:space="preserve">
+    <value>紧急登录服务不可用。</value>
+  </data>
   <data name="shell.scannerBinding" xml:space="preserve">
     <value>扫码枪</value>
   </data>
@@ -1496,6 +1544,9 @@
   </data>
   <data name="pos.terminal.actions.openCashDrawer" xml:space="preserve">
     <value>开钱箱</value>
+  </data>
+  <data name="pos.terminal.actions.lock" xml:space="preserve">
+    <value>锁屏</value>
   </data>
   <data name="pos.terminal.actions.exitApplication" xml:space="preserve">
     <value>退出软件</value>

@@ -119,7 +119,7 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
-    public async Task Cashier_login_removes_stale_cache_after_online_rejection()
+    public async Task Cashier_login_keeps_cache_after_online_rejection_but_does_not_fallback_for_that_attempt()
     {
         var settings = new InMemoryAppSettingsRepository();
         var service = new CashierLoginService(
@@ -131,18 +131,15 @@ public sealed class CashierPermissionTests
             new PassthroughProtector());
 
         await service.LoginAsync("S001", "POS-01", "BAR-1");
-        await settings.SetValueAsync(
-            "cashier-session:S001:POS-01:BAR-1",
-            "legacy-cache");
         var rejected = await service.LoginAsync("S001", "POS-01", "BAR-1");
         var unavailable = await service.LoginAsync("S001", "POS-01", "BAR-1");
 
         Assert.False(rejected.Succeeded);
         Assert.Null(rejected.Session);
         Assert.Equal("条码无效", rejected.Message);
-        Assert.False(unavailable.Succeeded);
-        Assert.Null(unavailable.Session);
-        Assert.Empty(settings.Keys);
+        Assert.True(unavailable.Succeeded);
+        Assert.True(unavailable.Session!.IsOfflineCached);
+        Assert.Equal("C001", unavailable.Session.CashierId);
     }
 
     [Fact]
@@ -550,6 +547,7 @@ public sealed class CashierPermissionTests
 
         Assert.True(attempt.IsApiUnavailable);
         Assert.False(attempt.IsOnlineRejected);
+        Assert.Equal("CASHIER_LOGIN_API_UNAVAILABLE", attempt.ErrorCode);
     }
 
     [Fact]
@@ -568,6 +566,7 @@ public sealed class CashierPermissionTests
 
         Assert.True(attempt.IsOnlineRejected);
         Assert.False(attempt.IsApiUnavailable);
+        Assert.Equal("CASHIER_LOGIN_FAILED", attempt.ErrorCode);
     }
 
     [Fact]
@@ -812,6 +811,37 @@ public sealed class CashierPermissionTests
         Assert.Equal(string.Empty, viewModel.ScanText);
         Assert.False(viewModel.IsMatchesPopupOpen);
         Assert.Equal("收银员登录成功", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_scanner_without_cashier_prefers_login_fallback_over_known_product()
+    {
+        var cart = new PosCartService();
+        var priceIndex = new LocalSellableItemIndex();
+        priceIndex.ReplaceAll([CreateItem()]);
+        var workflow = new FakePosTerminalWorkflowService();
+        var cashierBarcode = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PosTerminalViewModel(
+            priceIndex,
+            cart,
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow,
+            tryLoginCashierFromScannerFallbackAsync: (barcode, _) =>
+            {
+                cashierBarcode.TrySetResult(barcode);
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: true);
+
+        var processed = viewModel.ProcessScannerBarcode("930001", "scanner-device", "raw");
+
+        Assert.True(processed);
+        Assert.Equal("930001", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(0, workflow.ProcessScanAsyncCalls);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(viewModel.CartLines);
     }
 
     [Fact]

@@ -61,7 +61,7 @@ public partial class MainWindow : Window
         Closed += MainWindowClosed;
     }
 
-    private void CashierBarcodePasswordBoxPasswordChanged(object sender, RoutedEventArgs e)
+    private void CashierLoginOverlayPasswordBoxPasswordChanged(object sender, RoutedEventArgs e)
     {
         if (sender is PasswordBox passwordBox)
         {
@@ -69,7 +69,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void CashierBarcodePasswordBoxKeyDown(object sender, KeyEventArgs e)
+    private void CashierLoginOverlayPasswordBoxKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter)
         {
@@ -77,15 +77,15 @@ public partial class MainWindow : Window
         }
 
         e.Handled = true;
-        ExecuteCashierLoginCommandFromPasswordBox();
+        ExecuteCashierLoginCommandFromOverlay();
     }
 
-    private void CashierBarcodeKeyboardButtonClick(object sender, RoutedEventArgs e)
+    private void CashierLoginOverlayKeyboardButtonClick(object sender, RoutedEventArgs e)
     {
         var key = (sender as Button)?.Tag as string;
         var nextValue = ApplyCashierBarcodeKeyboardInput(CashierLoginOverlayPasswordBox.Password, key);
 
-        // 关键逻辑：屏幕键盘只服务遮罩弹窗，顶部小输入框和扫码枪登录流程保持不变。
+        // 关键逻辑：屏幕键盘只服务登录遮罩，扫码枪仍由同一个 PasswordBox 接收输入。
         CashierLoginOverlayPasswordBox.Password = nextValue;
         _viewModel.CashierBarcodeInput = nextValue;
         CashierLoginOverlayPasswordBox.Focus();
@@ -116,12 +116,12 @@ public partial class MainWindow : Window
             : current;
     }
 
-    private void CashierLoginButtonClick(object sender, RoutedEventArgs e)
+    private void CashierLoginOverlayButtonClick(object sender, RoutedEventArgs e)
     {
-        ClearCashierBarcodePasswordBoxesAfterLogin();
+        ClearCashierLoginOverlayInputAfterLogin();
     }
 
-    private void ExecuteCashierLoginCommandFromPasswordBox()
+    private void ExecuteCashierLoginCommandFromOverlay()
     {
         var command = _viewModel.LoginCashierCommand;
         if (!command.CanExecute(null))
@@ -130,19 +130,15 @@ public partial class MainWindow : Window
         }
 
         command.Execute(null);
-        ClearCashierBarcodePasswordBoxesAfterLogin();
+        ClearCashierLoginOverlayInputAfterLogin();
     }
 
-    private void ClearCashierBarcodePasswordBoxesAfterLogin()
+    private void ClearCashierLoginOverlayInputAfterLogin()
     {
         // 关键逻辑：PasswordBox 不能普通绑定，登录命令清空 VM 后还要同步清掉屏幕上的敏感输入。
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
-            new Action(() =>
-            {
-                CashierBarcodePasswordBox.Clear();
-                CashierLoginOverlayPasswordBox.Clear();
-            }));
+            new Action(CashierLoginOverlayPasswordBox.Clear));
     }
 
     private void CashierLoginOverlayIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)

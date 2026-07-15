@@ -92,6 +92,55 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Manual_lock_clears_cashier_reports_status_and_preserves_cart_for_relogin()
+    {
+        var cart = new PosCartService();
+        var cashierContext = new CashierSessionContext();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart,
+            cashierSessionContext: cashierContext,
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus,
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+        cart.AddItem(CreateItem("1042", "SKU-LOCK", "930LOCK"));
+        viewModel.CashierBarcodeInput = "SHOULD-BE-CLEARED";
+
+        await viewModel.PosTerminal!.LockCashierCommand.ExecuteAsync(null);
+
+        Assert.Null(cashierContext.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+        Assert.Empty(viewModel.Session.CashierId);
+        Assert.Empty(viewModel.Session.CashierName);
+        Assert.Empty(viewModel.CashierBarcodeInput);
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Equal("POS locked. Sign in again.", viewModel.StatusMessage);
+        Assert.Single(cart.Lines);
+
+        var logout = Assert.Single(auditLogger.Events.Where(auditEvent =>
+            auditEvent.OperationType == OperationAuditTypes.CashierLogout));
+        Assert.Equal("Succeeded", logout.Outcome);
+        Assert.Equal("MANUAL_LOCK", logout.ReasonCode);
+        Assert.Equal("CASHIER-1", logout.CashierId);
+
+        var lockReport = runtimeStatus.Reports.Last();
+        Assert.Null(lockReport.CashierId);
+        Assert.Null(lockReport.CashierName);
+
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task Cashier_login_and_shutdown_logout_record_operation_audits()
     {
         var auditLogger = new RecordingOperationAuditLogger();
@@ -140,6 +189,25 @@ public sealed class MainViewModelScannerTests
         Assert.True(string.IsNullOrEmpty(auditEvent.UserGuid));
         Assert.True(string.IsNullOrEmpty(auditEvent.CashierName));
         Assert.DoesNotContain("EMPLOYEE-BARCODE-SECRET", auditEvent.SafeMessage ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cashier_login_failure_uses_localized_error_code_instead_of_backend_message()
+    {
+        var loginResult = CashierLoginResult.Fail("后端原始中文，不应直接显示", "CASHIER_LOGIN_FAILED");
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FixedCashierLoginService(loginResult));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET");
+
+        Assert.Equal("Cashier barcode is invalid or disabled.", viewModel.StatusMessage);
+
+        await viewModel.ToggleCultureCommand.ExecuteAsync(null);
+        await viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET");
+
+        Assert.Equal("收银员条码无效或已停用。", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -2512,6 +2580,10 @@ public sealed class MainViewModelScannerTests
             apiServerSettings: apiServerSettings);
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        Assert.Same(apiServerSettings, viewModel.ApiServerSettings);
+        Assert.Equal(
+            "https://current.example.com/",
+            Assert.IsType<ApiServerSettingsViewModel>(viewModel.ApiServerSettings).ServerAddressText);
         await viewModel.ShowSettingsCommand.ExecuteAsync(null);
         var settings = Assert.IsType<SettingsViewModel>(viewModel.CurrentScreen);
 
@@ -4718,6 +4790,18 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(CashierLoginResult.Success(session));
+        }
+    }
+
+    private sealed class FixedCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(result);
         }
     }
 
