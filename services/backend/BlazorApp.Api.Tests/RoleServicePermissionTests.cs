@@ -59,8 +59,19 @@ public sealed class RoleServicePermissionTests : IDisposable
             Permissions.PosTerminal.Sales.RemoveLine,
             Permissions.PosTerminal.Sales.ChangeQuantity,
             Permissions.PosTerminal.Sales.ChangePrice,
-            Permissions.PosTerminal.Sales.LineDiscount,
-            Permissions.PosTerminal.Sales.OrderDiscount,
+            // 折扣权限按行/整单及操作方式细分，避免继续依赖已废弃的聚合权限。
+            Permissions.PosTerminal.Sales.LineManualDiscount,
+            Permissions.PosTerminal.Sales.LineQuickDiscount10Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount20Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount30Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount40Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount50Percent,
+            Permissions.PosTerminal.Sales.OrderManualDiscount,
+            Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent,
+            Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+            Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent,
+            Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent,
+            Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent,
             Permissions.PosTerminal.Sales.ClearCart,
             Permissions.PosTerminal.Sales.HoldOrder,
             Permissions.PosTerminal.Sales.RecallOrder,
@@ -115,6 +126,18 @@ public sealed class RoleServicePermissionTests : IDisposable
             Assert.Contains("收银端", seed.Description);
             Assert.False(string.IsNullOrWhiteSpace(seed.Name));
         }
+
+        // 旧聚合权限仅用于兼容迁移，不得再次成为可分配的活动种子。
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.LineDiscount, seedsByCode.Keys);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.OrderDiscount, seedsByCode.Keys);
+        Assert.Contains(
+            Permissions.PosTerminal.Sales.LineDiscount,
+            PermissionSeedData.DeprecatedPermissionCodes
+        );
+        Assert.Contains(
+            Permissions.PosTerminal.Sales.OrderDiscount,
+            PermissionSeedData.DeprecatedPermissionCodes
+        );
 
         Assert.DoesNotContain(
             PermissionSeedData.AllPermissions,
