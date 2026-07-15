@@ -43,10 +43,18 @@ public static class ServiceRegistration
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
-        services.AddSingleton<IEmergencyLoginTokenService>(sp => new EmergencyLoginTokenService(
-            sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build(),
-            sp.GetRequiredService<ILocalAppSettingsRepository>(),
-            sp.GetRequiredService<IDeviceAuthorizationProtector>()));
+        services.AddSingleton<IEmergencyLoginPublicKeyCache, EmergencyLoginPublicKeyCache>();
+        services.AddHttpClient<IEmergencyLoginPublicKeyApiClient, EmergencyLoginPublicKeyApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddSingleton<IEmergencyLoginPublicKeySyncService, EmergencyLoginPublicKeySyncService>();
+        services.AddSingleton<EmergencyLoginPublicKeySyncHostedService>();
+        services.AddSingleton<IHostedService>(sp =>
+            sp.GetRequiredService<EmergencyLoginPublicKeySyncHostedService>());
+        services.AddSingleton<IEmergencyLoginTokenService, EmergencyLoginTokenService>();
         services.AddSingleton(_ => new ClientLogOutboxStore(GetLogDatabasePath(startupOptions)));
         services.AddSingleton(_ => ClientLogIdentity.CreateCurrent());
         services.AddSingleton(sp =>

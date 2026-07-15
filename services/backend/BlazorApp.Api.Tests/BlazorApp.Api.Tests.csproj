@@ -80,6 +80,7 @@
     <Compile Include="PaymentTerminalSettingsServiceTests.cs" />
     <Compile Include="PaymentTerminalSettingsSchemaMigratorTests.cs" />
     <Compile Include="EmergencyLoginGrantTests.cs" />
+    <Compile Include="EmergencyLoginKeyManagementTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
     <Compile Include="CashRegisterUserReactServiceTests.cs" />

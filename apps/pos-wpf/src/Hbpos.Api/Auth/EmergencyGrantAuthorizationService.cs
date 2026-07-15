@@ -1,6 +1,5 @@
 using BlazorApp.Shared.Security;
 using Hbpos.Api.Data;
-using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
 namespace Hbpos.Api.Auth;
@@ -15,7 +14,7 @@ public interface IEmergencyGrantAuthorizationService
 
 public sealed class EmergencyGrantAuthorizationService(
     HbposSqlSugarContext dbContext,
-    IConfiguration configuration,
+    IEmergencyLoginPublicKeyProvider publicKeyProvider,
     ILogger<EmergencyGrantAuthorizationService> logger,
     TimeProvider? timeProvider = null) : IEmergencyGrantAuthorizationService
 {
@@ -26,18 +25,38 @@ public sealed class EmergencyGrantAuthorizationService(
         string deviceStoreCode,
         CancellationToken cancellationToken)
     {
-        var publicKeys = configuration.GetSection("EmergencyLogin:PublicKeys")
-            .GetChildren()
-            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
-            .ToDictionary(item => item.Key, item => item.Value!, StringComparer.Ordinal);
-        if (!EmergencyLoginTokenCodec.TryVerify(
+        EmergencyLoginTokenPayload? payload;
+        try
+        {
+            var publicKeys = await publicKeyProvider.GetKeysAsync(false, cancellationToken);
+            var verified = EmergencyLoginTokenCodec.TryVerify(
                 token,
                 publicKeys,
                 _timeProvider.GetUtcNow().UtcDateTime,
-                out var payload,
-                out _) ||
-            !string.Equals(payload!.StoreCode, deviceStoreCode, StringComparison.OrdinalIgnoreCase))
+                out payload,
+                out var errorCode);
+            if (!verified && string.Equals(errorCode, "EMERGENCY_TOKEN_KEY_UNKNOWN", StringComparison.Ordinal))
+            {
+                // 关键逻辑：轮换窗口遇到未知 KID 时绕过短缓存强制刷新一次。
+                publicKeys = await publicKeyProvider.GetKeysAsync(true, cancellationToken);
+                verified = EmergencyLoginTokenCodec.TryVerify(
+                    token,
+                    publicKeys,
+                    _timeProvider.GetUtcNow().UtcDateTime,
+                    out payload,
+                    out _);
+            }
+
+            if (!verified ||
+                !string.Equals(payload!.StoreCode, deviceStoreCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+        }
+        catch (Exception ex)
         {
+            // 公钥数据库不可读时失败关闭，不能回退到本地配置或旧私有来源。
+            logger.LogError(ex, "读取紧急登录验证公钥失败");
             return null;
         }
 

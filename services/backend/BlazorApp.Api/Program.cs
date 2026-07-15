@@ -491,10 +491,8 @@ builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<PaymentTerminalSettingsService>();
-builder.Services.Configure<EmergencyLoginSigningOptions>(
-    builder.Configuration.GetSection("EmergencyLogin")
-);
 builder.Services.AddScoped<EmergencyLoginGrantService>();
+builder.Services.AddScoped<EmergencyLoginKeyManagementService>();
 builder.Services.AddHttpClient<TencentCosMobileAppBuildArtifactMirror>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<IMobileAppBuildArtifactMirror>(sp =>
@@ -767,6 +765,7 @@ try
         await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await DeviceRuntimeStatusSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await EmergencyLoginGrantSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
+        await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         dbContext.CreateTable();
         // 默认关闭已有表自动同步，中心日志新增列和过滤唯一索引在这里显式升级。
         await ApplicationLogSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);

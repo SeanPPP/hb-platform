@@ -31,6 +31,10 @@ public static class ServiceRegistration
                 .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
         }
         services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
+        services.AddMemoryCache();
+        services.AddScoped<IEmergencyLoginPublicKeyRepository, SqlSugarEmergencyLoginPublicKeyRepository>();
+        services.AddScoped<IEmergencyLoginPublicKeyDistributionService, EmergencyLoginPublicKeyDistributionService>();
+        services.AddScoped<IEmergencyLoginPublicKeyProvider, EmergencyLoginPublicKeyProvider>();
         services.AddScoped<IEmergencyGrantAuthorizationService, EmergencyGrantAuthorizationService>();
         services.AddOptions<SquareWebhookOptions>();
         services.AddOptions<AppUpdateOptions>();

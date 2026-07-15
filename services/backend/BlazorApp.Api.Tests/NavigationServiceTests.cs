@@ -84,6 +84,37 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_EmergencyLoginKeysRequiresSystemManageSettings()
+    {
+        var authorized = CreateUser(
+            new Claim("permission", Permissions.System.ManageSettings)
+        );
+        var unauthorized = CreateUser(
+            new Claim("permission", Permissions.System.ViewAppDownloads)
+        );
+
+        var authorizedSystem = Assert.Single(
+            _service.BuildMenu(authorized),
+            item => item.Path == "/system"
+        );
+        var keyMenu = Assert.Single(
+            authorizedSystem.Children!,
+            item => item.Path == "/system/emergency-login-keys"
+        );
+        Assert.Equal("menu.emergencyLoginKeys", keyMenu.TitleKey);
+        Assert.Equal(Permissions.System.ManageSettings, keyMenu.Permission);
+
+        var unauthorizedSystem = Assert.Single(
+            _service.BuildMenu(unauthorized),
+            item => item.Path == "/system"
+        );
+        Assert.DoesNotContain(
+            unauthorizedSystem.Children!,
+            item => item.Path == "/system/emergency-login-keys"
+        );
+    }
+
+    [Fact]
     public async Task BuildMenu_UsesDatabasePermissionsInsteadOfStalePermissionClaims()
     {
         using var harness = new NavigationTestHarness();
