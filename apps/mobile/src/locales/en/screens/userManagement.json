@@ -26,12 +26,53 @@
     "confirmReset": "Reset"
   },
   "posPermissions": {
+    "title": "POS Terminal Permissions",
+    "unknownUser": "Unknown staff member",
+    "unknownStore": "Unknown store",
+    "loading": "Loading POS permissions...",
+    "selectedCount": "{{selected}} of {{total}} selected",
+    "mode": {
+      "inherited": "Inherited",
+      "override": "Override"
+    },
     "actions": {
-      "open": "POS access"
+      "open": "POS access",
+      "back": "Back",
+      "save": "Save",
+      "restore": "Restore inheritance",
+      "selectGroup": "Select all",
+      "clearGroup": "Clear"
+    },
+    "unsaved": {
+      "title": "Discard unsaved changes?",
+      "description": "These POS permission changes have not been saved and will be lost if you leave.",
+      "discard": "Discard changes"
+    },
+    "restore": {
+      "title": "Restore inherited permissions?",
+      "description": "This removes the store-specific override and restores inherited POS permissions."
     },
     "messages": {
-      "missingStoreGuid": "The store access identifier is missing. Refresh stores or sign in again."
-    }
+      "missingStoreGuid": "The store access identifier is missing. Refresh stores or sign in again.",
+      "saved": "POS permissions saved",
+      "restored": "Inherited permissions restored",
+      "saveFailed": "POS permissions could not be saved. Your unsaved selection has been kept.",
+      "restoreFailed": "Inherited permissions could not be restored. Your current selection has been kept."
+    },
+    "errors": {
+      "invalidTitle": "Permission details are incomplete",
+      "invalidDescription": "The staff member or store identifier is missing. Open this page again from Staff Management.",
+      "unauthorizedTitle": "Your session has expired",
+      "unauthorizedDescription": "Sign in again before managing POS permissions.",
+      "forbiddenTitle": "You cannot manage this account's POS permissions",
+      "forbiddenDescription": "Your account does not have permission for this action, and you cannot change your own POS permissions. The server still validates privileged targets.",
+      "notFoundTitle": "The staff-store assignment has changed",
+      "notFoundDescription": "This POS permission assignment no longer exists. The staff member may have moved stores, been disabled, or been unassigned. Return to Staff Management and refresh.",
+      "networkTitle": "Could not load POS permissions",
+      "networkDescription": "The server cannot be reached right now. Check your connection and try again."
+    },
+    "emptyTitle": "No POS permissions are assignable",
+    "emptyDescription": "The server has no assignable permissions for this staff member and store. You can still restore inheritance while an override is active."
   },
   "statuses": {
     "active": "Active",

@@ -98,6 +98,14 @@ export function buildPosPermissionDraft(
   };
 }
 
+export function shouldInitializePosPermissionDraft(
+  initializedScopeKey: string | null,
+  nextScopeKey: string
+) {
+  // 仅首次加载或切换用户/分店时重建，普通 refetch 必须保留未保存草稿。
+  return initializedScopeKey !== nextScopeKey;
+}
+
 export function groupPosPermissions(
   permissions: PosTerminalPermissionOption[]
 ): PosPermissionGroup[] {

@@ -8,6 +8,7 @@ import {
   getPosPermissionEntryState,
   groupPosPermissions,
   setPosPermissionGroupSelection,
+  shouldInitializePosPermissionDraft,
   togglePosPermissionCode,
 } from "./pos-terminal-permissions";
 import { PERMISSIONS } from "../../shared/utils/access";
@@ -94,6 +95,32 @@ assert.deepEqual(
     ],
   },
   "草稿应以过滤后的 effectivePermissionCodes 同时初始化基线和选择"
+);
+
+assert.deepEqual(
+  buildPosPermissionDraft({
+    ...permissionState,
+    mode: "Override",
+    effectivePermissionCodes: [],
+  }),
+  { baselineCodes: [], selectedCodes: [] },
+  "Override 模式的空 effective 权限应初始化为空草稿"
+);
+
+assert.equal(
+  shouldInitializePosPermissionDraft(null, "store-a:user-a"),
+  true,
+  "首次取得服务端响应时应初始化草稿"
+);
+assert.equal(
+  shouldInitializePosPermissionDraft("store-a:user-a", "store-a:user-a"),
+  false,
+  "同一 scope 普通 refetch 不应覆盖现有草稿"
+);
+assert.equal(
+  shouldInitializePosPermissionDraft("store-a:user-a", "store-b:user-a"),
+  true,
+  "切换用户或分店 scope 后应重新初始化草稿"
 );
 
 const groupedPermissions = groupPosPermissions([
