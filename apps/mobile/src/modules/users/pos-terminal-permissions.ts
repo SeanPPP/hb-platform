@@ -98,12 +98,27 @@ export function buildPosPermissionDraft(
   };
 }
 
-export function shouldInitializePosPermissionDraft(
-  initializedScopeKey: string | null,
-  nextScopeKey: string
-) {
-  // 仅首次加载或切换用户/分店时重建，普通 refetch 必须保留未保存草稿。
-  return initializedScopeKey !== nextScopeKey;
+export interface PosPermissionResponseState {
+  initializedScopeKey: string | null;
+  nextScopeKey: string;
+  dirty: boolean;
+  busy: boolean;
+  appliedDataUpdatedAt: number;
+  nextDataUpdatedAt: number;
+}
+
+export function shouldApplyPosPermissionResponse({
+  initializedScopeKey,
+  nextScopeKey,
+  dirty,
+  busy,
+  appliedDataUpdatedAt,
+  nextDataUpdatedAt,
+}: PosPermissionResponseState) {
+  // 首次加载或切换用户/分店时必须重建；同一范围只允许新响应更新干净草稿。
+  if (initializedScopeKey !== nextScopeKey) return true;
+
+  return !dirty && !busy && nextDataUpdatedAt > appliedDataUpdatedAt;
 }
 
 export interface PosPermissionRemovalGuardState {

@@ -35,10 +35,11 @@ import {
   classifyPosPermissionError,
   groupPosPermissions,
   setPosPermissionGroupSelection,
-  shouldInitializePosPermissionDraft,
+  shouldApplyPosPermissionResponse,
   shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "@/modules/users/pos-terminal-permissions";
+import type { PosPermissionErrorKind } from "@/modules/users/pos-terminal-permissions";
 import type { StoreUserPosTerminalPermissions } from "@/modules/users/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { PERMISSIONS } from "@/shared/utils/access";
@@ -86,18 +87,27 @@ export default function PosTerminalPermissionsScreen() {
   const [baselineCodes, setBaselineCodes] = useState<string[]>([]);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [allowRemove, setAllowRemove] = useState(false);
+  const [terminalErrorKind, setTerminalErrorKind] = useState<
+    Exclude<PosPermissionErrorKind, "network"> | null
+  >(null);
   const initializedScopeKeyRef = useRef<string | null>(null);
+  const appliedDataUpdatedAtRef = useRef(0);
+  const operationInFlightRef = useRef(false);
   const pendingActionRef = useRef<NavigationAction | null>(null);
   const busy = updateMutation.isPending || restoreMutation.isPending;
   const dirty = !arePermissionCodeSetsEqual(selectedCodes, baselineCodes);
 
   const applyServerPermissions = useCallback(
-    (permissions: StoreUserPosTerminalPermissions) => {
+    (
+      permissions: StoreUserPosTerminalPermissions,
+      dataUpdatedAt = Date.now()
+    ) => {
       // 服务端响应是保存后的权威状态，必须同时重建选择与基线。
       const draft = buildPosPermissionDraft(permissions);
       setSelectedCodes(draft.selectedCodes);
       setBaselineCodes(draft.baselineCodes);
       initializedScopeKeyRef.current = scopeKey;
+      appliedDataUpdatedAtRef.current = dataUpdatedAt;
     },
     [scopeKey]
   );
@@ -105,22 +115,38 @@ export default function PosTerminalPermissionsScreen() {
   useEffect(() => {
     if (initializedScopeKeyRef.current !== scopeKey) {
       initializedScopeKeyRef.current = null;
+      appliedDataUpdatedAtRef.current = 0;
       setSelectedCodes([]);
       setBaselineCodes([]);
+      setTerminalErrorKind(null);
     }
   }, [scopeKey]);
 
   useEffect(() => {
     if (
       permissionsQuery.data &&
-      shouldInitializePosPermissionDraft(
-        initializedScopeKeyRef.current,
-        scopeKey
-      )
+      shouldApplyPosPermissionResponse({
+        initializedScopeKey: initializedScopeKeyRef.current,
+        nextScopeKey: scopeKey,
+        dirty,
+        busy,
+        appliedDataUpdatedAt: appliedDataUpdatedAtRef.current,
+        nextDataUpdatedAt: permissionsQuery.dataUpdatedAt,
+      })
     ) {
-      applyServerPermissions(permissionsQuery.data);
+      applyServerPermissions(
+        permissionsQuery.data,
+        permissionsQuery.dataUpdatedAt
+      );
     }
-  }, [applyServerPermissions, permissionsQuery.data, scopeKey]);
+  }, [
+    applyServerPermissions,
+    busy,
+    dirty,
+    permissionsQuery.data,
+    permissionsQuery.dataUpdatedAt,
+    scopeKey,
+  ]);
 
   usePreventRemove(
     shouldPreventPosPermissionRemoval({ dirty, busy, allowRemove }),
@@ -180,8 +206,15 @@ export default function PosTerminalPermissionsScreen() {
     : "inherited";
 
   const handleSave = useCallback(async () => {
-    if (!permissionsQuery.data || !dirty || busy) return;
+    if (
+      !permissionsQuery.data ||
+      !dirty ||
+      busy ||
+      operationInFlightRef.current
+    ) return;
 
+    // ref 在等待 React Query 更新 isPending 前同步占位，封住快速双击窗口。
+    operationInFlightRef.current = true;
     try {
       const response = await updateMutation.mutateAsync({
         userGuid,
@@ -191,11 +224,19 @@ export default function PosTerminalPermissionsScreen() {
           permissionsQuery.data.assignablePermissions
         ),
       });
+      setTerminalErrorKind(null);
       applyServerPermissions(response);
       setSnackbarMessage(t("posPermissions.messages.saved"));
     } catch (error) {
       console.warn("[pos-terminal-permissions] 保存失败", error);
-      setSnackbarMessage(t("posPermissions.messages.saveFailed"));
+      const errorKind = classifyPosPermissionError(error);
+      if (errorKind === "network") {
+        setSnackbarMessage(t("posPermissions.messages.saveFailed"));
+      } else {
+        setTerminalErrorKind(errorKind);
+      }
+    } finally {
+      operationInFlightRef.current = false;
     }
   }, [
     applyServerPermissions,
@@ -210,7 +251,7 @@ export default function PosTerminalPermissionsScreen() {
   ]);
 
   const handleRestore = useCallback(() => {
-    if (busy || mode !== "override") return;
+    if (busy || mode !== "override" || operationInFlightRef.current) return;
 
     Alert.alert(
       t("posPermissions.restore.title"),
@@ -221,17 +262,32 @@ export default function PosTerminalPermissionsScreen() {
           text: t("posPermissions.actions.restore"),
           style: "destructive",
           onPress: async () => {
-            if (updateMutation.isPending || restoreMutation.isPending) return;
+            if (
+              operationInFlightRef.current ||
+              updateMutation.isPending ||
+              restoreMutation.isPending
+            ) return;
+
+            // Alert 回调同样同步占位，防止确认按钮被连续触发。
+            operationInFlightRef.current = true;
             try {
               const response = await restoreMutation.mutateAsync({
                 userGuid,
                 storeGuid,
               });
+              setTerminalErrorKind(null);
               applyServerPermissions(response);
               setSnackbarMessage(t("posPermissions.messages.restored"));
             } catch (error) {
               console.warn("[pos-terminal-permissions] 恢复继承失败", error);
-              setSnackbarMessage(t("posPermissions.messages.restoreFailed"));
+              const errorKind = classifyPosPermissionError(error);
+              if (errorKind === "network") {
+                setSnackbarMessage(t("posPermissions.messages.restoreFailed"));
+              } else {
+                setTerminalErrorKind(errorKind);
+              }
+            } finally {
+              operationInFlightRef.current = false;
             }
           },
         },
@@ -262,8 +318,8 @@ export default function PosTerminalPermissionsScreen() {
     </Surface>
   );
 
-  const renderErrorState = () => {
-    const errorKind = classifyPosPermissionError(permissionsQuery.error);
+  const renderErrorState = (explicitKind?: PosPermissionErrorKind) => {
+    const errorKind = explicitKind ?? classifyPosPermissionError(permissionsQuery.error);
     const canReturn = errorKind === "forbidden" || errorKind === "notFound";
     const canRetry = errorKind === "network";
 
@@ -299,6 +355,9 @@ export default function PosTerminalPermissionsScreen() {
         primaryAction={{ label: t("posPermissions.actions.back"), icon: "arrow-left", onPress: handleBack }}
       />
     );
+  } else if (terminalErrorKind) {
+    // 401/403/404 表示当前编辑上下文已失效，停止继续展示或操作旧草稿。
+    content = renderErrorState(terminalErrorKind);
   } else if (permissionsQuery.isLoading) {
     content = (
       <View style={styles.centerState}>

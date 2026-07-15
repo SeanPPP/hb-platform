@@ -8,7 +8,7 @@ import {
   getPosPermissionEntryState,
   groupPosPermissions,
   setPosPermissionGroupSelection,
-  shouldInitializePosPermissionDraft,
+  shouldApplyPosPermissionResponse,
   shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "./pos-terminal-permissions";
@@ -109,19 +109,76 @@ assert.deepEqual(
 );
 
 assert.equal(
-  shouldInitializePosPermissionDraft(null, "store-a:user-a"),
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: null,
+    nextScopeKey: "store-a:user-a",
+    dirty: false,
+    busy: false,
+    appliedDataUpdatedAt: 0,
+    nextDataUpdatedAt: 100,
+  }),
   true,
-  "首次取得服务端响应时应初始化草稿"
+  "缓存首次挂载时应应用服务端响应"
 );
 assert.equal(
-  shouldInitializePosPermissionDraft("store-a:user-a", "store-a:user-a"),
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: "store-a:user-a",
+    nextScopeKey: "store-b:user-a",
+    dirty: true,
+    busy: true,
+    appliedDataUpdatedAt: 100,
+    nextDataUpdatedAt: 100,
+  }),
+  true,
+  "切换用户或分店 scope 后应重新应用响应"
+);
+assert.equal(
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: "store-a:user-a",
+    nextScopeKey: "store-a:user-a",
+    dirty: false,
+    busy: false,
+    appliedDataUpdatedAt: 100,
+    nextDataUpdatedAt: 101,
+  }),
+  true,
+  "同一 scope 的干净草稿应应用更新的 refetch 响应"
+);
+assert.equal(
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: "store-a:user-a",
+    nextScopeKey: "store-a:user-a",
+    dirty: true,
+    busy: false,
+    appliedDataUpdatedAt: 100,
+    nextDataUpdatedAt: 101,
+  }),
   false,
-  "同一 scope 普通 refetch 不应覆盖现有草稿"
+  "同一 scope 的脏草稿不应被更新的 refetch 响应覆盖"
 );
 assert.equal(
-  shouldInitializePosPermissionDraft("store-a:user-a", "store-b:user-a"),
-  true,
-  "切换用户或分店 scope 后应重新初始化草稿"
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: "store-a:user-a",
+    nextScopeKey: "store-a:user-a",
+    dirty: false,
+    busy: true,
+    appliedDataUpdatedAt: 100,
+    nextDataUpdatedAt: 101,
+  }),
+  false,
+  "同一 scope 的操作中草稿不应被更新的 refetch 响应覆盖"
+);
+assert.equal(
+  shouldApplyPosPermissionResponse({
+    initializedScopeKey: "store-a:user-a",
+    nextScopeKey: "store-a:user-a",
+    dirty: false,
+    busy: false,
+    appliedDataUpdatedAt: 100,
+    nextDataUpdatedAt: 100,
+  }),
+  false,
+  "同一时间戳的响应不应重复应用"
 );
 
 assert.equal(
