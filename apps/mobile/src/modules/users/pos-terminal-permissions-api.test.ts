@@ -138,6 +138,25 @@ async function run() {
     assert.deepEqual(fetched, expectedNormalized, "GET 应兼容一层 envelope 并规范化");
     assert.deepEqual(updated, expectedNormalized, "PUT 应规范化已解包响应");
     assert.deepEqual(restored, expectedNormalized, "DELETE 应兼容 envelope 并规范化");
+    assert.throws(
+      () =>
+        normalizeStoreUserPosTerminalPermissions({
+          success: false,
+          message: "denied",
+          data: null,
+        }),
+      /denied/,
+      "失败 envelope 必须抛出服务端错误，不能规范化为空权限状态"
+    );
+    assert.throws(
+      () =>
+        normalizeStoreUserPosTerminalPermissions({
+          success: false,
+          data: null,
+        }),
+      /Request failed/,
+      "失败 envelope 缺少 message 时应使用稳定错误信息"
+    );
     assert.deepEqual(
       normalizeStoreUserPosTerminalPermissions(null),
       {

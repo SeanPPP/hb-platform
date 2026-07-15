@@ -10,6 +10,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function unwrapSuccessfulEnvelope(value: unknown): unknown {
+  if (isRecord(value) && value.success === false) {
+    // apiClient 通常已处理失败 envelope；此处兜底防止异常响应被误判为空权限。
+    throw new Error(
+      typeof value.message === "string" ? value.message : "Request failed"
+    );
+  }
+
   if (
     isRecord(value) &&
     value.success === true &&
