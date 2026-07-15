@@ -24,7 +24,9 @@ export interface EmployeeProfileSummaryDto {
   employmentType?: EmployeeEmploymentType
   avatarUrl?: string
   identityId?: string
+  identityType?: string
   identityPhotoUrl?: string
+  identityPhotoUrlExpiresAt?: string
   address?: string
   createdAt?: string
   updatedAt?: string
@@ -48,6 +50,53 @@ export interface SaveEmployeeProfilePayload {
   employmentType?: EmployeeEmploymentType
   avatarUrl?: string
   identityId?: string
+  identityType?: string
   identityPhotoUrl?: string
   address?: string
+}
+
+export type EmployeeProfileSensitiveChangeStatus = 'Pending' | 'Approved' | 'Rejected' | 'Superseded'
+
+export interface EmployeeProfileSensitiveChangeQueryDto {
+  keyword?: string
+  page?: number
+  pageSize?: number
+  status?: EmployeeProfileSensitiveChangeStatus
+}
+
+export interface EmployeeProfileSensitiveChangeSummaryDto {
+  requestId: number
+  userGuid: string
+  username?: string
+  status: EmployeeProfileSensitiveChangeStatus
+  bankBsb?: string
+  bankAccountSummary?: string
+  superannuationCompanyName?: string
+  superannuationCompanyCode?: string
+  superannuationAccountSummary?: string
+  identityType?: string
+  identityIdSummary?: string
+  hasIdentityPhoto: boolean
+  baseSensitiveRevision: number
+  submittedAt: string
+  reviewedAt?: string
+  reviewReason?: string
+}
+
+export interface EmployeeProfileSensitiveChangeDetailDto extends EmployeeProfileSensitiveChangeSummaryDto {
+  bankAccountNumber?: string
+  superannuationAccountNumber?: string
+  identityId?: string
+  identityPhotoUrl?: string
+  identityPhotoUrlExpiresAt?: string
+  submittedBy?: string
+  reviewedBy?: string
+}
+
+export interface EmployeeProfileSensitiveReviewPayload {
+  reason?: string
+}
+
+export interface EmployeeProfileSensitiveRejectPayload {
+  reason: string
 }

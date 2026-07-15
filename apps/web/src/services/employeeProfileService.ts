@@ -2,6 +2,12 @@ import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   EmployeeProfileDetailDto,
   EmployeeProfileQueryDto,
+  EmployeeProfileSensitiveChangeDetailDto,
+  EmployeeProfileSensitiveChangeQueryDto,
+  EmployeeProfileSensitiveChangeStatus,
+  EmployeeProfileSensitiveChangeSummaryDto,
+  EmployeeProfileSensitiveRejectPayload,
+  EmployeeProfileSensitiveReviewPayload,
   EmployeeProfileSummaryDto,
   SaveEmployeeProfilePayload,
 } from '../types/employeeProfile'
@@ -34,7 +40,9 @@ function mapEmployeeProfile<T extends EmployeeProfileSummaryDto>(raw: BackendEmp
     employmentType: (asString(raw.employmentType) ?? asString(raw.employeeType) ?? asString(raw.EmployeeType)) as T['employmentType'],
     avatarUrl: asString(raw.avatarUrl) ?? asString(raw.AvatarUrl),
     identityId: asString(raw.identityId) ?? asString(raw.IdentityId),
+    identityType: asString(raw.identityType) ?? asString(raw.IdentityType),
     identityPhotoUrl: asString(raw.identityPhotoUrl) ?? asString(raw.IdentityPhotoUrl),
+    identityPhotoUrlExpiresAt: asString(raw.identityPhotoUrlExpiresAt) ?? asString(raw.IdentityPhotoUrlExpiresAt),
     address: asString(raw.address) ?? asString(raw.Address),
     createdAt: asString(raw.createdAt) ?? asString(raw.CreatedAt),
     updatedAt: asString(raw.updatedAt) ?? asString(raw.UpdatedAt),
@@ -54,6 +62,7 @@ function toBackendPayload(payload: SaveEmployeeProfilePayload) {
     employmentType: payload.employmentType,
     avatarUrl: payload.avatarUrl,
     identityId: payload.identityId,
+    identityType: payload.identityType,
     identityPhotoUrl: payload.identityPhotoUrl,
     address: payload.address,
   }
@@ -99,4 +108,115 @@ export async function getMyEmployeeProfile(): Promise<EmployeeProfileDetailDto> 
 export async function updateMyEmployeeProfile(payload: SaveEmployeeProfilePayload): Promise<EmployeeProfileDetailDto> {
   const response = await request.put<ApiResponse<EmployeeProfileDetailDto>>(ME_BASE_PATH, toBackendPayload(payload))
   return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as BackendEmployeeProfile)
+}
+
+function asNumber(value: unknown, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function asBoolean(value: unknown) {
+  return value === true
+}
+
+function mapSensitiveStatus(value: unknown): EmployeeProfileSensitiveChangeStatus {
+  switch (asString(value)?.toLowerCase()) {
+    case 'approved':
+      return 'Approved'
+    case 'rejected':
+      return 'Rejected'
+    case 'superseded':
+      return 'Superseded'
+    default:
+      // 未知状态必须保持不可操作，不能误判为待审核。
+      return 'Superseded'
+  }
+}
+
+function mapSensitiveChangeSummary(raw: BackendEmployeeProfile): EmployeeProfileSensitiveChangeSummaryDto {
+  return {
+    requestId: asNumber(raw.requestId ?? raw.RequestId),
+    userGuid: asString(raw.userGuid) ?? asString(raw.UserGuid) ?? asString(raw.userGUID) ?? asString(raw.UserGUID) ?? '',
+    username: asString(raw.username) ?? asString(raw.Username),
+    status: mapSensitiveStatus(raw.status ?? raw.Status),
+    bankBsb: asString(raw.bankBsb) ?? asString(raw.BankBsb),
+    bankAccountSummary: asString(raw.bankAccountSummary) ?? asString(raw.BankAccountSummary),
+    superannuationCompanyName: asString(raw.superannuationCompanyName) ?? asString(raw.SuperannuationCompanyName),
+    superannuationCompanyCode: asString(raw.superannuationCompanyCode) ?? asString(raw.SuperannuationCompanyCode),
+    superannuationAccountSummary:
+      asString(raw.superannuationAccountSummary) ?? asString(raw.SuperannuationAccountSummary),
+    identityType: asString(raw.identityType) ?? asString(raw.IdentityType),
+    identityIdSummary: asString(raw.identityIdSummary) ?? asString(raw.IdentityIdSummary),
+    hasIdentityPhoto: asBoolean(raw.hasIdentityPhoto ?? raw.HasIdentityPhoto),
+    baseSensitiveRevision: asNumber(raw.baseSensitiveRevision ?? raw.BaseSensitiveRevision),
+    submittedAt: asString(raw.submittedAt) ?? asString(raw.SubmittedAt) ?? '',
+    reviewedAt: asString(raw.reviewedAt) ?? asString(raw.ReviewedAt),
+    reviewReason: asString(raw.reviewReason) ?? asString(raw.ReviewReason),
+  }
+}
+
+function mapSensitiveChangeDetail(raw: BackendEmployeeProfile): EmployeeProfileSensitiveChangeDetailDto {
+  return {
+    ...mapSensitiveChangeSummary(raw),
+    bankAccountNumber: asString(raw.bankAccountNumber) ?? asString(raw.BankAccountNumber),
+    superannuationAccountNumber:
+      asString(raw.superannuationAccountNumber) ?? asString(raw.SuperannuationAccountNumber),
+    identityId: asString(raw.identityId) ?? asString(raw.IdentityId),
+    identityPhotoUrl: asString(raw.identityPhotoUrl) ?? asString(raw.IdentityPhotoUrl),
+    identityPhotoUrlExpiresAt: asString(raw.identityPhotoUrlExpiresAt) ?? asString(raw.IdentityPhotoUrlExpiresAt),
+    submittedBy: asString(raw.submittedBy) ?? asString(raw.SubmittedBy),
+    reviewedBy: asString(raw.reviewedBy) ?? asString(raw.ReviewedBy),
+  }
+}
+
+export async function getAdminSensitiveChangeRequests(
+  params: EmployeeProfileSensitiveChangeQueryDto,
+): Promise<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>> {
+  const response = await request.get<ApiResponse<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>>(
+    `${ADMIN_BASE_PATH}/change-requests`,
+    {
+      params: {
+        page: params.page,
+        pageSize: params.pageSize,
+        status: params.status,
+        search: params.keyword,
+      },
+    },
+  )
+  const result = unwrapPagedResult(response)
+  return {
+    ...result,
+    // 列表只保留后端摘要 DTO 白名单，即使异常响应夹带完整账号也不会进入页面状态。
+    items: result.items.map((item) => mapSensitiveChangeSummary(item as unknown as BackendEmployeeProfile)),
+  }
+}
+
+export async function getAdminSensitiveChangeRequest(
+  requestId: number,
+): Promise<EmployeeProfileSensitiveChangeDetailDto> {
+  const response = await request.get<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>>(
+    `${ADMIN_BASE_PATH}/change-requests/${requestId}`,
+  )
+  return mapSensitiveChangeDetail(unwrapApiData(response) as unknown as BackendEmployeeProfile)
+}
+
+export async function approveAdminSensitiveChangeRequest(
+  requestId: number,
+  payload: EmployeeProfileSensitiveReviewPayload,
+): Promise<EmployeeProfileSensitiveChangeDetailDto> {
+  const response = await request.post<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>>(
+    `${ADMIN_BASE_PATH}/change-requests/${requestId}/approve`,
+    payload,
+  )
+  return mapSensitiveChangeDetail(unwrapApiData(response) as unknown as BackendEmployeeProfile)
+}
+
+export async function rejectAdminSensitiveChangeRequest(
+  requestId: number,
+  payload: EmployeeProfileSensitiveRejectPayload,
+): Promise<EmployeeProfileSensitiveChangeDetailDto> {
+  const response = await request.post<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>>(
+    `${ADMIN_BASE_PATH}/change-requests/${requestId}/reject`,
+    payload,
+  )
+  return mapSensitiveChangeDetail(unwrapApiData(response) as unknown as BackendEmployeeProfile)
 }

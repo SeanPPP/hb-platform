@@ -3526,6 +3526,7 @@
     "employeeProfiles": {
       "pageTitle": "Employee Profile Maintenance",
       "pageSubtitle": "Administrators can maintain employee banking, superannuation and identity details here.",
+      "tabs": { "profiles": "Employee profiles", "pending": "Pending review" },
       "searchPlaceholder": "Search username / name",
       "loadListFailed": "Failed to load employee profiles",
       "loadDetailFailed": "Failed to load employee profile details",
@@ -3544,6 +3545,7 @@
       "employmentType": "Employment Type",
       "gender": "Gender",
       "birthday": "Birthday",
+      "identityType": "Identity type",
       "identityId": "Identity ID",
       "avatarUrl": "Avatar URL",
       "identityPhotoUrl": "Identity Photo URL",
@@ -3561,6 +3563,32 @@
       "updatedAt": "Updated At",
       "lastUpdated": "Last Updated",
       "noImage": "No image preview",
+      "pendingSupersede": {
+        "title": "Confirm direct sensitive data change",
+        "content": "This employee has a pending request. Saving these sensitive data changes will invalidate that request.",
+        "confirm": "Save and invalidate request"
+      },
+      "review": {
+        "employee": "Employee", "changedFields": "Changed fields", "submittedAt": "Submitted at", "status": "Status",
+        "reviewAction": "Review", "searchPlaceholder": "Search employee account / name",
+        "loadListFailed": "Failed to load pending reviews", "loadDetailFailed": "Failed to load review details",
+        "loadingDetail": "Loading review details...", "detailUnavailable": "Review details are unavailable. Refresh and try again.",
+        "empty": "No pending reviews", "viewDetailForFields": "Open details to view changed fields",
+        "drawerTitle": "Sensitive data review - {{name}}", "field": "Field", "currentValue": "Current official value",
+        "proposedValue": "Employee submitted value", "changed": "Changed", "hasPhoto": "Identity photo available", "noPhoto": "No identity photo",
+        "currentPhoto": "Current official identity photo", "proposedPhoto": "Pending identity photo",
+        "authorizedDetailNotice": "Full account numbers are shown only in this authorized review detail. Do not copy them into lists, notes, or logs.",
+        "reason": "Review reason", "reasonHint": "The approval reason is optional. A rejection reason is required.", "reasonRequired": "Enter a rejection reason",
+        "approve": "Approve", "reject": "Reject", "approveSuccess": "Sensitive data request approved", "rejectSuccess": "Sensitive data request rejected",
+        "approveFailed": "Failed to approve the request", "rejectFailed": "Failed to reject the request",
+        "versionConflict": "Official data changed. Details and the list were refreshed for review.",
+        "statuses": { "Pending": "Pending", "Approved": "Approved", "Rejected": "Rejected", "Superseded": "Invalidated" },
+        "fields": {
+          "bankBsb": "BSB", "bankAccountNumber": "Bank account number", "superannuationCompanyName": "Superannuation company",
+          "superannuationCompanyCode": "Superannuation code", "superannuationAccountNumber": "Superannuation account number",
+          "identityType": "Identity type", "identityId": "Identity number", "identityPhotoUrl": "Identity photo"
+        }
+      },
       "sections": {
         "account": "Account Information",
         "media": "Avatar and Identity Photo",
@@ -3585,6 +3613,7 @@
         "employmentType": "Select employment type",
         "gender": "Select gender",
         "birthday": "Select birthday",
+        "identityType": "Enter identity type",
         "identityId": "Enter identity ID",
         "avatarUrl": "Enter avatar URL",
         "identityPhotoUrl": "Enter identity photo URL",
