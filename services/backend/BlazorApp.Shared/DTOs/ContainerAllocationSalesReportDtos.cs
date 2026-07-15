@@ -54,6 +54,7 @@ public class ContainerAllocationSalesReportResponse
 public class ContainerAllocationSalesProductDto
 {
     public string ProductCode { get; set; } = string.Empty;
+    public string? ProductImage { get; set; }
     public string? ItemNumber { get; set; }
     public string? ProductName { get; set; }
     public decimal LoadingQuantity { get; set; }

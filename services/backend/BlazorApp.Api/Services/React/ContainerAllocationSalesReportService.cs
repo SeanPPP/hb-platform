@@ -12,6 +12,7 @@ namespace BlazorApp.Api.Services.React;
 public sealed class ContainerAllocationSalesReportService : IContainerAllocationSalesReportService
 {
     private const string ChinaContainerSupplierCode = "200";
+    private const string ReconciliationFailurePrefix = "商品统计与分店营业额统计不一致:";
     private readonly SqlSugarContext _context;
     private readonly IContainerReactService _containerService;
     private readonly ILogger<ContainerAllocationSalesReportService> _logger;
@@ -44,7 +45,8 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
         var productCodes = reportContext.Products.Select(x => x.ProductCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var allocations = await LoadAllocationsAsync(reportContext.StartDate, reportContext.EndDate, productCodes);
         var statisticStatus = await GetStatisticStatusAsync(reportContext.StartDate, reportContext.EndDate);
-        var sales = statisticStatus.Status == SalesStatisticRefreshStatus.Fresh
+        var salesReady = statisticStatus.CanExposeMetrics;
+        var sales = salesReady
             ? await LoadSalesAsync(reportContext.StartDate, reportContext.EndDate, productCodes)
             : new List<SalesRow>();
 
@@ -52,8 +54,6 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             .ToDictionary(x => x.Key, AggregateAllocation, StringComparer.OrdinalIgnoreCase);
         var salesByProduct = sales.GroupBy(x => x.ProductCode, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, AggregateSales, StringComparer.OrdinalIgnoreCase);
-        var salesReady = statisticStatus.Status == SalesStatisticRefreshStatus.Fresh;
-
         var allItems = reportContext.Products.Select(product =>
         {
             allocationByProduct.TryGetValue(product.ProductCode, out var allocation);
@@ -102,16 +102,28 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
         if (string.IsNullOrWhiteSpace(productCode))
             throw new ArgumentException("商品编码不能为空。", nameof(request));
 
-        var reportContext = await LoadReportContextAsync(containerGuid, request.StartDate, request.EndDate);
+        var reportContext = await LoadReportContextAsync(
+            containerGuid,
+            request.StartDate,
+            request.EndDate,
+            loadProducts: false
+        );
         if (!reportContext.CanQuery)
             throw new ArgumentException(reportContext.QueryMessage ?? "当前货柜不能查询配销数据。", nameof(request));
-        if (!reportContext.Products.Any(x => x.ProductCode.Equals(productCode, StringComparison.OrdinalIgnoreCase)))
+        // 分店明细只需校验单个商品归属，避免加载整柜明细及商品补全联表。
+        var belongsToContainer = await _context.Db.Queryable<ContainerDetail>()
+            .AnyAsync(x =>
+                x.ContainerCode == containerGuid
+                && x.ProductCode != null
+                && SqlFunc.ToUpper(x.ProductCode.Trim()) == productCode
+            );
+        if (!belongsToContainer)
             throw new KeyNotFoundException("货柜中不存在该商品。");
 
         var productCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { productCode };
         var allocations = await LoadAllocationsAsync(reportContext.StartDate, reportContext.EndDate, productCodes);
         var statisticStatus = await GetStatisticStatusAsync(reportContext.StartDate, reportContext.EndDate);
-        var salesReady = statisticStatus.Status == SalesStatisticRefreshStatus.Fresh;
+        var salesReady = statisticStatus.CanExposeMetrics;
         var sales = salesReady
             ? await LoadSalesAsync(reportContext.StartDate, reportContext.EndDate, productCodes)
             : new List<SalesRow>();
@@ -120,7 +132,7 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             .ToDictionary(x => x.Key, AggregateAllocation, StringComparer.OrdinalIgnoreCase);
         var salesByBranch = sales.GroupBy(x => x.BranchCode, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, AggregateSales, StringComparer.OrdinalIgnoreCase);
-        // 非 Fresh 时不能返回销售数值，但仍需读取存在销售记录的分店键，保留历史停用分店可见性。
+        // Pending 等未完成状态不能返回销售数值，但仍需读取历史分店键，保留停用分店可见性。
         IEnumerable<string> historicalSalesBranchCodes = salesReady
             ? salesByBranch.Keys
             : await LoadSalesBranchCodesAsync(reportContext.StartDate, reportContext.EndDate, productCodes);
@@ -162,23 +174,31 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
     private async Task<ReportContext> LoadReportContextAsync(
         string containerGuid,
         DateTime? requestedStart,
-        DateTime? requestedEnd
+        DateTime? requestedEnd,
+        bool loadProducts = true
     )
     {
         // 货柜主档与明细顺序读取，避免同一 scoped SqlSugar 连接并发占用。
         var container = await _containerService.GetContainerDetailAsync(containerGuid)
             ?? throw new KeyNotFoundException("货柜不存在。");
-        var details = await _containerService.GetContainerProductsAsync(containerGuid);
+        var details = loadProducts
+            ? await _containerService.GetContainerProductsAsync(containerGuid)
+            : new List<ContainerDetailDto>();
         var products = details
             .Where(x => !string.IsNullOrWhiteSpace(x.商品编码))
             .GroupBy(x => NormalizeCode(x.商品编码), StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
                 var representative = group.First();
+                var itemNumber = group.Select(x => x.商品信息?.货号)
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
                 return new ProductIdentity(
                     group.Key,
                     group.Sum(x => x.装柜数量 ?? 0m),
-                    group.Select(x => x.商品信息?.货号).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+                    // 货柜商品接口已完成图片联表与默认地址补齐，报表直接复用，避免二次查询覆盖正确图片。
+                    group.Select(x => x.商品信息?.商品图片)
+                        .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+                    itemNumber,
                     group.Select(x => x.商品信息?.商品名称).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))
                         ?? representative.商品信息?.英文名称
                 );
@@ -348,20 +368,41 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             .ToListAsync();
 
         if (states.Count == 0)
-            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计尚未生成。");
-        var failed = states.FirstOrDefault(x => x.Status == SalesStatisticRefreshStatus.Failed);
-        if (failed != null)
-            return new StatisticStatus(SalesStatisticRefreshStatus.Failed, failed.ErrorMessage ?? "商品销售统计生成失败。");
-        if (states.Any(x => x.Status is SalesStatisticRefreshStatus.Queued or SalesStatisticRefreshStatus.Running))
-            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计正在重算中。");
-        if (states.Any(x => x.Status == SalesStatisticRefreshStatus.Stale))
-            return new StatisticStatus(SalesStatisticRefreshStatus.Stale, "商品销售统计正在等待补算。");
-        if (states.Any(x => x.Status == SalesStatisticRefreshStatus.Pending))
-            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计正在生成中。");
+            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计尚未生成。", false);
         var expectedDays = (endDate - startDate).Days + 1;
-        if (states.Select(x => x.Date.Date).Distinct().Count() < expectedDays)
-            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "日期范围内仍有商品销售统计未生成。");
-        return new StatisticStatus(SalesStatisticRefreshStatus.Fresh, null);
+        var hasCompleteDateCoverage = states.Select(x => x.Date.Date).Distinct().Count() == expectedDays;
+        // 只有全区间逐日完成，且 Failed 明确属于稳定前缀的对账差异时，才允许读取已落库指标。
+        var canExposeMetrics = hasCompleteDateCoverage && states.All(state =>
+            state.Status == SalesStatisticRefreshStatus.Fresh
+            || (
+                state.Status == SalesStatisticRefreshStatus.Failed
+                && IsReconciliationFailure(state.ErrorMessage)
+            )
+        );
+        var failedStates = states
+            .Where(x => x.Status == SalesStatisticRefreshStatus.Failed)
+            .OrderBy(x => x.Date)
+            .ToList();
+        // 操作失败优先于对账差异，组内按日期排序，避免数据库无序返回掩盖真正任务异常。
+        var failed = failedStates.FirstOrDefault(x => !IsReconciliationFailure(x.ErrorMessage))
+            ?? failedStates.FirstOrDefault();
+        if (failed != null)
+            return new StatisticStatus(
+                SalesStatisticRefreshStatus.Failed,
+                failed.ErrorMessage ?? "商品销售统计生成失败。",
+                canExposeMetrics
+            );
+        if (states.Any(x => x.Status is SalesStatisticRefreshStatus.Queued or SalesStatisticRefreshStatus.Running))
+            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计正在重算中。", false);
+        if (states.Any(x => x.Status == SalesStatisticRefreshStatus.Stale))
+            return new StatisticStatus(SalesStatisticRefreshStatus.Stale, "商品销售统计正在等待补算。", false);
+        if (states.Any(x => x.Status == SalesStatisticRefreshStatus.Pending))
+            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计正在生成中。", false);
+        if (!hasCompleteDateCoverage)
+            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "日期范围内仍有商品销售统计未生成。", false);
+        if (!canExposeMetrics)
+            return new StatisticStatus(SalesStatisticRefreshStatus.Pending, "商品销售统计状态尚未完成。", false);
+        return new StatisticStatus(SalesStatisticRefreshStatus.Fresh, null, true);
     }
 
     private async Task<List<string>> LoadSalesBranchCodesAsync(
@@ -404,6 +445,7 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
         return new ContainerAllocationSalesProductDto
         {
             ProductCode = product.ProductCode,
+            ProductImage = product.ProductImage,
             ItemNumber = product.ItemNumber,
             ProductName = product.ProductName,
             LoadingQuantity = product.LoadingQuantity,
@@ -551,8 +593,16 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
 
     private static DateTime MinDate(DateTime left, DateTime right) => left <= right ? left : right;
     private static string NormalizeCode(string? value) => value?.Trim().ToUpperInvariant() ?? string.Empty;
+    private static bool IsReconciliationFailure(string? message) =>
+        message?.StartsWith(ReconciliationFailurePrefix, StringComparison.Ordinal) == true;
 
-    private sealed record ProductIdentity(string ProductCode, decimal LoadingQuantity, string? ItemNumber, string? ProductName);
+    private sealed record ProductIdentity(
+        string ProductCode,
+        decimal LoadingQuantity,
+        string? ProductImage,
+        string? ItemNumber,
+        string? ProductName
+    );
     private sealed class AllocationQueryRow
     {
         public string? ProductCode { get; set; }
@@ -586,7 +636,7 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
     private sealed record SalesRow(string ProductCode, string BranchCode, decimal Quantity, decimal Amount, decimal? GrossProfit, bool CostComplete);
     private sealed record AllocationAggregate(decimal Quantity, decimal Amount);
     private sealed record SalesAggregate(decimal Quantity, decimal Amount, decimal GrossProfit, bool CostComplete);
-    private sealed record StatisticStatus(string Status, string? Message);
+    private sealed record StatisticStatus(string Status, string? Message, bool CanExposeMetrics);
     private sealed record ReportContext(
         ContainerMainDto Container,
         List<ProductIdentity> Products,
