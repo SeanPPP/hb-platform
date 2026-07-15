@@ -201,6 +201,15 @@ assert.equal(
   "本人账号应隐藏入口"
 );
 assert.equal(
+  getPosPermissionEntryState({
+    ...eligibleEntry,
+    currentUserGuid: " current-user",
+    targetUserGuid: "CURRENT-USER ",
+  }),
+  "hidden",
+  "本人账号 GUID 首尾有空白时仍应隐藏入口"
+);
+assert.equal(
   getPosPermissionEntryState({ ...eligibleEntry, targetStatus: 0 }),
   "hidden",
   "停用账号应隐藏入口"
@@ -241,9 +250,22 @@ assert.equal(
   "高权限角色应精确匹配，不能命中相似角色名"
 );
 assert.equal(
+  getPosPermissionEntryState({
+    ...eligibleEntry,
+    targetRoleNames: [" StoreManager "],
+  }),
+  "hidden",
+  "高权限角色首尾有空白时仍应隐藏入口"
+);
+assert.equal(
   getPosPermissionEntryState({ ...eligibleEntry, storeGuid: null }),
   "disabled",
   "符合资格但缺少 storeGuid 时应显示禁用入口"
+);
+assert.equal(
+  getPosPermissionEntryState({ ...eligibleEntry, storeGuid: "   " }),
+  "disabled",
+  "storeGuid 只有空白时应视为缺少分店标识并禁用入口"
 );
 
 assert.equal(

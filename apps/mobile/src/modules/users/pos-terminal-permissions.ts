@@ -44,6 +44,10 @@ const PRIVILEGED_ROLE_NAMES = new Set([
   "warehouseadmin",
 ]);
 
+function normalizeIdentityValue(value: string) {
+  return value.trim().toLowerCase();
+}
+
 function uniquePermissionCodes(permissionCodes: string[]) {
   return Array.from(new Set(permissionCodes));
 }
@@ -164,11 +168,15 @@ export function getPosPermissionEntryState({
   targetRoleNames,
   storeGuid,
 }: PosPermissionEntryContext): PosPermissionEntryState {
+  const normalizedCurrentUserGuid = currentUserGuid
+    ? normalizeIdentityValue(currentUserGuid)
+    : "";
+  const normalizedTargetUserGuid = normalizeIdentityValue(targetUserGuid);
   const isCurrentUser =
-    Boolean(currentUserGuid) &&
-    currentUserGuid?.toLowerCase() === targetUserGuid.toLowerCase();
+    normalizedCurrentUserGuid.length > 0 &&
+    normalizedCurrentUserGuid === normalizedTargetUserGuid;
   const hasPrivilegedRole = targetRoleNames.some((roleName) =>
-    PRIVILEGED_ROLE_NAMES.has(roleName.toLowerCase())
+    PRIVILEGED_ROLE_NAMES.has(normalizeIdentityValue(roleName))
   );
 
   // 隐藏条件属于业务资格判断，应优先于分店参数是否完整。
@@ -182,7 +190,8 @@ export function getPosPermissionEntryState({
     return "hidden";
   }
 
-  return storeGuid ? "enabled" : "disabled";
+  // 仅有空白的分店标识不可用于请求，按缺失参数显示禁用入口。
+  return storeGuid?.trim() ? "enabled" : "disabled";
 }
 
 function getHttpStatus(error: unknown): number | undefined {
