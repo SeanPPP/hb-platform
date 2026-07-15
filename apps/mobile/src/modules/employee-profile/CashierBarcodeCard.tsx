@@ -256,7 +256,8 @@ export function CashierBarcodeCard({
           <Button mode="outlined" icon="refresh" onPress={() => void barcodeQuery.refetch()}>{t("common:actions.retry")}</Button>
         </View>
       ) : barcodeQuery.data?.exists && barcodeQuery.data.barcode ? (
-        <ProductBarcodeImage value={barcodeQuery.data.barcode} />
+        // 仅缩小员工资料页的屏幕预览，不改变共享条码和实体标签打印尺寸。
+        <ProductBarcodeImage value={barcodeQuery.data.barcode} compact />
       ) : (
         <Text variant="bodyMedium" style={styles.muted}>{t("cashierBarcode.empty")}</Text>
       )}

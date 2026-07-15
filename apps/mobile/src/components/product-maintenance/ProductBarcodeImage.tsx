@@ -70,6 +70,7 @@ const CODE128_PATTERNS = [
 
 interface ProductBarcodeImageProps {
   value?: string | null;
+  compact?: boolean;
 }
 
 function toRuns(bits: string) {
@@ -121,7 +122,7 @@ function encodeCode128(value: string) {
   });
 }
 
-export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
+export function ProductBarcodeImage({ value, compact = false }: ProductBarcodeImageProps) {
   const normalized = value?.trim();
 
   if (!normalized) {
@@ -132,9 +133,9 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
   const runs = format === "EAN13" ? toRuns(encodeEAN13(normalized)) : encodeCode128(normalized);
 
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, compact && styles.compactWrapper]}>
       <View
-        style={styles.bars}
+        style={[styles.bars, compact && styles.compactBars]}
         accessibilityLabel={normalized}
       >
         {runs.map((run, index) => (
@@ -160,6 +161,14 @@ export function ProductBarcodeImage({ value }: ProductBarcodeImageProps) {
 const styles = StyleSheet.create({
   wrapper: {
     gap: 2,
+  },
+  compactWrapper: {
+    width: "100%",
+    alignItems: "center",
+  },
+  compactBars: {
+    height: 50,
+    maxWidth: 240,
   },
   bars: {
     height: 28,
