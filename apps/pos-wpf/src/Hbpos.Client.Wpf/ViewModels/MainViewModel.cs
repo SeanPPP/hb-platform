@@ -705,6 +705,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public SettingsViewModel? Settings => _screenNavigator.Settings;
 
+    public ApiServerSettingsViewModel? ApiServerSettings => _apiServerSettings;
+
     public ILinklyTerminalDialogPresenter? LinklyTerminalDialog => _linklyTerminalDialogPresenter;
 
     public IConfirmationDialogPresenter ConfirmationDialog { get; }
@@ -817,6 +819,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _schemaReady = true;
 
         await RestoreLanguageAsync(startupOptions);
+        // 关键逻辑：登录遮罩复用设置页与设备注册页的单例，未登录时也要显示当前服务器地址。
+        _apiServerSettings?.Load();
         var startupResult = await _mainShellStartupService.EvaluateAsync(Session, startupOptions.PreviewMode);
         Session = startupResult.Session;
         if (startupResult.RequiresDeviceRegistration)
@@ -899,7 +903,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var input = CashierBarcodeInput.Trim();
         if (input.Length == 0)
         {
-            StatusMessage = "请输入收银员条码或紧急二维码";
+            StatusMessage = _localization.T("shell.cashierLogin.status.required");
             return;
         }
 
@@ -927,7 +931,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ConsoleLog.Write("CashierLogin", $"cashier login input failed error={ex.Message}");
-            StatusMessage = "收银员登录失败";
+            StatusMessage = _localization.T("shell.cashierLogin.status.failed");
         }
     }
 
@@ -983,7 +987,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 safeMessage: result.Message);
             if (updateFailureStatus)
             {
-                StatusMessage = result.Message;
+                // 关键逻辑：界面只按稳定错误码本地化，避免直接显示后端语言或内部消息。
+                StatusMessage = ResolveCashierLoginStatusMessage(result.ErrorCode);
             }
 
             return false;
@@ -997,11 +1002,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Session,
             reasonCode: result.Session.IsOfflineCached ? "OFFLINE_CACHE" : "ONLINE");
         StatusMessage = result.Session.IsOfflineCached
-            ? "已使用离线缓存登录收银员"
-            : "收银员登录成功";
+            ? _localization.T("shell.cashierLogin.status.offlineSuccess")
+            : _localization.T("shell.cashierLogin.status.success");
         await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
         await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
         return true;
+    }
+
+    private string ResolveCashierLoginStatusMessage(string? errorCode)
+    {
+        var resourceKey = errorCode switch
+        {
+            "CASHIER_LOGIN_FAILED" => "shell.cashierLogin.status.invalidOrDisabled",
+            "CASHIER_LOGIN_API_UNAVAILABLE" => "shell.cashierLogin.status.apiUnavailable",
+            "EMERGENCY_LOGIN_SERVICE_UNAVAILABLE" => "shell.cashierLogin.status.emergencyServiceUnavailable",
+            "EMERGENCY_TOKEN_EXPIRED" => "shell.cashierLogin.status.emergencyExpired",
+            "EMERGENCY_TOKEN_NOT_ACTIVE" => "shell.cashierLogin.status.emergencyNotActive",
+            "EMERGENCY_TOKEN_KEY_UNKNOWN" => "shell.cashierLogin.status.emergencyKeyUnknown",
+            "EMERGENCY_TOKEN_TOO_LONG" => "shell.cashierLogin.status.emergencyTooLong",
+            "EMERGENCY_CLOCK_ROLLBACK" => "shell.cashierLogin.status.emergencyClockRollback",
+            "EMERGENCY_TOKEN_WRONG_STORE" => "shell.cashierLogin.status.emergencyWrongStore",
+            _ when errorCode?.StartsWith("EMERGENCY_TOKEN_", StringComparison.Ordinal) == true =>
+                "shell.cashierLogin.status.emergencyInvalid",
+            _ => "shell.cashierLogin.status.failed"
+        };
+
+        return _localization.T(resourceKey);
     }
 
     private PosSessionState CreateCashierLoginAuditSession(CashierSessionDto? candidateSession = null)

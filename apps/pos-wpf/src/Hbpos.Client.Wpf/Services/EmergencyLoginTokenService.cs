@@ -31,14 +31,14 @@ public sealed class EmergencyLoginTokenService(
     {
         if (token.Length > EmergencyLoginTokenCodec.MaxTokenLength)
         {
-            return CashierLoginResult.Fail("紧急登录二维码过长");
+            return CashierLoginResult.Fail("紧急登录二维码过长", "EMERGENCY_TOKEN_TOO_LONG");
         }
 
         var now = _timeProvider.GetUtcNow();
         var trustedTime = await ReadTrustedTimeAsync(cancellationToken);
         if (trustedTime is not null && now < trustedTime.Value)
         {
-            return CashierLoginResult.Fail("系统时间早于可信时间，请联网校时后重试");
+            return CashierLoginResult.Fail("系统时间早于可信时间，请联网校时后重试", "EMERGENCY_CLOCK_ROLLBACK");
         }
 
         EmergencyLoginTokenPayload? payload;
@@ -67,7 +67,7 @@ public sealed class EmergencyLoginTokenService(
 
             if (!verified)
             {
-                return CashierLoginResult.Fail(MapError(errorCode));
+                return CashierLoginResult.Fail(MapError(errorCode), errorCode);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -77,12 +77,12 @@ public sealed class EmergencyLoginTokenService(
         catch (Exception)
         {
             // 公钥缓存或同步不可用只影响紧急登录，不得抛出并干扰普通收银员登录链路。
-            return CashierLoginResult.Fail(MapError("EMERGENCY_TOKEN_KEY_UNKNOWN"));
+            return CashierLoginResult.Fail(MapError("EMERGENCY_TOKEN_KEY_UNKNOWN"), "EMERGENCY_TOKEN_KEY_UNKNOWN");
         }
 
         if (!string.Equals(payload!.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
         {
-            return CashierLoginResult.Fail("紧急登录二维码不属于当前门店");
+            return CashierLoginResult.Fail("紧急登录二维码不属于当前门店", "EMERGENCY_TOKEN_WRONG_STORE");
         }
 
         await SaveTrustedTimeAsync(now, cancellationToken);

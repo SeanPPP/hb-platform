@@ -61,6 +61,7 @@ public sealed class DeviceRegistrationViewModelTests
         var deviceRegistrationXaml = File.ReadAllText(Path.Combine(viewsRoot, "Screens", "DeviceRegistrationView.xaml"));
         var settingsXaml = File.ReadAllText(Path.Combine(viewsRoot, "Screens", "SettingsView.xaml"));
         var sharedPanelXaml = File.ReadAllText(Path.Combine(viewsRoot, "Controls", "ApiServerSettingsPanel.xaml"));
+        var mainWindowXaml = File.ReadAllText(Path.Combine(viewsRoot, "..", "MainWindow.xaml"));
         const string panelBinding = "<controls:ApiServerSettingsPanel DataContext=\"{Binding ApiServerSettings}\"";
 
         Assert.Contains(panelBinding, deviceRegistrationXaml);
@@ -75,6 +76,23 @@ public sealed class DeviceRegistrationViewModelTests
             settingsXaml.IndexOf(panelBinding, StringComparison.Ordinal) <
             settingsXaml.IndexOf("ReregisterDeviceCommand", StringComparison.Ordinal));
         Assert.Contains("settings.serverAddress.address", sharedPanelXaml);
+
+        var cashierLoginOverlay = XDocument.Parse(mainWindowXaml)
+            .Descendants()
+            .Single(element => element.Attributes().Any(attribute =>
+                attribute.Name.LocalName == "AutomationProperties.AutomationId" &&
+                attribute.Value == "CashierLoginOverlay"));
+        var serverAddressExpander = cashierLoginOverlay
+            .Descendants()
+            .Single(element =>
+                element.Name.LocalName == "Expander" &&
+                element.Attribute("Header")?.Value == "{loc:Loc shell.cashierLogin.changeServerAddress}");
+        Assert.Equal("False", serverAddressExpander.Attribute("IsExpanded")?.Value);
+        Assert.Contains(
+            serverAddressExpander.Descendants(),
+            element =>
+                element.Name.LocalName == "ApiServerSettingsPanel" &&
+                element.Attribute("DataContext")?.Value == "{Binding ApiServerSettings}");
 
         var settingsViewModelSource = File.ReadAllText(Path.Combine(
             FindRepoRoot(),

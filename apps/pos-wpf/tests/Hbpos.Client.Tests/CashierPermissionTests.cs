@@ -78,7 +78,7 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
-    public async Task Cashier_login_removes_stale_cache_after_online_rejection()
+    public async Task Cashier_login_keeps_cache_after_online_rejection_but_does_not_fallback_for_that_attempt()
     {
         var settings = new InMemoryAppSettingsRepository();
         var service = new CashierLoginService(
@@ -90,18 +90,15 @@ public sealed class CashierPermissionTests
             new PassthroughProtector());
 
         await service.LoginAsync("S001", "POS-01", "BAR-1");
-        await settings.SetValueAsync(
-            "cashier-session:S001:POS-01:BAR-1",
-            "legacy-cache");
         var rejected = await service.LoginAsync("S001", "POS-01", "BAR-1");
         var unavailable = await service.LoginAsync("S001", "POS-01", "BAR-1");
 
         Assert.False(rejected.Succeeded);
         Assert.Null(rejected.Session);
         Assert.Equal("条码无效", rejected.Message);
-        Assert.False(unavailable.Succeeded);
-        Assert.Null(unavailable.Session);
-        Assert.Empty(settings.Keys);
+        Assert.True(unavailable.Succeeded);
+        Assert.True(unavailable.Session!.IsOfflineCached);
+        Assert.Equal("C001", unavailable.Session.CashierId);
     }
 
     [Fact]
@@ -186,6 +183,7 @@ public sealed class CashierPermissionTests
 
         Assert.True(attempt.IsApiUnavailable);
         Assert.False(attempt.IsOnlineRejected);
+        Assert.Equal("CASHIER_LOGIN_API_UNAVAILABLE", attempt.ErrorCode);
     }
 
     [Fact]
@@ -204,6 +202,7 @@ public sealed class CashierPermissionTests
 
         Assert.True(attempt.IsOnlineRejected);
         Assert.False(attempt.IsApiUnavailable);
+        Assert.Equal("CASHIER_LOGIN_FAILED", attempt.ErrorCode);
     }
 
     [Fact]

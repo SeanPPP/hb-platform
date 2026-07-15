@@ -143,6 +143,25 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Cashier_login_failure_uses_localized_error_code_instead_of_backend_message()
+    {
+        var loginResult = CashierLoginResult.Fail("后端原始中文，不应直接显示", "CASHIER_LOGIN_FAILED");
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FixedCashierLoginService(loginResult));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET");
+
+        Assert.Equal("Cashier barcode is invalid or disabled.", viewModel.StatusMessage);
+
+        await viewModel.ToggleCultureCommand.ExecuteAsync(null);
+        await viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET");
+
+        Assert.Equal("收银员条码无效或已停用。", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Cashier_login_exception_without_established_session_does_not_use_placeholder_employee()
     {
         var auditLogger = new RecordingOperationAuditLogger();
@@ -2512,6 +2531,10 @@ public sealed class MainViewModelScannerTests
             apiServerSettings: apiServerSettings);
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        Assert.Same(apiServerSettings, viewModel.ApiServerSettings);
+        Assert.Equal(
+            "https://current.example.com/",
+            Assert.IsType<ApiServerSettingsViewModel>(viewModel.ApiServerSettings).ServerAddressText);
         await viewModel.ShowSettingsCommand.ExecuteAsync(null);
         var settings = Assert.IsType<SettingsViewModel>(viewModel.CurrentScreen);
 
@@ -4718,6 +4741,18 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(CashierLoginResult.Success(session));
+        }
+    }
+
+    private sealed class FixedCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(result);
         }
     }
 
