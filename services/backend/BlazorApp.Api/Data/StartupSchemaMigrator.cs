@@ -52,6 +52,7 @@ BEGIN
         [IdentityType] nvarchar(50) NULL,
         [IdentityId] nvarchar(100) NULL,
         [IdentityPhotoObjectKey] nvarchar(500) NULL,
+        [RemoveIdentityPhoto] bit NOT NULL CONSTRAINT [DF_EmployeeProfileSensitiveChangeRequest_RemoveIdentityPhoto] DEFAULT(0),
         [ChangedFieldsJson] nvarchar(1000) NULL,
         [Status] int NOT NULL,
         [BaseSensitiveRevision] int NOT NULL,
@@ -63,6 +64,13 @@ BEGIN
         [SupersededAt] datetime2 NULL,
         [SupersededBy] nvarchar(100) NULL
     );
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeProfileSensitiveChangeRequest]
+        ADD [RemoveIdentityPhoto] bit NOT NULL
+            CONSTRAINT [DF_EmployeeProfileSensitiveChangeRequest_RemoveIdentityPhoto] DEFAULT(0) WITH VALUES;
 END;
 IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
    AND COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL

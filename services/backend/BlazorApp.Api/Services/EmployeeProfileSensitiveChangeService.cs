@@ -178,105 +178,138 @@ public sealed class EmployeeProfileSensitiveChangeService
     )
     {
         var db = _context.Db;
-        var request = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
-            .FirstAsync(item => item.RequestId == requestId);
-        if (request is null)
+        var userGuid = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .Where(item => item.RequestId == requestId)
+            .Select(item => item.UserGUID)
+            .FirstAsync();
+        if (string.IsNullOrWhiteSpace(userGuid))
         {
             return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请不存在", "REQUEST_NOT_FOUND");
-        }
-        if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
-        {
-            return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请已处理", "REQUEST_NOT_PENDING");
-        }
-        var profile = await db.Queryable<EmployeeProfile>()
-            .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
-        if (profile is null || profile.SensitiveRevision != request.BaseSensitiveRevision)
-        {
-            return VersionConflict();
         }
 
         var actor = _currentUser.GetCurrentUsername();
         var now = DateTime.UtcNow;
-        var oldPhoto = profile.IdentityPhotoObjectKey;
-        var photoChanged = !NormalizedEquals(
-            profile.IdentityPhotoObjectKey,
-            request.IdentityPhotoObjectKey
-        );
-        var sensitiveValuesChanged = HasSensitiveValueChanges(profile, request);
-        await db.Ado.BeginTranAsync();
-        try
+        EmployeeProfileSensitiveChangeRequest request;
+        EmployeeProfile profile;
+        string? oldPhoto;
+        await using (await EmployeeProfileMediaLock.AcquireAsync(
+            db,
+            userGuid,
+            "sensitive-change",
+            _logger
+        ))
         {
-            // 关键逻辑：revision 条件更新是防止管理员并发修改被审批静默覆盖的最终防线。
-            int updated;
-            if (sensitiveValuesChanged)
+            await db.Ado.BeginTranAsync();
+            try
             {
-                var profileUpdate = db.Updateable<EmployeeProfile>()
-                    .SetColumns(item => item.BankBSB == request.BankBsb)
-                    .SetColumns(item => item.BankACC == request.BankAccountNumber)
-                    .SetColumns(item => item.SuperannuationCompanyName == request.SuperannuationCompanyName)
-                    .SetColumns(item => item.SuperannuationCompanyCode == request.SuperannuationCompanyCode)
-                    .SetColumns(item => item.SuperannuationAccount == request.SuperannuationAccountNumber)
-                    .SetColumns(item => item.IdentityType == request.IdentityType)
-                    .SetColumns(item => item.IdentityId == request.IdentityId)
-                    .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision + 1)
-                    .SetColumns(item => item.UpdatedAt == now)
-                    .SetColumns(item => item.UpdatedBy == actor);
-                if (photoChanged)
+                // 关键逻辑：锁内事务重新读取申请与正式版本，不能使用取得锁之前的旧快照做审批。
+                request = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                    .FirstAsync(item => item.RequestId == requestId);
+                if (request is null)
                 {
-                    // 仅证件照对象实际变化时移除旧式 URL，避免字段审批误清正式证件照。
-                    profileUpdate = profileUpdate
-                        .SetColumns(item => item.IdentityPhotoObjectKey == request.IdentityPhotoObjectKey)
-                        .SetColumns(item => item.IdentityPhotoUrl == null);
+                    await db.Ado.RollbackTranAsync();
+                    return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error(
+                        "申请不存在",
+                        "REQUEST_NOT_FOUND"
+                    );
                 }
-                updated = await profileUpdate
-                    .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
-                        && item.SensitiveRevision == request.BaseSensitiveRevision)
-                    .ExecuteCommandAsync();
-            }
-            else
-            {
-                // 等值申请仍执行 revision CAS，但不制造虚假的正式资料版本。
-                updated = await db.Updateable<EmployeeProfile>()
-                    .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision)
-                    .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
-                        && item.SensitiveRevision == request.BaseSensitiveRevision)
-                    .ExecuteCommandAsync();
-            }
-            if (updated != 1)
-            {
-                throw new SensitiveRevisionConflictException();
-            }
-            var reviewed = await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
-                .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
+                if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
                 {
-                    Status = EmployeeProfileSensitiveChangeStatus.Approved,
-                    ReviewedAt = now,
-                    ReviewedBy = actor,
-                    ReviewReason = Normalize(dto.Reason),
-                })
-                .Where(item => item.RequestId == requestId
-                    && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
-                .ExecuteCommandAsync();
-            if (reviewed != 1)
-            {
-                throw new InvalidOperationException("申请状态已改变");
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotPending();
+                }
+                profile = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
+                if (profile is null || profile.SensitiveRevision != request.BaseSensitiveRevision)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return VersionConflict();
+                }
+
+                oldPhoto = profile.IdentityPhotoObjectKey;
+                var photoChanged = request.RemoveIdentityPhoto
+                    ? HasFormalIdentityPhoto(profile)
+                    : !NormalizedEquals(
+                        profile.IdentityPhotoObjectKey,
+                        request.IdentityPhotoObjectKey
+                    );
+                var sensitiveValuesChanged = HasSensitiveValueChanges(profile, request)
+                    || photoChanged;
+                // 关键逻辑：revision 条件更新是防止锁外数据库写入静默覆盖资料的最终防线。
+                int updated;
+                if (sensitiveValuesChanged)
+                {
+                    var profileUpdate = db.Updateable<EmployeeProfile>()
+                        .SetColumns(item => item.BankBSB == request.BankBsb)
+                        .SetColumns(item => item.BankACC == request.BankAccountNumber)
+                        .SetColumns(item => item.SuperannuationCompanyName == request.SuperannuationCompanyName)
+                        .SetColumns(item => item.SuperannuationCompanyCode == request.SuperannuationCompanyCode)
+                        .SetColumns(item => item.SuperannuationAccount == request.SuperannuationAccountNumber)
+                        .SetColumns(item => item.IdentityType == request.IdentityType)
+                        .SetColumns(item => item.IdentityId == request.IdentityId)
+                        .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision + 1)
+                        .SetColumns(item => item.UpdatedAt == now)
+                        .SetColumns(item => item.UpdatedBy == actor);
+                    if (photoChanged)
+                    {
+                        // 证件照上传或显式删除时同步清理旧式 URL，普通字段审批不得误清。
+                        profileUpdate = profileUpdate
+                            .SetColumns(item => item.IdentityPhotoObjectKey == (
+                                request.RemoveIdentityPhoto ? null : request.IdentityPhotoObjectKey
+                            ))
+                            .SetColumns(item => item.IdentityPhotoUrl == null);
+                    }
+                    updated = await profileUpdate
+                        .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                            && item.SensitiveRevision == request.BaseSensitiveRevision)
+                        .ExecuteCommandAsync();
+                }
+                else
+                {
+                    // 等值申请仍执行 revision CAS，但不制造虚假的正式资料版本。
+                    updated = await db.Updateable<EmployeeProfile>()
+                        .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision)
+                        .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                            && item.SensitiveRevision == request.BaseSensitiveRevision)
+                        .ExecuteCommandAsync();
+                }
+                if (updated != 1)
+                {
+                    throw new SensitiveRevisionConflictException();
+                }
+                var reviewed = await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
+                    .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
+                    {
+                        Status = EmployeeProfileSensitiveChangeStatus.Approved,
+                        ReviewedAt = now,
+                        ReviewedBy = actor,
+                        ReviewReason = Normalize(dto.Reason),
+                    })
+                    .Where(item => item.RequestId == requestId
+                        && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
+                    .ExecuteCommandAsync();
+                if (reviewed != 1)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotPending();
+                }
+                if (!string.IsNullOrWhiteSpace(oldPhoto)
+                    && !string.Equals(oldPhoto, request.IdentityPhotoObjectKey, StringComparison.Ordinal))
+                {
+                    await ScheduleTicketCleanupAsync(requestId, oldPhoto, request.UserGUID);
+                }
+                await db.Ado.CommitTranAsync();
             }
-            if (!string.IsNullOrWhiteSpace(oldPhoto)
-                && !string.Equals(oldPhoto, request.IdentityPhotoObjectKey, StringComparison.Ordinal))
+            catch (SensitiveRevisionConflictException)
             {
-                await ScheduleTicketCleanupAsync(requestId, oldPhoto, request.UserGUID);
+                await db.Ado.RollbackTranAsync();
+                return VersionConflict();
             }
-            await db.Ado.CommitTranAsync();
-        }
-        catch (SensitiveRevisionConflictException)
-        {
-            await db.Ado.RollbackTranAsync();
-            return VersionConflict();
-        }
-        catch
-        {
-            await db.Ado.RollbackTranAsync();
-            throw;
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
         }
         request.Status = EmployeeProfileSensitiveChangeStatus.Approved;
         request.ReviewedAt = now;
@@ -295,56 +328,81 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("拒绝原因必填", "VALIDATION_ERROR");
         }
-        var request = await _context.Db.Queryable<EmployeeProfileSensitiveChangeRequest>()
-            .FirstAsync(item => item.RequestId == requestId);
-        if (request is null)
+        var db = _context.Db;
+        var userGuid = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .Where(item => item.RequestId == requestId)
+            .Select(item => item.UserGUID)
+            .FirstAsync();
+        if (string.IsNullOrWhiteSpace(userGuid))
         {
             return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请不存在", "REQUEST_NOT_FOUND");
         }
-        if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
-        {
-            return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请已处理", "REQUEST_NOT_PENDING");
-        }
         var actor = _currentUser.GetCurrentUsername();
         var now = DateTime.UtcNow;
-        await _context.Db.Ado.BeginTranAsync();
-        try
+        EmployeeProfileSensitiveChangeRequest request;
+        EmployeeProfile? profile;
+        await using (await EmployeeProfileMediaLock.AcquireAsync(
+            db,
+            userGuid,
+            "sensitive-change",
+            _logger
+        ))
         {
-            var changed = await _context.Db.Updateable<EmployeeProfileSensitiveChangeRequest>()
-                .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
-                {
-                    Status = EmployeeProfileSensitiveChangeStatus.Rejected,
-                    ReviewedAt = now,
-                    ReviewedBy = actor,
-                    ReviewReason = dto.Reason.Trim(),
-                })
-                .Where(item => item.RequestId == requestId
-                    && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
-                .ExecuteCommandAsync();
-            if (changed != 1)
+            await db.Ado.BeginTranAsync();
+            try
             {
-                await _context.Db.Ado.RollbackTranAsync();
-                return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请已处理", "REQUEST_NOT_PENDING");
+                // 关键逻辑：拒绝也必须在共用锁内重读状态，不能处理已被覆盖的新旧申请快照。
+                request = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                    .FirstAsync(item => item.RequestId == requestId);
+                if (request is null)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error(
+                        "申请不存在",
+                        "REQUEST_NOT_FOUND"
+                    );
+                }
+                if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotPending();
+                }
+                profile = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
+                var changed = await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
+                    .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
+                    {
+                        Status = EmployeeProfileSensitiveChangeStatus.Rejected,
+                        ReviewedAt = now,
+                        ReviewedBy = actor,
+                        ReviewReason = dto.Reason.Trim(),
+                    })
+                    .Where(item => item.RequestId == requestId
+                        && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
+                    .ExecuteCommandAsync();
+                if (changed != 1)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotPending();
+                }
+                await ScheduleTicketCleanupAsync(
+                    requestId,
+                    request.IdentityPhotoObjectKey,
+                    request.UserGUID
+                );
+                await db.Ado.CommitTranAsync();
             }
-            await ScheduleTicketCleanupAsync(
-                requestId,
-                request.IdentityPhotoObjectKey,
-                request.UserGUID
-            );
-            await _context.Db.Ado.CommitTranAsync();
-        }
-        catch
-        {
-            await _context.Db.Ado.RollbackTranAsync();
-            throw;
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
         }
         request.Status = EmployeeProfileSensitiveChangeStatus.Rejected;
         request.ReviewedAt = now;
         request.ReviewedBy = actor;
         request.ReviewReason = dto.Reason.Trim();
         await CleanupObjectAsync(request.IdentityPhotoObjectKey, null, request.UserGUID, "驳回待审证件照", requestId);
-        var profile = await _context.Db.Queryable<EmployeeProfile>()
-            .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
         return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile), "申请已拒绝");
     }
 
@@ -435,8 +493,11 @@ public sealed class EmployeeProfileSensitiveChangeService
             .FirstAsync(item => item.UserGUID == userGuid
                 && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
         var retainedPhoto = preservePendingPhoto
-            ? old?.IdentityPhotoObjectKey ?? profile.IdentityPhotoObjectKey
+            ? old is not null ? old.IdentityPhotoObjectKey : profile.IdentityPhotoObjectKey
             : identityPhotoObjectKey;
+        var removeIdentityPhoto = preservePendingPhoto
+            ? old?.RemoveIdentityPhoto ?? false
+            : string.IsNullOrWhiteSpace(identityPhotoObjectKey);
         var request = new EmployeeProfileSensitiveChangeRequest
         {
             UserGUID = userGuid,
@@ -448,6 +509,7 @@ public sealed class EmployeeProfileSensitiveChangeService
             IdentityType = Normalize(dto.IdentityType),
             IdentityId = Normalize(dto.IdentityId),
             IdentityPhotoObjectKey = retainedPhoto,
+            RemoveIdentityPhoto = removeIdentityPhoto,
             Status = EmployeeProfileSensitiveChangeStatus.Pending,
             BaseSensitiveRevision = profile.SensitiveRevision,
             SubmittedAt = now,
@@ -460,7 +522,7 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             if (old is not null)
             {
-                await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
+                var superseded = await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
                     .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
                     {
                         Status = EmployeeProfileSensitiveChangeStatus.Superseded,
@@ -470,6 +532,12 @@ public sealed class EmployeeProfileSensitiveChangeService
                     .Where(item => item.RequestId == old.RequestId
                         && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
                     .ExecuteCommandAsync();
+                if (superseded != 1)
+                {
+                    // CAS 失败说明旧申请已被其他写入终结；本次不能继续插入基于旧 revision 的新 Pending。
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotPending();
+                }
                 if (!string.IsNullOrWhiteSpace(old.IdentityPhotoObjectKey)
                     && !string.Equals(old.IdentityPhotoObjectKey, retainedPhoto, StringComparison.Ordinal))
                 {
@@ -751,7 +819,14 @@ public sealed class EmployeeProfileSensitiveChangeService
         AddChanged(fields, "superannuationAccountNumber", profile?.SuperannuationAccount, request.SuperannuationAccountNumber);
         AddChanged(fields, "identityType", profile?.IdentityType, request.IdentityType);
         AddChanged(fields, "identityId", profile?.IdentityId, request.IdentityId);
-        if (!NormalizedEquals(profile?.IdentityPhotoObjectKey, request.IdentityPhotoObjectKey))
+        if (request.RemoveIdentityPhoto)
+        {
+            if (HasFormalIdentityPhoto(profile))
+            {
+                fields.Add("identityPhotoUrl");
+            }
+        }
+        else if (!NormalizedEquals(profile?.IdentityPhotoObjectKey, request.IdentityPhotoObjectKey))
         {
             fields.Add("identityPhotoUrl");
         }
@@ -772,11 +847,21 @@ public sealed class EmployeeProfileSensitiveChangeService
             VersionConflictCode
         );
 
+    private static ApiResponse<EmployeeProfileSensitiveChangeDetailDto> RequestNotPending() =>
+        ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error(
+            "申请已处理",
+            "REQUEST_NOT_PENDING"
+        );
+
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static bool NormalizedEquals(string? left, string? right) =>
         string.Equals(Normalize(left), Normalize(right), StringComparison.Ordinal);
+
+    private static bool HasFormalIdentityPhoto(EmployeeProfile? profile) =>
+        !string.IsNullOrWhiteSpace(profile?.IdentityPhotoObjectKey)
+        || !string.IsNullOrWhiteSpace(profile?.IdentityPhotoUrl);
 
     private static bool HasSensitiveValueChanges(
         EmployeeProfile profile,

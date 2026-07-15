@@ -45,6 +45,8 @@ import {
   refreshEmployeeProfileAfterIdentityMutation,
   selectSensitiveDraft,
   shouldRefreshSensitiveProfile,
+  shouldShowPendingIdentityPhotoRemoval,
+  submitSensitiveProfileWithCache,
 } from "@/modules/employee-profile/sensitive-profile";
 import {
   EmployeeProfileImageUploadError,
@@ -57,7 +59,10 @@ import {
   type SensitiveEmployeeProfilePayload,
   type UpdateEmployeeProfilePayload,
 } from "@/modules/employee-profile/types";
-import { getIdentityPhotoRefetchDelay } from "@/modules/employee-profile/identity-photo-expiry";
+import {
+  getIdentityPhotoRefetchDelay,
+  shouldRefreshIdentityPhotoAfterLoadError,
+} from "@/modules/employee-profile/identity-photo-expiry";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
@@ -124,6 +129,8 @@ export default function EmployeeProfileScreen() {
   const [savingImageKind, setSavingImageKind] = useState<"avatar" | "identityPhoto" | null>(null);
   const formInitializedRef = useRef(false);
   const formIdentityRef = useRef("");
+  const formalIdentityPhotoErrorUrlRef = useRef("");
+  const pendingIdentityPhotoErrorUrlRef = useRef("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -192,6 +199,9 @@ export default function EmployeeProfileScreen() {
     queryKey: sensitiveQueryKey,
     queryFn: getMySensitiveChangeRequestApi,
     enabled: Boolean(isAuthenticated && user),
+    refetchInterval: (query) => getIdentityPhotoRefetchDelay(
+      query.state.data?.identityPhotoUrlExpiresAt
+    ),
   });
 
   const refreshProfileQueries = useCallback(async () => {
@@ -242,9 +252,19 @@ export default function EmployeeProfileScreen() {
   });
 
   const sensitiveMutation = useMutation({
-    mutationFn: upsertMySensitiveChangeRequestApi,
-    onSuccess: (request) => {
-      queryClient.setQueryData(sensitiveQueryKey, request);
+    mutationFn: (payload: SensitiveEmployeeProfilePayload) => submitSensitiveProfileWithCache(
+      payload,
+      {
+        cancelRequestQuery: () => queryClient.cancelQueries({ queryKey: sensitiveQueryKey }),
+        submitRequest: upsertMySensitiveChangeRequestApi,
+        setRequestData: (request) => queryClient.setQueryData(sensitiveQueryKey, request),
+        refreshRequestQuery: () => queryClient.invalidateQueries({
+          queryKey: sensitiveQueryKey,
+          refetchType: "active",
+        }),
+      }
+    ),
+    onSuccess: () => {
       setSensitiveEditing(false);
       showMessage(t("messages.sensitiveSubmitSuccess"));
     },
@@ -273,6 +293,12 @@ export default function EmployeeProfileScreen() {
       ? sensitiveQuery.data.changedFields
       : getChangedSensitiveFields(profileQuery.data, selectSensitiveDraft(profileQuery.data, sensitiveQuery.data));
   }, [profileQuery.data, sensitiveQuery.data]);
+  const pendingIdentityPhotoRemoval = sensitiveQuery.data?.status === "Pending"
+    && shouldShowPendingIdentityPhotoRemoval({
+      changedFields: sensitiveChangedFields,
+      pendingHasIdentityPhoto: sensitiveQuery.data.hasIdentityPhoto,
+      formalHasIdentityPhoto: Boolean(profileQuery.data?.identityPhotoUrl),
+    });
 
   const setFieldValue = useCallback(
     <K extends keyof UpdateEmployeeProfilePayload>(
@@ -329,11 +355,13 @@ export default function EmployeeProfileScreen() {
         ...image,
       });
       if (kind === "identityPhoto") {
-        await refreshEmployeeProfileAfterIdentityMutation({
+        const refreshResult = await refreshEmployeeProfileAfterIdentityMutation({
           refetchSensitive: sensitiveQuery.refetch,
           refetchFormal: profileQuery.refetch,
         });
-        showMessage(t("messages.identitySubmitSuccess"));
+        showMessage(t(refreshResult.isError
+          ? "messages.identityStatusRefreshFailed"
+          : "messages.identitySubmitSuccess"));
       } else {
         queryClient.setQueryData(profileQueryKey, profile);
         showMessage(t("messages.uploadSuccess"));
@@ -358,11 +386,13 @@ export default function EmployeeProfileScreen() {
     try {
       const profile = await deleteEmployeeProfileImageApi(kind);
       if (kind === "identityPhoto") {
-        await refreshEmployeeProfileAfterIdentityMutation({
+        const refreshResult = await refreshEmployeeProfileAfterIdentityMutation({
           refetchSensitive: sensitiveQuery.refetch,
           refetchFormal: profileQuery.refetch,
         });
-        showMessage(t("messages.identityRemoveSubmitSuccess"));
+        showMessage(t(refreshResult.isError
+          ? "messages.identityStatusRefreshFailed"
+          : "messages.identityRemoveSubmitSuccess"));
       } else {
         queryClient.setQueryData(profileQueryKey, profile);
         showMessage(t("messages.imageRemoved"));
@@ -651,7 +681,23 @@ export default function EmployeeProfileScreen() {
           <Text variant="bodyMedium">{profileQuery.data?.identityType || t("common:na")}</Text>
           <Text variant="bodyMedium">{getSensitiveAccountSummary(profileQuery.data?.identityId) || t("common:na")}</Text>
           {profileQuery.data?.identityPhotoUrl ? (
-            <Image source={{ uri: profileQuery.data.identityPhotoUrl }} style={styles.identityPreview} resizeMode="contain" />
+            <Image
+              source={{ uri: profileQuery.data.identityPhotoUrl }}
+              style={styles.identityPreview}
+              resizeMode="contain"
+              onError={() => {
+                const imageUrl = profileQuery.data?.identityPhotoUrl;
+                if (!shouldRefreshIdentityPhotoAfterLoadError(
+                  imageUrl,
+                  formalIdentityPhotoErrorUrlRef.current
+                )) {
+                  return;
+                }
+                // 每个签名 URL 最多自动刷新一次，避免 Image onError 紧密循环。
+                formalIdentityPhotoErrorUrlRef.current = imageUrl!;
+                void profileQuery.refetch();
+              }}
+            />
           ) : <Text variant="bodySmall" style={styles.metaText}>{t("preview.empty")}</Text>}
           {sensitiveQuery.data?.status === "Pending" ? (
             <View style={styles.pendingSnapshot}>
@@ -659,8 +705,28 @@ export default function EmployeeProfileScreen() {
               <Text variant="bodyMedium">{sensitiveQuery.data.identityType || t("common:na")}</Text>
               <Text variant="bodyMedium">{getSensitiveAccountSummary(sensitiveQuery.data.identityId) || t("common:na")}</Text>
               {sensitiveQuery.data.identityPhotoUrl ? (
-                <Image source={{ uri: sensitiveQuery.data.identityPhotoUrl }} style={styles.identityPreview} resizeMode="contain" />
-              ) : <Text variant="bodySmall">{t("sensitive.pendingPhotoRemoval")}</Text>}
+                <Image
+                  source={{ uri: sensitiveQuery.data.identityPhotoUrl }}
+                  style={styles.identityPreview}
+                  resizeMode="contain"
+                  onError={() => {
+                    const imageUrl = sensitiveQuery.data?.identityPhotoUrl;
+                    if (!shouldRefreshIdentityPhotoAfterLoadError(
+                      imageUrl,
+                      pendingIdentityPhotoErrorUrlRef.current
+                    )) {
+                      return;
+                    }
+                    // 待审私有 URL 失败时只刷新当前签名一次；新签名返回后才允许再次尝试。
+                    pendingIdentityPhotoErrorUrlRef.current = imageUrl!;
+                    void sensitiveQuery.refetch();
+                  }}
+                />
+              ) : pendingIdentityPhotoRemoval ? (
+                <Text variant="bodySmall">{t("sensitive.pendingPhotoRemoval")}</Text>
+              ) : (
+                <Text variant="bodySmall" style={styles.metaText}>{t("preview.empty")}</Text>
+              )}
             </View>
           ) : null}
           {sensitiveEditing ? (

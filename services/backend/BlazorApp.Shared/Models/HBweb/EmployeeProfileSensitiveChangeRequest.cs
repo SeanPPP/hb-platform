@@ -35,6 +35,8 @@ public sealed class EmployeeProfileSensitiveChangeRequest
     [SugarColumn(IsNullable = true, Length = 500)]
     public string? IdentityPhotoObjectKey { get; set; }
 
+    public bool RemoveIdentityPhoto { get; set; }
+
     [SugarColumn(IsNullable = true, Length = 1000)]
     public string? ChangedFieldsJson { get; set; }
 

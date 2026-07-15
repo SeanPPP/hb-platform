@@ -79,6 +79,7 @@
     "sensitiveSubmitFailed": "提交敏感资料审核失败。",
     "identitySubmitSuccess": "证件照片已提交审核，正式照片将在批准后更新。",
     "identityRemoveSubmitSuccess": "删除证件照片的申请已提交审核，正式照片将在批准前保留。",
+    "identityStatusRefreshFailed": "已提交，状态刷新失败，请手动刷新。",
     "versionConflict": "正式资料已更新，请刷新后重新填报。"
   },
   "status": {

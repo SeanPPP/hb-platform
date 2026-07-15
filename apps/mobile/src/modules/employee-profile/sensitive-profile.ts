@@ -119,13 +119,52 @@ export function shouldRefreshSensitiveProfile(
   return trigger !== "app-active" || appState === "active";
 }
 
-export async function refreshEmployeeProfileAfterIdentityMutation(dependencies: {
-  refetchSensitive: () => Promise<unknown>;
-  refetchFormal: () => Promise<unknown>;
+export function shouldShowPendingIdentityPhotoRemoval(input: {
+  changedFields: string[];
+  pendingHasIdentityPhoto: boolean;
+  formalHasIdentityPhoto: boolean;
 }) {
+  return input.formalHasIdentityPhoto
+    && !input.pendingHasIdentityPhoto
+    && input.changedFields.includes("identityPhotoUrl");
+}
+
+export async function submitSensitiveProfileWithCache<TPayload, TRequest>(
+  payload: TPayload,
+  dependencies: {
+    cancelRequestQuery: () => Promise<unknown>;
+    submitRequest: (value: TPayload) => Promise<TRequest>;
+    setRequestData: (value: TRequest) => void;
+    refreshRequestQuery: () => Promise<unknown>;
+  }
+) {
+  // 关键逻辑：先取消旧 GET，防止其在 PUT 成功后把新待审快照覆盖回旧值。
+  await dependencies.cancelRequestQuery();
+  const request = await dependencies.submitRequest(payload);
+  dependencies.setRequestData(request);
+  try {
+    await dependencies.refreshRequestQuery();
+  } catch {
+    // PUT 已成功并写入权威响应；刷新失败不得让 mutation 自动重试或误报提交失败。
+  }
+  return request;
+}
+
+export async function refreshEmployeeProfileAfterIdentityMutation(dependencies: {
+  refetchSensitive: () => Promise<{ isError: boolean }>;
+  refetchFormal: () => Promise<{ isError: boolean }>;
+}) {
+  const refetchSafely = async (refetch: () => Promise<{ isError: boolean }>) => {
+    try {
+      return (await refetch()).isError;
+    } catch {
+      return true;
+    }
+  };
   // 先刷新待审快照，确保新证件照立即出现在审核状态区；正式资料随后独立校验。
-  await dependencies.refetchSensitive();
-  await dependencies.refetchFormal();
+  const sensitiveIsError = await refetchSafely(dependencies.refetchSensitive);
+  const formalIsError = await refetchSafely(dependencies.refetchFormal);
+  return { isError: sensitiveIsError || formalIsError };
 }
 
 export function isSensitiveVersionConflict(error: unknown) {

@@ -25,6 +25,11 @@ public sealed class StartupSchemaMigratorStartupContractTests
             "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
             migrator
         );
+        Assert.Contains("[RemoveIdentityPhoto] bit NOT NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL",
+            migrator
+        );
 
         var migration = await File.ReadAllTextAsync(
             Path.Combine(
@@ -35,6 +40,11 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("[ChangedFieldsJson] nvarchar(1000) NULL", migration);
         Assert.Contains(
             "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
+            migration
+        );
+        Assert.Contains("[RemoveIdentityPhoto] bit NOT NULL", migration);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL",
             migration
         );
     }

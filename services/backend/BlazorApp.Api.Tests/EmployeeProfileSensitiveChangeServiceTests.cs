@@ -76,6 +76,18 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ApproveAsync_与重新提交并发时_共用锁且不会留下过期版本的待审申请()
+    {
+        await AssertReviewWaitsForResubmitLockAsync(approve: true);
+    }
+
+    [Fact]
+    public async Task RejectAsync_与重新提交并发时_共用锁且保留唯一最新待审申请()
+    {
+        await AssertReviewWaitsForResubmitLockAsync(approve: false);
+    }
+
+    [Fact]
     public async Task ApproveAsync_WhenRevisionChanged_ReturnsConflictWithoutOverwritingFormalData()
     {
         await SeedAsync();
@@ -379,6 +391,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
 
         Assert.True(first.Success);
         Assert.True(second.Success);
+        Assert.False((await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == second.Data!.RequestId)).RemoveIdentityPhoto);
         Assert.Equal("employee-profiles/user-self/identity/formal.png",
             (await _db.Queryable<EmployeeProfile>().FirstAsync()).IdentityPhotoObjectKey);
         Assert.Contains("employee-profiles/user-self/identity/pending-one.png", storage.DeletedKeys);
@@ -407,6 +421,74 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self"))
                 .IdentityPhotoObjectKey);
         Assert.Contains("employee-profiles/user-self/identity/formal.png", storage.DeletedKeys);
+    }
+
+    [Fact]
+    public async Task DeletePendingIdentityPhotoAsync_LegacyUrlOnly_固化删除意图并在批准后清空正式照片()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = null;
+        profile.IdentityPhotoUrl = "https://legacy.example/identity.jpg";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+
+        var submitted = await CreateService("user-self", "self_user")
+            .DeletePendingIdentityPhotoAsync();
+
+        Assert.True(submitted.Success);
+        Assert.False(submitted.Data!.HasIdentityPhoto);
+        Assert.Contains("identityPhotoUrl", submitted.Data.ChangedFields);
+        var deleteRow = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == submitted.Data.RequestId);
+        Assert.True(deleteRow.RemoveIdentityPhoto);
+
+        var resubmitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankBsb = "456-789",
+        });
+        var resubmittedRow = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == resubmitted.Data!.RequestId);
+        Assert.True(resubmittedRow.RemoveIdentityPhoto);
+        Assert.Contains("identityPhotoUrl", resubmitted.Data!.ChangedFields);
+
+        var approved = await CreateService("admin-user", "admin").ApproveAsync(
+            resubmitted.Data.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+
+        Assert.True(approved.Success);
+        var after = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        Assert.Null(after.IdentityPhotoObjectKey);
+        Assert.Null(after.IdentityPhotoUrl);
+        Assert.Equal(4, after.SensitiveRevision);
+    }
+
+    [Fact]
+    public async Task UpsertSelfAsync_LegacyUrlOnly普通字段申请_不得删除正式证件照()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = null;
+        profile.IdentityPhotoUrl = "https://legacy.example/identity.jpg";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "updated-account",
+        });
+        var row = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == submitted.Data!.RequestId);
+        Assert.False(row.RemoveIdentityPhoto);
+        Assert.DoesNotContain("identityPhotoUrl", submitted.Data!.ChangedFields);
+
+        Assert.True((await CreateService("admin-user", "admin").ApproveAsync(
+            row.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        )).Success);
+        Assert.Equal(
+            "https://legacy.example/identity.jpg",
+            (await _db.Queryable<EmployeeProfile>().FirstAsync()).IdentityPhotoUrl
+        );
     }
 
     [Fact]
@@ -737,16 +819,110 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     private EmployeeProfileSensitiveChangeService CreateService(
         string userGuid,
         string username,
-        TencentCloudUploadService? storage = null
+        TencentCloudUploadService? storage = null,
+        ISqlSugarClient? db = null
     )
     {
         return new EmployeeProfileSensitiveChangeService(
-            CreateContext(_db),
+            CreateContext(db ?? _db),
             CreateCurrentUser(userGuid, username),
             NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
             storage
         );
     }
+
+    private async Task AssertReviewWaitsForResubmitLockAsync(bool approve)
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "first-pending",
+        });
+        var requestId = submitted.Data!.RequestId;
+
+        using var resubmitDb = CreateAdditionalDb();
+        using var reviewDb = CreateAdditionalDb();
+        using var releaseResubmit = new ManualResetEventSlim(false);
+        var resubmitReachedBarrier = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var reviewReadRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var resubmitBarrierEntered = 0;
+        resubmitDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsSensitiveRequestSelect(sql)
+                && Interlocked.Exchange(ref resubmitBarrierEntered, 1) == 0)
+            {
+                // 关键逻辑：让重新提交在读取旧 Pending 后停住，稳定复现审批与覆盖提交的竞态窗口。
+                resubmitReachedBarrier.TrySetResult();
+                Assert.True(releaseResubmit.Wait(TimeSpan.FromSeconds(10)), "并发测试屏障等待超时");
+            }
+        };
+        reviewDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsSensitiveRequestSelect(sql))
+            {
+                reviewReadRequest.TrySetResult();
+            }
+        };
+
+        var resubmitService = CreateService("user-self", "self_user", db: resubmitDb);
+        var resubmitTask = Task.Run(() => resubmitService.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "latest-pending",
+        }));
+        await resubmitReachedBarrier.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var reviewer = CreateService("admin-user", "admin", db: reviewDb);
+        var reviewTask = Task.Run(() => approve
+            ? reviewer.ApproveAsync(requestId, new EmployeeProfileSensitiveReviewDto())
+            : reviewer.RejectAsync(
+                requestId,
+                new EmployeeProfileSensitiveRejectDto { Reason = "资料无法核验" }
+            ));
+        await reviewReadRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 若审批入口共用 sensitive-change 锁，此时只完成了锁外 requestId -> userGuid 定位，不能越过重新提交。
+        var reviewCompletedBeforeRelease = await Task.WhenAny(
+            reviewTask,
+            Task.Delay(TimeSpan.FromMilliseconds(500))
+        ) == reviewTask;
+        releaseResubmit.Set();
+
+        var resubmit = await resubmitTask;
+        var review = await reviewTask;
+        Assert.False(reviewCompletedBeforeRelease);
+        Assert.True(resubmit.Success);
+        Assert.False(review.Success);
+        Assert.Equal("REQUEST_NOT_PENDING", review.ErrorCode);
+
+        var rows = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .OrderBy(item => item.RequestId)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Superseded, rows[0].Status);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, rows[1].Status);
+        Assert.Equal("latest-pending", rows[1].BankAccountNumber);
+        Assert.Equal(1, rows.Count(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending));
+        Assert.Equal(
+            (await _db.Queryable<EmployeeProfile>().FirstAsync()).SensitiveRevision,
+            rows[1].BaseSensitiveRevision
+        );
+    }
+
+    private SqlSugarClient CreateAdditionalDb() => new(new ConnectionConfig
+    {
+        ConnectionString = _connection.ConnectionString,
+        DbType = DbType.Sqlite,
+        IsAutoCloseConnection = true,
+        InitKeyType = InitKeyType.Attribute,
+    });
+
+    private static bool IsSensitiveRequestSelect(string sql) =>
+        sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+        && sql.Contains("EmployeeProfileSensitiveChangeRequest", StringComparison.OrdinalIgnoreCase);
 
     private EmployeeProfileMediaService CreateMediaService(
         string userGuid,

@@ -79,6 +79,7 @@
     "sensitiveSubmitFailed": "Failed to submit sensitive details for review.",
     "identitySubmitSuccess": "Identity photo submitted for review. The confirmed photo changes only after approval.",
     "identityRemoveSubmitSuccess": "Identity photo removal submitted for review. The confirmed photo remains until approval.",
+    "identityStatusRefreshFailed": "Submitted, but the review status could not be refreshed. Refresh manually to see the latest status.",
     "versionConflict": "Confirmed details have changed. Refresh and complete the form again."
   },
   "status": {

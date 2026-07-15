@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as sensitiveProfileModule from "./sensitive-profile";
 import {
   buildNonSensitiveProfilePayload,
   getChangedSensitiveFields,
@@ -154,6 +155,35 @@ assert.equal(shouldRefreshSensitiveProfile("manual", true, "background"), true);
 assert.equal(shouldRefreshSensitiveProfile("app-active", true, "active"), true);
 assert.equal(shouldRefreshSensitiveProfile("app-active", true, "background"), false);
 assert.equal(shouldRefreshSensitiveProfile("focus", false, "active"), false);
+const shouldShowPendingRemoval = (
+  sensitiveProfileModule as typeof sensitiveProfileModule & {
+    shouldShowPendingIdentityPhotoRemoval?: (input: {
+      changedFields: string[];
+      pendingHasIdentityPhoto: boolean;
+      formalHasIdentityPhoto: boolean;
+    }) => boolean;
+  }
+).shouldShowPendingIdentityPhotoRemoval;
+assert.equal(
+  typeof shouldShowPendingRemoval,
+  "function",
+  "待审证件照删除提示必须由纯逻辑 helper 控制"
+);
+assert.equal(shouldShowPendingRemoval!({
+  changedFields: ["identityPhotoUrl"],
+  pendingHasIdentityPhoto: false,
+  formalHasIdentityPhoto: true,
+}), true);
+assert.equal(shouldShowPendingRemoval!({
+  changedFields: ["bankBsb"],
+  pendingHasIdentityPhoto: false,
+  formalHasIdentityPhoto: true,
+}), false, "纯文字申请不得显示删除证件照片");
+assert.equal(shouldShowPendingRemoval!({
+  changedFields: ["identityPhotoUrl"],
+  pendingHasIdentityPhoto: false,
+  formalHasIdentityPhoto: false,
+}), false, "正式资料原本无图时不得显示删除提示");
 assert.equal(
   isSensitiveVersionConflict({ response: { status: 409 } }),
   true,
@@ -166,13 +196,75 @@ assert.equal(
 );
 
 async function main() {
+  const submitWithCache = (
+    sensitiveProfileModule as typeof sensitiveProfileModule & {
+      submitSensitiveProfileWithCache?: <TPayload, TRequest>(
+        payload: TPayload,
+        dependencies: {
+          cancelRequestQuery: () => Promise<unknown>;
+          submitRequest: (value: TPayload) => Promise<TRequest>;
+          setRequestData: (value: TRequest) => void;
+          refreshRequestQuery: () => Promise<unknown>;
+        }
+      ) => Promise<TRequest>;
+    }
+  ).submitSensitiveProfileWithCache;
+  assert.equal(typeof submitWithCache, "function", "敏感 PUT 必须通过统一缓存协调 helper");
+
+  const events: string[] = [];
+  let releaseCancel: (() => void) | undefined;
+  const cancelBarrier = new Promise<void>((resolve) => {
+    releaseCancel = resolve;
+  });
+  const submitting = submitWithCache!(
+    { bankBsb: "123-456" },
+    {
+      cancelRequestQuery: async () => {
+        events.push("cancel");
+        await cancelBarrier;
+      },
+      submitRequest: async (payload) => {
+        events.push("put");
+        return { requestId: 88, ...payload };
+      },
+      setRequestData: () => {
+        events.push("set");
+      },
+      refreshRequestQuery: async () => {
+        events.push("refresh");
+      },
+    }
+  );
+  await Promise.resolve();
+  assert.deepEqual(events, ["cancel"], "PUT 必须等待在途旧 GET 取消完成");
+  releaseCancel!();
+  assert.equal((await submitting).requestId, 88);
+  assert.deepEqual(
+    events,
+    ["cancel", "put", "set", "refresh"],
+    "成功响应必须先写缓存，再触发 invalidate/refetch"
+  );
+  await assert.doesNotReject(() => submitWithCache!(
+    { bankBsb: "654-321" },
+    {
+      cancelRequestQuery: async () => undefined,
+      submitRequest: async (payload) => ({ requestId: 89, ...payload }),
+      setRequestData: () => undefined,
+      refreshRequestQuery: async () => {
+        throw new Error("refetch failed");
+      },
+    }
+  ), "PUT 已成功时，后续状态刷新失败不得误报提交失败或触发自动重提");
+
   const refreshOrder: string[] = [];
-  await refreshEmployeeProfileAfterIdentityMutation({
+  const refreshResult = await refreshEmployeeProfileAfterIdentityMutation({
     refetchSensitive: async () => {
       refreshOrder.push("sensitive");
+      return { isError: false };
     },
     refetchFormal: async () => {
       refreshOrder.push("formal");
+      return { isError: false };
     },
   });
   assert.deepEqual(
@@ -180,6 +272,28 @@ async function main() {
     ["sensitive", "formal"],
     "证件照完成或删除后必须先刷新待审快照，再刷新正式资料"
   );
+  assert.deepEqual(refreshResult, { isError: false }, "刷新成功必须与服务端提交成功分开建模");
+
+  const failedRefreshOrder: string[] = [];
+  let failedRefreshResult: { isError: boolean } | undefined;
+  await assert.doesNotReject(async () => {
+    failedRefreshResult = await refreshEmployeeProfileAfterIdentityMutation({
+      refetchSensitive: async () => {
+        failedRefreshOrder.push("sensitive");
+        throw new Error("refresh failed");
+      },
+      refetchFormal: async () => {
+        failedRefreshOrder.push("formal");
+        return { isError: false };
+      },
+    });
+  }, "刷新失败不得冒充服务端上传或删除失败");
+  assert.deepEqual(
+    failedRefreshOrder,
+    ["sensitive", "formal"],
+    "一个刷新失败仍必须尝试另一个查询，且不得反向判定服务端提交失败"
+  );
+  assert.deepEqual(failedRefreshResult, { isError: true });
 
   console.log("sensitive-profile.test.ts: ok");
 }
