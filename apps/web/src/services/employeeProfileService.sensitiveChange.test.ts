@@ -44,6 +44,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
             status: 'Pending',
             bankAccountNumber: 'must-not-leak-from-list',
             bankAccountSummary: '****6789',
+            changedFields: ['bankAccountNumber'],
             submittedAt: '2026-07-16T00:00:00Z',
             baseSensitiveRevision: 3,
           }],
@@ -72,7 +73,10 @@ try {
   assert(calls[0]?.url.includes('/api/EmployeeProfiles/admin/change-requests?'), '审核列表应使用固定后台路径')
   assert(calls[0]?.url.includes('status=Pending'), '审核列表应传递状态筛选')
   assert(calls[0]?.url.includes('search=amy'), '审核列表应传递搜索条件')
+  assertEqual(list.items[0]?.status, 'Pending', 'Pending 状态必须保持可审核，不能降级为 Superseded')
+  assertEqual(list.items[0]?.changedFields.join(','), 'bankAccountNumber', '列表应直接使用安全 ChangedFields 标识')
   assert(!JSON.stringify(list).includes('must-not-leak-from-list'), '列表映射必须丢弃意外返回的完整账号')
+  assertEqual(calls.length, 1, '列表加载不得调用 request detail 或 employee detail API')
 
   const detail = await getAdminSensitiveChangeRequest(7)
   assertEqual(calls[1]?.url, '/api/EmployeeProfiles/admin/change-requests/7', '审核详情应使用 requestId 路径')

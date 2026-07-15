@@ -6,6 +6,7 @@ import type {
   EmployeeProfileSensitiveChangeQueryDto,
   EmployeeProfileSensitiveChangeStatus,
   EmployeeProfileSensitiveChangeSummaryDto,
+  EmployeeProfileSensitiveField,
   EmployeeProfileSensitiveRejectPayload,
   EmployeeProfileSensitiveReviewPayload,
   EmployeeProfileSummaryDto,
@@ -120,6 +121,8 @@ function asBoolean(value: unknown) {
 
 function mapSensitiveStatus(value: unknown): EmployeeProfileSensitiveChangeStatus {
   switch (asString(value)?.toLowerCase()) {
+    case 'pending':
+      return 'Pending'
     case 'approved':
       return 'Approved'
     case 'rejected':
@@ -130,6 +133,27 @@ function mapSensitiveStatus(value: unknown): EmployeeProfileSensitiveChangeStatu
       // 未知状态必须保持不可操作，不能误判为待审核。
       return 'Superseded'
   }
+}
+
+const SENSITIVE_FIELD_NAMES = new Set<EmployeeProfileSensitiveField>([
+  'bankBsb',
+  'bankAccountNumber',
+  'superannuationCompanyName',
+  'superannuationCompanyCode',
+  'superannuationAccountNumber',
+  'identityType',
+  'identityId',
+  'identityPhotoUrl',
+])
+
+function mapSensitiveChangedFields(value: unknown): EmployeeProfileSensitiveField[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter(
+    (field): field is EmployeeProfileSensitiveField => typeof field === 'string'
+      && SENSITIVE_FIELD_NAMES.has(field as EmployeeProfileSensitiveField),
+  )
 }
 
 function mapSensitiveChangeSummary(raw: BackendEmployeeProfile): EmployeeProfileSensitiveChangeSummaryDto {
@@ -151,6 +175,7 @@ function mapSensitiveChangeSummary(raw: BackendEmployeeProfile): EmployeeProfile
     submittedAt: asString(raw.submittedAt) ?? asString(raw.SubmittedAt) ?? '',
     reviewedAt: asString(raw.reviewedAt) ?? asString(raw.ReviewedAt),
     reviewReason: asString(raw.reviewReason) ?? asString(raw.ReviewReason),
+    changedFields: mapSensitiveChangedFields(raw.changedFields ?? raw.ChangedFields),
   }
 }
 

@@ -39,7 +39,6 @@ import {
   getChangedSensitiveFields,
   handleSensitiveReviewFailure,
   isRejectReasonValid,
-  maskSensitiveSummary,
   type SensitiveProfileField,
 } from './logic'
 
@@ -47,9 +46,7 @@ interface SensitiveChangeReviewPanelProps {
   refreshPendingCount: () => Promise<void>
 }
 
-interface ReviewListRow extends EmployeeProfileSensitiveChangeSummaryDto {
-  changedFields: SensitiveProfileField[] | null
-}
+type ReviewListRow = EmployeeProfileSensitiveChangeSummaryDto
 
 interface ReviewFormValues {
   reason?: string
@@ -99,32 +96,6 @@ export default function SensitiveChangeReviewPanel({
   const fieldLabel = (field: SensitiveProfileField) =>
     t(`system.employeeProfiles.review.fields.${field}`)
 
-  const calculateChangedFields = async (summary: EmployeeProfileSensitiveChangeSummaryDto) => {
-    try {
-      // 列表只保留字段名。完整敏感值只在本次计算的局部变量中短暂存在，不写入列表状态或日志。
-      const [detail, profile] = await Promise.all([
-        getAdminSensitiveChangeRequest(summary.requestId),
-        getAdminEmployeeProfile(summary.userGuid),
-      ])
-      return getChangedSensitiveFields(
-        {
-          ...profile,
-          bankAccountNumber: maskSensitiveSummary(profile.bankAccountNumber),
-          superannuationAccountNumber: maskSensitiveSummary(profile.superannuationAccountNumber),
-          identityId: maskSensitiveSummary(profile.identityId),
-        },
-        {
-          ...detail,
-          bankAccountNumber: maskSensitiveSummary(detail.bankAccountNumber),
-          superannuationAccountNumber: maskSensitiveSummary(detail.superannuationAccountNumber),
-          identityId: maskSensitiveSummary(detail.identityId),
-        },
-      )
-    } catch {
-      return null
-    }
-  }
-
   const loadList = async (nextPage = page, nextPageSize = pageSize) => {
     setLoading(true)
     setListError(false)
@@ -135,8 +106,8 @@ export default function SensitiveChangeReviewPanel({
         status: 'Pending',
         keyword: keyword || undefined,
       })
-      const changedFields = await Promise.all(result.items.map(calculateChangedFields))
-      setRows(result.items.map((item, index) => ({ ...item, changedFields: changedFields[index] ?? null })))
+      // 列表仅消费服务端安全字段标识，禁止在打开审核抽屉前请求任何完整敏感详情。
+      setRows(result.items)
       setTotal(result.total)
       setPage(result.page)
       setPageSize(result.pageSize)
@@ -236,9 +207,7 @@ export default function SensitiveChangeReviewPanel({
     {
       title: t('system.employeeProfiles.review.changedFields'),
       dataIndex: 'changedFields',
-      render: (fields: SensitiveProfileField[] | null) => fields === null
-        ? <Typography.Text type="secondary">{t('system.employeeProfiles.review.viewDetailForFields')}</Typography.Text>
-        : fields.length > 0
+      render: (fields: SensitiveProfileField[]) => fields.length > 0
           ? <Space size={[4, 4]} wrap>{fields.map((field) => <Tag key={field}>{fieldLabel(field)}</Tag>)}</Space>
           : '--',
     },

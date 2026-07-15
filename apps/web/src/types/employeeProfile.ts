@@ -56,6 +56,15 @@ export interface SaveEmployeeProfilePayload {
 }
 
 export type EmployeeProfileSensitiveChangeStatus = 'Pending' | 'Approved' | 'Rejected' | 'Superseded'
+export type EmployeeProfileSensitiveField =
+  | 'bankBsb'
+  | 'bankAccountNumber'
+  | 'superannuationCompanyName'
+  | 'superannuationCompanyCode'
+  | 'superannuationAccountNumber'
+  | 'identityType'
+  | 'identityId'
+  | 'identityPhotoUrl'
 
 export interface EmployeeProfileSensitiveChangeQueryDto {
   keyword?: string
@@ -81,6 +90,7 @@ export interface EmployeeProfileSensitiveChangeSummaryDto {
   submittedAt: string
   reviewedAt?: string
   reviewReason?: string
+  changedFields: EmployeeProfileSensitiveField[]
 }
 
 export interface EmployeeProfileSensitiveChangeDetailDto extends EmployeeProfileSensitiveChangeSummaryDto {

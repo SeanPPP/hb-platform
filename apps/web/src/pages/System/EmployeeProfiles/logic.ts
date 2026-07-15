@@ -1,5 +1,6 @@
 import { RequestError } from '../../../utils/request'
 import type { EmployeeProfileSensitiveChangeSummaryDto } from '../../../types/employeeProfile'
+import type { EmployeeProfileSensitiveField } from '../../../types/employeeProfile'
 
 export const SENSITIVE_PROFILE_FIELDS = [
   'bankBsb',
@@ -12,7 +13,7 @@ export const SENSITIVE_PROFILE_FIELDS = [
   'identityPhotoUrl',
 ] as const
 
-export type SensitiveProfileField = (typeof SENSITIVE_PROFILE_FIELDS)[number]
+export type SensitiveProfileField = EmployeeProfileSensitiveField
 
 export type SensitiveProfileSnapshot = Partial<Record<SensitiveProfileField, unknown>>
 
@@ -54,6 +55,18 @@ export function shouldConfirmPendingSupersede<
   next: TNext,
 ) {
   return pendingRequest?.status === 'Pending' && getChangedSensitiveFields(current, next).length > 0
+}
+
+export function shouldConfirmAdminSensitiveSupersede<TNext extends SensitiveProfileSnapshot>(
+  pendingRequest: Pick<EmployeeProfileSensitiveChangeSummaryDto, 'status'> | null | undefined,
+  current: SensitiveProfileSnapshot & { identityPhotoUrlExpiresAt?: unknown },
+  next: TNext,
+) {
+  // 有 expiresAt 代表正式证件照来自托管对象，后端会忽略直接提交的 URL；legacy URL 才参与 PUT 比较。
+  const comparableCurrent = current.identityPhotoUrlExpiresAt
+    ? { ...current, identityPhotoUrl: next.identityPhotoUrl }
+    : current
+  return shouldConfirmPendingSupersede(pendingRequest, comparableCurrent, next)
 }
 
 function readErrorCode(payload: unknown) {

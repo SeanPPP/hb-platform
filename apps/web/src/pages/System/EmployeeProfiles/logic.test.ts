@@ -4,6 +4,7 @@ import {
   handleSensitiveReviewFailure,
   isRejectReasonValid,
   maskSensitiveSummary,
+  shouldConfirmAdminSensitiveSupersede,
   shouldConfirmPendingSupersede,
 } from './logic'
 
@@ -66,6 +67,25 @@ assertEqual(
   shouldConfirmPendingSupersede({ status: 'Approved' }, current, { ...current, bankBsb: '999-999' }),
   false,
   '非 Pending 申请不应触发作废提示',
+)
+
+assertEqual(
+  shouldConfirmAdminSensitiveSupersede(
+    { status: 'Pending' },
+    { ...current, identityPhotoUrlExpiresAt: '2026-07-16T01:00:00Z' },
+    { ...current, identityPhotoUrl: 'https://example.com/ignored-managed-change.jpg' },
+  ),
+  false,
+  'managed signed URL 不会被管理员 PUT 修改，因此不应误提示待审作废',
+)
+assertEqual(
+  shouldConfirmAdminSensitiveSupersede(
+    { status: 'Pending' },
+    current,
+    { ...current, identityPhotoUrl: 'https://example.com/legacy-change.jpg' },
+  ),
+  true,
+  'legacy identity URL 可被管理员 PUT 修改，应触发待审作废确认',
 )
 
 let detailRefreshes = 0

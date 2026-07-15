@@ -130,10 +130,13 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     public async Task AdminListAsync_MasksAccountsButDetailReturnsAuthorizedFullValues()
     {
         await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "11116789";
+        await _db.Updateable(profile).ExecuteCommandAsync();
         var service = CreateService("user-self", "self_user");
         var submitted = await service.UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
         {
-            BankAccountNumber = "123456789",
+            BankAccountNumber = "22226789",
             SuperannuationAccountNumber = "SUPER98765",
         });
 
@@ -145,7 +148,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         );
         Assert.Equal("****6789", listItems.Single().BankAccountSummary);
         Assert.Equal("****8765", listItems.Single().SuperannuationAccountSummary);
-        Assert.Equal("123456789", detail.Data!.BankAccountNumber);
+        Assert.Contains("bankAccountNumber", listItems.Single().ChangedFields);
+        Assert.Equal("22226789", detail.Data!.BankAccountNumber);
         Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
     }
 

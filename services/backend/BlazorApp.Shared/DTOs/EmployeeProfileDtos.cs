@@ -197,6 +197,7 @@ namespace BlazorApp.Shared.DTOs
         public DateTime SubmittedAt { get; set; }
         public DateTime? ReviewedAt { get; set; }
         public string? ReviewReason { get; set; }
+        public List<string> ChangedFields { get; set; } = new();
     }
 
     public sealed class EmployeeProfileSensitiveChangeDetailDto

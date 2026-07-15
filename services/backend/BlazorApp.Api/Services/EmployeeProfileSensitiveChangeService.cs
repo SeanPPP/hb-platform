@@ -104,21 +104,23 @@ public sealed class EmployeeProfileSensitiveChangeService
         var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
         var status = ParseStatus(query.Status);
-        var source = db.Queryable<EmployeeProfileSensitiveChangeRequest, User>(
-            (request, user) => new object[]
+        var source = db.Queryable<EmployeeProfileSensitiveChangeRequest, User, EmployeeProfile>(
+            (request, user, profile) => new object[]
             {
                 SqlSugar.JoinType.Left,
                 request.UserGUID == user.UserGUID,
+                SqlSugar.JoinType.Left,
+                request.UserGUID == profile.UserGUID && !profile.IsDeleted,
             }
         );
         if (status.HasValue)
         {
-            source = source.Where((request, user) => request.Status == status.Value);
+            source = source.Where((request, user, profile) => request.Status == status.Value);
         }
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
             var search = query.Search.Trim();
-            source = source.Where((request, user) =>
+            source = source.Where((request, user, profile) =>
                 request.UserGUID.Contains(search)
                 || user.Username.Contains(search)
                 || (user.FullName != null && user.FullName.Contains(search))
@@ -126,14 +128,14 @@ public sealed class EmployeeProfileSensitiveChangeService
         }
         var total = await source.CountAsync();
         var rows = await source
-            .OrderBy((request, user) => request.SubmittedAt, SqlSugar.OrderByType.Desc)
-            .Select((request, user) => new { Request = request, user.Username })
+            .OrderBy((request, user, profile) => request.SubmittedAt, SqlSugar.OrderByType.Desc)
+            .Select((request, user, profile) => new { Request = request, user.Username, Profile = profile })
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
         return ApiResponse<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>.OK(new()
         {
-            Items = rows.Select(row => MapSummary(row.Request, row.Username)).ToList(),
+            Items = rows.Select(row => MapSummary(row.Request, row.Username, row.Profile)).ToList(),
             Total = total,
             Page = page,
             PageSize = pageSize,
@@ -666,7 +668,8 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     private static EmployeeProfileSensitiveChangeSummaryDto MapSummary(
         EmployeeProfileSensitiveChangeRequest request,
-        string? username
+        string? username,
+        EmployeeProfile? profile
     ) => new()
     {
         RequestId = request.RequestId,
@@ -685,7 +688,37 @@ public sealed class EmployeeProfileSensitiveChangeService
         SubmittedAt = request.SubmittedAt,
         ReviewedAt = request.ReviewedAt,
         ReviewReason = request.ReviewReason,
+        // 列表只返回字段标识；完整正式值和申请值只在服务端内存中参与比较。
+        ChangedFields = GetChangedFields(profile, request),
     };
+
+    private static List<string> GetChangedFields(
+        EmployeeProfile? profile,
+        EmployeeProfileSensitiveChangeRequest request
+    )
+    {
+        var fields = new List<string>();
+        AddChanged(fields, "bankBsb", profile?.BankBSB, request.BankBsb);
+        AddChanged(fields, "bankAccountNumber", profile?.BankACC, request.BankAccountNumber);
+        AddChanged(fields, "superannuationCompanyName", profile?.SuperannuationCompanyName, request.SuperannuationCompanyName);
+        AddChanged(fields, "superannuationCompanyCode", profile?.SuperannuationCompanyCode, request.SuperannuationCompanyCode);
+        AddChanged(fields, "superannuationAccountNumber", profile?.SuperannuationAccount, request.SuperannuationAccountNumber);
+        AddChanged(fields, "identityType", profile?.IdentityType, request.IdentityType);
+        AddChanged(fields, "identityId", profile?.IdentityId, request.IdentityId);
+        if (!NormalizedEquals(profile?.IdentityPhotoObjectKey, request.IdentityPhotoObjectKey))
+        {
+            fields.Add("identityPhotoUrl");
+        }
+        return fields;
+    }
+
+    private static void AddChanged(List<string> fields, string field, string? current, string? proposed)
+    {
+        if (!NormalizedEquals(current, proposed))
+        {
+            fields.Add(field);
+        }
+    }
 
     private static ApiResponse<EmployeeProfileSensitiveChangeDetailDto> VersionConflict() =>
         ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error(

@@ -39,7 +39,7 @@ import type {
   EmployeeProfileSummaryDto,
 } from '../../../types/employeeProfile'
 import SensitiveChangeReviewPanel from './SensitiveChangeReviewPanel'
-import { shouldConfirmPendingSupersede } from './logic'
+import { maskSensitiveSummary, shouldConfirmAdminSensitiveSupersede } from './logic'
 
 interface EmployeeProfileFormValues {
   userGUID?: string
@@ -264,10 +264,7 @@ export default function SystemEmployeeProfilesPage() {
         identityPhotoUrl: values.identityPhotoUrl?.trim() || undefined,
         address: values.address?.trim() || undefined,
       }
-      const currentSensitiveSnapshot = editingProfile.identityPhotoUrlExpiresAt
-        ? { ...editingProfile, identityPhotoUrl: payload.identityPhotoUrl }
-        : editingProfile
-      if (shouldConfirmPendingSupersede(editingPendingRequest, currentSensitiveSnapshot, payload)) {
+      if (shouldConfirmAdminSensitiveSupersede(editingPendingRequest, editingProfile, payload)) {
         const confirmed = await new Promise<boolean>((resolve) => {
           Modal.confirm({
             title: t('system.employeeProfiles.pendingSupersede.title'),
@@ -331,7 +328,7 @@ export default function SystemEmployeeProfilesPage() {
       title: t('system.employeeProfiles.bankSummary'),
       key: 'bankSummary',
       width: 220,
-      render: (_, record) => joinSummary([record.bankBsb, record.bankAccountNumber]),
+      render: (_, record) => joinSummary([record.bankBsb, maskSensitiveSummary(record.bankAccountNumber)]),
     },
     {
       title: t('system.employeeProfiles.superSummary'),
@@ -341,7 +338,7 @@ export default function SystemEmployeeProfilesPage() {
         joinSummary([
           record.superannuationCompanyName,
           record.superannuationCompanyCode,
-          record.superannuationAccountNumber,
+          maskSensitiveSummary(record.superannuationAccountNumber),
         ]),
     },
     {
