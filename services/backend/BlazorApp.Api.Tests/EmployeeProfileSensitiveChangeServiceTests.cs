@@ -163,6 +163,115 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ChangedFieldsSnapshot_AfterApprove_RemainsStableAcrossSelfAdminDetailAndList()
+    {
+        await SeedAsync();
+        var self = CreateService("user-self", "self_user");
+        var submitted = await self.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "approved-snapshot",
+        });
+        var approved = await CreateService("admin-user", "admin").ApproveAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto { Reason = "已核验" }
+        );
+        Assert.True(approved.Success);
+
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "later-admin-value";
+        profile.SensitiveRevision++;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+
+        var selfDetail = await CreateService("user-self", "self_user").GetSelfAsync();
+        var admin = CreateService("admin-user", "admin");
+        var adminDetail = await admin.GetAdminDetailAsync(submitted.Data.RequestId);
+        var list = await admin.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto());
+        var listItem = list.Data!.Items!.Single(item => item.RequestId == submitted.Data.RequestId);
+
+        Assert.NotNull(selfDetail.Data);
+        Assert.Contains("bankAccountNumber", selfDetail.Data.ChangedFields);
+        Assert.Contains("bankAccountNumber", adminDetail.Data!.ChangedFields);
+        Assert.Contains("bankAccountNumber", listItem.ChangedFields);
+    }
+
+    [Fact]
+    public async Task ChangedFieldsSnapshot_RejectedAndSuperseded_DoNotDriftAfterFormalChanges()
+    {
+        await SeedAsync();
+        var self = CreateService("user-self", "self_user");
+        var superseded = await self.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "superseded-account",
+        });
+        var rejected = await self.UpsertSelfAsync(new()
+        {
+            BankBsb = "999-000",
+            BankAccountNumber = "formal-old",
+        });
+        await CreateService("admin-user", "admin").RejectAsync(
+            rejected.Data!.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "无法核验" }
+        );
+
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "superseded-account";
+        profile.BankBSB = "999-000";
+        profile.SensitiveRevision++;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+
+        var admin = CreateService("admin-user", "admin");
+        var supersededDetail = await admin.GetAdminDetailAsync(superseded.Data!.RequestId);
+        var rejectedDetail = await admin.GetAdminDetailAsync(rejected.Data.RequestId);
+        var rows = (await admin.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto()))
+            .Data!.Items!.ToDictionary(item => item.RequestId);
+
+        Assert.Equal(new[] { "bankAccountNumber" }, supersededDetail.Data!.ChangedFields);
+        Assert.Equal(new[] { "bankBsb" }, rejectedDetail.Data!.ChangedFields);
+        Assert.Equal(new[] { "bankAccountNumber" }, rows[superseded.Data.RequestId].ChangedFields);
+        Assert.Equal(new[] { "bankBsb" }, rows[rejected.Data.RequestId].ChangedFields);
+    }
+
+    [Fact]
+    public async Task ChangedFieldsSnapshot_MalformedOrUnknownValues_NeverLeaksUncontrolledContent()
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "pending-secret-account",
+        });
+        var row = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == submitted.Data!.RequestId);
+        var snapshotProperty = typeof(EmployeeProfileSensitiveChangeRequest)
+            .GetProperty("ChangedFieldsJson");
+        Assert.NotNull(snapshotProperty);
+
+        snapshotProperty.SetValue(
+            row,
+            "[\"bankAccountNumber\",\"pending-secret-account\",\"identityPhotoUrl\"]"
+        );
+        await _db.Updateable(row).ExecuteCommandAsync();
+        var controlled = await CreateService("admin-user", "admin")
+            .GetAdminDetailAsync(row.RequestId);
+        Assert.Equal(
+            new[] { "bankAccountNumber", "identityPhotoUrl" },
+            controlled.Data!.ChangedFields
+        );
+        Assert.DoesNotContain("pending-secret-account", controlled.Data.ChangedFields);
+
+        snapshotProperty.SetValue(row, "{malformed-json");
+        await _db.Updateable(row).ExecuteCommandAsync();
+        var malformed = await CreateService("admin-user", "admin")
+            .GetAdminDetailAsync(row.RequestId);
+        Assert.Empty(malformed.Data!.ChangedFields);
+
+        snapshotProperty.SetValue(row, null);
+        await _db.Updateable(row).ExecuteCommandAsync();
+        var legacyFallback = await CreateService("admin-user", "admin")
+            .GetAdminDetailAsync(row.RequestId);
+        Assert.Contains("bankAccountNumber", legacyFallback.Data!.ChangedFields);
+    }
+
+    [Fact]
     public async Task ApproveAndRejectAsync_ApplyOnlyApprovedSnapshotAndRequireRejectReason()
     {
         await SeedAsync();

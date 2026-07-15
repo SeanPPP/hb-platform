@@ -1,12 +1,25 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using System.Text.Json;
 
 namespace BlazorApp.Api.Services;
 
 public sealed class EmployeeProfileSensitiveChangeService
 {
     public const string VersionConflictCode = "EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT";
+
+    private static readonly string[] SensitiveFieldNames =
+    [
+        "bankBsb",
+        "bankAccountNumber",
+        "superannuationCompanyName",
+        "superannuationCompanyCode",
+        "superannuationAccountNumber",
+        "identityType",
+        "identityId",
+        "identityPhotoUrl",
+    ];
 
     private readonly SqlSugarContext _context;
     private readonly ICurrentUserService _currentUser;
@@ -440,6 +453,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             SubmittedAt = now,
             SubmittedBy = actor,
         };
+        // 关键逻辑：变更字段以提交瞬间的正式资料为基线固化，终态后不随正式资料继续漂移。
+        request.ChangedFieldsJson = JsonSerializer.Serialize(GetChangedFields(profile, request));
         await db.Ado.BeginTranAsync();
         try
         {
@@ -664,8 +679,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             ReviewedAt = request.ReviewedAt,
             ReviewedBy = request.ReviewedBy,
             ReviewReason = request.ReviewReason,
-            // 详情只暴露变更字段标识；完整值比较仅在服务端内存中完成。
-            ChangedFields = GetChangedFields(profile, request),
+            // 详情只暴露受控字段标识；历史记录缺少快照时才动态回退。
+            ChangedFields = ResolveChangedFields(profile, request),
         };
         if (_storage is not null && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
         {
@@ -690,9 +705,38 @@ public sealed class EmployeeProfileSensitiveChangeService
         SubmittedAt = request.SubmittedAt,
         ReviewedAt = request.ReviewedAt,
         ReviewReason = request.ReviewReason,
-        // 列表只返回字段标识；完整正式值和申请值只在服务端内存中参与比较。
-        ChangedFields = GetChangedFields(profile, request),
+        // 列表只返回受控字段标识；完整正式值和申请值只在服务端内存中参与比较。
+        ChangedFields = ResolveChangedFields(profile, request),
     };
+
+    private static List<string> ResolveChangedFields(
+        EmployeeProfile? profile,
+        EmployeeProfileSensitiveChangeRequest request
+    )
+    {
+        if (string.IsNullOrWhiteSpace(request.ChangedFieldsJson))
+        {
+            // 兼容加列前的历史申请；新申请均读取持久化快照。
+            return GetChangedFields(profile, request);
+        }
+
+        try
+        {
+            var persisted = JsonSerializer.Deserialize<List<string>>(request.ChangedFieldsJson);
+            if (persisted is null)
+            {
+                return [];
+            }
+
+            // 不直接回传数据库 JSON，避免损坏或被篡改的内容泄露敏感值。
+            var persistedSet = persisted.ToHashSet(StringComparer.Ordinal);
+            return SensitiveFieldNames.Where(persistedSet.Contains).ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 
     private static List<string> GetChangedFields(
         EmployeeProfile? profile,

@@ -20,6 +20,23 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("UX_EmployeeProfileSensitiveChangeRequest_User_Pending", migrator);
         Assert.Contains("WHERE [Status] = 0", migrator);
         Assert.Contains("SensitiveChangeRequestId", migrator);
+        Assert.Contains("[ChangedFieldsJson] nvarchar(1000) NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
+            migrator
+        );
+
+        var migration = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/Migrations/20260715_CreateEmployeeProfileSensitiveChangeRequest.sql"
+            )
+        );
+        Assert.Contains("[ChangedFieldsJson] nvarchar(1000) NULL", migration);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
+            migration
+        );
     }
 
     [Fact]

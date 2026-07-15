@@ -25,6 +25,7 @@ BEGIN
         [IdentityType] nvarchar(50) NULL,
         [IdentityId] nvarchar(100) NULL,
         [IdentityPhotoObjectKey] nvarchar(500) NULL,
+        [ChangedFieldsJson] nvarchar(1000) NULL,
         [Status] int NOT NULL,
         [BaseSensitiveRevision] int NOT NULL,
         [SubmittedAt] datetime2 NOT NULL,
@@ -35,6 +36,13 @@ BEGIN
         [SupersededAt] datetime2 NULL,
         [SupersededBy] nvarchar(100) NULL
     );
+END;
+
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeProfileSensitiveChangeRequest]
+        ADD [ChangedFieldsJson] nvarchar(1000) NULL;
 END;
 
 IF NOT EXISTS (
