@@ -293,7 +293,13 @@ public sealed class CashierLoginService(
         var attempt = await apiClient.LoginAsync(request, cancellationToken);
         if (attempt.IsOnlineRejected)
         {
-            // 在线明确拒绝只影响本次登录；保留旧缓存供后续真正断网时继续营业。
+            // 关键逻辑：在线明确拒绝表示条码已刷新、停用或失效，必须同步清除离线缓存，避免旧码断网复用。
+            await settingsRepository.DeleteValueAsync(
+                BuildCacheKey(storeCode, deviceCode, userBarcode),
+                cancellationToken);
+            await settingsRepository.DeleteValueAsync(
+                BuildLegacyCacheKey(storeCode, deviceCode, userBarcode),
+                cancellationToken);
             return CashierLoginResult.Fail(attempt.Message);
         }
 
