@@ -104,6 +104,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<IEmergencyLoginTokenService>()));
         services.AddSingleton<ICashierLoginService>(sp => sp.GetRequiredService<CashierLoginService>());
         services.AddSingleton<ICashierSessionCacheUpdater>(sp => sp.GetRequiredService<CashierLoginService>());
+        services.AddSingleton<IOperationAuthorizationService, OperationAuthorizationService>();
         services.AddHttpClient<ICashierSessionRefreshApiClient, CashierSessionRefreshApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -413,9 +414,10 @@ public static class ServiceRegistration
             cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
             cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
-            enforceCashierPermissions: true,
-            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
-            apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>()));
+             enforceCashierPermissions: true,
+             operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
+             apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>(),
+             operationAuthorizationService: sp.GetRequiredService<IOperationAuthorizationService>()));
         services.AddSingleton<MainWindow>();
 
         return services;

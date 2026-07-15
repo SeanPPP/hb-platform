@@ -1,5 +1,6 @@
 using System.Net;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -366,6 +367,7 @@ public interface ICashierLoginService
         string storeCode,
         string deviceCode,
         string userBarcode,
+        bool attemptOnline = true,
         CancellationToken cancellationToken = default);
 }
 
@@ -396,6 +398,7 @@ public sealed class CashierLoginService(
         string storeCode,
         string deviceCode,
         string userBarcode,
+        bool attemptOnline = true,
         CancellationToken cancellationToken = default)
     {
         if (userBarcode.StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal))
@@ -410,8 +413,42 @@ public sealed class CashierLoginService(
                     cancellationToken);
         }
 
+        if (!attemptOnline)
+        {
+            // 关键逻辑：连接状态已明确离线时直接读取加密缓存，避免等待登录 API 超时。
+            var cacheStopwatch = Stopwatch.StartNew();
+            var offlineCached = await ReadCachedSessionAsync(
+                storeCode,
+                deviceCode,
+                userBarcode,
+                cancellationToken);
+            cacheStopwatch.Stop();
+            ConsoleLog.Write(
+                "CashierLoginTiming",
+                $"cacheReadMs={cacheStopwatch.ElapsedMilliseconds} cacheHit={offlineCached is not null} attemptOnline=false");
+            if (offlineCached is not null)
+            {
+                return CashierLoginResult.Success(offlineCached);
+            }
+
+            var unavailable = CashierLoginAttempt.ApiUnavailable();
+            return CashierLoginResult.Fail(unavailable.Message, unavailable.ErrorCode);
+        }
+
         var request = new CashierBarcodeLoginRequest(storeCode, userBarcode, deviceCode);
-        var attempt = await apiClient.LoginAsync(request, cancellationToken);
+        var onlineStopwatch = Stopwatch.StartNew();
+        CashierLoginAttempt attempt;
+        try
+        {
+            attempt = await apiClient.LoginAsync(request, cancellationToken);
+        }
+        finally
+        {
+            onlineStopwatch.Stop();
+            ConsoleLog.Write(
+                "CashierLoginTiming",
+                $"onlineAttemptMs={onlineStopwatch.ElapsedMilliseconds} attemptOnline=true");
+        }
         if (attempt.IsOnlineRejected)
         {
             // 在线明确拒绝只影响本次登录；保留旧缓存供后续真正断网时继续营业。
@@ -429,7 +466,12 @@ public sealed class CashierLoginService(
             return CashierLoginResult.Fail(attempt.Message, attempt.ErrorCode);
         }
 
+        var cacheFallbackStopwatch = Stopwatch.StartNew();
         var cached = await ReadCachedSessionAsync(storeCode, deviceCode, userBarcode, cancellationToken);
+        cacheFallbackStopwatch.Stop();
+        ConsoleLog.Write(
+            "CashierLoginTiming",
+            $"cacheReadMs={cacheFallbackStopwatch.ElapsedMilliseconds} cacheHit={cached is not null} attemptOnline=true");
         return cached is null
             ? CashierLoginResult.Fail(attempt.Message, attempt.ErrorCode)
             : CashierLoginResult.Success(cached);

@@ -19,6 +19,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -45,7 +46,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         ICardTerminalClient? cardTerminalClient = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
@@ -56,6 +58,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -223,10 +226,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     private async Task CreateInstallmentAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Create))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Create, "create");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         await _showCreateAsync(CartSnapshot);
     }
@@ -238,10 +243,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     private async Task AddRepaymentAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.AddRepayment))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Installments.AddRepayment, "add-repayment");
+        if (permissionGrant is null)
         {
             return;
         }
+        using var authorizationActivation = permissionGrant.Activate();
 
         if (SelectedOrder is null) return;
 
@@ -331,10 +338,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         (RepaymentMethod != PaymentMethodKind.Voucher || (!string.IsNullOrWhiteSpace(RepaymentReference) && !string.IsNullOrWhiteSpace(RepaymentVoucherToken)));
     private async Task CancelWithRefundAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Cancel))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "cancel-with-refund");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (SelectedOrder is not null)
         {
@@ -350,10 +359,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private bool CanCancelWithRefund() => !IsBusy && !IsOffline && SelectedOrder is { CanCancelWithRefund: true };
     private async Task VoidCancelAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Cancel))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "void-cancel");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (SelectedOrder is not null)
         {
@@ -369,10 +380,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private bool CanVoidCancel() => !IsBusy && !IsOffline && SelectedOrder is { CanVoidCancel: true };
     private async Task ConfirmPickupAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.ConfirmPickup))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.ConfirmPickup, "confirm-pickup");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (SelectedOrder is not null)
         {
@@ -411,6 +424,15 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         SetLiteralStatus(message);
         return false;
     }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(string permissionCode, string action) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            permissionCode,
+            "installment-center",
+            action,
+            Session);
 
     private async Task RunOrderActionAsync(
         Func<Task<InstallmentOrderActionResult>> action,

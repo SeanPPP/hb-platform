@@ -105,6 +105,37 @@ public sealed class OperationAuditIngestServiceTests
     }
 
     [Fact]
+    public async Task IngestAsync_accepts_permission_override_and_persists_only_approved_properties()
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "PERMISSION_OVERRIDE";
+        request.Events[0].Properties = new Dictionary<string, string?>
+        {
+            ["requestingCashierId"] = "REQUESTER",
+            ["authorizingCashierId"] = "SUPERVISOR",
+            ["authorizingUserGuid"] = "USER-SUPERVISOR",
+            ["permissionCode"] = "Permissions.PosTerminal.Sales.ChangePrice",
+            ["authorizationMode"] = "offline-cache",
+            ["screen"] = "PosTerminal",
+            ["action"] = "change-price",
+            ["barcode"] = "must-not-persist"
+        };
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.AcceptedCount);
+        var persisted = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
+        Assert.Equal("PERMISSION_OVERRIDE", persisted.OperationType);
+        Assert.Contains("REQUESTER", persisted.PropertiesJson ?? string.Empty, StringComparison.Ordinal);
+        Assert.Contains("SUPERVISOR", persisted.PropertiesJson ?? string.Empty, StringComparison.Ordinal);
+        Assert.Contains("offline-cache", persisted.PropertiesJson ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("barcode", persisted.PropertiesJson ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task IngestAsync_two_independent_contexts_concurrently_persist_event_once()
     {
         await using var fixture = OperationAuditFixture.Create();

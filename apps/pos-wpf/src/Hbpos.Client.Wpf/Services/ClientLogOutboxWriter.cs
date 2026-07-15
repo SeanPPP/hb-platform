@@ -37,7 +37,8 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     private static readonly HashSet<string> AllowedOperationProperties = new(StringComparer.OrdinalIgnoreCase)
     {
         "source", "action", "status", "screen", "mode", "reason", "result",
-        "paymentMethod", "cashDrawerMode", "itemCount"
+        "paymentMethod", "cashDrawerMode", "itemCount", "requestingCashierId",
+        "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode"
     };
     private readonly ClientLogOutboxStore _store;
     private readonly DeviceAuthorizationState _authorizationState;

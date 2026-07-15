@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Windows;
 using System.Globalization;
 using System.Reflection;
@@ -24,6 +25,47 @@ namespace Hbpos.Client.Tests;
 [Collection(ProductThumbnailImageSourceConverterTestCollection.Name)]
 public sealed class MainViewModelScannerTests
 {
+    [Fact]
+    public async Task Operation_authorization_prompt_takes_scanner_page_and_routes_both_scan_sources()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        authorization.Open();
+
+        Assert.Equal(authorization.ScannerPageId, scanner.ActivePageId);
+        scanner.Emit("RAW-AUTH");
+        Assert.True(viewModel.TryProcessKeyboardScannerInput("KEYBOARD-AUTH"));
+        Assert.Equal(["RAW-AUTH", "KEYBOARD-AUTH"], authorization.Barcodes);
+
+        authorization.Close();
+
+        Assert.Equal(PosTerminalViewModel.PageId, scanner.ActivePageId);
+    }
+
+    [Fact]
+    public async Task Navigation_cancels_pending_operation_authorization_and_restores_new_screen_scanner_page()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        authorization.Open();
+
+        viewModel.ShowReturnsCommand.Execute(null);
+
+        Assert.Equal(1, authorization.CancelCount);
+        Assert.Equal(ReceiptReturnsViewModel.PageId, scanner.ActivePageId);
+    }
+
     [Fact]
     public void Expired_emergency_session_is_cleared_by_clock_guard()
     {
@@ -89,6 +131,43 @@ public sealed class MainViewModelScannerTests
         Assert.False(report.IsOnline);
         Assert.Equal("CASHIER-1", report.CashierId);
         Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Fact]
+    public async Task Cashier_login_passes_current_offline_state_to_login_service()
+    {
+        var login = new RecordingAttemptCashierLoginService(
+            CashierLoginResult.Success(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: login);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+
+        Assert.False(login.AttemptOnline);
+    }
+
+    [Fact]
+    public async Task Cashier_login_closes_overlay_before_runtime_status_report_completes()
+    {
+        var runtimeStatus = new DeferredRuntimeStatusApiClient();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var loginTask = viewModel.LoginCashierByBarcodeAsync("BAR-1");
+        await runtimeStatus.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.False(loginTask.IsCompleted);
+
+        runtimeStatus.Complete();
+        await loginTask;
     }
 
     [Fact]
@@ -3042,7 +3121,7 @@ public sealed class MainViewModelScannerTests
         var viewModel = CreateAuthorizedMainViewModel(customerDisplayWindow);
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(1, customerDisplayWindow.SetModeCallCount);
         Assert.Equal(CustomerDisplayWindowMode.Normal, customerDisplayWindow.LastSetMode);
@@ -3077,21 +3156,21 @@ public sealed class MainViewModelScannerTests
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Normal, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Normal, viewModel.CustomerDisplayWindowMode);
         Assert.True(viewModel.IsCustomerDisplayOpen);
         Assert.Equal("Customer display opened in a normal window on the second display.", viewModel.StatusMessage);
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Fullscreen, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Fullscreen, viewModel.CustomerDisplayWindowMode);
         Assert.True(viewModel.IsCustomerDisplayOpen);
         Assert.Equal("Customer display opened full screen on the second display.", viewModel.StatusMessage);
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Closed, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Closed, viewModel.CustomerDisplayWindowMode);
@@ -4270,6 +4349,7 @@ public sealed class MainViewModelScannerTests
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
         IInstallmentOrderService? installmentOrderService = null,
         IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null,
         IUserFeedbackService? userFeedbackService = null,
         bool enforceCashierPermissions = false)
     {
@@ -4325,6 +4405,7 @@ public sealed class MainViewModelScannerTests
             cashierLoginService: cashierLoginService,
             runtimeStatusApiClient: runtimeStatusApiClient,
             operationAuditLogger: operationAuditLogger,
+            operationAuthorizationService: operationAuthorizationService,
             enforceCashierPermissions: enforceCashierPermissions);
     }
 
@@ -4755,6 +4836,81 @@ public sealed class MainViewModelScannerTests
         }
     }
 
+    private sealed class FakeOperationAuthorizationService : IOperationAuthorizationService
+    {
+        private bool _isPromptOpen;
+
+        public FakeOperationAuthorizationService()
+        {
+            CancelCommand = new RelayCommand(Cancel);
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public event EventHandler? StatusChanged;
+
+        public string ScannerPageId => "OperationAuthorizationTest";
+
+        public bool IsPromptOpen => _isPromptOpen;
+
+        public bool IsBusy => false;
+
+        public string PromptMessage => string.Empty;
+
+        public string StatusMessage => string.Empty;
+
+        public string PermissionCode => Permissions.PosTerminal.Sales.AddItem;
+
+        public string Screen => "POS";
+
+        public string Action => "Add item";
+
+        public IRelayCommand CancelCommand { get; }
+
+        public List<string> Barcodes { get; } = [];
+
+        public int CancelCount { get; private set; }
+
+        public Task<OperationAuthorizationScope?> AuthorizeAsync(
+            string permissionCode,
+            string screen,
+            string action,
+            PosSessionState session,
+            CancellationToken cancellationToken = default) => Task.FromResult<OperationAuthorizationScope?>(null);
+
+        public bool ProcessScannerBarcode(string barcode)
+        {
+            Barcodes.Add(barcode);
+            return true;
+        }
+
+        public void Cancel()
+        {
+            if (!_isPromptOpen)
+            {
+                return;
+            }
+
+            CancelCount++;
+            Close();
+        }
+
+        public void RevokeAll() => Cancel();
+
+        public void Open()
+        {
+            _isPromptOpen = true;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPromptOpen)));
+        }
+
+        public void Close()
+        {
+            _isPromptOpen = false;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPromptOpen)));
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     private sealed class FakeLocalSchemaService : ILocalSchemaService
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -4787,9 +4943,26 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(CashierLoginResult.Success(session));
+        }
+    }
+
+    private sealed class RecordingAttemptCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        public bool? AttemptOnline { get; private set; }
+
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            bool attemptOnline = true,
+            CancellationToken cancellationToken = default)
+        {
+            AttemptOnline = attemptOnline;
+            return Task.FromResult(result);
         }
     }
 
@@ -4799,6 +4972,7 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(result);
@@ -4811,6 +4985,7 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             if (exception is not null)
@@ -5260,6 +5435,25 @@ public sealed class MainViewModelScannerTests
             Reports.Add(report);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class DeferredRuntimeStatusApiClient : IPosRuntimeStatusApiClient
+    {
+        private readonly TaskCompletionSource _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ReportAsync(
+            PosRuntimeStatusReport report,
+            CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await _completion.Task.WaitAsync(cancellationToken);
+        }
+
+        public void Complete() => _completion.TrySetResult();
     }
 
     private sealed class FakeLocalDeviceRepository : ILocalDeviceRepository

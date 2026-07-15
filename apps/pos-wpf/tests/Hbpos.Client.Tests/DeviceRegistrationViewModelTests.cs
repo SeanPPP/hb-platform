@@ -103,7 +103,7 @@ public sealed class DeviceRegistrationViewModelTests
             "ViewModels",
             "SettingsViewModel.cs"));
         Assert.Contains(
-            "SelectCategory(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration)",
+            "SelectCategoryAsync(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration)",
             settingsViewModelSource);
     }
 

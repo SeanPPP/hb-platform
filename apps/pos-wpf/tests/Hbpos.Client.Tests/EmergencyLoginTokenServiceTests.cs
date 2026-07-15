@@ -51,7 +51,11 @@ public sealed class EmergencyLoginTokenServiceTests
         var api = new CountingCashierLoginApiClient();
         var service = new CashierLoginService(api, settings, new PassthroughProtector(), emergency);
 
-        var result = await service.LoginAsync("S001", "POS-02", "HBPOSE1-K1-AA-BB");
+        var result = await service.LoginAsync(
+            "S001",
+            "POS-02",
+            "HBPOSE1-K1-AA-BB",
+            attemptOnline: false);
 
         Assert.True(result.Succeeded);
         Assert.Equal(0, api.CallCount);

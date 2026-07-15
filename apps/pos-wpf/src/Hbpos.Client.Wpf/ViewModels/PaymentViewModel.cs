@@ -24,6 +24,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly bool _enforcePermissions;
     private readonly PaymentNavigationActions _navigationActions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
 
     internal PaymentNavigationActions NavigationActions => _navigationActions;
     private readonly PaymentTenderController _tenderController = new();
@@ -128,7 +129,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -143,7 +145,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             installmentOrderService,
             onInstallmentOrderCreatedAsync,
             confirmInstallmentFullFirstPaymentAsync,
-            operationAuditLogger)
+            operationAuditLogger,
+            operationAuthorizationService)
     {
     }
 
@@ -161,7 +164,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -171,6 +175,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -210,7 +215,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         ConfirmPaymentCommand = new AsyncRelayCommand(ConfirmPaymentAsync, CanConfirmPayment);
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
         BackToPosCommand = new RelayCommand(BackToPos, CanBackToPos);
-        ShowInstallmentCenterCommand = new RelayCommand(ShowInstallmentCenter, CanShowInstallmentCenter);
+        ShowInstallmentCenterCommand = new AsyncRelayCommand(ShowInstallmentCenterAsync, CanShowInstallmentCenter);
         CloseCardPaymentErrorOverlayCommand = new RelayCommand(CloseCardPaymentErrorOverlay);
         CardPaymentErrorPrimaryActionCommand = new AsyncRelayCommand(
             ExecuteCardPaymentErrorPrimaryActionAsync,
@@ -834,12 +839,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
-        var permissionAttemptedAmount = ResolveAttemptedPaymentAmount(ResolveTenderAmountText(method));
-        if (!TryRequirePermission(GetTenderPermission(method), method, permissionAttemptedAmount))
-        {
-            return;
-        }
-
         if (IsInstallmentPaymentEnabled && PaymentTenders.Count > 0)
         {
             SetStatus("payment.installment.status.singleTenderOnly");
@@ -869,11 +868,41 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var attemptedPaymentAmount = ResolveAttemptedPaymentAmount(amountText);
+        using var tenderPermissionGrant = await AuthorizeAsync(
+            GetTenderPermission(method),
+            $"add-tender-{method.ToString().ToLowerInvariant()}",
+            method,
+            attemptedPaymentAmount);
+        if (tenderPermissionGrant is null)
+        {
+            return;
+        }
+
+        var willAutoCompleteCardPayment = method == PaymentMethodKind.Card &&
+            !IsInstallmentPaymentEnabled &&
+            (IsPaymentMode || IsRefundMode) &&
+            _workflowService.TryParseTenderedAmount(amountText, out var plannedCardAmount) &&
+            plannedCardAmount >= RemainingAmount;
+        using var confirmPermissionGrant = willAutoCompleteCardPayment
+            ? await AuthorizeAsync(
+                Permissions.PosTerminal.Payment.Confirm,
+                "confirm-payment",
+                method,
+                attemptedPaymentAmount)
+            : null;
+        if (willAutoCompleteCardPayment && confirmPermissionGrant is null)
+        {
+            return;
+        }
+
+        // 中文注释：卡终端阶段只激活收卡授权；确认付款授权到真正完成订单前才单独激活。
+        using var tenderAuthorizationActivation = tenderPermissionGrant.Activate();
+
         PaymentTenderAttemptResult result;
         CancellationTokenSource? cardPaymentCts = null;
         var cardPaymentWasManuallyCancelled = false;
         var isCard = method == PaymentMethodKind.Card;
-        var attemptedPaymentAmount = ResolveAttemptedPaymentAmount(amountText);
         var paymentEntryVersion = _paymentEntryVersion;
         try
         {
@@ -1109,11 +1138,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             IsSettlementComplete() &&
             (IsPaymentMode || IsRefundMode))
         {
-            if (!TryRequirePermission(Permissions.PosTerminal.Payment.Confirm))
-            {
-                return;
-            }
-
+            tenderAuthorizationActivation.Dispose();
+            using var confirmAuthorizationActivation = confirmPermissionGrant?.Activate();
             await CompletePaymentFromTendersAsync();
         }
     }
@@ -1230,14 +1256,19 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task RemoveTenderAsync(PaymentTender? tender)
     {
-        if (!TryRequirePermission(
-                Permissions.PosTerminal.Payment.RemoveTender,
-                tender?.Method,
-                tender?.Amount))
+        var tenderSnapshot = tender;
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Payment.RemoveTender,
+            "remove-tender",
+            tenderSnapshot?.Method,
+            tenderSnapshot?.Amount);
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
+        tender = tenderSnapshot;
         if (tender is null)
         {
             return;
@@ -1350,11 +1381,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task ConfirmPaymentAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Payment.Confirm))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Payment.Confirm, "confirm-payment");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (IsPaymentInteractionLocked)
         {
             return;
@@ -1894,7 +1927,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Session = result.UpdatedSession;
         RefreshCart();
         SetStatus("payment.status.completed");
-        PaymentCompleted?.Invoke(this, new PaymentCompletedEventArgs(result.Order, result.TenderedAmount, result.ChangeAmount));
+        // 中文注释：支付完成后的导航、同步、自动开钱箱和打印属于后台收尾，不得继承本次提权票据。
+        using (OperationAuthorizationScope.Suspend())
+        {
+            PaymentCompleted?.Invoke(this, new PaymentCompletedEventArgs(result.Order, result.TenderedAmount, result.ChangeAmount));
+        }
     }
 
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
@@ -2161,16 +2198,31 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             !_cardSession.IsAwaitingLateResult;
     }
 
-    private void ShowInstallmentCenter()
+    private async Task ShowInstallmentCenterAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Installments.View, "open-installment-center");
+        if (permissionGrant is null)
         {
             return;
         }
 
         // 分期流程暂时独立于现有收款流程，只负责跳转到新骨架页面。
+        using var authorizationActivation = permissionGrant.Activate();
         _navigationActions.ShowInstallmentCenter?.Invoke();
     }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(
+        string permissionCode,
+        string action,
+        PaymentMethodKind? requestedPaymentMethod = null,
+        decimal? requestedPaymentAmount = null) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            code => TryRequirePermission(code, requestedPaymentMethod, requestedPaymentAmount),
+            permissionCode,
+            "payment",
+            action,
+            Session);
 
     private bool CanShowInstallmentCenter()
     {

@@ -860,4 +860,22 @@
   <data name="appUpdate.force.exit" xml:space="preserve"><value>Exit</value></data>
   <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>Complete or clear the current transaction before installing the update.</value></data>
   <data name="appUpdate.install.failed" xml:space="preserve"><value>Could not start the update installer. {0}</value></data>
+  <data name="shell.operationAuthorization.title" xml:space="preserve"><value>Approval required</value></data>
+  <data name="shell.operationAuthorization.message" xml:space="preserve"><value>The current cashier cannot perform this operation.</value></data>
+  <data name="shell.operationAuthorization.operationLabel" xml:space="preserve"><value>CURRENT OPERATION</value></data>
+  <data name="shell.operationAuthorization.screenLabel" xml:space="preserve"><value>Screen:</value></data>
+  <data name="shell.operationAuthorization.permissionLabel" xml:space="preserve"><value>Required permission:</value></data>
+  <data name="shell.operationAuthorization.scanHint" xml:space="preserve"><value>Ask an authorized user to scan their cashier barcode.</value></data>
+  <data name="operationAuthorization.noSession" xml:space="preserve"><value>No cashier session is active.</value></data>
+  <data name="operationAuthorization.pending" xml:space="preserve"><value>Another operation is already waiting for authorization.</value></data>
+  <data name="operationAuthorization.prompt" xml:space="preserve"><value>Scan an authorized employee barcode with permission {0}.</value></data>
+  <data name="operationAuthorization.waiting" xml:space="preserve"><value>Waiting for authorization scan.</value></data>
+  <data name="operationAuthorization.cancelled" xml:space="preserve"><value>Authorization cancelled.</value></data>
+  <data name="operationAuthorization.verifying" xml:space="preserve"><value>Verifying authorized employee.</value></data>
+  <data name="operationAuthorization.success" xml:space="preserve"><value>Authorization succeeded.</value></data>
+  <data name="operationAuthorization.emergencyDenied" xml:space="preserve"><value>Emergency authorization sessions cannot approve permission overrides.</value></data>
+  <data name="operationAuthorization.scopeMismatch" xml:space="preserve"><value>The authorizing employee session does not match this store or device.</value></data>
+  <data name="operationAuthorization.ticketInvalid" xml:space="preserve"><value>The authorizing employee ticket is invalid or expired.</value></data>
+  <data name="operationAuthorization.permissionDenied" xml:space="preserve"><value>This employee does not have permission to approve the operation.</value></data>
+  <data name="operationAuthorization.exception" xml:space="preserve"><value>Authorization verification failed: {0}</value></data>
 </root>

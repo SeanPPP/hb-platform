@@ -34,13 +34,14 @@ public sealed class SqlSugarOperationAuditIngestService(
         "CASH_DRAWER_OPEN", "PAYMENT_TENDER_ADD", "PAYMENT_TENDER_REMOVE", "PAYMENT_CANCEL", "SALE_COMPLETE",
         "RETURN_REFUND_COMPLETE", "SALE_VOID", "RECEIPT_REPRINT",
         "INSTALLMENT_REPAYMENT_COMPLETE", "INSTALLMENT_REPAYMENT_CANCEL",
-        "DAILY_CLOSE_SAVE", "DAILY_CLOSE_REPRINT"
+        "DAILY_CLOSE_SAVE", "DAILY_CLOSE_REPRINT", "PERMISSION_OVERRIDE"
     };
 
     private static readonly HashSet<string> AllowedPropertyKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "source", "action", "status", "screen", "mode", "reason", "result",
-        "paymentMethod", "cashDrawerMode", "itemCount"
+        "paymentMethod", "cashDrawerMode", "itemCount", "requestingCashierId",
+        "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode"
     };
 
     private static readonly Regex UrlQueryRegex = new(
