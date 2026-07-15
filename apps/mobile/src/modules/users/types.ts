@@ -82,3 +82,28 @@ export interface StoreUserFormValues {
   password: string;
   status: boolean;
 }
+
+export interface PosTerminalPermissionOption {
+  code: string;
+  name: string;
+  group: string;
+  description: string;
+}
+
+export interface StoreUserPosTerminalPermissions {
+  mode: string;
+  assignablePermissions: PosTerminalPermissionOption[];
+  inheritedPermissionCodes: string[];
+  overriddenPermissionCodes: string[];
+  grantedPermissionCodes: string[];
+  effectivePermissionCodes: string[];
+}
+
+export interface StoreUserPosTerminalPermissionTarget {
+  userGuid: string;
+  storeGuid: string;
+}
+
+export interface UpdateStoreUserPosTerminalPermissionsPayload {
+  grantedPermissionCodes: string[];
+}
