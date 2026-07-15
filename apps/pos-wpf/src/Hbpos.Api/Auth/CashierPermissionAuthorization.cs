@@ -118,8 +118,7 @@ public sealed class CashierPermissionAuthorizationHandler(
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(token) &&
-            token.StartsWith(EmergencyLoginTokenCodec.TokenPrefix + "-", StringComparison.Ordinal))
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(token))
         {
             // 仅紧急二维码才解析摘要数据库服务，缺失票据不会让普通设备请求提前连接数据库。
             var emergencyGrantService = httpContext.RequestServices

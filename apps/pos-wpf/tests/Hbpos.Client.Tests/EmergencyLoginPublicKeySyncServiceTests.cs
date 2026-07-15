@@ -196,16 +196,13 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
         var cache = new EmergencyLoginPublicKeyCache(settings, new PassthroughProtector());
         await cache.ReplaceAsync(CreatePackage(1, "K1", oldKey));
         var sync = new ReplacingSyncService(cache, CreatePackage(2, "K2", newKey));
-        var token = EmergencyLoginTokenCodec.Sign(new EmergencyLoginTokenPayload
-        {
-            GrantId = Guid.NewGuid(),
-            StoreCode = "S001",
-            BusinessDate = "2026-07-15",
-            Issuer = "admin",
-            IssuedAtUtc = now.UtcDateTime,
-            NotBeforeUtc = now.AddMinutes(-1).UtcDateTime,
-            ExpiresAtUtc = now.AddHours(1).UtcDateTime
-        }, "K2", newKey.ExportECPrivateKeyPem());
+        var token = EmergencyLoginTokenCodec.SignV2(
+            Guid.NewGuid(),
+            "S001",
+            now.AddMinutes(-1).UtcDateTime,
+            now.AddHours(1).UtcDateTime,
+            "K2",
+            newKey.ExportECPrivateKeyPem());
         var service = new EmergencyLoginTokenService(
             cache,
             sync,

@@ -195,17 +195,11 @@ public sealed class EmergencyLoginGrantService
                 ExpiresAtUtc = expiresAtUtc,
                 UpdatedAtUtc = now,
             };
-            token = EmergencyLoginTokenCodec.Sign(
-                new EmergencyLoginTokenPayload
-                {
-                    GrantId = entity.GrantId,
-                    StoreCode = entity.StoreCode,
-                    BusinessDate = businessDate.ToString("yyyy-MM-dd"),
-                    Issuer = normalizedActor,
-                    IssuedAtUtc = now,
-                    NotBeforeUtc = now,
-                    ExpiresAtUtc = expiresAtUtc,
-                },
+            token = EmergencyLoginTokenCodec.SignV2(
+                entity.GrantId,
+                entity.StoreCode,
+                now,
+                expiresAtUtc,
                 activeKey.KeyId,
                 privateKeyPem
             );

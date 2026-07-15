@@ -41,8 +41,10 @@ public sealed class EmergencyLoginTokenServiceTests
         Assert.Contains("可信时间", rolledBack.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task Cashier_login_routes_emergency_prefix_before_online_barcode_api_and_does_not_cache()
+    [Theory]
+    [InlineData("HBPOSE1-K1-AA-BB")]
+    [InlineData("HBPOSE2-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    public async Task Cashier_login_routes_both_emergency_prefixes_before_online_barcode_api_and_does_not_cache(string token)
     {
         var settings = new InMemorySettingsRepository();
         var emergencySession = CashierSessionContext.CreateEmergencyOverride(
@@ -51,7 +53,7 @@ public sealed class EmergencyLoginTokenServiceTests
         var api = new CountingCashierLoginApiClient();
         var service = new CashierLoginService(api, settings, new PassthroughProtector(), emergency);
 
-        var result = await service.LoginAsync("S001", "POS-02", "HBPOSE1-K1-AA-BB");
+        var result = await service.LoginAsync("S001", "POS-02", token);
 
         Assert.True(result.Succeeded);
         Assert.Equal(0, api.CallCount);
@@ -104,17 +106,13 @@ public sealed class EmergencyLoginTokenServiceTests
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var now = DateTimeOffset.Parse("2026-07-14T03:00:00Z");
-        var payload = new EmergencyLoginTokenPayload
-        {
-            GrantId = Guid.NewGuid(),
-            StoreCode = "S001",
-            BusinessDate = "2026-07-14",
-            Issuer = "admin",
-            IssuedAtUtc = now.UtcDateTime,
-            NotBeforeUtc = now.AddMinutes(-1).UtcDateTime,
-            ExpiresAtUtc = now.AddHours(2).UtcDateTime
-        };
-        var token = EmergencyLoginTokenCodec.Sign(payload, "K1", key.ExportECPrivateKeyPem());
+        var token = EmergencyLoginTokenCodec.SignV2(
+            Guid.NewGuid(),
+            "S001",
+            now.AddMinutes(-1).UtcDateTime,
+            now.AddHours(2).UtcDateTime,
+            "K1",
+            key.ExportECPrivateKeyPem());
         var time = new MutableTimeProvider(now);
         var settings = new InMemorySettingsRepository();
         var protector = new PassthroughProtector();

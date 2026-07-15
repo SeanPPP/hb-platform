@@ -22,6 +22,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
+using SqlSugar;
 
 namespace Hbpos.Api.Tests;
 
@@ -234,16 +236,13 @@ public sealed class EmergencyLoginPublicKeysTests
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var now = DateTimeOffset.Parse("2026-07-15T02:00:00Z");
-        var token = EmergencyLoginTokenCodec.Sign(new EmergencyLoginTokenPayload
-        {
-            GrantId = Guid.NewGuid(),
-            StoreCode = "S001",
-            BusinessDate = "2026-07-15",
-            Issuer = "admin",
-            IssuedAtUtc = now.UtcDateTime,
-            NotBeforeUtc = now.AddMinutes(-1).UtcDateTime,
-            ExpiresAtUtc = now.AddHours(1).UtcDateTime
-        }, "K2", key.ExportECPrivateKeyPem());
+        var token = EmergencyLoginTokenCodec.SignV2(
+            Guid.NewGuid(),
+            "S001",
+            now.AddMinutes(-1).UtcDateTime,
+            now.AddHours(1).UtcDateTime,
+            "K2",
+            key.ExportECPrivateKeyPem());
         var provider = new RefreshingPublicKeyProvider(
             new Dictionary<string, string>(StringComparer.Ordinal),
             new Dictionary<string, string>(StringComparer.Ordinal)
@@ -262,6 +261,111 @@ public sealed class EmergencyLoginPublicKeysTests
 
         Assert.Null(result);
         Assert.Equal([false, true], provider.ForceRefreshCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Grant_validation_rechecks_active_database_grant_for_v2_and_legacy_v1(bool legacyV1)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = DateTimeOffset.Parse("2026-07-15T02:00:00Z");
+        var grantId = Guid.NewGuid();
+        var token = legacyV1
+            ? EmergencyLoginTokenCodec.SignLegacy(new EmergencyLoginTokenPayload
+            {
+                GrantId = grantId,
+                StoreCode = "S001",
+                BusinessDate = "2026-07-15",
+                Issuer = "admin",
+                IssuedAtUtc = now.UtcDateTime,
+                NotBeforeUtc = now.AddMinutes(-1).UtcDateTime,
+                ExpiresAtUtc = now.AddHours(1).UtcDateTime,
+            }, "K1", key.ExportECPrivateKeyPem())
+            : EmergencyLoginTokenCodec.SignV2(
+                grantId,
+                "S001",
+                now.AddMinutes(-1).UtcDateTime,
+                now.AddHours(1).UtcDateTime,
+                "K1",
+                key.ExportECPrivateKeyPem());
+
+        var result = await ValidateWithDatabaseAsync(token, grantId, key, revokedAtUtc: null);
+
+        Assert.NotNull(result);
+        Assert.Equal(grantId, result.GrantId);
+        Assert.Equal("S001", result.StoreCode);
+    }
+
+    [Fact]
+    public async Task Grant_validation_rejects_revoked_v2_grant()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = DateTimeOffset.Parse("2026-07-15T02:00:00Z");
+        var grantId = Guid.NewGuid();
+        var token = EmergencyLoginTokenCodec.SignV2(
+            grantId,
+            "S001",
+            now.AddMinutes(-1).UtcDateTime,
+            now.AddHours(1).UtcDateTime,
+            "K1",
+            key.ExportECPrivateKeyPem());
+
+        var result = await ValidateWithDatabaseAsync(token, grantId, key, now.AddMinutes(-2).UtcDateTime);
+
+        Assert.Null(result);
+    }
+
+    private static async Task<EmergencyLoginVerifiedClaims?> ValidateWithDatabaseAsync(
+        string token,
+        Guid grantId,
+        ECDsa key,
+        DateTime? revokedAtUtc)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.emergency-auth.db");
+        try
+        {
+            await using var connection = new SqliteConnection($"Data Source={dbPath}");
+            await connection.OpenAsync();
+            using var db = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString = connection.ConnectionString,
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = false,
+                InitKeyType = InitKeyType.Attribute,
+            });
+            db.CodeFirst.InitTables<EmergencyGrantRow>();
+            await db.Insertable(new EmergencyGrantRow
+            {
+                GrantId = grantId,
+                StoreCode = "S001",
+                ExpiresAtUtc = DateTime.Parse("2026-07-15T03:00:00Z").ToUniversalTime(),
+                RevokedAtUtc = revokedAtUtc,
+            }).ExecuteCommandAsync();
+
+            var context = (HbposSqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(HbposSqlSugarContext));
+            typeof(HbposSqlSugarContext)
+                .GetField("<PosmDb>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(context, db);
+            var provider = new RefreshingPublicKeyProvider(
+                new Dictionary<string, string> { ["K1"] = key.ExportSubjectPublicKeyInfoPem() },
+                new Dictionary<string, string>());
+            var service = new EmergencyGrantAuthorizationService(
+                context,
+                provider,
+                NullLogger<EmergencyGrantAuthorizationService>.Instance,
+                new FixedTimeProvider());
+
+            return await service.ValidateAsync(token, "S001", CancellationToken.None);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(dbPath))
+            {
+                File.Delete(dbPath);
+            }
+        }
     }
 
     private static EmergencyLoginPublicKeysController CreateController(
@@ -362,6 +466,17 @@ public sealed class EmergencyLoginPublicKeysTests
             ForceRefreshCalls.Add(forceRefresh);
             return Task.FromResult(forceRefresh ? refreshed : cached);
         }
+    }
+
+    [SugarTable("POSM_EmergencyLoginGrant")]
+    private sealed class EmergencyGrantRow
+    {
+        [SugarColumn(IsPrimaryKey = true)]
+        public Guid GrantId { get; set; }
+        public string StoreCode { get; set; } = string.Empty;
+        public DateTime ExpiresAtUtc { get; set; }
+        [SugarColumn(IsNullable = true)]
+        public DateTime? RevokedAtUtc { get; set; }
     }
 
     private sealed class UnauthenticatedHandler(

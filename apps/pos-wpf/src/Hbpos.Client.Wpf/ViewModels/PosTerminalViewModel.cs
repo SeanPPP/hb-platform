@@ -1022,7 +1022,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     {
         try
         {
-            if (barcode.Trim().StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal) &&
+            if (EmergencyLoginTokenCodec.HasSupportedPrefix(barcode.Trim()) &&
                 _tryLoginCashierFromScannerFallbackAsync is not null)
             {
                 // 原始扫描枪也必须在商品工作流前分流，令牌不得触发本地或远程商品查询。

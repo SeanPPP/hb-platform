@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -168,6 +169,12 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         var normalizedBarcode = barcode.Trim();
         if (string.IsNullOrWhiteSpace(normalizedBarcode))
         {
+            return true;
+        }
+
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(normalizedBarcode))
+        {
+            // 关键逻辑：退货页只消费紧急令牌，不写入订单查询框，也不调用订单查询 API。
             return true;
         }
 

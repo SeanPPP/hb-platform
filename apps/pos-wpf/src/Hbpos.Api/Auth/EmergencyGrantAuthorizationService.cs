@@ -6,7 +6,7 @@ namespace Hbpos.Api.Auth;
 
 public interface IEmergencyGrantAuthorizationService
 {
-    Task<EmergencyLoginTokenPayload?> ValidateAsync(
+    Task<EmergencyLoginVerifiedClaims?> ValidateAsync(
         string? token,
         string deviceStoreCode,
         CancellationToken cancellationToken);
@@ -20,20 +20,21 @@ public sealed class EmergencyGrantAuthorizationService(
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
-    public async Task<EmergencyLoginTokenPayload?> ValidateAsync(
+    public async Task<EmergencyLoginVerifiedClaims?> ValidateAsync(
         string? token,
         string deviceStoreCode,
         CancellationToken cancellationToken)
     {
-        EmergencyLoginTokenPayload? payload;
+        EmergencyLoginVerifiedClaims? claims;
         try
         {
             var publicKeys = await publicKeyProvider.GetKeysAsync(false, cancellationToken);
             var verified = EmergencyLoginTokenCodec.TryVerify(
                 token,
                 publicKeys,
+                deviceStoreCode,
                 _timeProvider.GetUtcNow().UtcDateTime,
-                out payload,
+                out claims,
                 out var errorCode);
             if (!verified && string.Equals(errorCode, "EMERGENCY_TOKEN_KEY_UNKNOWN", StringComparison.Ordinal))
             {
@@ -42,13 +43,13 @@ public sealed class EmergencyGrantAuthorizationService(
                 verified = EmergencyLoginTokenCodec.TryVerify(
                     token,
                     publicKeys,
+                    deviceStoreCode,
                     _timeProvider.GetUtcNow().UtcDateTime,
-                    out payload,
+                    out claims,
                     out _);
             }
 
-            if (!verified ||
-                !string.Equals(payload!.StoreCode, deviceStoreCode, StringComparison.OrdinalIgnoreCase))
+            if (!verified)
             {
                 return null;
             }
@@ -63,19 +64,19 @@ public sealed class EmergencyGrantAuthorizationService(
         try
         {
             var grant = await dbContext.PosmDb.Queryable<EmergencyLoginGrantStatus>()
-                .FirstAsync(item => item.GrantId == payload.GrantId, cancellationToken);
+                .FirstAsync(item => item.GrantId == claims!.GrantId, cancellationToken);
             var now = _timeProvider.GetUtcNow().UtcDateTime;
             return grant is not null &&
                 grant.RevokedAtUtc is null &&
                 grant.ExpiresAtUtc > now &&
                 string.Equals(grant.StoreCode, deviceStoreCode, StringComparison.OrdinalIgnoreCase)
-                ? payload
+                ? claims
                 : null;
         }
         catch (Exception ex)
         {
             // 撤销状态不可读时必须失败关闭，不能仅凭离线签名放行在线敏感操作。
-            logger.LogError(ex, "读取紧急登录授权状态失败，GrantId={GrantId}", payload.GrantId);
+            logger.LogError(ex, "读取紧急登录授权状态失败，GrantId={GrantId}", claims!.GrantId);
             return null;
         }
     }

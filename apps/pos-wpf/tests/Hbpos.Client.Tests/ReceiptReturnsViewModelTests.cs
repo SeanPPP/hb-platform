@@ -8,6 +8,26 @@ namespace Hbpos.Client.Tests;
 
 public sealed class ReceiptReturnsViewModelTests
 {
+    [Theory]
+    [InlineData("HBPOSE1-K1-AA-BB")]
+    [InlineData("HBPOSE2-compact-token")]
+    public void ScannerBarcode_emergency_token_is_consumed_without_order_lookup(string token)
+    {
+        var workflow = new FakeReceiptReturnsWorkflowService();
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-EXISTING"
+        };
+
+        var processed = viewModel.ProcessScannerBarcode(token, "scanner-device", "raw");
+
+        Assert.True(processed);
+        Assert.Equal("ORDER-EXISTING", viewModel.ScanText);
+        Assert.Equal(0, workflow.LookupCallCount);
+        Assert.Null(workflow.LastOrderQuery);
+        Assert.Empty(viewModel.OrderLines);
+    }
+
     [Fact]
     public async Task BackCommand_resets_pending_return_state_before_leaving()
     {
@@ -270,6 +290,10 @@ public sealed class ReceiptReturnsViewModelTests
 
     private sealed class FakeReceiptReturnsWorkflowService : IReceiptReturnsWorkflowService
     {
+        public int LookupCallCount { get; private set; }
+
+        public string? LastOrderQuery { get; private set; }
+
         public ReceiptReturnLookupResult LookupResult { get; init; } = new(null, false, false, "");
 
         public List<PendingReturnLine> AddedLines { get; } = [];
@@ -281,6 +305,8 @@ public sealed class ReceiptReturnsViewModelTests
             string orderQuery,
             CancellationToken cancellationToken = default)
         {
+            LookupCallCount++;
+            LastOrderQuery = orderQuery;
             return Task.FromResult(LookupResult);
         }
 

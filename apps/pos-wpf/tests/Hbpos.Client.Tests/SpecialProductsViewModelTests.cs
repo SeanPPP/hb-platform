@@ -678,6 +678,24 @@ public sealed class SpecialProductsViewModelTests
         Assert.Contains("Alpha", viewModel.StatusMessage, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("HBPOSE1-K1-AA-BB")]
+    [InlineData("HBPOSE2-compact-token")]
+    public void ScannerBarcode_emergency_token_is_consumed_without_product_search(string token)
+    {
+        var workflow = new FakeSpecialProductsWorkflowService();
+        var viewModel = CreateViewModel(workflow: workflow);
+        viewModel.ToggleEditModeCommand.Execute(null);
+        viewModel.SearchText = "existing-query";
+
+        var processed = viewModel.ProcessScannerBarcode(token, "scanner-device", "raw");
+
+        Assert.True(processed);
+        Assert.Equal("existing-query", viewModel.SearchText);
+        Assert.Equal(0, workflow.SearchCallCount);
+        Assert.Empty(viewModel.SearchResults);
+    }
+
     [Fact]
     public async Task MoveDown_across_page_boundary_keeps_moved_item_visible_on_destination_page()
     {

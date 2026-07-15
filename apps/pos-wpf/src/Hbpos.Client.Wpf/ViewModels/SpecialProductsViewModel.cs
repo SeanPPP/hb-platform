@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Converters;
@@ -407,6 +408,13 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         if (string.IsNullOrWhiteSpace(normalizedBarcode))
         {
             Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} success=false reason=empty-barcode");
+            return true;
+        }
+
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(normalizedBarcode))
+        {
+            // 关键逻辑：业务页只安全吞掉紧急令牌，禁止写入搜索框或进入商品查询链。
+            Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} consumed=true searched=false reason=emergency-token");
             return true;
         }
 

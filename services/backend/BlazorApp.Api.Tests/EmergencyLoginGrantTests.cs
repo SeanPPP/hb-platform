@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +24,167 @@ namespace BlazorApp.Api.Tests;
 
 public sealed class EmergencyLoginGrantTests
 {
+    [Fact]
+    public void TokenCodec_V2HasFixedLengthAndRoundTrips()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var grantId = Guid.Parse("4460b7f9-3770-4806-b0cb-f77eca21cae0");
+        var token = EmergencyLoginTokenCodec.SignV2(
+            grantId,
+            "  s001 ",
+            now,
+            now.AddHours(12),
+            "K202607",
+            key.ExportPkcs8PrivateKeyPem());
+
+        Assert.Equal(158, token.Length);
+        Assert.StartsWith("HBPOSE2-", token);
+        Assert.Matches("^HBPOSE2-[A-Za-z0-9_-]{150}$", token);
+        Assert.True(EmergencyLoginTokenCodec.HasSupportedPrefix(token));
+        Assert.True(EmergencyLoginTokenCodec.TryVerify(
+            token,
+            new Dictionary<string, string> { ["K202607"] = key.ExportSubjectPublicKeyInfoPem() },
+            "S001",
+            now.AddMinutes(1),
+            out var claims,
+            out var error), error);
+        Assert.Equal(grantId, claims!.GrantId);
+        Assert.Equal("S001", claims.StoreCode);
+        Assert.Equal(now, claims.NotBeforeUtc);
+        Assert.Equal(now.AddHours(12), claims.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public void TokenCodec_V2UsesSpecifiedBinaryLayoutAndSignatureInput()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var keyId = "K202607";
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var grantId = Guid.Parse("4460b7f9-3770-4806-b0cb-f77eca21cae0");
+        var token = EmergencyLoginTokenCodec.SignV2(
+            grantId, "s001", now, now.AddHours(12), keyId, key.ExportPkcs8PrivateKeyPem());
+        var encoded = token["HBPOSE2-".Length..].Replace('-', '+').Replace('_', '/');
+        var bytes = Convert.FromBase64String(encoded + new string('=', (4 - encoded.Length % 4) % 4));
+
+        Assert.Equal(SHA256.HashData(Encoding.ASCII.GetBytes(keyId))[..8], bytes[..8]);
+        Assert.Equal(Convert.FromHexString("4460B7F937704806B0CBF77ECA21CAE0"), bytes[8..24]);
+        Assert.Equal(SHA256.HashData(Encoding.UTF8.GetBytes("S001"))[..16], bytes[24..40]);
+        Assert.Equal(new DateTimeOffset(now).ToUnixTimeSeconds(), BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(40, 4)));
+        Assert.Equal(new DateTimeOffset(now.AddHours(12)).ToUnixTimeSeconds(), BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(44, 4)));
+        Assert.True(key.VerifyData(
+            Encoding.ASCII.GetBytes("HBPOSE2-").Concat(bytes[..48]).ToArray(),
+            bytes[48..],
+            HashAlgorithmName.SHA256,
+            DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+    }
+
+    [Fact]
+    public void TokenCodec_UnifiedVerifierAcceptsLegacyV1()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var grantId = Guid.NewGuid();
+        var token = EmergencyLoginTokenCodec.SignLegacy(CreateLegacyPayload(grantId, "S001", now), "K1", key.ExportPkcs8PrivateKeyPem());
+
+        Assert.True(EmergencyLoginTokenCodec.HasSupportedPrefix(token));
+        Assert.True(EmergencyLoginTokenCodec.TryVerify(
+            token,
+            new Dictionary<string, string> { ["K1"] = key.ExportSubjectPublicKeyInfoPem() },
+            "s001",
+            now.AddMinutes(1),
+            out var claims,
+            out var error), error);
+        Assert.Equal(grantId, claims!.GrantId);
+        Assert.Equal("S001", claims.StoreCode);
+    }
+
+    [Fact]
+    public void TokenCodec_V2RejectsTamperingWrongStoreAndTimeBounds()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var publicKeys = new Dictionary<string, string> { ["K1"] = key.ExportSubjectPublicKeyInfoPem() };
+        var active = EmergencyLoginTokenCodec.SignV2(Guid.NewGuid(), "S001", now, now.AddMinutes(5), "K1", key.ExportPkcs8PrivateKeyPem());
+        var future = EmergencyLoginTokenCodec.SignV2(Guid.NewGuid(), "S001", now.AddMinutes(5), now.AddHours(1), "K1", key.ExportPkcs8PrivateKeyPem());
+        var encoded = active["HBPOSE2-".Length..].Replace('-', '+').Replace('_', '/');
+        var tamperedBytes = Convert.FromBase64String(encoded + new string('=', (4 - encoded.Length % 4) % 4));
+        tamperedBytes[48] ^= 0x01;
+        var tampered = "HBPOSE2-" + Convert.ToBase64String(tamperedBytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(tampered, publicKeys, "S001", now.AddMinutes(1), out _, out var tamperedError));
+        Assert.Equal("EMERGENCY_TOKEN_SIGNATURE_INVALID", tamperedError);
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(active, publicKeys, "S002", now.AddMinutes(1), out _, out var storeError));
+        Assert.Equal("EMERGENCY_TOKEN_WRONG_STORE", storeError);
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(future, publicKeys, "S001", now, out _, out var futureError));
+        Assert.Equal("EMERGENCY_TOKEN_NOT_ACTIVE", futureError);
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(active, publicKeys, "S001", now.AddMinutes(6), out _, out var expiredError));
+        Assert.Equal("EMERGENCY_TOKEN_EXPIRED", expiredError);
+    }
+
+    [Fact]
+    public void TokenCodec_V2RejectsUnknownAmbiguousAndInvalidKeys()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var wrongCurve = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var token = EmergencyLoginTokenCodec.SignV2(Guid.NewGuid(), "S001", now, now.AddHours(1), "K1", key.ExportPkcs8PrivateKeyPem());
+
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(token, new Dictionary<string, string>(), "S001", now, out _, out var unknownError));
+        Assert.Equal("EMERGENCY_TOKEN_KEY_UNKNOWN", unknownError);
+        // 测试辅助类型通过重复枚举同一 KeyId 覆盖 selector 多命中失败关闭分支，不模拟真实 64-bit 哈希碰撞。
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(token, new DuplicateEnumeratedKeyDictionary("K1", key.ExportSubjectPublicKeyInfoPem()), "S001", now, out _, out var ambiguousError));
+        Assert.Equal("EMERGENCY_TOKEN_KEY_INVALID", ambiguousError);
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(token, new Dictionary<string, string> { ["K1"] = wrongCurve.ExportSubjectPublicKeyInfoPem() }, "S001", now, out _, out var keyError));
+        Assert.Equal("EMERGENCY_TOKEN_KEY_INVALID", keyError);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("HBPOSE2-A")]
+    [InlineData("HBPOSE2-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")]
+    public void TokenCodec_V2RejectsInvalidLengthOrCharacters(string token)
+    {
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(
+            token,
+            new Dictionary<string, string>(),
+            "S001",
+            DateTime.UtcNow,
+            out _,
+            out var error));
+        Assert.Equal("EMERGENCY_TOKEN_FORMAT_INVALID", error);
+    }
+
+    [Fact]
+    public void TokenCodec_V2RejectsNonCanonicalBase64Url()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var now = new DateTime(2026, 7, 14, 2, 0, 0, DateTimeKind.Utc);
+        var token = EmergencyLoginTokenCodec.SignV2(
+            Guid.NewGuid(), "S001", now, now.AddHours(1), "K1", key.ExportPkcs8PrivateKeyPem());
+        var replacement = token[^1] switch
+        {
+            'A' => 'B',
+            'Q' => 'R',
+            'g' => 'h',
+            'w' => 'x',
+            _ => throw new InvalidOperationException("112 字节编码的末字符应只有四种规范值"),
+        };
+        var nonCanonical = token[..^1] + replacement;
+
+        Assert.False(EmergencyLoginTokenCodec.TryVerify(
+            nonCanonical,
+            new Dictionary<string, string> { ["K1"] = key.ExportSubjectPublicKeyInfoPem() },
+            "S001",
+            now,
+            out _,
+            out var error));
+        Assert.Equal("EMERGENCY_TOKEN_FORMAT_INVALID", error);
+    }
+
     [Fact]
     public void TokenCodec_SignsAndVerifiesP1363Token()
     {
@@ -238,6 +400,39 @@ public sealed class EmergencyLoginGrantTests
         return $"{EmergencyLoginTokenCodec.TokenPrefix}-{keyId}-{Convert.ToHexString(payloadBytes)}-{Convert.ToHexString(signature)}";
     }
 
+    private static EmergencyLoginTokenPayload CreateLegacyPayload(Guid grantId, string storeCode, DateTime now) => new()
+    {
+        GrantId = grantId,
+        StoreCode = storeCode,
+        BusinessDate = now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+        Issuer = "admin",
+        IssuedAtUtc = now,
+        NotBeforeUtc = now,
+        ExpiresAtUtc = now.AddHours(1),
+    };
+
+    private sealed class DuplicateEnumeratedKeyDictionary(string keyId, string publicKeyPem)
+        : IReadOnlyDictionary<string, string>
+    {
+        public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
+        {
+            yield return new KeyValuePair<string, string>(keyId, publicKeyPem);
+            yield return new KeyValuePair<string, string>(keyId, publicKeyPem);
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        public int Count => 2;
+        public IEnumerable<string> Keys => [keyId, keyId];
+        public IEnumerable<string> Values => [publicKeyPem, publicKeyPem];
+        public string this[string key] => key == keyId ? publicKeyPem : throw new KeyNotFoundException();
+        public bool ContainsKey(string key) => key == keyId;
+        public bool TryGetValue(string key, out string value)
+        {
+            value = publicKeyPem;
+            return key == keyId;
+        }
+    }
+
     [Fact]
     public void SchemaScripts_CreateSummaryOnlyTableAndUniqueActiveGrant()
     {
@@ -410,7 +605,8 @@ public sealed class EmergencyLoginGrantServiceTests : IDisposable
         );
 
         Assert.True(first.Success);
-        Assert.StartsWith("HBPOSE1-K1-", first.Data.Token);
+        Assert.StartsWith("HBPOSE2-", first.Data.Token);
+        Assert.Equal(EmergencyLoginTokenCodec.V2TokenLength, first.Data.Token.Length);
         Assert.False(duplicate.Success);
         Assert.Equal("EMERGENCY_GRANT_ALREADY_ACTIVE", duplicate.ErrorCode);
         Assert.True(revoked.Success);

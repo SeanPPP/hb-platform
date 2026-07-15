@@ -855,7 +855,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool TryProcessKeyboardScannerInput(string barcode)
     {
-        if (barcode.Trim().StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal) &&
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(barcode.Trim()) &&
             TryProcessCashierLoginInput(barcode))
         {
             // 紧急令牌优先于当前商品页，禁止进入商品查询和页面日志。

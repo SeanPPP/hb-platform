@@ -398,7 +398,7 @@ public sealed class CashierLoginService(
         string userBarcode,
         CancellationToken cancellationToken = default)
     {
-        if (userBarcode.StartsWith($"{EmergencyLoginTokenCodec.TokenPrefix}-", StringComparison.Ordinal))
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(userBarcode))
         {
             // 紧急二维码必须在普通条码 API 和商品查询之前分流，避免令牌外泄。
             return emergencyLoginTokenService is null

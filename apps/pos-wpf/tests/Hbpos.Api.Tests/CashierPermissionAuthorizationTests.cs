@@ -52,16 +52,18 @@ public sealed class CashierPermissionAuthorizationTests
         Assert.Empty(cashierService.CheckedPermissions);
     }
 
-    [Fact]
-    public async Task Handler_accepts_active_emergency_grant_without_cashier_database_identity()
+    [Theory]
+    [InlineData("HBPOSE1-test-token")]
+    [InlineData("HBPOSE2-test-token")]
+    public async Task Handler_accepts_both_emergency_token_versions_without_cashier_database_identity(string token)
     {
         var cashierService = new FakeCashierService(false);
-        var emergencyGrantService = new FakeEmergencyGrantService(new EmergencyLoginTokenPayload
-        {
-            GrantId = Guid.NewGuid(),
-            StoreCode = "S001"
-        });
-        var httpContext = CreateHttpContext("HBPOSE1-test-token", cashierService, emergencyGrantService);
+        var emergencyGrantService = new FakeEmergencyGrantService(new EmergencyLoginVerifiedClaims(
+            Guid.NewGuid(),
+            "S001",
+            DateTime.UtcNow.AddMinutes(-1),
+            DateTime.UtcNow.AddHours(1)));
+        var httpContext = CreateHttpContext(token, cashierService, emergencyGrantService);
         var requirement = new CashierPermissionRequirement([Permissions.PosTerminal.Returns.Confirm]);
         var context = new AuthorizationHandlerContext([requirement], httpContext.User, null);
         var handler = new CashierPermissionAuthorizationHandler(
@@ -264,12 +266,12 @@ public sealed class CashierPermissionAuthorizationTests
         }
     }
 
-    private sealed class FakeEmergencyGrantService(EmergencyLoginTokenPayload? payload)
+    private sealed class FakeEmergencyGrantService(EmergencyLoginVerifiedClaims? claims)
         : IEmergencyGrantAuthorizationService
     {
-        public Task<EmergencyLoginTokenPayload?> ValidateAsync(
+        public Task<EmergencyLoginVerifiedClaims?> ValidateAsync(
             string? token,
             string deviceStoreCode,
-            CancellationToken cancellationToken) => Task.FromResult(payload);
+            CancellationToken cancellationToken) => Task.FromResult(claims);
     }
 }

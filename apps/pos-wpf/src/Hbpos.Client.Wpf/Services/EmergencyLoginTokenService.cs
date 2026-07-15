@@ -41,7 +41,7 @@ public sealed class EmergencyLoginTokenService(
             return CashierLoginResult.Fail("系统时间早于可信时间，请联网校时后重试", "EMERGENCY_CLOCK_ROLLBACK");
         }
 
-        EmergencyLoginTokenPayload? payload;
+        EmergencyLoginVerifiedClaims? claims;
         string errorCode;
         try
         {
@@ -49,8 +49,9 @@ public sealed class EmergencyLoginTokenService(
             var verified = EmergencyLoginTokenCodec.TryVerify(
                 token,
                 publicKeys,
+                storeCode,
                 now.UtcDateTime,
-                out payload,
+                out claims,
                 out errorCode);
             if (!verified && string.Equals(errorCode, "EMERGENCY_TOKEN_KEY_UNKNOWN", StringComparison.Ordinal))
             {
@@ -60,8 +61,9 @@ public sealed class EmergencyLoginTokenService(
                 verified = EmergencyLoginTokenCodec.TryVerify(
                     token,
                     publicKeys,
+                    storeCode,
                     now.UtcDateTime,
-                    out payload,
+                    out claims,
                     out errorCode);
             }
 
@@ -80,17 +82,12 @@ public sealed class EmergencyLoginTokenService(
             return CashierLoginResult.Fail(MapError("EMERGENCY_TOKEN_KEY_UNKNOWN"), "EMERGENCY_TOKEN_KEY_UNKNOWN");
         }
 
-        if (!string.Equals(payload!.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
-        {
-            return CashierLoginResult.Fail("紧急登录二维码不属于当前门店", "EMERGENCY_TOKEN_WRONG_STORE");
-        }
-
         await SaveTrustedTimeAsync(now, cancellationToken);
         return CashierLoginResult.Success(CashierSessionContext.CreateEmergencyOverride(
             storeCode,
             deviceCode,
-            payload.GrantId,
-            new DateTimeOffset(payload.ExpiresAtUtc, TimeSpan.Zero),
+            claims!.GrantId,
+            new DateTimeOffset(claims.ExpiresAtUtc, TimeSpan.Zero),
             token));
     }
 
@@ -130,6 +127,7 @@ public sealed class EmergencyLoginTokenService(
         "EMERGENCY_TOKEN_EXPIRED" => "紧急登录二维码已过期",
         "EMERGENCY_TOKEN_NOT_ACTIVE" => "紧急登录二维码尚未生效",
         "EMERGENCY_TOKEN_KEY_UNKNOWN" => "紧急登录签名密钥未知，请更新客户端",
+        "EMERGENCY_TOKEN_WRONG_STORE" => "紧急登录二维码不属于当前门店",
         _ => "紧急登录二维码无效"
     };
 }
