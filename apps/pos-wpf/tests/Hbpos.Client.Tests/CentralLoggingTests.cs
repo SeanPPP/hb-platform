@@ -190,9 +190,12 @@ public sealed class CentralLoggingTests
 
         using var provider = services.BuildServiceProvider();
         var hostedServices = provider.GetServices<IHostedService>().ToArray();
+        var loggingServices = hostedServices
+            .Where(service => service is ApplicationLogUploadService or OperationAuditUploadService or ClientLogOutboxWriter)
+            .ToArray();
 
         Assert.Collection(
-            hostedServices,
+            loggingServices,
             service => Assert.IsType<ApplicationLogUploadService>(service),
             service => Assert.IsType<OperationAuditUploadService>(service),
             service => Assert.IsType<ClientLogOutboxWriter>(service));

@@ -67,6 +67,66 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Api_server_switch_freezes_scanner_and_common_navigation()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var originalScreen = viewModel.CurrentScreen;
+
+        viewModel.IsApiServerSwitching = true;
+        viewModel.ShowReturnsCommand.Execute(null);
+        var handled = viewModel.TryProcessKeyboardScannerInput("SWITCH-SCAN");
+
+        Assert.True(handled);
+        Assert.Same(originalScreen, viewModel.CurrentScreen);
+        Assert.Empty(authorization.Barcodes);
+        Assert.Null(scanner.ActivePageId);
+    }
+
+    [Fact]
+    public async Task Server_switch_reinitialize_waits_for_post_show_startup_continuation()
+    {
+        var recoveryCompletion = new TaskCompletionSource<CardPaymentRecoveryResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovery = new FakeCardPaymentRecoveryService(
+            (_, _, _) => recoveryCompletion.Task);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            mainShellStartupService: new SwitchReadyMainShellStartupService());
+
+        var reinitialize = viewModel.ReinitializeAfterServerSwitchAsync(CancellationToken.None);
+        await WaitUntilAsync(() => recovery.CallCount > 0);
+
+        Assert.False(reinitialize.IsCompleted);
+
+        recoveryCompletion.SetResult(CardPaymentRecoveryResult.None);
+        await reinitialize.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Server_switch_reinitialize_propagates_post_show_startup_failure()
+    {
+        var expected = new InvalidOperationException("post-show startup failed");
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromException<CardPaymentRecoveryResult>(expected));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            mainShellStartupService: new SwitchReadyMainShellStartupService());
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            viewModel.ReinitializeAfterServerSwitchAsync(CancellationToken.None));
+
+        Assert.Same(expected, actual);
+    }
+
+    [Fact]
     public void Expired_emergency_session_is_cleared_by_clock_guard()
     {
         var context = new CashierSessionContext();
@@ -4351,6 +4411,7 @@ public sealed class MainViewModelScannerTests
         IOperationAuditLogger? operationAuditLogger = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         IUserFeedbackService? userFeedbackService = null,
+        IMainShellStartupService? mainShellStartupService = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -4384,7 +4445,10 @@ public sealed class MainViewModelScannerTests
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
+            mainShellStartupService ?? new MainShellStartupService(
+                deviceRepository,
+                fingerprintService,
+                new DeviceAuthorizationState()),
             orderRepository,
             new ShellSyncCenterService(syncQueue),
             localization,
@@ -5434,6 +5498,53 @@ public sealed class MainViewModelScannerTests
 
             Reports.Add(report);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class SwitchReadyMainShellStartupService : IMainShellStartupService
+    {
+        public Task<MainShellStartupResult> EvaluateAsync(
+            PosSessionState session,
+            bool previewMode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CreateResult(session));
+        }
+
+        public Task<MainShellStartupResult> EvaluateAfterServerSwitchAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CreateResult(session));
+        }
+
+        public void SetAuthorizedDevice(
+            string deviceCode,
+            string storeCode,
+            string hardwareId,
+            string authorizationCode)
+        {
+        }
+
+        public void ClearAuthorization()
+        {
+        }
+
+        private static MainShellStartupResult CreateResult(PosSessionState session)
+        {
+            var cashier = CreateCashierSession();
+            return new MainShellStartupResult(
+                session with
+                {
+                    StoreCode = cashier.StoreCode,
+                    StoreName = "Main Branch",
+                    DeviceCode = cashier.DeviceCode,
+                    CashierId = cashier.CashierId,
+                    CashierName = cashier.CashierName,
+                    CashierSession = cashier
+                },
+                RequiresDeviceRegistration: false,
+                CachedDevice: null);
         }
     }
 

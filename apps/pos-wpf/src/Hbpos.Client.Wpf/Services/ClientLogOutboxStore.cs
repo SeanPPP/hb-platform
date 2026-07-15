@@ -171,6 +171,16 @@ internal sealed class ClientLogOutboxStore
         return await ReadRecordsAsync(command, cancellationToken);
     }
 
+    public async Task<int> CountPendingAsync(
+        ClientLogOutboxKind kind,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {GetTableName(kind)} WHERE State = 'Pending';";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+    }
+
     public async Task<IReadOnlyList<ClientLogOutboxRecord>> ReadPendingOperationForScopeAsync(
         DateTimeOffset nowUtc,
         string storeCode,

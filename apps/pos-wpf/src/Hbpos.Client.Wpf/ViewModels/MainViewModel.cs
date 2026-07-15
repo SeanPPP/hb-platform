@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Client.Wpf.Converters;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
@@ -111,6 +112,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private bool _startupCardRecoveryPendingAfterCashierLogin;
     private bool _shutdownLogoutRecorded;
+    private bool _allowApiServerSwitchNavigation;
+    private object? _apiServerSwitchFrozenScreen;
     private int _applicationExitStarted;
 
     private SyncOrchestrator? _syncOrchestrator;
@@ -123,7 +126,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public object? CurrentScreen
     {
         get => _screenNavigator.CurrentScreen;
-        set => _screenNavigator.SetCurrentScreen(value);
+        set
+        {
+            if (IsApiServerSwitching && !_allowApiServerSwitchNavigation)
+            {
+                return;
+            }
+
+            _screenNavigator.SetCurrentScreen(value);
+        }
     }
 
     public PosTerminalViewModel? CachedPosTerminalScreen => _screenNavigator.CachedPosTerminalScreen;
@@ -157,6 +168,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _isApiServerSwitching;
 
     [ObservableProperty]
     private string _currentTime = string.Empty;
@@ -371,7 +385,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         bool enforceCashierPermissions = false,
         IOperationAuditLogger? operationAuditLogger = null,
         ApiServerSettingsViewModel? apiServerSettings = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        ApiRuntimeEndpointState? runtimeEndpointState = null)
     {
         _core = core;
         _infra = infra;
@@ -433,6 +448,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cashierLoginService = cashierLoginService;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        if (runtimeEndpointState is not null && Application.Current is not null)
+        {
+            ProductThumbnailImageSourceConverter.ConfigureApiBaseAddressProvider(
+                () => runtimeEndpointState.CurrentAddress);
+        }
         _runtimeStatusApiClient = runtimeStatusApiClient;
         _enforceCashierPermissions = enforceCashierPermissions;
         _windowOwnerProvider = windowOwnerProvider;
@@ -860,6 +880,65 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await InitializePosExperienceAsync(startupOptions);
     }
 
+    internal async Task ReinitializeAfterServerSwitchAsync(CancellationToken cancellationToken)
+    {
+        _allowApiServerSwitchNavigation = true;
+        try
+        {
+            await ReinitializeAfterServerSwitchCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _allowApiServerSwitchNavigation = false;
+        }
+    }
+
+    private async Task ReinitializeAfterServerSwitchCoreAsync(CancellationToken cancellationToken)
+    {
+        var startupOptions = _startupOptions ?? new AppStartupOptions([], false, null, null);
+        _connectivityTimer.Stop();
+        _deviceRegistrationStoreLoadTask = null;
+        _posPostShowStartupTask = null;
+        CancelStartupCatalogIndexLoad();
+        _screenNavigator.ClearScreens();
+        _screenNavigator.SetCachedPosTerminalScreen(null);
+        _screenNavigator.SetCachedSpecialProductsScreen(null);
+        DeviceRegistration = null;
+        _mainShellStartupService.ClearAuthorization();
+
+        // 服务器边界切换后清空旧身份与门店上下文，再只使用目标分区重新建立壳层。
+        Session = Session with
+        {
+            StoreCode = string.Empty,
+            StoreName = string.Empty,
+            DeviceCode = string.Empty,
+            CashierId = string.Empty,
+            CashierName = string.Empty,
+            CashierSession = null,
+            IsOnline = false,
+            PendingSyncCount = 0
+        };
+
+        await _schema.InitializeAsync(cancellationToken);
+        var startupResult = await _mainShellStartupService.EvaluateAfterServerSwitchAsync(
+            Session,
+            cancellationToken);
+        Session = startupResult.Session;
+        if (startupResult.RequiresDeviceRegistration)
+        {
+            DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
+            _pendingDeviceRegistrationCache = startupResult.CachedDevice;
+            DeviceRegistration.Prepare(startupResult.CachedDevice);
+            CurrentScreen = DeviceRegistration;
+            _deviceRegistrationStoreLoadTask = DeviceRegistration.LoadStoresAsync(startupResult.CachedDevice);
+            return;
+        }
+
+        await InitializePosExperienceAsync(startupOptions);
+        // 热切换必须等待后续启动链完成，确保失败能进入 PostCommitFailed，壳层也不会提前解冻。
+        await ContinuePosStartupAfterShownAsync(startupOptions, CurrentOwner);
+    }
+
     public Task ContinueStartupAfterShownAsync(AppStartupOptions startupOptions, Window? owner = null)
     {
         if (startupOptions.PreviewMode)
@@ -878,6 +957,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool TryProcessKeyboardScannerInput(string barcode)
     {
+        if (IsApiServerSwitching)
+        {
+            return true;
+        }
+
         if (_operationAuthorizationService?.IsPromptOpen == true)
         {
             return _operationAuthorizationService.ProcessScannerBarcode(barcode);
@@ -1288,6 +1372,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private void OnScreenChanged(object? screen)
     {
+        if (IsApiServerSwitching &&
+            !_allowApiServerSwitchNavigation &&
+            !ReferenceEquals(screen, _apiServerSwitchFrozenScreen))
+        {
+            _screenNavigator.SetCurrentScreen(_apiServerSwitchFrozenScreen);
+            return;
+        }
+
         _operationAuthorizationService?.Cancel();
         OnPropertyChanged(nameof(CurrentScreen));
         if (!ReferenceEquals(screen, _screenNavigator!.ReceiptReturns))
@@ -1312,6 +1404,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RefreshActiveScannerPage();
     }
 
+    partial void OnIsApiServerSwitchingChanged(bool value)
+    {
+        if (!value)
+        {
+            _apiServerSwitchFrozenScreen = null;
+            return;
+        }
+
+        // 切换边界关闭所有常用交互入口，避免扫描、导航或临时提权生成新的旧环境工作。
+        _apiServerSwitchFrozenScreen = CurrentScreen;
+        _operationAuthorizationService?.Cancel();
+        _rawScannerService.ClearPendingInput();
+        _rawScannerService.SetActivePage(null);
+    }
+
     private void OnOperationAuthorizationBarcodeScanned(RawBarcodeScannedEventArgs args)
     {
         _operationAuthorizationService?.ProcessScannerBarcode(args.Barcode);
@@ -1319,6 +1426,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshActiveScannerPage()
     {
+        if (IsApiServerSwitching)
+        {
+            _rawScannerService.SetActivePage(null);
+            return;
+        }
+
         var pageId = _operationAuthorizationService?.IsPromptOpen == true
             ? _operationAuthorizationService.ScannerPageId
             : (CurrentScreen as IScannerInputTarget)?.ScannerPageId;

@@ -124,6 +124,26 @@ public sealed class MainShellStartupServiceTests
     }
 
     [Fact]
+    public async Task EvaluateAfterServerSwitchAsync_WhenRemoteVerifyFails_RequiresRegistrationWithoutOfflineFallback()
+    {
+        var authorizationState = new DeviceAuthorizationState();
+        authorizationState.Set(new DeviceAuthorizationContext("POS-OLD", "1001", "HW-001", "AUTH-OLD"));
+        var apiClient = new FakeDeviceApiClient
+        {
+            VerifyAsyncHandler = (_, _) => Task.FromException<DeviceVerifyResponse>(
+                new HttpRequestException("Target server verify unavailable."))
+        };
+        var repository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var service = CreateServiceWithApi(authorizationState, apiClient, repository);
+
+        var result = await service.EvaluateAfterServerSwitchAsync(StartupSession, CancellationToken.None);
+
+        Assert.True(result.RequiresDeviceRegistration);
+        Assert.Same(repository.Latest, result.CachedDevice);
+        Assert.Null(authorizationState.Current);
+    }
+
+    [Fact]
     public async Task EvaluateAsync_WhenDeniedResponseSaveFails_ClearsAuthorizationAndPropagatesFailure()
     {
         var authorizationState = new DeviceAuthorizationState();

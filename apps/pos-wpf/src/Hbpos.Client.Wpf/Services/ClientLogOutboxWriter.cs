@@ -48,6 +48,11 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     private readonly Channel<QueuedClientLog> _runtimeChannel;
     private readonly Channel<QueuedClientLog> _operationChannel;
     private readonly SemaphoreSlim _signal = new(0, 1);
+    private readonly object _operationRevisionGate = new();
+    private readonly object _operationFlushGate = new();
+    private TaskCompletionSource _operationFlushed = CreateCompletedSource();
+    private long _pendingOperationAuditPersistenceCount;
+    private long _operationAuditRevision;
     private long _runtimeQueueDroppedCount;
     private CancellationToken _hostShutdownToken = CancellationToken.None;
 
@@ -79,6 +84,44 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     }
 
     public long RuntimeQueueDroppedCount => Interlocked.Read(ref _runtimeQueueDroppedCount);
+
+    public long PendingOperationAuditPersistenceCount =>
+        Interlocked.Read(ref _pendingOperationAuditPersistenceCount);
+
+    public Task WaitForOperationAuditFlushAsync(CancellationToken cancellationToken)
+    {
+        Task flushed;
+        lock (_operationFlushGate)
+        {
+            flushed = _operationFlushed.Task;
+        }
+
+        return flushed.WaitAsync(cancellationToken);
+    }
+
+    public long CaptureOperationAuditRevision()
+    {
+        lock (_operationRevisionGate)
+        {
+            return _operationAuditRevision;
+        }
+    }
+
+    public bool TryPublishForOperationAuditRevision(long expectedRevision, Action publish)
+    {
+        ArgumentNullException.ThrowIfNull(publish);
+        lock (_operationRevisionGate)
+        {
+            if (_operationAuditRevision != expectedRevision)
+            {
+                return false;
+            }
+
+            // revision 校验与运行时边界发布必须原子，Record 只能发生在发布前或发布后。
+            publish();
+            return true;
+        }
+    }
 
     public void Enqueue(ApplicationLogEntry entry)
     {
@@ -166,7 +209,22 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
                 snapshot.EventId,
                 snapshot.OccurredAtUtc,
                 ClientLogSanitizer.Serialize(snapshot));
-            if (_operationChannel.Writer.TryWrite(queued))
+            var enqueued = false;
+            lock (_operationRevisionGate)
+            {
+                BeginOperationAuditPersistence();
+                if (_operationChannel.Writer.TryWrite(queued))
+                {
+                    _operationAuditRevision++;
+                    enqueued = true;
+                }
+                else
+                {
+                    CompleteOperationAuditPersistence();
+                }
+            }
+
+            if (enqueued)
             {
                 TryReleaseSignal();
             }
@@ -240,6 +298,7 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
             if (_operationChannel.Reader.TryRead(out var operation))
             {
                 await PersistWithRetryAsync(ClientLogOutboxKind.OperationAudit, operation, cancellationToken);
+                CompleteOperationAuditPersistence();
                 continue;
             }
 
@@ -308,6 +367,41 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         catch (SemaphoreFullException)
         {
         }
+    }
+
+    private void BeginOperationAuditPersistence()
+    {
+        lock (_operationFlushGate)
+        {
+            if (_pendingOperationAuditPersistenceCount == 0)
+            {
+                _operationFlushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            _pendingOperationAuditPersistenceCount++;
+        }
+    }
+
+    private void CompleteOperationAuditPersistence()
+    {
+        TaskCompletionSource? flushed = null;
+        lock (_operationFlushGate)
+        {
+            _pendingOperationAuditPersistenceCount--;
+            if (_pendingOperationAuditPersistenceCount == 0)
+            {
+                flushed = _operationFlushed;
+            }
+        }
+
+        flushed?.TrySetResult();
+    }
+
+    private static TaskCompletionSource CreateCompletedSource()
+    {
+        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetResult();
+        return source;
     }
 
 }

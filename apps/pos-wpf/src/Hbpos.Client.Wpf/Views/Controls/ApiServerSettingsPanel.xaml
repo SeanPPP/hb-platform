@@ -43,7 +43,23 @@
                      Style="{StaticResource PosSearchTextBoxStyle}"
                      Height="42"
                      FontSize="13"
-                     Margin="0,0,0,10" />
+                     Margin="0,0,0,8" />
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                <Button Command="{Binding UseDevelopmentAddressCommand}"
+                        AutomationProperties.Name="{loc:Loc settings.serverAddress.useDevelopment}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        MinWidth="112"
+                        Height="34"
+                        Margin="0,0,8,0"
+                        Content="{loc:Loc settings.serverAddress.useDevelopment}" />
+                <Button Command="{Binding UseReleaseAddressCommand}"
+                        AutomationProperties.Name="{loc:Loc settings.serverAddress.useRelease}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        MinWidth="112"
+                        Height="34"
+                        Content="{loc:Loc settings.serverAddress.useRelease}" />
+            </StackPanel>
 
             <Grid Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>

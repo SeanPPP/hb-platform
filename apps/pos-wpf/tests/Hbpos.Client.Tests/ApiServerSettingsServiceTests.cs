@@ -138,6 +138,33 @@ public sealed class ApiServerSettingsServiceTests
         Assert.False(result);
     }
 
+    [Fact]
+    public async Task TestConnectionAsync_uses_candidate_address_directly()
+    {
+        var state = new ApiRuntimeEndpointState("https://startup.example.com/pos-api/");
+        state.Switch("https://current.example.com/pos-api/");
+        Uri? capturedUri = null;
+        var service = new ApiServerSettingsService(
+            new HttpClient(new StubHttpMessageHandler(request =>
+            {
+                capturedUri = request.RequestUri;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(ApiResult<HealthCheckResponse>.Ok(
+                        new HealthCheckResponse(true, DateTimeOffset.UnixEpoch, "ok")))
+                };
+            })),
+            () => state.CurrentAddress.AbsoluteUri,
+            _ => { });
+
+        var result = await service.TestConnectionAsync(
+            "https://startup.example.com/pos-api/",
+            CancellationToken.None);
+
+        Assert.True(result);
+        Assert.Equal("https://startup.example.com/pos-api/api/v1/health", capturedUri?.AbsoluteUri);
+    }
+
     private static ApiServerSettingsService CreateService(
         HttpMessageHandler handler,
         Func<string>? currentAddress = null,
