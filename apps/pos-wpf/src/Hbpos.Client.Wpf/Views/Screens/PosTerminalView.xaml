@@ -866,7 +866,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" Margin="12,8,12,6" Padding="10,8" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
+            <Border Grid.Row="0" Margin="12,8,12,6" Padding="10,4" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
                 <!-- 输入缓冲区和退格按钮共享同一外框，保持总宽度不超过下方键盘。 -->
                 <Grid>
                     <Grid.RowDefinitions>
@@ -896,7 +896,7 @@
                     <Button Grid.Row="1"
                             Grid.Column="1"
                             Width="48"
-                            Height="42"
+                            Height="48"
                             Margin="8,0,0,0"
                             Background="White"
                             BorderBrush="#1F000000"
@@ -942,7 +942,7 @@
                 </Grid>
             </Border>
 
-            <UniformGrid Grid.Row="1" Columns="3" Rows="5" Margin="12,0,12,6" VerticalAlignment="Stretch">
+            <UniformGrid Grid.Row="1" Columns="3" Rows="5" Margin="10,0,10,6" VerticalAlignment="Stretch">
                 <Button Content="1" Command="{Binding KeypadInputCommand}" CommandParameter="1" Style="{StaticResource PosMainNumberButtonStyle}" />
                 <Button Content="2" Command="{Binding KeypadInputCommand}" CommandParameter="2" Style="{StaticResource PosMainNumberButtonStyle}" />
                 <Button Content="3" Command="{Binding KeypadInputCommand}" CommandParameter="3" Style="{StaticResource PosMainNumberButtonStyle}" />
@@ -968,12 +968,12 @@
                     Margin="12,0,12,6"
                     Style="{StaticResource PosNoBarcodeButtonStyle}">
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <materialDesign:PackIcon Kind="BarcodeScan" Width="20" Height="20" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="White" FontSize="14" FontWeight="Black" VerticalAlignment="Center" />
+                    <materialDesign:PackIcon Kind="BarcodeScan" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="14" FontWeight="Black" VerticalAlignment="Center" />
                 </StackPanel>
             </Button>
 
-            <Grid Grid.Row="3" Margin="10,0,10,0" VerticalAlignment="Top">
+            <Grid Grid.Row="3" Margin="9,0,9,0" VerticalAlignment="Top">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
@@ -981,58 +981,76 @@
 
                 <UniformGrid Grid.Row="0" Columns="2">
                     <Button Command="{Binding ModifySelectedLineQuantityCommand}"
-                            Style="{StaticResource PosStitchQuantityButtonStyle}">
+                            Style="{StaticResource PosStitchFunctionButtonStyle}">
                         <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="28" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Pencil" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="Pencil" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
                             <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.modifyQty}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
                         </Grid>
                     </Button>
                     <Button Command="{Binding ModifySelectedLinePriceCommand}"
-                            Style="{StaticResource PosStitchPriceButtonStyle}">
+                            Style="{StaticResource PosStitchFunctionButtonStyle}">
                         <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="28" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="CurrencyUsd" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="CurrencyUsd" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
                             <TextBlock Grid.Column="1" Text="{loc:Loc Price}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
                         </Grid>
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountAmountCommand}"
-                            Style="{StaticResource PosStitchDiscountAmountButtonStyle}">
+                            Style="{StaticResource PosStitchFunctionButtonStyle}">
                         <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="28" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
                             <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.discountAmount}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
                         </Grid>
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountPercentCommand}"
-                            Style="{StaticResource PosStitchDiscountPercentButtonStyle}">
+                            Style="{StaticResource PosStitchFunctionButtonStyle}">
                         <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="28" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Percent" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="Percent" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
                             <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.discountPercent}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
                         </Grid>
                     </Button>
                 </UniformGrid>
 
-                <UniformGrid Grid.Row="1" Columns="5" Margin="0,4,0,0">
-                    <Button Content="10%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="10" Background="#FFE0F2FE" BorderBrush="#FF7DD3FC" Foreground="#FF075985" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                    <Button Content="20%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="20" Background="#FFDCFCE7" BorderBrush="#FF86EFAC" Foreground="#FF166534" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                    <Button Content="30%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="30" Background="#FFFEF3C7" BorderBrush="#FFFCD34D" Foreground="#FF92400E" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                    <Button Content="40%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="40" Background="#FFFFE4E6" BorderBrush="#FFFDA4AF" Foreground="#FF9F1239" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                    <Button Content="50%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="50" Background="#FFEDE9FE" BorderBrush="#FFC4B5FD" Foreground="#FF5B21B6" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                </UniformGrid>
+                <Border x:Name="QuickDiscountSegment"
+                        Grid.Row="1"
+                        Margin="3,4,3,0"
+                        Background="White"
+                        BorderBrush="{StaticResource PosBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12">
+                    <Border.OpacityMask>
+                        <VisualBrush Stretch="Fill">
+                            <VisualBrush.Visual>
+                                <Border Width="{Binding ActualWidth, ElementName=QuickDiscountSegment}"
+                                        Height="{Binding ActualHeight, ElementName=QuickDiscountSegment}"
+                                        Background="Black"
+                                        CornerRadius="12" />
+                            </VisualBrush.Visual>
+                        </VisualBrush>
+                    </Border.OpacityMask>
+                    <UniformGrid Columns="5">
+                        <Button Content="10%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="10" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                        <Button Content="20%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="20" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                        <Button Content="30%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="30" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                        <Button Content="40%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="40" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                        <Button Content="50%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="50" BorderThickness="0" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                    </UniformGrid>
+                </Border>
             </Grid>
         </Grid>
 
