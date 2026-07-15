@@ -52,6 +52,10 @@
       "title": "Restore inherited permissions?",
       "description": "This removes the store-specific override and restores inherited POS permissions."
     },
+    "busy": {
+      "title": "Operation in progress",
+      "description": "Wait for the save or restore to finish before leaving this page."
+    },
     "messages": {
       "missingStoreGuid": "The store access identifier is missing. Refresh stores or sign in again.",
       "saved": "POS permissions saved",

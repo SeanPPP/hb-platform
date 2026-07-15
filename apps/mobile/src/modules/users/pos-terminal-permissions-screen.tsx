@@ -123,8 +123,17 @@ export default function PosTerminalPermissionsScreen() {
   }, [applyServerPermissions, permissionsQuery.data, scopeKey]);
 
   usePreventRemove(
-    shouldPreventPosPermissionRemoval(dirty, allowRemove),
+    shouldPreventPosPermissionRemoval({ dirty, busy, allowRemove }),
     ({ data }) => {
+      if (busy) {
+        Alert.alert(
+          t("posPermissions.busy.title"),
+          t("posPermissions.busy.description"),
+          [{ text: t("common:actions.confirm") }]
+        );
+        return;
+      }
+
       Alert.alert(
         t("posPermissions.unsaved.title"),
         t("posPermissions.unsaved.description"),
@@ -384,6 +393,8 @@ export default function PosTerminalPermissionsScreen() {
                         <Switch
                           value={selectedCodeSet.has(permission.code)}
                           disabled={busy}
+                          accessibilityLabel={permission.name}
+                          accessibilityHint={permission.description || undefined}
                           onValueChange={() => setSelectedCodes((current) =>
                             togglePosPermissionCode(current, permission.code)
                           )}
@@ -404,6 +415,7 @@ export default function PosTerminalPermissionsScreen() {
               icon="backup-restore"
               disabled={busy}
               onPress={handleRestore}
+              style={styles.footerButton}
             >
               {t("posPermissions.actions.restore")}
             </Button>
@@ -414,7 +426,7 @@ export default function PosTerminalPermissionsScreen() {
             loading={updateMutation.isPending}
             disabled={!dirty || busy}
             onPress={handleSave}
-            style={styles.saveButton}
+            style={styles.footerButton}
           >
             {t("posPermissions.actions.save")}
           </Button>
@@ -463,6 +475,6 @@ const styles = StyleSheet.create({
   permissionRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#D8DEE6" },
   permissionText: { flex: 1, gap: 2 },
   secondaryText: { color: "#5E6B78" },
-  footer: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: "#FFFFFF" },
-  saveButton: { flex: 1 },
+  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: "#FFFFFF" },
+  footerButton: { flexGrow: 1, minWidth: 160 },
 });

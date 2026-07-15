@@ -125,17 +125,47 @@ assert.equal(
 );
 
 assert.equal(
-  shouldPreventPosPermissionRemoval(true, false),
+  shouldPreventPosPermissionRemoval({
+    dirty: true,
+    busy: false,
+    allowRemove: false,
+  }),
   true,
   "存在未保存草稿且尚未放行时应阻止页面移除"
 );
 assert.equal(
-  shouldPreventPosPermissionRemoval(true, true),
-  false,
-  "用户确认放弃后应放行待处理的原始导航 action"
+  shouldPreventPosPermissionRemoval({
+    dirty: false,
+    busy: true,
+    allowRemove: false,
+  }),
+  true,
+  "保存或恢复进行中时，即使草稿不脏也应阻止页面移除"
 );
 assert.equal(
-  shouldPreventPosPermissionRemoval(false, false),
+  shouldPreventPosPermissionRemoval({
+    dirty: true,
+    busy: true,
+    allowRemove: false,
+  }),
+  true,
+  "草稿未保存且操作进行中时应继续阻止页面移除"
+);
+assert.equal(
+  shouldPreventPosPermissionRemoval({
+    dirty: true,
+    busy: true,
+    allowRemove: true,
+  }),
+  false,
+  "已获一次放行时不应重复拦截待处理的原始导航 action"
+);
+assert.equal(
+  shouldPreventPosPermissionRemoval({
+    dirty: false,
+    busy: false,
+    allowRemove: false,
+  }),
   false,
   "没有未保存草稿时不应阻止返回或手势离开"
 );
