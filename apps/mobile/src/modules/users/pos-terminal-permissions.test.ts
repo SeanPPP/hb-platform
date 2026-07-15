@@ -9,6 +9,7 @@ import {
   groupPosPermissions,
   setPosPermissionGroupSelection,
   shouldApplyPosPermissionResponse,
+  shouldBypassPosPermissionRemovalGuard,
   shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "./pos-terminal-permissions";
@@ -179,6 +180,31 @@ assert.equal(
   }),
   false,
   "同一时间戳的响应不应重复应用"
+);
+
+assert.equal(
+  shouldBypassPosPermissionRemovalGuard({
+    isAuthenticated: false,
+    terminalErrorKind: null,
+  }),
+  true,
+  "会话已失效时应绕过离页确认"
+);
+assert.equal(
+  shouldBypassPosPermissionRemovalGuard({
+    isAuthenticated: true,
+    terminalErrorKind: "unauthorized",
+  }),
+  true,
+  "终止错误为 unauthorized 时应绕过离页确认"
+);
+assert.equal(
+  shouldBypassPosPermissionRemovalGuard({
+    isAuthenticated: true,
+    terminalErrorKind: "forbidden",
+  }),
+  false,
+  "正常会话的非 unauthorized 错误不应绕过离页确认"
 );
 
 assert.equal(

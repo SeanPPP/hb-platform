@@ -36,6 +36,7 @@ import {
   groupPosPermissions,
   setPosPermissionGroupSelection,
   shouldApplyPosPermissionResponse,
+  shouldBypassPosPermissionRemovalGuard,
   shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "@/modules/users/pos-terminal-permissions";
@@ -61,6 +62,7 @@ export default function PosTerminalPermissionsScreen() {
   }>();
   const access = useAuthStore((state) => state.access);
   const currentUser = useAuthStore((state) => state.user);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const userGuid = firstParam(params.userGuid)?.trim() ?? "";
   const storeGuid = firstParam(params.storeGuid)?.trim() ?? "";
   const userName = firstParam(params.userName)?.trim() || t("posPermissions.unknownUser");
@@ -87,6 +89,7 @@ export default function PosTerminalPermissionsScreen() {
   const [baselineCodes, setBaselineCodes] = useState<string[]>([]);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [allowRemove, setAllowRemove] = useState(false);
+  const [authRedirectRequested, setAuthRedirectRequested] = useState(false);
   const [terminalErrorKind, setTerminalErrorKind] = useState<
     Exclude<PosPermissionErrorKind, "network"> | null
   >(null);
@@ -96,6 +99,10 @@ export default function PosTerminalPermissionsScreen() {
   const pendingActionRef = useRef<NavigationAction | null>(null);
   const busy = updateMutation.isPending || restoreMutation.isPending;
   const dirty = !arePermissionCodeSetsEqual(selectedCodes, baselineCodes);
+  const bypassRemovalGuard = shouldBypassPosPermissionRemovalGuard({
+    isAuthenticated,
+    terminalErrorKind,
+  });
 
   const applyServerPermissions = useCallback(
     (
@@ -149,8 +156,22 @@ export default function PosTerminalPermissionsScreen() {
   ]);
 
   usePreventRemove(
-    shouldPreventPosPermissionRemoval({ dirty, busy, allowRemove }),
+    !bypassRemovalGuard &&
+      shouldPreventPosPermissionRemoval({ dirty, busy, allowRemove }),
     ({ data }) => {
+      if (
+        shouldBypassPosPermissionRemovalGuard({
+          // Zustand 可能已在拦截发生前更新，必须读取当前值而不是闭包快照。
+          isAuthenticated: useAuthStore.getState().isAuthenticated,
+          terminalErrorKind,
+        })
+      ) {
+        pendingActionRef.current = data.action;
+        setAuthRedirectRequested(true);
+        setAllowRemove(true);
+        return;
+      }
+
       if (busy) {
         Alert.alert(
           t("posPermissions.busy.title"),
@@ -180,13 +201,21 @@ export default function PosTerminalPermissionsScreen() {
   );
 
   useEffect(() => {
-    if (!allowRemove || !pendingActionRef.current) return;
+    if (!allowRemove) return;
 
-    const pendingAction = pendingActionRef.current;
-    pendingActionRef.current = null;
-    // usePreventRemove 已在本次渲染关闭阻止，派发时不会递归进入确认框。
-    navigation.dispatch(pendingAction);
-  }, [allowRemove, navigation]);
+    if (pendingActionRef.current) {
+      const pendingAction = pendingActionRef.current;
+      pendingActionRef.current = null;
+      // usePreventRemove 已在本次渲染关闭阻止，优先重放原始登录或离页 action。
+      navigation.dispatch(pendingAction);
+      return;
+    }
+
+    if (authRedirectRequested) {
+      // 某些 401 路径没有触发导航 action，显式兜底离开失效的编辑上下文。
+      router.replace("/(auth)/login");
+    }
+  }, [allowRemove, authRedirectRequested, navigation, router]);
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -225,6 +254,7 @@ export default function PosTerminalPermissionsScreen() {
         ),
       });
       setTerminalErrorKind(null);
+      setAuthRedirectRequested(false);
       applyServerPermissions(response);
       setSnackbarMessage(t("posPermissions.messages.saved"));
     } catch (error) {
@@ -234,6 +264,10 @@ export default function PosTerminalPermissionsScreen() {
         setSnackbarMessage(t("posPermissions.messages.saveFailed"));
       } else {
         setTerminalErrorKind(errorKind);
+        if (errorKind === "unauthorized") {
+          setAuthRedirectRequested(true);
+          setAllowRemove(true);
+        }
       }
     } finally {
       operationInFlightRef.current = false;
@@ -276,6 +310,7 @@ export default function PosTerminalPermissionsScreen() {
                 storeGuid,
               });
               setTerminalErrorKind(null);
+              setAuthRedirectRequested(false);
               applyServerPermissions(response);
               setSnackbarMessage(t("posPermissions.messages.restored"));
             } catch (error) {
@@ -285,6 +320,10 @@ export default function PosTerminalPermissionsScreen() {
                 setSnackbarMessage(t("posPermissions.messages.restoreFailed"));
               } else {
                 setTerminalErrorKind(errorKind);
+                if (errorKind === "unauthorized") {
+                  setAuthRedirectRequested(true);
+                  setAllowRemove(true);
+                }
               }
             } finally {
               operationInFlightRef.current = false;

@@ -127,6 +127,19 @@ export interface PosPermissionRemovalGuardState {
   allowRemove: boolean;
 }
 
+export interface PosPermissionRemovalBypassState {
+  isAuthenticated: boolean;
+  terminalErrorKind: PosPermissionErrorKind | null;
+}
+
+export function shouldBypassPosPermissionRemovalGuard({
+  isAuthenticated,
+  terminalErrorKind,
+}: PosPermissionRemovalBypassState) {
+  // 会话失效后的登录跳转优先级高于草稿或请求中的普通离页保护。
+  return !isAuthenticated || terminalErrorKind === "unauthorized";
+}
+
 export function shouldPreventPosPermissionRemoval({
   dirty,
   busy,
