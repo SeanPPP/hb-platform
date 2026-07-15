@@ -119,6 +119,39 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Pos_terminal_lock_cashier_command_invokes_callback()
+    {
+        var locked = false;
+        var localization = new LocalizationService();
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            localization: localization,
+            onLockCashierAsync: () =>
+            {
+                locked = true;
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            await viewModel.LockCashierCommand.ExecuteAsync(null);
+
+            Assert.True(locked);
+            Assert.Equal("Lock", viewModel.LockCashierText);
+
+            await localization.SetCultureAsync("zh-CN");
+            Assert.Equal("锁屏", viewModel.LockCashierText);
+        }
+        finally
+        {
+            await localization.SetCultureAsync(LocalizationService.DefaultCultureName);
+        }
+    }
+
+    [Fact]
     public void Pos_terminal_scans_exact_barcode_into_cart()
     {
         var cart = new PosCartService();

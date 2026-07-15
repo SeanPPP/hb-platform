@@ -92,6 +92,55 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Manual_lock_clears_cashier_reports_status_and_preserves_cart_for_relogin()
+    {
+        var cart = new PosCartService();
+        var cashierContext = new CashierSessionContext();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart,
+            cashierSessionContext: cashierContext,
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus,
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+        cart.AddItem(CreateItem("1042", "SKU-LOCK", "930LOCK"));
+        viewModel.CashierBarcodeInput = "SHOULD-BE-CLEARED";
+
+        await viewModel.PosTerminal!.LockCashierCommand.ExecuteAsync(null);
+
+        Assert.Null(cashierContext.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+        Assert.Empty(viewModel.Session.CashierId);
+        Assert.Empty(viewModel.Session.CashierName);
+        Assert.Empty(viewModel.CashierBarcodeInput);
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Equal("POS locked. Sign in again.", viewModel.StatusMessage);
+        Assert.Single(cart.Lines);
+
+        var logout = Assert.Single(auditLogger.Events.Where(auditEvent =>
+            auditEvent.OperationType == OperationAuditTypes.CashierLogout));
+        Assert.Equal("Succeeded", logout.Outcome);
+        Assert.Equal("MANUAL_LOCK", logout.ReasonCode);
+        Assert.Equal("CASHIER-1", logout.CashierId);
+
+        var lockReport = runtimeStatus.Reports.Last();
+        Assert.Null(lockReport.CashierId);
+        Assert.Null(lockReport.CashierName);
+
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task Cashier_login_and_shutdown_logout_record_operation_audits()
     {
         var auditLogger = new RecordingOperationAuditLogger();

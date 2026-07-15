@@ -112,7 +112,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
         IPromotionEvaluationService? promotionEvaluationService = null,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        Func<Task>? onLockCashierAsync = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -132,7 +133,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             onPrintLastReceiptAsync,
             onOpenCashDrawerAsync,
             onExitApplicationAsync,
-            onReregisterDeviceAsync);
+            onReregisterDeviceAsync,
+            onLockCashierAsync);
         _scanController = new PosTerminalScanController(cart);
         _session = session;
         _localization = localization;
@@ -186,6 +188,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenCustomerDisplayCommand = new RelayCommand(OpenCustomerDisplay);
         PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
         OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
+        LockCashierCommand = new AsyncRelayCommand(LockCashierAsync);
         ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync, () => _actions.CanExitApplication);
         // 手动目录操作使用命令令牌，保留调用方取消能力，同时不影响后台无超时同步。
         SyncCommand = new AsyncRelayCommand(SyncAsync);
@@ -253,6 +256,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public IAsyncRelayCommand OpenCashDrawerCommand { get; }
 
+    public IAsyncRelayCommand LockCashierCommand { get; }
+
     public IAsyncRelayCommand ExitApplicationCommand { get; }
 
     public IAsyncRelayCommand SyncCommand { get; }
@@ -294,6 +299,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public string PrintLastReceiptText => T("pos.terminal.actions.printLastReceipt");
 
     public string OpenCashDrawerText => T("pos.terminal.actions.openCashDrawer");
+
+    public string LockCashierText => T("pos.terminal.actions.lock");
 
     public string ExitApplicationText => T("pos.terminal.actions.exitApplication");
 
@@ -1269,6 +1276,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
+    private async Task LockCashierAsync()
+    {
+        if (_actions.LockCashierAsync is not null)
+        {
+            await _actions.LockCashierAsync();
+        }
+    }
+
     private async Task ReregisterDeviceAsync()
     {
         if (!TryRequirePermission(Permissions.PosTerminal.Settings.DeviceRegistration))
@@ -1310,13 +1325,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         var applyStopwatch = new Stopwatch();
         try
         {
-            // 关键逻辑：这里复用旧分支变量；true 表示本地已知商品条码，必须按 AddItem 权限拒绝，不能 fallback 换收银员。
+            var hasCashierSession = _cashierSessionContext.CurrentSession is not null || Session.CashierSession is not null;
+            // 关键逻辑：已登录且本地已知商品时必须按 AddItem 权限拒绝；未登录时则优先把同码输入解释为收银员登录。
             var hasLocalCatalogMatch = HasLocalCatalogExactMatch(plan.Barcode);
             if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
             {
                 workflowStopwatch.Stop();
-                // 关键逻辑：只有未登录时才允许扫码先解释为收银员登录；已登录但无添加商品权限时不能切换收银员绕过权限失败。
-                if (!hasLocalCatalogMatch && await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
+                if ((!hasCashierSession || !hasLocalCatalogMatch) &&
+                    await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
                 {
                     totalStopwatch.Stop();
                     _scanController.LogFinished(
@@ -1732,6 +1748,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(CustomerDisplayText));
         OnPropertyChanged(nameof(PrintLastReceiptText));
         OnPropertyChanged(nameof(OpenCashDrawerText));
+        OnPropertyChanged(nameof(LockCashierText));
         OnPropertyChanged(nameof(ExitApplicationText));
         OnPropertyChanged(nameof(MemberText));
         OnPropertyChanged(nameof(SyncText));

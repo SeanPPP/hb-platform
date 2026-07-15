@@ -210,7 +210,8 @@ internal sealed class MainChildViewModelFactory
         Func<Task<ReceiptPrintResult>>? onPrintLastReceiptAsync = null,
         Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync = null,
         Func<Task>? onExitApplicationAsync = null,
-        Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null)
+        Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null,
+        Func<Task>? onLockCashierAsync = null)
     {
         return new PosTerminalViewModel(
             _priceIndex,
@@ -240,7 +241,8 @@ internal sealed class MainChildViewModelFactory
             tryLoginCashierFromScannerFallbackAsync: tryLoginCashierFromScannerFallbackAsync,
             cashierSessionContext: _cashierSessionContext,
             enforcePermissionsWhenNoCashier: _enforceCashierPermissions,
-            operationAuditLogger: _operationAuditLogger);
+            operationAuditLogger: _operationAuditLogger,
+            onLockCashierAsync: onLockCashierAsync);
     }
 
     public SpecialProductsViewModel CreateSpecialProductsViewModel(

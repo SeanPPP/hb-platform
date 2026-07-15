@@ -1040,10 +1040,10 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <UniformGrid Grid.Row="0" Columns="2" Margin="12,12,12,8">
+            <!-- 关键逻辑：右侧操作区固定五行两列，避免不同语言下按钮顺序和状态卡位置漂移。 -->
+            <UniformGrid Grid.Row="0" Columns="2" Rows="5" Margin="12,12,12,8">
                 <Button Command="{Binding OpenSpecialProductsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
@@ -1068,28 +1068,20 @@
                         <TextBlock Text="{Binding HoldOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosStitchActionButtonStyle}">
-                    <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="CashRegister" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <TextBlock Text="{Binding OpenCashDrawerText}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
-                <Button Command="{Binding OpenDailyCloseCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
-                    <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="CalendarCheck" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <TextBlock Text="{Binding DailyCloseText}" Style="{StaticResource PosStitchTileLabelStyle}" />
-                    </StackPanel>
-                </Button>
                 <Button Command="{Binding RecallOrderCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
                             <materialDesign:PackIcon Kind="ClipboardTextClock" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding RecallOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosStitchActionButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="CashRegister" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding OpenCashDrawerText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
                 <Button Command="{Binding PrintLastReceiptCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
@@ -1100,12 +1092,20 @@
                         <TextBlock Text="{Binding PrintLastReceiptText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding ExitApplicationCommand}" Style="{StaticResource PosStitchExitButtonStyle}">
+                <Button Command="{Binding LockCashierCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchExitIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Power" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="LockOutline" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding ExitApplicationText}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="White" />
+                        <TextBlock Text="{Binding LockCashierText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding OpenDailyCloseCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="CalendarCheck" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding DailyCloseText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
                 <Button Command="{Binding OpenSettingsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
@@ -1116,21 +1116,17 @@
                         <TextBlock Text="{Binding SettingsText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
+                <Button Command="{Binding ExitApplicationCommand}" Style="{StaticResource PosStitchExitButtonStyle}">
+                    <StackPanel>
+                        <Border Style="{StaticResource PosStitchExitIconCircleStyle}">
+                            <materialDesign:PackIcon Kind="Power" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding ExitApplicationText}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="White" />
+                    </StackPanel>
+                </Button>
             </UniformGrid>
 
-            <Border Grid.Row="1" Margin="12,4,12,10" Padding="12" Background="#CCFFFFFF" BorderBrush="#80FFFFFF" BorderThickness="1" CornerRadius="14">
-                <StackPanel Orientation="Horizontal">
-                    <Border Width="34" Height="34" Background="{StaticResource PosAccentBrush}" CornerRadius="17" Margin="0,0,10,0">
-                        <materialDesign:PackIcon Kind="CardAccountDetails" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
-                    <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="{loc:Loc shell.member}" FontSize="8" FontWeight="Black" Foreground="#FF8F4E00" />
-                        <TextBlock Text="{loc:Loc shell.memberDefault}" FontSize="11" FontWeight="Black" />
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-
-            <ContentControl Grid.Row="2"
+            <ContentControl Grid.Row="1"
                             Margin="12,0,12,12"
                             Padding="12"
                             Template="{StaticResource PosStatusCardTemplate}"

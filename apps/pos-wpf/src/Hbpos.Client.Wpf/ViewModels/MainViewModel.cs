@@ -1113,7 +1113,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onPrintLastReceiptAsync: PrintLatestReceiptAsync,
             onOpenCashDrawerAsync: OpenCashDrawerAsync,
             onExitApplicationAsync: ExitApplicationAsync,
-            tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync);
+            tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync,
+            onLockCashierAsync: LockCashierAsync);
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
             Session,
             _screenNavigator.ShowPos,
@@ -2188,6 +2189,36 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // 关键逻辑：两处退出入口共用本方法，只有首次确认成功才关闭客显并退出应用。
         SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
         _applicationExitService.Exit();
+    }
+
+    internal async Task LockCashierAsync()
+    {
+        var cashier = _cashierSessionContext.CurrentSession ?? Session.CashierSession;
+        if (cashier is null)
+        {
+            return;
+        }
+
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashierLogout,
+            "Succeeded",
+            CreateCashierLoginAuditSession(cashier),
+            reasonCode: "MANUAL_LOCK");
+
+        // 关键逻辑：手动锁屏只清当前收银员会话，购物车、离线缓存和设备授权必须原样保留。
+        _cashierSessionContext.Clear();
+        Session = Session with
+        {
+            CashierId = string.Empty,
+            CashierName = string.Empty,
+            CashierSession = null
+        };
+        CashierBarcodeInput = string.Empty;
+        _screenNavigator.ApplySessionToScreens();
+        OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
+        StatusMessage = _localization.T("shell.cashierLogin.status.locked");
+        await ReportRuntimeStatusSafeAsync(Session.IsOnline, CancellationToken.None, clearCashier: true);
     }
 
     private async Task PrintPaymentSuccessReceiptAsync()

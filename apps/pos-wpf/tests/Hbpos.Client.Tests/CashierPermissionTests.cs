@@ -357,6 +357,37 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
+    public async Task Pos_terminal_scanner_without_cashier_prefers_login_fallback_over_known_product()
+    {
+        var cart = new PosCartService();
+        var priceIndex = new LocalSellableItemIndex();
+        priceIndex.ReplaceAll([CreateItem()]);
+        var workflow = new FakePosTerminalWorkflowService();
+        var cashierBarcode = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PosTerminalViewModel(
+            priceIndex,
+            cart,
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow,
+            tryLoginCashierFromScannerFallbackAsync: (barcode, _) =>
+            {
+                cashierBarcode.TrySetResult(barcode);
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: true);
+
+        var processed = viewModel.ProcessScannerBarcode("930001", "scanner-device", "raw");
+
+        Assert.True(processed);
+        Assert.Equal("930001", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(0, workflow.ProcessScanAsyncCalls);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(viewModel.CartLines);
+    }
+
+    [Fact]
     public async Task Pos_terminal_routes_emergency_token_before_product_workflow()
     {
         var workflow = new FakePosTerminalWorkflowService();
