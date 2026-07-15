@@ -115,10 +115,11 @@ namespace BlazorApp.Api.Services
                         HasProfile = row.EmployeeInfoId > 0,
                         Phone = row.Phone,
                         BankBsb = row.BankBSB,
-                        BankAccountNumber = row.BankACC,
+                        // 管理列表只返回摘要；完整账号仅允许通过授权详情接口读取。
+                        BankAccountNumber = MaskAccount(row.BankACC),
                         SuperannuationCompanyName = row.SuperannuationCompanyName,
                         SuperannuationCompanyCode = row.SuperannuationCompanyCode,
-                        SuperannuationAccountNumber = row.SuperannuationAccount,
+                        SuperannuationAccountNumber = MaskAccount(row.SuperannuationAccount),
                         Gender = FormatGender(row.Gender),
                         EmployeeType = FormatEmployeeType(row.EmployeeType),
                         Birthday = row.Birthday,
@@ -429,6 +430,14 @@ namespace BlazorApp.Api.Services
         private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static string? MaskAccount(string? value)
+        {
+            var normalized = Normalize(value);
+            return normalized is null
+                ? null
+                : $"****{normalized[^Math.Min(4, normalized.Length)..]}";
         }
 
         private static bool HasLegacySensitivePayload(EmployeeProfileUpsertDto dto) =>

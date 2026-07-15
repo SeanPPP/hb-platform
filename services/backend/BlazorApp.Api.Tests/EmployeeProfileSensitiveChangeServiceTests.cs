@@ -103,6 +103,30 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ApproveAsync_WhenNormalizedSnapshotIsUnchanged_ApprovesWithoutIncreasingRevision()
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "  formal-old  ",
+        });
+
+        var approved = await CreateService("admin-user", "admin").ApproveAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+
+        Assert.True(approved.Success);
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        Assert.Equal("formal-old", profile.BankACC);
+        Assert.Equal(3, profile.SensitiveRevision);
+        Assert.Equal(
+            EmployeeProfileSensitiveChangeStatus.Approved,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+        );
+    }
+
+    [Fact]
     public async Task AdminListAsync_MasksAccountsButDetailReturnsAuthorizedFullValues()
     {
         await SeedAsync();
@@ -307,6 +331,69 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task FieldOnlyReplacement_MigratesIdentityTicketSoFailedRejectCleanupCanRetry()
+    {
+        await SeedAsync();
+        var png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        );
+        const string pendingKey = "pending/employee-profiles/user-self/identity/migrated.png";
+        const string finalKey = "employee-profiles/user-self/identity/migrated.png";
+        await _db.Insertable(new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = pendingKey,
+            FinalObjectKey = finalKey,
+            UserGUID = "user-self",
+            Kind = "identity",
+            ContentType = "image/png",
+            FileSize = png.Length,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            Status = EmployeeImageUploadStatus.Pending,
+        }).ExecuteCommandAsync();
+        var storage = new FakeStorage { Bytes = png };
+        var sensitive = CreateService("user-self", "self_user", storage);
+        var media = CreateMediaService("user-self", "self_user", storage, sensitive);
+
+        Assert.True((await media.CompleteAsync(new EmployeeImageCompleteRequest
+        {
+            Kind = "identity",
+            ObjectKey = pendingKey,
+        })).Success);
+        var firstRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
+        var replacement = await sensitive.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "field-only-change",
+        });
+        var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.NotEqual(firstRequest.RequestId, replacement.Data!.RequestId);
+        Assert.Equal(replacement.Data.RequestId, ticket.SensitiveChangeRequestId);
+
+        storage.DeleteSucceeds = false;
+        var rejected = await CreateService("admin-user", "admin", storage).RejectAsync(
+            replacement.Data.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "资料无法核验" }
+        );
+        Assert.True(rejected.Success);
+        ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, ticket.PreviousObjectCleanupStatus);
+
+        storage.DeleteSucceeds = true;
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            DateTime.UtcNow,
+            CancellationToken.None
+        );
+
+        ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Completed, ticket.PreviousObjectCleanupStatus);
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == finalKey));
+    }
+
+    [Fact]
     public async Task ExpiredCleanup_DoesNotDeleteIdentityObjectReferencedByPendingApproval()
     {
         await SeedAsync();
@@ -508,6 +595,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     {
         public List<string> DeletedKeys { get; } = new();
         public byte[] Bytes { get; set; } = Array.Empty<byte>();
+        public bool DeleteSucceeds { get; set; } = true;
 
         public FakeStorage()
             : base(
@@ -530,7 +618,11 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         )
         {
             DeletedKeys.Add(objectKey);
-            return Task.FromResult(ApiResponse<bool>.OK(true));
+            return Task.FromResult(
+                DeleteSucceeds
+                    ? ApiResponse<bool>.OK(true)
+                    : ApiResponse<bool>.Error("模拟对象存储删除失败", "DELETE_FAILED")
+            );
         }
 
         public override Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(

@@ -49,6 +49,30 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetAdminListAsync_MasksAccountNumbers_ButDetailKeepsFullValues()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "123456789",
+                SuperannuationAccount = "SUPER98765",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("user-self", "admin");
+
+            var list = await service.GetAdminListAsync(new EmployeeProfileQueryDto());
+            var detail = await service.GetAdminDetailAsync("user-self");
+
+            var item = Assert.Single(list.Data!.Items!, row => row.UserGUID == "user-self");
+            Assert.Equal("****6789", item.BankAccountNumber);
+            Assert.Equal("****8765", item.SuperannuationAccountNumber);
+            Assert.Equal("123456789", detail.Data!.BankAccountNumber);
+            Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
+        }
+
+        [Fact]
         public async Task UpsertSelfAsync_WhenPayloadContainsAnotherUserGuid_OnlyUpdatesCurrentUser()
         {
             await SeedUsersAsync();

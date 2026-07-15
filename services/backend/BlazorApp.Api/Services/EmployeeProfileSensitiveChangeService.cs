@@ -175,26 +175,50 @@ public sealed class EmployeeProfileSensitiveChangeService
         var actor = _currentUser.GetCurrentUsername();
         var now = DateTime.UtcNow;
         var oldPhoto = profile.IdentityPhotoObjectKey;
+        var photoChanged = !NormalizedEquals(
+            profile.IdentityPhotoObjectKey,
+            request.IdentityPhotoObjectKey
+        );
+        var sensitiveValuesChanged = HasSensitiveValueChanges(profile, request);
         await db.Ado.BeginTranAsync();
         try
         {
             // 关键逻辑：revision 条件更新是防止管理员并发修改被审批静默覆盖的最终防线。
-            var updated = await db.Updateable<EmployeeProfile>()
-                .SetColumns(item => item.BankBSB == request.BankBsb)
-                .SetColumns(item => item.BankACC == request.BankAccountNumber)
-                .SetColumns(item => item.SuperannuationCompanyName == request.SuperannuationCompanyName)
-                .SetColumns(item => item.SuperannuationCompanyCode == request.SuperannuationCompanyCode)
-                .SetColumns(item => item.SuperannuationAccount == request.SuperannuationAccountNumber)
-                .SetColumns(item => item.IdentityType == request.IdentityType)
-                .SetColumns(item => item.IdentityId == request.IdentityId)
-                .SetColumns(item => item.IdentityPhotoObjectKey == request.IdentityPhotoObjectKey)
-                .SetColumns(item => item.IdentityPhotoUrl == null)
-                .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision + 1)
-                .SetColumns(item => item.UpdatedAt == now)
-                .SetColumns(item => item.UpdatedBy == actor)
-                .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
-                    && item.SensitiveRevision == request.BaseSensitiveRevision)
-                .ExecuteCommandAsync();
+            int updated;
+            if (sensitiveValuesChanged)
+            {
+                var profileUpdate = db.Updateable<EmployeeProfile>()
+                    .SetColumns(item => item.BankBSB == request.BankBsb)
+                    .SetColumns(item => item.BankACC == request.BankAccountNumber)
+                    .SetColumns(item => item.SuperannuationCompanyName == request.SuperannuationCompanyName)
+                    .SetColumns(item => item.SuperannuationCompanyCode == request.SuperannuationCompanyCode)
+                    .SetColumns(item => item.SuperannuationAccount == request.SuperannuationAccountNumber)
+                    .SetColumns(item => item.IdentityType == request.IdentityType)
+                    .SetColumns(item => item.IdentityId == request.IdentityId)
+                    .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision + 1)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == actor);
+                if (photoChanged)
+                {
+                    // 仅证件照对象实际变化时移除旧式 URL，避免字段审批误清正式证件照。
+                    profileUpdate = profileUpdate
+                        .SetColumns(item => item.IdentityPhotoObjectKey == request.IdentityPhotoObjectKey)
+                        .SetColumns(item => item.IdentityPhotoUrl == null);
+                }
+                updated = await profileUpdate
+                    .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                        && item.SensitiveRevision == request.BaseSensitiveRevision)
+                    .ExecuteCommandAsync();
+            }
+            else
+            {
+                // 等值申请仍执行 revision CAS，但不制造虚假的正式资料版本。
+                updated = await db.Updateable<EmployeeProfile>()
+                    .SetColumns(item => item.SensitiveRevision == request.BaseSensitiveRevision)
+                    .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                        && item.SensitiveRevision == request.BaseSensitiveRevision)
+                    .ExecuteCommandAsync();
+            }
             if (updated != 1)
             {
                 throw new SensitiveRevisionConflictException();
@@ -418,6 +442,18 @@ public sealed class EmployeeProfileSensitiveChangeService
                 }
             }
             request.RequestId = await db.Insertable(request).ExecuteReturnIdentityAsync();
+            if (old is not null && !string.IsNullOrWhiteSpace(retainedPhoto))
+            {
+                // 覆盖申请但复用同一待审证件照时，恢复清理责任必须随申请迁移。
+                await db.Updateable<EmployeeImageUploadTicket>()
+                    .SetColumns(item => item.SensitiveChangeRequestId == request.RequestId)
+                    .Where(item => item.SensitiveChangeRequestId == old.RequestId
+                        && item.UserGUID == userGuid
+                        && item.Kind == "identity"
+                        && item.Status == EmployeeImageUploadStatus.Completed
+                        && item.FinalObjectKey == retainedPhoto)
+                    .ExecuteCommandAsync();
+            }
             await db.Ado.CommitTranAsync();
         }
         catch
@@ -625,6 +661,22 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool NormalizedEquals(string? left, string? right) =>
+        string.Equals(Normalize(left), Normalize(right), StringComparison.Ordinal);
+
+    private static bool HasSensitiveValueChanges(
+        EmployeeProfile profile,
+        EmployeeProfileSensitiveChangeRequest request
+    ) =>
+        !NormalizedEquals(profile.BankBSB, request.BankBsb)
+        || !NormalizedEquals(profile.BankACC, request.BankAccountNumber)
+        || !NormalizedEquals(profile.SuperannuationCompanyName, request.SuperannuationCompanyName)
+        || !NormalizedEquals(profile.SuperannuationCompanyCode, request.SuperannuationCompanyCode)
+        || !NormalizedEquals(profile.SuperannuationAccount, request.SuperannuationAccountNumber)
+        || !NormalizedEquals(profile.IdentityType, request.IdentityType)
+        || !NormalizedEquals(profile.IdentityId, request.IdentityId)
+        || !NormalizedEquals(profile.IdentityPhotoObjectKey, request.IdentityPhotoObjectKey);
 
     private static string FormatStatus(EmployeeProfileSensitiveChangeStatus status) =>
         status.ToString();
