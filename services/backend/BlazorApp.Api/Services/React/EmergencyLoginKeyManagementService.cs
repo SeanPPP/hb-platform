@@ -40,11 +40,31 @@ public sealed class EmergencyLoginKeyManagementService
             END AS [IsCurrent]
         FROM [dbo].[POSM_EmergencyLoginKeyDeviceSync] WITH (UPDLOCK, HOLDLOCK);
         """;
+    private const string LockKeyByIdSql = """
+        SELECT
+            [KeyId], [Status], [PublicKeyPem], [PublicKeyFingerprint], [ProtectedPrivateKey],
+            [CreatedAtUtc], [CreatedBy], [CreatedReason], [ActivatedAtUtc], [ActivatedBy],
+            [RetiredAtUtc], [RetiredBy], [UpdatedAtUtc]
+        FROM [dbo].[POSM_EmergencyLoginKey] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [KeyId] = @KeyId;
+        """;
+    private const string LockLiveGrantsForRetireSql = """
+        SELECT [GrantId]
+        FROM [dbo].[POSM_EmergencyLoginGrant] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [KeyId] = @KeyId
+          AND [RevokedAtUtc] IS NULL
+          AND [ExpiresAtUtc] > @UtcNow;
+        """;
     internal static IReadOnlyList<string> ActivationLockSqlForTests { get; } =
     [
         LockExpectedVersionSql,
         LockEnabledPosDevicesSql,
         LockDeviceAcknowledgementsSql,
+    ];
+    internal static IReadOnlyList<string> RetireLockSqlForTests { get; } =
+    [
+        LockKeyByIdSql,
+        LockLiveGrantsForRetireSql,
     ];
     private const int MaxReasonLength = 200;
     private const int MaxActorLength = 128;
@@ -242,7 +262,18 @@ public sealed class EmergencyLoginKeyManagementService
         {
             // 关键逻辑：版本、启用 POS 范围和 ACK 范围必须在同一事务内锁定并重算，关闭检查后启用设备的竞态窗口。
             await LockExpectedVersionAsync(expectedVersion);
-            coverage = await GetLockedActivationCoverageAsync(expectedVersion, staged.KeyId);
+            var lockedStaged = await LockKeyByIdAsync(staged.KeyId);
+            if (lockedStaged?.Status != EmergencyLoginKeyStatus.Staged)
+            {
+                throw new EmergencyLoginKeyConcurrencyException();
+            }
+
+            // 状态切换前在持锁事务内完整验证私钥、公钥、曲线和指纹，任何损坏都回滚。
+            EmergencyLoginKeyMaterialValidator.ValidateAndUnprotect(
+                lockedStaged,
+                _privateKeyProtector
+            );
+            coverage = await GetLockedActivationCoverageAsync(expectedVersion, lockedStaged.KeyId);
             if (coverage.MissingDevices.Count > 0 && !request.Force)
             {
                 throw new EmergencyLoginKeyCoverageException(coverage.MissingDevices);
@@ -290,6 +321,19 @@ public sealed class EmergencyLoginKeyManagementService
         });
         if (!transaction.IsSuccess)
         {
+            if (transaction.ErrorException is EmergencyLoginKeyMaterialException materialException)
+            {
+                _logger.LogError(
+                    materialException,
+                    "紧急登录待激活密钥材料校验失败，KeyId={KeyId}",
+                    staged.KeyId
+                );
+                return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
+                    "待激活密钥材料无效，激活已回滚",
+                    "EMERGENCY_KEY_MATERIAL_INVALID"
+                );
+            }
+
             if (transaction.ErrorException is EmergencyLoginKeyCoverageException coverageException)
             {
                 return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
@@ -365,22 +409,24 @@ public sealed class EmergencyLoginKeyManagementService
         }
 
         var now = UtcNow();
-        if (entity.Status == EmergencyLoginKeyStatus.Retiring
-            && await _db.Queryable<EmergencyLoginGrantEntity>().AnyAsync(grant =>
-                grant.KeyId == entity.KeyId
-                && grant.RevokedAtUtc == null
-                && grant.ExpiresAtUtc > now))
-        {
-            return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
-                "该密钥仍有未撤销且未过期的紧急登录授权，暂不能退役",
-                "EMERGENCY_KEY_ACTIVE_GRANTS_EXIST"
-            );
-        }
-
         var normalizedActor = NormalizeActor(actor);
         var resultVersion = expectedVersion + 1;
         var transaction = await _db.Ado.UseTranAsync(async () =>
         {
+            // 锁序固定为版本状态 -> 密钥行 -> grant 范围，避免与激活并发形成环路。
+            await LockExpectedVersionAsync(expectedVersion);
+            var lockedKey = await LockKeyByIdAsync(entity.KeyId);
+            if (lockedKey?.Status is not (EmergencyLoginKeyStatus.Staged or EmergencyLoginKeyStatus.Retiring))
+            {
+                throw new EmergencyLoginKeyConcurrencyException();
+            }
+
+            if (lockedKey.Status == EmergencyLoginKeyStatus.Retiring
+                && await HasLockedLiveGrantAsync(lockedKey.KeyId, now))
+            {
+                throw new EmergencyLoginKeyLiveGrantException();
+            }
+
             await AdvanceVersionAsync(expectedVersion, resultVersion, state.ActiveKeyId, now);
             var retiredRows = await _db.Updateable<EmergencyLoginKeyEntity>()
                 .SetColumns(item => item.Status == EmergencyLoginKeyStatus.Retired)
@@ -411,6 +457,14 @@ public sealed class EmergencyLoginKeyManagementService
         });
         if (!transaction.IsSuccess)
         {
+            if (transaction.ErrorException is EmergencyLoginKeyLiveGrantException)
+            {
+                return ApiResponse<EmergencyLoginKeyMutationDto>.Error(
+                    "该密钥仍有未撤销且未过期的紧急登录授权，暂不能退役",
+                    "EMERGENCY_KEY_ACTIVE_GRANTS_EXIST"
+                );
+            }
+
             return HandleMutationFailure(transaction.ErrorException, "退役");
         }
 
@@ -523,6 +577,37 @@ public sealed class EmergencyLoginKeyManagementService
         return BuildCoverage(devices, syncRows, version, keyId);
     }
 
+    private async Task<EmergencyLoginKeyEntity?> LockKeyByIdAsync(string keyId)
+    {
+        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            return (await _db.Ado.SqlQueryAsync<EmergencyLoginKeyEntity>(
+                LockKeyByIdSql,
+                new SugarParameter("@KeyId", keyId)
+            )).SingleOrDefault();
+        }
+
+        return await _db.Queryable<EmergencyLoginKeyEntity>()
+            .FirstAsync(item => item.KeyId == keyId);
+    }
+
+    private async Task<bool> HasLockedLiveGrantAsync(string keyId, DateTime utcNow)
+    {
+        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            return (await _db.Ado.SqlQueryAsync<GrantIdRow>(
+                LockLiveGrantsForRetireSql,
+                new SugarParameter("@KeyId", keyId),
+                new SugarParameter("@UtcNow", utcNow)
+            )).Count > 0;
+        }
+
+        return await _db.Queryable<EmergencyLoginGrantEntity>().AnyAsync(grant =>
+            grant.KeyId == keyId
+            && grant.RevokedAtUtc == null
+            && grant.ExpiresAtUtc > utcNow);
+    }
+
     private static CoverageResult BuildCoverage(
         List<ActivationDeviceRow> devices,
         List<ActivationSyncRow> syncRows,
@@ -580,9 +665,14 @@ public sealed class EmergencyLoginKeyManagementService
             {
                 try
                 {
-                    _privateKeyProtector.Unprotect(key.ProtectedPrivateKey!);
+                    EmergencyLoginKeyMaterialValidator.ValidateAndUnprotect(
+                        key,
+                        _privateKeyProtector
+                    );
                 }
-                catch (CryptographicException ex)
+                catch (Exception ex) when (
+                    ex is CryptographicException or EmergencyLoginKeyMaterialException
+                )
                 {
                     _logger.LogError(
                         ex,
@@ -719,6 +809,11 @@ public sealed class EmergencyLoginKeyManagementService
         public int IsCurrent { get; set; }
     }
 
+    private sealed class GrantIdRow
+    {
+        public Guid GrantId { get; set; }
+    }
+
     private sealed class EmergencyLoginKeyCoverageException(
         List<EmergencyLoginKeyMissingDeviceDto> missingDevices
     ) : Exception
@@ -727,6 +822,99 @@ public sealed class EmergencyLoginKeyManagementService
     }
 
     private sealed class EmergencyLoginKeyConcurrencyException : Exception;
+    private sealed class EmergencyLoginKeyLiveGrantException : Exception;
+}
+
+internal static class EmergencyLoginKeyMaterialValidator
+{
+    internal static string ValidateAndUnprotect(
+        EmergencyLoginKeyEntity keyEntity,
+        IDataProtector protector
+    )
+    {
+        if (string.IsNullOrWhiteSpace(keyEntity.ProtectedPrivateKey))
+        {
+            throw new EmergencyLoginKeyMaterialException("受保护私钥为空");
+        }
+
+        string privateKeyPem;
+        try
+        {
+            privateKeyPem = protector.Unprotect(keyEntity.ProtectedPrivateKey);
+        }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
+        {
+            throw new EmergencyLoginKeyMaterialException(
+                "Data Protection 私钥解密失败",
+                ex,
+                isDataProtectionFailure: true
+            );
+        }
+
+        try
+        {
+            using var privateKey = ECDsa.Create();
+            privateKey.ImportFromPem(privateKeyPem);
+            EnsureP256(privateKey);
+            var privateSpki = privateKey.ExportSubjectPublicKeyInfo();
+
+            using var storedPublicKey = ECDsa.Create();
+            storedPublicKey.ImportFromPem(keyEntity.PublicKeyPem);
+            EnsureP256(storedPublicKey);
+            var storedSpki = storedPublicKey.ExportSubjectPublicKeyInfo();
+            if (!CryptographicOperations.FixedTimeEquals(privateSpki, storedSpki))
+            {
+                throw new EmergencyLoginKeyMaterialException("公私钥不匹配");
+            }
+
+            var fingerprint = Convert.ToHexString(SHA256.HashData(privateSpki));
+            if (!string.Equals(
+                    fingerprint,
+                    keyEntity.PublicKeyFingerprint,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+            {
+                throw new EmergencyLoginKeyMaterialException("公钥指纹不匹配");
+            }
+
+            return privateKeyPem;
+        }
+        catch (EmergencyLoginKeyMaterialException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException or FormatException)
+        {
+            throw new EmergencyLoginKeyMaterialException("密钥 PEM 或 Data Protection 密文无效", ex);
+        }
+    }
+
+    private static void EnsureP256(ECDsa key)
+    {
+        var curve = key.ExportParameters(false).Curve.Oid;
+        var p256 = ECCurve.NamedCurves.nistP256.Oid;
+        if (key.KeySize != 256
+            || (!string.Equals(curve.Value, p256.Value, StringComparison.Ordinal)
+                && !string.Equals(curve.FriendlyName, p256.FriendlyName, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new EmergencyLoginKeyMaterialException("签名密钥不是 ECDSA P-256");
+        }
+    }
+}
+
+internal sealed class EmergencyLoginKeyMaterialException : Exception
+{
+    internal EmergencyLoginKeyMaterialException(
+        string message,
+        Exception? innerException = null,
+        bool isDataProtectionFailure = false
+    )
+        : base(message, innerException)
+    {
+        IsDataProtectionFailure = isDataProtectionFailure;
+    }
+
+    internal bool IsDataProtectionFailure { get; }
 }
 
 internal static class EmergencyLoginKeyStatus

@@ -11,6 +11,26 @@ namespace BlazorApp.Api.Services.React;
 
 public sealed class EmergencyLoginGrantService
 {
+    private const string LockActiveSigningKeySql = """
+        SELECT
+            [KeyId], [Status], [PublicKeyPem], [PublicKeyFingerprint], [ProtectedPrivateKey],
+            [CreatedAtUtc], [CreatedBy], [CreatedReason], [ActivatedAtUtc], [ActivatedBy],
+            [RetiredAtUtc], [RetiredBy], [UpdatedAtUtc]
+        FROM [dbo].[POSM_EmergencyLoginKey] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Status] = N'Active';
+        """;
+    private const string LockGrantRangeForIssueSql = """
+        SELECT [GrantId]
+        FROM [dbo].[POSM_EmergencyLoginGrant] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [StoreCode] = @StoreCode
+          AND [BusinessDate] = @BusinessDate
+          AND [RevokedAtUtc] IS NULL;
+        """;
+    internal static IReadOnlyList<string> GrantIssueLockSqlForTests { get; } =
+    [
+        LockActiveSigningKeySql,
+        LockGrantRangeForIssueSql,
+    ];
     private const int MaxReasonLength = 200;
     private const int MaxActorLength = 128;
     private readonly ISqlSugarClient _db;
@@ -113,85 +133,68 @@ public sealed class EmergencyLoginGrantService
 
         var now = UtcNow();
         var (businessDate, expiresAtUtc) = ResolveBusinessWindow(now);
-        var existing = await FindActiveAsync(storeCode, businessDate);
-        if (existing != null)
-        {
-            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "该门店当天已有未撤销的紧急登录授权，请先撤销后重新生成",
-                "EMERGENCY_GRANT_ALREADY_ACTIVE"
-            );
-        }
-
-        var keySetState = await _db.Queryable<EmergencyLoginKeySetStateEntity>()
-            .FirstAsync(item => item.StateId == 1);
-        var activeKey = string.IsNullOrWhiteSpace(keySetState?.ActiveKeyId)
-            ? null
-            : await _db.Queryable<EmergencyLoginKeyEntity>().FirstAsync(item =>
-                item.KeyId == keySetState.ActiveKeyId
-                && item.Status == EmergencyLoginKeyStatus.Active);
-        if (activeKey == null || string.IsNullOrWhiteSpace(activeKey.ProtectedPrivateKey))
-        {
-            _logger.LogError(
-                "紧急登录数据库活动签名密钥不存在，KeyId={KeyId}",
-                keySetState?.ActiveKeyId
-            );
-            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "当前没有可用的紧急登录活动签名密钥",
-                "EMERGENCY_GRANT_ACTIVE_SIGNING_KEY_UNAVAILABLE"
-            );
-        }
-
-        string privateKeyPem;
-        try
-        {
-            // 关键逻辑：只从中央密钥表读取活动密钥，并在签名瞬间解密；失败时必须关闭签发。
-            privateKeyPem = _privateKeyProtector.Unprotect(activeKey.ProtectedPrivateKey);
-        }
-        catch (CryptographicException ex)
-        {
-            _logger.LogError(
-                ex,
-                "紧急登录活动签名密钥解密失败，KeyId={KeyId}",
-                activeKey.KeyId
-            );
-            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "紧急登录活动签名密钥无法解密，请检查 Data Protection key ring",
-                "EMERGENCY_GRANT_SIGNING_KEY_DECRYPT_FAILED"
-            );
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "紧急登录签发时 Data Protection 不可用，KeyId={KeyId}",
-                activeKey.KeyId
-            );
-            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "Data Protection 当前不可用，紧急登录授权未签发",
-                "EMERGENCY_GRANT_DATA_PROTECTION_UNAVAILABLE"
-            );
-        }
-
-        var keyId = activeKey.KeyId;
-
         var normalizedActor = NormalizeActor(actor);
-        var entity = new EmergencyLoginGrantEntity
+        EmergencyLoginGrantEntity? entity = null;
+        string? token = null;
+        ApiResponse<EmergencyLoginGrantCreateResponseDto>? failure = null;
+        var transaction = await _db.Ado.UseTranAsync(async () =>
         {
-            GrantId = Guid.NewGuid(),
-            StoreCode = storeCode,
-            BusinessDate = businessDate.ToDateTime(TimeOnly.MinValue),
-            KeyId = keyId,
-            PermissionProfile = EmergencyLoginTokenCodec.AllPosTerminalProfile,
-            IssuedBy = normalizedActor,
-            IssuedReason = reason,
-            IssuedAtUtc = now,
-            NotBeforeUtc = now,
-            ExpiresAtUtc = expiresAtUtc,
-            UpdatedAtUtc = now,
-        };
-        string token;
-        try
-        {
+            // 锁序固定为活动密钥行 -> 门店业务日 grant 范围，签名和插入都在持锁事务内完成。
+            var activeKey = await LockActiveSigningKeyAsync();
+            if (activeKey == null)
+            {
+                failure = ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                    "当前没有可用的紧急登录活动签名密钥",
+                    "EMERGENCY_GRANT_ACTIVE_SIGNING_KEY_UNAVAILABLE"
+                );
+                return;
+            }
+
+            if (await HasLockedActiveGrantAsync(storeCode, businessDate))
+            {
+                failure = ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                    "该门店当天已有未撤销的紧急登录授权，请先撤销后重新生成",
+                    "EMERGENCY_GRANT_ALREADY_ACTIVE"
+                );
+                return;
+            }
+
+            string privateKeyPem;
+            try
+            {
+                privateKeyPem = EmergencyLoginKeyMaterialValidator.ValidateAndUnprotect(
+                    activeKey,
+                    _privateKeyProtector
+                );
+            }
+            catch (EmergencyLoginKeyMaterialException ex)
+            {
+                _logger.LogError(ex, "紧急登录活动签名密钥校验失败，KeyId={KeyId}", activeKey.KeyId);
+                failure = ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                    ex.IsDataProtectionFailure
+                        ? "紧急登录活动签名密钥无法解密，请检查 Data Protection key ring"
+                        : "紧急登录活动签名密钥无效",
+                    ex.IsDataProtectionFailure
+                        ? "EMERGENCY_GRANT_SIGNING_KEY_DECRYPT_FAILED"
+                        : "EMERGENCY_GRANT_SIGNING_KEY_INVALID"
+                );
+                return;
+            }
+
+            entity = new EmergencyLoginGrantEntity
+            {
+                GrantId = Guid.NewGuid(),
+                StoreCode = storeCode,
+                BusinessDate = businessDate.ToDateTime(TimeOnly.MinValue),
+                KeyId = activeKey.KeyId,
+                PermissionProfile = EmergencyLoginTokenCodec.AllPosTerminalProfile,
+                IssuedBy = normalizedActor,
+                IssuedReason = reason,
+                IssuedAtUtc = now,
+                NotBeforeUtc = now,
+                ExpiresAtUtc = expiresAtUtc,
+                UpdatedAtUtc = now,
+            };
             token = EmergencyLoginTokenCodec.Sign(
                 new EmergencyLoginTokenPayload
                 {
@@ -203,25 +206,18 @@ public sealed class EmergencyLoginGrantService
                     NotBeforeUtc = now,
                     ExpiresAtUtc = expiresAtUtc,
                 },
-                keyId,
+                activeKey.KeyId,
                 privateKeyPem
             );
-        }
-        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
-        {
-            _logger.LogError(ex, "紧急登录令牌签名失败，KeyId={KeyId}", keyId);
-            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
-                "紧急登录签名密钥无效",
-                "EMERGENCY_GRANT_SIGNING_KEY_INVALID"
-            );
-        }
-
-        try
-        {
             // 关键逻辑：数据库只保存审计摘要，完整二维码令牌仅在本次响应返回一次。
             await _db.Insertable(entity).ExecuteCommandAsync();
+        });
+        if (failure != null)
+        {
+            return failure;
         }
-        catch (Exception ex)
+
+        if (!transaction.IsSuccess || entity == null || token == null)
         {
             if (await FindActiveAsync(storeCode, businessDate) != null)
             {
@@ -231,8 +227,15 @@ public sealed class EmergencyLoginGrantService
                 );
             }
 
-            _logger.LogError(ex, "紧急登录授权摘要保存失败，StoreCode={StoreCode}", storeCode);
-            throw;
+            _logger.LogError(
+                transaction.ErrorException,
+                "紧急登录授权签名或摘要保存失败，StoreCode={StoreCode}",
+                storeCode
+            );
+            return ApiResponse<EmergencyLoginGrantCreateResponseDto>.Error(
+                "紧急登录授权签发失败",
+                "EMERGENCY_GRANT_CREATE_FAILED"
+            );
         }
 
         _logger.LogWarning(
@@ -328,6 +331,37 @@ public sealed class EmergencyLoginGrantService
             );
     }
 
+    private async Task<EmergencyLoginKeyEntity?> LockActiveSigningKeyAsync()
+    {
+        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            return (await _db.Ado.SqlQueryAsync<EmergencyLoginKeyEntity>(
+                LockActiveSigningKeySql
+            )).SingleOrDefault();
+        }
+
+        return await _db.Queryable<EmergencyLoginKeyEntity>()
+            .FirstAsync(item => item.Status == EmergencyLoginKeyStatus.Active);
+    }
+
+    private async Task<bool> HasLockedActiveGrantAsync(string storeCode, DateOnly businessDate)
+    {
+        var date = businessDate.ToDateTime(TimeOnly.MinValue);
+        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            return (await _db.Ado.SqlQueryAsync<GrantIdRow>(
+                LockGrantRangeForIssueSql,
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@BusinessDate", date)
+            )).Count > 0;
+        }
+
+        return await _db.Queryable<EmergencyLoginGrantEntity>().AnyAsync(item =>
+            item.StoreCode == storeCode
+            && item.BusinessDate == date
+            && item.RevokedAtUtc == null);
+    }
+
     internal static (DateOnly BusinessDate, DateTime ExpiresAtUtc) ResolveBusinessWindow(
         DateTime utcNow
     )
@@ -399,6 +433,11 @@ public sealed class EmergencyLoginGrantService
     {
         var normalized = string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
         return normalized.Length <= MaxActorLength ? normalized : normalized[..MaxActorLength];
+    }
+
+    private sealed class GrantIdRow
+    {
+        public Guid GrantId { get; set; }
     }
 }
 

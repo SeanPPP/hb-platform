@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.React;
@@ -77,6 +78,23 @@ public sealed class EmergencyLoginKeyManagementContractTests
         Assert.Contains("POSM_EmergencyLoginKeyDeviceSync", scripts[2]);
         Assert.Contains("[KeySetVersion] = @KeySetVersion", scripts[2]);
         Assert.Contains("[KeyId] = @KeyId", scripts[2]);
+    }
+
+    [Fact]
+    public void GrantIssueAndRetire_UseSameKeyThenGrantRangeLockOrder()
+    {
+        var issueScripts = EmergencyLoginGrantService.GrantIssueLockSqlForTests;
+        var retireScripts = EmergencyLoginKeyManagementService.RetireLockSqlForTests;
+
+        Assert.Equal(2, issueScripts.Count);
+        Assert.Equal(2, retireScripts.Count);
+        Assert.All(issueScripts.Concat(retireScripts), sql =>
+            Assert.Contains("UPDLOCK, HOLDLOCK", sql));
+        Assert.Contains("POSM_EmergencyLoginKey", issueScripts[0]);
+        Assert.Contains("POSM_EmergencyLoginGrant", issueScripts[1]);
+        Assert.Contains("POSM_EmergencyLoginKey", retireScripts[0]);
+        Assert.Contains("POSM_EmergencyLoginGrant", retireScripts[1]);
+        Assert.Contains("[ExpiresAtUtc] > @UtcNow", retireScripts[1]);
     }
 
     [Fact]
@@ -345,6 +363,77 @@ public sealed class EmergencyLoginKeyManagementServiceTests : IDisposable
             .Where(item => item.Action == "Activate")
             .SingleAsync();
         Assert.Null(audit.Details);
+    }
+
+    [Theory]
+    [InlineData("CorruptPublicPem")]
+    [InlineData("NonP256")]
+    [InlineData("KeyMismatch")]
+    [InlineData("FingerprintMismatch")]
+    public async Task Activate_InvalidStagedKeyMaterialRollsBackAndPreservesOldActive(
+        string corruption
+    )
+    {
+        var service = CreateService();
+        var first = await service.GenerateAsync(
+            new EmergencyLoginKeyGenerateRequestDto { ExpectedVersion = 0, Reason = "首把密钥" },
+            "admin"
+        );
+        await service.ActivateAsync(
+            first.Data!.Key.KeyId,
+            new EmergencyLoginKeyActivateRequestDto { ExpectedVersion = 1, Reason = "首次激活" },
+            "admin"
+        );
+        var second = await service.GenerateAsync(
+            new EmergencyLoginKeyGenerateRequestDto { ExpectedVersion = 2, Reason = "轮换密钥" },
+            "admin"
+        );
+        var staged = await _db.Queryable<EmergencyLoginKeyEntity>()
+            .SingleAsync(item => item.KeyId == second.Data!.Key.KeyId);
+        using var replacement = ECDsa.Create(
+            corruption == "NonP256" ? ECCurve.NamedCurves.nistP384 : ECCurve.NamedCurves.nistP256
+        );
+        switch (corruption)
+        {
+            case "CorruptPublicPem":
+                staged.PublicKeyPem = "not-a-public-key-pem";
+                break;
+            case "NonP256":
+                staged.ProtectedPrivateKey = _dataProtectionProvider
+                    .CreateProtector(EmergencyLoginKeyManagementService.PrivateKeyProtectionPurpose)
+                    .Protect(replacement.ExportPkcs8PrivateKeyPem());
+                staged.PublicKeyPem = replacement.ExportSubjectPublicKeyInfoPem();
+                staged.PublicKeyFingerprint = Convert.ToHexString(
+                    SHA256.HashData(replacement.ExportSubjectPublicKeyInfo())
+                );
+                break;
+            case "KeyMismatch":
+                staged.PublicKeyPem = replacement.ExportSubjectPublicKeyInfoPem();
+                staged.PublicKeyFingerprint = Convert.ToHexString(
+                    SHA256.HashData(replacement.ExportSubjectPublicKeyInfo())
+                );
+                break;
+            case "FingerprintMismatch":
+                staged.PublicKeyFingerprint = new string('0', 64);
+                break;
+        }
+        await _db.Updateable(staged).ExecuteCommandAsync();
+
+        var result = await service.ActivateAsync(
+            staged.KeyId,
+            new EmergencyLoginKeyActivateRequestDto { ExpectedVersion = 3, Reason = "尝试激活" },
+            "admin"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("EMERGENCY_KEY_MATERIAL_INVALID", result.ErrorCode);
+        var state = await _db.Queryable<EmergencyLoginKeySetStateEntity>().SingleAsync();
+        Assert.Equal(3, state.Version);
+        Assert.Equal(first.Data.Key.KeyId, state.ActiveKeyId);
+        Assert.Equal("Active", (await _db.Queryable<EmergencyLoginKeyEntity>()
+            .SingleAsync(item => item.KeyId == first.Data.Key.KeyId)).Status);
+        Assert.Equal("Staged", (await _db.Queryable<EmergencyLoginKeyEntity>()
+            .SingleAsync(item => item.KeyId == staged.KeyId)).Status);
     }
 
     [Fact]
