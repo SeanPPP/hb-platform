@@ -25,6 +25,14 @@
     "resetPassword": "Reset password",
     "confirmReset": "Reset"
   },
+  "posPermissions": {
+    "actions": {
+      "open": "POS access"
+    },
+    "messages": {
+      "missingStoreGuid": "The store access identifier is missing. Refresh stores or sign in again."
+    }
+  },
   "statuses": {
     "active": "Active",
     "disabled": "Disabled"

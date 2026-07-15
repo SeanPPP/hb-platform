@@ -10,6 +10,7 @@ import {
   setPosPermissionGroupSelection,
   togglePosPermissionCode,
 } from "./pos-terminal-permissions";
+import { PERMISSIONS } from "../../shared/utils/access";
 import type {
   PosTerminalPermissionOption,
   StoreUserPosTerminalPermissions,
@@ -173,6 +174,12 @@ const eligibleEntry = {
   targetRoleNames: ["StoreStaff"],
   storeGuid: "store-guid",
 };
+
+assert.equal(
+  PERMISSIONS.Users.ManagePosTerminalPermissions,
+  "Users.ManagePosTerminalPermissions",
+  "POS 授权入口应使用后端定义的显式权限代码"
+);
 
 assert.equal(
   getPosPermissionEntryState(eligibleEntry),

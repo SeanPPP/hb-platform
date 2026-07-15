@@ -25,6 +25,14 @@
     "resetPassword": "重置密码",
     "confirmReset": "重置密码"
   },
+  "posPermissions": {
+    "actions": {
+      "open": "POS 授权"
+    },
+    "messages": {
+      "missingStoreGuid": "分店资料缺少授权标识，请刷新分店资料或重新登录。"
+    }
+  },
   "statuses": {
     "active": "启用中",
     "disabled": "已停用"
