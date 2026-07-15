@@ -48,6 +48,7 @@ import {
   buildCenterLogStatusOverview,
   createLatestCenterLogRequestRunner,
   resolveCenterLogConfigurationState,
+  resolveCenterLogCredentialState,
   shouldHydrateCenterLogQueryFromLocation,
 } from './query'
 
@@ -381,18 +382,17 @@ export default function SystemCenterLogsPage() {
         dataIndex: 'explicitlyConfigured',
         width: 130,
         render: (value: boolean) => value
-          ? t('system.centerLogs.status.configured')
+          ? t('system.centerLogs.status.registered')
           : t('system.centerLogs.status.usingDefault'),
       },
       {
         title: t('system.centerLogs.status.credential'),
         dataIndex: 'credentialConfigured',
         width: 120,
-        render: (value: boolean | null) => value === null
-          ? t('system.centerLogs.status.notRequired')
-          : value
-            ? t('system.centerLogs.status.configured')
-            : t('system.centerLogs.status.missingCredential'),
+        render: (_, record) => {
+          const state = resolveCenterLogCredentialState(record)
+          return t(`system.centerLogs.status.credentialStates.${state}`)
+        },
       },
       {
         title: t('system.centerLogs.status.retention'),
@@ -614,9 +614,17 @@ export default function SystemCenterLogsPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Typography.Text type="secondary">
-              {t('system.centerLogs.status.configurationNote')}
-            </Typography.Text>
+            <Space direction="vertical" size={2}>
+              <Typography.Text type="secondary">
+                {t('system.centerLogs.status.instanceScopeNote')}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {t('system.centerLogs.status.databaseScopeNote')}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {t('system.centerLogs.status.pipelineScopeNote')}
+              </Typography.Text>
+            </Space>
 
             <Collapse
               size="small"

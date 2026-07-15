@@ -30,6 +30,7 @@ export const CENTER_LOG_LEVEL_OPTIONS = ['Trace', 'Debug', 'Information', 'Warni
 export const CENTER_LOG_SOURCE_TYPE_OPTIONS = ['Backend', 'Web', 'Mobile', 'POS']
 
 export type CenterLogConfigurationState = 'Ready' | 'Disabled' | 'MissingCredential'
+export type CenterLogCredentialState = 'Configured' | 'Inactive' | 'MissingCredential' | 'NotRequired' | 'Unknown'
 
 function normalizeProjectCodes(projectCodes?: string[]) {
   const normalized = projectCodes
@@ -101,7 +102,7 @@ export function buildCenterLogProjectChangeQuery(
 export function resolveCenterLogConfigurationState(status: {
   configurationState?: string
   enabled: boolean
-  credentialConfigured: boolean | null
+  credentialConfigured?: boolean | null
 }): CenterLogConfigurationState {
   if (status.configurationState === 'Ready' ||
     status.configurationState === 'Disabled' ||
@@ -114,6 +115,24 @@ export function resolveCenterLogConfigurationState(status: {
   }
 
   return status.credentialConfigured === false ? 'MissingCredential' : 'Ready'
+}
+
+export function resolveCenterLogCredentialState(status: {
+  enabled: boolean
+  mode?: string
+  credentialConfigured?: boolean | null
+}): CenterLogCredentialState {
+  // 项目停用时密钥不参与当前接收流程，避免把它误报为待处理故障。
+  if (!status.enabled) {
+    return 'Inactive'
+  }
+
+  // 只有内部采集明确无需外部凭据；旧响应缺字段时，外部项目必须保留为未知。
+  if (status.credentialConfigured == null) {
+    return status.mode === 'Internal' ? 'NotRequired' : 'Unknown'
+  }
+
+  return status.credentialConfigured ? 'Configured' : 'MissingCredential'
 }
 
 export interface LatestCenterLogRequestHandlers<T> {

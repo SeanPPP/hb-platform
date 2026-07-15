@@ -109,7 +109,7 @@ export interface ApplicationLogProjectStatus {
   mode: string
   explicitlyConfigured: boolean
   enabled: boolean
-  credentialConfigured: boolean | null
+  credentialConfigured?: boolean | null
   configurationState: ApplicationLogConfigurationState
   effectiveRetentionDays: number
   lastReceivedAtUtc: string | null

@@ -198,6 +198,52 @@ assertEqual(
   'missing credential project state is derived when backend state is absent',
 )
 
+const resolveCredentialState = (
+  queryModule as unknown as {
+    resolveCenterLogCredentialState?: (status: {
+      enabled: boolean
+      mode?: string
+      credentialConfigured?: boolean | null
+    }) => string
+  }
+).resolveCenterLogCredentialState
+assertEqual(typeof resolveCredentialState, 'function', 'center logs should expose credential display state mapping')
+assertEqual(
+  resolveCredentialState?.({ enabled: false, mode: 'External', credentialConfigured: undefined }),
+  'Inactive',
+  'disabled project should remain inactive when an older response omits credential state',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: true, mode: 'Internal', credentialConfigured: undefined }),
+  'NotRequired',
+  'omitted internal credential state should be reported as not required',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: true, mode: 'Internal', credentialConfigured: null }),
+  'NotRequired',
+  'null internal credential state should be reported as not required',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: true, mode: 'External', credentialConfigured: undefined }),
+  'Unknown',
+  'omitted external credential state should remain unknown during staggered rollout',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: true, mode: 'External', credentialConfigured: true }),
+  'Configured',
+  'configured external credential should be preserved',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: true, mode: 'External', credentialConfigured: false }),
+  'MissingCredential',
+  'enabled external project without a credential should remain actionable',
+)
+assertEqual(
+  resolveCredentialState?.({ enabled: false, mode: 'External', credentialConfigured: true }),
+  'Inactive',
+  'disabled state should take precedence over an existing credential',
+)
+
 assertEqual(
   typeof (queryModule as Record<string, unknown>).buildCenterLogFormValuesFromSearchParams,
   'function',
@@ -378,6 +424,18 @@ assertEqual(
   false,
   'project status should not duplicate raw and localized state labels',
 )
+assertEqual(
+  centerLogsPageSource.includes("t('system.centerLogs.status.registered')"),
+  true,
+  'project entry should render registered rather than configured',
+)
+assertEqual(
+  centerLogsPageSource.includes("t('system.centerLogs.status.instanceScopeNote')") &&
+    centerLogsPageSource.includes("t('system.centerLogs.status.databaseScopeNote')") &&
+    centerLogsPageSource.includes("t('system.centerLogs.status.pipelineScopeNote')"),
+  true,
+  'status area should render the three scope notes separately',
+)
 
 const zhCenterLogs = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8')).system.centerLogs
 const enCenterLogs = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8')).system.centerLogs
@@ -399,10 +457,71 @@ assertEqual(enCenterLogs.status.modes.Internal, 'Internal', 'English internal mo
 assertEqual(enCenterLogs.status.modes.External, 'External', 'English external mode label is defined')
 assertEqual(zhCenterLogs.status.states.Ready, '配置齐全', 'Chinese ready copy describes configuration')
 assertEqual(zhCenterLogs.status.webBuildConfigured, '已配置', 'Chinese web build copy describes configuration')
+assertEqual(zhCenterLogs.status.configurationState, '当前实例接收状态', 'Chinese configuration column names its scope')
+assertEqual(enCenterLogs.status.configurationState, 'Current Instance Ingest Status', 'English configuration column names its scope')
+assertEqual(zhCenterLogs.status.explicitConfiguration, '中心端项目条目', 'Chinese project entry column names its scope')
+assertEqual(enCenterLogs.status.explicitConfiguration, 'Central Project Entry', 'English project entry column names its scope')
+assertEqual(zhCenterLogs.status.credential, '当前实例凭据', 'Chinese credential column names its scope')
+assertEqual(enCenterLogs.status.credential, 'Current Instance Credential', 'English credential column names its scope')
+assertEqual(zhCenterLogs.status.lastReceivedAt, '日志库最近入库', 'Chinese last received column names the database scope')
+assertEqual(enCenterLogs.status.lastReceivedAt, 'Latest Stored in Log DB', 'English last received column names the database scope')
+assertEqual(zhCenterLogs.status.credentialStates.Inactive, '停用中 / 不适用', 'Chinese disabled credential copy is not actionable')
+assertEqual(enCenterLogs.status.credentialStates.Inactive, 'Inactive / Not applicable', 'English disabled credential copy is not actionable')
+assertEqual(zhCenterLogs.status.credentialStates.Unknown, '状态未知', 'Chinese unknown credential copy is explicit')
+assertEqual(enCenterLogs.status.credentialStates.Unknown, 'Unknown', 'English unknown credential copy is explicit')
+assertEqual(zhCenterLogs.status.registered, '已登记', 'Chinese project entry copy does not imply client configuration')
+assertEqual(enCenterLogs.status.registered, 'Registered', 'English project entry copy does not imply client configuration')
 assertEqual(
-  zhCenterLogs.status.configurationNote.includes('配置不等于已收到日志'),
+  zhCenterLogs.status.pipelineSummary,
+  '当前实例 HBBBackend 内部采集队列异常摘要',
+  'Chinese pipeline summary names the covered queue',
+)
+assertEqual(
+  enCenterLogs.status.pipelineSummary,
+  'Current Instance HBBBackend Internal Capture Queue Anomaly Summary',
+  'English pipeline summary names the covered queue',
+)
+assertEqual(zhCenterLogs.status.pipeline, '当前实例 HBBBackend 内部采集队列计数', 'Chinese pipeline title names the covered queue')
+assertEqual(enCenterLogs.status.pipeline, 'Current Instance HBBBackend Internal Capture Queue Counters', 'English pipeline title names the covered queue')
+assertEqual(zhCenterLogs.status.notReceived, '当前保留数据中无记录', 'Chinese empty project copy names the retention scope')
+assertEqual(enCenterLogs.status.notReceived, 'No records in currently retained data', 'English empty project copy names the retention scope')
+assertEqual(
+  zhCenterLogs.status.instanceScopeNote.includes('当前实例') &&
+    zhCenterLogs.status.instanceScopeNote.includes('已登记不代表客户端已接入'),
   true,
-  'status note distinguishes configuration from received logs',
+  'Chinese instance note describes only current-instance configuration',
+)
+assertEqual(
+  zhCenterLogs.status.databaseScopeNote.includes('日志库最近入库') &&
+    zhCenterLogs.status.databaseScopeNote.includes('其他实例或历史配置'),
+  true,
+  'Chinese database note describes shared storage evidence',
+)
+assertEqual(
+  zhCenterLogs.status.pipelineScopeNote.includes('HBBBackend 内部采集队列') &&
+    zhCenterLogs.status.pipelineScopeNote.includes('不覆盖外部客户端上传或 /ingest') &&
+    zhCenterLogs.status.pipelineScopeNote.includes('重启后归零'),
+  true,
+  'Chinese pipeline note names exclusions and reset behavior',
+)
+assertEqual(
+  enCenterLogs.status.instanceScopeNote.includes('current backend instance') &&
+    enCenterLogs.status.instanceScopeNote.includes('does not mean the client is connected'),
+  true,
+  'English instance note describes only current-instance configuration',
+)
+assertEqual(
+  enCenterLogs.status.databaseScopeNote.includes('log database') &&
+    enCenterLogs.status.databaseScopeNote.includes('other instances or earlier configurations'),
+  true,
+  'English database note describes shared storage evidence',
+)
+assertEqual(
+  enCenterLogs.status.pipelineScopeNote.includes('HBBBackend internal capture queue') &&
+    enCenterLogs.status.pipelineScopeNote.includes('external client uploads or /ingest') &&
+    enCenterLogs.status.pipelineScopeNote.includes('resets after process restart'),
+  true,
+  'English pipeline note names exclusions and reset behavior',
 )
 assertEqual(
   zhCenterLogs.empty.description,
