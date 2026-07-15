@@ -2,11 +2,24 @@ import assert from "node:assert/strict";
 import {
   buildBigDiscountLabelCommand,
   buildClearanceLabelCommand,
+  buildEmployeeCashierBarcodeLabelCommand,
   buildDiscountLabelCommand,
   buildProductLabelCommand,
   buildWarehouseLocationLabelCommand,
   buildWarehouseProductLabelCommand,
 } from "./cpcl-labels";
+
+const employeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
+  employeeName: "管理员",
+  barcode: "2912345678906",
+});
+assert.ok(employeeBarcodeCommand.includes("PAGE-WIDTH 570"), "员工条码标签使用当前标准标签宽度");
+assert.ok(employeeBarcodeCommand.includes("TEXT 7 0 20 30 管理员"), "员工条码标签包含员工姓名");
+assert.ok(
+  employeeBarcodeCommand.includes("BARCODE EAN13 1 2 72 20 112 2912345678906"),
+  "员工条码标签必须使用 EAN13"
+);
+assert.ok(employeeBarcodeCommand.endsWith("PRINT\r\n"), "员工条码标签必须发送 PRINT");
 
 const productPayload = {
   productName: "Coconut Water 1L",

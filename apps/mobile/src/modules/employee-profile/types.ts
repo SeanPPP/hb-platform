@@ -24,6 +24,7 @@ export interface EmployeeProfile {
   avatarUrl: string;
   identityId: string;
   identityPhotoUrl: string;
+  identityPhotoUrlExpiresAt?: string;
   address: string;
   createdAt?: string;
   updatedAt?: string;
@@ -38,9 +39,7 @@ export interface UpdateEmployeeProfilePayload {
   birthday: string;
   gender: string;
   employmentType: string;
-  avatarUrl: string;
   identityId: string;
-  identityPhotoUrl: string;
   address: string;
 }
 
@@ -48,7 +47,6 @@ export interface DirectUploadRequest {
   fileName: string;
   contentType: string;
   fileSize: number;
-  objectKey?: string | null;
 }
 
 export interface DirectUploadSignature {
@@ -57,7 +55,11 @@ export interface DirectUploadSignature {
   headers: Record<string, string>;
 }
 
-export interface EmployeeProfileImageUploadResult {
-  objectKey: string;
-  downloadUrl: string;
+export interface CashierBarcodeResponse {
+  exists: boolean;
+  barcode: string;
+  format: string;
+  printCount: number;
+  createdAt?: string;
+  updatedAt?: string;
 }

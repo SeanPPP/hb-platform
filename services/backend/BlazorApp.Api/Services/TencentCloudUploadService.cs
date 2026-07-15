@@ -86,7 +86,7 @@ namespace BlazorApp.Api.Services
             return true;
         }
 
-        public async Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(
+        public virtual async Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(
             string objectKey,
             CancellationToken cancellationToken = default
         )
@@ -101,9 +101,10 @@ namespace BlazorApp.Api.Services
 
             try
             {
+                // 私有证件照必须使用签名 HEAD，不能依赖 bucket 的公开读权限。
                 using var request = new HttpRequestMessage(
                     HttpMethod.Head,
-                    GeneratePublicUrl(objectKey)
+                    GeneratePresignedUrl(objectKey, "HEAD", 300)
                 );
                 using var response = await _httpClient.SendAsync(
                     request,
@@ -132,9 +133,22 @@ namespace BlazorApp.Api.Services
                     new CosObjectMetadata
                     {
                         ContentLength = response.Content.Headers.ContentLength,
+                        ContentType = response.Content.Headers.ContentType?.MediaType,
                         Sha256 = string.IsNullOrWhiteSpace(sha256)
                             ? null
                             : sha256.Trim().ToLowerInvariant(),
+                        Owner = TryGetHeaderValue(response, "x-cos-meta-owner"),
+                        Kind = TryGetHeaderValue(response, "x-cos-meta-kind"),
+                        DeclaredContentType = TryGetHeaderValue(
+                            response,
+                            "x-cos-meta-content-type"
+                        ),
+                        DeclaredFileSize = long.TryParse(
+                            TryGetHeaderValue(response, "x-cos-meta-file-size"),
+                            out var declaredFileSize
+                        )
+                            ? declaredFileSize
+                            : null,
                     }
                 );
             }
@@ -156,6 +170,157 @@ namespace BlazorApp.Api.Services
         private string GeneratePublicUrl(string objectKey)
         {
             return $"https://{_settings.BucketName}.cos.{_settings.Region}.myqcloud.com/{objectKey}";
+        }
+
+        public string GetPublicDownloadUrl(string objectKey) => GeneratePublicUrl(objectKey);
+
+        public string GetSignedDownloadUrl(string objectKey, int expiresInSeconds = 300) =>
+            GeneratePresignedUrl(objectKey, "GET", expiresInSeconds);
+
+        public (string Url, DateTime ExpiresAtUtc) GetSignedDownload(
+            string objectKey,
+            int expiresInSeconds = 300
+        ) => (
+            GeneratePresignedUrl(objectKey, "GET", expiresInSeconds),
+            _timeProvider.GetUtcNow().UtcDateTime.AddSeconds(expiresInSeconds)
+        );
+
+        public bool TryGetPublicObjectKey(string? url, out string objectKey)
+        {
+            objectKey = string.Empty;
+            if (
+                !Uri.TryCreate(url, UriKind.Absolute, out var actual)
+                || !Uri.TryCreate(GeneratePublicUrl("probe"), UriKind.Absolute, out var expected)
+                || !string.Equals(actual.Host, expected.Host, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return false;
+            }
+            objectKey = Uri.UnescapeDataString(actual.AbsolutePath.TrimStart('/'));
+            return !string.IsNullOrWhiteSpace(objectKey);
+        }
+
+        public virtual async Task<ApiResponse<byte[]>> DownloadObjectBytesAsync(
+            string objectKey,
+            int maximumBytes,
+            CancellationToken cancellationToken = default
+        )
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    GeneratePresignedUrl(objectKey, "GET", 300)
+                );
+                using var response = await _httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken
+                );
+                if (!response.IsSuccessStatusCode)
+                {
+                    return ApiResponse<byte[]>.Error("COS 图片读取失败", "COS_OBJECT_DOWNLOAD_FAILED");
+                }
+                if (response.Content.Headers.ContentLength > maximumBytes)
+                {
+                    return ApiResponse<byte[]>.Error("COS 图片超过允许大小", "COS_OBJECT_TOO_LARGE");
+                }
+
+                await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var output = new MemoryStream(Math.Min(maximumBytes, 64 * 1024));
+                var buffer = new byte[64 * 1024];
+                while (true)
+                {
+                    var read = await input.ReadAsync(buffer, cancellationToken);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+                    if (output.Length + read > maximumBytes)
+                    {
+                        return ApiResponse<byte[]>.Error("COS 图片超过允许大小", "COS_OBJECT_TOO_LARGE");
+                    }
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                }
+                return ApiResponse<byte[]>.OK(output.ToArray());
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "读取 COS 图片内容失败，ObjectKey: {ObjectKey}", objectKey);
+                return ApiResponse<byte[]>.Error("COS 图片读取失败", "COS_OBJECT_DOWNLOAD_FAILED");
+            }
+        }
+
+        public virtual async Task<ApiResponse<bool>> DeleteObjectAsync(
+            string objectKey,
+            CancellationToken cancellationToken = default
+        )
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    GeneratePresignedUrl(objectKey, "DELETE", 300)
+                );
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                return response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound
+                    ? ApiResponse<bool>.OK(true)
+                    : ApiResponse<bool>.Error("COS 图片删除失败", "COS_OBJECT_DELETE_FAILED");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "删除 COS 图片失败，ObjectKey: {ObjectKey}", objectKey);
+                return ApiResponse<bool>.Error("COS 图片删除失败", "COS_OBJECT_DELETE_FAILED");
+            }
+        }
+
+        public virtual async Task<ApiResponse<bool>> PromoteObjectAsync(
+            string sourceObjectKey,
+            string targetObjectKey,
+            string contentType,
+            bool isPublic,
+            CancellationToken cancellationToken = default
+        )
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-cos-copy-source"] = $"/{_settings.BucketName}/{sourceObjectKey}",
+                ["x-cos-acl"] = isPublic ? "public-read" : "private",
+            };
+            var signature = GetDirectUploadSignature(targetObjectKey, contentType, 300, headers);
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Put, signature.Url)
+                {
+                    Content = new ByteArrayContent(Array.Empty<byte>()),
+                };
+                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+                foreach (var header in headers)
+                {
+                    request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                return response.IsSuccessStatusCode
+                    ? ApiResponse<bool>.OK(true)
+                    : ApiResponse<bool>.Error("COS 图片转正失败", "COS_OBJECT_PROMOTE_FAILED");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "COS 图片转正失败，Source: {Source}, Target: {Target}", sourceObjectKey, targetObjectKey);
+                return ApiResponse<bool>.Error("COS 图片转正失败", "COS_OBJECT_PROMOTE_FAILED");
+            }
         }
 
         private static string? TryGetHeaderValue(HttpResponseMessage response, string headerName)
@@ -801,7 +966,17 @@ namespace BlazorApp.Api.Services
         {
             public long? ContentLength { get; set; }
 
+            public string? ContentType { get; set; }
+
             public string? Sha256 { get; set; }
+
+            public string? Owner { get; set; }
+
+            public string? Kind { get; set; }
+
+            public string? DeclaredContentType { get; set; }
+
+            public long? DeclaredFileSize { get; set; }
         }
     }
 }

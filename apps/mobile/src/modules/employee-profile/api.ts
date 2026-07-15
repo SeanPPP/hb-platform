@@ -1,14 +1,20 @@
 import { apiClient } from "@/shared/api/client";
 import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
+import { buildCashierBarcodePrintConfirmationRequest } from "@/modules/employee-profile/cashier-barcode";
 import type {
   DirectUploadRequest,
   DirectUploadSignature,
+  CashierBarcodeResponse,
   EmployeeProfile,
   EmployeeProfileImageKind,
   UpdateEmployeeProfilePayload,
 } from "@/modules/employee-profile/types";
 
 type ApiRecord = Record<string, unknown>;
+
+function toApiImageKind(kind: EmployeeProfileImageKind) {
+  return kind === "identityPhoto" ? "identity" : "avatar";
+}
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -37,6 +43,8 @@ function normalizeEmployeeProfile(payload: unknown): EmployeeProfile {
     avatarUrl: asString(data.avatarUrl ?? data.AvatarUrl),
     identityId: asString(data.identityId ?? data.IdentityId),
     identityPhotoUrl: asString(data.identityPhotoUrl ?? data.IdentityPhotoUrl),
+    identityPhotoUrlExpiresAt:
+      asString(data.identityPhotoUrlExpiresAt ?? data.IdentityPhotoUrlExpiresAt) || undefined,
     address: asString(data.address ?? data.Address),
     createdAt: asString(data.createdAt ?? data.CreatedAt) || undefined,
     updatedAt: asString(data.updatedAt ?? data.UpdatedAt) || undefined,
@@ -63,6 +71,18 @@ function normalizeDirectUploadSignature(payload: unknown): DirectUploadSignature
   };
 }
 
+function normalizeCashierBarcode(payload: unknown): CashierBarcodeResponse {
+  const data = (payload && typeof payload === "object" ? payload : {}) as ApiRecord;
+  return {
+    exists: Boolean(data.exists ?? data.Exists),
+    barcode: asString(data.barcode ?? data.Barcode),
+    format: asString(data.format ?? data.Format) || "EAN13",
+    printCount: Number(data.printCount ?? data.PrintCount) || 0,
+    createdAt: asString(data.createdAt ?? data.CreatedAt) || undefined,
+    updatedAt: asString(data.updatedAt ?? data.UpdatedAt) || undefined,
+  };
+}
+
 export async function getMyEmployeeProfileApi(): Promise<EmployeeProfile> {
   const response = await apiClient.get("/EmployeeProfiles/me");
   return normalizeEmployeeProfile(response.data);
@@ -81,7 +101,7 @@ export async function getEmployeeProfileImageUploadSignature(
 ): Promise<DirectUploadSignature> {
   const response = await apiClient.post("/EmployeeProfiles/me/image-upload-signature", {
     ...request,
-    kind,
+    kind: toApiImageKind(kind),
   });
   return normalizeDirectUploadSignature(response.data);
 }
@@ -128,4 +148,43 @@ export async function uploadEmployeeProfileImageBlobToSignedUrl(
   }
 
   return signature.objectKey;
+}
+
+export async function completeEmployeeProfileImageUploadApi(
+  kind: EmployeeProfileImageKind,
+  objectKey: string
+): Promise<EmployeeProfile> {
+  const response = await apiClient.post("/EmployeeProfiles/me/images/complete", {
+    kind: toApiImageKind(kind),
+    objectKey,
+  });
+  return normalizeEmployeeProfile(response.data);
+}
+
+export async function deleteEmployeeProfileImageApi(
+  kind: EmployeeProfileImageKind
+): Promise<EmployeeProfile> {
+  const response = await apiClient.delete(`/EmployeeProfiles/me/images/${toApiImageKind(kind)}`);
+  return normalizeEmployeeProfile(response.data);
+}
+
+export async function getMyCashierBarcodeApi(): Promise<CashierBarcodeResponse> {
+  const response = await apiClient.get("/EmployeeProfiles/me/cashier-barcode");
+  return normalizeCashierBarcode(response.data);
+}
+
+export async function refreshMyCashierBarcodeApi(): Promise<CashierBarcodeResponse> {
+  const response = await apiClient.post("/EmployeeProfiles/me/cashier-barcode/refresh");
+  return normalizeCashierBarcode(response.data);
+}
+
+export async function confirmMyCashierBarcodePrintApi(
+  barcode: string,
+  printAttemptId: string
+): Promise<CashierBarcodeResponse> {
+  const response = await apiClient.post(
+    "/EmployeeProfiles/me/cashier-barcode/print-confirmation",
+    buildCashierBarcodePrintConfirmationRequest(barcode, printAttemptId)
+  );
+  return normalizeCashierBarcode(response.data);
 }

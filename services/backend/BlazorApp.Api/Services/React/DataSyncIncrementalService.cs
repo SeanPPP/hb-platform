@@ -2654,7 +2654,6 @@ namespace BlazorApp.Api.Services.React
                 var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
                 var added = 0;
                 var updated = 0;
-                var errors = 0;
 
                 var existingCodes = await _localContext
                     .Db.Queryable<CashRegisterUser>()
@@ -2662,28 +2661,34 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync();
                 var existingSet = new HashSet<string>(existingCodes);
 
-                for (var page = 1; page <= pages; page++)
+                await _localContext.Db.Ado.BeginTranAsync();
+                try
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var batch = await hqDb.Queryable<DIC_收银用户信息表>()
-                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
-                        .OrderBy(x => x.FGC_LastModifyDate)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    hqDb.Dispose();
-
-                    if (!batch.Any())
-                        continue;
-
-                    var localBatch = _mapper.Map<List<CashRegisterUser>>(batch);
-
-                    var toInsert = localBatch.Where(x => !existingSet.Contains(x.HGUID!)).ToList();
-                    var toUpdate = localBatch.Where(x => existingSet.Contains(x.HGUID!)).ToList();
-
-                    try
+                    await CashierBarcodeMutationLock.AcquireAsync(_localContext.Db);
+                    // 关键逻辑：一次增量调用的全部分页共用一个事务，任何页冲突都回滚本次全部写入。
+                    for (var page = 1; page <= pages; page++)
                     {
+                        var skip = (page - 1) * hqBatchSize;
+                        hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                        var batch = await hqDb.Queryable<DIC_收银用户信息表>()
+                            .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                            .OrderBy(x => x.FGC_LastModifyDate)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        hqDb.Dispose();
+
+                        if (!batch.Any())
+                            continue;
+
+                        var localBatch = _mapper.Map<List<CashRegisterUser>>(batch);
+                        var toInsert = localBatch.Where(x => !existingSet.Contains(x.HGUID!)).ToList();
+                        var toUpdate = localBatch.Where(x => existingSet.Contains(x.HGUID!)).ToList();
+
+                        await CashierBarcodeSyncGuard.ValidateAndReserveHqBatchAsync(
+                            _localContext.Db,
+                            localBatch
+                        );
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -2702,6 +2707,13 @@ namespace BlazorApp.Api.Services.React
                                 .BulkCopyAsync(toInsert);
                             added += toInsert.Count;
                         }
+                        foreach (var item in toInsert)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item.HGUID))
+                            {
+                                existingSet.Add(item.HGUID);
+                            }
+                        }
                         _logger.LogInformation(
                             "[ReactSync] 收银用户增量页{Page}: 插入{Inserted}, 更新{Updated}",
                             page,
@@ -2709,31 +2721,21 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
                     }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 收银用户增量页{Page}出错: {Error}",
-                            page,
-                            ex.Message
-                        );
-                    }
+                    await _localContext.Db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _localContext.Db.Ado.RollbackTranAsync();
+                    throw;
                 }
 
-                result.IsSuccess = errors == 0;
-                result.Message =
-                    errors == 0
-                        ? $"增量同步完成，新增 {added} 条，更新 {updated} 条"
-                        : $"增量同步部分完成，新增 {added} 条，更新 {updated} 条，{errors} 页出错";
+                result.IsSuccess = true;
+                result.Message = $"增量同步完成，新增 {added} 条，更新 {updated} 条";
                 result.AddedCount = added;
                 result.UpdatedCount = updated;
-                result.ErrorCount = errors;
+                result.ErrorCount = 0;
 
-                if (result.IsSuccess)
-                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
-                else
-                    await _taskLogService.LogTaskFailureAsync(taskLog.Id, result.Message);
+                await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
 
                 return result;
             }

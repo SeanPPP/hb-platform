@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, ScrollView, StyleSheet, View } from "react-native";
+import { AppState, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
@@ -9,8 +8,6 @@ import {
   Button,
   Chip,
   HelperText,
-  Modal,
-  Portal,
   SegmentedButtons,
   Snackbar,
   Surface,
@@ -20,9 +17,21 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
+  deleteEmployeeProfileImageApi,
   getMyEmployeeProfileApi,
   updateMyEmployeeProfileApi,
 } from "@/modules/employee-profile/api";
+import { AvatarEditorField } from "@/modules/employee-profile/AvatarEditorField";
+import { CashierBarcodeCard } from "@/modules/employee-profile/CashierBarcodeCard";
+import {
+  getEmployeeProfileQueryKey,
+  resolveEmployeeProfileIdentity,
+  shouldResetEmployeeProfileDraft,
+} from "@/modules/employee-profile/cache-keys";
+import {
+  syncEmployeeProfileDraft,
+  toEmployeeProfileDraft,
+} from "@/modules/employee-profile/profile-draft";
 import {
   EmployeeProfileImageUploadError,
   uploadEmployeeProfileImage,
@@ -30,15 +39,13 @@ import {
 import {
   GENDERS,
   type EmployeeProfile,
-  type EmployeeProfileImageKind,
   type UpdateEmployeeProfilePayload,
 } from "@/modules/employee-profile/types";
+import { getIdentityPhotoRefetchDelay } from "@/modules/employee-profile/identity-photo-expiry";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
-
-type ImageFieldKey = "avatarUrl" | "identityPhotoUrl";
 
 const EMPTY_FORM: UpdateEmployeeProfilePayload = {
   bankBsb: "",
@@ -49,45 +56,9 @@ const EMPTY_FORM: UpdateEmployeeProfilePayload = {
   birthday: "",
   gender: "",
   employmentType: "",
-  avatarUrl: "",
   identityId: "",
-  identityPhotoUrl: "",
   address: "",
 };
-
-const IMAGE_FIELD_CONFIG: Record<
-  EmployeeProfileImageKind,
-  {
-    fieldKey: ImageFieldKey;
-    labelKey: "fields.avatarUrl" | "fields.identityPhotoUrl";
-  }
-> = {
-  avatar: {
-    fieldKey: "avatarUrl",
-    labelKey: "fields.avatarUrl",
-  },
-  identityPhoto: {
-    fieldKey: "identityPhotoUrl",
-    labelKey: "fields.identityPhotoUrl",
-  },
-};
-
-function toFormValues(profile: EmployeeProfile): UpdateEmployeeProfilePayload {
-  return {
-    bankBsb: profile.bankBsb,
-    bankAccountNumber: profile.bankAccountNumber,
-    superannuationCompanyName: profile.superannuationCompanyName,
-    superannuationCompanyCode: profile.superannuationCompanyCode,
-    superannuationAccountNumber: profile.superannuationAccountNumber,
-    birthday: profile.birthday,
-    gender: profile.gender,
-    employmentType: profile.employmentType,
-    avatarUrl: profile.avatarUrl,
-    identityId: profile.identityId,
-    identityPhotoUrl: profile.identityPhotoUrl,
-    address: profile.address,
-  };
-}
 
 function formatDateTime(value: string | undefined, locale: string) {
   if (!value) {
@@ -116,82 +87,18 @@ function getInitials(value: string) {
   return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
-function buildPhotoFileName(kind: EmployeeProfileImageKind, uri: string) {
-  const rawName = uri.split("/").pop()?.split("?")[0] ?? `${kind}.jpg`;
-  const hasExtension = /\.[a-z0-9]+$/i.test(rawName);
-  return hasExtension ? rawName : `${rawName}.jpg`;
-}
-
-function ProfileImageField({
-  label,
-  uri,
-  emptyText,
-  takePhotoLabel,
-  retakePhotoLabel,
-  removeLabel,
-  onTakePhoto,
-  onRemove,
-  disabled,
-}: {
-  label: string;
-  uri: string;
-  emptyText: string;
-  takePhotoLabel: string;
-  retakePhotoLabel: string;
-  removeLabel: string;
-  onTakePhoto: () => void;
-  onRemove: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <View style={styles.imageField}>
-      <Text variant="labelLarge">{label}</Text>
-      {uri ? (
-        <Image source={{ uri }} style={styles.previewImage} resizeMode="cover" />
-      ) : (
-        <View style={[styles.previewImage, styles.previewPlaceholder]}>
-          <Text variant="bodySmall" style={styles.metaText}>
-            {emptyText}
-          </Text>
-        </View>
-      )}
-      <View style={styles.imageActionRow}>
-        <Button
-          mode="outlined"
-          icon="camera"
-          onPress={onTakePhoto}
-          disabled={disabled}
-          style={styles.imageActionButton}
-        >
-          {uri ? retakePhotoLabel : takePhotoLabel}
-        </Button>
-        <Button
-          mode="text"
-          icon="trash-can-outline"
-          onPress={onRemove}
-          disabled={disabled || !uri}
-          compact
-        >
-          {removeLabel}
-        </Button>
-      </View>
-    </View>
-  );
-}
-
 export default function EmployeeProfileScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const cameraRef = useRef<CameraView | null>(null);
   const { t, language } = useAppTranslation(["employeeProfile", "common"]);
   const user = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [formValues, setFormValues] = useState<UpdateEmployeeProfilePayload>(EMPTY_FORM);
+  const [storedFormValues, setFormValues] = useState<UpdateEmployeeProfilePayload>(EMPTY_FORM);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarVisible, setSnackbarVisible] = useState(false);
-  const [cameraTarget, setCameraTarget] = useState<EmployeeProfileImageKind | null>(null);
-  const [uploadingField, setUploadingField] = useState<ImageFieldKey | null>(null);
+  const [savingImageKind, setSavingImageKind] = useState<"avatar" | "identityPhoto" | null>(null);
+  const formInitializedRef = useRef(false);
+  const formIdentityRef = useRef("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -201,6 +108,12 @@ export default function EmployeeProfileScreen() {
   ), [language, t]);
 
   const locale = useMemo(() => resolveLocaleTag(language), [language]);
+  const userIdentity = resolveEmployeeProfileIdentity(user);
+  const formValues = formIdentityRef.current === userIdentity ? storedFormValues : EMPTY_FORM;
+  const profileQueryKey = useMemo(
+    () => getEmployeeProfileQueryKey(userIdentity),
+    [userIdentity]
+  );
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -225,25 +138,49 @@ export default function EmployeeProfileScreen() {
     router.navigate("/(tabs)/settings");
   }, [isAuthenticated, router, showMessage, t, user]);
 
+  useEffect(() => {
+    if (!shouldResetEmployeeProfileDraft(formIdentityRef.current, userIdentity)) {
+      return;
+    }
+    // 账号变化时先清空旧草稿，随后由新账号自己的查询结果重新初始化。
+    formIdentityRef.current = userIdentity;
+    formInitializedRef.current = false;
+    setFormValues(EMPTY_FORM);
+  }, [userIdentity]);
+
   const profileQuery = useQuery({
-    queryKey: ["employee-profile", "me"],
+    queryKey: profileQueryKey,
     queryFn: getMyEmployeeProfileApi,
     enabled: Boolean(isAuthenticated && user),
+    refetchInterval: (query) => getIdentityPhotoRefetchDelay(
+      (query.state.data as EmployeeProfile | undefined)?.identityPhotoUrlExpiresAt
+    ),
   });
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active" && isAuthenticated) {
+        void queryClient.invalidateQueries({ queryKey: profileQueryKey });
+      }
+    });
+    return () => subscription.remove();
+  }, [isAuthenticated, profileQueryKey, queryClient]);
 
   useEffect(() => {
     if (!profileQuery.data) {
       return;
     }
 
-    setFormValues(toFormValues(profileQuery.data));
+    const wasInitialized = formInitializedRef.current;
+    formInitializedRef.current = true;
+    setFormValues((current) => syncEmployeeProfileDraft(current, profileQuery.data!, wasInitialized));
   }, [profileQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: updateMyEmployeeProfileApi,
     onSuccess: (profile) => {
-      queryClient.setQueryData(["employee-profile", "me"], profile);
-      setFormValues(toFormValues(profile));
+      queryClient.setQueryData(profileQueryKey, profile);
+      setFormValues(toEmployeeProfileDraft(profile));
       showMessage(t("messages.saveSuccess"));
     },
     onError: (error) => {
@@ -273,13 +210,11 @@ export default function EmployeeProfileScreen() {
         ...formValues,
         birthday: formValues.birthday.trim(),
         address: formValues.address.trim(),
-        avatarUrl: formValues.avatarUrl.trim(),
         bankAccountNumber: formValues.bankAccountNumber.trim(),
         bankBsb: formValues.bankBsb.trim(),
         gender: formValues.gender.trim(),
         employmentType: formValues.employmentType.trim(),
         identityId: formValues.identityId.trim(),
-        identityPhotoUrl: formValues.identityPhotoUrl.trim(),
         superannuationAccountNumber: formValues.superannuationAccountNumber.trim(),
         superannuationCompanyCode: formValues.superannuationCompanyCode.trim(),
         superannuationCompanyName: formValues.superannuationCompanyName.trim(),
@@ -289,47 +224,17 @@ export default function EmployeeProfileScreen() {
     }
   };
 
-  const handleRemoveImage = useCallback(
-    (fieldKey: ImageFieldKey) => {
-      setFieldValue(fieldKey, "");
-      showMessage(t("messages.imageRemoved"));
-    },
-    [setFieldValue, showMessage, t]
-  );
-
-  const openCameraForImage = useCallback(
-    (kind: EmployeeProfileImageKind) => {
-      setCameraTarget(kind);
-      if (cameraPermission && !cameraPermission.granted && !cameraPermission.canAskAgain) {
-        showMessage(t("messages.permissionRequired"));
-      }
-    },
-    [cameraPermission, showMessage, t]
-  );
-
-  const handleCapturePhoto = useCallback(async () => {
-    if (!cameraTarget || !cameraRef.current) {
-      return;
-    }
-
-    const { fieldKey } = IMAGE_FIELD_CONFIG[cameraTarget];
-    setUploadingField(fieldKey);
-
+  const handleSaveImage = async (
+    kind: "avatar" | "identityPhoto",
+    image: { uri: string; fileName: string; contentType: "image/jpeg"; fileSize: number }
+  ) => {
+    setSavingImageKind(kind);
     try {
-      const picture = await cameraRef.current.takePictureAsync({ quality: 0.7 });
-      if (!picture?.uri) {
-        throw new Error(t("messages.uploadFailed"));
-      }
-
-      const uploadResult = await uploadEmployeeProfileImage({
-        kind: cameraTarget,
-        uri: picture.uri,
-        fileName: buildPhotoFileName(cameraTarget, picture.uri),
-        contentType: "image/jpeg",
+      const profile = await uploadEmployeeProfileImage({
+        kind,
+        ...image,
       });
-
-      setFieldValue(fieldKey, uploadResult.downloadUrl);
-      setCameraTarget(null);
+      queryClient.setQueryData(profileQueryKey, profile);
       showMessage(t("messages.uploadSuccess"));
     } catch (error) {
       if (
@@ -340,10 +245,25 @@ export default function EmployeeProfileScreen() {
       } else {
         showMessage(getErrorMessage(error, "messages.uploadFailed"));
       }
+      throw error;
     } finally {
-      setUploadingField(null);
+      setSavingImageKind(null);
     }
-  }, [cameraTarget, setFieldValue, showMessage, t]);
+  };
+
+  const handleDeleteImage = async (kind: "avatar" | "identityPhoto") => {
+    setSavingImageKind(kind);
+    try {
+      const profile = await deleteEmployeeProfileImageApi(kind);
+      queryClient.setQueryData(profileQueryKey, profile);
+      showMessage(t("messages.imageRemoved"));
+    } catch (error) {
+      showMessage(getErrorMessage(error, "messages.removeImageFailed"));
+      throw error;
+    } finally {
+      setSavingImageKind(null);
+    }
+  };
 
   if (!isAuthenticated || !user) {
     return (
@@ -397,8 +317,8 @@ export default function EmployeeProfileScreen() {
     <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
       <ScrollView contentContainerStyle={styles.content}>
         <Surface style={styles.heroCard} elevation={1}>
-          {formValues.avatarUrl ? (
-            <Avatar.Image size={68} source={{ uri: formValues.avatarUrl }} style={styles.heroAvatar} />
+          {profileQuery.data?.avatarUrl ? (
+            <Avatar.Image size={68} source={{ uri: profileQuery.data.avatarUrl }} style={styles.heroAvatar} />
           ) : (
             <Avatar.Text
               size={68}
@@ -418,6 +338,8 @@ export default function EmployeeProfileScreen() {
             </Chip>
           </View>
         </Surface>
+
+        <CashierBarcodeCard employeeName={readonlyDisplayName} userIdentity={userIdentity} />
 
         <Surface style={styles.card} elevation={1}>
           <Text variant="titleMedium">{t("sections.personal")}</Text>
@@ -451,16 +373,13 @@ export default function EmployeeProfileScreen() {
 
         <Surface style={styles.card} elevation={1}>
           <Text variant="titleMedium">{t("sections.images")}</Text>
-          <ProfileImageField
-            label={t(IMAGE_FIELD_CONFIG.avatar.labelKey)}
-            uri={formValues.avatarUrl}
-            emptyText={t("preview.empty")}
-            takePhotoLabel={t("actions.takePhoto")}
-            retakePhotoLabel={t("actions.retakePhoto")}
-            removeLabel={t("actions.removeImage")}
-            onTakePhoto={() => openCameraForImage("avatar")}
-            onRemove={() => handleRemoveImage("avatarUrl")}
-            disabled={saveMutation.isPending || uploadingField === "avatarUrl"}
+          <AvatarEditorField
+            kind="avatar"
+            label={t("fields.avatarUrl")}
+            uri={profileQuery.data?.avatarUrl ?? ""}
+            onSave={(image) => handleSaveImage("avatar", image)}
+            onDelete={() => handleDeleteImage("avatar")}
+            disabled={saveMutation.isPending || savingImageKind !== null}
           />
         </Surface>
 
@@ -542,16 +461,16 @@ export default function EmployeeProfileScreen() {
             value={formValues.identityId}
             onChangeText={(value) => setFieldValue("identityId", value)}
           />
-          <ProfileImageField
-            label={t(IMAGE_FIELD_CONFIG.identityPhoto.labelKey)}
-            uri={formValues.identityPhotoUrl}
-            emptyText={t("preview.empty")}
-            takePhotoLabel={t("actions.takePhoto")}
-            retakePhotoLabel={t("actions.retakePhoto")}
-            removeLabel={t("actions.removeImage")}
-            onTakePhoto={() => openCameraForImage("identityPhoto")}
-            onRemove={() => handleRemoveImage("identityPhotoUrl")}
-            disabled={saveMutation.isPending || uploadingField === "identityPhotoUrl"}
+          <AvatarEditorField
+            kind="identityPhoto"
+            label={t("fields.identityPhotoUrl")}
+            uri={profileQuery.data?.identityPhotoUrl ?? ""}
+            onSave={(image) => handleSaveImage("identityPhoto", image)}
+            onDelete={() => handleDeleteImage("identityPhoto")}
+            onImageLoadError={() => {
+              void queryClient.invalidateQueries({ queryKey: profileQueryKey });
+            }}
+            disabled={saveMutation.isPending || savingImageKind !== null}
           />
         </Surface>
 
@@ -563,55 +482,12 @@ export default function EmployeeProfileScreen() {
           mode="contained"
           onPress={() => void handleSave()}
           loading={saveMutation.isPending}
-          disabled={saveMutation.isPending || Boolean(uploadingField)}
+          disabled={saveMutation.isPending || savingImageKind !== null}
           style={styles.saveButton}
         >
           {t("actions.save")}
         </Button>
       </ScrollView>
-
-      <Portal>
-        <Modal
-          visible={cameraTarget !== null}
-          onDismiss={() => {
-            if (!uploadingField) {
-              setCameraTarget(null);
-            }
-          }}
-          contentContainerStyle={styles.cameraModal}
-        >
-          <Text variant="titleMedium" style={styles.modalTitle}>
-            {t("camera.title")}
-          </Text>
-          <Text variant="bodySmall" style={styles.modalSubtitle}>
-            {t("messages.cameraReady")}
-          </Text>
-          {cameraPermission?.granted ? (
-            <>
-              <CameraView ref={cameraRef} style={styles.cameraView} facing="back" />
-              <Button
-                mode="contained"
-                icon="camera"
-                onPress={() => void handleCapturePhoto()}
-                loading={Boolean(uploadingField)}
-                disabled={Boolean(uploadingField)}
-              >
-                {t("actions.capture")}
-              </Button>
-            </>
-          ) : (
-            <View style={styles.permissionBlock}>
-              <Text variant="titleMedium">{t("camera.permissionTitle")}</Text>
-              <Text variant="bodySmall" style={styles.permissionText}>
-                {t("camera.permissionDescription")}
-              </Text>
-              <Button mode="contained" onPress={() => void requestCameraPermission()}>
-                {t("actions.grantCameraPermission")}
-              </Button>
-            </View>
-          )}
-        </Modal>
-      </Portal>
 
       <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)}>
         {snackbarMessage}
@@ -677,61 +553,8 @@ const styles = StyleSheet.create({
   segmentBlock: {
     gap: 8,
   },
-  imageField: {
-    gap: 10,
-  },
-  imageActionRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  imageActionButton: {
-    flex: 1,
-  },
-  previewImage: {
-    width: "100%",
-    height: 180,
-    borderRadius: 14,
-    backgroundColor: "#E9EDF3",
-  },
-  previewPlaceholder: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-  },
   saveButton: {
     marginTop: 4,
     marginBottom: 10,
-  },
-  cameraModal: {
-    marginHorizontal: 16,
-    borderRadius: 18,
-    backgroundColor: "#FFFFFF",
-    padding: 16,
-    gap: 12,
-  },
-  modalTitle: {
-    textAlign: "center",
-  },
-  modalSubtitle: {
-    textAlign: "center",
-    color: "#667085",
-  },
-  cameraView: {
-    height: 360,
-    borderRadius: 14,
-    overflow: "hidden",
-  },
-  permissionBlock: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-    paddingVertical: 24,
-    paddingHorizontal: 8,
-  },
-  permissionText: {
-    textAlign: "center",
-    color: "#667085",
   },
 });

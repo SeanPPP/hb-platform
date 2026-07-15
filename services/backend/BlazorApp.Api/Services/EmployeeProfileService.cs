@@ -10,16 +10,19 @@ namespace BlazorApp.Api.Services
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly ILogger<EmployeeProfileService> _logger;
+        private readonly TencentCloudUploadService? _uploadService;
 
         public EmployeeProfileService(
             SqlSugarContext context,
             ICurrentUserService currentUserService,
-            ILogger<EmployeeProfileService> logger
+            ILogger<EmployeeProfileService> logger,
+            TencentCloudUploadService? uploadService = null
         )
         {
             _context = context;
             _currentUserService = currentUserService;
             _logger = logger;
+            _uploadService = uploadService;
         }
 
         public async Task<ApiResponse<PagedResult<EmployeeProfileListItemDto>>> GetAdminListAsync(
@@ -152,7 +155,7 @@ namespace BlazorApp.Api.Services
             EmployeeProfileUpsertDto dto
         )
         {
-            return UpsertForUserAsync(userGuid, dto);
+            return UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: true);
         }
 
         public Task<ApiResponse<EmployeeProfileDetailDto>> GetSelfAsync()
@@ -164,7 +167,7 @@ namespace BlazorApp.Api.Services
         public Task<ApiResponse<EmployeeProfileDetailDto>> UpsertSelfAsync(EmployeeProfileUpsertDto dto)
         {
             var userGuid = _currentUserService.GetCurrentUserGuid();
-            return UpsertForUserAsync(userGuid, dto);
+            return UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: false);
         }
 
         private async Task<ApiResponse<EmployeeProfileDetailDto>> GetByUserGuidAsync(string userGuid)
@@ -202,7 +205,8 @@ namespace BlazorApp.Api.Services
 
         private async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertForUserAsync(
             string userGuid,
-            EmployeeProfileUpsertDto dto
+            EmployeeProfileUpsertDto dto,
+            bool allowLegacyImageUrls
         )
         {
             if (string.IsNullOrWhiteSpace(userGuid))
@@ -237,12 +241,12 @@ namespace BlazorApp.Api.Services
                         UpdatedBy = actor,
                     };
 
-                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: true);
+                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: true, allowLegacyImageUrls);
                     await db.Insertable(profile).ExecuteCommandAsync();
                 }
                 else
                 {
-                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: false);
+                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: false, allowLegacyImageUrls);
                     await db.Updateable(profile).ExecuteCommandAsync();
                 }
 
@@ -267,7 +271,8 @@ namespace BlazorApp.Api.Services
             string userGuid,
             string actor,
             DateTime now,
-            bool isCreate
+            bool isCreate,
+            bool allowLegacyImageUrls
         )
         {
             profile.UserGUID = userGuid;
@@ -280,9 +285,16 @@ namespace BlazorApp.Api.Services
             profile.Birthday = dto.Birthday?.Date;
             profile.Gender = ParseGender(dto.Gender);
             profile.EmployeeType = ParseEmployeeType(dto.EmploymentType);
-            profile.AvatarUrl = Normalize(dto.AvatarUrl);
+            if (allowLegacyImageUrls)
+            {
+                profile.AvatarUrl = Normalize(dto.AvatarUrl);
+                if (string.IsNullOrWhiteSpace(profile.IdentityPhotoObjectKey))
+                {
+                    // 历史记录仍允许管理端维护 URL；托管私有图只能通过专用媒体接口更改。
+                    profile.IdentityPhotoUrl = Normalize(dto.IdentityPhotoUrl);
+                }
+            }
             profile.IdentityId = Normalize(dto.IdentityId);
-            profile.IdentityPhotoUrl = Normalize(dto.IdentityPhotoUrl);
             profile.Address = Normalize(dto.Address);
             profile.UpdatedAt = now;
             profile.UpdatedBy = actor;
@@ -295,8 +307,16 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        private static EmployeeProfileDetailDto MapDetail(User user, EmployeeProfile? profile)
+        private EmployeeProfileDetailDto MapDetail(User user, EmployeeProfile? profile)
         {
+            string? identityPhotoUrl = profile?.IdentityPhotoUrl;
+            DateTime? identityPhotoUrlExpiresAt = null;
+            if (!string.IsNullOrWhiteSpace(profile?.IdentityPhotoObjectKey) && _uploadService is not null)
+            {
+                var signed = _uploadService.GetSignedDownload(profile.IdentityPhotoObjectKey, 300);
+                identityPhotoUrl = signed.Url;
+                identityPhotoUrlExpiresAt = signed.ExpiresAtUtc;
+            }
             return new EmployeeProfileDetailDto
             {
                 EmployeeInfoId = profile?.EmployeeInfoId,
@@ -315,7 +335,8 @@ namespace BlazorApp.Api.Services
                 EmploymentType = FormatEmployeeType(profile?.EmployeeType),
                 AvatarUrl = profile?.AvatarUrl,
                 IdentityId = profile?.IdentityId,
-                IdentityPhotoUrl = profile?.IdentityPhotoUrl,
+                IdentityPhotoUrl = identityPhotoUrl,
+                IdentityPhotoUrlExpiresAt = identityPhotoUrlExpiresAt,
                 Address = profile?.Address,
                 CreatedAt = profile?.CreatedAt,
                 CreatedBy = profile?.CreatedBy,

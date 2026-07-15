@@ -21,6 +21,92 @@ namespace BlazorApp.Api.Data
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
+            await EnsureEmployeeProfileImageSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureEmployeeProfileImageSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[EmployeeProfile]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeProfile', 'IdentityPhotoObjectKey') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeProfile]
+    ADD [IdentityPhotoObjectKey] nvarchar(500) NULL;
+END
+IF OBJECT_ID(N'[dbo].[EmployeeImageUploadTickets]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[EmployeeImageUploadTickets] (
+        [PendingObjectKey] nvarchar(500) NOT NULL CONSTRAINT [PK_EmployeeImageUploadTickets] PRIMARY KEY,
+        [UserGUID] nvarchar(50) NOT NULL,
+        [Kind] nvarchar(20) NOT NULL,
+        [ContentType] nvarchar(100) NOT NULL,
+        [FileSize] bigint NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [ExpiresAt] datetime2 NOT NULL,
+        [Status] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_Status] DEFAULT(0),
+        [FinalObjectKey] nvarchar(500) NULL,
+        [ProcessingStartedAt] datetime2 NULL,
+        [PromotedAt] datetime2 NULL,
+        [CompletedAt] datetime2 NULL,
+        [FailedAt] datetime2 NULL,
+        [StageChangedAt] datetime2 NULL,
+        [PreviousObjectKey] nvarchar(500) NULL,
+        [PreviousObjectCleanupStatus] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_PreviousCleanup] DEFAULT(0),
+        [PreviousObjectCleanupStartedAt] datetime2 NULL
+    );
+    CREATE INDEX [IX_EmployeeImageUploadTickets_Expiry]
+        ON [dbo].[EmployeeImageUploadTickets]([Status], [ExpiresAt]);
+END
+IF OBJECT_ID(N'[dbo].[EmployeeImageUploadTickets]', N'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'Status') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [Status] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_Status] DEFAULT(0);
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'FinalObjectKey') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [FinalObjectKey] nvarchar(500) NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'ProcessingStartedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [ProcessingStartedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'PromotedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PromotedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'CompletedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [CompletedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'FailedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [FailedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'StageChangedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [StageChangedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'PreviousObjectKey') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PreviousObjectKey] nvarchar(500) NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'PreviousObjectCleanupStatus') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PreviousObjectCleanupStatus] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_PreviousCleanup] DEFAULT(0);
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'PreviousObjectCleanupStartedAt') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PreviousObjectCleanupStartedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'Completed') IS NOT NULL
+        EXEC(N'UPDATE [dbo].[EmployeeImageUploadTickets] SET [Status] = 3, [CompletedAt] = COALESCE([CompletedAt], [ExpiresAt]) WHERE [Completed] = 1 AND [Status] = 0');
+    UPDATE [dbo].[EmployeeImageUploadTickets]
+    SET [StageChangedAt] = COALESCE([StageChangedAt], [ProcessingStartedAt], [PromotedAt], [CompletedAt], [CreatedAt])
+    WHERE [StageChangedAt] IS NULL;
+    IF EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = 'IX_EmployeeImageUploadTickets_Expiry'
+          AND [object_id] = OBJECT_ID(N'[dbo].[EmployeeImageUploadTickets]')
+    )
+        DROP INDEX [IX_EmployeeImageUploadTickets_Expiry] ON [dbo].[EmployeeImageUploadTickets];
+    CREATE INDEX [IX_EmployeeImageUploadTickets_Expiry]
+        ON [dbo].[EmployeeImageUploadTickets]([Status], [ExpiresAt], [StageChangedAt]);
+END
+""";
+            try
+            {
+                // 关键逻辑：仅补 nullable 列，不迁移历史公开证件照，确保启动迁移可重复执行。
+                await db.Ado.ExecuteCommandAsync(sql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "补充员工私有证件照对象键字段失败");
+                throw;
+            }
         }
 
         private static async Task EnsureWarehouseOrderCartOwnerSchemaAsync(
@@ -80,6 +166,127 @@ namespace BlazorApp.Api.Data
             ILogger logger
         )
         {
+            const string ensureEmployeeCashierTablesSql = @"
+IF OBJECT_ID('EmployeeCashierBarcodes', 'U') IS NULL
+BEGIN
+    CREATE TABLE [EmployeeCashierBarcodes] (
+        [HGUID] nvarchar(50) NOT NULL CONSTRAINT [PK_EmployeeCashierBarcodes] PRIMARY KEY,
+        [UserGUID] nvarchar(50) NOT NULL,
+        [Barcode] nvarchar(13) NOT NULL,
+        [PrintCount] int NOT NULL CONSTRAINT [DF_EmployeeCashierBarcodes_PrintCount] DEFAULT(0),
+        [Status] bit NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [UpdatedAt] datetime2 NOT NULL,
+        [UpdatedBy] nvarchar(100) NULL
+    );
+    CREATE UNIQUE INDEX [IX_EmployeeCashierBarcodes_UserGUID_Active]
+        ON [EmployeeCashierBarcodes]([UserGUID]) WHERE [Status] = 1;
+    CREATE UNIQUE INDEX [IX_EmployeeCashierBarcodes_Barcode]
+        ON [EmployeeCashierBarcodes]([Barcode]);
+END;
+IF OBJECT_ID('EmployeeCashierBarcodePrintAttempts', 'U') IS NULL
+BEGIN
+    CREATE TABLE [EmployeeCashierBarcodePrintAttempts] (
+        [PrintAttemptId] uniqueidentifier NOT NULL CONSTRAINT [PK_EmployeeCashierBarcodePrintAttempts] PRIMARY KEY,
+        [BarcodeHGUID] nvarchar(50) NOT NULL,
+        [UserGUID] nvarchar(50) NOT NULL,
+        [Barcode] nvarchar(13) NOT NULL,
+        [CreatedAt] datetime2 NOT NULL
+    );
+END;";
+            await db.Ado.ExecuteCommandAsync(ensureEmployeeCashierTablesSql);
+
+            const string ensureReservationTableSql = @"
+IF OBJECT_ID('CashierBarcodeReservations', 'U') IS NULL
+BEGIN
+    CREATE TABLE [CashierBarcodeReservations] (
+        [Barcode] nvarchar(50) NOT NULL CONSTRAINT [PK_CashierBarcodeReservations] PRIMARY KEY,
+        [CreatedAt] datetime2 NOT NULL,
+        [OwnerType] nvarchar(20) NULL,
+        [OwnerId] nvarchar(50) NULL
+    );
+END;
+IF COL_LENGTH('CashierBarcodeReservations', 'OwnerType') IS NULL
+    ALTER TABLE [CashierBarcodeReservations] ADD [OwnerType] nvarchar(20) NULL;
+IF COL_LENGTH('CashierBarcodeReservations', 'OwnerId') IS NULL
+    ALTER TABLE [CashierBarcodeReservations] ADD [OwnerId] nvarchar(50) NULL;
+
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+   AND COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM [CashRegisterUsers]
+        WHERE NULLIF(LTRIM(RTRIM([UserBarcode])), '') IS NOT NULL
+        GROUP BY LTRIM(RTRIM([UserBarcode]))
+        HAVING COUNT(DISTINCT ISNULL([HGUID], '')) > 1
+    )
+        THROW 51001, '历史 legacy 收银条码存在跨 owner 冲突，已阻断迁移', 1;
+
+    IF OBJECT_ID('EmployeeCashierBarcodes', 'U') IS NOT NULL
+       AND EXISTS (
+           SELECT 1
+           FROM [CashRegisterUsers] AS [legacy]
+           INNER JOIN [EmployeeCashierBarcodes] AS [employee]
+               ON [employee].[Barcode] = LTRIM(RTRIM([legacy].[UserBarcode]))
+           WHERE NULLIF(LTRIM(RTRIM([legacy].[UserBarcode])), '') IS NOT NULL
+       )
+        THROW 51002, 'legacy 与 employee 收银条码存在跨表冲突，已阻断迁移', 1;
+
+    IF EXISTS (
+        SELECT 1
+        FROM [CashRegisterUsers] AS [legacy]
+        INNER JOIN [CashierBarcodeReservations] AS [reservation]
+            ON [reservation].[Barcode] = LTRIM(RTRIM([legacy].[UserBarcode]))
+        WHERE NULLIF(LTRIM(RTRIM([legacy].[UserBarcode])), '') IS NOT NULL
+          AND (
+              ISNULL([reservation].[OwnerType], '') <> 'legacy'
+              OR (NULLIF([reservation].[OwnerId], '') IS NOT NULL
+                  AND [reservation].[OwnerId] <> [legacy].[HGUID])
+          )
+    )
+        THROW 51003, 'legacy 收银条码与已有占用 owner 冲突，已阻断迁移', 1;
+
+    ;WITH [HistoricalBarcodes] AS (
+        SELECT DISTINCT LTRIM(RTRIM([UserBarcode])) AS [Barcode], [HGUID] AS [OwnerId]
+        FROM [CashRegisterUsers]
+        WHERE NULLIF(LTRIM(RTRIM([UserBarcode])), '') IS NOT NULL
+    )
+    INSERT INTO [CashierBarcodeReservations] ([Barcode], [CreatedAt], [OwnerType], [OwnerId])
+    SELECT [history].[Barcode], SYSUTCDATETIME(), 'legacy', [history].[OwnerId]
+    FROM [HistoricalBarcodes] AS [history]
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM [CashierBarcodeReservations] AS [reservation]
+        WHERE [reservation].[Barcode] = [history].[Barcode]
+    );
+END;";
+            // 关键逻辑：先回填独立占用表，历史表即使已有重复也不会影响后续新条码的永久唯一性。
+            await db.Ado.ExecuteCommandAsync(ensureReservationTableSql);
+            await db.Ado.ExecuteCommandAsync(@"
+IF OBJECT_ID('EmployeeCashierBarcodes', 'U') IS NOT NULL
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM [EmployeeCashierBarcodes] AS [employee]
+        INNER JOIN [CashierBarcodeReservations] AS [reservation]
+            ON [reservation].[Barcode] = [employee].[Barcode]
+        WHERE ISNULL([reservation].[OwnerType], '') <> 'employee'
+           OR (NULLIF([reservation].[OwnerId], '') IS NOT NULL
+               AND [reservation].[OwnerId] <> [employee].[HGUID])
+    )
+        THROW 51004, 'employee 收银条码与已有占用 owner 冲突，已阻断迁移', 1;
+
+    INSERT INTO [CashierBarcodeReservations] ([Barcode], [CreatedAt], [OwnerType], [OwnerId])
+    SELECT [employee].[Barcode], MIN([employee].[CreatedAt]), 'employee', MIN([employee].[HGUID])
+    FROM [EmployeeCashierBarcodes] AS [employee]
+    WHERE NOT EXISTS (
+        SELECT 1 FROM [CashierBarcodeReservations] AS [reservation]
+        WHERE [reservation].[Barcode] = [employee].[Barcode]
+    )
+    GROUP BY [employee].[Barcode];
+END;");
+
             const string addUserGuidColumnSql =
                 @"
 IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
@@ -199,6 +406,19 @@ BEGIN
         END;
     END;
 
+    IF OBJECT_ID('EmployeeCashierBarcodes', 'U') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+       AND EXISTS (
+           SELECT 1
+           FROM [CashRegisterUsers] AS [legacy]
+           INNER JOIN [EmployeeCashierBarcodes] AS [employee]
+               ON [legacy].[UserGUID] = [employee].[UserGUID]
+           WHERE [legacy].[Status] = 1
+             AND [employee].[Status] = 1
+             AND NULLIF(LTRIM(RTRIM([legacy].[UserGUID])), '') IS NOT NULL
+       )
+        THROW 51005, '同一用户在 legacy 与 employee 表均有有效条码，已阻断迁移', 1;
+
     IF NOT EXISTS (
         SELECT *
         FROM sys.indexes
@@ -231,11 +451,53 @@ BEGIN
         ON [CashRegisterUsers]([UserBarcode])
         WHERE [Status] = 1 AND [UserBarcode] IS NOT NULL AND [UserBarcode] <> '';
     END;
+
+    IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+       AND NOT EXISTS (
+            SELECT * FROM sys.indexes
+            WHERE name = 'IX_CashRegisterUsers_UserBarcode_AllHistory'
+              AND object_id = OBJECT_ID('CashRegisterUsers')
+       )
+       AND NOT EXISTS (
+            SELECT [UserBarcode]
+            FROM [CashRegisterUsers]
+            WHERE [UserBarcode] IS NOT NULL AND [UserBarcode] <> ''
+            GROUP BY [UserBarcode]
+            HAVING COUNT(*) > 1
+       )
+    BEGIN
+        -- 历史条码禁止复用；旧库若已有重复则保留审计数据并跳过建索引，等待人工清理。
+        CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserBarcode_AllHistory]
+        ON [CashRegisterUsers]([UserBarcode])
+        WHERE [UserBarcode] IS NOT NULL AND [UserBarcode] <> '';
+    END;
 END;";
 
-            // 关键逻辑：老表只补 nullable 关联列，StoreCode 继续保留兼容显示；有效条码唯一性按 UserGUID 和 UserBarcode 双重兜底。
+            // 关键逻辑：老表只补 nullable 关联列；新库同时用有效用户索引和全历史条码索引兜底。
             await db.Ado.ExecuteCommandAsync(sql);
-            logger.LogInformation("CashRegisterUsers.UserGUID 列与有效条码唯一索引检查完成");
+            var historicalDuplicateCount = await db.Ado.GetIntAsync(
+                @"
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+   AND COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+BEGIN
+    SELECT COUNT(*) FROM (
+        SELECT [UserBarcode]
+        FROM [CashRegisterUsers]
+        WHERE [UserBarcode] IS NOT NULL AND [UserBarcode] <> ''
+        GROUP BY [UserBarcode]
+        HAVING COUNT(*) > 1
+    ) AS [DuplicateBarcodes];
+END
+ELSE SELECT 0;"
+            );
+            if (historicalDuplicateCount > 0)
+            {
+                logger.LogWarning(
+                    "CashRegisterUsers 存在 {DuplicateCount} 组历史重复条码，已保留审计数据并跳过全历史唯一索引",
+                    historicalDuplicateCount
+                );
+            }
+            logger.LogInformation("CashRegisterUsers.UserGUID 列与条码唯一索引检查完成");
         }
 
         private static async Task EnsureMobileAppBuildSchemaAsync(

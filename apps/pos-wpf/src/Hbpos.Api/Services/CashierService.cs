@@ -21,7 +21,8 @@ public interface ICashierService
 
 public sealed class CashierService(
     HbposSqlSugarContext dbContext,
-    ICashierAuthorizationTicketService ticketService) : ICashierService
+    ICashierAuthorizationTicketService ticketService,
+    ILogger<CashierService> logger) : ICashierService
 {
     public async Task<CashierSessionDto?> BarcodeLoginAsync(
         CashierBarcodeLoginRequest request,
@@ -42,8 +43,23 @@ public sealed class CashierService(
                 x => x.UserBarcode == userBarcode && x.Status,
                 cancellationToken);
 
-        var cashierUserGuid = cashier?.UserGUID?.Trim();
-        if (cashier is null || string.IsNullOrWhiteSpace(cashierUserGuid))
+        var employeeCashier = await dbContext.MainDb.Queryable<EmployeeCashierBarcode>()
+            .FirstAsync(
+                x => x.Barcode == userBarcode && x.Status,
+                cancellationToken);
+        if (cashier is not null && employeeCashier is not null)
+        {
+            // 关键逻辑：双表同时有效表示数据唯一性已损坏，禁止任意选择身份继续授权。
+            var barcodeSuffix = userBarcode.Length <= 4 ? "***" : $"***{userBarcode[^4..]}";
+            logger.LogCritical(
+                "收银条码同时命中 legacy 与 employee 表，已拒绝登录。BarcodeSuffix={BarcodeSuffix}, Legacy={LegacyHguid}, Employee={EmployeeHguid}",
+                barcodeSuffix,
+                cashier.HGUID,
+                employeeCashier.HGUID);
+            return null;
+        }
+        var cashierUserGuid = cashier?.UserGUID?.Trim() ?? employeeCashier?.UserGUID?.Trim();
+        if (string.IsNullOrWhiteSpace(cashierUserGuid))
         {
             return null;
         }
@@ -72,7 +88,8 @@ public sealed class CashierService(
         }
 
         var snapshot = await GetPermissionSnapshotAsync(user.UserGUID, cancellationToken);
-        var cashierId = string.IsNullOrWhiteSpace(cashier.HGUID) ? cashier.Id.ToString() : cashier.HGUID;
+        var cashierId = employeeCashier?.HGUID
+            ?? (string.IsNullOrWhiteSpace(cashier!.HGUID) ? cashier.Id.ToString() : cashier.HGUID);
         var authorization = ticketService.Issue(cashierId, cashierUserGuid, storeCode, deviceCode);
 
         return new CashierSessionDto(

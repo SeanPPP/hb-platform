@@ -12,6 +12,9 @@ using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using BlazorApp.Api.Models;
 using SqlSugar;
 using Xunit;
 
@@ -37,7 +40,11 @@ namespace BlazorApp.Api.Tests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<User, EmployeeProfile>();
+            _db.CodeFirst.InitTables(
+                typeof(User), typeof(EmployeeProfile), typeof(CashRegisterUser),
+                typeof(CashierBarcodeReservation), typeof(EmployeeCashierBarcode),
+                typeof(EmployeeCashierBarcodePrintAttempt), typeof(EmployeeImageUploadTicket)
+            );
         }
 
         [Fact]
@@ -94,6 +101,812 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("Original other address", otherProfile.Address);
         }
 
+        [Fact]
+        public async Task UpsertSelfAsync_WhenPayloadContainsImageUrls_PreservesSavedImages()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(
+                new EmployeeProfile
+                {
+                    EmployeeInfoId = 1,
+                    UserGUID = "user-self",
+                    AvatarUrl = "https://saved/avatar.jpg",
+                    IdentityPhotoUrl = "https://legacy/identity.jpg",
+                    IdentityPhotoObjectKey = "employee-profiles/user-self/identity/saved.jpg",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                }
+            ).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(
+                new EmployeeProfileUpsertDto
+                {
+                    Address = "New address",
+                    AvatarUrl = "https://temporary/avatar.jpg?signature=bad",
+                    IdentityPhotoUrl = "https://temporary/identity.jpg?signature=bad",
+                }
+            );
+
+            Assert.True(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("https://saved/avatar.jpg", profile.AvatarUrl);
+            Assert.Equal("https://legacy/identity.jpg", profile.IdentityPhotoUrl);
+            Assert.Equal("employee-profiles/user-self/identity/saved.jpg", profile.IdentityPhotoObjectKey);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenPrivateIdentityIsManaged_PreservesStableAssociation()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-other",
+                AvatarUrl = "https://old/avatar.jpg",
+                IdentityPhotoUrl = "https://old/identity.jpg",
+                IdentityPhotoObjectKey = "employee-profiles/user-other/identity/private.jpg",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "admin").UpsertAdminAsync(
+                "user-other",
+                new EmployeeProfileUpsertDto
+                {
+                    Address = "admin changed address",
+                    AvatarUrl = "https://new/avatar.jpg",
+                    IdentityPhotoUrl = "https://temporary/identity.jpg?sign=expired",
+                }
+            );
+
+            Assert.True(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-other");
+            Assert.Equal("https://new/avatar.jpg", profile.AvatarUrl);
+            Assert.Equal("https://old/identity.jpg", profile.IdentityPhotoUrl);
+            Assert.Equal("employee-profiles/user-other/identity/private.jpg", profile.IdentityPhotoObjectKey);
+            Assert.Equal("admin changed address", profile.Address);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenIdentityIsLegacy_AllowsLegacyUrlEditing()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-other",
+                IdentityPhotoUrl = "https://old/identity.jpg",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "admin").UpsertAdminAsync(
+                "user-other",
+                new EmployeeProfileUpsertDto { IdentityPhotoUrl = "https://new/identity.jpg" }
+            );
+
+            Assert.True(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-other");
+            Assert.Equal("https://new/identity.jpg", profile.IdentityPhotoUrl);
+            Assert.Null(profile.IdentityPhotoObjectKey);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_RefreshNeverReusesHistoryAndKeepsOneActiveRecord()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+
+            var first = await service.RefreshAsync();
+            var second = await service.RefreshAsync();
+
+            Assert.True(first.Success);
+            Assert.True(second.Success);
+            Assert.NotEqual(first.Data!.Barcode, second.Data!.Barcode);
+            Assert.Equal(13, second.Data.Barcode!.Length);
+            Assert.Equal(
+                1,
+                await _db.Queryable<EmployeeCashierBarcode>()
+                    .CountAsync(item => item.UserGUID == "user-self" && item.Status)
+            );
+            Assert.Equal(
+                2,
+                await _db.Queryable<EmployeeCashierBarcode>()
+                    .CountAsync(item => item.UserGUID == "user-self")
+            );
+        }
+
+        [Fact]
+        public async Task CashierBarcode_RefreshDeactivatesActiveLegacyBarcodeForSameUser()
+        {
+            await _db.Insertable(new CashRegisterUser
+            {
+                HGUID = "legacy-self",
+                UserGUID = "user-self",
+                UserBarcode = "LEGACY-CODE",
+                StoreCode = "S1",
+                OperatorUser = "self_user",
+                LoginRole = "2",
+                Remark = string.Empty,
+                Status = true,
+                Creator = "seed",
+                LastModifier = "seed",
+                CreateDate = DateTime.UtcNow,
+                LastModifyDate = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateBarcodeService("user-self", "self_user").RefreshAsync();
+
+            Assert.True(result.Success);
+            Assert.False((await _db.Queryable<CashRegisterUser>()
+                .FirstAsync(item => item.HGUID == "legacy-self")).Status);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_ConfirmPrintIncrementsCurrentActiveBarcode()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+            await service.RefreshAsync();
+
+            var current = await service.GetAsync();
+            var result = await service.ConfirmPrintAsync(
+                new EmployeeCashierBarcodePrintConfirmationRequest
+                {
+                    Barcode = current.Data!.Barcode!,
+                    PrintAttemptId = Guid.NewGuid(),
+                }
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.Data!.PrintCount);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_ConfirmOldBarcodeAfterRefresh_DoesNotIncrementNewBarcode()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+            var oldBarcode = (await service.RefreshAsync()).Data!.Barcode!;
+            var currentBarcode = (await service.RefreshAsync()).Data!.Barcode!;
+
+            var result = await service.ConfirmPrintAsync(
+                new EmployeeCashierBarcodePrintConfirmationRequest
+                {
+                    Barcode = oldBarcode,
+                    PrintAttemptId = Guid.NewGuid(),
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("CASHIER_BARCODE_CHANGED", result.Code);
+            var current = await _db.Queryable<EmployeeCashierBarcode>()
+                .FirstAsync(item => item.Barcode == currentBarcode);
+            Assert.Equal(0, current.PrintCount);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_WhenReservationCollides_RollsBackAndRetriesWithNewBarcode()
+        {
+            const string reserved = "2900000000001";
+            const string available = "2912345678906";
+            await _db.Insertable(new CashierBarcodeReservation
+            {
+                Barcode = reserved,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var candidates = new Queue<string>(new[] { reserved, available });
+            var service = CreateBarcodeService(
+                "user-self",
+                "self_user",
+                () => candidates.Dequeue()
+            );
+
+            var result = await service.RefreshAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(available, result.Data!.Barcode);
+            Assert.Equal(2, await _db.Queryable<CashierBarcodeReservation>().CountAsync());
+            Assert.Equal(1, await _db.Queryable<EmployeeCashierBarcode>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CashierBarcode_LegacyFullSyncDelete_DoesNotDeleteEmployeeBarcode()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+            var created = await service.RefreshAsync();
+            await _db.Deleteable<CashRegisterUser>().ExecuteCommandAsync();
+
+            var afterLegacyDelete = await service.GetAsync();
+
+            Assert.True(afterLegacyDelete.Success);
+            Assert.True(afterLegacyDelete.Data!.Exists);
+            Assert.Equal(created.Data!.Barcode, afterLegacyDelete.Data.Barcode);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_PrintAttemptIsIdempotent()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+            var barcode = (await service.RefreshAsync()).Data!.Barcode!;
+            var attemptId = Guid.NewGuid();
+            var request = new EmployeeCashierBarcodePrintConfirmationRequest
+            {
+                Barcode = barcode,
+                PrintAttemptId = attemptId,
+            };
+
+            var first = await service.ConfirmPrintAsync(request);
+            var retry = await service.ConfirmPrintAsync(request);
+            var second = await service.ConfirmPrintAsync(
+                new EmployeeCashierBarcodePrintConfirmationRequest
+                {
+                    Barcode = barcode,
+                    PrintAttemptId = Guid.NewGuid(),
+                }
+            );
+
+            Assert.Equal(1, first.Data!.PrintCount);
+            Assert.Equal(1, retry.Data!.PrintCount);
+            Assert.Equal(2, second.Data!.PrintCount);
+            Assert.Equal(2, await _db.Queryable<EmployeeCashierBarcodePrintAttempt>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CashierBarcode_RetryConfirmedAttemptAfterRefresh_ReturnsChanged()
+        {
+            var service = CreateBarcodeService("user-self", "self_user");
+            var oldBarcode = (await service.RefreshAsync()).Data!.Barcode!;
+            var request = new EmployeeCashierBarcodePrintConfirmationRequest
+            {
+                Barcode = oldBarcode,
+                PrintAttemptId = Guid.NewGuid(),
+            };
+            Assert.True((await service.ConfirmPrintAsync(request)).Success);
+            var current = (await service.RefreshAsync()).Data!.Barcode!;
+
+            var retry = await service.ConfirmPrintAsync(request);
+
+            Assert.False(retry.Success);
+            Assert.Equal("CASHIER_BARCODE_CHANGED", retry.Code);
+            Assert.Equal(current, retry.Data?.Barcode);
+        }
+
+        [Fact]
+        public async Task DeleteIdentity_WhenCosDeleteFails_PreservesDatabaseAssociation()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = "employee-profiles/user-self/identity/old.jpg",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService { DeleteSucceeds = false };
+            var service = CreateMediaService("user-self", "self_user", storage);
+
+            var result = await service.DeleteAsync("identity");
+
+            Assert.False(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("employee-profiles/user-self/identity/old.jpg", profile.IdentityPhotoObjectKey);
+        }
+
+        [Fact]
+        public async Task CompleteImage_WhenBytesAreForged_PreservesOldImage()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                AvatarUrl = "https://saved/avatar.jpg",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var key = "pending/employee-profiles/user-self/avatar/new.jpg";
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = key,
+                UserGUID = "user-self",
+                Kind = "avatar",
+                ContentType = "image/jpeg",
+                FileSize = 18,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService
+            {
+                Metadata = new TencentCloudUploadService.CosObjectMetadata
+                {
+                    ContentLength = 18,
+                    ContentType = "image/jpeg",
+                    Owner = "user-self",
+                    Kind = "avatar",
+                    DeclaredContentType = "image/jpeg",
+                    DeclaredFileSize = 18,
+                },
+                Bytes = System.Text.Encoding.UTF8.GetBytes("this is not a jpeg"),
+            };
+            var service = CreateMediaService("user-self", "self_user", storage);
+
+            var result = await service.CompleteAsync(
+                new EmployeeImageCompleteRequest { Kind = "avatar", ObjectKey = key }
+            );
+
+            Assert.False(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("https://saved/avatar.jpg", profile.AvatarUrl);
+            Assert.Contains(key, storage.DeletedKeys);
+        }
+
+        [Fact]
+        public async Task CreateUploadSignature_CreatesPrivatePendingTicketAndLimitsOutstandingUploads()
+        {
+            var storage = new FakeTencentCloudUploadService();
+            var service = CreateMediaService("user-self", "self_user", storage);
+            var request = new EmployeeImageUploadSignatureRequest
+            {
+                Kind = "avatar",
+                FileName = "avatar.jpg",
+                ContentType = "image/jpeg",
+                FileSize = 100,
+            };
+
+            var first = await service.CreateUploadSignatureAsync(request);
+
+            Assert.True(first.Success);
+            Assert.StartsWith("pending/employee-profiles/user-self/avatar/", first.Data!.ObjectKey);
+            Assert.Equal("private", first.Data.Headers["x-cos-acl"]);
+            Assert.Equal(1, await _db.Queryable<EmployeeImageUploadTicket>().CountAsync());
+
+            for (var index = 0; index < 2; index++)
+            {
+                await service.CreateUploadSignatureAsync(request);
+            }
+            var limited = await service.CreateUploadSignatureAsync(request);
+            Assert.False(limited.Success);
+            Assert.Equal("TOO_MANY_PENDING_UPLOADS", limited.Code);
+        }
+
+        [Fact]
+        public async Task CreateUploadSignature_ConcurrentRequests_StillEnforcesPerUserLimit()
+        {
+            var service = CreateMediaService(
+                "user-self",
+                "self_user",
+                new FakeTencentCloudUploadService()
+            );
+            var request = new EmployeeImageUploadSignatureRequest
+            {
+                Kind = "avatar",
+                FileName = "avatar.jpg",
+                ContentType = "image/jpeg",
+                FileSize = 100,
+            };
+
+            var results = await Task.WhenAll(
+                Enumerable.Range(0, 4).Select(_ => service.CreateUploadSignatureAsync(request))
+            );
+
+            Assert.Equal(3, results.Count(result => result.Success));
+            Assert.Single(results, result => result.Code == "TOO_MANY_PENDING_UPLOADS");
+            Assert.Equal(3, await _db.Queryable<EmployeeImageUploadTicket>().CountAsync());
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_DeletesOnlyExpiredPendingTickets()
+        {
+            var now = DateTime.UtcNow;
+            await _db.Insertable(new[]
+            {
+                new EmployeeImageUploadTicket
+                {
+                    PendingObjectKey = "pending/employee-profiles/user-self/avatar/expired.jpg",
+                    UserGUID = "user-self", Kind = "avatar", ContentType = "image/jpeg",
+                    FileSize = 10, CreatedAt = now.AddHours(-1), ExpiresAt = now.AddMinutes(-1),
+                },
+                new EmployeeImageUploadTicket
+                {
+                    PendingObjectKey = "pending/employee-profiles/user-self/avatar/active.jpg",
+                    UserGUID = "user-self", Kind = "avatar", ContentType = "image/jpeg",
+                    FileSize = 10, CreatedAt = now, ExpiresAt = now.AddMinutes(10),
+                },
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService();
+
+            await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db,
+                storage,
+                NullLogger.Instance,
+                now,
+                CancellationToken.None
+            );
+
+            Assert.Contains("pending/employee-profiles/user-self/avatar/expired.jpg", storage.DeletedKeys);
+            var cleaned = await _db.Queryable<EmployeeImageUploadTicket>()
+                .FirstAsync(item => item.PendingObjectKey.Contains("expired"));
+            Assert.Equal(EmployeeImageUploadStatus.Failed, cleaned.Status);
+            Assert.Equal(2, await _db.Queryable<EmployeeImageUploadTicket>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CompleteImage_ConcurrentRetry_PromotesOnceAndReturnsIdempotently()
+        {
+            await SeedUsersAsync();
+            var (key, png, storage) = await SeedValidIdentityTicketAsync();
+            storage.PromoteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            storage.ReleasePromote = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var service = CreateMediaService("user-self", "self_user", storage);
+            var request = new EmployeeImageCompleteRequest { Kind = "identity", ObjectKey = key };
+
+            var first = service.CompleteAsync(request);
+            await storage.PromoteEntered.Task;
+            var retry = service.CompleteAsync(request);
+            storage.ReleasePromote.SetResult();
+            var results = await Task.WhenAll(first, retry);
+
+            Assert.All(results, result => Assert.True(result.Success));
+            Assert.Equal(1, storage.PromoteCount);
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            Assert.Equal(EmployeeImageUploadStatus.Completed, ticket.Status);
+            Assert.NotNull(ticket.CompletedAt);
+            Assert.Equal(png.Length, ticket.FileSize);
+        }
+
+        [Fact]
+        public async Task CompleteImage_RacingDelete_IsSerializedWithoutFormalOrphan()
+        {
+            await SeedUsersAsync();
+            var (key, _, storage) = await SeedValidIdentityTicketAsync();
+            storage.PromoteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            storage.ReleasePromote = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var service = CreateMediaService("user-self", "self_user", storage);
+
+            var complete = service.CompleteAsync(
+                new EmployeeImageCompleteRequest { Kind = "identity", ObjectKey = key }
+            );
+            await storage.PromoteEntered.Task;
+            var delete = service.DeleteAsync("identity");
+            storage.ReleasePromote.SetResult();
+
+            Assert.True((await complete).Success);
+            Assert.True((await delete).Success);
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Null(profile.IdentityPhotoObjectKey);
+            Assert.Contains(ticket.FinalObjectKey!, storage.DeletedKeys);
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_RecoversPromotedAndProcessingTickets()
+        {
+            await SeedUsersAsync();
+            var now = DateTime.UtcNow;
+            const string linkedFinal = "employee-profiles/user-self/identity/linked.png";
+            const string orphanFinal = "employee-profiles/user-self/avatar/orphan.png";
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = linkedFinal,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new EmployeeImageUploadTicket
+                {
+                    PendingObjectKey = "pending/" + linkedFinal,
+                    FinalObjectKey = linkedFinal,
+                    UserGUID = "user-self", Kind = "identity", ContentType = "image/png",
+                    FileSize = 10, CreatedAt = now.AddHours(-1), ExpiresAt = now.AddMinutes(-1),
+                    Status = EmployeeImageUploadStatus.Promoted, PromotedAt = now.AddMinutes(-20),
+                    StageChangedAt = now.AddMinutes(-20),
+                },
+                new EmployeeImageUploadTicket
+                {
+                    PendingObjectKey = "pending/" + orphanFinal,
+                    FinalObjectKey = orphanFinal,
+                    UserGUID = "user-self", Kind = "avatar", ContentType = "image/png",
+                    FileSize = 10, CreatedAt = now.AddHours(-1), ExpiresAt = now.AddMinutes(-1),
+                    Status = EmployeeImageUploadStatus.Processing,
+                    ProcessingStartedAt = now.AddMinutes(-20),
+                    StageChangedAt = now.AddMinutes(-20),
+                },
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService();
+
+            await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db, storage, NullLogger.Instance, now, CancellationToken.None
+            );
+
+            var linked = await _db.Queryable<EmployeeImageUploadTicket>()
+                .FirstAsync(item => item.FinalObjectKey == linkedFinal);
+            var orphan = await _db.Queryable<EmployeeImageUploadTicket>()
+                .FirstAsync(item => item.FinalObjectKey == orphanFinal);
+            Assert.Equal(EmployeeImageUploadStatus.Completed, linked.Status);
+            Assert.Equal(EmployeeImageUploadStatus.Failed, orphan.Status);
+            Assert.DoesNotContain(linkedFinal, storage.DeletedKeys);
+            Assert.Contains(orphanFinal, storage.DeletedKeys);
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_ProcessingJustCrossedSignatureExpiry_DoesNotClean()
+        {
+            var now = DateTime.UtcNow;
+            const string pendingKey = "pending/employee-profiles/user-self/identity/active.png";
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = pendingKey,
+                FinalObjectKey = pendingKey["pending/".Length..],
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = 10,
+                CreatedAt = now.AddMinutes(-20),
+                ExpiresAt = now.AddSeconds(-1),
+                Status = EmployeeImageUploadStatus.Processing,
+                ProcessingStartedAt = now.AddMinutes(-1),
+                StageChangedAt = now.AddMinutes(-1),
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService();
+
+            await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db, storage, NullLogger.Instance, now, CancellationToken.None
+            );
+
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            Assert.Equal(EmployeeImageUploadStatus.Processing, ticket.Status);
+            Assert.Empty(storage.DeletedKeys);
+        }
+
+        [Fact]
+        public async Task CompleteImage_WhenPromotedCasLoses_DoesNotReturnSuccessOrLinkMissingObject()
+        {
+            await SeedUsersAsync();
+            var (key, _, storage) = await SeedValidIdentityTicketAsync();
+            storage.OnPromote = async () => await _db.Updateable<EmployeeImageUploadTicket>()
+                .SetColumns(item => new EmployeeImageUploadTicket
+                {
+                    Status = EmployeeImageUploadStatus.Cleaning,
+                    StageChangedAt = DateTime.UtcNow,
+                })
+                .Where(item => item.PendingObjectKey == key)
+                .ExecuteCommandAsync();
+
+            var result = await CreateMediaService("user-self", "self_user", storage)
+                .CompleteAsync(new EmployeeImageCompleteRequest
+                {
+                    Kind = "identity",
+                    ObjectKey = key,
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("IMAGE_UPLOAD_STATE_CONFLICT", result.Code);
+            Assert.Null(await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self"));
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_CompletedTicket_RecoversPreviousObjectCleanup()
+        {
+            await SeedUsersAsync();
+            var now = DateTime.UtcNow;
+            const string currentKey = "employee-profiles/user-self/identity/current.png";
+            const string previousKey = "employee-profiles/user-self/identity/previous.png";
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = currentKey,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = "pending/" + currentKey,
+                FinalObjectKey = currentKey,
+                PreviousObjectKey = previousKey,
+                PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Pending,
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = 10,
+                CreatedAt = now.AddMinutes(-20),
+                ExpiresAt = now.AddMinutes(-5),
+                Status = EmployeeImageUploadStatus.Completed,
+                CompletedAt = now.AddMinutes(-1),
+                StageChangedAt = now.AddMinutes(-1),
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService();
+
+            await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db, storage, NullLogger.Instance, now, CancellationToken.None
+            );
+
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            Assert.Contains(previousKey, storage.DeletedKeys);
+            Assert.DoesNotContain(currentKey, storage.DeletedKeys);
+            Assert.Equal(
+                EmployeeImageObjectCleanupStatus.Completed,
+                ticket.PreviousObjectCleanupStatus
+            );
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_CompletedTicket_ReclaimsExpiredPreviousCleanupLease()
+        {
+            await SeedUsersAsync();
+            var now = DateTime.UtcNow;
+            const string currentKey = "employee-profiles/user-self/identity/current-lease.png";
+            const string previousKey = "employee-profiles/user-self/identity/previous-lease.png";
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = currentKey,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = "pending/" + currentKey,
+                FinalObjectKey = currentKey,
+                PreviousObjectKey = previousKey,
+                PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Processing,
+                PreviousObjectCleanupStartedAt = now.AddMinutes(-20),
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = 10,
+                CreatedAt = now.AddMinutes(-30),
+                ExpiresAt = now.AddMinutes(-15),
+                Status = EmployeeImageUploadStatus.Completed,
+                CompletedAt = now.AddMinutes(-10),
+                StageChangedAt = now.AddMinutes(-10),
+            }).ExecuteCommandAsync();
+            var storage = new FakeTencentCloudUploadService();
+
+            await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db, storage, NullLogger.Instance, now, CancellationToken.None
+            );
+
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            Assert.Contains(previousKey, storage.DeletedKeys);
+            Assert.Equal(
+                EmployeeImageObjectCleanupStatus.Completed,
+                ticket.PreviousObjectCleanupStatus
+            );
+            Assert.Null(ticket.PreviousObjectCleanupStartedAt);
+        }
+
+        [Fact]
+        public async Task PendingUploadCleanup_RacingComplete_WaitsAndKeepsCompletedFinalObject()
+        {
+            await SeedUsersAsync();
+            var (key, _, storage) = await SeedValidIdentityTicketAsync();
+            storage.PromoteEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            storage.ReleasePromote = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var service = CreateMediaService("user-self", "self_user", storage);
+            var complete = service.CompleteAsync(
+                new EmployeeImageCompleteRequest { Kind = "identity", ObjectKey = key }
+            );
+            await storage.PromoteEntered.Task;
+
+            var cleanup = EmployeeImageUploadCleanup.CleanupExpiredAsync(
+                _db,
+                storage,
+                NullLogger.Instance,
+                DateTime.UtcNow.AddHours(1),
+                CancellationToken.None
+            );
+            storage.ReleasePromote.SetResult();
+            await Task.WhenAll(complete, cleanup);
+            var completeResult = await complete;
+
+            var ticket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+            Assert.True(completeResult.Success);
+            Assert.Equal(EmployeeImageUploadStatus.Completed, ticket.Status);
+            Assert.DoesNotContain(ticket.FinalObjectKey!, storage.DeletedKeys);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task CompleteIdentity_ReplacesAssociationAndObservesOldObjectCleanup(
+            bool deleteSucceeds
+        )
+        {
+            await SeedUsersAsync();
+            const string oldKey = "employee-profiles/user-self/identity/old.png";
+            const string newKey = "pending/employee-profiles/user-self/identity/new.png";
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = oldKey,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var png = Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            );
+            var storage = new FakeTencentCloudUploadService
+            {
+                DeleteSucceeds = deleteSucceeds,
+                Bytes = png,
+                Metadata = CreateMetadata("user-self", "identity", "image/png", png.Length),
+            };
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = newKey,
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = png.Length,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            }).ExecuteCommandAsync();
+            var logger = new CaptureLogger<EmployeeProfileMediaService>();
+            var service = CreateMediaService("user-self", "self_user", storage, logger);
+
+            var result = await service.CompleteAsync(
+                new EmployeeImageCompleteRequest { Kind = "identity", ObjectKey = newKey }
+            );
+
+            Assert.True(result.Success);
+            Assert.Contains(oldKey, storage.DeletedKeys);
+            var profile = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+            Assert.StartsWith("employee-profiles/user-self/identity/", profile.IdentityPhotoObjectKey);
+            if (!deleteSucceeds)
+            {
+                Assert.Contains(
+                    logger.Messages,
+                    message => message.Contains(oldKey) && message.Contains("user-self")
+                );
+            }
+        }
+
+        [Fact]
+        public async Task CompleteIdentity_DoesNotDeleteCrossUserOldObject()
+        {
+            await SeedUsersAsync();
+            const string crossUserKey = "employee-profiles/user-other/identity/old.png";
+            const string newKey = "pending/employee-profiles/user-self/identity/new.png";
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                IdentityPhotoObjectKey = crossUserKey,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var png = Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            );
+            var storage = new FakeTencentCloudUploadService
+            {
+                Bytes = png,
+                Metadata = CreateMetadata("user-self", "identity", "image/png", png.Length),
+            };
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = newKey,
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = png.Length,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            }).ExecuteCommandAsync();
+
+            var result = await CreateMediaService("user-self", "self_user", storage)
+                .CompleteAsync(
+                    new EmployeeImageCompleteRequest { Kind = "identity", ObjectKey = newKey }
+                );
+
+            Assert.True(result.Success);
+            Assert.DoesNotContain(crossUserKey, storage.DeletedKeys);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -124,6 +937,97 @@ namespace BlazorApp.Api.Tests
                 context,
                 currentUserService,
                 NullLogger<EmployeeProfileService>.Instance
+            );
+        }
+
+        private EmployeeCashierBarcodeService CreateBarcodeService(
+            string userGuid,
+            string username,
+            Func<string>? barcodeFactory = null
+        )
+        {
+            var httpContextAccessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(CreateClaims(userGuid, username), "TestAuth")
+                    ),
+                },
+            };
+            return new EmployeeCashierBarcodeService(
+                CreateSqlSugarContext(_db),
+                new CurrentUserService(httpContextAccessor),
+                barcodeFactory
+            );
+        }
+
+        private EmployeeProfileMediaService CreateMediaService(
+            string userGuid,
+            string username,
+            TencentCloudUploadService storage,
+            ILogger<EmployeeProfileMediaService>? logger = null
+        )
+        {
+            var accessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(CreateClaims(userGuid, username), "TestAuth")
+                    ),
+                },
+            };
+            return new EmployeeProfileMediaService(
+                CreateSqlSugarContext(_db),
+                new CurrentUserService(accessor),
+                storage,
+                logger ?? NullLogger<EmployeeProfileMediaService>.Instance
+            );
+        }
+
+        private static TencentCloudUploadService.CosObjectMetadata CreateMetadata(
+            string owner,
+            string kind,
+            string contentType,
+            long size
+        ) => new()
+        {
+            ContentLength = size,
+            ContentType = contentType,
+            Owner = owner,
+            Kind = kind,
+            DeclaredContentType = contentType,
+            DeclaredFileSize = size,
+        };
+
+        private async Task<(string Key, byte[] Bytes, FakeTencentCloudUploadService Storage)>
+            SeedValidIdentityTicketAsync()
+        {
+            const string key = "pending/employee-profiles/user-self/identity/concurrent.png";
+            var png = Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            );
+            await _db.Insertable(new EmployeeImageUploadTicket
+            {
+                PendingObjectKey = key,
+                FinalObjectKey = key["pending/".Length..],
+                UserGUID = "user-self",
+                Kind = "identity",
+                ContentType = "image/png",
+                FileSize = png.Length,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+                Status = EmployeeImageUploadStatus.Pending,
+            }).ExecuteCommandAsync();
+            return (
+                key,
+                png,
+                new FakeTencentCloudUploadService
+                {
+                    Bytes = png,
+                    Metadata = CreateMetadata("user-self", "identity", "image/png", png.Length),
+                }
             );
         }
 
@@ -179,6 +1083,91 @@ namespace BlazorApp.Api.Tests
             yield return new Claim("userId", userGuid);
             yield return new Claim(ClaimTypes.NameIdentifier, userGuid);
             yield return new Claim(ClaimTypes.Name, username);
+        }
+
+        private sealed class FakeTencentCloudUploadService : TencentCloudUploadService
+        {
+            public bool DeleteSucceeds { get; set; } = true;
+            public byte[] Bytes { get; set; } = Array.Empty<byte>();
+            public CosObjectMetadata Metadata { get; set; } = new();
+            public List<string> DeletedKeys { get; } = new();
+            public int PromoteCount { get; private set; }
+            public TaskCompletionSource? PromoteEntered { get; set; }
+            public TaskCompletionSource? ReleasePromote { get; set; }
+            public Func<Task>? OnPromote { get; set; }
+
+            public FakeTencentCloudUploadService()
+                : base(
+                    Options.Create(new TencentCloudSettings
+                    {
+                        SecretId = "id",
+                        SecretKey = "key",
+                        BucketName = "bucket",
+                        Region = "region",
+                    }),
+                    NullLogger<TencentCloudUploadService>.Instance,
+                    new HttpClient()
+                )
+            { }
+
+            public override Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(
+                string objectKey,
+                CancellationToken cancellationToken = default
+            ) => Task.FromResult(ApiResponse<CosObjectMetadata>.OK(Metadata));
+
+            public override Task<ApiResponse<byte[]>> DownloadObjectBytesAsync(
+                string objectKey,
+                int maximumBytes,
+                CancellationToken cancellationToken = default
+            ) => Task.FromResult(ApiResponse<byte[]>.OK(Bytes));
+
+            public override Task<ApiResponse<bool>> DeleteObjectAsync(
+                string objectKey,
+                CancellationToken cancellationToken = default
+            )
+            {
+                DeletedKeys.Add(objectKey);
+                return Task.FromResult(
+                    DeleteSucceeds
+                        ? ApiResponse<bool>.OK(true)
+                        : ApiResponse<bool>.Error("delete failed", "COS_OBJECT_DELETE_FAILED")
+                );
+            }
+
+            public override async Task<ApiResponse<bool>> PromoteObjectAsync(
+                string sourceObjectKey,
+                string targetObjectKey,
+                string contentType,
+                bool isPublic,
+                CancellationToken cancellationToken = default
+            )
+            {
+                PromoteCount++;
+                if (OnPromote is not null)
+                {
+                    await OnPromote();
+                }
+                PromoteEntered?.TrySetResult();
+                if (ReleasePromote is not null)
+                {
+                    await ReleasePromote.Task.WaitAsync(cancellationToken);
+                }
+                return ApiResponse<bool>.OK(true);
+            }
+        }
+
+        private sealed class CaptureLogger<T> : ILogger<T>
+        {
+            public List<string> Messages { get; } = new();
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter
+            ) => Messages.Add(formatter(state, exception));
         }
     }
 }

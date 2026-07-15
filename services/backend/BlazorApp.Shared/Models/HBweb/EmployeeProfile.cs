@@ -52,6 +52,9 @@ namespace BlazorApp.Shared.Models
         public string? IdentityPhotoUrl { get; set; }
 
         [SugarColumn(IsNullable = true, Length = 500)]
+        public string? IdentityPhotoObjectKey { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 500)]
         public string? Address { get; set; }
 
         [Navigate(NavigateType.OneToOne, nameof(UserGUID), nameof(User.UserGUID))]

@@ -61,3 +61,8 @@ export interface WarehouseLocationLabelPrintPayload {
   middlePackageQuantity?: number | null;
   productCount: number;
 }
+
+export interface EmployeeCashierBarcodeLabelPrintPayload {
+  employeeName: string;
+  barcode: string;
+}

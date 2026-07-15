@@ -6,7 +6,7 @@ import { Image, StyleSheet, Text, View } from "react-native";
 import { PaperProvider, MD3LightTheme } from "react-native-paper";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider } from "react-i18next";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
@@ -14,18 +14,10 @@ import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-bu
 import { useAutomaticAppUpdate } from "@/modules/updates/use-automatic-app-update";
 import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-native-app-update";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
+import { queryClient } from "@/shared/api/query-client";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
 import "@/modules/attendance/location-tracking";
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000,
-      retry: 1,
-    },
-  },
-});
 
 const MIN_SPLASH_VISIBLE_MS = 900;
 

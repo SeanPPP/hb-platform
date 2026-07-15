@@ -56,6 +56,7 @@ namespace BlazorApp.Shared.DTOs
         public string? AvatarUrl { get; set; }
         public string? IdentityId { get; set; }
         public string? IdentityPhotoUrl { get; set; }
+        public DateTime? IdentityPhotoUrlExpiresAt { get; set; }
         public string? Address { get; set; }
         public DateTime? CreatedAt { get; set; }
         public string? CreatedBy { get; set; }
@@ -102,5 +103,44 @@ namespace BlazorApp.Shared.DTOs
 
         [StringLength(500)]
         public string? Address { get; set; }
+    }
+
+    public sealed class EmployeeImageUploadSignatureRequest
+    {
+        [Required]
+        public string Kind { get; set; } = string.Empty;
+        [Required]
+        public string FileName { get; set; } = string.Empty;
+        [Required]
+        public string ContentType { get; set; } = string.Empty;
+        [Range(1, 5 * 1024 * 1024)]
+        public long FileSize { get; set; }
+    }
+
+    public sealed class EmployeeImageCompleteRequest
+    {
+        [Required]
+        public string Kind { get; set; } = string.Empty;
+        [Required]
+        public string ObjectKey { get; set; } = string.Empty;
+    }
+
+    public sealed class EmployeeCashierBarcodeDto
+    {
+        public bool Exists { get; set; }
+        public string? Barcode { get; set; }
+        public string Format { get; set; } = "EAN-13";
+        public int PrintCount { get; set; }
+        public DateTime? CreatedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public sealed class EmployeeCashierBarcodePrintConfirmationRequest
+    {
+        [Required]
+        [StringLength(13, MinimumLength = 13)]
+        public string Barcode { get; set; } = string.Empty;
+        [Required]
+        public Guid PrintAttemptId { get; set; }
     }
 }

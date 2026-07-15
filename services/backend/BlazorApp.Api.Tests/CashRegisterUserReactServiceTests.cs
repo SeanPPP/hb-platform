@@ -35,6 +35,8 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
 
         _db.CodeFirst.InitTables(
             typeof(CashRegisterUser),
+            typeof(CashierBarcodeReservation),
+            typeof(EmployeeCashierBarcode),
             typeof(User),
             typeof(Store),
             typeof(UserStore)
@@ -74,6 +76,60 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateAsync_启用Legacy条码时停用同用户个人条码()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedStoreAsync("store-1", "S1");
+        await SeedEmployeeCashierAsync("employee-1", "user-1", "2900000000001");
+
+        var result = await CreateService().CreateAsync(
+            new CreateCashRegisterUserDto
+            {
+                StoreCode = "S1",
+                UserGUID = "user-1",
+                OperatorUser = "Alice",
+                UserBarcode = "NEW-CODE",
+                LoginRole = "2",
+                Status = true,
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success);
+        Assert.False((await _db.Queryable<EmployeeCashierBarcode>()
+            .FirstAsync(item => item.HGUID == "employee-1")).Status);
+    }
+
+    [Fact]
+    public async Task CreateAsync_拒绝复用个人或历史已占用条码()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedStoreAsync("store-1", "S1");
+        await _db.Insertable(new CashierBarcodeReservation
+        {
+            Barcode = "RESERVED-CODE",
+            CreatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().CreateAsync(
+            new CreateCashRegisterUserDto
+            {
+                StoreCode = "S1",
+                UserGUID = "user-1",
+                OperatorUser = "Alice",
+                UserBarcode = "RESERVED-CODE",
+                LoginRole = "2",
+                Status = true,
+            },
+            "tester"
+        );
+
+        Assert.False(result.Success);
+        Assert.False(await _db.Queryable<CashRegisterUser>()
+            .AnyAsync(item => item.UserBarcode == "RESERVED-CODE"));
+    }
+
+    [Fact]
     public async Task UpdateAsync_拒绝启用其他用户已启用条码()
     {
         await SeedActiveUserAsync("user-1", "Alice");
@@ -96,6 +152,32 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
         );
 
         Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_启用Legacy条码时停用同用户个人条码()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedCashierAsync("cashier-1", "user-1", "CODE-1", status: false);
+        await SeedEmployeeCashierAsync("employee-1", "user-1", "2900000000001");
+
+        var result = await CreateService().UpdateAsync(
+            "cashier-1",
+            new UpdateCashRegisterUserDto
+            {
+                StoreCode = "S1",
+                UserGUID = "user-1",
+                OperatorUser = "Alice",
+                UserBarcode = "CODE-1",
+                LoginRole = "2",
+                Status = true,
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success);
+        Assert.False((await _db.Queryable<EmployeeCashierBarcode>()
+            .FirstAsync(item => item.HGUID == "employee-1")).Status);
     }
 
     [Fact]
@@ -303,6 +385,19 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
             LastModifier = "seed",
             CreateDate = DateTime.UtcNow,
             LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedEmployeeCashierAsync(string hGuid, string userGuid, string barcode)
+    {
+        await _db.Insertable(new EmployeeCashierBarcode
+        {
+            HGUID = hGuid,
+            UserGUID = userGuid,
+            Barcode = barcode,
+            Status = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
         }).ExecuteCommandAsync();
     }
 

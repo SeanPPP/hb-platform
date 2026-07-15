@@ -644,6 +644,91 @@ public sealed class StartupSchemaMigratorStartupContractTests
         );
     }
 
+    [Fact]
+    public async Task CashierBarcodeMigration_BackfillsDistinctHistoricalReservations()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains("CREATE TABLE [CashierBarcodeReservations]", migrator);
+        Assert.Contains("PRIMARY KEY", migrator);
+        Assert.Contains("SELECT DISTINCT", migrator);
+        Assert.Contains("FROM [CashRegisterUsers]", migrator);
+        Assert.Contains("CREATE TABLE [EmployeeCashierBarcodes]", migrator);
+        Assert.Contains("FROM [EmployeeCashierBarcodes]", migrator);
+        Assert.Contains("CREATE TABLE [EmployeeCashierBarcodePrintAttempts]", migrator);
+        Assert.Contains("EmployeeImageUploadTickets", migrator);
+    }
+
+    [Fact]
+    public async Task HqFullSync_OwnsOnlyLegacyCashRegisterUsers()
+    {
+        var source = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs"
+            )
+        );
+        var guard = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Services/React/CashierBarcodeSyncGuard.cs"
+            )
+        );
+        Assert.Contains("Deleteable<CashRegisterUser>()", source);
+        Assert.DoesNotContain("Deleteable<EmployeeCashierBarcode>()", source);
+        Assert.Contains("ValidateAndReserveHqBatchAsync", source);
+        Assert.Contains("Queryable<CashierBarcodeReservation>()", guard);
+        Assert.Contains("HQ 收银条码与员工个人条码冲突", guard);
+    }
+
+    [Fact]
+    public async Task CashierBarcodeMigration_发现跨Owner或跨表冲突时必须阻断且不覆盖()
+    {
+        var source = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs")
+        );
+
+        Assert.Contains("THROW 51001", source);
+        Assert.Contains("THROW 51002", source);
+        Assert.Contains("THROW 51005", source);
+        Assert.Contains("[legacy].[UserGUID] = [employee].[UserGUID]", source);
+        Assert.DoesNotContain("SET [OwnerType] = 'employee'", source);
+    }
+
+    [Fact]
+    public async Task HqCashierSync_全量删除前完整预检且增量批写入使用事务()
+    {
+        var root = FindRepoRoot();
+        var full = await File.ReadAllTextAsync(Path.Combine(
+            root, "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs"));
+        var incremental = await File.ReadAllTextAsync(Path.Combine(
+            root, "services/backend/BlazorApp.Api/Services/React/DataSyncIncrementalService.cs"));
+
+        Assert.True(
+            full.IndexOf("ValidateAndReserveHqBatchAsync", StringComparison.Ordinal)
+                < full.IndexOf("Deleteable<CashRegisterUser>()", StringComparison.Ordinal),
+            "全量同步必须在删除旧表前完成全部 HQ 条码预检。"
+        );
+        var deleteIndex = full.IndexOf("Deleteable<CashRegisterUser>()", StringComparison.Ordinal);
+        var nextMethodIndex = full.IndexOf(
+            "SyncPosmProductSupplierMappingsAsync",
+            deleteIndex,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "Queryable<DIC_收银用户信息表>()",
+            full[deleteIndex..nextMethodIndex]
+        );
+        Assert.Contains("await _localContext.Db.Ado.BeginTranAsync();", incremental);
+        Assert.Contains("ValidateAndReserveHqBatchAsync", incremental);
+        Assert.Contains("await _localContext.Db.Ado.RollbackTranAsync();", incremental);
+    }
+
     private static string FindRepoRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

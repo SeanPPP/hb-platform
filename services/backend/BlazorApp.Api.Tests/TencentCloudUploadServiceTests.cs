@@ -94,6 +94,72 @@ public sealed class TencentCloudUploadServiceTests
         );
     }
 
+    [Fact]
+    public async Task DownloadObjectBytesAsync_超过限制时拒绝且不无界读取()
+    {
+        var handler = new ByteResponseHandler(new byte[1025]);
+        var service = CreateService(handler);
+
+        var result = await service.DownloadObjectBytesAsync("employee/image.jpg", 1024);
+
+        Assert.False(result.Success);
+        Assert.Equal("COS_OBJECT_TOO_LARGE", result.Code);
+        Assert.Equal(HttpMethod.Get, handler.Request!.Method);
+    }
+
+    [Fact]
+    public async Task DeleteObjectAsync_使用签名Delete请求()
+    {
+        var handler = new ByteResponseHandler(Array.Empty<byte>());
+        var service = CreateService(handler);
+
+        var result = await service.DeleteObjectAsync("employee/image.jpg");
+
+        Assert.True(result.Success);
+        Assert.Equal(HttpMethod.Delete, handler.Request!.Method);
+        Assert.Contains("q-sign-algorithm=sha1", handler.Request.RequestUri!.Query);
+    }
+
+    [Fact]
+    public void GetDirectUploadSignature_私有Acl和归属元数据参与签名()
+    {
+        var service = CreateService(new CaptureHandler());
+        var signature = service.GetDirectUploadSignature(
+            "employee-profiles/user-a/identity/token.jpg",
+            "image/jpeg",
+            900,
+            new Dictionary<string, string>
+            {
+                ["x-cos-acl"] = "private",
+                ["x-cos-meta-owner"] = "user-a",
+            }
+        );
+
+        Assert.Equal("private", signature.Headers["x-cos-acl"]);
+        Assert.Equal("user-a", signature.Headers["x-cos-meta-owner"]);
+        var query = Uri.UnescapeDataString(new Uri(signature.Url).Query);
+        Assert.Contains("x-cos-acl", query);
+        Assert.Contains("x-cos-meta-owner", query);
+    }
+
+    [Fact]
+    public void GetSignedDownloadUrl_使用五分钟短期签名()
+    {
+        var service = CreateService(new CaptureHandler());
+
+        var url = service.GetSignedDownloadUrl(
+            "employee-profiles/user-a/identity/token.jpg",
+            300
+        );
+
+        Assert.Contains("q-sign-time=1782172800%3B1782173100", url);
+        var signed = service.GetSignedDownload(
+            "employee-profiles/user-a/identity/token.jpg",
+            300
+        );
+        Assert.Equal(new DateTime(2026, 6, 23, 0, 5, 0, DateTimeKind.Utc), signed.ExpiresAtUtc);
+    }
+
     private static TencentCloudUploadService CreateService(HttpMessageHandler handler)
     {
         return new TencentCloudUploadService(
@@ -150,6 +216,31 @@ public sealed class TencentCloudUploadServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class ByteResponseHandler : HttpMessageHandler
+    {
+        private readonly byte[] _bytes;
+        public HttpRequestMessage? Request { get; private set; }
+
+        public ByteResponseHandler(byte[] bytes)
+        {
+            _bytes = bytes;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            Request = request;
+            return Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(_bytes),
+                }
+            );
         }
     }
 }

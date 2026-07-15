@@ -1,4 +1,5 @@
 import type {
+  EmployeeCashierBarcodeLabelPrintPayload,
   ProductLabelPrintPayload,
   WarehouseLocationLabelPrintPayload,
   WarehouseProductLabelPrintPayload,
@@ -237,6 +238,26 @@ export function buildProductLabelCommand(payload: ProductLabelPrintPayload, prin
   lines.push(text(4, priceDotX, priceTopY + 38, "."));
   lines.push(text(4, priceDecimalX, priceTopY, price.decimal));
   lines.push(text(4, dateX, 175, dateValue));
+  lines.push("PRINT");
+  return command(lines);
+}
+
+export function buildEmployeeCashierBarcodeLabelCommand(
+  payload: EmployeeCashierBarcodeLabelPrintPayload
+) {
+  const employeeName = cpclText(payload.employeeName, 30) || "--";
+  const barcodeValue = cpclText(payload.barcode);
+  if (!isValidEan13(barcodeValue)) {
+    throw new Error("Employee cashier barcode must be a valid EAN13 value.");
+  }
+
+  const lines = [
+    `! 0 200 200 ${STANDARD_HEIGHT} 1`,
+    `PAGE-WIDTH ${STANDARD_WIDTH}`,
+    text(7, 20, 30, employeeName, 30),
+    "BARCODE-TEXT 7 0 8",
+  ];
+  addBarcode(lines, "EAN13", 20, 112, barcodeValue, 72);
   lines.push("PRINT");
   return command(lines);
 }

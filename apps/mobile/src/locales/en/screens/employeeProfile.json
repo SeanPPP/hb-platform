@@ -44,21 +44,28 @@
   },
   "actions": {
     "save": "Save profile",
-    "takePhoto": "Take photo",
+    "takePhoto": "Camera",
+    "choosePhoto": "Library",
     "retakePhoto": "Retake photo",
-    "removeImage": "Remove image",
+    "removeImage": "Remove",
     "grantCameraPermission": "Allow camera",
-    "capture": "Capture"
+    "capture": "Capture",
+    "switchCamera": "Switch camera",
+    "openSettings": "Open settings"
   },
   "messages": {
     "loadFailed": "Failed to load your profile.",
     "saveSuccess": "Your profile has been saved.",
     "saveFailed": "Failed to save your profile.",
     "loginRequired": "Please sign in before opening your profile.",
-    "uploadSuccess": "Image uploaded. Save your profile to keep it.",
+    "uploadSuccess": "Image uploaded and saved.",
     "uploadFailed": "Failed to upload image.",
     "uploadNotAvailable": "This server does not support employee profile image uploads yet.",
-    "imageRemoved": "Image removed. Save your profile to keep the change.",
+    "imageRemoved": "Image removed.",
+    "removeImageFailed": "Failed to remove image.",
+    "processingImage": "Processing and saving image...",
+    "cameraCaptureFailed": "The camera could not capture this photo. Try again or choose one from your library.",
+    "libraryPermissionBlocked": "Photo library access is blocked. Open system settings to allow it.",
     "permissionRequired": "Camera permission is required to take a photo.",
     "cameraReady": "Take a clear photo and upload it."
   },
@@ -71,5 +78,46 @@
     "title": "Take photo",
     "permissionTitle": "Camera access required",
     "permissionDescription": "Allow camera access to take and upload your profile images."
+  },
+  "imageErrors": {
+    "decode_failed": "This image cannot be decoded. Choose another image.",
+    "blob_read_failed": "The processed image cannot be read. Try another image.",
+    "file_too_large": "The image is still over 5 MiB after compression. Choose a smaller image."
+  },
+  "cashierBarcode": {
+    "title": "Personal cashier barcode",
+    "loading": "Loading barcode...",
+    "empty": "No cashier barcode yet. Refresh to create one.",
+    "loadFailed": "Failed to load cashier barcode.",
+    "refresh": "Refresh barcode",
+    "refreshTitle": "Refresh cashier barcode?",
+    "refreshDescription": "The current barcode will stop working immediately after a new one is created.",
+    "refreshFailed": "Failed to refresh cashier barcode.",
+    "print": "Print label",
+    "retryConfirmation": "Retry confirmation",
+    "resolvePrintStatus": "Resolve print status",
+    "confirmationPendingTitle": "Label printed",
+    "confirmationPending": "The label was printed, but confirmation could not be saved. Tap retry confirmation. Do not print another label.",
+    "uncertainTitle": "Was the label printed?",
+    "uncertainDescription": "The app closed or lost connection during printing. Check the printer before choosing. We will not print or count it automatically.",
+    "printedConfirmOnly": "Printed — confirm count only",
+    "notPrintedReprint": "Not printed — print again",
+    "recoveryFailedTitle": "Print status unavailable",
+    "recoveryFailed": "The saved print status could not be read. Close this page and try again before printing.",
+    "revalidationFailedTitle": "Barcode check failed",
+    "revalidationFailed": "The latest barcode could not be checked. Nothing was printed and the pending status was kept. Try again when connected.",
+    "printFailed": "Failed to print cashier barcode label.",
+    "changedTitle": "Barcode updated",
+    "changed": "This pending print belongs to an old barcode and cannot be confirmed. It was cleared and the latest barcode has been reloaded.",
+    "printCount_one": "Printed {{count}} time",
+    "printCount_other": "Printed {{count}} times",
+    "openPrinterSettings": "Printer settings",
+    "printErrors": {
+      "noPrinter": "No label printer is selected. Choose one in printer settings.",
+      "bluetoothDisabled": "Bluetooth is turned off. Turn it on and try again.",
+      "permissionDenied": "Bluetooth permission was denied. Allow it in system settings and try again.",
+      "connectionFailed": "The saved label printer could not be connected. Check the printer and try again.",
+      "unknown": "The label could not be printed. Check printer settings and try again."
+    }
   }
 }

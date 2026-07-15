@@ -7,6 +7,7 @@ using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Cashiers;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
 
 namespace Hbpos.Api.Tests;
@@ -33,6 +34,7 @@ public sealed class CashierServiceTests : IDisposable
 
         _db.CodeFirst.InitTables(
             typeof(CashRegisterUser),
+            typeof(EmployeeCashierBarcode),
             typeof(User),
             typeof(Store),
             typeof(UserStore),
@@ -122,6 +124,66 @@ public sealed class CashierServiceTests : IDisposable
         Assert.Contains(Permissions.PosTerminal.CashDrawer.Open, allowed.PermissionCodes);
     }
 
+    [Fact]
+    public async Task BarcodeLoginAsync_EmployeeBarcodeSurvivesLegacyFullSyncDeleteAndKeepsAuthorizationChecks()
+    {
+        await SeedStoreAsync("store-allowed", "S-ALLOWED");
+        await SeedStoreAsync("store-blocked", "S-BLOCKED");
+        await SeedUserAsync("employee-1", "Employee One");
+        await SeedUserStoreAsync("employee-1", "store-allowed");
+        await _db.Insertable(new EmployeeCashierBarcode
+        {
+            HGUID = "employee-cashier-1",
+            UserGUID = "employee-1",
+            Barcode = "2900000000001",
+            Status = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _db.Deleteable<CashRegisterUser>().ExecuteCommandAsync();
+
+        var blocked = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-BLOCKED", "2900000000001", "POS-1"),
+            CancellationToken.None
+        );
+        var allowed = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-ALLOWED", "2900000000001", "POS-1"),
+            CancellationToken.None
+        );
+
+        Assert.Null(blocked);
+        Assert.NotNull(allowed);
+        Assert.Equal("employee-cashier-1", allowed.CashierId);
+        Assert.Equal("employee-1", allowed.UserGuid);
+    }
+
+    [Fact]
+    public async Task BarcodeLoginAsync_同一条码双表同时有效时拒绝登录()
+    {
+        await SeedStoreAsync("store-allowed", "S-ALLOWED");
+        await SeedUserAsync("legacy-user", "Legacy User");
+        await SeedUserAsync("employee-user", "Employee User");
+        await SeedUserStoreAsync("legacy-user", "store-allowed");
+        await SeedUserStoreAsync("employee-user", "store-allowed");
+        await SeedCashierAsync("legacy-cashier", "legacy-user", "DUPLICATE-CODE", "DUPLICATE-CODE");
+        await _db.Insertable(new EmployeeCashierBarcode
+        {
+            HGUID = "employee-cashier",
+            UserGUID = "employee-user",
+            Barcode = "DUPLICATE-CODE",
+            Status = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var session = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-ALLOWED", "DUPLICATE-CODE", "POS-1"),
+            CancellationToken.None
+        );
+
+        Assert.Null(session);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -133,7 +195,10 @@ public sealed class CashierServiceTests : IDisposable
         }
     }
 
-    private CashierService CreateService() => new(CreateHbposContext(_db), new FakeTicketService());
+    private CashierService CreateService() => new(
+        CreateHbposContext(_db),
+        new FakeTicketService(),
+        NullLogger<CashierService>.Instance);
 
     private sealed class FakeTicketService : ICashierAuthorizationTicketService
     {

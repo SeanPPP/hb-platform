@@ -3427,20 +3427,42 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogInformation("[ReactSync] 收银用户同步：检查HQ连接");
                 _hqContext.CheckConnection();
 
+                var total = await _hqContext.Db.Queryable<DIC_收银用户信息表>().CountAsync();
+                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+
                 await _localContext.Db.Ado.BeginTranAsync();
                 try
                 {
+                    await CashierBarcodeMutationLock.AcquireAsync(_localContext.Db);
+                    // 关键逻辑：必须完整扫描 HQ 并在同一事务预占全部条码，任何冲突都发生在删除旧表之前。
+                    var preflightBatches = new List<List<CashRegisterUser>>(pages);
+                    for (var page = 1; page <= pages; page++)
+                    {
+                        var preflightBatch = await _hqContext
+                            .Db.Queryable<DIC_收银用户信息表>()
+                            .OrderBy(item => item.ID)
+                            .Skip((page - 1) * hqBatchSize)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        if (preflightBatch.Count == 0)
+                        {
+                            continue;
+                        }
+                        var localPreflightBatch = _mapper.Map<List<CashRegisterUser>>(preflightBatch);
+                        await CashierBarcodeSyncGuard.ValidateAndReserveHqBatchAsync(
+                            _localContext.Db,
+                            localPreflightBatch
+                        );
+                        preflightBatches.Add(localPreflightBatch);
+                    }
+
                     _logger.LogInformation("[ReactSync] 清空本地 CashRegisterUser 表");
                     await _localContext
                         .Db.Deleteable<CashRegisterUser>()
                         .AS("CashRegisterUsers")
                         .ExecuteCommandAsync();
 
-                    var total = await _hqContext.Db.Queryable<DIC_收银用户信息表>().CountAsync();
-
-                    var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
                     var added = 0;
-                    var errors = 0;
 
                     _logger.LogInformation(
                         "[ReactSync] 收银用户总计: {Total}, 分为 {Pages} 页",
@@ -3448,57 +3470,29 @@ namespace BlazorApp.Api.Services.React
                         pages
                     );
 
-                    for (var page = 1; page <= pages; page++)
+                    for (var pageIndex = 0; pageIndex < preflightBatches.Count; pageIndex++)
                     {
-                        var skip = (page - 1) * hqBatchSize;
-                        var batch = await _hqContext
-                            .Db.Queryable<DIC_收银用户信息表>()
-                            .OrderBy(x => x.ID)
-                            .Skip(skip)
-                            .Take(hqBatchSize)
-                            .ToListAsync();
+                        var localBatch = preflightBatches[pageIndex];
 
-                        if (!batch.Any())
-                            continue;
-
-                        var localBatch = _mapper.Map<List<CashRegisterUser>>(batch);
-
-                        try
-                        {
-                            await _localContext
-                                .Db.Fastest<CashRegisterUser>()
-                                .AS("CashRegisterUsers")
-                                .PageSize(writePageSize)
-                                .BulkCopyAsync(localBatch);
-                            added += localBatch.Count;
-                            _logger.LogInformation(
-                                "[ReactSync] 收银用户第{Page}/{TotalPages}页完成，新增{Count}条",
-                                page,
-                                pages,
-                                localBatch.Count
-                            );
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(
-                                ex,
-                                "[ReactSync] CashRegisterUser 批{Page} 插入失败 批大小{Size}",
-                                page,
-                                localBatch.Count
-                            );
-                            errors += localBatch.Count;
-                            await Task.Delay(1500);
-                        }
-                        batch.Clear();
-                        localBatch.Clear();
+                        await _localContext
+                            .Db.Fastest<CashRegisterUser>()
+                            .AS("CashRegisterUsers")
+                            .PageSize(writePageSize)
+                            .BulkCopyAsync(localBatch);
+                        added += localBatch.Count;
+                        _logger.LogInformation(
+                            "[ReactSync] 收银用户第{Page}/{TotalPages}页完成，新增{Count}条",
+                            pageIndex + 1,
+                            pages,
+                            localBatch.Count
+                        );
                     }
 
                     await _localContext.Db.Ado.CommitTranAsync();
                     result.AddedCount = added;
-                    result.ErrorCount = errors;
-                    result.IsSuccess = errors == 0;
-                    result.Message =
-                        errors == 0 ? "收银用户同步成功" : "收银用户同步完成，但存在错误";
+                    result.ErrorCount = 0;
+                    result.IsSuccess = true;
+                    result.Message = "收银用户同步成功";
                 }
                 catch (Exception exTran)
                 {

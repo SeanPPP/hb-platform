@@ -1,11 +1,10 @@
 import {
+  completeEmployeeProfileImageUploadApi,
   getEmployeeProfileImageUploadSignature,
   uploadEmployeeProfileImageBlobToSignedUrl,
 } from "@/modules/employee-profile/api";
-import type {
-  EmployeeProfileImageKind,
-  EmployeeProfileImageUploadResult,
-} from "@/modules/employee-profile/types";
+import { completeEmployeeProfileImageUpload } from "@/modules/employee-profile/image-upload-workflow";
+import type { EmployeeProfileImageKind } from "@/modules/employee-profile/types";
 import { i18n } from "@/shared/i18n/i18n";
 
 export class EmployeeProfileImageUploadError extends Error {
@@ -15,19 +14,6 @@ export class EmployeeProfileImageUploadError extends Error {
     super(message);
     this.code = code;
   }
-}
-
-function sanitizeFileName(fileName: string) {
-  const trimmed = fileName.trim();
-  if (!trimmed) {
-    return "photo.jpg";
-  }
-
-  return trimmed.replace(/[^a-zA-Z0-9._-]/g, "-");
-}
-
-function buildObjectKey(kind: EmployeeProfileImageKind, fileName: string) {
-  return `employee-profile/${kind}/${Date.now()}-${sanitizeFileName(fileName)}`;
 }
 
 function isMissingUploadSignatureError(error: unknown) {
@@ -44,26 +30,22 @@ export async function uploadEmployeeProfileImage(params: {
   uri: string;
   fileName: string;
   contentType?: string;
-}): Promise<EmployeeProfileImageUploadResult> {
+  fileSize: number;
+}) {
   const contentType = params.contentType ?? "image/jpeg";
-  const fileResponse = await fetch(params.uri);
-  const fileBlob = await fileResponse.blob();
-
-  if (!fileBlob.size) {
-    throw new EmployeeProfileImageUploadError(
-      "upload_failed",
-      i18n.t("common:errors.requestFailed")
-    );
-  }
-
-  let signature;
   try {
-    signature = await getEmployeeProfileImageUploadSignature(params.kind, {
-      fileName: params.fileName,
-      contentType,
-      fileSize: fileBlob.size,
-      objectKey: buildObjectKey(params.kind, params.fileName),
-    });
+    return await completeEmployeeProfileImageUpload(
+      { ...params, contentType },
+      {
+        readBlob: async (uri) => {
+          const response = await fetch(uri);
+          return response.blob();
+        },
+        requestSignature: getEmployeeProfileImageUploadSignature,
+        uploadBlob: uploadEmployeeProfileImageBlobToSignedUrl,
+        completeUpload: completeEmployeeProfileImageUploadApi,
+      }
+    );
   } catch (error) {
     if (isMissingUploadSignatureError(error)) {
       throw new EmployeeProfileImageUploadError(
@@ -71,21 +53,12 @@ export async function uploadEmployeeProfileImage(params: {
         i18n.t("common:errors.requestFailed")
       );
     }
-
-    throw error;
-  }
-
-  try {
-    await uploadEmployeeProfileImageBlobToSignedUrl(fileBlob, signature);
-  } catch (error) {
+    if (error instanceof EmployeeProfileImageUploadError) {
+      throw error;
+    }
     throw new EmployeeProfileImageUploadError(
       "upload_failed",
       error instanceof Error ? error.message : i18n.t("common:errors.requestFailed")
     );
   }
-
-  return {
-    objectKey: signature.objectKey,
-    downloadUrl: signature.url.split("?")[0] ?? "",
-  };
 }

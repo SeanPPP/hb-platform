@@ -481,6 +481,9 @@ builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录�
 builder.Services.AddScoped<IServiceApiTokenService, ServiceApiTokenService>(); // 后台自动化 service API token
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
+builder.Services.AddScoped<EmployeeProfileMediaService>();
+builder.Services.AddScoped<EmployeeCashierBarcodeService>();
+builder.Services.AddHostedService<EmployeeImageUploadCleanupBackgroundService>();
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
 builder.Services.AddScoped<IStoreService, StoreService>(); // 分店管理服务
 builder.Services.AddScoped<StoreSyncService>(); // 分店数据同步服务

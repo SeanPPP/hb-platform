@@ -634,6 +634,17 @@ namespace BlazorApp.Api.Services.React
                 })
                 .Where(u => u.UserGUID == userGuid && u.HGUID != currentHGuid && u.Status)
                 .ExecuteCommandAsync();
+
+            // 关键逻辑：管理端启用 legacy 条码时，同时停用该用户的个人条码，避免 POS 双表命中。
+            await _db.Updateable<EmployeeCashierBarcode>()
+                .SetColumns(item => new EmployeeCashierBarcode
+                {
+                    Status = false,
+                    UpdatedBy = updatedBy,
+                    UpdatedAt = DateTime.UtcNow,
+                })
+                .Where(item => item.UserGUID == userGuid && item.Status)
+                .ExecuteCommandAsync();
         }
 
         public async Task<ApiResponse<CashRegisterUserDetailDto>> CreateAsync(
@@ -695,6 +706,14 @@ namespace BlazorApp.Api.Services.React
                 await _db.Ado.BeginTranAsync();
                 try
                 {
+                    await CashierBarcodeMutationLock.AcquireAsync(_db);
+                    await _db.Insertable(new CashierBarcodeReservation
+                    {
+                        Barcode = entity.UserBarcode,
+                        CreatedAt = now,
+                        OwnerType = "legacy",
+                        OwnerId = entity.HGUID,
+                    }).ExecuteCommandAsync();
                     var existing = await _db.Queryable<CashRegisterUser>()
                         .Where(u => u.UserBarcode == entity.UserBarcode && u.Status)
                         .FirstAsync();
@@ -811,8 +830,16 @@ namespace BlazorApp.Api.Services.React
                 await _db.Ado.BeginTranAsync();
                 try
                 {
+                    await CashierBarcodeMutationLock.AcquireAsync(_db);
                     if (!string.IsNullOrEmpty(normalizedUserBarcode) && normalizedUserBarcode != entity.UserBarcode)
                     {
+                        await _db.Insertable(new CashierBarcodeReservation
+                        {
+                            Barcode = normalizedUserBarcode,
+                            CreatedAt = DateTime.UtcNow,
+                            OwnerType = "legacy",
+                            OwnerId = entity.HGUID,
+                        }).ExecuteCommandAsync();
                         var existing = await _db.Queryable<CashRegisterUser>()
                             .Where(u => u.UserBarcode == normalizedUserBarcode && u.HGUID != hGuid && u.Status)
                             .FirstAsync();

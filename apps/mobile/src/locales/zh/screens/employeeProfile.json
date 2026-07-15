@@ -44,21 +44,28 @@
   },
   "actions": {
     "save": "保存资料",
-    "takePhoto": "拍照上传",
+    "takePhoto": "拍照",
+    "choosePhoto": "相册",
     "retakePhoto": "重新拍照",
-    "removeImage": "移除图片",
+    "removeImage": "移除",
     "grantCameraPermission": "允许相机权限",
-    "capture": "拍照"
+    "capture": "拍照",
+    "switchCamera": "切换镜头",
+    "openSettings": "打开系统设置"
   },
   "messages": {
     "loadFailed": "加载个人信息失败。",
     "saveSuccess": "个人信息已保存。",
     "saveFailed": "保存个人信息失败。",
     "loginRequired": "请先登录后再打开个人信息。",
-    "uploadSuccess": "图片已上传，请保存资料。",
+    "uploadSuccess": "图片已上传并保存。",
     "uploadFailed": "图片上传失败。",
     "uploadNotAvailable": "当前服务器暂未开放个人资料图片上传。",
-    "imageRemoved": "图片已移除，请保存资料。",
+    "imageRemoved": "图片已移除。",
+    "removeImageFailed": "移除图片失败。",
+    "processingImage": "正在处理并保存图片...",
+    "cameraCaptureFailed": "相机拍摄失败，请重试或改用相册图片。",
+    "libraryPermissionBlocked": "相册权限已被永久拒绝，请在系统设置中允许访问。",
     "permissionRequired": "需要相机权限才能拍照上传。",
     "cameraReady": "拍摄清晰照片后上传。"
   },
@@ -71,5 +78,46 @@
     "title": "拍照上传",
     "permissionTitle": "需要相机权限",
     "permissionDescription": "允许相机权限后即可拍照上传个人资料图片。"
+  },
+  "imageErrors": {
+    "decode_failed": "无法解码这张图片，请选择其他图片。",
+    "blob_read_failed": "无法读取处理后的图片，请选择其他图片重试。",
+    "file_too_large": "压缩后仍超过 5 MiB，请选择尺寸更小的图片。"
+  },
+  "cashierBarcode": {
+    "title": "个人收银条码",
+    "loading": "正在加载条码...",
+    "empty": "暂未生成收银条码，点击刷新即可创建。",
+    "loadFailed": "加载收银条码失败。",
+    "refresh": "刷新条码",
+    "refreshTitle": "确认刷新收银条码？",
+    "refreshDescription": "新条码创建成功后，当前条码会立即停用。",
+    "refreshFailed": "刷新收银条码失败。",
+    "print": "打印标签",
+    "retryConfirmation": "重试确认",
+    "resolvePrintStatus": "确认打印结果",
+    "confirmationPendingTitle": "标签已打印",
+    "confirmationPending": "标签已经打印，但确认记录暂未保存。请点击重试确认，不要再次打印。",
+    "uncertainTitle": "标签是否已打印？",
+    "uncertainDescription": "打印过程中应用曾关闭或连接中断。请选择前先检查打印机；系统不会自动重复打印或自动计数。",
+    "printedConfirmOnly": "已打印，仅确认计数",
+    "notPrintedReprint": "未打印，重新打印",
+    "recoveryFailedTitle": "无法读取打印状态",
+    "recoveryFailed": "无法读取已保存的打印状态。请关闭本页面后重试，暂时不要继续打印。",
+    "revalidationFailedTitle": "条码校验失败",
+    "revalidationFailed": "无法获取服务端最新条码。本次没有打印，并保留待处理状态。请联网后重试。",
+    "printFailed": "打印收银条码标签失败。",
+    "changedTitle": "条码已更新",
+    "changed": "待确认记录属于旧条码，已无法确认。记录已清理，并重新加载了最新条码。",
+    "printCount_one": "已打印 {{count}} 次",
+    "printCount_other": "已打印 {{count}} 次",
+    "openPrinterSettings": "打印机设置",
+    "printErrors": {
+      "noPrinter": "尚未选择标签打印机，请先前往打印机设置。",
+      "bluetoothDisabled": "蓝牙已关闭，请开启蓝牙后重试。",
+      "permissionDenied": "蓝牙权限已被拒绝，请在系统设置中允许后重试。",
+      "connectionFailed": "无法连接已保存的标签打印机，请检查打印机后重试。",
+      "unknown": "标签打印失败，请检查打印机设置后重试。"
+    }
   }
 }

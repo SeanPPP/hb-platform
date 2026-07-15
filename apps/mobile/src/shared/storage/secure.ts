@@ -1,9 +1,12 @@
 import * as SecureStore from "expo-secure-store";
+import { clearSecureAccountSession } from "./secure-session-cleanup";
+import { clearCashierPrintSecureSession } from "./cashier-print-secure-session";
 
 const KEYS = {
   ACCESS_TOKEN: "hbweb_access_token",
   REFRESH_TOKEN: "hbweb_refresh_token",
   USER: "hbweb_user",
+  CASHIER_BARCODE_PRINT_PENDING: "hbweb_cashier_barcode_print_pending",
 } as const;
 
 export const SecureStorage = {
@@ -32,11 +35,22 @@ export const SecureStorage = {
     const d = await SecureStore.getItemAsync(KEYS.USER);
     return d ? (JSON.parse(d) as T) : null;
   },
+  async setCashierBarcodePrintPending(value: string) {
+    await SecureStore.setItemAsync(KEYS.CASHIER_BARCODE_PRINT_PENDING, value);
+  },
+  async getCashierBarcodePrintPending() {
+    return SecureStore.getItemAsync(KEYS.CASHIER_BARCODE_PRINT_PENDING);
+  },
+  async removeCashierBarcodePrintPending() {
+    await SecureStore.deleteItemAsync(KEYS.CASHIER_BARCODE_PRINT_PENDING);
+  },
+  async clearCashierBarcodePrintSession() {
+    await clearCashierPrintSecureSession(this);
+  },
+  async removeUser() {
+    await SecureStore.deleteItemAsync(KEYS.USER);
+  },
   async clearAll() {
-    await Promise.all([
-      SecureStore.deleteItemAsync(KEYS.ACCESS_TOKEN),
-      SecureStore.deleteItemAsync(KEYS.REFRESH_TOKEN),
-      SecureStore.deleteItemAsync(KEYS.USER),
-    ]);
+    await clearSecureAccountSession(this);
   },
 };

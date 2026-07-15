@@ -3,6 +3,8 @@ import type { CurrentUser, AccessControl, LoginRequest } from "@/modules/auth/ty
 import { buildAccess } from "@/shared/utils/access";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { SecureStorage } from "@/shared/storage/secure";
+import { queryClient } from "@/shared/api/query-client";
+import { clearSensitiveQueryCache } from "@/modules/auth/sensitive-query-cache";
 import { subscribeUnauthenticatedSession } from "@/modules/auth/auth-session-events";
 import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
 import {
@@ -105,6 +107,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
     useCartStore.getState().reset();
     useAppNavigationStore.getState().reset();
+    // 当前查询缓存可能包含银行资料、私有图片 URL 等敏感数据，退出会话时统一清除。
+    clearSensitiveQueryCache(queryClient);
     set({
       user: null,
       access: buildAccess(null),
@@ -121,6 +125,7 @@ subscribeUnauthenticatedSession(() => {
   void AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
   useCartStore.getState().reset();
   useAppNavigationStore.getState().reset();
+  clearSensitiveQueryCache(queryClient);
   useAuthStore.setState({
     user: null,
     access: buildAccess(null),
