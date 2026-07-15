@@ -6,6 +6,7 @@ import {
   DatePicker,
   Drawer,
   Empty,
+  Image,
   Input,
   Result,
   Skeleton,
@@ -40,16 +41,23 @@ import {
   buildBranchQuery,
   buildContainerAllocationSalesQuery,
   buildQuickRangeQuery,
+  compareContainerAllocationSalesBranches,
   formatAustralianCurrency,
+  formatStatisticMessageAmounts,
   getContainerAllocationSalesViewState,
   getGrossMarginDisplay,
+  getPaginatedRowNumber,
   isCustomEndDateDisabled,
   mapTableChangeToQuery,
+  shouldTriggerTableRowClick,
   shouldLoadContainerAllocationSales,
 } from './logic'
 import { createLatestRequestGuard } from './requestGuard'
 
 const WEEK_OPTIONS = [1, 2, 4, 8, 12]
+const PRODUCT_IMAGE_FALLBACK = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" rx="4" fill="#f5f5f5"/><text x="20" y="24" text-anchor="middle" font-size="10" fill="#999">无图</text></svg>',
+)}`
 
 function formatQuantity(value: number | null | undefined) {
   if (value == null) return '-'
@@ -222,21 +230,46 @@ export default function ContainerAllocationSalesPage() {
 
   const productColumns: ColumnsType<ContainerAllocationSalesProduct> = [
     {
-      title: '商品编码',
-      dataIndex: 'productCode',
-      key: 'productCode',
-      width: 130,
+      title: '序号 / 图片',
+      key: 'imageAndIndex',
+      width: 150,
       fixed: 'left',
-      sorter: true,
-      sortOrder: sortBy === 'productCode' ? (sortDirection === 'asc' ? 'ascend' : 'descend') : null,
-      render: (value: string, record) => (
-        <Button type="link" size="small" onClick={() => void openBranches(record)}>{value}</Button>
+      render: (_, record, index) => (
+        <Space size={6}>
+          <Typography.Text
+            style={{ display: 'inline-block', minWidth: 24, textAlign: 'right' }}
+          >
+            {getPaginatedRowNumber(pageNumber, pageSize, index)}
+          </Typography.Text>
+          <Image
+            src={record.productImage || PRODUCT_IMAGE_FALLBACK}
+            alt=""
+            width={40}
+            height={40}
+            style={{ objectFit: 'contain', borderRadius: 4, border: '1px solid #f0f0f0' }}
+            preview={false}
+            fallback={PRODUCT_IMAGE_FALLBACK}
+          />
+          <Button
+            type="text"
+            size="small"
+            aria-label={`查看第 ${getPaginatedRowNumber(pageNumber, pageSize, index)} 个商品 ${record.itemNumber || record.productName || record.productCode} 的分店明细`}
+            onClick={() => void openBranches(record)}
+            style={{ paddingInline: 4 }}
+          >
+            明细
+          </Button>
+        </Space>
       ),
     },
     {
       title: '货号 / 商品名称',
+      dataIndex: 'itemNumber',
       key: 'product',
       width: 260,
+      // 表格只负责发送排序条件，实际顺序由后端按货号并以商品编码稳定兜底。
+      sorter: true,
+      sortOrder: sortBy === 'itemNumber' ? (sortDirection === 'asc' ? 'ascend' : 'descend') : null,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{record.itemNumber || '-'}</Typography.Text>
@@ -264,15 +297,74 @@ export default function ContainerAllocationSalesPage() {
   ]
 
   const branchColumns: ColumnsType<ContainerAllocationSalesBranch> = [
-    { title: '分店编码', dataIndex: 'branchCode', width: 110, fixed: 'left' },
-    { title: '分店名称', dataIndex: 'branchName', width: 160 },
-    { title: '状态', dataIndex: 'isActive', width: 90, render: (active: boolean) => <Tag color={active ? 'green' : 'default'}>{active ? '有效' : '已停用'}</Tag> },
-    { title: '配货数量', dataIndex: 'allocationQuantity', width: 110, align: 'right', render: formatQuantity },
-    { title: '配货进口金额', dataIndex: 'allocationImportAmount', width: 140, align: 'right', render: formatAustralianCurrency },
-    { title: '销售数量', dataIndex: 'salesQuantity', width: 110, align: 'right', render: salesValue },
-    { title: '销售金额', dataIndex: 'salesAmount', width: 130, align: 'right', render: formatAustralianCurrency },
-    { title: '销售均价', dataIndex: 'averageSalesPrice', width: 120, align: 'right', render: formatAustralianCurrency },
-    { title: '毛利率', dataIndex: 'grossMarginRate', width: 110, align: 'right', render: (_, record) => getGrossMarginDisplay(record) },
+    {
+      title: '分店编码',
+      dataIndex: 'branchCode',
+      width: 110,
+      fixed: 'left',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'branchCode', sortOrder),
+    },
+    {
+      title: '分店名称',
+      dataIndex: 'branchName',
+      width: 160,
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'branchName', sortOrder),
+    },
+    {
+      title: '状态',
+      dataIndex: 'isActive',
+      width: 90,
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'isActive', sortOrder),
+      render: (active: boolean) => <Tag color={active ? 'green' : 'default'}>{active ? '有效' : '已停用'}</Tag>,
+    },
+    {
+      title: '配货数量',
+      dataIndex: 'allocationQuantity',
+      width: 110,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'allocationQuantity', sortOrder),
+      render: formatQuantity,
+    },
+    {
+      title: '配货进口金额',
+      dataIndex: 'allocationImportAmount',
+      width: 140,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'allocationImportAmount', sortOrder),
+      render: formatAustralianCurrency,
+    },
+    {
+      title: '销售数量',
+      dataIndex: 'salesQuantity',
+      width: 110,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'salesQuantity', sortOrder),
+      render: salesValue,
+    },
+    {
+      title: '销售金额',
+      dataIndex: 'salesAmount',
+      width: 130,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'salesAmount', sortOrder),
+      render: formatAustralianCurrency,
+    },
+    {
+      title: '销售均价',
+      dataIndex: 'averageSalesPrice',
+      width: 120,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'averageSalesPrice', sortOrder),
+      render: formatAustralianCurrency,
+    },
+    {
+      title: '毛利率',
+      dataIndex: 'grossMarginRate',
+      width: 110,
+      align: 'right',
+      sorter: (left, right, sortOrder) => compareContainerAllocationSalesBranches(left, right, 'grossMarginRate', sortOrder),
+      render: (_, record) => getGrossMarginDisplay(record),
+    },
   ]
 
   const isNotFound = error instanceof RequestError && error.status === 404
@@ -365,7 +457,8 @@ export default function ContainerAllocationSalesPage() {
             type="warning"
             showIcon
             message="销售统计暂未就绪"
-            description={report.statisticMessage || '配货数据仍可查看，销售和毛利字段暂不展示。'}
+            description={formatStatisticMessageAmounts(report.statisticMessage)
+              || '配货数据仍可查看，销售和毛利字段暂不展示。'}
           />
         ) : null}
         {error && report ? <Alert type="error" showIcon message="刷新失败" description={error instanceof Error ? error.message : '请稍后重试'} /> : null}
@@ -381,9 +474,16 @@ export default function ContainerAllocationSalesPage() {
               loading={loading}
               columns={productColumns}
               dataSource={report?.items ?? []}
-              scroll={{ x: 1190 }}
+              scroll={{ x: 1230 }}
               pagination={pagination}
               onChange={handleTableChange}
+              onRow={(record) => ({
+                style: { cursor: 'pointer' },
+                onClick: (event) => {
+                  if (!shouldTriggerTableRowClick(event.target, event.currentTarget)) return
+                  void openBranches(record)
+                },
+              })}
               summary={() => totals ? (
                 <Table.Summary.Row>
                   <Table.Summary.Cell index={0}><Typography.Text strong>全表合计（{totals.productCount}）</Typography.Text></Table.Summary.Cell>
@@ -403,7 +503,9 @@ export default function ContainerAllocationSalesPage() {
       </Space>
 
       <Drawer
-        title={selectedProduct ? `分店明细 · ${selectedProduct.productCode}` : '分店明细'}
+        title={selectedProduct
+          ? `分店明细 · ${selectedProduct.itemNumber || selectedProduct.productName || '商品'}`
+          : '分店明细'}
         width="min(1100px, 92vw)"
         open={drawerOpen}
         onClose={() => {
@@ -413,7 +515,13 @@ export default function ContainerAllocationSalesPage() {
         }}
       >
         {branchReport?.statisticStatus !== 'Fresh' && branchReport ? (
-          <Alert type="warning" showIcon message="销售统计暂未就绪" description={branchReport.statisticMessage || '仅展示配货数据。'} style={{ marginBottom: 12 }} />
+          <Alert
+            type="warning"
+            showIcon
+            message="销售统计暂未就绪"
+            description={formatStatisticMessageAmounts(branchReport.statisticMessage) || '仅展示配货数据。'}
+            style={{ marginBottom: 12 }}
+          />
         ) : null}
         {branchError ? <Alert type="error" showIcon message="分店明细加载失败" description={branchError} style={{ marginBottom: 12 }} /> : null}
         <Table

@@ -25,6 +25,7 @@ export interface ContainerAllocationSalesMetric {
 
 export interface ContainerAllocationSalesProduct extends ContainerAllocationSalesMetric {
   productCode: string
+  productImage: string | null
   itemNumber: string | null
   productName: string | null
   loadingQuantity: number

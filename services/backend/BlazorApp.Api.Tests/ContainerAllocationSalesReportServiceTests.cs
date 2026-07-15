@@ -36,7 +36,9 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
             typeof(WareHouseOrderDetails),
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState),
-            typeof(Store)
+            typeof(Store),
+            typeof(Product),
+            typeof(ContainerDetail)
         );
     }
 
@@ -54,7 +56,7 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
             },
             Detail(" p-1 ", 10, "A-1", "商品一"),
             Detail("P-1", 5, "A-1", "商品一"),
-            Detail("P-2", 8, "A-2", "商品二")
+            Detail("P-2", 8, "A-2", "商品二", "https://images.example.com/p-2.jpg")
         );
         await SeedFreshStatesAsync(arrival, arrival.AddDays(2));
 
@@ -99,10 +101,40 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
         Assert.Equal(0.4m, product.GrossMarginRate);
         Assert.True(product.IsGrossMarginComplete);
         var zeroSales = Assert.Single(result.Items, item => item.ProductCode == "P-2");
+        Assert.Equal("https://images.example.com/p-2.jpg", zeroSales.ProductImage);
         Assert.Null(zeroSales.AverageSalesPrice);
         Assert.Null(zeroSales.GrossMarginRate);
         Assert.Equal(23, result.Totals.LoadingQuantity);
         Assert.Equal(3, result.Totals.AllocationQuantity);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("/broken/product-image.jpg")]
+    public async Task QueryAsync_优先复用货柜明细已补齐的商品图片(string? productImage)
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        const string detailImage = "https://images.example.com/container-detail.jpg";
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-DETAIL-IMAGE", 实际到货日期 = arrival },
+            Detail("P-DETAIL", 1, "REPORT-DETAIL", "明细图片商品", detailImage)
+        );
+        await _db.Insertable(new Product
+        {
+            UUID = "PRODUCT-DETAIL",
+            ProductCode = "P-DETAIL",
+            ItemNumber = "LOCAL-DETAIL",
+            ProductName = "明细图片商品",
+            ProductImage = productImage,
+        }).ExecuteCommandAsync();
+
+        var result = await service.QueryAsync("C-DETAIL-IMAGE", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = arrival,
+        });
+
+        Assert.Equal(detailImage, Assert.Single(result.Items).ProductImage);
     }
 
     [Theory]
@@ -314,6 +346,203 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryAsync_统计Failed时保留警告并展示已生成销售指标()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        const string errorMessage = "商品统计与分店营业额统计不一致: 2026-07-14 S1, 商品金额 40, 分店营业额 41, 金额差 1";
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-FAILED", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await SeedFailedStateAsync(arrival, errorMessage);
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-FAILED", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = arrival,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal(errorMessage, result.StatisticMessage);
+        var product = Assert.Single(result.Items);
+        Assert.Equal(4, product.SalesQuantity);
+        Assert.Equal(40, product.SalesAmount);
+        Assert.Equal(10, product.AverageSalesPrice);
+        Assert.Equal(16, product.GrossProfit);
+        Assert.Equal(0.4m, product.GrossMarginRate);
+        Assert.True(product.IsGrossMarginComplete);
+        Assert.Equal(4, result.Totals.SalesQuantity);
+        Assert.Equal(40, result.Totals.SalesAmount);
+        Assert.Equal(10, result.Totals.AverageSalesPrice);
+        Assert.Equal(16, result.Totals.GrossProfit);
+        Assert.Equal(0.4m, result.Totals.GrossMarginRate);
+    }
+
+    [Fact]
+    public async Task QueryAsync_操作失败状态即使存在旧销售行也不得泄漏主表和合计指标()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-OPERATIONAL-FAILED", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await SeedStatisticStateAsync(arrival, SalesStatisticRefreshStatus.Failed, "数据库连接超时");
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-OPERATIONAL-FAILED", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = arrival,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal("数据库连接超时", result.StatisticMessage);
+        var product = Assert.Single(result.Items);
+        Assert.Null(product.SalesQuantity);
+        Assert.Null(product.SalesAmount);
+        Assert.Null(product.AverageSalesPrice);
+        Assert.Null(product.GrossProfit);
+        Assert.Null(product.GrossMarginRate);
+        Assert.Null(product.IsGrossMarginComplete);
+        Assert.Null(result.Totals.SalesQuantity);
+        Assert.Null(result.Totals.SalesAmount);
+        Assert.Null(result.Totals.AverageSalesPrice);
+        Assert.Null(result.Totals.GrossProfit);
+        Assert.Null(result.Totals.GrossMarginRate);
+    }
+
+    [Fact]
+    public async Task QueryAsync_未知统计状态不得被视为Fresh或泄漏销售指标()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-UNKNOWN-STATUS", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await SeedStatisticStateAsync(arrival, "Unexpected");
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-UNKNOWN-STATUS", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = arrival,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, result.StatisticStatus);
+        var product = Assert.Single(result.Items);
+        Assert.Null(product.SalesQuantity);
+        Assert.Null(product.SalesAmount);
+        Assert.Null(result.Totals.SalesQuantity);
+        Assert.Null(result.Totals.SalesAmount);
+    }
+
+    [Theory]
+    [InlineData(SalesStatisticRefreshStatus.Pending)]
+    [InlineData(SalesStatisticRefreshStatus.Queued)]
+    [InlineData(SalesStatisticRefreshStatus.Running)]
+    [InlineData(SalesStatisticRefreshStatus.Stale)]
+    [InlineData(null)]
+    public async Task QueryAsync_多日范围含未完成状态或缺日时不得泄漏销售指标(string? secondDayStatus)
+    {
+        var arrival = DateTime.Today.AddDays(-2);
+        var secondDay = arrival.AddDays(1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-MIXED-STATUS", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await SeedStatisticStateAsync(
+            arrival,
+            SalesStatisticRefreshStatus.Failed,
+            "商品统计与分店营业额统计不一致: 2026-07-13 S1, 商品金额 40, 分店营业额 41, 金额差 1"
+        );
+        if (secondDayStatus != null)
+            await SeedStatisticStateAsync(secondDay, secondDayStatus);
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+        await SeedSaleAsync(secondDay, "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-MIXED-STATUS", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = secondDay,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        var product = Assert.Single(result.Items);
+        Assert.Null(product.SalesQuantity);
+        Assert.Null(product.SalesAmount);
+        Assert.Null(result.Totals.SalesQuantity);
+        Assert.Null(result.Totals.SalesAmount);
+    }
+
+    [Fact]
+    public async Task QueryAsync_多日同时存在对账和操作Failed时优先返回操作错误且不泄漏指标()
+    {
+        var arrival = DateTime.Today.AddDays(-2);
+        var secondDay = arrival.AddDays(1);
+        const string reconciliationError =
+            "商品统计与分店营业额统计不一致: 2026-07-13 S1, 商品金额 40, 分店营业额 41, 金额差 1";
+        const string operationalError = "写入商品销售统计失败";
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-MIXED-FAILED", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        // 刻意先插入对账失败，验证消息优先级不依赖数据库返回顺序。
+        await SeedStatisticStateAsync(arrival, SalesStatisticRefreshStatus.Failed, reconciliationError);
+        await SeedStatisticStateAsync(secondDay, SalesStatisticRefreshStatus.Failed, operationalError);
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+        await SeedSaleAsync(secondDay, "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-MIXED-FAILED", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = secondDay,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal(operationalError, result.StatisticMessage);
+        var product = Assert.Single(result.Items);
+        Assert.Null(product.SalesQuantity);
+        Assert.Null(product.SalesAmount);
+        Assert.Null(result.Totals.SalesQuantity);
+        Assert.Null(result.Totals.SalesAmount);
+    }
+
+    [Fact]
+    public async Task QueryAsync_多日范围逐日均为Fresh或对账Failed时允许展示销售指标()
+    {
+        var arrival = DateTime.Today.AddDays(-2);
+        var secondDay = arrival.AddDays(1);
+        const string errorMessage =
+            "商品统计与分店营业额统计不一致: 2026-07-13 S1, 商品金额 40, 分店营业额 41, 金额差 1";
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-READABLE-RANGE", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await SeedStatisticStateAsync(arrival, SalesStatisticRefreshStatus.Failed, errorMessage);
+        await SeedStatisticStateAsync(secondDay, SalesStatisticRefreshStatus.Fresh);
+        await SeedSaleAsync(arrival, "S1", "P-1", 4, 40, 24, 16, "ProductSnapshot");
+        await SeedSaleAsync(secondDay, "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot");
+
+        var result = await service.QueryAsync("C-READABLE-RANGE", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = secondDay,
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal(errorMessage, result.StatisticMessage);
+        var product = Assert.Single(result.Items);
+        Assert.Equal(7, product.SalesQuantity);
+        Assert.Equal(70, product.SalesAmount);
+        Assert.Equal(10, product.AverageSalesPrice);
+        Assert.Equal(28, product.GrossProfit);
+        Assert.Equal(0.4m, product.GrossMarginRate);
+        Assert.Equal(7, result.Totals.SalesQuantity);
+        Assert.Equal(70, result.Totals.SalesAmount);
+    }
+
+    [Fact]
     public async Task QueryAsync_缺成本时不显示毛利率并支持搜索排序分页()
     {
         var arrival = DateTime.Today.AddDays(-1);
@@ -457,8 +686,155 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
         Assert.Null(branch.IsGrossMarginComplete);
     }
 
+    [Fact]
+    public async Task QueryBranchesAsync_商品属于货柜时不依赖完整货柜商品加载()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-BRANCH-FAST", 实际到货日期 = arrival },
+            new InvalidOperationException("不应加载完整货柜商品")
+        );
+        await _db.Insertable(new ContainerDetail
+        {
+            DetailCode = "D-BRANCH-FAST",
+            ContainerCode = "C-BRANCH-FAST",
+            ProductCode = " p-fast ",
+        }).ExecuteCommandAsync();
+
+        var result = await service.QueryBranchesAsync(
+            "C-BRANCH-FAST",
+            new ContainerAllocationSalesBranchesQueryRequest
+            {
+                ProductCode = "P-FAST",
+                StartDate = arrival,
+                EndDate = arrival,
+            }
+        );
+
+        Assert.Equal("P-FAST", result.ProductCode);
+    }
+
+    [Fact]
+    public async Task QueryBranchesAsync_商品不属于货柜时仍抛出不存在异常()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-BRANCH-MISSING", 实际到货日期 = arrival },
+            new InvalidOperationException("不应加载完整货柜商品")
+        );
+        await _db.Insertable(new ContainerDetail
+        {
+            DetailCode = "D-BRANCH-OTHER",
+            ContainerCode = "C-BRANCH-MISSING",
+            ProductCode = "P-OTHER",
+        }).ExecuteCommandAsync();
+
+        var exception = await Assert.ThrowsAsync<KeyNotFoundException>(() => service.QueryBranchesAsync(
+            "C-BRANCH-MISSING",
+            new ContainerAllocationSalesBranchesQueryRequest
+            {
+                ProductCode = "P-MISSING",
+                StartDate = arrival,
+                EndDate = arrival,
+            }
+        ));
+
+        Assert.Equal("货柜中不存在该商品。", exception.Message);
+    }
+
+    [Fact]
+    public async Task QueryBranchesAsync_统计Failed时保留警告并展示已生成分店销售指标()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        const string errorMessage = "商品统计与分店营业额统计不一致: 2026-07-14 S1, 商品金额 30, 分店营业额 31, 金额差 1";
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-FAILED-BRANCH", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "G-FAILED",
+            StoreCode = "S1",
+            StoreName = "失败状态分店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await SeedFailedStateAsync(arrival, errorMessage);
+        await SeedSaleAsync(arrival, "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot");
+
+        var result = await service.QueryBranchesAsync(
+            "C-FAILED-BRANCH",
+            new ContainerAllocationSalesBranchesQueryRequest
+            {
+                ProductCode = "P-1",
+                StartDate = arrival,
+                EndDate = arrival,
+            }
+        );
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal(errorMessage, result.StatisticMessage);
+        var branch = Assert.Single(result.Items);
+        Assert.Equal(3, branch.SalesQuantity);
+        Assert.Equal(30, branch.SalesAmount);
+        Assert.Equal(10, branch.AverageSalesPrice);
+        Assert.Equal(12, branch.GrossProfit);
+        Assert.Equal(0.4m, branch.GrossMarginRate);
+        Assert.True(branch.IsGrossMarginComplete);
+    }
+
+    [Fact]
+    public async Task QueryBranchesAsync_操作失败状态即使存在旧销售行也不得泄漏分店指标()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(
+            new ContainerMainDto { HGUID = "C-OPERATIONAL-BRANCH", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一")
+        );
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "G-OPERATIONAL",
+            StoreCode = "S1",
+            StoreName = "操作失败分店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(arrival, SalesStatisticRefreshStatus.Failed, "统计任务写入失败");
+        await SeedSaleAsync(arrival, "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot");
+
+        var result = await service.QueryBranchesAsync(
+            "C-OPERATIONAL-BRANCH",
+            new ContainerAllocationSalesBranchesQueryRequest
+            {
+                ProductCode = "P-1",
+                StartDate = arrival,
+                EndDate = arrival,
+            }
+        );
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Equal("统计任务写入失败", result.StatisticMessage);
+        var branch = Assert.Single(result.Items);
+        Assert.Null(branch.SalesQuantity);
+        Assert.Null(branch.SalesAmount);
+        Assert.Null(branch.AverageSalesPrice);
+        Assert.Null(branch.GrossProfit);
+        Assert.Null(branch.GrossMarginRate);
+        Assert.Null(branch.IsGrossMarginComplete);
+    }
+
     private ContainerAllocationSalesReportService CreateService(ContainerMainDto container, params ContainerDetailDto[] details)
     {
+        if (details.Length > 0)
+        {
+            // 报表主查询仍使用容器服务 DTO，分店查询则按真实窄查路径验证明细归属。
+            _db.Insertable(details.Select((detail, index) => new ContainerDetail
+            {
+                DetailCode = $"{container.HGUID}-REPORT-{index}",
+                ContainerCode = container.HGUID!,
+                ProductCode = detail.商品编码,
+                LoadingQuantity = detail.装柜数量,
+            }).ToList()).ExecuteCommand();
+        }
+
         var containerService = new Mock<IContainerReactService>();
         containerService.Setup(x => x.GetContainerDetailAsync(container.HGUID!)).ReturnsAsync(container);
         containerService.Setup(x => x.GetContainerProductsAsync(container.HGUID!)).ReturnsAsync(details.ToList());
@@ -469,11 +845,34 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
         );
     }
 
-    private static ContainerDetailDto Detail(string productCode, decimal quantity, string itemNumber, string name) => new()
+    private ContainerAllocationSalesReportService CreateService(ContainerMainDto container, Exception productsException)
+    {
+        var containerService = new Mock<IContainerReactService>();
+        containerService.Setup(x => x.GetContainerDetailAsync(container.HGUID!)).ReturnsAsync(container);
+        containerService.Setup(x => x.GetContainerProductsAsync(container.HGUID!)).ThrowsAsync(productsException);
+        return new ContainerAllocationSalesReportService(
+            CreateContext(_db),
+            containerService.Object,
+            NullLogger<ContainerAllocationSalesReportService>.Instance
+        );
+    }
+
+    private static ContainerDetailDto Detail(
+        string productCode,
+        decimal quantity,
+        string itemNumber,
+        string name,
+        string? productImage = null
+    ) => new()
     {
         商品编码 = productCode,
         装柜数量 = quantity,
-        商品信息 = new ContainerProductInfoDto { 货号 = itemNumber, 商品名称 = name },
+        商品信息 = new ContainerProductInfoDto
+        {
+            货号 = itemNumber,
+            商品名称 = name,
+            商品图片 = productImage,
+        },
     };
 
     private static WareHouseOrderDetails OrderDetail(
@@ -563,6 +962,22 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
                 Status = SalesStatisticRefreshStatus.Fresh,
             }).ToList();
         await _db.Insertable(states).ExecuteCommandAsync();
+    }
+
+    private async Task SeedFailedStateAsync(DateTime date, string errorMessage)
+    {
+        await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Failed, errorMessage);
+    }
+
+    private async Task SeedStatisticStateAsync(DateTime date, string status, string? errorMessage = null)
+    {
+        await _db.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = date,
+            Status = status,
+            ErrorMessage = errorMessage,
+        }).ExecuteCommandAsync();
     }
 
     private static SqlSugarContext CreateContext(ISqlSugarClient db)
