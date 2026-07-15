@@ -7,6 +7,7 @@ var P = {
     Delete: "Users.Delete",
     ManageRoles: "Users.ManageRoles",
     ManageStores: "Users.ManageStores",
+    ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
     ResetPassword: "Users.ResetPassword"
   },
   Roles: {
@@ -120,6 +121,9 @@ var P = {
   PosProducts: {
     View: "PosProducts.View",
     Manage: "PosProducts.Manage"
+  },
+  PosTerminal: {
+    AuditView: "Permissions.PosTerminal.Audit.View"
   },
   Dashboard: {
     View: "Dashboard"
@@ -245,6 +249,7 @@ function createEmptyAccess() {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canViewOperationAudits: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
@@ -269,7 +274,7 @@ function buildAccess(currentUser) {
     return createEmptyAccess();
   }
   const hasRole = (role) => currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false;
-  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458");
+  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
   const hasPermission = (permission) => {
@@ -369,6 +374,7 @@ function buildAccess(currentUser) {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit);
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View);
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs);
+  const canViewOperationAudits = isAdmin || hasPermission(P.PosTerminal.AuditView);
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks);
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings);
   const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads);
@@ -449,6 +455,7 @@ function buildAccess(currentUser) {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canViewOperationAudits,
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,

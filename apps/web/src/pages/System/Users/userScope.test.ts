@@ -252,6 +252,18 @@ assertEqual(
 )
 
 assertEqual(
+  isForbiddenRoleForScopedManager('SuperAdmin'),
+  true,
+  'SuperAdmin role should be forbidden for scoped store managers',
+)
+
+assertEqual(
+  isForbiddenRoleForScopedManager('超级管理员'),
+  true,
+  'Chinese super administrator role should be forbidden for scoped store managers',
+)
+
+assertEqual(
   hasForbiddenRoleForScopedManager(createUser({ roleNames: ['收银员', '店长'] })),
   true,
   'Users with manager-level roles should be hidden from scoped store managers',

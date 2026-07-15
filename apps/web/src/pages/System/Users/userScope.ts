@@ -9,6 +9,8 @@ type RoleIdentity = Pick<RoleOptionDto, 'roleGUID' | 'roleName'>
 const SCOPED_MANAGER_FORBIDDEN_ROLE_NAMES = new Set([
   'admin',
   '管理员',
+  'superadmin',
+  '超级管理员',
   'storemanager',
   '店长',
   '经理',

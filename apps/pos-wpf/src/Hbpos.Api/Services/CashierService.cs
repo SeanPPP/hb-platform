@@ -17,6 +17,10 @@ public interface ICashierService
         string storeCode,
         IReadOnlyCollection<string> permissionCodes,
         CancellationToken cancellationToken);
+
+    Task<CashierSessionDto?> RefreshSessionAsync(
+        CashierAuthorizationTicket ticket,
+        CancellationToken cancellationToken);
 }
 
 public sealed class CashierService(
@@ -24,6 +28,26 @@ public sealed class CashierService(
     ICashierAuthorizationTicketService ticketService,
     ILogger<CashierService> logger) : ICashierService
 {
+    private static readonly string[] LineDiscountPermissions =
+    [
+        Permissions.PosTerminal.Sales.LineManualDiscount,
+        Permissions.PosTerminal.Sales.LineQuickDiscount10Percent,
+        Permissions.PosTerminal.Sales.LineQuickDiscount20Percent,
+        Permissions.PosTerminal.Sales.LineQuickDiscount30Percent,
+        Permissions.PosTerminal.Sales.LineQuickDiscount40Percent,
+        Permissions.PosTerminal.Sales.LineQuickDiscount50Percent,
+    ];
+
+    private static readonly string[] OrderDiscountPermissions =
+    [
+        Permissions.PosTerminal.Sales.OrderManualDiscount,
+        Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent,
+        Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+        Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent,
+        Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent,
+        Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent,
+    ];
+
     public async Task<CashierSessionDto?> BarcodeLoginAsync(
         CashierBarcodeLoginRequest request,
         CancellationToken cancellationToken)
@@ -64,48 +88,26 @@ public sealed class CashierService(
             return null;
         }
 
-        var user = await dbContext.MainDb.Queryable<User>()
-            .FirstAsync(
-                x => x.UserGUID == cashierUserGuid && x.IsActive && !x.IsDeleted,
-                cancellationToken);
-        if (user is null)
-        {
-            return null;
-        }
-
-        var allowedStoreCodes = await dbContext.MainDb.Queryable<UserStore>()
-            .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-            .Where((us, s) =>
-                us.UserGUID == user.UserGUID
-                && !us.IsDeleted
-                && s.IsActive
-                && !s.IsDeleted)
-            .Select((us, s) => s.StoreCode)
-            .ToListAsync(cancellationToken);
-        if (!allowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var snapshot = await GetPermissionSnapshotAsync(user.UserGUID, cancellationToken);
         var cashierId = employeeCashier?.HGUID
             ?? (string.IsNullOrWhiteSpace(cashier!.HGUID) ? cashier.Id.ToString() : cashier.HGUID);
-        var authorization = ticketService.Issue(cashierId, cashierUserGuid, storeCode, deviceCode);
-
-        return new CashierSessionDto(
+        return await CreateSessionAsync(
             cashierId,
             cashierUserGuid,
-            string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName,
             storeCode,
             deviceCode,
-            snapshot.RoleNames,
-            snapshot.PermissionCodes,
-            allowedStoreCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-            snapshot.IsSuperAdmin,
-            IsOfflineCached: false,
-            IsEmergencyOverride: false,
-            AuthorizationToken: authorization.Token,
-            AuthorizationExpiresAtUtc: authorization.ExpiresAtUtc);
+            cancellationToken);
+    }
+
+    public Task<CashierSessionDto?> RefreshSessionAsync(
+        CashierAuthorizationTicket ticket,
+        CancellationToken cancellationToken)
+    {
+        return CreateSessionAsync(
+            ticket.CashierId,
+            ticket.UserGuid,
+            ticket.StoreCode,
+            ticket.DeviceCode,
+            cancellationToken);
     }
 
     public async Task<bool> HasAnyPermissionAsync(
@@ -128,28 +130,31 @@ public sealed class CashierService(
             return false;
         }
 
-        var allowedStoreCodes = await dbContext.MainDb.Queryable<UserStore>()
+        var allowedStores = await dbContext.MainDb.Queryable<UserStore>()
             .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
             .Where((us, s) =>
                 us.UserGUID == userGuid &&
                 !us.IsDeleted &&
                 s.IsActive &&
                 !s.IsDeleted)
-            .Select((us, s) => s.StoreCode)
+            .Select((us, s) => new { s.StoreGUID, s.StoreCode })
             .ToListAsync(cancellationToken);
-        if (!allowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase))
+        var allowedStore = allowedStores.FirstOrDefault(store =>
+            string.Equals(store.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+        if (allowedStore is null)
         {
             return false;
         }
 
         // 每次敏感请求都重新读取角色和权限，停用、调店或撤权立即生效。
-        var snapshot = await GetPermissionSnapshotAsync(userGuid, cancellationToken);
+        var snapshot = await GetPermissionSnapshotAsync(userGuid, allowedStore.StoreGUID, cancellationToken);
         return snapshot.IsSuperAdmin ||
             snapshot.PermissionCodes.Intersect(permissionCodes, StringComparer.OrdinalIgnoreCase).Any();
     }
 
     private async Task<CashierPermissionSnapshot> GetPermissionSnapshotAsync(
         string userGuid,
+        string storeGuid,
         CancellationToken cancellationToken)
     {
         var roleEntries = await dbContext.MainDb.Queryable<UserRole>()
@@ -201,7 +206,110 @@ public sealed class CashierService(
                 .ToArray();
         }
 
+        if (!isSuperAdmin)
+        {
+            var storeOverrides = await dbContext.MainDb.Queryable<SysUserStorePosPermission>()
+                .Where(x =>
+                    x.UserGuid == userGuid &&
+                    x.StoreGuid == storeGuid &&
+                    !x.IsDeleted)
+                .Select(x => new { x.PermissionCode, x.IsGranted })
+                .ToListAsync(cancellationToken);
+            var effectivePermissions = permissionCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var storeOverride in storeOverrides)
+            {
+                // 只允许分店覆盖 POS 权限，避免历史脏数据影响后台权限。
+                if (!storeOverride.PermissionCode.StartsWith(
+                        "Permissions.PosTerminal.",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (storeOverride.IsGranted)
+                {
+                    effectivePermissions.Add(storeOverride.PermissionCode);
+                }
+                else
+                {
+                    effectivePermissions.Remove(storeOverride.PermissionCode);
+                }
+            }
+
+            permissionCodes = effectivePermissions.ToArray();
+        }
+
+        permissionCodes = AddLegacyDiscountCompatibility(permissionCodes);
         return new CashierPermissionSnapshot(roleNames, permissionCodes, isSuperAdmin);
+    }
+
+    private async Task<CashierSessionDto?> CreateSessionAsync(
+        string cashierId,
+        string userGuid,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken)
+    {
+        var user = await dbContext.MainDb.Queryable<User>()
+            .FirstAsync(
+                x => x.UserGUID == userGuid && x.IsActive && !x.IsDeleted,
+                cancellationToken);
+        if (user is null)
+        {
+            return null;
+        }
+
+        var allowedStores = await dbContext.MainDb.Queryable<UserStore>()
+            .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+            .Where((us, s) =>
+                us.UserGUID == userGuid &&
+                !us.IsDeleted &&
+                s.IsActive &&
+                !s.IsDeleted)
+            .Select((us, s) => new { s.StoreGUID, s.StoreCode })
+            .ToListAsync(cancellationToken);
+        var currentStore = allowedStores.FirstOrDefault(store =>
+            string.Equals(store.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+        if (currentStore is null)
+        {
+            return null;
+        }
+
+        var snapshot = await GetPermissionSnapshotAsync(userGuid, currentStore.StoreGUID, cancellationToken);
+        var authorization = ticketService.Issue(cashierId, userGuid, storeCode, deviceCode);
+        return new CashierSessionDto(
+            cashierId,
+            userGuid,
+            string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName,
+            storeCode,
+            deviceCode,
+            snapshot.RoleNames,
+            snapshot.PermissionCodes,
+            allowedStores
+                .Select(store => store.StoreCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            snapshot.IsSuperAdmin,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false,
+            AuthorizationToken: authorization.Token,
+            AuthorizationExpiresAtUtc: authorization.ExpiresAtUtc);
+    }
+
+    private static string[] AddLegacyDiscountCompatibility(IEnumerable<string> permissionCodes)
+    {
+        var effectivePermissions = permissionCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (LineDiscountPermissions.All(effectivePermissions.Contains))
+        {
+            effectivePermissions.Add(Permissions.PosTerminal.Sales.LineDiscount);
+        }
+
+        if (OrderDiscountPermissions.All(effectivePermissions.Contains))
+        {
+            effectivePermissions.Add(Permissions.PosTerminal.Sales.OrderDiscount);
+        }
+
+        return effectivePermissions.ToArray();
     }
 
     private sealed record CashierPermissionSnapshot(

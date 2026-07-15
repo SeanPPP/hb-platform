@@ -1,14 +1,18 @@
-import { EditOutlined, EyeOutlined, HistoryOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
+import { DollarOutlined, EditOutlined, EyeOutlined, HistoryOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Drawer,
+  Empty,
   Form,
   Input,
   List,
   Modal,
   Select,
+  Skeleton,
   Space,
   Spin,
   Switch,
@@ -24,7 +28,7 @@ import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import type { Dispatch, Key, SetStateAction } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
@@ -34,19 +38,22 @@ import {
   assignStoresToUser,
   assignPermissionsToUser,
   createUser,
+  deleteUserStorePosTerminalPermissions,
   getUserByGuid,
   getUserLoginRecords,
   getUserPermissionState,
   getUserRoles,
+  getUserStorePosTerminalPermissions,
   getUserStores,
   getUsers,
   updateUser,
   updateUserPassword,
+  updateUserStorePosTerminalPermissions,
 } from '../../../services/userService'
 import { getActiveRoles } from '../../../services/roleService'
 import { getPermissions } from '../../../services/roleService'
 import { getStores } from '../../../services/storeService'
-import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserLoginRecordDto, UserPermissionStateDto, UserStoreDto } from '../../../types/user'
+import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserLoginRecordDto, UserPermissionStateDto, UserStoreDto, UserStorePosTerminalPermissionsResponse } from '../../../types/user'
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
@@ -66,11 +73,18 @@ import {
 } from './userScope'
 import {
   arePermissionSetsEqual,
+  buildGrantedPosPermissionCodes,
   buildDirectPermissionPayload,
+  buildPosPermissionSections,
   buildPermissionSourceMap,
   deriveDirectPermissionKeysFromChecked,
+  getEditablePosPermissionCodes,
+  isCurrentPosPermissionRequest,
+  isInheritedPosPermissionMode,
+  shouldEnablePosPermissionSave,
   uniquePermissionCodes,
 } from './userPermissions'
+import type { PosPermissionRequestTarget } from './userPermissions'
 import { formatUserLocalDateTime } from './time'
 
 export default function SystemUsersPage() {
@@ -130,6 +144,20 @@ export default function SystemUsersPage() {
   const [permLoading, setPermLoading] = useState(false)
   const [permSaving, setPermSaving] = useState(false)
 
+  const [posPermissionOpen, setPosPermissionOpen] = useState(false)
+  const [posPermissionUser, setPosPermissionUser] = useState<UserDto | null>(null)
+  const [posPermissionStores, setPosPermissionStores] = useState<UserStoreDto[]>([])
+  const [selectedPosPermissionStoreGuid, setSelectedPosPermissionStoreGuid] = useState<string>()
+  const [posPermissionState, setPosPermissionState] = useState<UserStorePosTerminalPermissionsResponse | null>(null)
+  const [selectedPosPermissionCodes, setSelectedPosPermissionCodes] = useState<string[]>([])
+  const [originalPosPermissionCodes, setOriginalPosPermissionCodes] = useState<string[]>([])
+  const [posPermissionStoresLoading, setPosPermissionStoresLoading] = useState(false)
+  const [posPermissionLoading, setPosPermissionLoading] = useState(false)
+  const [posPermissionSaving, setPosPermissionSaving] = useState(false)
+  const [posPermissionRestoring, setPosPermissionRestoring] = useState(false)
+  const [posPermissionError, setPosPermissionError] = useState<string | null>(null)
+  const posPermissionRequestRef = useRef<PosPermissionRequestTarget | null>(null)
+
   const [resetPwdLoading, setResetPwdLoading] = useState(false)
   const [resetPwdOpen, setResetPwdOpen] = useState(false)
   const [resetPwdForm] = Form.useForm<{ newPassword: string }>()
@@ -157,6 +185,7 @@ export default function SystemUsersPage() {
   const canLoadRoleOptions = access.canReadRole || access.hasPermission(P.Users.ManageRoles)
   const canManageUserPermissions = access.hasPermission(P.Users.ManageRoles)
   const canEditUserPermissions = canManageUserPermissions
+  const canManagePosTerminalPermissions = access.hasPermission(P.Users.ManagePosTerminalPermissions)
 
   const visibleStoreOptions = useMemo(() => {
     if (isCurrentUserScoped) {
@@ -728,6 +757,166 @@ export default function SystemUsersPage() {
     }
   }
 
+  const applyPosPermissionState = (nextState: UserStorePosTerminalPermissionsResponse) => {
+    const editableCodes = getEditablePosPermissionCodes(
+      nextState.effectivePermissionCodes,
+      nextState.assignablePermissions,
+    )
+    setPosPermissionState(nextState)
+    setSelectedPosPermissionCodes(editableCodes)
+    setOriginalPosPermissionCodes(editableCodes)
+  }
+
+  const loadPosPermissionState = async (userGuid: string, storeGuid: string) => {
+    const requestTarget = {
+      sequence: (posPermissionRequestRef.current?.sequence ?? 0) + 1,
+      userGuid,
+      storeGuid,
+    }
+    posPermissionRequestRef.current = requestTarget
+    setPosPermissionLoading(true)
+    setPosPermissionError(null)
+    setPosPermissionState(null)
+    setSelectedPosPermissionCodes([])
+    setOriginalPosPermissionCodes([])
+    try {
+      const nextState = await getUserStorePosTerminalPermissions(userGuid, storeGuid)
+      if (!isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) return
+      applyPosPermissionState(nextState)
+    } catch (error) {
+      if (!isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) return
+      console.error(error)
+      setPosPermissionError(t('system.users.loadPosPermissionsFailed', '加载收银权限失败，请重试'))
+    } finally {
+      if (isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) {
+        setPosPermissionLoading(false)
+      }
+    }
+  }
+
+  const handleOpenPosPermissions = async (record: UserDto) => {
+    if (!canManagePosTerminalPermissions) return
+    if (isCurrentUserScoped && (!data.some((item) => item.userGUID === record.userGUID) || hasForbiddenRoleForScopedManager(record))) {
+      message.error(t('system.users.posPermissionOutOfScope', '无权管理该用户的收银权限'))
+      return
+    }
+
+    setPosPermissionOpen(true)
+    setPosPermissionUser(record)
+    setPosPermissionStores([])
+    setSelectedPosPermissionStoreGuid(undefined)
+    setPosPermissionState(null)
+    setPosPermissionError(null)
+    setPosPermissionLoading(false)
+    const storeListRequestTarget = {
+      sequence: (posPermissionRequestRef.current?.sequence ?? 0) + 1,
+      userGuid: record.userGUID,
+      storeGuid: '',
+    }
+    posPermissionRequestRef.current = storeListRequestTarget
+    setPosPermissionStoresLoading(true)
+    try {
+      const userStores = await getUserStores(record.userGUID)
+      // 店长只看“自己可管理分店”和“目标用户关联分店”的交集；管理员保留目标用户全部分店。
+      const scopedStores = isCurrentUserScoped
+        ? filterStoresForManager(userStores, managedStores)
+        : userStores
+      const sortedScopedStores = [...scopedStores].sort((left, right) =>
+        left.storeName.localeCompare(right.storeName, 'zh-CN', { numeric: true }),
+      )
+      if (!isCurrentPosPermissionRequest(storeListRequestTarget, posPermissionRequestRef.current)) return
+      setPosPermissionStores(sortedScopedStores)
+      const firstStoreGuid = sortedScopedStores[0]?.storeGUID
+      setSelectedPosPermissionStoreGuid(firstStoreGuid)
+      setPosPermissionStoresLoading(false)
+      if (firstStoreGuid) {
+        await loadPosPermissionState(record.userGUID, firstStoreGuid)
+      }
+    } catch (error) {
+      if (!isCurrentPosPermissionRequest(storeListRequestTarget, posPermissionRequestRef.current)) return
+      console.error(error)
+      setPosPermissionError(t('system.users.loadPosPermissionStoresFailed', '加载目标用户分店失败，请重试'))
+    } finally {
+      if (isCurrentPosPermissionRequest(storeListRequestTarget, posPermissionRequestRef.current)) {
+        setPosPermissionStoresLoading(false)
+      }
+    }
+  }
+
+  const handlePosPermissionStoreChange = async (storeGuid: string) => {
+    if (!posPermissionUser) return
+    setSelectedPosPermissionStoreGuid(storeGuid)
+    await loadPosPermissionState(posPermissionUser.userGUID, storeGuid)
+  }
+
+  const handleSavePosPermissions = async () => {
+    if (!posPermissionUser || !selectedPosPermissionStoreGuid || !posPermissionState) return
+    const requestTarget = posPermissionRequestRef.current
+    setPosPermissionSaving(true)
+    try {
+      const grantedPermissionCodes = buildGrantedPosPermissionCodes(
+        selectedPosPermissionCodes,
+        posPermissionState.assignablePermissions,
+      )
+      const nextState = await updateUserStorePosTerminalPermissions(
+        posPermissionUser.userGUID,
+        selectedPosPermissionStoreGuid,
+        { grantedPermissionCodes },
+      )
+      if (requestTarget && isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) {
+        applyPosPermissionState(nextState)
+        message.success(t('system.users.savePosPermissionsSuccess', '分店收银权限已保存'))
+      }
+    } catch (error) {
+      if (requestTarget && isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) {
+        console.error(error)
+        message.error(t('system.users.savePosPermissionsFailed', '保存分店收银权限失败'))
+      }
+    } finally {
+      setPosPermissionSaving(false)
+    }
+  }
+
+  const restorePosPermissionInheritance = async (
+    userGuid: string,
+    storeGuid: string,
+    requestTarget: PosPermissionRequestTarget | null,
+  ) => {
+    setPosPermissionRestoring(true)
+    try {
+      const nextState = await deleteUserStorePosTerminalPermissions(
+        userGuid,
+        storeGuid,
+      )
+      if (requestTarget && isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) {
+        applyPosPermissionState(nextState)
+        message.success(t('system.users.restorePosPermissionsSuccess', '已恢复账号权限继承'))
+      }
+    } catch (error) {
+      if (requestTarget && isCurrentPosPermissionRequest(requestTarget, posPermissionRequestRef.current)) {
+        console.error(error)
+        message.error(t('system.users.restorePosPermissionsFailed', '恢复账号权限继承失败'))
+      }
+    } finally {
+      setPosPermissionRestoring(false)
+    }
+  }
+
+  const handleRestorePosPermissionInheritance = () => {
+    if (!posPermissionUser || !selectedPosPermissionStoreGuid) return
+    // 确认框打开时固定目标，避免用户切换分店后误删其他分店覆盖。
+    const userGuid = posPermissionUser.userGUID
+    const storeGuid = selectedPosPermissionStoreGuid
+    const requestTarget = posPermissionRequestRef.current
+    Modal.confirm({
+      title: t('system.users.restorePosPermissionsTitle', '恢复账号权限继承'),
+      content: t('system.users.restorePosPermissionsConfirm', '恢复后将删除当前分店覆盖，并重新使用账号级有效权限。'),
+      okText: t('system.users.restoreInheritance', '恢复继承'),
+      cancelText: t('common.cancel', '取消'),
+      onOk: () => restorePosPermissionInheritance(userGuid, storeGuid, requestTarget),
+    })
+  }
+
   const handleOpenCreate = async () => {
     setCreateOpen(true)
     setCreateTab('info')
@@ -854,6 +1043,31 @@ export default function SystemUsersPage() {
   const checkedPermKeys = useMemo(() => {
     return Array.from(effectivePermSet)
   }, [effectivePermSet])
+
+  const posPermissionSections = useMemo(
+    () => buildPosPermissionSections(posPermissionState?.assignablePermissions ?? []),
+    [posPermissionState],
+  )
+  const inheritedPosPermissionSet = useMemo(
+    () => new Set(posPermissionState?.inheritedPermissionCodes ?? []),
+    [posPermissionState],
+  )
+  const overriddenPosPermissionSet = useMemo(
+    () => new Set(posPermissionState?.overriddenPermissionCodes ?? []),
+    [posPermissionState],
+  )
+  const effectivePosPermissionSet = useMemo(
+    () => new Set(posPermissionState?.effectivePermissionCodes ?? []),
+    [posPermissionState],
+  )
+  const selectedPosPermissionSet = useMemo(
+    () => new Set(selectedPosPermissionCodes),
+    [selectedPosPermissionCodes],
+  )
+  const hasPosPermissionChanges = useMemo(
+    () => !arePermissionSetsEqual(selectedPosPermissionCodes, originalPosPermissionCodes),
+    [originalPosPermissionCodes, selectedPosPermissionCodes],
+  )
 
   const handlePermissionCheck = (
     nextCheckedKeys: Key[] | { checked: Key[]; halfChecked: Key[] },
@@ -995,7 +1209,7 @@ export default function SystemUsersPage() {
     {
       title: t('common.action', '操作'),
       key: 'action',
-      width: 260,
+      width: 350,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
@@ -1008,6 +1222,15 @@ export default function SystemUsersPage() {
           <HasPermission code={P.Users.Edit}>
             <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
               {t('common.edit', '编辑')}
+            </Button>
+          </HasPermission>
+          <HasPermission code={P.Users.ManagePosTerminalPermissions}>
+            <Button
+              type="link"
+              icon={<DollarOutlined />}
+              onClick={() => void handleOpenPosPermissions(record)}
+            >
+              {t('system.users.posPermissions', '收银权限')}
             </Button>
           </HasPermission>
         </Space>
@@ -1332,6 +1555,194 @@ export default function SystemUsersPage() {
             </Card>
           </Space>
         )}
+      </Drawer>
+
+      <Drawer
+        title={
+          posPermissionUser
+            ? t('system.users.posPermissionsTitle', '收银权限 - {{name}}', { name: posPermissionUser.username })
+            : t('system.users.posPermissions', '收银权限')
+        }
+        width={900}
+        open={posPermissionOpen}
+        onClose={() => {
+          posPermissionRequestRef.current = {
+            sequence: (posPermissionRequestRef.current?.sequence ?? 0) + 1,
+            userGuid: '',
+            storeGuid: '',
+          }
+          setPosPermissionOpen(false)
+          setPosPermissionUser(null)
+          setPosPermissionStores([])
+          setSelectedPosPermissionStoreGuid(undefined)
+          setPosPermissionState(null)
+          setPosPermissionError(null)
+          setPosPermissionStoresLoading(false)
+          setPosPermissionLoading(false)
+          setPosPermissionSaving(false)
+          setPosPermissionRestoring(false)
+        }}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <div>
+            <Typography.Text strong>{t('system.users.targetStore', '目标分店')}</Typography.Text>
+            <Select
+              aria-label={t('system.users.targetStore', '目标分店')}
+              value={selectedPosPermissionStoreGuid}
+              loading={posPermissionStoresLoading}
+              disabled={posPermissionStoresLoading || posPermissionSaving || posPermissionRestoring || !posPermissionStores.length}
+              style={{ width: '100%', marginTop: 8 }}
+              placeholder={t('system.users.selectPosPermissionStore', '请选择目标用户关联的分店')}
+              options={posPermissionStores.map((store) => ({
+                label: `${store.storeName} (${store.storeCode})`,
+                value: store.storeGUID,
+              }))}
+              onChange={(storeGuid) => void handlePosPermissionStoreChange(storeGuid)}
+            />
+          </div>
+
+          {posPermissionStoresLoading || posPermissionLoading ? (
+            <Skeleton active title paragraph={{ rows: 8 }} />
+          ) : posPermissionError ? (
+            <Alert
+              type="error"
+              showIcon
+              message={posPermissionError}
+              action={
+                posPermissionUser && selectedPosPermissionStoreGuid ? (
+                  <Button
+                    size="small"
+                    onClick={() => void loadPosPermissionState(posPermissionUser.userGUID, selectedPosPermissionStoreGuid)}
+                  >
+                    {t('common.retry', '重试')}
+                  </Button>
+                ) : (
+                  <Button size="small" onClick={() => posPermissionUser && void handleOpenPosPermissions(posPermissionUser)}>
+                    {t('common.retry', '重试')}
+                  </Button>
+                )
+              }
+            />
+          ) : !posPermissionStores.length ? (
+            <Empty description={t('system.users.noPosPermissionStores', '目标用户没有可管理的关联分店')} />
+          ) : !posPermissionState ? (
+            <Empty description={t('system.users.noPosPermissionData', '暂无收银权限数据')} />
+          ) : (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message={
+                  isInheritedPosPermissionMode(posPermissionState.mode)
+                    ? t('system.users.posPermissionInheritedMode', '当前使用账号权限继承')
+                    : t('system.users.posPermissionOverrideMode', '当前使用分店权限覆盖')
+                }
+                description={t(
+                  'system.users.posPermissionSummary',
+                  '可分配 {{assignable}} 项，账号继承 {{inherited}} 项，当前有效 {{effective}} 项。勾选项表示保存后的分店有效权限。',
+                  {
+                    assignable: posPermissionState.assignablePermissions.length,
+                    inherited: inheritedPosPermissionSet.size,
+                    effective: effectivePosPermissionSet.size,
+                  },
+                )}
+              />
+
+              {posPermissionSections.length ? posPermissionSections.map((section) => (
+                <Card key={section.module} title={section.displayName} size="small">
+                  <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                    {section.groups.map((group) => (
+                      <div key={group.key}>
+                        <Typography.Text strong>{group.displayName}</Typography.Text>
+                        <List
+                          size="small"
+                          dataSource={group.permissions}
+                          locale={{ emptyText: t('system.users.noPosPermissionData', '暂无收银权限数据') }}
+                          renderItem={(permission) => {
+                            const isSelected = selectedPosPermissionSet.has(permission.code)
+                            const isEffective = effectivePosPermissionSet.has(permission.code)
+                            const hasDraftChange = isSelected !== isEffective
+                            return (
+                              <List.Item>
+                                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                  <Checkbox
+                                    checked={isSelected}
+                                    disabled={posPermissionSaving || posPermissionRestoring}
+                                    onChange={(event) => {
+                                      setSelectedPosPermissionCodes((current) => {
+                                        const next = new Set(current)
+                                        if (event.target.checked) next.add(permission.code)
+                                        else next.delete(permission.code)
+                                        return Array.from(next)
+                                      })
+                                    }}
+                                  >
+                                    {permission.name}
+                                  </Checkbox>
+                                  <Space wrap size={[4, 4]} style={{ paddingLeft: 24 }}>
+                                    {inheritedPosPermissionSet.has(permission.code) ? (
+                                      <Tag>{t('system.users.accountInherited', '账号继承')}</Tag>
+                                    ) : null}
+                                    {overriddenPosPermissionSet.has(permission.code) ? (
+                                      <Tag color="processing">{t('system.users.storeOverridden', '分店已覆盖')}</Tag>
+                                    ) : null}
+                                    <Tag color={isEffective ? 'success' : 'default'}>
+                                      {isEffective
+                                        ? t('system.users.permissionEffective', '当前有效')
+                                        : t('system.users.permissionIneffective', '当前无效')}
+                                    </Tag>
+                                    {hasDraftChange ? (
+                                      <Tag color="warning">
+                                        {isSelected
+                                          ? t('system.users.pendingEnable', '待保存启用')
+                                          : t('system.users.pendingDisable', '待保存停用')}
+                                      </Tag>
+                                    ) : null}
+                                  </Space>
+                                  {permission.description ? (
+                                    <Typography.Text type="secondary" style={{ paddingLeft: 24, fontSize: 12 }}>
+                                      {permission.description}
+                                    </Typography.Text>
+                                  ) : null}
+                                </Space>
+                              </List.Item>
+                            )
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </Space>
+                </Card>
+              )) : (
+                <Empty description={t('system.users.noAssignablePosPermissions', '当前分店没有可分配的收银权限')} />
+              )}
+
+              <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+                <Button
+                  disabled={isInheritedPosPermissionMode(posPermissionState.mode) || posPermissionSaving || posPermissionRestoring}
+                  loading={posPermissionRestoring}
+                  onClick={handleRestorePosPermissionInheritance}
+                >
+                  {t('system.users.restoreInheritance', '恢复继承')}
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<SaveOutlined />}
+                  disabled={
+                    !shouldEnablePosPermissionSave(posPermissionState.mode, hasPosPermissionChanges) ||
+                    posPermissionLoading ||
+                    posPermissionRestoring
+                  }
+                  loading={posPermissionSaving}
+                  onClick={() => void handleSavePosPermissions()}
+                >
+                  {t('system.users.saveStorePosPermissions', '保存分店权限')}
+                </Button>
+              </Space>
+            </>
+          )}
+        </Space>
       </Drawer>
 
       <Modal

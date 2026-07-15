@@ -301,6 +301,8 @@ namespace BlazorApp.Api.Data
             new SimpleClient<SysRolePermission>(_db);
         public SimpleClient<SysUserPermission> SysUserPermissionDb =>
             new SimpleClient<SysUserPermission>(_db);
+        public SimpleClient<SysUserStorePosPermission> SysUserStorePosPermissionDb =>
+            new SimpleClient<SysUserStorePosPermission>(_db);
 
         // 收银用户相关实体
         public SimpleClient<CashRegisterUser> CashRegisterUserDb =>
@@ -440,6 +442,7 @@ namespace BlazorApp.Api.Data
                 typeof(SysPermission),
                 typeof(SysRolePermission),
                 typeof(SysUserPermission),
+                typeof(SysUserStorePosPermission),
                 typeof(ProductPrefixCode),
                 typeof(ProductSetCode),
                 typeof(DomesticSetProduct),
@@ -468,6 +471,7 @@ namespace BlazorApp.Api.Data
                 typeof(SysPermission),
                 typeof(SysRolePermission),
                 typeof(SysUserPermission),
+                typeof(SysUserStorePosPermission),
                 typeof(CashRegisterUser),
                 typeof(DailySalesStatistic),
                 typeof(HourlySalesStatistic),
@@ -1255,6 +1259,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_UserStore_UserStore_Unique\" ON \"UserStore\" (\"UserGUID\", \"StoreGUID\")",
                 ["IX_SysUserPermission_User_Permission_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SysUserPermission_User_Permission_Unique\" ON \"HBwebSysUserPermissions\" (\"UserGuid\", \"PermissionCode\")",
+                ["IX_UserStorePosPermission_Scope_Unique"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_UserStorePosPermission_Scope_Unique\" ON \"HBwebSysUserStorePosPermissions\" (\"UserGuid\", \"StoreGuid\", \"PermissionCode\")",
                 ["IX_RefreshToken_Token_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RefreshToken_Token_Unique\" ON \"RefreshToken\" (\"Token\")",
                 ["IX_Cart_UserGUID_Unique"] =
@@ -1415,6 +1421,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_UserStore_UserStore_Unique' AND object_id = OBJECT_ID('UserStore')) CREATE UNIQUE INDEX IX_UserStore_UserStore_Unique ON [UserStore](UserGUID, StoreGUID)",
                 ["IX_SysUserPermission_User_Permission_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_User_Permission_Unique' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE UNIQUE INDEX IX_SysUserPermission_User_Permission_Unique ON [HBwebSysUserPermissions](UserGuid, PermissionCode)",
+                ["IX_UserStorePosPermission_Scope_Unique"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_UserStorePosPermission_Scope_Unique' AND object_id = OBJECT_ID('HBwebSysUserStorePosPermissions')) CREATE UNIQUE INDEX IX_UserStorePosPermission_Scope_Unique ON [HBwebSysUserStorePosPermissions](UserGuid, StoreGuid, PermissionCode)",
                 ["IX_RefreshToken_Token_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_Token_Unique' AND object_id = OBJECT_ID('RefreshToken')) CREATE UNIQUE INDEX IX_RefreshToken_Token_Unique ON [RefreshToken](Token)",
                 ["IX_Cart_UserGUID_Unique"] =
@@ -1597,6 +1605,8 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_UserStore_UserStore_Unique' AND object_id = OBJECT_ID('UserStore')) CREATE UNIQUE INDEX IX_UserStore_UserStore_Unique ON [UserStore](UserGUID, StoreGUID)",
                 // 用户直接权限表的唯一索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_User_Permission_Unique' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE UNIQUE INDEX IX_SysUserPermission_User_Permission_Unique ON [HBwebSysUserPermissions](UserGuid, PermissionCode)",
+                // 用户分店 POS 权限覆盖唯一索引
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_UserStorePosPermission_Scope_Unique' AND object_id = OBJECT_ID('HBwebSysUserStorePosPermissions')) CREATE UNIQUE INDEX IX_UserStorePosPermission_Scope_Unique ON [HBwebSysUserStorePosPermissions](UserGuid, StoreGuid, PermissionCode)",
                 // RefreshToken表的唯一索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_Token' AND object_id = OBJECT_ID('RefreshToken')) CREATE UNIQUE INDEX IX_RefreshToken_Token ON [RefreshToken](Token)",
                 // Cart表的索引（用户GUID非唯一，一个用户可能有多个购物车）

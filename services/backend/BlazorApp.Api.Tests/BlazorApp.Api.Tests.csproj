@@ -42,6 +42,8 @@
     <Compile Include="AttendancePublicHolidaySyncHelperTests.cs" />
     <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />
+    <Compile Include="UserStorePosTerminalPermissionContractTests.cs" />
+    <Compile Include="UserStorePosTerminalPermissionServiceTests.cs" />
     <Compile Include="NavigationServiceTests.cs" />
     <Compile Include="ControllerAuthorizationMetadataTests.cs" />
     <Compile Include="PermissionAuthorizationHandlerTests.cs" />

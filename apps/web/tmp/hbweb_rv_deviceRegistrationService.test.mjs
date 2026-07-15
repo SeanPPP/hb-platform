@@ -440,6 +440,8 @@ var request_default = request;
 
 // src/services/deviceRegistrationService.ts
 var DEVICE_API_BASE = "/api";
+var EMERGENCY_LOGIN_GRANT_API_BASE = "/api/react/v1/emergency-login-grants";
+var DEVICE_RUNTIME_ONLINE_STALE_MS = 45e3;
 var APP_DEVICE_API_BASE = "/api/mobile/app-device-status";
 function getString(raw, ...keys) {
   for (const key of keys) {
@@ -461,6 +463,22 @@ function getNullableString(raw, ...keys) {
     }
   }
   return null;
+}
+function getBoolean(raw, ...keys) {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return false;
+}
+function isDeviceRuntimeOnline(item, now = Date.now()) {
+  if (!item.isOnline || !item.lastHeartbeatAt) {
+    return false;
+  }
+  const heartbeatTime = Date.parse(item.lastHeartbeatAt);
+  return !Number.isNaN(heartbeatTime) && now - heartbeatTime <= DEVICE_RUNTIME_ONLINE_STALE_MS;
 }
 function pick(raw, ...keys) {
   for (const key of keys) {
@@ -521,7 +539,17 @@ function normalizeItem(raw) {
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : typeof raw.CreatedAt === "string" ? raw.CreatedAt : void 0,
     lastModified: typeof raw.lastModified === "string" ? raw.lastModified : typeof raw.LastModified === "string" ? raw.LastModified : null,
     createdBy: typeof raw.createdBy === "string" ? raw.createdBy : typeof raw.CreatedBy === "string" ? raw.CreatedBy : null,
-    lastModifiedBy: typeof raw.lastModifiedBy === "string" ? raw.lastModifiedBy : typeof raw.LastModifiedBy === "string" ? raw.LastModifiedBy : null
+    lastModifiedBy: typeof raw.lastModifiedBy === "string" ? raw.lastModifiedBy : typeof raw.LastModifiedBy === "string" ? raw.LastModifiedBy : null,
+    isOnline: getBoolean(raw, "isOnline", "IsOnline", "\u662F\u5426\u5728\u7EBF"),
+    lastHeartbeatAt: getNullableString(raw, "lastHeartbeatAt", "LastHeartbeatAt", "\u6700\u540E\u5FC3\u8DF3\u65F6\u95F4"),
+    currentCashierId: getNullableString(raw, "currentCashierId", "CurrentCashierId", "\u5F53\u524D\u6536\u94F6\u5458ID"),
+    currentCashierName: getNullableString(
+      raw,
+      "currentCashierName",
+      "CurrentCashierName",
+      "\u5F53\u524D\u6536\u94F6\u5458\u59D3\u540D"
+    ),
+    cashierLoginAt: getNullableString(raw, "cashierLoginAt", "CashierLoginAt", "\u6536\u94F6\u5458\u767B\u5F55\u65F6\u95F4")
   };
 }
 function normalizeAppDeviceStatus(raw) {
@@ -615,7 +643,17 @@ function normalizeDeviceRegistrationDetail(raw) {
     createdAt: getString(raw, "createdAt", "\u521B\u5EFA\u65F6\u95F4", "CreatedAt"),
     lastModified: getNullableString(raw, "lastModified", "\u6700\u540E\u4FEE\u6539\u65F6\u95F4", "LastModified"),
     createdBy: getNullableString(raw, "createdBy", "\u521B\u5EFA\u4EBA", "CreatedBy"),
-    lastModifiedBy: getNullableString(raw, "lastModifiedBy", "\u6700\u540E\u4FEE\u6539\u4EBA", "LastModifiedBy")
+    lastModifiedBy: getNullableString(raw, "lastModifiedBy", "\u6700\u540E\u4FEE\u6539\u4EBA", "LastModifiedBy"),
+    isOnline: getBoolean(raw, "isOnline", "\u662F\u5426\u5728\u7EBF", "IsOnline"),
+    lastHeartbeatAt: getNullableString(raw, "lastHeartbeatAt", "\u6700\u540E\u5FC3\u8DF3\u65F6\u95F4", "LastHeartbeatAt"),
+    currentCashierId: getNullableString(raw, "currentCashierId", "\u5F53\u524D\u6536\u94F6\u5458ID", "CurrentCashierId"),
+    currentCashierName: getNullableString(
+      raw,
+      "currentCashierName",
+      "\u5F53\u524D\u6536\u94F6\u5458\u59D3\u540D",
+      "CurrentCashierName"
+    ),
+    cashierLoginAt: getNullableString(raw, "cashierLoginAt", "\u6536\u94F6\u5458\u767B\u5F55\u65F6\u95F4", "CashierLoginAt")
   };
 }
 function buildUpdateDeviceRegistrationPayload(payload) {
@@ -669,6 +707,71 @@ async function disableDevice(id) {
 }
 async function lockDevice(id) {
   return request_default.post(`${DEVICE_API_BASE}/${id}/lock`, {});
+}
+function normalizeEmergencyLoginGrant(value) {
+  const raw = asRecord(value);
+  if (!raw) {
+    return null;
+  }
+  const grantId = asString(pick(raw, "grantId", "GrantId"));
+  const storeCode = asString(pick(raw, "storeCode", "StoreCode"));
+  if (!grantId || !storeCode) {
+    return null;
+  }
+  const rawStatus = asString(pick(raw, "status", "Status"))?.toLowerCase();
+  const status = rawStatus === "active" ? "Active" : rawStatus === "revoked" ? "Revoked" : "Expired";
+  return {
+    grantId,
+    storeCode,
+    businessDate: asString(pick(raw, "businessDate", "BusinessDate")) ?? "",
+    keyId: asString(pick(raw, "keyId", "KeyId")) ?? "",
+    permissionProfile: "AllPosTerminal",
+    issuedBy: asString(pick(raw, "issuedBy", "IssuedBy")) ?? "",
+    reason: asString(pick(raw, "reason", "Reason", "issuedReason", "IssuedReason")) ?? "",
+    issuedAtUtc: asString(pick(raw, "issuedAtUtc", "IssuedAtUtc")) ?? "",
+    expiresAtUtc: asString(pick(raw, "expiresAtUtc", "ExpiresAtUtc")) ?? "",
+    revokedBy: asString(pick(raw, "revokedBy", "RevokedBy")) ?? null,
+    revokedAtUtc: asString(pick(raw, "revokedAtUtc", "RevokedAtUtc")) ?? null,
+    revokeReason: asString(
+      pick(raw, "revokeReason", "RevokeReason", "revokedReason", "RevokedReason")
+    ) ?? null,
+    status
+  };
+}
+async function getEmergencyLoginGrant(storeCode) {
+  const response = await request_default.get(EMERGENCY_LOGIN_GRANT_API_BASE, {
+    params: { storeCode }
+  });
+  const data = unwrapApiData(response);
+  if (Array.isArray(data)) {
+    const grants = data.map(normalizeEmergencyLoginGrant).filter((grant) => Boolean(grant));
+    return grants.find((grant) => grant.status === "Active") ?? grants[0] ?? null;
+  }
+  return normalizeEmergencyLoginGrant(data);
+}
+async function createEmergencyLoginGrant(storeCode, reason) {
+  const response = await request_default.post(EMERGENCY_LOGIN_GRANT_API_BASE, {
+    storeCode,
+    reason: reason.trim()
+  });
+  const data = asRecord(unwrapApiData(response));
+  const grant = normalizeEmergencyLoginGrant(data ? pick(data, "grant", "Grant") : null);
+  const token = data ? asString(pick(data, "token", "Token")) : void 0;
+  if (!grant || !token) {
+    throw new Error("\u7D27\u6025\u767B\u5F55\u6388\u6743\u54CD\u5E94\u65E0\u6548");
+  }
+  return { grant, token };
+}
+async function revokeEmergencyLoginGrant(grantId, reason) {
+  const response = await request_default.post(
+    `${EMERGENCY_LOGIN_GRANT_API_BASE}/${encodeURIComponent(grantId)}/revoke`,
+    { reason: reason.trim() }
+  );
+  const grant = normalizeEmergencyLoginGrant(unwrapApiData(response));
+  if (!grant) {
+    throw new Error("\u7D27\u6025\u767B\u5F55\u6388\u6743\u54CD\u5E94\u65E0\u6548");
+  }
+  return grant;
 }
 
 // src/services/deviceRegistrationService.test.ts
@@ -747,6 +850,51 @@ assertEqual(
   normalizedCamelDetail.remark,
   "camel field",
   "Should normalize camelCase remark field"
+);
+assertEqual(
+  normalizedCamelDetail.isOnline,
+  false,
+  "Should normalize missing runtime online field as false"
+);
+var normalizedRuntimeDetail = normalizeDeviceRegistrationDetail({
+  id: 14,
+  hardwareId: "HW-RUN-01",
+  systemDeviceNumber: "POS-RUN-01",
+  deviceType: "POS",
+  deviceSystem: "Windows",
+  status: 1,
+  isOnline: true,
+  lastHeartbeatAt: "2026-07-01T10:00:00Z",
+  currentCashierId: "CASHIER-1",
+  currentCashierName: "Alice",
+  cashierLoginAt: "2026-07-01T09:55:00Z"
+});
+assertEqual(normalizedRuntimeDetail.isOnline, true, "Should normalize runtime online status");
+assertEqual(
+  normalizedRuntimeDetail.lastHeartbeatAt,
+  "2026-07-01T10:00:00Z",
+  "Should normalize last heartbeat time"
+);
+assertEqual(
+  normalizedRuntimeDetail.currentCashierName,
+  "Alice",
+  "Should normalize current cashier name"
+);
+assertEqual(
+  isDeviceRuntimeOnline(
+    normalizedRuntimeDetail,
+    Date.parse("2026-07-01T10:00:44Z")
+  ),
+  true,
+  "Runtime status should stay online inside the 45 second heartbeat window"
+);
+assertEqual(
+  isDeviceRuntimeOnline(
+    normalizedRuntimeDetail,
+    Date.parse("2026-07-01T10:00:46Z")
+  ),
+  false,
+  "Runtime status should become offline after the 45 second heartbeat window"
 );
 var updateValuesWithRuntimeExtras = {
   deviceType: "Mobile",
@@ -862,6 +1010,27 @@ globalThis.fetch = async (input, init) => {
       headers: { "Content-Type": "application/json" }
     });
   }
+  if (url.includes("/api/react/v1/emergency-login-grants")) {
+    const revoked = url.endsWith("/revoke");
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    const grant = {
+      grantId: "grant-1",
+      storeCode: "S01",
+      businessDate: "2026-07-14",
+      keyId: "KEY1",
+      permissionProfile: "AllPosTerminal",
+      issuedBy: "admin",
+      reason: String(body.reason ?? "outage"),
+      issuedAtUtc: "2026-07-14T01:00:00Z",
+      expiresAtUtc: "2026-07-14T14:00:00Z",
+      status: revoked ? "Revoked" : "Active"
+    };
+    const data = init?.method === "POST" && !revoked ? { grant, token: "HBPOSE1-KEY1-PAYLOAD-SIGNATURE" } : grant;
+    return new Response(JSON.stringify({ success: true, data }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
   return new Response(JSON.stringify({
     success: true,
     data: {
@@ -902,6 +1071,9 @@ try {
     deviceSystem: "Android",
     keyword: "Ada"
   });
+  const grant = await getEmergencyLoginGrant("S01");
+  const createdGrant = await createEmergencyLoginGrant("S01", " network outage ");
+  const revokedGrant = await revokeEmergencyLoginGrant("grant-1", " resolved ");
   assertEqual(
     calls[0]?.url,
     "/api/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows",
@@ -936,6 +1108,29 @@ try {
     "App device summary should use mobile app-device-status summary API"
   );
   assertEqual(calls[5]?.method, "GET", "App device summary should use GET");
+  assertEqual(
+    calls[6]?.url,
+    "/api/react/v1/emergency-login-grants?storeCode=S01",
+    "Emergency grant summary should use the store query route"
+  );
+  assertEqual(grant?.status, "Active", "Emergency grant summary should be normalized");
+  assertEqual(calls[7]?.method, "POST", "Emergency grant creation should use POST");
+  assertEqual(
+    calls[7]?.body,
+    JSON.stringify({ storeCode: "S01", reason: "network outage" }),
+    "Emergency grant creation should trim its reason"
+  );
+  assertEqual(
+    createdGrant.token,
+    "HBPOSE1-KEY1-PAYLOAD-SIGNATURE",
+    "Emergency grant creation should return the one-time token"
+  );
+  assertEqual(
+    calls[8]?.url,
+    "/api/react/v1/emergency-login-grants/grant-1/revoke",
+    "Emergency grant revocation should use the grant route"
+  );
+  assertEqual(revokedGrant.status, "Revoked", "Emergency grant revocation should return its status");
 } finally {
   globalThis.fetch = originalFetch;
 }

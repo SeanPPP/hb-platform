@@ -1,4 +1,170 @@
-import type { UserPermissionInheritedSourceDto, UserPermissionStateDto } from '../../../types/user'
+import type {
+  PosTerminalPermissionOptionDto,
+  UserPermissionInheritedSourceDto,
+  UserPermissionStateDto,
+} from '../../../types/user'
+
+const POS_TERMINAL_PREFIX = 'Permissions.PosTerminal.'
+const POS_MODULE_ORDER = ['Sales', 'Payment', 'Returns', 'SpecialProducts', 'Admin', 'Device']
+const POS_MODULE_FALLBACK_NAMES: Record<string, string> = {
+  Sales: 'POS 销售',
+  Payment: 'POS 收款',
+  Returns: 'POS 退货',
+  SpecialProducts: 'POS 特殊商品',
+  Admin: 'POS 管理',
+  Device: 'POS 设备',
+}
+
+const LINE_DISCOUNT_PERMISSION_CODES = [
+  'Permissions.PosTerminal.Sales.LineManualDiscount',
+  'Permissions.PosTerminal.Sales.LineQuickDiscount10Percent',
+  'Permissions.PosTerminal.Sales.LineQuickDiscount20Percent',
+  'Permissions.PosTerminal.Sales.LineQuickDiscount30Percent',
+  'Permissions.PosTerminal.Sales.LineQuickDiscount40Percent',
+  'Permissions.PosTerminal.Sales.LineQuickDiscount50Percent',
+]
+
+const ORDER_DISCOUNT_PERMISSION_CODES = [
+  'Permissions.PosTerminal.Sales.OrderManualDiscount',
+  'Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent',
+  'Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent',
+  'Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent',
+  'Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent',
+  'Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent',
+]
+
+const LINE_DISCOUNT_ORDER = new Map(LINE_DISCOUNT_PERMISSION_CODES.map((code, index) => [code, index]))
+const ORDER_DISCOUNT_ORDER = new Map(ORDER_DISCOUNT_PERMISSION_CODES.map((code, index) => [code, index]))
+
+export interface PosPermissionGroup {
+  key: string
+  displayName: string
+  permissions: PosTerminalPermissionOptionDto[]
+}
+
+export interface PosPermissionSection {
+  module: string
+  displayName: string
+  groups: PosPermissionGroup[]
+}
+
+export interface PosPermissionRequestTarget {
+  sequence: number
+  userGuid: string
+  storeGuid: string
+}
+
+function getPosPermissionModule(permissionCode: string) {
+  if (!permissionCode.startsWith(POS_TERMINAL_PREFIX)) return 'Other'
+  return permissionCode.slice(POS_TERMINAL_PREFIX.length).split('.')[0] || 'Other'
+}
+
+function sortPermissionsByDisplayName(permissions: PosTerminalPermissionOptionDto[]) {
+  return [...permissions].sort((left, right) =>
+    left.name.localeCompare(right.name, 'zh-CN', { numeric: true }),
+  )
+}
+
+function sortDiscountPermissions(
+  permissions: PosTerminalPermissionOptionDto[],
+  order: Map<string, number>,
+) {
+  return [...permissions].sort(
+    (left, right) => (order.get(left.code) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.code) ?? Number.MAX_SAFE_INTEGER),
+  )
+}
+
+export function buildPosPermissionSections(
+  assignablePermissions: PosTerminalPermissionOptionDto[],
+): PosPermissionSection[] {
+  const modules = new Map<string, PosTerminalPermissionOptionDto[]>()
+
+  assignablePermissions.forEach((permission) => {
+    const module = getPosPermissionModule(permission.code)
+    modules.set(module, [...(modules.get(module) ?? []), permission])
+  })
+
+  // API 返回的 assignablePermissions 是唯一白名单；这里仅负责分组和固定折扣展示顺序。
+  return Array.from(modules.entries())
+    .sort(([left], [right]) => {
+      const leftIndex = POS_MODULE_ORDER.indexOf(left)
+      const rightIndex = POS_MODULE_ORDER.indexOf(right)
+      return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+        (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex) || left.localeCompare(right)
+    })
+    .map(([module, permissions]) => {
+      const lineDiscounts = permissions.filter((permission) => LINE_DISCOUNT_ORDER.has(permission.code))
+      const orderDiscounts = permissions.filter((permission) => ORDER_DISCOUNT_ORDER.has(permission.code))
+      const discounts = new Set([...lineDiscounts, ...orderDiscounts].map((permission) => permission.code))
+      const regularPermissions = permissions.filter((permission) => !discounts.has(permission.code))
+      const groups: PosPermissionGroup[] = []
+
+      if (regularPermissions.length) {
+        groups.push({
+          key: `${module}:regular`,
+          displayName: module === 'Sales' ? '销售操作' : '模块权限',
+          permissions: sortPermissionsByDisplayName(regularPermissions),
+        })
+      }
+      if (lineDiscounts.length) {
+        groups.push({
+          key: `${module}:line-discounts`,
+          displayName: '单行折扣',
+          permissions: sortDiscountPermissions(lineDiscounts, LINE_DISCOUNT_ORDER),
+        })
+      }
+      if (orderDiscounts.length) {
+        groups.push({
+          key: `${module}:order-discounts`,
+          displayName: '整单折扣',
+          permissions: sortDiscountPermissions(orderDiscounts, ORDER_DISCOUNT_ORDER),
+        })
+      }
+
+      return {
+        module,
+        displayName: permissions[0]?.group || POS_MODULE_FALLBACK_NAMES[module] || module,
+        groups,
+      }
+    })
+}
+
+export function getEditablePosPermissionCodes(
+  permissionCodes: string[],
+  assignablePermissions: PosTerminalPermissionOptionDto[],
+) {
+  const assignableCodes = new Set(assignablePermissions.map((permission) => permission.code))
+  return uniquePermissionCodes(permissionCodes.filter((permissionCode) => assignableCodes.has(permissionCode)))
+}
+
+export function buildGrantedPosPermissionCodes(
+  selectedPermissionCodes: string[],
+  assignablePermissions: PosTerminalPermissionOptionDto[],
+) {
+  return getEditablePosPermissionCodes(selectedPermissionCodes, assignablePermissions)
+}
+
+export function isInheritedPosPermissionMode(mode: string | undefined) {
+  const normalizedMode = mode?.trim().toLowerCase()
+  return normalizedMode === 'inherited' || normalizedMode === 'inherit'
+}
+
+export function shouldEnablePosPermissionSave(mode: string | undefined, hasChanges: boolean) {
+  // 继承模式允许保存当前有效快照，即使没有手工改动，也能显式切换为分店覆盖。
+  return isInheritedPosPermissionMode(mode) || hasChanges
+}
+
+export function isCurrentPosPermissionRequest(
+  request: PosPermissionRequestTarget,
+  currentRequest: PosPermissionRequestTarget | null,
+) {
+  return Boolean(
+    currentRequest &&
+    request.sequence === currentRequest.sequence &&
+    request.userGuid === currentRequest.userGuid &&
+    request.storeGuid === currentRequest.storeGuid,
+  )
+}
 
 export function uniquePermissionCodes(permissionCodes: string[]): string[] {
   return Array.from(new Set(permissionCodes))

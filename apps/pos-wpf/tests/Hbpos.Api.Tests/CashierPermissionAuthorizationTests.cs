@@ -225,6 +225,10 @@ public sealed class CashierPermissionAuthorizationTests
             CashierBarcodeLoginRequest request,
             CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
 
+        public Task<CashierSessionDto?> RefreshSessionAsync(
+            CashierAuthorizationTicket ticket,
+            CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
+
         public Task<bool> HasAnyPermissionAsync(
             string userGuid,
             string storeCode,
@@ -242,6 +246,10 @@ public sealed class CashierPermissionAuthorizationTests
 
         public Task<CashierSessionDto?> BarcodeLoginAsync(
             CashierBarcodeLoginRequest request,
+            CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
+
+        public Task<CashierSessionDto?> RefreshSessionAsync(
+            CashierAuthorizationTicket ticket,
             CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
 
         public Task<bool> HasAnyPermissionAsync(

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -20,6 +21,10 @@ public interface ICashierSessionContext
 
     void Clear();
 
+    bool TrySetCurrent(CashierSessionDto expected, CashierSessionDto replacement);
+
+    bool TryClear(CashierSessionDto expected);
+
     bool HasPermission(string permissionCode);
 
     bool RequirePermission(string permissionCode, out string message);
@@ -28,46 +33,98 @@ public interface ICashierSessionContext
 public sealed class CashierSessionContext(TimeProvider? timeProvider = null) : ICashierSessionContext
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly object _sessionGate = new();
+    private CashierSessionDto? _currentSession;
     private static readonly string[] AllPosTerminalPermissions = Permissions.GetAllPermissions()
         .Select(permission => permission.Code)
         .Where(code => code.StartsWith("Permissions.PosTerminal.", StringComparison.Ordinal))
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
-    public CashierSessionDto? CurrentSession { get; private set; }
+    public CashierSessionDto? CurrentSession
+    {
+        get
+        {
+            lock (_sessionGate)
+            {
+                return _currentSession;
+            }
+        }
+    }
 
     public void SetCurrent(CashierSessionDto session)
     {
-        CurrentSession = session;
+        lock (_sessionGate)
+        {
+            _currentSession = session;
+        }
     }
 
     public void Clear()
     {
-        CurrentSession = null;
+        lock (_sessionGate)
+        {
+            _currentSession = null;
+        }
+    }
+
+    public bool TrySetCurrent(CashierSessionDto expected, CashierSessionDto replacement)
+    {
+        lock (_sessionGate)
+        {
+            if (!ReferenceEquals(_currentSession, expected))
+            {
+                return false;
+            }
+
+            _currentSession = replacement;
+            return true;
+        }
+    }
+
+    public bool TryClear(CashierSessionDto expected)
+    {
+        lock (_sessionGate)
+        {
+            if (!ReferenceEquals(_currentSession, expected))
+            {
+                return false;
+            }
+
+            _currentSession = null;
+            return true;
+        }
     }
 
     public bool HasPermission(string permissionCode)
     {
-        if (CurrentSession is null)
+        var currentSession = CurrentSession;
+        if (currentSession is null)
         {
             return false;
         }
 
-        if (CurrentSession.IsEmergencyOverride &&
-            CurrentSession.AuthorizationExpiresAtUtc <= _timeProvider.GetUtcNow())
+        if (currentSession.IsEmergencyOverride &&
+            currentSession.AuthorizationExpiresAtUtc <= _timeProvider.GetUtcNow())
         {
-            CurrentSession = null;
+            TryClear(currentSession);
             return false;
         }
 
         // 紧急授权和后台超管只在本机上下文授予 POS 端权限，不扩展为后台权限。
-        if (CurrentSession.IsEmergencyOverride || CurrentSession.IsSuperAdmin)
+        if (currentSession.IsEmergencyOverride || currentSession.IsSuperAdmin)
         {
             return permissionCode.StartsWith("Permissions.PosTerminal.", StringComparison.Ordinal);
         }
 
-        return Permissions.ExpandPermissionCodes(CurrentSession.PermissionCodes)
-            .Contains(permissionCode, StringComparer.OrdinalIgnoreCase);
+        var effectivePermissionCodes = Permissions.ExpandPermissionCodes(currentSession.PermissionCodes);
+        if (effectivePermissionCodes.Contains(permissionCode, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 滚动升级窗口：旧服务只会返回整组 LineDiscount/OrderDiscount；新服务的部分授权不会生成旧码。
+        return IsLegacyDiscountCompatible(permissionCode, effectivePermissionCodes);
     }
 
     public bool RequirePermission(string permissionCode, out string message)
@@ -130,6 +187,18 @@ public sealed class CashierSessionContext(TimeProvider? timeProvider = null) : I
             Permissions.PosTerminal.Sales.ChangePrice => "当前收银员没有改价权限",
             Permissions.PosTerminal.Sales.LineDiscount => "当前收银员没有行折扣权限",
             Permissions.PosTerminal.Sales.OrderDiscount => "当前收银员没有整单折扣权限",
+            Permissions.PosTerminal.Sales.LineManualDiscount => "当前收银员没有单行自定义折扣或金额减免权限",
+            Permissions.PosTerminal.Sales.LineQuickDiscount10Percent => "当前收银员没有单行快速折扣 10% 权限",
+            Permissions.PosTerminal.Sales.LineQuickDiscount20Percent => "当前收银员没有单行快速折扣 20% 权限",
+            Permissions.PosTerminal.Sales.LineQuickDiscount30Percent => "当前收银员没有单行快速折扣 30% 权限",
+            Permissions.PosTerminal.Sales.LineQuickDiscount40Percent => "当前收银员没有单行快速折扣 40% 权限",
+            Permissions.PosTerminal.Sales.LineQuickDiscount50Percent => "当前收银员没有单行快速折扣 50% 权限",
+            Permissions.PosTerminal.Sales.OrderManualDiscount => "当前收银员没有整单自定义折扣或金额减免权限",
+            Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent => "当前收银员没有整单快速折扣 10% 权限",
+            Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent => "当前收银员没有整单快速折扣 20% 权限",
+            Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent => "当前收银员没有整单快速折扣 30% 权限",
+            Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent => "当前收银员没有整单快速折扣 40% 权限",
+            Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent => "当前收银员没有整单快速折扣 50% 权限",
             Permissions.PosTerminal.Sales.ClearCart => "当前收银员没有清空购物车权限",
             Permissions.PosTerminal.Sales.HoldOrder => "当前收银员没有挂单权限",
             Permissions.PosTerminal.Sales.RecallOrder => "当前收银员没有取单权限",
@@ -171,6 +240,31 @@ public sealed class CashierSessionContext(TimeProvider? timeProvider = null) : I
             Permissions.PosTerminal.System.Sync => "当前收银员没有手动同步权限",
             _ => "当前收银员没有权限"
         };
+    }
+
+    private static bool IsLegacyDiscountCompatible(
+        string permissionCode,
+        IReadOnlyCollection<string> effectivePermissionCodes)
+    {
+        var legacyPermissionCode = permissionCode switch
+        {
+            Permissions.PosTerminal.Sales.LineManualDiscount or
+            Permissions.PosTerminal.Sales.LineQuickDiscount10Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount20Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount30Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount40Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount50Percent => Permissions.PosTerminal.Sales.LineDiscount,
+            Permissions.PosTerminal.Sales.OrderManualDiscount or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent => Permissions.PosTerminal.Sales.OrderDiscount,
+            _ => null
+        };
+
+        return legacyPermissionCode is not null &&
+            effectivePermissionCodes.Contains(legacyPermissionCode, StringComparer.OrdinalIgnoreCase);
     }
 }
 
@@ -263,13 +357,28 @@ public interface ICashierLoginService
         CancellationToken cancellationToken = default);
 }
 
+public interface ICashierSessionCacheUpdater
+{
+    Task UpdateCachedSessionAsync(
+        CashierSessionDto session,
+        CancellationToken cancellationToken = default);
+
+    Task RemoveCachedSessionAsync(
+        CashierSessionDto session,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class CashierLoginService(
     ICashierLoginApiClient apiClient,
     ILocalAppSettingsRepository settingsRepository,
     IDeviceAuthorizationProtector protector,
-    IEmergencyLoginTokenService? emergencyLoginTokenService = null) : ICashierLoginService
+    IEmergencyLoginTokenService? emergencyLoginTokenService = null)
+    : ICashierLoginService, ICashierSessionCacheUpdater
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ConcurrentDictionary<string, CashierSessionCacheReference> _cacheKeysBySessionIdentity =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _cacheGate = new(1, 1);
 
     public async Task<CashierLoginResult> LoginAsync(
         string storeCode,
@@ -294,12 +403,7 @@ public sealed class CashierLoginService(
         if (attempt.IsOnlineRejected)
         {
             // 关键逻辑：在线明确拒绝表示条码已刷新、停用或失效，必须同步清除离线缓存，避免旧码断网复用。
-            await settingsRepository.DeleteValueAsync(
-                BuildCacheKey(storeCode, deviceCode, userBarcode),
-                cancellationToken);
-            await settingsRepository.DeleteValueAsync(
-                BuildLegacyCacheKey(storeCode, deviceCode, userBarcode),
-                cancellationToken);
+            await RemoveLoginCacheAsync(storeCode, deviceCode, userBarcode, cancellationToken);
             return CashierLoginResult.Fail(attempt.Message);
         }
 
@@ -330,13 +434,23 @@ public sealed class CashierLoginService(
         var json = JsonSerializer.Serialize(session with { IsOfflineCached = false }, JsonOptions);
         var protectedJson = protector.Protect(json)
             ?? throw new InvalidOperationException("无法保护收银员离线缓存。");
-        await settingsRepository.SetValueAsync(
-            BuildCacheKey(storeCode, deviceCode, userBarcode),
-            protectedJson,
-            cancellationToken);
+        var cacheKey = BuildCacheKey(storeCode, deviceCode, userBarcode);
+        await _cacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            await settingsRepository.SetValueAsync(cacheKey, protectedJson, cancellationToken);
+            _cacheKeysBySessionIdentity[BuildSessionIdentity(session)] =
+                CashierSessionCacheReference.Create(cacheKey, session);
 
-        // 新格式写入成功后再清理同一身份的旧明文缓存，避免迁移期间丢失可用登录。
-        await settingsRepository.DeleteValueAsync(BuildLegacyCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
+            // 新格式写入成功后再清理同一身份的旧明文缓存，避免迁移期间丢失可用登录。
+            await settingsRepository.DeleteValueAsync(
+                BuildLegacyCacheKey(storeCode, deviceCode, userBarcode),
+                cancellationToken);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
     }
 
     private async Task<CashierSessionDto?> ReadCachedSessionAsync(
@@ -345,35 +459,130 @@ public sealed class CashierLoginService(
         string userBarcode,
         CancellationToken cancellationToken)
     {
-        var protectedJson = await settingsRepository.GetValueAsync(BuildCacheKey(storeCode, deviceCode, userBarcode), cancellationToken);
-        var json = protector.Unprotect(protectedJson);
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return null;
-        }
-
-        CashierSessionDto? session;
+        var cacheKey = BuildCacheKey(storeCode, deviceCode, userBarcode);
+        await _cacheGate.WaitAsync(cancellationToken);
         try
         {
-            session = JsonSerializer.Deserialize<CashierSessionDto>(json, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-        if (session?.AllowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase) != true)
-        {
-            return null;
-        }
+            var protectedJson = await settingsRepository.GetValueAsync(cacheKey, cancellationToken);
+            var json = protector.Unprotect(protectedJson);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
 
-        // 中文注释：离线只复用同门店、同设备、同条码缓存，并显式标记来源。
-        return session with
+            CashierSessionDto? session;
+            try
+            {
+                session = JsonSerializer.Deserialize<CashierSessionDto>(json, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+            if (session?.AllowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase) != true)
+            {
+                return null;
+            }
+
+            // 中文注释：离线只复用同门店、同设备、同条码缓存，并显式标记来源。
+            var offlineSession = session with
+            {
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
+                IsOfflineCached = true,
+                IsEmergencyOverride = false
+            };
+            _cacheKeysBySessionIdentity[BuildSessionIdentity(offlineSession)] =
+                CashierSessionCacheReference.Create(cacheKey, offlineSession);
+            return offlineSession;
+        }
+        finally
         {
-            StoreCode = storeCode,
-            DeviceCode = deviceCode,
-            IsOfflineCached = true,
-            IsEmergencyOverride = false
-        };
+            _cacheGate.Release();
+        }
+    }
+
+    public async Task UpdateCachedSessionAsync(
+        CashierSessionDto session,
+        CancellationToken cancellationToken = default)
+    {
+        var json = JsonSerializer.Serialize(session with { IsOfflineCached = false }, JsonOptions);
+        var protectedJson = protector.Protect(json)
+            ?? throw new InvalidOperationException("无法保护收银员离线缓存。");
+        var identity = BuildSessionIdentity(session);
+        await _cacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_cacheKeysBySessionIdentity.TryGetValue(identity, out var cacheReference))
+            {
+                throw new InvalidOperationException("找不到当前收银员离线缓存定位信息。");
+            }
+
+            await settingsRepository.SetValueAsync(
+                cacheReference.CacheKey,
+                protectedJson,
+                cancellationToken);
+            _cacheKeysBySessionIdentity[identity] =
+                CashierSessionCacheReference.Create(cacheReference.CacheKey, session);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    public async Task RemoveCachedSessionAsync(
+        CashierSessionDto session,
+        CancellationToken cancellationToken = default)
+    {
+        var identity = BuildSessionIdentity(session);
+        await _cacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_cacheKeysBySessionIdentity.TryGetValue(identity, out var cacheReference) ||
+                !cacheReference.MatchesVersion(session))
+            {
+                return;
+            }
+
+            _cacheKeysBySessionIdentity.TryRemove(identity, out _);
+            await settingsRepository.DeleteValueAsync(cacheReference.CacheKey, cancellationToken);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task RemoveLoginCacheAsync(
+        string storeCode,
+        string deviceCode,
+        string userBarcode,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = BuildCacheKey(storeCode, deviceCode, userBarcode);
+        await _cacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            await settingsRepository.DeleteValueAsync(cacheKey, cancellationToken);
+            await settingsRepository.DeleteValueAsync(
+                BuildLegacyCacheKey(storeCode, deviceCode, userBarcode),
+                cancellationToken);
+            foreach (var identity in _cacheKeysBySessionIdentity
+                         .Where(entry => string.Equals(
+                             entry.Value.CacheKey,
+                             cacheKey,
+                             StringComparison.Ordinal))
+                         .Select(entry => entry.Key)
+                         .ToArray())
+            {
+                _cacheKeysBySessionIdentity.TryRemove(identity, out _);
+            }
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
     }
 
     private static string BuildCacheKey(string storeCode, string deviceCode, string userBarcode)
@@ -386,5 +595,23 @@ public sealed class CashierLoginService(
     private static string BuildLegacyCacheKey(string storeCode, string deviceCode, string userBarcode)
     {
         return $"cashier-session:{storeCode.Trim()}:{deviceCode.Trim()}:{userBarcode.Trim()}";
+    }
+
+    private static string BuildSessionIdentity(CashierSessionDto session) =>
+        $"{session.UserGuid.Trim()}\n{session.StoreCode.Trim()}\n{session.DeviceCode.Trim()}";
+
+    private sealed record CashierSessionCacheReference(
+        string CacheKey,
+        string? AuthorizationToken,
+        DateTimeOffset? AuthorizationExpiresAtUtc)
+    {
+        public static CashierSessionCacheReference Create(
+            string cacheKey,
+            CashierSessionDto session) =>
+            new(cacheKey, session.AuthorizationToken, session.AuthorizationExpiresAtUtc);
+
+        public bool MatchesVersion(CashierSessionDto session) =>
+            string.Equals(AuthorizationToken, session.AuthorizationToken, StringComparison.Ordinal) &&
+            AuthorizationExpiresAtUtc == session.AuthorizationExpiresAtUtc;
     }
 }

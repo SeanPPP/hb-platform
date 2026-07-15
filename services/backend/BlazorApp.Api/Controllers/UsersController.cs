@@ -541,14 +541,18 @@ namespace BlazorApp.Api.Controllers
         /// 用户可查看自己的分店，管理员可查看所有用户的分店
         /// </summary>
         [HttpGet("guid/{guid}/stores")]
-        public async Task<IActionResult> GetUserStores(string guid, [FromServices] ICurrentUserService currentUser)
+        public async Task<IActionResult> GetUserStores(
+            string guid,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] ICurrentUserManageableStoreScopeService? storeScopeService = null
+        )
         {
             var currentUserGuid = currentUser.GetCurrentUserGuid();
             var isSelf = string.Equals(currentUserGuid, guid, StringComparison.OrdinalIgnoreCase);
             var canViewOtherUserStores =
                 CurrentUserManageableStoreScopeService.HasAnyRole(
                     User,
-                    CurrentUserManageableStoreScopeService.AdminRoleAliases
+                    Permissions.SuperAdminRoleNames
                 )
                 || CurrentUserManageableStoreScopeService.HasAnyRole(
                     User,
@@ -557,7 +561,63 @@ namespace BlazorApp.Api.Controllers
 
             if (!isSelf && !canViewOtherUserStores)
             {
-                return Forbid();
+                var isStoreManager = CurrentUserManageableStoreScopeService.HasAnyRole(
+                    User,
+                    CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
+                );
+                if (!isStoreManager || storeScopeService == null)
+                {
+                    return Forbid();
+                }
+
+                var permission = await _roleService.UserHasPermissionAsync(
+                    currentUserGuid,
+                    Permissions.Users.ManagePosTerminalPermissions
+                );
+                if (!permission.Success || permission.Data != true)
+                {
+                    return Forbid();
+                }
+
+                var scope = await storeScopeService.GetScopeAsync();
+                if (!scope.IsAllowed || scope.IsAdmin)
+                {
+                    return Forbid();
+                }
+
+                var targetRoles = await _userService.GetUserRolesAsync(guid);
+                var highPrivilegeRoleNames = Permissions.SuperAdminRoleNames
+                    .Concat(CurrentUserManageableStoreScopeService.StoreManagerRoleAliases)
+                    .Concat(CurrentUserManageableStoreScopeService.WarehouseManagerRoleAliases)
+                    .Concat(new[] { "仓库管理员", "WarehouseAdmin" })
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (
+                    !targetRoles.Success
+                    || targetRoles.Data?.Any(role => highPrivilegeRoleNames.Contains(role.RoleName))
+                        == true
+                )
+                {
+                    return Forbid();
+                }
+
+                var targetStores = await _userService.GetUserStoresAsync(guid);
+                if (!targetStores.Success || targetStores.Data == null)
+                {
+                    return Ok(targetStores);
+                }
+
+                // 店长只获得目标普通用户与自身管理分店的交集，不能借多店员工查看其他分店。
+                var scopedStores = targetStores.Data
+                    .Where(store => scope.CanAccessStoreGuid(store.StoreGUID))
+                    .ToList();
+                if (scopedStores.Count == 0)
+                {
+                    return Forbid();
+                }
+
+                return Ok(
+                    ApiResponse<List<UserStoreDto>>.OK(scopedStores, "获取用户分店成功")
+                );
             }
 
             try

@@ -7,6 +7,7 @@ var P = {
     Delete: "Users.Delete",
     ManageRoles: "Users.ManageRoles",
     ManageStores: "Users.ManageStores",
+    ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
     ResetPassword: "Users.ResetPassword"
   },
   Roles: {
@@ -120,6 +121,9 @@ var P = {
   PosProducts: {
     View: "PosProducts.View",
     Manage: "PosProducts.Manage"
+  },
+  PosTerminal: {
+    AuditView: "Permissions.PosTerminal.Audit.View"
   },
   Dashboard: {
     View: "Dashboard"
@@ -245,6 +249,7 @@ function createEmptyAccess() {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canViewOperationAudits: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
@@ -269,7 +274,7 @@ function buildAccess(currentUser) {
     return createEmptyAccess();
   }
   const hasRole = (role) => currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false;
-  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458");
+  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
   const hasPermission = (permission) => {
@@ -369,6 +374,7 @@ function buildAccess(currentUser) {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit);
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View);
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs);
+  const canViewOperationAudits = isAdmin || hasPermission(P.PosTerminal.AuditView);
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks);
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings);
   const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads);
@@ -449,6 +455,7 @@ function buildAccess(currentUser) {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canViewOperationAudits,
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,
@@ -800,6 +807,7 @@ var accessKeyPermissionMap = {
   canManageAdvertisements: [P.Advertisements.View],
   canViewAttendanceSchedule: [P.Attendance.AdminView, P.Attendance.ScheduleViewStore],
   canManageStoreOps: [P.Store.ManageOperations],
+  canViewOperationAudits: [P.PosTerminal.AuditView],
   canReadOrder: [P.Orders.View],
   canManageLocalPurchase: [P.LocalPurchase.View, "LocalInvocie.View"],
   canEditLocalPurchase: [P.LocalPurchase.Edit, "LocalInvocie.Edit"]
@@ -816,6 +824,7 @@ var webMenuPreviewRoutes = [
       { path: "/system/scheduled-statistics", title: "menu.scheduledStatistics", accessKey: "canManageScheduledTasks" },
       { path: "/system/invoice-email-settings", title: "menu.invoiceEmailSettings", accessKey: "canManageSystemSettings" },
       { path: "/system/payment-terminal-settings", title: "menu.paymentTerminalSettings", accessKey: "canManageSystemSettings" },
+      { path: "/system/emergency-login-keys", title: "menu.emergencyLoginKeys", accessKey: "canManageSystemSettings" },
       { path: "/system/users", title: "menu.systemUsers", accessKey: "canReadUser" },
       { path: "/system/roles", title: "menu.systemRoles", accessKey: "canReadRole" },
       { path: "/system/permissions", title: "menu.systemPermissions", accessKey: "canReadRole" },
@@ -870,6 +879,7 @@ var webMenuPreviewRoutes = [
       { path: "/pos-admin/advertisements", title: "menu.advertisements", accessKey: "canManageAdvertisements" },
       { path: "/pos-admin/schedule-attendance", title: "menu.scheduleAttendance", accessKey: "canViewAttendanceSchedule" },
       { path: "/pos-admin/cash-register-users", title: "menu.cashRegisterUsers", accessKey: "canManageStoreOps" },
+      { path: "/pos-admin/operation-logs", title: "menu.operationLogs", accessKey: "canViewOperationAudits" },
       { path: "/pos-admin/sales-orders", title: "menu.salesOrders", accessKey: "canReadOrder" },
       { path: "/pos-admin/local-supplier-invoices", title: "menu.localSupplierInvoices", accessKey: "canManageLocalPurchase" }
     ]
@@ -1117,6 +1127,30 @@ assertEqual(
   systemLogAccess.canViewSystemLogs,
   true,
   "System.ViewLogs should unlock center log page visibility"
+);
+for (const roleName of ["SuperAdmin", "\u8D85\u7EA7\u7BA1\u7406\u5458"]) {
+  const superAdminAccess = buildAccess(
+    createCurrentUser({
+      roleNames: [roleName],
+      permissions: []
+    })
+  );
+  assertEqual(superAdminAccess.isAdmin, true, `${roleName} should use the global admin access path`);
+  assertEqual(
+    superAdminAccess.canViewOperationAudits,
+    true,
+    `${roleName} should see employee operation audits without an explicit permission row`
+  );
+}
+var operationAuditAccess = buildAccess(
+  createCurrentUser({
+    permissions: ["Permissions.PosTerminal.Audit.View"]
+  })
+);
+assertEqual(
+  operationAuditAccess.canViewOperationAudits,
+  true,
+  "PosTerminal.Audit.View should unlock employee operation audit visibility"
 );
 var appDownloadAccess = buildAccess(
   createCurrentUser({

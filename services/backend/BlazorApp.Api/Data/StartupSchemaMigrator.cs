@@ -22,6 +22,51 @@ namespace BlazorApp.Api.Data
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
             await EnsureEmployeeProfileImageSchemaAsync(db, logger);
+            await EnsureUserStorePosPermissionSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureUserStorePosPermissionSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[HBwebSysUserStorePosPermissions]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[HBwebSysUserStorePosPermissions] (
+        [Id] nvarchar(50) NOT NULL CONSTRAINT [PK_HBwebSysUserStorePosPermissions] PRIMARY KEY,
+        [UserGuid] nvarchar(50) NOT NULL,
+        [StoreGuid] nvarchar(50) NOT NULL,
+        [PermissionCode] nvarchar(100) NOT NULL,
+        [IsGranted] bit NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL CONSTRAINT [DF_HBwebSysUserStorePosPermissions_IsDeleted] DEFAULT(0)
+    );
+END;
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE [name] = 'IX_UserStorePosPermission_Scope_Unique'
+      AND [object_id] = OBJECT_ID(N'[dbo].[HBwebSysUserStorePosPermissions]')
+)
+BEGIN
+    CREATE UNIQUE INDEX [IX_UserStorePosPermission_Scope_Unique]
+        ON [dbo].[HBwebSysUserStorePosPermissions]([UserGuid], [StoreGuid], [PermissionCode]);
+END;
+""";
+
+            try
+            {
+                // 权限覆盖表和唯一索引必须同批兜底，保证 PUT 快照可安全重试。
+                await db.Ado.ExecuteCommandAsync(sql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "初始化用户分店 POS 权限覆盖表失败");
+                throw;
+            }
         }
 
         private static async Task EnsureEmployeeProfileImageSchemaAsync(

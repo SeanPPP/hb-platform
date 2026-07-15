@@ -50,7 +50,119 @@ namespace BlazorApp.Api.Tests
                 InitKeyType = InitKeyType.Attribute,
             });
 
-            _db.CodeFirst.InitTables<Role, SysPermission, SysRolePermission, SeasonalCardCatalog>();
+            _db.CodeFirst.InitTables<User, Role, UserRole, SysPermission>();
+            _db.CodeFirst.InitTables<SysRolePermission, SysUserPermission, SeasonalCardCatalog>();
+        }
+
+        [Fact]
+        public void PosTerminalPermissionSeeds_拆分折扣并给店长用户管理权限()
+        {
+            var expectedSalesCodes = new[]
+            {
+                "Permissions.PosTerminal.Sales.LineManualDiscount",
+                "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent",
+                "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent",
+                "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent",
+                "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent",
+                "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent",
+                "Permissions.PosTerminal.Sales.OrderManualDiscount",
+                "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent",
+                "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent",
+                "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent",
+                "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent",
+                "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent",
+            };
+            var seedCodes = PermissionSeedData.AllPermissions
+                .Select(item => item.Code)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            Assert.All(expectedSalesCodes, code => Assert.Contains(code, seedCodes));
+            Assert.DoesNotContain("Permissions.PosTerminal.Sales.LineDiscount", seedCodes);
+            Assert.DoesNotContain("Permissions.PosTerminal.Sales.OrderDiscount", seedCodes);
+            Assert.Contains("Permissions.PosTerminal.Sales.LineDiscount", PermissionSeedData.DeprecatedPermissionCodes);
+            Assert.Contains("Permissions.PosTerminal.Sales.OrderDiscount", PermissionSeedData.DeprecatedPermissionCodes);
+
+            foreach (var roleName in new[] { "StoreManager", "店长", "经理" })
+            {
+                var template = Assert.Single(
+                    PermissionSeedData.RolePermissionTemplates,
+                    item => item.RoleName == roleName
+                );
+                Assert.Contains("Users.View", template.PermissionCodes);
+                Assert.Contains("Users.ManagePosTerminalPermissions", template.PermissionCodes);
+            }
+
+            Assert.Contains(Permissions.PosTerminal.Payment.Confirm, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.Contains(Permissions.PosTerminal.Returns.Confirm, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.Contains(Permissions.PosTerminal.Installments.AddRepayment, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.DoesNotContain(Permissions.PosTerminal.Settings.AppUpdate, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.DoesNotContain(Permissions.PosTerminal.Settings.TestDataReset, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.DoesNotContain(Permissions.PosTerminal.SpecialProducts.Manage, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.DoesNotContain(Permissions.PosTerminal.System.Sync, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+            Assert.DoesNotContain(Permissions.PosTerminal.Audit.View, PermissionSeedData.PosTerminalBusinessPermissionCodes);
+        }
+
+        [Fact]
+        public async Task InitializePermissionSeedsAsync_迁移旧折扣关联后停用旧定义且保持幂等()
+        {
+            var role = CreateRole("role-store", "StoreManager", "Store manager");
+            var user = new User
+            {
+                UserGUID = "user-1",
+                Username = "user-1",
+                Email = "user-1@example.com",
+                PasswordHash = "hash",
+            };
+            await _db.Insertable(role).ExecuteCommandAsync();
+            await _db.Insertable(user).ExecuteCommandAsync();
+            await _db.Insertable(new SysPermission
+            {
+                Id = "permission-old-line",
+                Code = "Permissions.PosTerminal.Sales.LineDiscount",
+                Name = "旧行折扣",
+                Category = "POS 销售",
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new SysRolePermission
+            {
+                Id = "role-old-line",
+                RoleGuid = role.RoleGUID,
+                PermissionCode = "Permissions.PosTerminal.Sales.LineDiscount",
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new SysRolePermission
+            {
+                Id = "role-deleted-new-line",
+                RoleGuid = role.RoleGUID,
+                PermissionCode = "Permissions.PosTerminal.Sales.LineManualDiscount",
+                IsDeleted = true,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new SysUserPermission
+            {
+                Id = "user-old-order",
+                UserGuid = user.UserGUID,
+                PermissionCode = "Permissions.PosTerminal.Sales.OrderDiscount",
+            }).ExecuteCommandAsync();
+
+            await CreateService().InitializePermissionSeedsAsync();
+            await CreateService().InitializePermissionSeedsAsync();
+
+            var roleCodes = await _db.Queryable<SysRolePermission>()
+                .Where(item => item.RoleGuid == role.RoleGUID && !item.IsDeleted)
+                .Select(item => item.PermissionCode)
+                .ToListAsync();
+            var userCodes = await _db.Queryable<SysUserPermission>()
+                .Where(item => item.UserGuid == user.UserGUID && !item.IsDeleted)
+                .Select(item => item.PermissionCode)
+                .ToListAsync();
+
+            Assert.Equal(6, roleCodes.Count(code => code.StartsWith("Permissions.PosTerminal.Sales.Line", StringComparison.Ordinal)));
+            Assert.Equal(6, userCodes.Count(code => code.StartsWith("Permissions.PosTerminal.Sales.Order", StringComparison.Ordinal)));
+            Assert.DoesNotContain("Permissions.PosTerminal.Sales.LineDiscount", roleCodes);
+            Assert.DoesNotContain("Permissions.PosTerminal.Sales.OrderDiscount", userCodes);
+            Assert.Equal(1, await _db.Queryable<SysRolePermission>().CountAsync(item =>
+                item.RoleGuid == role.RoleGUID
+                && item.PermissionCode == "Permissions.PosTerminal.Sales.LineManualDiscount"));
+            Assert.True((await _db.Queryable<SysPermission>()
+                .SingleAsync(item => item.Code == "Permissions.PosTerminal.Sales.LineDiscount")).IsDeleted);
         }
 
         [Fact]
@@ -817,6 +929,7 @@ namespace BlazorApp.Api.Tests
         private static HashSet<string> GetPermissionConstantCodes()
         {
             return GetPermissionConstantCodes(typeof(Permissions))
+                .Where(code => !PermissionSeedData.DeprecatedPermissionCodes.Contains(code))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 

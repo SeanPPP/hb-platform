@@ -86,6 +86,26 @@ export interface UserPermissionAssignmentDto {
   permissions: string[]
 }
 
+export interface PosTerminalPermissionOptionDto {
+  code: string
+  name: string
+  group: string
+  description: string
+}
+
+export interface UserStorePosTerminalPermissionsResponse {
+  mode: string
+  assignablePermissions: PosTerminalPermissionOptionDto[]
+  inheritedPermissionCodes: string[]
+  overriddenPermissionCodes: string[]
+  grantedPermissionCodes: string[]
+  effectivePermissionCodes: string[]
+}
+
+export interface UpdateUserStorePosTerminalPermissionsRequest {
+  grantedPermissionCodes: string[]
+}
+
 export interface UserStoreAssignmentDto {
   storeGUID: string
   accessLevel?: string

@@ -674,6 +674,28 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<UserDetailDto>.Error("无权查看该用户", "FORBIDDEN");
+                }
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    // Users.View 新增给店长后，GUID 详情同样必须受管理分店约束，避免绕过列表隔离。
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    var isRelatedUser = await db.Queryable<UserStore>()
+                        .AnyAsync(item =>
+                            item.UserGUID == userGuid
+                            && !item.IsDeleted
+                            && scopedStoreGuids.Contains(item.StoreGUID)
+                        );
+                    if (!isRelatedUser)
+                    {
+                        return ApiResponse<UserDetailDto>.Error("无权查看该用户", "FORBIDDEN");
+                    }
+                }
+
                 var user = await db.Queryable<User>()
                     .Where(u => u.UserGUID == userGuid)
                     .FirstAsync();
@@ -774,6 +796,33 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                        "无权查看该用户登录记录",
+                        "FORBIDDEN"
+                    );
+                }
+
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    var isRelatedUser = await db.Queryable<UserStore>()
+                        .AnyAsync(item =>
+                            item.UserGUID == userGuid
+                            && !item.IsDeleted
+                            && scopedStoreGuids.Contains(item.StoreGUID)
+                        );
+                    if (!isRelatedUser)
+                    {
+                        return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                            "无权查看该用户登录记录",
+                            "FORBIDDEN"
+                        );
+                    }
+                }
+
                 var page = Math.Max(query.Page, 1);
                 var pageSize = Math.Clamp(query.PageSize, 1, 100);
 

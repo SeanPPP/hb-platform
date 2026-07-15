@@ -5,6 +5,21 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task StartupSchemaMigrator_创建用户分店Pos权限表和唯一索引()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains("HBwebSysUserStorePosPermissions", migrator);
+        Assert.Contains("IX_UserStorePosPermission_Scope_Unique", migrator);
+        Assert.Contains("[UserGuid], [StoreGuid], [PermissionCode]", migrator);
+    }
+
+    [Fact]
     public async Task Program_启动初始化接入统一StartupSchemaMigrator()
     {
         var repoRoot = FindRepoRoot();

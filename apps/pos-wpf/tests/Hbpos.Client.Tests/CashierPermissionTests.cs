@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -21,6 +22,20 @@ public sealed class CashierPermissionTests
         Assert.False(context.HasPermission(Permissions.PosTerminal.Sales.AddItem));
         Assert.False(context.RequirePermission(Permissions.PosTerminal.Sales.ChangePrice, out var message));
         Assert.Equal("当前收银员没有改价权限", message);
+    }
+
+    [Fact]
+    public void Cashier_context_compare_and_swap_cannot_replace_or_clear_a_newer_session()
+    {
+        var original = CreateSession() with { AuthorizationToken = "ticket-a" };
+        var newer = original with { AuthorizationToken = "ticket-b" };
+        var context = new CashierSessionContext();
+        context.SetCurrent(original);
+        context.SetCurrent(newer);
+
+        Assert.False(context.TrySetCurrent(original, original with { AuthorizationToken = "ticket-a-renewed" }));
+        Assert.False(context.TryClear(original));
+        Assert.Same(newer, context.CurrentSession);
     }
 
     [Fact]
@@ -49,6 +64,32 @@ public sealed class CashierPermissionTests
 
         Assert.False(context.HasPermission(Permissions.PosTerminal.Payment.Confirm));
         Assert.Null(context.CurrentSession);
+    }
+
+    [Fact]
+    public void Legacy_line_discount_snapshot_allows_all_new_line_discounts_but_not_order_discounts()
+    {
+        var context = new CashierSessionContext();
+        context.SetCurrent(CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.LineDiscount]));
+
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineManualDiscount));
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount10Percent));
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent));
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount30Percent));
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount40Percent));
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount50Percent));
+        Assert.False(context.HasPermission(Permissions.PosTerminal.Sales.OrderManualDiscount));
+    }
+
+    [Fact]
+    public void Partial_new_line_discount_snapshot_does_not_expand_to_other_percentages()
+    {
+        var context = new CashierSessionContext();
+        context.SetCurrent(CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.LineQuickDiscount10Percent]));
+
+        Assert.True(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount10Percent));
+        Assert.False(context.HasPermission(Permissions.PosTerminal.Sales.LineManualDiscount));
+        Assert.False(context.HasPermission(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent));
     }
 
     [Fact]
@@ -153,6 +194,329 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
+    public async Task Cashier_session_refresh_updates_encrypted_cache_before_replacing_current_session()
+    {
+        var current = CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]);
+        var refreshed = current with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount20Percent],
+            AuthorizationToken = "renewed-ticket"
+        };
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.Refreshed(refreshed)),
+            context,
+            cache);
+
+        await service.RefreshOnceAsync();
+
+        Assert.Same(refreshed, context.CurrentSession);
+        Assert.Same(refreshed, cache.UpdatedSession);
+        Assert.Same(current, cache.SessionObservedDuringUpdate);
+        Assert.False(cache.Removed);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_persists_new_permissions_to_encrypted_offline_cache()
+    {
+        var settings = new InMemoryAppSettingsRepository();
+        var protector = new PassthroughProtector();
+        var initial = CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]);
+        var refreshed = initial with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount20Percent],
+            AuthorizationToken = "renewed-ticket"
+        };
+        var loginService = new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.OnlineAccepted(initial)),
+            settings,
+            protector);
+        var login = await loginService.LoginAsync("S001", "POS-01", "BAR-REFRESH");
+        var context = new CashierSessionContext();
+        context.SetCurrent(login.Session!);
+        var refreshService = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.Refreshed(refreshed)),
+            context,
+            loginService);
+
+        await refreshService.RefreshOnceAsync();
+
+        var offlineLoginService = new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.ApiUnavailable()),
+            settings,
+            protector);
+        var offline = await offlineLoginService.LoginAsync("S001", "POS-01", "BAR-REFRESH");
+        Assert.True(offline.Succeeded);
+        Assert.True(offline.Session!.IsOfflineCached);
+        Assert.Contains(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent, offline.Session.PermissionCodes);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.AddItem, offline.Session.PermissionCodes);
+        Assert.All(settings.Values, value => Assert.StartsWith("protected:", value, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_keeps_last_snapshot_when_api_is_unavailable()
+    {
+        var current = CreateSession();
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.ApiUnavailable()),
+            context,
+            cache);
+
+        await service.RefreshOnceAsync();
+
+        Assert.Same(current, context.CurrentSession);
+        Assert.Null(cache.UpdatedSession);
+        Assert.False(cache.Removed);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_clears_session_and_cache_after_online_rejection()
+    {
+        var current = CreateSession();
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()),
+            context,
+            cache);
+
+        await service.RefreshOnceAsync();
+
+        Assert.Null(context.CurrentSession);
+        Assert.True(cache.Removed);
+        Assert.Same(current, cache.RemovedSession);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_skips_emergency_override()
+    {
+        var context = new CashierSessionContext();
+        context.SetCurrent(CashierSessionContext.CreateEmergencyOverride(
+            "S001", "POS-01", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1), "token"));
+        var api = new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected());
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(api, context, cache);
+
+        await service.RefreshOnceAsync();
+
+        Assert.NotNull(context.CurrentSession);
+        Assert.Equal(0, api.CallCount);
+        Assert.False(cache.Removed);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_success_does_not_replace_a_newer_login_session()
+    {
+        var original = CreateSession() with { AuthorizationToken = "ticket-a" };
+        var newer = CreateSession() with
+        {
+            UserGuid = "user-b",
+            CashierId = "cashier-b",
+            AuthorizationToken = "ticket-b"
+        };
+        var refreshedOriginal = original with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount20Percent],
+            AuthorizationToken = "ticket-a-renewed"
+        };
+        var context = new CashierSessionContext();
+        context.SetCurrent(original);
+        var api = new DeferredCashierSessionRefreshApiClient();
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(api, context, cache);
+
+        var refreshTask = service.RefreshOnceAsync();
+        await api.Started.Task;
+        context.SetCurrent(newer);
+        api.Complete(CashierSessionRefreshAttempt.Refreshed(refreshedOriginal));
+        await refreshTask;
+
+        Assert.Same(newer, context.CurrentSession);
+        Assert.Null(cache.UpdatedSession);
+        Assert.False(cache.Removed);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_cas_failure_restores_newer_same_identity_cache()
+    {
+        var original = CreateSession() with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.AddItem],
+            AuthorizationToken = "ticket-a"
+        };
+        var newer = original with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount30Percent],
+            AuthorizationToken = "ticket-b"
+        };
+        var refreshedOriginal = original with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount20Percent],
+            AuthorizationToken = "ticket-a-renewed"
+        };
+        var context = new CashierSessionContext();
+        context.SetCurrent(original);
+        var updateCount = 0;
+        var cache = new RecordingCashierSessionCacheUpdater(
+            () => context.CurrentSession,
+            _ =>
+            {
+                if (updateCount++ == 0)
+                {
+                    // 模拟缓存写入期间同一收银员重新登录并取得新票据。
+                    context.SetCurrent(newer);
+                }
+            });
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(
+                CashierSessionRefreshAttempt.Refreshed(refreshedOriginal)),
+            context,
+            cache);
+
+        await service.RefreshOnceAsync();
+
+        Assert.Same(newer, context.CurrentSession);
+        Assert.Equal([refreshedOriginal, newer], cache.UpdatedSessions);
+        Assert.False(cache.Removed);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_rejection_does_not_clear_a_newer_login_session()
+    {
+        var original = CreateSession() with { AuthorizationToken = "ticket-a" };
+        var newer = CreateSession() with
+        {
+            UserGuid = "user-b",
+            CashierId = "cashier-b",
+            AuthorizationToken = "ticket-b"
+        };
+        var context = new CashierSessionContext();
+        context.SetCurrent(original);
+        var api = new DeferredCashierSessionRefreshApiClient();
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(api, context, cache);
+
+        var refreshTask = service.RefreshOnceAsync();
+        await api.Started.Task;
+        context.SetCurrent(newer);
+        api.Complete(CashierSessionRefreshAttempt.OnlineRejected());
+        await refreshTask;
+
+        Assert.Same(newer, context.CurrentSession);
+        Assert.True(cache.Removed);
+        Assert.Same(original, cache.RemovedSession);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_rejection_deletes_rejected_cache_but_keeps_different_identity_login()
+    {
+        var settings = new InMemoryAppSettingsRepository();
+        var protector = new PassthroughProtector();
+        var original = CreateSession() with
+        {
+            UserGuid = "user-a",
+            CashierId = "cashier-a",
+            AuthorizationToken = "ticket-a",
+            AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+        var newer = CreateSession() with
+        {
+            UserGuid = "user-b",
+            CashierId = "cashier-b",
+            AuthorizationToken = "ticket-b",
+            AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(2)
+        };
+        var loginService = new CashierLoginService(
+            new SequenceCashierLoginApiClient(
+                CashierLoginAttempt.OnlineAccepted(original),
+                CashierLoginAttempt.OnlineAccepted(newer)),
+            settings,
+            protector);
+        var firstLogin = await loginService.LoginAsync("S001", "POS-01", "BAR-A");
+        var context = new CashierSessionContext();
+        context.SetCurrent(firstLogin.Session!);
+        var refreshApi = new DeferredCashierSessionRefreshApiClient();
+        var refreshService = new CashierSessionRefreshService(refreshApi, context, loginService);
+
+        var refreshTask = refreshService.RefreshOnceAsync();
+        await refreshApi.Started.Task;
+        var secondLogin = await loginService.LoginAsync("S001", "POS-01", "BAR-B");
+        context.SetCurrent(secondLogin.Session!);
+        refreshApi.Complete(CashierSessionRefreshAttempt.OnlineRejected());
+        await refreshTask;
+
+        var offlineA = await new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.ApiUnavailable()),
+            settings,
+            protector).LoginAsync("S001", "POS-01", "BAR-A");
+        var offlineB = await new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.ApiUnavailable()),
+            settings,
+            protector).LoginAsync("S001", "POS-01", "BAR-B");
+        Assert.Same(secondLogin.Session, context.CurrentSession);
+        Assert.False(offlineA.Succeeded);
+        Assert.True(offlineB.Succeeded);
+        Assert.Equal("ticket-b", offlineB.Session!.AuthorizationToken);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_rejection_does_not_delete_same_identity_new_ticket_cache()
+    {
+        var settings = new InMemoryAppSettingsRepository();
+        var protector = new PassthroughProtector();
+        var original = CreateSession() with
+        {
+            AuthorizationToken = "ticket-a",
+            AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+        var newer = original with
+        {
+            PermissionCodes = [Permissions.PosTerminal.Sales.LineQuickDiscount30Percent],
+            AuthorizationToken = "ticket-b",
+            AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(2)
+        };
+        var loginService = new CashierLoginService(
+            new SequenceCashierLoginApiClient(
+                CashierLoginAttempt.OnlineAccepted(original),
+                CashierLoginAttempt.OnlineAccepted(newer)),
+            settings,
+            protector);
+        var firstLogin = await loginService.LoginAsync("S001", "POS-01", "BAR-SAME");
+        var context = new CashierSessionContext();
+        context.SetCurrent(firstLogin.Session!);
+        var refreshApi = new DeferredCashierSessionRefreshApiClient();
+        var refreshService = new CashierSessionRefreshService(refreshApi, context, loginService);
+
+        var refreshTask = refreshService.RefreshOnceAsync();
+        await refreshApi.Started.Task;
+        var secondLogin = await loginService.LoginAsync("S001", "POS-01", "BAR-SAME");
+        context.SetCurrent(secondLogin.Session!);
+        refreshApi.Complete(CashierSessionRefreshAttempt.OnlineRejected());
+        await refreshTask;
+
+        var offline = await new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.ApiUnavailable()),
+            settings,
+            protector).LoginAsync("S001", "POS-01", "BAR-SAME");
+        Assert.Same(secondLogin.Session, context.CurrentSession);
+        Assert.True(offline.Succeeded);
+        Assert.Equal("ticket-b", offline.Session!.AuthorizationToken);
+        Assert.Contains(Permissions.PosTerminal.Sales.LineQuickDiscount30Percent, offline.Session.PermissionCodes);
+    }
+
+    [Fact]
+    public void Cashier_session_refresh_host_uses_sixty_second_interval()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(60), CashierSessionRefreshHostedService.RefreshInterval);
+    }
+
+    [Fact]
     public void Windows_dpapi_protector_round_trips_for_current_user()
     {
         if (!OperatingSystem.IsWindows())
@@ -227,6 +591,99 @@ public sealed class CashierPermissionTests
 
         Assert.Equal(0, workflow.ChangePriceCalls);
         Assert.Equal("当前收银员没有改价权限", viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData(false, "Permissions.PosTerminal.Sales.LineManualDiscount")]
+    [InlineData(true, "Permissions.PosTerminal.Sales.OrderManualDiscount")]
+    public void Pos_terminal_manual_discount_only_uses_matching_line_or_order_permission(
+        bool isWholeOrderOperation,
+        string permissionCode)
+    {
+        var (viewModel, workflow, line) = CreateDiscountViewModel(permissionCode, isWholeOrderOperation);
+
+        viewModel.KeypadBuffer = "1";
+        viewModel.ApplySelectedLineDiscountAmountCommand.Execute(null);
+        viewModel.KeypadBuffer = "10";
+        viewModel.ApplySelectedLineDiscountPercentCommand.Execute(null);
+
+        Assert.Equal(1, workflow.ManualDiscountAmountCalls);
+        Assert.Equal(1, workflow.ManualDiscountPercentCalls);
+        Assert.Equal(0m, line.DiscountAmount);
+    }
+
+    [Theory]
+    [InlineData(false, "10", "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent", "20", "当前收银员没有单行快速折扣 20% 权限")]
+    [InlineData(false, "20", "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent", "30", "当前收银员没有单行快速折扣 30% 权限")]
+    [InlineData(false, "30", "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent", "40", "当前收银员没有单行快速折扣 40% 权限")]
+    [InlineData(false, "40", "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent", "50", "当前收银员没有单行快速折扣 50% 权限")]
+    [InlineData(false, "50", "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent", "10", "当前收银员没有单行快速折扣 10% 权限")]
+    [InlineData(true, "10", "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent", "20", "当前收银员没有整单快速折扣 20% 权限")]
+    [InlineData(true, "20", "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent", "30", "当前收银员没有整单快速折扣 30% 权限")]
+    [InlineData(true, "30", "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent", "40", "当前收银员没有整单快速折扣 40% 权限")]
+    [InlineData(true, "40", "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent", "50", "当前收银员没有整单快速折扣 50% 权限")]
+    [InlineData(true, "50", "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent", "10", "当前收银员没有整单快速折扣 10% 权限")]
+    public void Pos_terminal_quick_discount_only_uses_its_exact_scope_and_percentage_permission(
+        bool isWholeOrderOperation,
+        string grantedPercent,
+        string permissionCode,
+        string deniedPercent,
+        string deniedMessage)
+    {
+        var (viewModel, workflow, line) = CreateDiscountViewModel(permissionCode, isWholeOrderOperation);
+
+        viewModel.ApplyQuickDiscountPercentCommand.Execute(grantedPercent);
+        viewModel.ApplyQuickDiscountPercentCommand.Execute(deniedPercent);
+
+        Assert.Equal([grantedPercent], workflow.QuickDiscountPercentValues);
+        Assert.Equal(0m, line.DiscountAmount);
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public void Pos_terminal_quick_discount_rejects_non_fixed_percentage_without_calling_workflow()
+    {
+        var (viewModel, workflow, line) = CreateDiscountViewModel(
+            Permissions.PosTerminal.Sales.LineManualDiscount,
+            isWholeOrderOperation: false);
+
+        viewModel.ApplyQuickDiscountPercentCommand.Execute("15");
+
+        Assert.Empty(workflow.QuickDiscountPercentValues);
+        Assert.Equal(0m, line.DiscountAmount);
+        Assert.Equal("快速折扣仅支持 10%、20%、30%、40%、50%", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public void Pos_terminal_denied_new_discount_permissions_keep_cart_unchanged_and_record_scoped_audit()
+    {
+        var lineLogger = new RecordingOperationAuditLogger();
+        var (lineViewModel, lineWorkflow, line) = CreateDiscountViewModel(
+            Permissions.PosTerminal.Sales.AddItem,
+            isWholeOrderOperation: false,
+            lineLogger);
+
+        lineViewModel.ApplyQuickDiscountPercentCommand.Execute("20");
+
+        Assert.Empty(lineWorkflow.QuickDiscountPercentValues);
+        Assert.Equal(0m, line.DiscountAmount);
+        var lineAudit = Assert.Single(lineLogger.Events);
+        Assert.Equal(OperationAuditTypes.CartLineDiscountChange, lineAudit.OperationType);
+        Assert.Equal("PERMISSION_DENIED", lineAudit.ReasonCode);
+
+        var orderLogger = new RecordingOperationAuditLogger();
+        var (orderViewModel, orderWorkflow, _) = CreateDiscountViewModel(
+            Permissions.PosTerminal.Sales.AddItem,
+            isWholeOrderOperation: true,
+            orderLogger);
+        orderViewModel.KeypadBuffer = "10";
+
+        orderViewModel.ApplySelectedLineDiscountPercentCommand.Execute(null);
+
+        Assert.Equal(0, orderWorkflow.ManualDiscountPercentCalls);
+        var orderAudit = Assert.Single(orderLogger.Events);
+        Assert.Equal(OperationAuditTypes.CartOrderDiscountChange, orderAudit.OperationType);
+        Assert.Equal("PERMISSION_DENIED", orderAudit.ReasonCode);
     }
 
     [Fact]
@@ -549,6 +1006,34 @@ public sealed class CashierPermissionTests
             IsOfflineCached: false,
             IsEmergencyOverride: false);
 
+    private static (PosTerminalViewModel ViewModel, FakePosTerminalWorkflowService Workflow, CartLine Line)
+        CreateDiscountViewModel(
+            string permissionCode,
+            bool isWholeOrderOperation,
+            IOperationAuditLogger? operationAuditLogger = null)
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem());
+        var workflow = new FakePosTerminalWorkflowService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateSession(permissionCodes: [permissionCode]));
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            cart,
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow,
+            cashierSessionContext: cashierContext,
+            enforcePermissionsWhenNoCashier: true,
+            operationAuditLogger: operationAuditLogger)
+        {
+            SelectedCartLine = line,
+            IsWholeOrderOperation = isWholeOrderOperation
+        };
+
+        return (viewModel, workflow, line);
+    }
+
     private static SellableItemDto CreateItem() =>
         new(
             StoreCode: "S001",
@@ -621,6 +1106,85 @@ public sealed class CashierPermissionTests
         }
     }
 
+    private sealed class SequenceCashierSessionRefreshApiClient(params CashierSessionRefreshAttempt[] attempts)
+        : ICashierSessionRefreshApiClient
+    {
+        private int _index;
+
+        public int CallCount { get; private set; }
+
+        public Task<CashierSessionRefreshAttempt> RefreshAsync(CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(attempts[Math.Min(_index++, attempts.Length - 1)]);
+        }
+    }
+
+    private sealed class DeferredCashierSessionRefreshApiClient : ICashierSessionRefreshApiClient
+    {
+        private readonly TaskCompletionSource<CashierSessionRefreshAttempt> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<CashierSessionRefreshAttempt> RefreshAsync(CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            return _completion.Task.WaitAsync(cancellationToken);
+        }
+
+        public void Complete(CashierSessionRefreshAttempt attempt)
+        {
+            _completion.TrySetResult(attempt);
+        }
+    }
+
+    private sealed class RecordingCashierSessionCacheUpdater(
+        Func<CashierSessionDto?> currentSession,
+        Action<CashierSessionDto>? afterUpdate = null)
+        : ICashierSessionCacheUpdater
+    {
+        public CashierSessionDto? UpdatedSession => UpdatedSessions.LastOrDefault();
+
+        public List<CashierSessionDto> UpdatedSessions { get; } = [];
+
+        public CashierSessionDto? RemovedSession { get; private set; }
+
+        public CashierSessionDto? SessionObservedDuringUpdate { get; private set; }
+
+        public bool Removed { get; private set; }
+
+        public Task UpdateCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default)
+        {
+            SessionObservedDuringUpdate = currentSession();
+            UpdatedSessions.Add(session);
+            afterUpdate?.Invoke(session);
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default)
+        {
+            Removed = true;
+            RemovedSession = session;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
+        }
+    }
+
     private sealed class StaticResponseHandler(HttpResponseMessage response) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
@@ -675,6 +1239,12 @@ public sealed class CashierPermissionTests
 
         public int ChangePriceCalls { get; private set; }
 
+        public int ManualDiscountAmountCalls { get; private set; }
+
+        public int ManualDiscountPercentCalls { get; private set; }
+
+        public List<string?> QuickDiscountPercentValues { get; } = [];
+
         public int ProcessScanAsyncCalls { get; private set; }
 
         public PosTerminalWorkflowResult ScanResult { get; init; } = new();
@@ -705,11 +1275,23 @@ public sealed class CashierPermissionTests
             return new PosTerminalWorkflowResult();
         }
 
-        public PosTerminalWorkflowResult ApplySelectedLineDiscountAmount(CartLine? selectedLine, string keypadBuffer, bool isWholeOrderOperation) => new();
+        public PosTerminalWorkflowResult ApplySelectedLineDiscountAmount(CartLine? selectedLine, string keypadBuffer, bool isWholeOrderOperation)
+        {
+            ManualDiscountAmountCalls++;
+            return new();
+        }
 
-        public PosTerminalWorkflowResult ApplySelectedLineDiscountPercent(CartLine? selectedLine, string keypadBuffer, bool isWholeOrderOperation) => new();
+        public PosTerminalWorkflowResult ApplySelectedLineDiscountPercent(CartLine? selectedLine, string keypadBuffer, bool isWholeOrderOperation)
+        {
+            ManualDiscountPercentCalls++;
+            return new();
+        }
 
-        public PosTerminalWorkflowResult ApplyQuickDiscountPercent(CartLine? selectedLine, string? value, bool isWholeOrderOperation) => new();
+        public PosTerminalWorkflowResult ApplyQuickDiscountPercent(CartLine? selectedLine, string? value, bool isWholeOrderOperation)
+        {
+            QuickDiscountPercentValues.Add(value);
+            return new();
+        }
 
         public PosTerminalWorkflowResult ClearCart() => new();
 

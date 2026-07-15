@@ -97,11 +97,22 @@ public static class ServiceRegistration
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<OperationAuditUploadService>());
         // Generic Host 按注册逆序停止：writer 最后注册，退出时先落库，再由 uploader 做最终上传。
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ClientLogOutboxWriter>());
-        services.AddSingleton<ICashierLoginService>(sp => new CashierLoginService(
+        services.AddSingleton(sp => new CashierLoginService(
             sp.GetRequiredService<ICashierLoginApiClient>(),
             sp.GetRequiredService<ILocalAppSettingsRepository>(),
             sp.GetRequiredService<IDeviceAuthorizationProtector>(),
             sp.GetRequiredService<IEmergencyLoginTokenService>()));
+        services.AddSingleton<ICashierLoginService>(sp => sp.GetRequiredService<CashierLoginService>());
+        services.AddSingleton<ICashierSessionCacheUpdater>(sp => sp.GetRequiredService<CashierLoginService>());
+        services.AddHttpClient<ICashierSessionRefreshApiClient, CashierSessionRefreshApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddSingleton<CashierSessionRefreshService>();
+        services.AddSingleton<CashierSessionRefreshHostedService>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<CashierSessionRefreshHostedService>());
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();

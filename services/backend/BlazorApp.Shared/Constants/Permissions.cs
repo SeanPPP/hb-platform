@@ -18,6 +18,8 @@ namespace BlazorApp.Shared.Constants
             public const string Delete = "Users.Delete";
             public const string ManageRoles = "Users.ManageRoles";
             public const string ManageStores = "Users.ManageStores";
+            public const string ManagePosTerminalPermissions =
+                "Users.ManagePosTerminalPermissions";
             public const string ResetPassword = "Users.ResetPassword";
         }
 
@@ -70,6 +72,32 @@ namespace BlazorApp.Shared.Constants
                 public const string RemoveLine = "Permissions.PosTerminal.Sales.RemoveLine";
                 public const string ChangeQuantity = "Permissions.PosTerminal.Sales.ChangeQuantity";
                 public const string ChangePrice = "Permissions.PosTerminal.Sales.ChangePrice";
+                public const string LineManualDiscount =
+                    "Permissions.PosTerminal.Sales.LineManualDiscount";
+                public const string LineQuickDiscount10Percent =
+                    "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent";
+                public const string LineQuickDiscount20Percent =
+                    "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent";
+                public const string LineQuickDiscount30Percent =
+                    "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent";
+                public const string LineQuickDiscount40Percent =
+                    "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent";
+                public const string LineQuickDiscount50Percent =
+                    "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent";
+                public const string OrderManualDiscount =
+                    "Permissions.PosTerminal.Sales.OrderManualDiscount";
+                public const string OrderQuickDiscount10Percent =
+                    "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent";
+                public const string OrderQuickDiscount20Percent =
+                    "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent";
+                public const string OrderQuickDiscount30Percent =
+                    "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent";
+                public const string OrderQuickDiscount40Percent =
+                    "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent";
+                public const string OrderQuickDiscount50Percent =
+                    "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent";
+
+                // 旧权限仅保留给旧版 POS 做运行时兼容，不再作为可分配权限种子。
                 public const string LineDiscount = "Permissions.PosTerminal.Sales.LineDiscount";
                 public const string OrderDiscount = "Permissions.PosTerminal.Sales.OrderDiscount";
                 public const string ClearCart = "Permissions.PosTerminal.Sales.ClearCart";

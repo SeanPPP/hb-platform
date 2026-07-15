@@ -83,7 +83,72 @@ namespace BlazorApp.Shared.Constants
                 Permissions.DeviceRegistration.View,
                 Permissions.DeviceRegistration.Manage,
                 Permissions.PosTerminal.Audit.View,
+                Permissions.Users.View,
+                Permissions.Users.ManagePosTerminalPermissions,
             };
+
+        public static IReadOnlyList<string> PosTerminalLineDiscountPermissionCodes { get; } =
+            new[]
+            {
+                Permissions.PosTerminal.Sales.LineManualDiscount,
+                Permissions.PosTerminal.Sales.LineQuickDiscount10Percent,
+                Permissions.PosTerminal.Sales.LineQuickDiscount20Percent,
+                Permissions.PosTerminal.Sales.LineQuickDiscount30Percent,
+                Permissions.PosTerminal.Sales.LineQuickDiscount40Percent,
+                Permissions.PosTerminal.Sales.LineQuickDiscount50Percent,
+            };
+
+        public static IReadOnlyList<string> PosTerminalOrderDiscountPermissionCodes { get; } =
+            new[]
+            {
+                Permissions.PosTerminal.Sales.OrderManualDiscount,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent,
+            };
+
+        public static IReadOnlyList<string> PosTerminalBusinessPermissionCodes { get; } =
+            new[]
+            {
+                Permissions.PosTerminal.Sales.View,
+                Permissions.PosTerminal.Sales.AddItem,
+                Permissions.PosTerminal.Sales.AddOpenItem,
+                Permissions.PosTerminal.Sales.RemoveLine,
+                Permissions.PosTerminal.Sales.ChangeQuantity,
+                Permissions.PosTerminal.Sales.ChangePrice,
+                Permissions.PosTerminal.Sales.ClearCart,
+                Permissions.PosTerminal.Sales.HoldOrder,
+                Permissions.PosTerminal.Sales.RecallOrder,
+                Permissions.PosTerminal.Payment.View,
+                Permissions.PosTerminal.Payment.TakeCash,
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.TakeVoucher,
+                Permissions.PosTerminal.Payment.RemoveTender,
+                Permissions.PosTerminal.Payment.Confirm,
+                Permissions.PosTerminal.Returns.View,
+                Permissions.PosTerminal.Returns.AddReceiptLine,
+                Permissions.PosTerminal.Returns.AddNoReceiptItem,
+                Permissions.PosTerminal.Returns.Confirm,
+                Permissions.PosTerminal.History.View,
+                Permissions.PosTerminal.History.Recall,
+                Permissions.PosTerminal.History.Reprint,
+                Permissions.PosTerminal.DailyClose.View,
+                Permissions.PosTerminal.DailyClose.Save,
+                Permissions.PosTerminal.DailyClose.Reprint,
+                Permissions.PosTerminal.Installments.View,
+                Permissions.PosTerminal.Installments.Create,
+                Permissions.PosTerminal.Installments.AddRepayment,
+                Permissions.PosTerminal.Installments.Cancel,
+                Permissions.PosTerminal.Installments.ConfirmPickup,
+                Permissions.PosTerminal.CashDrawer.Open,
+                Permissions.PosTerminal.Receipt.PrintLast,
+            }
+            .Concat(PosTerminalLineDiscountPermissionCodes)
+            .Concat(PosTerminalOrderDiscountPermissionCodes)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         public static IReadOnlyList<string> OrderRolePermissionCodes { get; } =
             new[]
@@ -110,6 +175,8 @@ namespace BlazorApp.Shared.Constants
                 "ChinaProduct.Create",
                 "ChinaProduct.Edit",
                 "ChinaProduct.Delete",
+                Permissions.PosTerminal.Sales.LineDiscount,
+                Permissions.PosTerminal.Sales.OrderDiscount,
             };
 
         private static IReadOnlyList<PermissionSeedDefinition> SharedPermissionSeeds { get; } =
@@ -121,6 +188,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Users.Delete, "删除用户", "用户管理", "页面 /system/users - 删除或停用用户"),
                 new(Permissions.Users.ManageRoles, "管理用户角色", "用户管理", "页面 /system/users - 分配或移除用户角色"),
                 new(Permissions.Users.ManageStores, "管理用户分店", "用户管理", "页面 /system/users - 维护用户关联分店"),
+                new(Permissions.Users.ManagePosTerminalPermissions, "管理分店 POS 权限", "用户管理", "页面 /system/users - 按分店维护收银员 POS 终端业务权限"),
                 new(Permissions.Users.ResetPassword, "重置密码", "用户管理", "页面 /system/users - 重置用户登录密码"),
                 new(Permissions.EmployeeProfiles.View, "查看员工个人信息", "用户管理", "页面 /system/employee-profiles - 查看员工个人信息维护列表与详情"),
                 new(Permissions.EmployeeProfiles.Edit, "维护员工个人信息", "用户管理", "页面 /system/employee-profiles - 编辑员工身份、银行、养老金、地址等资料"),
@@ -176,8 +244,18 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.PosTerminal.Sales.RemoveLine, "移除销售行", "POS 销售", "收银端销售页 - 移除购物车明细按钮"),
                 new(Permissions.PosTerminal.Sales.ChangeQuantity, "修改销售数量", "POS 销售", "收银端销售页 - 修改商品数量按钮"),
                 new(Permissions.PosTerminal.Sales.ChangePrice, "修改销售价格", "POS 销售", "收银端销售页 - 修改商品单价按钮"),
-                new(Permissions.PosTerminal.Sales.LineDiscount, "销售行折扣", "POS 销售", "收银端销售页 - 单行折扣按钮"),
-                new(Permissions.PosTerminal.Sales.OrderDiscount, "整单折扣", "POS 销售", "收银端销售页 - 整单折扣按钮"),
+                new(Permissions.PosTerminal.Sales.LineManualDiscount, "单行手工折扣", "POS 销售", "收银端销售页 - 单行手工折扣"),
+                new(Permissions.PosTerminal.Sales.LineQuickDiscount10Percent, "单行快捷九折", "POS 销售", "收银端销售页 - 单行快捷 10% 折扣"),
+                new(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent, "单行快捷八折", "POS 销售", "收银端销售页 - 单行快捷 20% 折扣"),
+                new(Permissions.PosTerminal.Sales.LineQuickDiscount30Percent, "单行快捷七折", "POS 销售", "收银端销售页 - 单行快捷 30% 折扣"),
+                new(Permissions.PosTerminal.Sales.LineQuickDiscount40Percent, "单行快捷六折", "POS 销售", "收银端销售页 - 单行快捷 40% 折扣"),
+                new(Permissions.PosTerminal.Sales.LineQuickDiscount50Percent, "单行快捷五折", "POS 销售", "收银端销售页 - 单行快捷 50% 折扣"),
+                new(Permissions.PosTerminal.Sales.OrderManualDiscount, "整单手工折扣", "POS 销售", "收银端销售页 - 整单手工折扣"),
+                new(Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent, "整单快捷九折", "POS 销售", "收银端销售页 - 整单快捷 10% 折扣"),
+                new(Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent, "整单快捷八折", "POS 销售", "收银端销售页 - 整单快捷 20% 折扣"),
+                new(Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent, "整单快捷七折", "POS 销售", "收银端销售页 - 整单快捷 30% 折扣"),
+                new(Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent, "整单快捷六折", "POS 销售", "收银端销售页 - 整单快捷 40% 折扣"),
+                new(Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent, "整单快捷五折", "POS 销售", "收银端销售页 - 整单快捷 50% 折扣"),
                 new(Permissions.PosTerminal.Sales.ClearCart, "清空购物车", "POS 销售", "收银端销售页 - 清空购物车按钮"),
                 new(Permissions.PosTerminal.Sales.HoldOrder, "挂起订单", "POS 销售", "收银端销售页 - 挂起订单按钮"),
                 new(Permissions.PosTerminal.Sales.RecallOrder, "召回挂单", "POS 销售", "收银端销售页 - 召回挂单按钮"),
@@ -294,9 +372,9 @@ namespace BlazorApp.Shared.Constants
                     }
                 ),
                 new("StoreManager", StoreManagerPermissionCodes),
-                // 中文历史别名只增量补审计查看权限，避免顺带扩大设备、排班等既有权限。
-                new("店长", new[] { Permissions.PosTerminal.Audit.View }),
-                new("经理", new[] { Permissions.PosTerminal.Audit.View }),
+                // 中文店长别名只补用户查看和 POS 权限管理，不扩大其他系统管理能力。
+                new("店长", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions }),
+                new("经理", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions }),
                 new("Manager", AttendanceSelfServicePermissionCodes),
                 new("User", AttendanceSelfServicePermissionCodes),
                 new("StoreStaff", AttendanceSelfServicePermissionCodes),

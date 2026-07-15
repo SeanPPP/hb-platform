@@ -854,7 +854,10 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ApplySelectedLineDiscountAmount()
     {
-        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        var permissionCode = IsWholeOrderOperation
+            ? Permissions.PosTerminal.Sales.OrderManualDiscount
+            : Permissions.PosTerminal.Sales.LineManualDiscount;
+        if (!TryRequirePermission(permissionCode))
         {
             return;
         }
@@ -864,7 +867,10 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ApplySelectedLineDiscountPercent()
     {
-        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        var permissionCode = IsWholeOrderOperation
+            ? Permissions.PosTerminal.Sales.OrderManualDiscount
+            : Permissions.PosTerminal.Sales.LineManualDiscount;
+        if (!TryRequirePermission(permissionCode))
         {
             return;
         }
@@ -874,12 +880,41 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ApplyQuickDiscountPercent(string? value)
     {
-        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        var permissionCode = GetQuickDiscountPermissionCode(value, IsWholeOrderOperation);
+        if (permissionCode is null)
+        {
+            // 快速入口固定为五个档位，禁止通过命令参数绕过逐档权限。
+            SetStatusText(
+                "快速折扣仅支持 10%、20%、30%、40%、50%",
+                StatusFeedbackKind.Error,
+                UserFeedbackCue.OperationError);
+            return;
+        }
+
+        if (!TryRequirePermission(permissionCode))
         {
             return;
         }
 
         ExecuteCartMutation("quick-discount-percent", () => _workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
+    }
+
+    private static string? GetQuickDiscountPermissionCode(string? value, bool isWholeOrderOperation)
+    {
+        return (isWholeOrderOperation, value?.Trim()) switch
+        {
+            (false, "10") => Permissions.PosTerminal.Sales.LineQuickDiscount10Percent,
+            (false, "20") => Permissions.PosTerminal.Sales.LineQuickDiscount20Percent,
+            (false, "30") => Permissions.PosTerminal.Sales.LineQuickDiscount30Percent,
+            (false, "40") => Permissions.PosTerminal.Sales.LineQuickDiscount40Percent,
+            (false, "50") => Permissions.PosTerminal.Sales.LineQuickDiscount50Percent,
+            (true, "10") => Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent,
+            (true, "20") => Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+            (true, "30") => Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent,
+            (true, "40") => Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent,
+            (true, "50") => Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent,
+            _ => null
+        };
     }
 
     private void SelectCartLine(CartLine line)
@@ -1656,8 +1691,20 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             Permissions.PosTerminal.Sales.RemoveLine => OperationAuditTypes.CartItemRemove,
             Permissions.PosTerminal.Sales.ChangeQuantity => OperationAuditTypes.CartItemQuantityChange,
             Permissions.PosTerminal.Sales.ChangePrice => OperationAuditTypes.CartItemPriceChange,
-            Permissions.PosTerminal.Sales.LineDiscount => OperationAuditTypes.CartLineDiscountChange,
-            Permissions.PosTerminal.Sales.OrderDiscount => OperationAuditTypes.CartOrderDiscountChange,
+            Permissions.PosTerminal.Sales.LineDiscount or
+            Permissions.PosTerminal.Sales.LineManualDiscount or
+            Permissions.PosTerminal.Sales.LineQuickDiscount10Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount20Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount30Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount40Percent or
+            Permissions.PosTerminal.Sales.LineQuickDiscount50Percent => OperationAuditTypes.CartLineDiscountChange,
+            Permissions.PosTerminal.Sales.OrderDiscount or
+            Permissions.PosTerminal.Sales.OrderManualDiscount or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent or
+            Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent => OperationAuditTypes.CartOrderDiscountChange,
             Permissions.PosTerminal.Sales.ClearCart => OperationAuditTypes.CartClear,
             Permissions.PosTerminal.Sales.HoldOrder => OperationAuditTypes.OrderHold,
             Permissions.PosTerminal.Sales.RecallOrder => OperationAuditTypes.OrderRecall,

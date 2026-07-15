@@ -13,6 +13,7 @@ export const P = {
     Delete: 'Users.Delete',
     ManageRoles: 'Users.ManageRoles',
     ManageStores: 'Users.ManageStores',
+    ManagePosTerminalPermissions: 'Users.ManagePosTerminalPermissions',
     ResetPassword: 'Users.ResetPassword',
   },
   Roles: {

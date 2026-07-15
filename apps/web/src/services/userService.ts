@@ -12,8 +12,10 @@ import type {
   UserDto,
   UserQueryDto,
   UserRoleAssignmentDto,
+  UserStorePosTerminalPermissionsResponse,
   UserStoreAssignmentDto,
   UserStoreDto,
+  UpdateUserStorePosTerminalPermissionsRequest,
 } from '../types/user'
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
@@ -106,6 +108,43 @@ export async function assignPermissionsToUser(
   const response = await request.post<ApiResponse<boolean>>(
     `/api/Users/guid/${guid}/permissions`,
     { permissions: payload.permissions },
+  )
+  return unwrapApiData(response)
+}
+
+function getUserStorePosTerminalPermissionsPath(userGuid: string, storeGuid: string) {
+  return `/api/Users/guid/${userGuid}/stores/${storeGuid}/pos-terminal-permissions`
+}
+
+export async function getUserStorePosTerminalPermissions(
+  userGuid: string,
+  storeGuid: string,
+): Promise<UserStorePosTerminalPermissionsResponse> {
+  const response = await request.get<ApiResponse<UserStorePosTerminalPermissionsResponse>>(
+    getUserStorePosTerminalPermissionsPath(userGuid, storeGuid),
+  )
+  return unwrapApiData(response)
+}
+
+export async function updateUserStorePosTerminalPermissions(
+  userGuid: string,
+  storeGuid: string,
+  payload: UpdateUserStorePosTerminalPermissionsRequest,
+): Promise<UserStorePosTerminalPermissionsResponse> {
+  const response = await request.put<ApiResponse<UserStorePosTerminalPermissionsResponse>>(
+    getUserStorePosTerminalPermissionsPath(userGuid, storeGuid),
+    // 分店覆盖接口只接受授权码，禁止透传响应中的继承或有效权限字段。
+    { grantedPermissionCodes: payload.grantedPermissionCodes },
+  )
+  return unwrapApiData(response)
+}
+
+export async function deleteUserStorePosTerminalPermissions(
+  userGuid: string,
+  storeGuid: string,
+): Promise<UserStorePosTerminalPermissionsResponse> {
+  const response = await request.delete<ApiResponse<UserStorePosTerminalPermissionsResponse>>(
+    getUserStorePosTerminalPermissionsPath(userGuid, storeGuid),
   )
   return unwrapApiData(response)
 }

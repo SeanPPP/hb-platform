@@ -480,6 +480,10 @@ builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // ac
 builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录公网 IP 解析
 builder.Services.AddScoped<IServiceApiTokenService, ServiceApiTokenService>(); // 后台自动化 service API token
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
+builder.Services.AddScoped<
+    IUserStorePosTerminalPermissionService,
+    UserStorePosTerminalPermissionService
+>();
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
 builder.Services.AddScoped<EmployeeProfileMediaService>();
 builder.Services.AddScoped<EmployeeCashierBarcodeService>();

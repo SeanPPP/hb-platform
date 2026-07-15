@@ -42,7 +42,8 @@ public sealed class CashierServiceTests : IDisposable
             typeof(UserRole),
             typeof(SysPermission),
             typeof(SysRolePermission),
-            typeof(SysUserPermission)
+            typeof(SysUserPermission),
+            typeof(SysUserStorePosPermission)
         );
     }
 
@@ -184,6 +185,128 @@ public sealed class CashierServiceTests : IDisposable
         Assert.Null(session);
     }
 
+    [Fact]
+    public async Task BarcodeLoginAsync_按分店应用显式允许拒绝且不影响其他分店()
+    {
+        await SeedStoreAsync("store-a", "S-A");
+        await SeedStoreAsync("store-b", "S-B");
+        await SeedUserAsync("user-store-scope", "Scoped Cashier");
+        await SeedUserStoreAsync("user-store-scope", "store-a");
+        await SeedUserStoreAsync("user-store-scope", "store-b");
+        await SeedCashierAsync("cashier-store-scope", "user-store-scope", "S-OLD", "STORE-SCOPE");
+        await SeedRoleAsync("role-store-scope", "Cashier");
+        await SeedUserRoleAsync("user-store-scope", "role-store-scope");
+        await SeedRolePermissionAsync("role-store-scope", Permissions.PosTerminal.Sales.AddItem);
+        await SeedStorePermissionAsync(
+            "user-store-scope", "store-a", Permissions.PosTerminal.Sales.AddItem, isGranted: false);
+        await SeedStorePermissionAsync(
+            "user-store-scope", "store-a", Permissions.PosTerminal.Sales.LineQuickDiscount20Percent, isGranted: true);
+
+        var storeA = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-A", "STORE-SCOPE", "POS-1"),
+            CancellationToken.None);
+        var storeB = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-B", "STORE-SCOPE", "POS-1"),
+            CancellationToken.None);
+
+        Assert.NotNull(storeA);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.AddItem, storeA.PermissionCodes);
+        Assert.Contains(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent, storeA.PermissionCodes);
+        Assert.NotNull(storeB);
+        Assert.Contains(Permissions.PosTerminal.Sales.AddItem, storeB.PermissionCodes);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.LineQuickDiscount20Percent, storeB.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task BarcodeLoginAsync_仅在六项新权限齐全时合成旧折扣权限()
+    {
+        await SeedStoreAsync("store-compat", "S-COMPAT");
+        await SeedUserAsync("user-compat", "Compat Cashier");
+        await SeedUserStoreAsync("user-compat", "store-compat");
+        await SeedCashierAsync("cashier-compat", "user-compat", "S-OLD", "COMPAT-CODE");
+        await SeedRoleAsync("role-compat", "Cashier");
+        await SeedUserRoleAsync("user-compat", "role-compat");
+        foreach (var permissionCode in new[]
+        {
+            Permissions.PosTerminal.Sales.LineManualDiscount,
+            Permissions.PosTerminal.Sales.LineQuickDiscount10Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount20Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount30Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount40Percent,
+            Permissions.PosTerminal.Sales.LineQuickDiscount50Percent,
+            Permissions.PosTerminal.Sales.OrderManualDiscount
+        })
+        {
+            await SeedRolePermissionAsync("role-compat", permissionCode);
+        }
+
+        var session = await CreateService().BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-COMPAT", "COMPAT-CODE", "POS-1"),
+            CancellationToken.None);
+
+        Assert.NotNull(session);
+        Assert.Contains(Permissions.PosTerminal.Sales.LineDiscount, session.PermissionCodes);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.OrderDiscount, session.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task RefreshSessionAsync_重新解析门店权限并在用户停用后拒绝()
+    {
+        await SeedStoreAsync("store-refresh", "S-REFRESH");
+        await SeedUserAsync("user-refresh", "Refresh Cashier");
+        await SeedUserStoreAsync("user-refresh", "store-refresh");
+        await SeedRoleAsync("role-refresh", "Cashier");
+        await SeedUserRoleAsync("user-refresh", "role-refresh");
+        await SeedRolePermissionAsync("role-refresh", Permissions.PosTerminal.Sales.AddItem);
+        var ticket = new CashierAuthorizationTicket(
+            "cashier-refresh",
+            "user-refresh",
+            "S-REFRESH",
+            "POS-1",
+            DateTimeOffset.UtcNow.AddHours(1));
+        var service = CreateService();
+
+        var inherited = await service.RefreshSessionAsync(ticket, CancellationToken.None);
+        await SeedStorePermissionAsync(
+            "user-refresh", "store-refresh", Permissions.PosTerminal.Sales.AddItem, isGranted: false);
+        var denied = await service.RefreshSessionAsync(ticket, CancellationToken.None);
+        await _db.Updateable<User>()
+            .SetColumns(user => user.IsActive == false)
+            .Where(user => user.UserGUID == "user-refresh")
+            .ExecuteCommandAsync();
+        var inactive = await service.RefreshSessionAsync(ticket, CancellationToken.None);
+
+        Assert.NotNull(inherited);
+        Assert.Contains(Permissions.PosTerminal.Sales.AddItem, inherited.PermissionCodes);
+        Assert.NotNull(denied);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.AddItem, denied.PermissionCodes);
+        Assert.Null(inactive);
+    }
+
+    [Fact]
+    public async Task HasAnyPermissionAsync_敏感请求使用当前分店覆盖权限()
+    {
+        await SeedStoreAsync("store-auth-a", "S-AUTH-A");
+        await SeedStoreAsync("store-auth-b", "S-AUTH-B");
+        await SeedUserAsync("user-auth", "Authorized Cashier");
+        await SeedUserStoreAsync("user-auth", "store-auth-a");
+        await SeedUserStoreAsync("user-auth", "store-auth-b");
+        await SeedRoleAsync("role-auth", "Cashier");
+        await SeedUserRoleAsync("user-auth", "role-auth");
+        await SeedRolePermissionAsync("role-auth", Permissions.PosTerminal.Sales.AddItem);
+        await SeedStorePermissionAsync(
+            "user-auth", "store-auth-a", Permissions.PosTerminal.Sales.AddItem, isGranted: false);
+        var service = CreateService();
+
+        var storeA = await service.HasAnyPermissionAsync(
+            "user-auth", "S-AUTH-A", [Permissions.PosTerminal.Sales.AddItem], CancellationToken.None);
+        var storeB = await service.HasAnyPermissionAsync(
+            "user-auth", "S-AUTH-B", [Permissions.PosTerminal.Sales.AddItem], CancellationToken.None);
+
+        Assert.False(storeA);
+        Assert.True(storeB);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -315,6 +438,23 @@ public sealed class CashierServiceTests : IDisposable
             Id = $"{roleGuid}-{permissionCode}",
             RoleGuid = roleGuid,
             PermissionCode = permissionCode,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStorePermissionAsync(
+        string userGuid,
+        string storeGuid,
+        string permissionCode,
+        bool isGranted)
+    {
+        await _db.Insertable(new SysUserStorePosPermission
+        {
+            Id = $"{userGuid}-{storeGuid}-{permissionCode}",
+            UserGuid = userGuid,
+            StoreGuid = storeGuid,
+            PermissionCode = permissionCode,
+            IsGranted = isGranted,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }

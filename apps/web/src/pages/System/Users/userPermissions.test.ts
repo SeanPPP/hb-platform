@@ -1,11 +1,18 @@
 import {
+  buildGrantedPosPermissionCodes,
   buildDirectPermissionPayload,
   buildFallbackUserPermissionState,
+  buildPosPermissionSections,
   deriveDirectPermissionKeysFromChecked,
   buildPermissionSourceMap,
   getCheckedPermissionKeys,
+  getEditablePosPermissionCodes,
+  isCurrentPosPermissionRequest,
+  isInheritedPosPermissionMode,
+  shouldEnablePosPermissionSave,
   toggleDirectPermission,
 } from './userPermissions'
+import type { PosTerminalPermissionOptionDto } from '../../../types/user'
 import type { UserPermissionStateDto } from '../../../types/user'
 
 function assertArrayEqual<T>(actual: T[], expected: T[], message: string) {
@@ -21,6 +28,137 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
     throw new Error(`${message}. Expected: ${String(expected)}, received: ${String(actual)}`)
   }
 }
+
+function createPosPermission(
+  code: string,
+  name: string,
+  group = 'POS 销售',
+): PosTerminalPermissionOptionDto {
+  return { code, name, group, description: '' }
+}
+
+const posSalesPrefix = 'Permissions.PosTerminal.Sales.'
+const assignableDiscountPermissions = [
+  createPosPermission(`${posSalesPrefix}OrderQuickDiscount50Percent`, '整单 50% 折扣'),
+  createPosPermission(`${posSalesPrefix}LineQuickDiscount20Percent`, '单行 20% 折扣'),
+  createPosPermission(`${posSalesPrefix}LineManualDiscount`, '单行手动折扣'),
+  createPosPermission(`${posSalesPrefix}OrderManualDiscount`, '整单手动折扣'),
+  createPosPermission(`${posSalesPrefix}LineQuickDiscount10Percent`, '单行 10% 折扣'),
+  createPosPermission(`${posSalesPrefix}LineQuickDiscount30Percent`, '单行 30% 折扣'),
+  createPosPermission(`${posSalesPrefix}LineQuickDiscount40Percent`, '单行 40% 折扣'),
+  createPosPermission(`${posSalesPrefix}LineQuickDiscount50Percent`, '单行 50% 折扣'),
+  createPosPermission(`${posSalesPrefix}OrderQuickDiscount10Percent`, '整单 10% 折扣'),
+  createPosPermission(`${posSalesPrefix}OrderQuickDiscount20Percent`, '整单 20% 折扣'),
+  createPosPermission(`${posSalesPrefix}OrderQuickDiscount30Percent`, '整单 30% 折扣'),
+  createPosPermission(`${posSalesPrefix}OrderQuickDiscount40Percent`, '整单 40% 折扣'),
+]
+
+const posSections = buildPosPermissionSections(assignableDiscountPermissions)
+
+assertArrayEqual(
+  posSections.flatMap((section) => section.groups.map((group) => group.displayName)),
+  ['单行折扣', '整单折扣'],
+  'POS discount permissions should be presented as clear line and order groups',
+)
+
+assertArrayEqual(
+  posSections[0]?.groups[0]?.permissions.map((permission) => permission.code) ?? [],
+  [
+    `${posSalesPrefix}LineManualDiscount`,
+    `${posSalesPrefix}LineQuickDiscount10Percent`,
+    `${posSalesPrefix}LineQuickDiscount20Percent`,
+    `${posSalesPrefix}LineQuickDiscount30Percent`,
+    `${posSalesPrefix}LineQuickDiscount40Percent`,
+    `${posSalesPrefix}LineQuickDiscount50Percent`,
+  ],
+  'Line discount permissions should keep manual then 10 to 50 percent order',
+)
+
+assertArrayEqual(
+  posSections[0]?.groups[1]?.permissions.map((permission) => permission.code) ?? [],
+  [
+    `${posSalesPrefix}OrderManualDiscount`,
+    `${posSalesPrefix}OrderQuickDiscount10Percent`,
+    `${posSalesPrefix}OrderQuickDiscount20Percent`,
+    `${posSalesPrefix}OrderQuickDiscount30Percent`,
+    `${posSalesPrefix}OrderQuickDiscount40Percent`,
+    `${posSalesPrefix}OrderQuickDiscount50Percent`,
+  ],
+  'Order discount permissions should keep manual then 10 to 50 percent order',
+)
+
+assertArrayEqual(
+  buildGrantedPosPermissionCodes(
+    [
+      `${posSalesPrefix}LineManualDiscount`,
+      'Permissions.PosTerminal.Admin.Manage',
+      `${posSalesPrefix}LineManualDiscount`,
+    ],
+    assignableDiscountPermissions,
+  ),
+  [`${posSalesPrefix}LineManualDiscount`],
+  'POS save payload should only contain unique API-assignable permission codes',
+)
+
+assertArrayEqual(
+  getEditablePosPermissionCodes(
+    [
+      `${posSalesPrefix}LineManualDiscount`,
+      'Permissions.PosTerminal.Admin.Hidden',
+    ],
+    assignableDiscountPermissions,
+  ),
+  [`${posSalesPrefix}LineManualDiscount`],
+  'POS effective selection should not expose permissions outside the API whitelist',
+)
+
+assertEqual(
+  isInheritedPosPermissionMode('Inherited'),
+  true,
+  'Inherited POS mode should be recognized case-insensitively',
+)
+
+assertEqual(
+  isInheritedPosPermissionMode('Override'),
+  false,
+  'Override POS mode should not be treated as inherited',
+)
+
+assertEqual(
+  shouldEnablePosPermissionSave('Inherited', false),
+  true,
+  'Inherited POS mode should allow saving an unchanged effective snapshot',
+)
+
+assertEqual(
+  shouldEnablePosPermissionSave('Override', false),
+  false,
+  'Unchanged override mode should keep save disabled',
+)
+
+assertEqual(
+  shouldEnablePosPermissionSave('Override', true),
+  true,
+  'Changed override mode should allow saving',
+)
+
+assertEqual(
+  isCurrentPosPermissionRequest(
+    { sequence: 3, userGuid: 'user-a', storeGuid: 'store-b' },
+    { sequence: 3, userGuid: 'user-a', storeGuid: 'store-b' },
+  ),
+  true,
+  'Matching POS permission request target should be current',
+)
+
+assertEqual(
+  isCurrentPosPermissionRequest(
+    { sequence: 2, userGuid: 'user-a', storeGuid: 'store-a' },
+    { sequence: 3, userGuid: 'user-a', storeGuid: 'store-b' },
+  ),
+  false,
+  'Older POS permission response must not overwrite the latest store request',
+)
 
 const permissionState: UserPermissionStateDto = {
   userGuid: 'user-a-guid',

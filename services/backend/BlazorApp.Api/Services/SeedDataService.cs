@@ -3,6 +3,7 @@ using BlazorApp.Api.Utils;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using SqlSugar;
 
 namespace BlazorApp.Api.Services
 {
@@ -504,6 +505,9 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation($"已更新 {updatedPermissions.Count} 个权限定义");
             }
 
+            // 旧折扣权限先展开到同范围六项，再清理旧关联；重复启动不会产生重复行。
+            await MigrateDeprecatedPosDiscountPermissionsAsync(db, now);
+
             // 2. 清理 Admin / 管理员 的显式权限关联
             var adminRoleNames = AdminRoleNames.ToArray();
             var adminRoles = await db.Queryable<Role>()
@@ -571,6 +575,134 @@ namespace BlazorApp.Api.Services
             permission.UpdatedAt = updatedAt;
             permission.UpdatedBy = "System";
             updatedPermissionsById[permission.Id] = permission;
+        }
+
+        private async Task MigrateDeprecatedPosDiscountPermissionsAsync(
+            ISqlSugarClient db,
+            DateTime now
+        )
+        {
+            var migrations = new[]
+            {
+                new
+                {
+                    OldCode = Permissions.PosTerminal.Sales.LineDiscount,
+                    NewCodes = PermissionSeedData.PosTerminalLineDiscountPermissionCodes,
+                },
+                new
+                {
+                    OldCode = Permissions.PosTerminal.Sales.OrderDiscount,
+                    NewCodes = PermissionSeedData.PosTerminalOrderDiscountPermissionCodes,
+                },
+            };
+
+            foreach (var migration in migrations)
+            {
+                var oldRoleLinks = await db.Queryable<SysRolePermission>()
+                    .Where(item =>
+                        item.PermissionCode == migration.OldCode && !item.IsDeleted
+                    )
+                    .ToListAsync();
+                var oldUserLinks = await db.Queryable<SysUserPermission>()
+                    .Where(item =>
+                        item.PermissionCode == migration.OldCode && !item.IsDeleted
+                    )
+                    .ToListAsync();
+
+                var roleGuids = oldRoleLinks
+                    .Select(item => item.RoleGuid)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var userGuids = oldUserLinks
+                    .Select(item => item.UserGuid)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var newCodeList = migration.NewCodes.ToList();
+                if (roleGuids.Count > 0)
+                {
+                    // 唯一索引包含软删除行，迁移前先清掉同键墓碑，避免恢复授权时撞唯一键。
+                    await db.Deleteable<SysRolePermission>()
+                        .Where(item =>
+                            roleGuids.Contains(item.RoleGuid)
+                            && newCodeList.Contains(item.PermissionCode)
+                            && item.IsDeleted
+                        )
+                        .ExecuteCommandAsync();
+                }
+
+                if (userGuids.Count > 0)
+                {
+                    await db.Deleteable<SysUserPermission>()
+                        .Where(item =>
+                            userGuids.Contains(item.UserGuid)
+                            && newCodeList.Contains(item.PermissionCode)
+                            && item.IsDeleted
+                        )
+                        .ExecuteCommandAsync();
+                }
+
+                var existingRoleLinks = roleGuids.Count == 0
+                    ? new List<SysRolePermission>()
+                    : await db.Queryable<SysRolePermission>()
+                        .Where(item => roleGuids.Contains(item.RoleGuid) && !item.IsDeleted)
+                        .ToListAsync();
+                var existingUserLinks = userGuids.Count == 0
+                    ? new List<SysUserPermission>()
+                    : await db.Queryable<SysUserPermission>()
+                        .Where(item => userGuids.Contains(item.UserGuid) && !item.IsDeleted)
+                        .ToListAsync();
+
+                var newRoleLinks = roleGuids
+                    .SelectMany(roleGuid => migration.NewCodes.Select(code => (roleGuid, code)))
+                    .Where(entry => !existingRoleLinks.Any(item =>
+                        item.RoleGuid.Equals(entry.roleGuid, StringComparison.OrdinalIgnoreCase)
+                        && item.PermissionCode.Equals(entry.code, StringComparison.OrdinalIgnoreCase)))
+                    .Select(entry => new SysRolePermission
+                    {
+                        Id = UuidHelper.GenerateUuid7(),
+                        RoleGuid = entry.roleGuid,
+                        PermissionCode = entry.code,
+                        CreatedAt = now,
+                        CreatedBy = "System",
+                        UpdatedAt = now,
+                        UpdatedBy = "System",
+                    })
+                    .ToList();
+                var newUserLinks = userGuids
+                    .SelectMany(userGuid => migration.NewCodes.Select(code => (userGuid, code)))
+                    .Where(entry => !existingUserLinks.Any(item =>
+                        item.UserGuid.Equals(entry.userGuid, StringComparison.OrdinalIgnoreCase)
+                        && item.PermissionCode.Equals(entry.code, StringComparison.OrdinalIgnoreCase)))
+                    .Select(entry => new SysUserPermission
+                    {
+                        Id = UuidHelper.GenerateUuid7(),
+                        UserGuid = entry.userGuid,
+                        PermissionCode = entry.code,
+                        CreatedAt = now,
+                        CreatedBy = "System",
+                        UpdatedAt = now,
+                        UpdatedBy = "System",
+                    })
+                    .ToList();
+
+                if (newRoleLinks.Count > 0)
+                {
+                    await db.Insertable(newRoleLinks).ExecuteCommandAsync();
+                }
+
+                if (newUserLinks.Count > 0)
+                {
+                    await db.Insertable(newUserLinks).ExecuteCommandAsync();
+                }
+
+                await db.Deleteable<SysRolePermission>()
+                    .Where(item => item.PermissionCode == migration.OldCode)
+                    .ExecuteCommandAsync();
+                await db.Deleteable<SysUserPermission>()
+                    .Where(item => item.PermissionCode == migration.OldCode)
+                    .ExecuteCommandAsync();
+            }
         }
 
         private async Task SeedRolePermissionTemplatesAsync()

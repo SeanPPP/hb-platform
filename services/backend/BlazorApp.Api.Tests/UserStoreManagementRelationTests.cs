@@ -716,7 +716,10 @@ namespace BlazorApp.Api.Tests
         }
 
         [Theory]
+        [InlineData("Admin")]
         [InlineData("管理员")]
+        [InlineData("SuperAdmin")]
+        [InlineData("超级管理员")]
         [InlineData("WarehouseManager")]
         [InlineData("仓库经理")]
         public async Task GetUserStores_WhenPrivilegedAliasViewsOtherUser_ReturnsStores(
@@ -745,6 +748,156 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task GetUserStores_WhenStoreManagerHasPermission_ReturnsManagedStoreIntersection()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var roleService = new Mock<IRoleService>();
+            roleService
+                .Setup(service => service.UserHasPermissionAsync(
+                    "manager-1",
+                    Permissions.Users.ManagePosTerminalPermissions
+                ))
+                .ReturnsAsync(ApiResponse<bool>.OK(true));
+            var controller = new UsersController(
+                CreateUserService(),
+                roleService.Object,
+                NullLogger<UsersController>.Instance
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("manager-1", "StoreManager"),
+                    },
+                },
+            };
+            var scopeService = new FakeManageableStoreScopeService(
+                new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                }
+            );
+
+            var method = typeof(UsersController).GetMethod(nameof(UsersController.GetUserStores));
+            var task = Assert.IsAssignableFrom<Task<IActionResult>>(
+                method!.Invoke(
+                    controller,
+                    new object?[]
+                    {
+                        "dual-user",
+                        new FakeCurrentUserService("manager-1"),
+                        scopeService,
+                    }
+                )
+            );
+            var result = Assert.IsType<OkObjectResult>(await task);
+            var response = Assert.IsType<ApiResponse<List<UserStoreDto>>>(result.Value);
+            var store = Assert.Single(response.Data!);
+            Assert.Equal("store-1", store.StoreGUID);
+        }
+
+        [Theory]
+        [InlineData("foreign-user", true)]
+        [InlineData("dual-user", false)]
+        public async Task GetUserStores_WhenStoreManagerIsOutOfScopeOrMissingPermission_ReturnsForbid(
+            string targetUserGuid,
+            bool hasPermission
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var roleService = new Mock<IRoleService>();
+            roleService
+                .Setup(service => service.UserHasPermissionAsync(
+                    "manager-1",
+                    Permissions.Users.ManagePosTerminalPermissions
+                ))
+                .ReturnsAsync(ApiResponse<bool>.OK(hasPermission));
+            var controller = new UsersController(
+                CreateUserService(),
+                roleService.Object,
+                NullLogger<UsersController>.Instance
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("manager-1", "StoreManager"),
+                    },
+                },
+            };
+
+            var result = await controller.GetUserStores(
+                targetUserGuid,
+                new FakeCurrentUserService("manager-1"),
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                    }
+                )
+            );
+
+            Assert.IsType<ForbidResult>(result);
+        }
+
+        [Fact]
+        public async Task GetUserStores_WhenStoreManagerTargetsHighPrivilegeUser_ReturnsForbid()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await SeedAliasedStoreManagerAsync(
+                "manager-2",
+                "role-store-manager-2",
+                "StoreManager",
+                true
+            );
+            var roleService = new Mock<IRoleService>();
+            roleService
+                .Setup(service => service.UserHasPermissionAsync(
+                    "manager-2",
+                    Permissions.Users.ManagePosTerminalPermissions
+                ))
+                .ReturnsAsync(ApiResponse<bool>.OK(true));
+            var controller = new UsersController(
+                CreateUserService(),
+                roleService.Object,
+                NullLogger<UsersController>.Instance
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("manager-2", "StoreManager"),
+                    },
+                },
+            };
+
+            var result = await controller.GetUserStores(
+                "manager-1",
+                new FakeCurrentUserService("manager-2"),
+                new FakeManageableStoreScopeService(
+                    new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-2",
+                        StoreGuids = new[] { "store-1" },
+                    }
+                )
+            );
+
+            Assert.IsType<ForbidResult>(result);
         }
 
         [Theory]
