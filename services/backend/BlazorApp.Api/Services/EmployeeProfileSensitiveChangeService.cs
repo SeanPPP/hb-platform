@@ -241,7 +241,7 @@ public sealed class EmployeeProfileSensitiveChangeService
             if (!string.IsNullOrWhiteSpace(oldPhoto)
                 && !string.Equals(oldPhoto, request.IdentityPhotoObjectKey, StringComparison.Ordinal))
             {
-                await ScheduleTicketCleanupAsync(requestId, oldPhoto);
+                await ScheduleTicketCleanupAsync(requestId, oldPhoto, request.UserGUID);
             }
             await db.Ado.CommitTranAsync();
         }
@@ -303,7 +303,11 @@ public sealed class EmployeeProfileSensitiveChangeService
                 await _context.Db.Ado.RollbackTranAsync();
                 return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请已处理", "REQUEST_NOT_PENDING");
             }
-            await ScheduleTicketCleanupAsync(requestId, request.IdentityPhotoObjectKey);
+            await ScheduleTicketCleanupAsync(
+                requestId,
+                request.IdentityPhotoObjectKey,
+                request.UserGUID
+            );
             await _context.Db.Ado.CommitTranAsync();
         }
         catch
@@ -343,7 +347,11 @@ public sealed class EmployeeProfileSensitiveChangeService
             .ExecuteCommandAsync();
         foreach (var item in pending)
         {
-            await ScheduleTicketCleanupAsync(item.RequestId, item.IdentityPhotoObjectKey);
+            await ScheduleTicketCleanupAsync(
+                item.RequestId,
+                item.IdentityPhotoObjectKey,
+                item.UserGUID
+            );
         }
         return pending.Select(item => item.IdentityPhotoObjectKey)
             .Where(item => !string.IsNullOrWhiteSpace(item))
@@ -438,7 +446,11 @@ public sealed class EmployeeProfileSensitiveChangeService
                 if (!string.IsNullOrWhiteSpace(old.IdentityPhotoObjectKey)
                     && !string.Equals(old.IdentityPhotoObjectKey, retainedPhoto, StringComparison.Ordinal))
                 {
-                    await ScheduleTicketCleanupAsync(old.RequestId, old.IdentityPhotoObjectKey);
+                    await ScheduleTicketCleanupAsync(
+                        old.RequestId,
+                        old.IdentityPhotoObjectKey,
+                        old.UserGUID
+                    );
                 }
             }
             request.RequestId = await db.Insertable(request).ExecuteReturnIdentityAsync();
@@ -570,13 +582,17 @@ public sealed class EmployeeProfileSensitiveChangeService
                 && item.PreviousObjectKey == objectKey)
             .ExecuteCommandAsync();
 
-    private Task<int> ScheduleTicketCleanupAsync(int requestId, string? objectKey)
+    private async Task<int> ScheduleTicketCleanupAsync(
+        int requestId,
+        string? objectKey,
+        string userGuid
+    )
     {
         if (string.IsNullOrWhiteSpace(objectKey))
         {
-            return Task.FromResult(0);
+            return 0;
         }
-        return _context.Db.Updateable<EmployeeImageUploadTicket>()
+        var scheduled = await _context.Db.Updateable<EmployeeImageUploadTicket>()
             .SetColumns(item => new EmployeeImageUploadTicket
             {
                 PreviousObjectKey = objectKey,
@@ -586,6 +602,30 @@ public sealed class EmployeeProfileSensitiveChangeService
             .Where(item => item.SensitiveChangeRequestId == requestId
                 && item.Status == EmployeeImageUploadStatus.Completed)
             .ExecuteCommandAsync();
+        if (scheduled > 0)
+        {
+            return scheduled;
+        }
+
+        // 删除正式证件照可能没有对应上传票据；补建恢复票据，确保 COS 短暂失败后可重试。
+        var now = DateTime.UtcNow;
+        var recoveryTicket = new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = $"cleanup/employee-profiles/{userGuid}/identity/{Guid.NewGuid():N}",
+            UserGUID = userGuid,
+            Kind = "identity",
+            ContentType = "application/octet-stream",
+            FileSize = 0,
+            CreatedAt = now,
+            ExpiresAt = now,
+            Status = EmployeeImageUploadStatus.Completed,
+            CompletedAt = now,
+            StageChangedAt = now,
+            PreviousObjectKey = objectKey,
+            PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Pending,
+            SensitiveChangeRequestId = requestId,
+        };
+        return await _context.Db.Insertable(recoveryTicket).ExecuteCommandAsync();
     }
 
     private EmployeeProfileSensitiveChangeDetailDto MapDetail(

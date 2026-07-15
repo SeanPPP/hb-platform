@@ -102,12 +102,15 @@ namespace BlazorApp.Api.Services
                         || ticket.Status == EmployeeImageUploadStatus.Cleaning))
                 {
                     // promote 后进程中断，但数据库已稳定关联时只需完成票据。
+                    var recoveredRequestId = ticket.SensitiveChangeRequestId
+                        ?? sensitiveRequest?.RequestId;
                     var recovered = await db.Updateable<EmployeeImageUploadTicket>()
                         .SetColumns(item => new EmployeeImageUploadTicket
                         {
                             Status = EmployeeImageUploadStatus.Completed,
                             CompletedAt = utcNow,
                             StageChangedAt = utcNow,
+                            SensitiveChangeRequestId = recoveredRequestId,
                         })
                         .Where(item => item.PendingObjectKey == ticket.PendingObjectKey
                             && item.Status == ticket.Status)

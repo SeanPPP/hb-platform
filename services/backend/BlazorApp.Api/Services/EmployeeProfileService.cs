@@ -232,32 +232,116 @@ namespace BlazorApp.Api.Services
 
                 var actor = _currentUserService.GetCurrentUsername();
                 var now = DateTime.UtcNow;
-                var profile = await db.Queryable<EmployeeProfile>()
-                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
-
-                var sensitiveChanged = isAdmin && HasSensitiveChanges(profile, dto);
-                var legacySensitiveDto = !isAdmin && HasLegacySensitivePayload(dto)
-                    ? BuildLegacySensitiveSnapshot(profile, dto)
-                    : null;
+                EmployeeProfile? profile;
+                EmployeeProfileSensitiveChangeUpsertDto? legacySensitiveDto = null;
                 var supersededKeys = new List<string>();
-                IAsyncDisposable? adminSensitiveLock = null;
-
                 if (isAdmin)
                 {
-                    adminSensitiveLock = await EmployeeProfileMediaLock.AcquireAsync(
+                    // 关键逻辑：管理员必须先取得敏感资料锁，再在事务内读取最新版本。
+                    await using var adminSensitiveLock = await EmployeeProfileMediaLock.AcquireAsync(
                         db,
                         userGuid,
                         "sensitive-change",
                         _logger
                     );
-                }
-
-                try
-                {
-                    if (isAdmin)
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
-                        await db.Ado.BeginTranAsync();
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        var sensitiveChanged = HasSensitiveChanges(profile, dto);
+                        if (profile == null)
+                        {
+                            profile = new EmployeeProfile
+                            {
+                                UserGUID = userGuid,
+                                CreatedAt = now,
+                                CreatedBy = actor,
+                                UpdatedAt = now,
+                                UpdatedBy = actor,
+                            };
+                            ApplyChanges(
+                                profile,
+                                dto,
+                                userGuid,
+                                actor,
+                                now,
+                                isCreate: true,
+                                allowLegacyImageUrls,
+                                allowSensitiveChanges: true
+                            );
+                            profile.SensitiveRevision = sensitiveChanged ? 1 : 0;
+                            profile.EmployeeInfoId = await db.Insertable(profile)
+                                .ExecuteReturnIdentityAsync();
+                        }
+                        else
+                        {
+                            var baseRevision = profile.SensitiveRevision;
+                            ApplyChanges(
+                                profile,
+                                dto,
+                                userGuid,
+                                actor,
+                                now,
+                                isCreate: false,
+                                allowLegacyImageUrls,
+                                allowSensitiveChanges: true
+                            );
+                            var nextRevision = sensitiveChanged
+                                ? baseRevision + 1
+                                : baseRevision;
+                            var update = db.Updateable<EmployeeProfile>()
+                                .SetColumns(item => item.Phone == profile.Phone)
+                                .SetColumns(item => item.BankBSB == profile.BankBSB)
+                                .SetColumns(item => item.BankACC == profile.BankACC)
+                                .SetColumns(item => item.SuperannuationCompanyName == profile.SuperannuationCompanyName)
+                                .SetColumns(item => item.SuperannuationCompanyCode == profile.SuperannuationCompanyCode)
+                                .SetColumns(item => item.SuperannuationAccount == profile.SuperannuationAccount)
+                                .SetColumns(item => item.Birthday == profile.Birthday)
+                                .SetColumns(item => item.Gender == profile.Gender)
+                                .SetColumns(item => item.EmployeeType == profile.EmployeeType)
+                                .SetColumns(item => item.AvatarUrl == profile.AvatarUrl)
+                                .SetColumns(item => item.IdentityType == profile.IdentityType)
+                                .SetColumns(item => item.IdentityId == profile.IdentityId)
+                                .SetColumns(item => item.Address == profile.Address)
+                                .SetColumns(item => item.UpdatedAt == now)
+                                .SetColumns(item => item.UpdatedBy == actor)
+                                .SetColumns(item => item.IsDeleted == false)
+                                .SetColumns(item => item.SensitiveRevision == nextRevision);
+                            if (string.IsNullOrWhiteSpace(profile.IdentityPhotoObjectKey))
+                            {
+                                update = update.SetColumns(item =>
+                                    item.IdentityPhotoUrl == profile.IdentityPhotoUrl
+                                );
+                            }
+                            var changed = await update
+                                .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                                    && item.SensitiveRevision == baseRevision)
+                                .ExecuteCommandAsync();
+                            if (changed != 1)
+                            {
+                                throw new InvalidOperationException("管理员保存时敏感资料版本已改变");
+                            }
+                            profile.SensitiveRevision = nextRevision;
+                        }
+                        if (sensitiveChanged && _sensitiveChangeService is not null)
+                        {
+                            // 管理员直改与待审申请失效必须处在同一事务内。
+                            supersededKeys = await _sensitiveChangeService
+                                .SupersedePendingWithinTransactionAsync(userGuid, actor);
+                        }
+                        await db.Ado.CommitTranAsync();
                     }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
+                    }
+                }
+                else
+                {
+                    profile = await db.Queryable<EmployeeProfile>()
+                        .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
                     if (profile == null)
                     {
                         profile = new EmployeeProfile
@@ -268,48 +352,40 @@ namespace BlazorApp.Api.Services
                             UpdatedAt = now,
                             UpdatedBy = actor,
                         };
-
-                        ApplyChanges(profile, dto, userGuid, actor, now, isCreate: true, allowLegacyImageUrls, isAdmin);
-                        if (sensitiveChanged)
-                        {
-                            profile.SensitiveRevision = 1;
-                        }
-                        await db.Insertable(profile).ExecuteCommandAsync();
+                        ApplyChanges(
+                            profile,
+                            dto,
+                            userGuid,
+                            actor,
+                            now,
+                            isCreate: true,
+                            allowLegacyImageUrls: false,
+                            allowSensitiveChanges: false
+                        );
+                        profile.EmployeeInfoId = await db.Insertable(profile)
+                            .ExecuteReturnIdentityAsync();
                     }
                     else
                     {
-                        ApplyChanges(profile, dto, userGuid, actor, now, isCreate: false, allowLegacyImageUrls, isAdmin);
-                        if (sensitiveChanged)
-                        {
-                            profile.SensitiveRevision++;
-                        }
-                        await db.Updateable(profile).ExecuteCommandAsync();
+                        // 员工自助保存只更新非敏感白名单列，绝不写回敏感字段或 revision。
+                        var birthday = dto.Birthday?.Date;
+                        await db.Updateable<EmployeeProfile>()
+                            .SetColumns(item => item.Phone == Normalize(dto.Phone))
+                            .SetColumns(item => item.Birthday == birthday)
+                            .SetColumns(item => item.Gender == ParseGender(dto.Gender))
+                            .SetColumns(item => item.EmployeeType == ParseEmployeeType(dto.EmploymentType))
+                            .SetColumns(item => item.Address == Normalize(dto.Address))
+                            .SetColumns(item => item.UpdatedAt == now)
+                            .SetColumns(item => item.UpdatedBy == actor)
+                            .SetColumns(item => item.IsDeleted == false)
+                            .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId)
+                            .ExecuteCommandAsync();
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.EmployeeInfoId == profile.EmployeeInfoId);
                     }
-
-                    if (isAdmin && sensitiveChanged && _sensitiveChangeService is not null)
+                    if (HasLegacySensitivePayload(dto))
                     {
-                        // 关键逻辑：管理员直改与待审申请失效必须处在同一事务内。
-                        supersededKeys = await _sensitiveChangeService
-                            .SupersedePendingWithinTransactionAsync(userGuid, actor);
-                    }
-                    if (isAdmin)
-                    {
-                        await db.Ado.CommitTranAsync();
-                    }
-                }
-                catch
-                {
-                    if (isAdmin)
-                    {
-                        await db.Ado.RollbackTranAsync();
-                    }
-                    throw;
-                }
-                finally
-                {
-                    if (adminSensitiveLock is not null)
-                    {
-                        await adminSensitiveLock.DisposeAsync();
+                        legacySensitiveDto = BuildLegacySensitiveSnapshot(profile, dto);
                     }
                 }
 

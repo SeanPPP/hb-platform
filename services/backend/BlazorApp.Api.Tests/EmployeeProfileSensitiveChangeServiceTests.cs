@@ -431,6 +431,94 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PromotedRecovery_BackfillsRequestIdSoRejectCleanupCanRetry()
+    {
+        await SeedAsync();
+        const string finalKey = "employee-profiles/user-self/identity/recovered-link.png";
+        var submitted = await CreateService("user-self", "self_user")
+            .ReplacePendingIdentityPhotoAsync(finalKey);
+        var now = DateTime.UtcNow;
+        await _db.Insertable(new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = "pending/" + finalKey,
+            FinalObjectKey = finalKey,
+            UserGUID = "user-self",
+            Kind = "identity",
+            ContentType = "image/png",
+            FileSize = 10,
+            CreatedAt = now.AddHours(-1),
+            ExpiresAt = now.AddMinutes(-30),
+            Status = EmployeeImageUploadStatus.Promoted,
+            StageChangedAt = now.AddMinutes(-30),
+        }).ExecuteCommandAsync();
+        var storage = new FakeStorage();
+
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            now,
+            CancellationToken.None
+        );
+        var recovered = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.Equal(EmployeeImageUploadStatus.Completed, recovered.Status);
+        Assert.Equal(submitted.Data!.RequestId, recovered.SensitiveChangeRequestId);
+
+        storage.DeleteSucceeds = false;
+        Assert.True((await CreateService("admin-user", "admin", storage).RejectAsync(
+            submitted.Data.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "照片无效" }
+        )).Success);
+        storage.DeleteSucceeds = true;
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            now.AddMinutes(1),
+            CancellationToken.None
+        );
+
+        recovered = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Completed, recovered.PreviousObjectCleanupStatus);
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == finalKey));
+    }
+
+    [Fact]
+    public async Task ApproveIdentityPhotoDeletion_WithoutUploadTicket_PersistsFailedCleanupForRetry()
+    {
+        await SeedAsync();
+        const string formalKey = "employee-profiles/user-self/identity/formal-delete.png";
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = formalKey;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var storage = new FakeStorage { DeleteSucceeds = false };
+        var submitted = await CreateService("user-self", "self_user", storage)
+            .DeletePendingIdentityPhotoAsync();
+
+        Assert.True((await CreateService("admin-user", "admin", storage).ApproveAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        )).Success);
+        var cleanupTicket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.NotNull(cleanupTicket);
+        Assert.Equal(formalKey, cleanupTicket!.PreviousObjectKey);
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, cleanupTicket.PreviousObjectCleanupStatus);
+
+        storage.DeleteSucceeds = true;
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            DateTime.UtcNow.AddMinutes(1),
+            CancellationToken.None
+        );
+
+        cleanupTicket = await _db.Queryable<EmployeeImageUploadTicket>().FirstAsync();
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Completed, cleanupTicket.PreviousObjectCleanupStatus);
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == formalKey));
+    }
+
+    [Fact]
     public async Task ApproveController_MapsRevisionConflictTo409_AndAdminEndpointsRequireRoleAndEditPolicy()
     {
         await SeedAsync();

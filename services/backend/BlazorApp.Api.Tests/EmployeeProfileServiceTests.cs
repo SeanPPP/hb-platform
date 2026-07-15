@@ -127,6 +127,94 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpsertSelfAsync_UsesNonSensitiveWhitelist_AndPreservesAdminSensitiveData()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "admin-new",
+                SensitiveRevision = 4,
+                Address = "old address",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var selfDb = CreateAdditionalDb();
+            var updates = new List<string>();
+            selfDb.Aop.OnLogExecuting = (sql, _) =>
+            {
+                if (sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase)
+                    && sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+                {
+                    updates.Add(sql);
+                }
+            };
+            var result = await CreateService("user-self", "self_user", selfDb).UpsertSelfAsync(new()
+            {
+                Address = "self address",
+            });
+
+            Assert.True(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("self address", profile.Address);
+            Assert.Equal("admin-new", profile.BankACC);
+            Assert.Equal(4, profile.SensitiveRevision);
+            var updateSql = Assert.Single(updates);
+            Assert.DoesNotContain("BankACC", updateSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitiveRevision", updateSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("IdentityId", updateSql, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenAnotherAdminCommitsWhileWaiting_UsesLatestRevision()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-old",
+                SensitiveRevision = 3,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var adminADb = CreateAdditionalDb();
+            using var adminBDb = CreateAdditionalDb();
+            var adminARead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            adminADb.Aop.OnLogExecuted = (sql, _) =>
+            {
+                if (sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase)
+                    && sql.Contains("SELECT", StringComparison.OrdinalIgnoreCase))
+                {
+                    adminARead.TrySetResult();
+                }
+            };
+
+            var adminBLock = await EmployeeProfileMediaLock.AcquireAsync(
+                adminBDb,
+                "user-self",
+                "sensitive-change"
+            );
+            var adminASave = CreateService("user-self", "admin-a", adminADb).UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto { BankAccountNumber = "admin-a" }
+            );
+            await Task.Delay(200);
+            var readBeforeAdminBReleasedLock = adminARead.Task.IsCompleted;
+            await adminBDb.Updateable<EmployeeProfile>()
+                .SetColumns(item => item.BankACC == "admin-b")
+                .SetColumns(item => item.SensitiveRevision == 4)
+                .Where(item => item.UserGUID == "user-self")
+                .ExecuteCommandAsync();
+            await adminBLock.DisposeAsync();
+
+            Assert.True((await adminASave).Success);
+            Assert.False(readBeforeAdminBReleasedLock);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("admin-a", profile.BankACC);
+            Assert.Equal(5, profile.SensitiveRevision);
+        }
+
+        [Fact]
         public async Task UpsertSelfAsync_WhenPayloadContainsImageUrls_PreservesSavedImages()
         {
             await SeedUsersAsync();
@@ -944,6 +1032,13 @@ namespace BlazorApp.Api.Tests
         }
 
         private EmployeeProfileService CreateService(string userGuid, string username)
+            => CreateService(userGuid, username, _db);
+
+        private EmployeeProfileService CreateService(
+            string userGuid,
+            string username,
+            ISqlSugarClient db
+        )
         {
             var httpContextAccessor = new HttpContextAccessor
             {
@@ -956,7 +1051,7 @@ namespace BlazorApp.Api.Tests
             };
 
             var currentUserService = new CurrentUserService(httpContextAccessor);
-            var context = CreateSqlSugarContext(_db);
+            var context = CreateSqlSugarContext(db);
 
             return new EmployeeProfileService(
                 context,
@@ -964,6 +1059,14 @@ namespace BlazorApp.Api.Tests
                 NullLogger<EmployeeProfileService>.Instance
             );
         }
+
+        private SqlSugarClient CreateAdditionalDb() => new(new ConnectionConfig
+        {
+            ConnectionString = _sqliteConnection.ConnectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
 
         private EmployeeCashierBarcodeService CreateBarcodeService(
             string userGuid,
