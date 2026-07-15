@@ -25,6 +25,59 @@
     "resetPassword": "重置密码",
     "confirmReset": "重置密码"
   },
+  "posPermissions": {
+    "title": "POS 收银权限",
+    "unknownUser": "未知员工",
+    "unknownStore": "未知分店",
+    "loading": "正在加载 POS 权限...",
+    "selectedCount": "已选 {{selected}} / {{total}}",
+    "mode": {
+      "inherited": "继承",
+      "override": "独立设置"
+    },
+    "actions": {
+      "open": "POS 授权",
+      "back": "返回",
+      "save": "保存",
+      "restore": "恢复继承",
+      "selectGroup": "全选",
+      "clearGroup": "清空"
+    },
+    "unsaved": {
+      "title": "放弃未保存的更改？",
+      "description": "当前 POS 权限尚未保存。离开后，这些更改将丢失。",
+      "discard": "放弃更改"
+    },
+    "restore": {
+      "title": "恢复继承权限？",
+      "description": "这会删除当前分店的独立设置，并恢复使用继承的 POS 权限。"
+    },
+    "busy": {
+      "title": "操作处理中",
+      "description": "正在保存或恢复权限，请等待操作完成后再离开。"
+    },
+    "messages": {
+      "missingStoreGuid": "分店资料缺少授权标识，请刷新分店资料或重新登录。",
+      "saved": "POS 权限已保存",
+      "restored": "已恢复继承权限",
+      "saveFailed": "保存 POS 权限失败，未保存的选择已保留",
+      "restoreFailed": "恢复继承失败，当前选择已保留"
+    },
+    "errors": {
+      "invalidTitle": "授权参数不完整",
+      "invalidDescription": "缺少员工或分店标识，请从店员管理页面重新打开。",
+      "unauthorizedTitle": "登录已失效",
+      "unauthorizedDescription": "请重新登录后再管理 POS 权限。",
+      "forbiddenTitle": "无法管理此账号的 POS 权限",
+      "forbiddenDescription": "当前账号没有此操作权限，且不能修改本人账号的 POS 权限。高权限目标仍由服务器最终校验。",
+      "notFoundTitle": "员工与分店的关联已变化",
+      "notFoundDescription": "未找到这项 POS 授权关系。员工可能已调店、停用或解除分店关联，请返回店员管理刷新。",
+      "networkTitle": "POS 权限加载失败",
+      "networkDescription": "暂时无法连接服务器，请检查网络后重试。"
+    },
+    "emptyTitle": "没有可分配的 POS 权限",
+    "emptyDescription": "服务器目前没有为此员工和分店提供可分配权限。你仍可在独立设置模式下恢复继承。"
+  },
   "statuses": {
     "active": "启用中",
     "disabled": "已停用"

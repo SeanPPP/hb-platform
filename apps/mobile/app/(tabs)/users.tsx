@@ -34,9 +34,11 @@ import {
   type StoreUserListItem,
 } from "@/modules/users";
 import { calculateAge } from "@/modules/users/profile-display";
+import { getPosPermissionEntryState } from "@/modules/users/pos-terminal-permissions";
 import { validatePasswordValue, validateStoreUserForm, type UserDialogMode } from "@/modules/users/validation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 
 type StatusFilter = "all" | "active" | "disabled";
@@ -82,6 +84,7 @@ export default function UsersScreen() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["userManagement", "common"]);
   const access = useAuthStore((state) => state.access);
+  const currentUser = useAuthStore((state) => state.user);
   const {
     stores,
     selectedStoreCode: rememberedStoreCode,
@@ -111,6 +114,9 @@ export default function UsersScreen() {
 
   const canViewUsers = access.isAdmin || access.canReadUser;
   const canModifyUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
+  const canManagePosTerminalPermissions = access.hasPermission(
+    PERMISSIONS.Users.ManagePosTerminalPermissions
+  );
   const manageableStores = useMemo(
     () =>
       getManageableStoresForSession({
@@ -258,6 +264,26 @@ export default function UsersScreen() {
       } as unknown as Parameters<typeof router.push>[0]);
     },
     [resolveUserStoreCode, router, t]
+  );
+
+  const openPosTerminalPermissions = useCallback(
+    (user: StoreUserListItem) => {
+      if (!managedStore?.storeGUID?.trim()) {
+        setSnackbarMessage(t("posPermissions.messages.missingStoreGuid"));
+        return;
+      }
+
+      router.push({
+        pathname: "/users/[userGuid]/pos-terminal-permissions",
+        params: {
+          userGuid: user.userGUID,
+          storeGuid: managedStore.storeGUID,
+          userName: user.fullName || user.username,
+          storeName: managedStore.storeName || managedStore.storeCode,
+        },
+      } as unknown as Parameters<typeof router.push>[0]);
+    },
+    [managedStore, router, t]
   );
 
   const closeResetPasswordDialog = useCallback(() => {
@@ -529,6 +555,16 @@ export default function UsersScreen() {
         ? t(`detail.employmentTypes.${item.employmentType}`, item.employmentType)
         : emptyValue;
       const canModifyThisUser = canModifyUserStore(item);
+      // POS 授权入口只依赖显式权限、当前分店管理范围和严格的分店 GUID。
+      const posPermissionEntryState = getPosPermissionEntryState({
+        canManagePosTerminalPermissions,
+        canManageStore: isStoreManageable(managedStoreCode, manageableStores),
+        currentUserGuid: currentUser?.userGUID,
+        targetUserGuid: item.userGUID,
+        targetStatus: item.status,
+        targetRoleNames: item.roleNames,
+        storeGuid: managedStore?.storeGUID,
+      });
 
       return (
         <Card style={styles.userCard} mode="elevated" onPress={() => openStaffDetail(item)}>
@@ -586,6 +622,17 @@ export default function UsersScreen() {
               <Button compact mode="outlined" icon="account-details-outline" onPress={() => openStaffDetail(item)}>
                 {t("actions.viewDetails")}
               </Button>
+              {posPermissionEntryState !== "hidden" ? (
+                <Button
+                  compact
+                  mode="outlined"
+                  icon="shield-account-outline"
+                  onPress={() => openPosTerminalPermissions(item)}
+                  disabled={posPermissionEntryState === "disabled"}
+                >
+                  {t("posPermissions.actions.open")}
+                </Button>
+              ) : null}
               <Button compact mode="outlined" icon="pencil-outline" onPress={() => openEditDialog(item)} disabled={!canModifyThisUser}>
                 {t("actions.edit")}
               </Button>
@@ -608,17 +655,28 @@ export default function UsersScreen() {
                 {item.status === 1 ? t("actions.disable") : t("actions.enable")}
               </Button>
             </View>
+            {posPermissionEntryState === "disabled" ? (
+              <Text variant="bodySmall" style={styles.readOnlyHint}>
+                {t("posPermissions.messages.missingStoreGuid")}
+              </Text>
+            ) : null}
           </Card.Content>
         </Card>
       );
     },
     [
       canModifyUserStore,
+      canManagePosTerminalPermissions,
+      currentUser?.userGUID,
       handleToggleStatus,
       language,
+      manageableStores,
+      managedStore?.storeGUID,
       managedStore?.storeName,
+      managedStore?.storeCode,
       managedStoreCode,
       openEditDialog,
+      openPosTerminalPermissions,
       openResetPasswordDialog,
       openStaffDetail,
       t,

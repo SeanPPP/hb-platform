@@ -8,6 +8,9 @@ export const PERMISSIONS = {
   EmployeeProfiles: {
     View: "EmployeeProfiles.View",
   },
+  Users: {
+    ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
+  },
   LocalPurchase: {
     View: "LocalPurchase.View",
     Edit: "LocalPurchase.Edit",
