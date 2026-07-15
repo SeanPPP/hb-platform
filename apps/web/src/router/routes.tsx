@@ -76,6 +76,7 @@ import SystemUsersPage from '../pages/System/Users'
 import SystemPermissionsPage from '../pages/System/Permissions'
 import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
 import ContainerDetailPage from '../pages/Warehouse/ContainerDetail'
+import ContainerAllocationSalesPage from '../pages/Warehouse/ContainerAllocationSales'
 import ContainersPage from '../pages/Warehouse/Containers'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
@@ -429,6 +430,18 @@ export const appRoutes: AppRouteItem[] = [
           dynamicTitle: () => i18n.t('menu.containerDetail'),
         },
         element: <ContainerDetailPage />,
+      },
+      {
+        path: '/warehouse/container/allocation-sales/:containerGuid',
+        meta: {
+          title: '货柜配销数据',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canViewContainers',
+          activeMenu: '/warehouse/containers',
+          dynamicTitle: () => '货柜配销数据',
+        },
+        element: <ContainerAllocationSalesPage />,
       },
       {
         path: '/warehouse/products',

@@ -1,4 +1,5 @@
 import {
+  BarChartOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
   EyeOutlined,
@@ -736,12 +737,22 @@ export default function ContainersPage() {
     },
     {
       title: t('common.action'),
-      width: 120,
+      width: 220,
       fixed: 'right',
       render: (_, record) => (
-        <Button icon={<EyeOutlined />} type="link" onClick={() => navigate(`/warehouse/container/detail/${record.hguid}`)}>
-          {t('common.view')}
-        </Button>
+        <Space size={0}>
+          <Button icon={<EyeOutlined />} type="link" onClick={() => navigate(`/warehouse/container/detail/${record.hguid}`)}>
+            {t('common.view')}
+          </Button>
+          <Button
+            icon={<BarChartOutlined />}
+            type="link"
+            disabled={!record.hguid}
+            onClick={() => navigate(`/warehouse/container/allocation-sales/${record.hguid}`)}
+          >
+            配销数据
+          </Button>
+        </Space>
       ),
     },
   ]

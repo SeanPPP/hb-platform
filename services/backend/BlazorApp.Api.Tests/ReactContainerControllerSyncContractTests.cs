@@ -180,9 +180,70 @@ public class ReactContainerControllerSyncContractTests
     [InlineData(nameof(ReactContainerController.GetDateFilterOptions))]
     [InlineData(nameof(ReactContainerController.GetDomesticSetCodes))]
     [InlineData(nameof(ReactContainerController.CheckConflicts))]
+    [InlineData(nameof(ReactContainerController.QueryAllocationSales))]
+    [InlineData(nameof(ReactContainerController.QueryAllocationSalesBranches))]
     public void ContainerReadEndpoints_使用货柜查看权限策略(string methodName)
     {
         AssertMethodHasPolicy(methodName, Permissions.Container.View);
+    }
+
+    [Fact]
+    public async Task QueryAllocationSales_应使用路由货柜GUID并返回标准响应()
+    {
+        ContainerAllocationSalesQueryRequest? actualRequest = null;
+        var expected = new ContainerAllocationSalesReportResponse { ContainerGuid = "ROUTE-GUID", CanQuery = true };
+        var reportService = new Mock<IContainerAllocationSalesReportService>();
+        reportService
+            .Setup(service => service.QueryAsync("ROUTE-GUID", It.IsAny<ContainerAllocationSalesQueryRequest>()))
+            .Callback<string, ContainerAllocationSalesQueryRequest>((_, request) => actualRequest = request)
+            .ReturnsAsync(expected);
+        var controller = CreateController(reportService: reportService.Object);
+
+        var result = await controller.QueryAllocationSales(
+            "ROUTE-GUID",
+            new ContainerAllocationSalesQueryRequest { PageNumber = 2 }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(actualRequest);
+        Assert.Equal(2, actualRequest!.PageNumber);
+        AssertPayload(ok.Value, true, "获取货柜配销数据成功", expected);
+    }
+
+    [Fact]
+    public async Task QueryAllocationSalesBranches_商品不属于货柜时返回404()
+    {
+        var reportService = new Mock<IContainerAllocationSalesReportService>();
+        reportService
+            .Setup(service => service.QueryBranchesAsync("ROUTE-GUID", It.IsAny<ContainerAllocationSalesBranchesQueryRequest>()))
+            .ThrowsAsync(new KeyNotFoundException("货柜中不存在该商品。"));
+        var controller = CreateController(reportService: reportService.Object);
+
+        var result = await controller.QueryAllocationSalesBranches(
+            "ROUTE-GUID",
+            new ContainerAllocationSalesBranchesQueryRequest { ProductCode = "P-404" }
+        );
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        AssertPayload(notFound.Value, false, "货柜中不存在该商品。", null);
+    }
+
+    [Fact]
+    public async Task QueryAllocationSales_货柜不存在时返回404()
+    {
+        var reportService = new Mock<IContainerAllocationSalesReportService>();
+        reportService
+            .Setup(service => service.QueryAsync("MISSING", It.IsAny<ContainerAllocationSalesQueryRequest>()))
+            .ThrowsAsync(new KeyNotFoundException("货柜不存在。"));
+        var controller = CreateController(reportService: reportService.Object);
+
+        var result = await controller.QueryAllocationSales(
+            "MISSING",
+            new ContainerAllocationSalesQueryRequest()
+        );
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        AssertPayload(notFound.Value, false, "货柜不存在。", null);
     }
 
     [Theory]
@@ -435,12 +496,14 @@ public class ReactContainerControllerSyncContractTests
     private static ReactContainerController CreateController(
         IContainerHqSyncService? syncService = null,
         IContainerReactService? containerService = null,
+        IContainerAllocationSalesReportService? reportService = null,
         ContainerExportService? exportService = null,
         IMemoryCache? cache = null
     )
     {
         return new ReactContainerController(
             containerService ?? Mock.Of<IContainerReactService>(),
+            reportService ?? Mock.Of<IContainerAllocationSalesReportService>(),
             syncService ?? Mock.Of<IContainerHqSyncService>(),
             exportService ?? CreateExportService(),
             cache ?? new MemoryCache(new MemoryCacheOptions()),

@@ -20,6 +20,7 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactContainerController : ControllerBase
     {
         private readonly IContainerReactService _containerReactService;
+        private readonly IContainerAllocationSalesReportService _allocationSalesReportService;
         private readonly IContainerHqSyncService _containerHqSyncService;
         private readonly ContainerExportService _containerExportService;
         private readonly IMemoryCache _cache;
@@ -31,6 +32,7 @@ namespace BlazorApp.Api.Controllers.React
 
         public ReactContainerController(
             IContainerReactService containerReactService,
+            IContainerAllocationSalesReportService allocationSalesReportService,
             IContainerHqSyncService containerHqSyncService,
             ContainerExportService containerExportService,
             IMemoryCache cache,
@@ -38,10 +40,81 @@ namespace BlazorApp.Api.Controllers.React
         )
         {
             _containerReactService = containerReactService;
+            _allocationSalesReportService = allocationSalesReportService;
             _containerHqSyncService = containerHqSyncService;
             _containerExportService = containerExportService;
             _cache = cache;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// 查询指定货柜到货后的商品配货与销售汇总。
+        /// </summary>
+        [HttpPost("{containerGuid}/allocation-sales/query")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> QueryAllocationSales(
+            string containerGuid,
+            [FromBody] ContainerAllocationSalesQueryRequest request
+        )
+        {
+            if (string.IsNullOrWhiteSpace(containerGuid))
+                return BadRequest(new { success = false, message = "货柜GUID不能为空", data = (object?)null });
+            if (request == null)
+                return BadRequest(new { success = false, message = "查询条件不能为空", data = (object?)null });
+
+            try
+            {
+                var result = await _allocationSalesReportService.QueryAsync(containerGuid, request);
+                return Ok(new { success = true, data = result, message = "获取货柜配销数据成功" });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new { success = false, message = ex.Message, data = (object?)null });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message, data = (object?)null });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询货柜配销数据失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(500, new { success = false, message = "服务器内部错误", data = (object?)null });
+            }
+        }
+
+        /// <summary>
+        /// 查询指定货柜商品的分店配货与销售明细。
+        /// </summary>
+        [HttpPost("{containerGuid}/allocation-sales/branches/query")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> QueryAllocationSalesBranches(
+            string containerGuid,
+            [FromBody] ContainerAllocationSalesBranchesQueryRequest request
+        )
+        {
+            if (string.IsNullOrWhiteSpace(containerGuid))
+                return BadRequest(new { success = false, message = "货柜GUID不能为空", data = (object?)null });
+            if (request == null)
+                return BadRequest(new { success = false, message = "查询条件不能为空", data = (object?)null });
+
+            try
+            {
+                var result = await _allocationSalesReportService.QueryBranchesAsync(containerGuid, request);
+                return Ok(new { success = true, data = result, message = "获取分店配销明细成功" });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new { success = false, message = ex.Message, data = (object?)null });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message, data = (object?)null });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询货柜分店配销明细失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(500, new { success = false, message = "服务器内部错误", data = (object?)null });
+            }
         }
 
         private static MemoryCacheEntryOptions CreateComingSoonCacheOptions()
