@@ -640,14 +640,11 @@ public sealed class EmployeeProfileSensitiveChangeService
             UserGuid = request.UserGUID,
             Status = FormatStatus(request.Status),
             BankBsb = request.BankBsb,
-            BankAccountSummary = Mask(request.BankAccountNumber),
             BankAccountNumber = request.BankAccountNumber,
             SuperannuationCompanyName = request.SuperannuationCompanyName,
             SuperannuationCompanyCode = request.SuperannuationCompanyCode,
-            SuperannuationAccountSummary = Mask(request.SuperannuationAccountNumber),
             SuperannuationAccountNumber = request.SuperannuationAccountNumber,
             IdentityType = request.IdentityType,
-            IdentityIdSummary = Mask(request.IdentityId),
             IdentityId = request.IdentityId,
             HasIdentityPhoto = !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey),
             BaseSensitiveRevision = request.BaseSensitiveRevision,
@@ -676,14 +673,6 @@ public sealed class EmployeeProfileSensitiveChangeService
         UserGuid = request.UserGUID,
         Username = username,
         Status = FormatStatus(request.Status),
-        BankBsb = request.BankBsb,
-        BankAccountSummary = Mask(request.BankAccountNumber),
-        SuperannuationCompanyName = request.SuperannuationCompanyName,
-        SuperannuationCompanyCode = request.SuperannuationCompanyCode,
-        SuperannuationAccountSummary = Mask(request.SuperannuationAccountNumber),
-        IdentityType = request.IdentityType,
-        IdentityIdSummary = Mask(request.IdentityId),
-        HasIdentityPhoto = !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey),
         BaseSensitiveRevision = request.BaseSensitiveRevision,
         SubmittedAt = request.SubmittedAt,
         ReviewedAt = request.ReviewedAt,
@@ -725,12 +714,6 @@ public sealed class EmployeeProfileSensitiveChangeService
             "正式敏感资料已被管理员更新，请重新提交申请",
             VersionConflictCode
         );
-
-    private static string? Mask(string? value)
-    {
-        var normalized = Normalize(value);
-        return normalized is null ? null : $"****{normalized[^Math.Min(4, normalized.Length)..]}";
-    }
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

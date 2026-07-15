@@ -66,6 +66,7 @@ function toBackendPayload(payload: SaveEmployeeProfilePayload) {
     identityType: payload.identityType,
     identityPhotoUrl: payload.identityPhotoUrl,
     address: payload.address,
+    confirmSupersedePendingSensitiveChangeRequest: payload.confirmSupersedePendingSensitiveChangeRequest,
   }
 }
 
@@ -162,15 +163,6 @@ function mapSensitiveChangeSummary(raw: BackendEmployeeProfile): EmployeeProfile
     userGuid: asString(raw.userGuid) ?? asString(raw.UserGuid) ?? asString(raw.userGUID) ?? asString(raw.UserGUID) ?? '',
     username: asString(raw.username) ?? asString(raw.Username),
     status: mapSensitiveStatus(raw.status ?? raw.Status),
-    bankBsb: asString(raw.bankBsb) ?? asString(raw.BankBsb),
-    bankAccountSummary: asString(raw.bankAccountSummary) ?? asString(raw.BankAccountSummary),
-    superannuationCompanyName: asString(raw.superannuationCompanyName) ?? asString(raw.SuperannuationCompanyName),
-    superannuationCompanyCode: asString(raw.superannuationCompanyCode) ?? asString(raw.SuperannuationCompanyCode),
-    superannuationAccountSummary:
-      asString(raw.superannuationAccountSummary) ?? asString(raw.SuperannuationAccountSummary),
-    identityType: asString(raw.identityType) ?? asString(raw.IdentityType),
-    identityIdSummary: asString(raw.identityIdSummary) ?? asString(raw.IdentityIdSummary),
-    hasIdentityPhoto: asBoolean(raw.hasIdentityPhoto ?? raw.HasIdentityPhoto),
     baseSensitiveRevision: asNumber(raw.baseSensitiveRevision ?? raw.BaseSensitiveRevision),
     submittedAt: asString(raw.submittedAt) ?? asString(raw.SubmittedAt) ?? '',
     reviewedAt: asString(raw.reviewedAt) ?? asString(raw.ReviewedAt),
@@ -182,10 +174,15 @@ function mapSensitiveChangeSummary(raw: BackendEmployeeProfile): EmployeeProfile
 function mapSensitiveChangeDetail(raw: BackendEmployeeProfile): EmployeeProfileSensitiveChangeDetailDto {
   return {
     ...mapSensitiveChangeSummary(raw),
+    bankBsb: asString(raw.bankBsb) ?? asString(raw.BankBsb),
     bankAccountNumber: asString(raw.bankAccountNumber) ?? asString(raw.BankAccountNumber),
+    superannuationCompanyName: asString(raw.superannuationCompanyName) ?? asString(raw.SuperannuationCompanyName),
+    superannuationCompanyCode: asString(raw.superannuationCompanyCode) ?? asString(raw.SuperannuationCompanyCode),
     superannuationAccountNumber:
       asString(raw.superannuationAccountNumber) ?? asString(raw.SuperannuationAccountNumber),
+    identityType: asString(raw.identityType) ?? asString(raw.IdentityType),
     identityId: asString(raw.identityId) ?? asString(raw.IdentityId),
+    hasIdentityPhoto: asBoolean(raw.hasIdentityPhoto ?? raw.HasIdentityPhoto),
     identityPhotoUrl: asString(raw.identityPhotoUrl) ?? asString(raw.IdentityPhotoUrl),
     identityPhotoUrlExpiresAt: asString(raw.identityPhotoUrlExpiresAt) ?? asString(raw.IdentityPhotoUrlExpiresAt),
     submittedBy: asString(raw.submittedBy) ?? asString(raw.SubmittedBy),

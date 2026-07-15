@@ -35,11 +35,10 @@ import type {
   EmployeeEmploymentType,
   EmployeeProfileDetailDto,
   EmployeeProfileGender,
-  EmployeeProfileSensitiveChangeSummaryDto,
   EmployeeProfileSummaryDto,
 } from '../../../types/employeeProfile'
 import SensitiveChangeReviewPanel from './SensitiveChangeReviewPanel'
-import { maskSensitiveSummary, shouldConfirmAdminSensitiveSupersede } from './logic'
+import { maskSensitiveSummary, saveAdminProfileWithPendingConfirmation } from './logic'
 
 interface EmployeeProfileFormValues {
   userGUID?: string
@@ -125,7 +124,6 @@ export default function SystemEmployeeProfilesPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingProfile, setEditingProfile] = useState<EmployeeProfileDetailDto | null>(null)
-  const [editingPendingRequest, setEditingPendingRequest] = useState<EmployeeProfileSensitiveChangeSummaryDto | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const [form] = Form.useForm<EmployeeProfileFormValues>()
 
@@ -213,20 +211,11 @@ export default function SystemEmployeeProfilesPage() {
     setEditOpen(true)
     setEditLoading(true)
     setEditingProfile(null)
-    setEditingPendingRequest(null)
     form.resetFields()
 
     try {
       const detail = await getAdminEmployeeProfile(profileKey)
-      const pendingResult = await getAdminSensitiveChangeRequests({
-        page: 1,
-        pageSize: 100,
-        status: 'Pending',
-        keyword: detail.userGUID,
-      })
-      const pendingRequest = pendingResult.items.find((item) => item.userGuid === detail.userGUID) ?? null
       setEditingProfile(detail)
-      setEditingPendingRequest(pendingRequest)
       form.setFieldsValue(mapProfileToFormValues(detail))
     } catch (error) {
       console.error(error)
@@ -264,8 +253,11 @@ export default function SystemEmployeeProfilesPage() {
         identityPhotoUrl: values.identityPhotoUrl?.trim() || undefined,
         address: values.address?.trim() || undefined,
       }
-      if (shouldConfirmAdminSensitiveSupersede(editingPendingRequest, editingProfile, payload)) {
-        const confirmed = await new Promise<boolean>((resolve) => {
+      setEditLoading(true)
+      const result = await saveAdminProfileWithPendingConfirmation(
+        payload,
+        saveAdminEmployeeProfile,
+        () => new Promise<boolean>((resolve) => {
           Modal.confirm({
             title: t('system.employeeProfiles.pendingSupersede.title'),
             content: t('system.employeeProfiles.pendingSupersede.content'),
@@ -274,17 +266,14 @@ export default function SystemEmployeeProfilesPage() {
             onOk: () => resolve(true),
             onCancel: () => resolve(false),
           })
-        })
-        if (!confirmed) {
-          return
-        }
+        }),
+      )
+      if (result.status === 'cancelled') {
+        return
       }
-      setEditLoading(true)
-      await saveAdminEmployeeProfile(payload)
       message.success(t('system.employeeProfiles.saveSuccess'))
       setEditOpen(false)
       setEditingProfile(null)
-      setEditingPendingRequest(null)
       form.resetFields()
       void loadData(page, pageSize)
       void loadPendingCount()
@@ -429,7 +418,6 @@ export default function SystemEmployeeProfilesPage() {
         onClose={() => {
           setEditOpen(false)
           setEditingProfile(null)
-          setEditingPendingRequest(null)
           form.resetFields()
         }}
         title={

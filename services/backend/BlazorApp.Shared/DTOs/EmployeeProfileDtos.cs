@@ -107,6 +107,9 @@ namespace BlazorApp.Shared.DTOs
 
         [StringLength(500)]
         public string? Address { get; set; }
+
+        /// <summary>管理员确认本次敏感资料直改可以原子作废现有待审申请。</summary>
+        public bool? ConfirmSupersedePendingSensitiveChangeRequest { get; set; }
     }
 
     public sealed class EmployeeImageUploadSignatureRequest
@@ -185,14 +188,6 @@ namespace BlazorApp.Shared.DTOs
         public string UserGuid { get; set; } = string.Empty;
         public string? Username { get; set; }
         public string Status { get; set; } = string.Empty;
-        public string? BankBsb { get; set; }
-        public string? BankAccountSummary { get; set; }
-        public string? SuperannuationCompanyName { get; set; }
-        public string? SuperannuationCompanyCode { get; set; }
-        public string? SuperannuationAccountSummary { get; set; }
-        public string? IdentityType { get; set; }
-        public string? IdentityIdSummary { get; set; }
-        public bool HasIdentityPhoto { get; set; }
         public int BaseSensitiveRevision { get; set; }
         public DateTime SubmittedAt { get; set; }
         public DateTime? ReviewedAt { get; set; }
@@ -203,9 +198,14 @@ namespace BlazorApp.Shared.DTOs
     public sealed class EmployeeProfileSensitiveChangeDetailDto
         : EmployeeProfileSensitiveChangeSummaryDto
     {
+        public string? BankBsb { get; set; }
         public string? BankAccountNumber { get; set; }
+        public string? SuperannuationCompanyName { get; set; }
+        public string? SuperannuationCompanyCode { get; set; }
         public string? SuperannuationAccountNumber { get; set; }
+        public string? IdentityType { get; set; }
         public string? IdentityId { get; set; }
+        public bool HasIdentityPhoto { get; set; }
         public string? IdentityPhotoUrl { get; set; }
         public DateTime? IdentityPhotoUrlExpiresAt { get; set; }
         public string? SubmittedBy { get; set; }

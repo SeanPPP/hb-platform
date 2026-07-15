@@ -20,7 +20,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   approveAdminSensitiveChangeRequest,
@@ -39,6 +39,7 @@ import {
   getChangedSensitiveFields,
   handleSensitiveReviewFailure,
   isRejectReasonValid,
+  createLatestRequestGuard,
   type SensitiveProfileField,
 } from './logic'
 
@@ -80,6 +81,8 @@ export default function SensitiveChangeReviewPanel({
   const [detailError, setDetailError] = useState(false)
   const [reviewDetail, setReviewDetail] = useState<EmployeeProfileSensitiveChangeDetailDto | null>(null)
   const [currentProfile, setCurrentProfile] = useState<EmployeeProfileDetailDto | null>(null)
+  const detailRequestGuardRef = useRef(createLatestRequestGuard())
+  const activeRequestIdRef = useRef<number | null>(null)
   const [reviewForm] = Form.useForm<ReviewFormValues>()
 
   const formatDateTime = (value?: string) => {
@@ -124,22 +127,35 @@ export default function SensitiveChangeReviewPanel({
   }, [])
 
   const loadReviewDetail = async (requestId: number) => {
+    const requestToken = detailRequestGuardRef.current.begin()
     setDetailLoading(true)
     setDetailError(false)
     try {
       const detail = await getAdminSensitiveChangeRequest(requestId)
       const profile = await getAdminEmployeeProfile(detail.userGuid)
+      if (!detailRequestGuardRef.current.isCurrent(requestToken)
+        || activeRequestIdRef.current !== requestId) {
+        return
+      }
       setReviewDetail(detail)
       setCurrentProfile(profile)
     } catch {
+      if (!detailRequestGuardRef.current.isCurrent(requestToken)
+        || activeRequestIdRef.current !== requestId) {
+        return
+      }
       setDetailError(true)
       message.error(t('system.employeeProfiles.review.loadDetailFailed'))
     } finally {
-      setDetailLoading(false)
+      if (detailRequestGuardRef.current.isCurrent(requestToken)
+        && activeRequestIdRef.current === requestId) {
+        setDetailLoading(false)
+      }
     }
   }
 
   const openReview = (record: ReviewListRow) => {
+    activeRequestIdRef.current = record.requestId
     setReviewOpen(true)
     setReviewDetail(null)
     setCurrentProfile(null)
@@ -148,7 +164,10 @@ export default function SensitiveChangeReviewPanel({
   }
 
   const closeReview = () => {
+    activeRequestIdRef.current = null
+    detailRequestGuardRef.current.invalidate()
     setReviewOpen(false)
+    setDetailLoading(false)
     setReviewDetail(null)
     setCurrentProfile(null)
     setDetailError(false)

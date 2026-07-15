@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Text.Json;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Interfaces;
@@ -127,7 +128,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task AdminListAsync_MasksAccountsButDetailReturnsAuthorizedFullValues()
+    public async Task AdminListAsync_ReturnsOnlyChangedFieldMetadataButDetailReturnsAuthorizedFullValues()
     {
         await SeedAsync();
         var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
@@ -146,9 +147,13 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         var listItems = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeProfileSensitiveChangeSummaryDto>>(
             list.Data!.Items
         );
-        Assert.Equal("****6789", listItems.Single().BankAccountSummary);
-        Assert.Equal("****8765", listItems.Single().SuperannuationAccountSummary);
-        Assert.Contains("bankAccountNumber", listItems.Single().ChangedFields);
+        var listItem = listItems.Single();
+        var listJson = JsonSerializer.Serialize(listItem);
+        Assert.Contains("bankAccountNumber", listItem.ChangedFields);
+        Assert.DoesNotContain("22226789", listJson);
+        Assert.DoesNotContain("SUPER98765", listJson);
+        Assert.DoesNotContain("BankAccountSummary", listJson);
+        Assert.DoesNotContain("SuperannuationAccountSummary", listJson);
         Assert.Equal("22226789", detail.Data!.BankAccountNumber);
         Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
     }
@@ -229,6 +234,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
                 Address = "admin address",
                 BankAccountNumber = "admin-direct",
                 IdentityId = "ADMIN-ID",
+                ConfirmSupersedePendingSensitiveChangeRequest = true,
             });
 
         Assert.True(adminResult.Success);
@@ -537,8 +543,15 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         var sensitive = CreateService("admin-user", "admin", storage);
         var current = CreateCurrentUser("admin-user", "admin");
         var context = CreateContext(_db);
+        var profileService = new Mock<IEmployeeProfileService>();
+        profileService
+            .Setup(service => service.UpsertAdminAsync("user-self", It.IsAny<EmployeeProfileUpsertDto>()))
+            .ReturnsAsync(ApiResponse<EmployeeProfileDetailDto>.Error(
+                "存在待审核敏感资料变更，请确认后重试",
+                EmployeeProfileService.PendingChangeConfirmationRequiredCode
+            ));
         var controller = new EmployeeProfilesController(
-            new Mock<IEmployeeProfileService>().Object,
+            profileService.Object,
             NullLogger<EmployeeProfilesController>.Instance,
             new EmployeeProfileMediaService(
                 context,
@@ -557,6 +570,10 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         );
 
         Assert.IsType<ConflictObjectResult>(action);
+        Assert.IsType<ConflictObjectResult>(await controller.UpsertAdmin(
+            "user-self",
+            new EmployeeProfileUpsertDto { BankAccountNumber = "admin-new" }
+        ));
         foreach (var methodName in new[]
         {
             nameof(EmployeeProfilesController.GetAdminSensitiveChangeRequests),

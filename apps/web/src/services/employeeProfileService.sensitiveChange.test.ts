@@ -3,6 +3,7 @@ import {
   getAdminSensitiveChangeRequest,
   getAdminSensitiveChangeRequests,
   rejectAdminSensitiveChangeRequest,
+  saveAdminEmployeeProfile,
 } from './employeeProfileService'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -44,6 +45,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
             status: 'Pending',
             bankAccountNumber: 'must-not-leak-from-list',
             bankAccountSummary: '****6789',
+            bankBsb: '123-456',
+            superannuationCompanyName: 'Must Not Leak Super',
+            identityIdSummary: '****9999',
             changedFields: ['bankAccountNumber'],
             submittedAt: '2026-07-16T00:00:00Z',
             baseSensitiveRevision: 3,
@@ -76,6 +80,9 @@ try {
   assertEqual(list.items[0]?.status, 'Pending', 'Pending 状态必须保持可审核，不能降级为 Superseded')
   assertEqual(list.items[0]?.changedFields.join(','), 'bankAccountNumber', '列表应直接使用安全 ChangedFields 标识')
   assert(!JSON.stringify(list).includes('must-not-leak-from-list'), '列表映射必须丢弃意外返回的完整账号')
+  assert(!JSON.stringify(list).includes('123-456'), '列表映射必须丢弃 BSB')
+  assert(!JSON.stringify(list).includes('Must Not Leak Super'), '列表映射必须丢弃养老金公司资料')
+  assert(!JSON.stringify(list).includes('****9999'), '列表映射必须丢弃证件摘要')
   assertEqual(calls.length, 1, '列表加载不得调用 request detail 或 employee detail API')
 
   const detail = await getAdminSensitiveChangeRequest(7)
@@ -90,6 +97,18 @@ try {
   assertEqual(calls[3]?.url, '/api/EmployeeProfiles/admin/change-requests/7/reject', '拒绝应使用固定路径')
   assertEqual(calls[3]?.init?.method, 'POST', '拒绝应使用 POST')
   assertEqual(JSON.parse(String(calls[3]?.init?.body)).reason, '无法核验', '拒绝请求应提交原因')
+
+  await saveAdminEmployeeProfile({
+    userGUID: 'user-guid-7',
+    bankAccountNumber: 'admin-new',
+    confirmSupersedePendingSensitiveChangeRequest: true,
+  })
+  assertEqual(calls[4]?.url, '/api/EmployeeProfiles/admin/user-guid-7', '管理员保存应使用员工路径')
+  assertEqual(
+    JSON.parse(String(calls[4]?.init?.body)).confirmSupersedePendingSensitiveChangeRequest,
+    true,
+    '管理员确认重试必须把确认标志传给后端',
+  )
 
   console.log('employeeProfileService.sensitiveChange.test: ok')
 } finally {

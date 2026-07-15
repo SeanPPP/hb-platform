@@ -152,6 +152,7 @@ namespace BlazorApp.Api.Tests
             var result = await CreateService("user-self", "self_user", selfDb).UpsertSelfAsync(new()
             {
                 Address = "self address",
+                ConfirmSupersedePendingSensitiveChangeRequest = true,
             });
 
             Assert.True(result.Success);
@@ -212,6 +213,93 @@ namespace BlazorApp.Api.Tests
             var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
             Assert.Equal("admin-a", profile.BankACC);
             Assert.Equal(5, profile.SensitiveRevision);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenPendingRequestAppearsWhileWaiting_RequiresAtomicConfirmation()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-old",
+                Address = "old address",
+                SensitiveRevision = 3,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var adminDb = CreateAdditionalDb();
+            using var writerDb = CreateAdditionalDb();
+            var writerLock = await EmployeeProfileMediaLock.AcquireAsync(
+                writerDb,
+                "user-self",
+                "sensitive-change"
+            );
+            var service = CreateService(
+                "admin-user",
+                "admin",
+                adminDb,
+                includeSensitiveChangeService: true
+            );
+
+            var blockedSave = service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto { BankAccountNumber = "admin-new" }
+            );
+            await Task.Delay(200);
+            await writerDb.Insertable(new EmployeeProfileSensitiveChangeRequest
+            {
+                UserGUID = "user-self",
+                BankAccountNumber = "employee-proposed",
+                Status = EmployeeProfileSensitiveChangeStatus.Pending,
+                BaseSensitiveRevision = 3,
+                SubmittedAt = DateTime.UtcNow,
+                SubmittedBy = "employee",
+            }).ExecuteCommandAsync();
+            await writerLock.DisposeAsync();
+
+            var confirmationRequired = await blockedSave;
+            Assert.False(confirmationRequired.Success);
+            Assert.Equal(
+                EmployeeProfileService.PendingChangeConfirmationRequiredCode,
+                confirmationRequired.ErrorCode
+            );
+            var unchanged = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("formal-old", unchanged.BankACC);
+            Assert.Equal("old address", unchanged.Address);
+            Assert.Equal(3, unchanged.SensitiveRevision);
+
+            var nonSensitiveSave = await service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto
+                {
+                    BankAccountNumber = "formal-old",
+                    Address = "new address",
+                }
+            );
+            Assert.True(nonSensitiveSave.Success);
+            Assert.Equal(
+                EmployeeProfileSensitiveChangeStatus.Pending,
+                (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+            );
+
+            var confirmedSave = await service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto
+                {
+                    BankAccountNumber = "admin-new",
+                    Address = "new address",
+                    ConfirmSupersedePendingSensitiveChangeRequest = true,
+                }
+            );
+            Assert.True(confirmedSave.Success);
+            var saved = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("admin-new", saved.BankACC);
+            Assert.Equal(4, saved.SensitiveRevision);
+            Assert.Equal(
+                EmployeeProfileSensitiveChangeStatus.Superseded,
+                (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+            );
         }
 
         [Fact]
@@ -1037,7 +1125,8 @@ namespace BlazorApp.Api.Tests
         private EmployeeProfileService CreateService(
             string userGuid,
             string username,
-            ISqlSugarClient db
+            ISqlSugarClient db,
+            bool includeSensitiveChangeService = false
         )
         {
             var httpContextAccessor = new HttpContextAccessor
@@ -1053,10 +1142,19 @@ namespace BlazorApp.Api.Tests
             var currentUserService = new CurrentUserService(httpContextAccessor);
             var context = CreateSqlSugarContext(db);
 
+            var sensitiveChangeService = includeSensitiveChangeService
+                ? new EmployeeProfileSensitiveChangeService(
+                    context,
+                    currentUserService,
+                    NullLogger<EmployeeProfileSensitiveChangeService>.Instance
+                )
+                : null;
+
             return new EmployeeProfileService(
                 context,
                 currentUserService,
-                NullLogger<EmployeeProfileService>.Instance
+                NullLogger<EmployeeProfileService>.Instance,
+                sensitiveChangeService: sensitiveChangeService
             );
         }
 

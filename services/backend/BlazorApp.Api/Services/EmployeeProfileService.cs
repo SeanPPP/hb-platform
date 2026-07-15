@@ -7,6 +7,9 @@ namespace BlazorApp.Api.Services
 {
     public class EmployeeProfileService : IEmployeeProfileService
     {
+        public const string PendingChangeConfirmationRequiredCode =
+            "EMPLOYEE_PROFILE_PENDING_CHANGE_CONFIRMATION_REQUIRED";
+
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly ILogger<EmployeeProfileService> _logger;
@@ -250,6 +253,22 @@ namespace BlazorApp.Api.Services
                         profile = await db.Queryable<EmployeeProfile>()
                             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
                         var sensitiveChanged = HasSensitiveChanges(profile, dto);
+                        var hasPendingSensitiveChange = sensitiveChanged
+                            && await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                                .AnyAsync(item =>
+                                    item.UserGUID == userGuid
+                                    && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
+                                );
+                        if (hasPendingSensitiveChange
+                            && dto.ConfirmSupersedePendingSensitiveChangeRequest != true)
+                        {
+                            // 确认检查与后续写入共用敏感资料锁和事务，失败时不得写入任何资料。
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "存在待审核敏感资料变更，请确认后重试",
+                                PendingChangeConfirmationRequiredCode
+                            );
+                        }
                         if (profile == null)
                         {
                             profile = new EmployeeProfile

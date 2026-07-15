@@ -96,7 +96,13 @@ namespace BlazorApp.Api.Controllers
                     );
                 }
 
-                return Ok(await _service.UpsertAdminAsync(userGuid, dto));
+                var result = await _service.UpsertAdminAsync(userGuid, dto);
+                if (result.ErrorCode == EmployeeProfileService.PendingChangeConfirmationRequiredCode)
+                {
+                    return Conflict(result);
+                }
+
+                return Ok(result);
             }
             catch (Exception ex)
             {

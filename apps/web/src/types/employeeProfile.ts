@@ -53,6 +53,7 @@ export interface SaveEmployeeProfilePayload {
   identityType?: string
   identityPhotoUrl?: string
   address?: string
+  confirmSupersedePendingSensitiveChangeRequest?: boolean
 }
 
 export type EmployeeProfileSensitiveChangeStatus = 'Pending' | 'Approved' | 'Rejected' | 'Superseded'
@@ -78,14 +79,6 @@ export interface EmployeeProfileSensitiveChangeSummaryDto {
   userGuid: string
   username?: string
   status: EmployeeProfileSensitiveChangeStatus
-  bankBsb?: string
-  bankAccountSummary?: string
-  superannuationCompanyName?: string
-  superannuationCompanyCode?: string
-  superannuationAccountSummary?: string
-  identityType?: string
-  identityIdSummary?: string
-  hasIdentityPhoto: boolean
   baseSensitiveRevision: number
   submittedAt: string
   reviewedAt?: string
@@ -94,9 +87,14 @@ export interface EmployeeProfileSensitiveChangeSummaryDto {
 }
 
 export interface EmployeeProfileSensitiveChangeDetailDto extends EmployeeProfileSensitiveChangeSummaryDto {
+  bankBsb?: string
   bankAccountNumber?: string
+  superannuationCompanyName?: string
+  superannuationCompanyCode?: string
   superannuationAccountNumber?: string
+  identityType?: string
   identityId?: string
+  hasIdentityPhoto: boolean
   identityPhotoUrl?: string
   identityPhotoUrlExpiresAt?: string
   submittedBy?: string

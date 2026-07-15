@@ -1,5 +1,4 @@
 import { RequestError } from '../../../utils/request'
-import type { EmployeeProfileSensitiveChangeSummaryDto } from '../../../types/employeeProfile'
 import type { EmployeeProfileSensitiveField } from '../../../types/employeeProfile'
 
 export const SENSITIVE_PROFILE_FIELDS = [
@@ -46,27 +45,18 @@ export function isRejectReasonValid(reason?: string | null) {
   return Boolean(reason?.trim())
 }
 
-export function shouldConfirmPendingSupersede<
-  TCurrent extends SensitiveProfileSnapshot,
-  TNext extends SensitiveProfileSnapshot,
->(
-  pendingRequest: Pick<EmployeeProfileSensitiveChangeSummaryDto, 'status'> | null | undefined,
-  current: TCurrent,
-  next: TNext,
-) {
-  return pendingRequest?.status === 'Pending' && getChangedSensitiveFields(current, next).length > 0
-}
-
-export function shouldConfirmAdminSensitiveSupersede<TNext extends SensitiveProfileSnapshot>(
-  pendingRequest: Pick<EmployeeProfileSensitiveChangeSummaryDto, 'status'> | null | undefined,
-  current: SensitiveProfileSnapshot & { identityPhotoUrlExpiresAt?: unknown },
-  next: TNext,
-) {
-  // 有 expiresAt 代表正式证件照来自托管对象，后端会忽略直接提交的 URL；legacy URL 才参与 PUT 比较。
-  const comparableCurrent = current.identityPhotoUrlExpiresAt
-    ? { ...current, identityPhotoUrl: next.identityPhotoUrl }
-    : current
-  return shouldConfirmPendingSupersede(pendingRequest, comparableCurrent, next)
+export function createLatestRequestGuard() {
+  let version = 0
+  return {
+    begin: () => {
+      version += 1
+      return version
+    },
+    isCurrent: (token: number) => token === version,
+    invalidate: () => {
+      version += 1
+    },
+  }
 }
 
 function readErrorCode(payload: unknown) {
@@ -80,6 +70,42 @@ function readErrorCode(payload: unknown) {
     : typeof candidate.code === 'string'
       ? candidate.code
       : undefined
+}
+
+export function isPendingChangeConfirmationRequired(error: unknown) {
+  return error instanceof RequestError
+    && error.status === 409
+    && readErrorCode(error.payload) === 'EMPLOYEE_PROFILE_PENDING_CHANGE_CONFIRMATION_REQUIRED'
+}
+
+export async function saveAdminProfileWithPendingConfirmation<
+  TPayload extends object,
+  TResult,
+>(
+  payload: TPayload,
+  save: (
+    nextPayload: TPayload & { confirmSupersedePendingSensitiveChangeRequest?: boolean }
+  ) => Promise<TResult>,
+  confirm: () => Promise<boolean>,
+): Promise<{ status: 'saved'; data: TResult } | { status: 'cancelled' }> {
+  try {
+    return { status: 'saved', data: await save(payload) }
+  } catch (error) {
+    if (!isPendingChangeConfirmationRequired(error)) {
+      throw error
+    }
+  }
+
+  if (!await confirm()) {
+    return { status: 'cancelled' }
+  }
+
+  // 确认标志只在服务端明确报告 Pending 冲突后发送，最终判断仍由事务内检查完成。
+  const confirmedPayload = {
+    ...payload,
+    confirmSupersedePendingSensitiveChangeRequest: true,
+  }
+  return { status: 'saved', data: await save(confirmedPayload) }
 }
 
 export function isSensitiveVersionConflict(error: unknown) {
