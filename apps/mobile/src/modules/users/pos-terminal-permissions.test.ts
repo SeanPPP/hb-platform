@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import {
   arePermissionCodeSetsEqual,
+  buildGrantedPosPermissionCodes,
   buildPosPermissionDraft,
-  buildPosPermissionPayload,
   classifyPosPermissionError,
   getEffectivePosPermissionCodes,
   getPosPermissionEntryState,
@@ -13,6 +13,7 @@ import {
 import type {
   PosTerminalPermissionOption,
   StoreUserPosTerminalPermissions,
+  UpdateStoreUserPosTerminalPermissionsPayload,
 } from "./types";
 
 const assignablePermissions: PosTerminalPermissionOption[] = [
@@ -56,8 +57,10 @@ assert.deepEqual(
   "effective 权限只能保留 assignablePermissions 白名单并去重"
 );
 
-assert.deepEqual(
-  buildPosPermissionPayload(
+const updatePayload: UpdateStoreUserPosTerminalPermissionsPayload = {
+  userGuid: "user-guid",
+  storeGuid: "store-guid",
+  grantedPermissionCodes: buildGrantedPosPermissionCodes(
     [
       "PosTerminal.Payment.TakeCash",
       "Unknown.Permission",
@@ -65,8 +68,16 @@ assert.deepEqual(
     ],
     assignablePermissions
   ),
-  { grantedPermissionCodes: ["PosTerminal.Payment.TakeCash"] },
-  "保存 payload 应去重，并过滤白名单之外的权限"
+};
+
+assert.deepEqual(
+  updatePayload,
+  {
+    userGuid: "user-guid",
+    storeGuid: "store-guid",
+    grantedPermissionCodes: ["PosTerminal.Payment.TakeCash"],
+  },
+  "保存 payload 应包含目标用户、分店，并过滤去重后的白名单权限"
 );
 
 assert.deepEqual(

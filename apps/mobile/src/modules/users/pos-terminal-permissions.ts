@@ -1,7 +1,6 @@
 import type {
   PosTerminalPermissionOption,
   StoreUserPosTerminalPermissions,
-  UpdateStoreUserPosTerminalPermissionsPayload,
 } from "./types";
 
 export interface PosPermissionDraft {
@@ -74,16 +73,14 @@ export function getEffectivePosPermissionCodes(
   );
 }
 
-export function buildPosPermissionPayload(
+export function buildGrantedPosPermissionCodes(
   selectedCodes: string[],
   assignablePermissions: PosTerminalPermissionOption[]
-): UpdateStoreUserPosTerminalPermissionsPayload {
-  return {
-    grantedPermissionCodes: filterAssignablePermissionCodes(
-      selectedCodes,
-      assignablePermissions
-    ),
-  };
+): string[] {
+  return filterAssignablePermissionCodes(
+    selectedCodes,
+    assignablePermissions
+  );
 }
 
 export function buildPosPermissionDraft(

@@ -104,6 +104,7 @@ export interface StoreUserPosTerminalPermissionTarget {
   storeGuid: string;
 }
 
-export interface UpdateStoreUserPosTerminalPermissionsPayload {
+export interface UpdateStoreUserPosTerminalPermissionsPayload
+  extends StoreUserPosTerminalPermissionTarget {
   grantedPermissionCodes: string[];
 }
