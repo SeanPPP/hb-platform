@@ -576,6 +576,7 @@ builder.Services.AddScoped<TencentCloudUploadService>();
 
 // ===================== React 专用服务注册（与原有服务解耦） =====================
 builder.Services.AddScoped<IContainerReactService, ContainerReactService>();
+builder.Services.AddScoped<IContainerAllocationSalesReportService, ContainerAllocationSalesReportService>();
 builder.Services.AddScoped<
     IContainerProductCreationExecutorService,
     ContainerProductCreationExecutorService
