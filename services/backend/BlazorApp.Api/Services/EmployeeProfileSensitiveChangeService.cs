@@ -40,8 +40,12 @@ public sealed class EmployeeProfileSensitiveChangeService
             .Where(item => item.UserGUID == userGuid)
             .OrderBy(item => item.SubmittedAt, SqlSugar.OrderByType.Desc)
             .FirstAsync();
+        var profile = request is null
+            ? null
+            : await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
         return ApiResponse<EmployeeProfileSensitiveChangeDetailDto?>.OK(
-            request is null ? null : MapDetail(request)
+            request is null ? null : MapDetail(request, profile)
         );
     }
 
@@ -146,9 +150,13 @@ public sealed class EmployeeProfileSensitiveChangeService
     {
         var request = await _context.Db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .FirstAsync(item => item.RequestId == requestId);
+        var profile = request is null
+            ? null
+            : await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
         return request is null
             ? ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请不存在", "REQUEST_NOT_FOUND")
-            : ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request));
+            : ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile));
     }
 
     public async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> ApproveAsync(
@@ -262,7 +270,7 @@ public sealed class EmployeeProfileSensitiveChangeService
         request.ReviewedBy = actor;
         request.ReviewReason = Normalize(dto.Reason);
         await CleanupObjectAsync(oldPhoto, request.IdentityPhotoObjectKey, request.UserGUID, "批准后旧正式证件照", requestId);
-        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request), "申请已批准");
+        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile), "申请已批准");
     }
 
     public async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> RejectAsync(
@@ -322,7 +330,9 @@ public sealed class EmployeeProfileSensitiveChangeService
         request.ReviewedBy = actor;
         request.ReviewReason = dto.Reason.Trim();
         await CleanupObjectAsync(request.IdentityPhotoObjectKey, null, request.UserGUID, "驳回待审证件照", requestId);
-        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request), "申请已拒绝");
+        var profile = await _context.Db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
+        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile), "申请已拒绝");
     }
 
     /// <summary>管理员直接改正式资料后在同一数据库事务内调用，终结所有待审申请。</summary>
@@ -481,7 +491,7 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             await CleanupObjectAsync(old.IdentityPhotoObjectKey, retainedPhoto, userGuid, "覆盖待审证件照", old.RequestId);
         }
-        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request), "敏感资料变更已提交审批");
+        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile), "敏感资料变更已提交审批");
     }
 
     private async Task<EmployeeProfileSensitiveChangeUpsertDto> BuildCurrentSnapshotAsync(string userGuid)
@@ -631,7 +641,8 @@ public sealed class EmployeeProfileSensitiveChangeService
     }
 
     private EmployeeProfileSensitiveChangeDetailDto MapDetail(
-        EmployeeProfileSensitiveChangeRequest request
+        EmployeeProfileSensitiveChangeRequest request,
+        EmployeeProfile? profile
     )
     {
         var dto = new EmployeeProfileSensitiveChangeDetailDto
@@ -653,6 +664,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             ReviewedAt = request.ReviewedAt,
             ReviewedBy = request.ReviewedBy,
             ReviewReason = request.ReviewReason,
+            // 详情只暴露变更字段标识；完整值比较仅在服务端内存中完成。
+            ChangedFields = GetChangedFields(profile, request),
         };
         if (_storage is not null && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
         {

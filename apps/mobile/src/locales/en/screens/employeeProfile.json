@@ -8,6 +8,7 @@
     "updatedAt": "Updated"
   },
   "fields": {
+    "phone": "Phone",
     "bankBsb": "BSB",
     "bankAccountNumber": "Bank account number",
     "superannuationCompanyName": "Super company",
@@ -18,6 +19,7 @@
     "employmentType": "Employment type",
     "avatarUrl": "Avatar",
     "identityId": "Identity ID",
+    "identityType": "Identity type",
     "identityPhotoUrl": "Identity photo",
     "address": "Address"
   },
@@ -30,7 +32,8 @@
     "superannuation": "Superannuation",
     "personal": "Personal details",
     "identity": "Identity",
-    "images": "Images"
+    "images": "Images",
+    "sensitiveStatus": "Sensitive details review"
   },
   "genderOptions": {
     "male": "Male",
@@ -44,6 +47,9 @@
   },
   "actions": {
     "save": "Save profile",
+    "savePersonal": "Save personal details",
+    "editSensitive": "Update sensitive details",
+    "submitSensitive": "Submit for review",
     "takePhoto": "Camera",
     "choosePhoto": "Library",
     "retakePhoto": "Retake photo",
@@ -67,7 +73,29 @@
     "cameraCaptureFailed": "The camera could not capture this photo. Try again or choose one from your library.",
     "libraryPermissionBlocked": "Photo library access is blocked. Open system settings to allow it.",
     "permissionRequired": "Camera permission is required to take a photo.",
-    "cameraReady": "Take a clear photo and upload it."
+    "cameraReady": "Take a clear photo and upload it.",
+    "sensitiveLoadFailed": "Failed to load the sensitive details review status.",
+    "sensitiveSubmitSuccess": "Sensitive details submitted for review.",
+    "sensitiveSubmitFailed": "Failed to submit sensitive details for review.",
+    "identitySubmitSuccess": "Identity photo submitted for review. The confirmed photo changes only after approval.",
+    "identityRemoveSubmitSuccess": "Identity photo removal submitted for review. The confirmed photo remains until approval.",
+    "versionConflict": "Confirmed details have changed. Refresh and complete the form again."
+  },
+  "status": {
+    "empty": "No review request",
+    "pending": "Pending review",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "superseded": "Replaced by a newer request or administrator update"
+  },
+  "sensitive": {
+    "confirmed": "Confirmed details",
+    "pendingSnapshot": "Pending review details",
+    "submittedAt": "Submitted: {{time}}",
+    "changedFields": "Changed fields",
+    "fieldSeparator": ", ",
+    "rejectionReason": "Rejection reason: {{reason}}",
+    "pendingPhotoRemoval": "The pending request removes the identity photo."
   },
   "preview": {
     "avatar": "Avatar preview",

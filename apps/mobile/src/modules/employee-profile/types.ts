@@ -13,6 +13,7 @@ export type EmployeeProfileImageKind = (typeof EMPLOYEE_PROFILE_IMAGE_KINDS)[num
 export interface EmployeeProfile {
   username: string;
   displayName?: string;
+  phone: string;
   bankBsb: string;
   bankAccountNumber: string;
   superannuationCompanyName: string;
@@ -22,6 +23,7 @@ export interface EmployeeProfile {
   gender: string;
   employmentType: string;
   avatarUrl: string;
+  identityType: string;
   identityId: string;
   identityPhotoUrl: string;
   identityPhotoUrlExpiresAt?: string;
@@ -31,16 +33,42 @@ export interface EmployeeProfile {
 }
 
 export interface UpdateEmployeeProfilePayload {
+  phone: string;
+  birthday: string;
+  gender: string;
+  employmentType: string;
+  address: string;
+}
+
+export type EmployeeProfileSensitiveChangeStatus =
+  | "Pending"
+  | "Approved"
+  | "Rejected"
+  | "Superseded";
+
+export interface SensitiveEmployeeProfilePayload {
   bankBsb: string;
   bankAccountNumber: string;
   superannuationCompanyName: string;
   superannuationCompanyCode: string;
   superannuationAccountNumber: string;
-  birthday: string;
-  gender: string;
-  employmentType: string;
+  identityType: string;
   identityId: string;
-  address: string;
+}
+
+export interface EmployeeProfileSensitiveChangeRequest extends SensitiveEmployeeProfilePayload {
+  requestId: number;
+  status: EmployeeProfileSensitiveChangeStatus;
+  hasIdentityPhoto: boolean;
+  identityPhotoUrl: string;
+  identityPhotoUrlExpiresAt?: string;
+  baseSensitiveRevision: number;
+  submittedAt: string;
+  submittedBy?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewReason?: string;
+  changedFields: string[];
 }
 
 export interface DirectUploadRequest {

@@ -3,6 +3,7 @@ import { syncEmployeeProfileDraft } from "./profile-draft";
 
 const profile = {
   username: "admin",
+  phone: "",
   bankBsb: "server-bsb",
   bankAccountNumber: "server-account",
   superannuationCompanyName: "",
@@ -12,32 +13,33 @@ const profile = {
   gender: "",
   employmentType: "",
   avatarUrl: "https://cdn/new-avatar.jpg",
+  identityType: "",
   identityId: "",
   identityPhotoUrl: "",
   address: "server-address",
 };
 const draft = {
-  bankBsb: "draft-bsb",
-  bankAccountNumber: "draft-account",
-  superannuationCompanyName: "",
-  superannuationCompanyCode: "",
-  superannuationAccountNumber: "",
+  phone: "draft-phone",
   birthday: "",
   gender: "",
   employmentType: "",
-  identityId: "",
   address: "draft-address",
 };
 
 assert.deepEqual(
   syncEmployeeProfileDraft(draft, profile, true),
   draft,
-  "图片即时保存刷新资料缓存时必须保留未保存表单草稿"
+  "头像即时保存刷新资料缓存时必须保留未保存的非敏感草稿"
 );
 assert.equal(
-  syncEmployeeProfileDraft(draft, profile, false).bankBsb,
-  "server-bsb",
-  "首次加载资料时应初始化表单"
+  syncEmployeeProfileDraft(draft, profile, false).phone,
+  "",
+  "首次加载资料时应初始化非敏感表单"
+);
+assert.equal(
+  "bankAccountNumber" in syncEmployeeProfileDraft(draft, profile, false),
+  false,
+  "普通资料草稿不得携带银行账号"
 );
 assert.equal(
   syncEmployeeProfileDraft(draft, profile, false).address,

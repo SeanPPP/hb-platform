@@ -143,6 +143,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
 
         var list = await service.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto());
         var detail = await service.GetAdminDetailAsync(submitted.Data!.RequestId);
+        var selfDetail = await service.GetSelfAsync();
 
         var listItems = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeProfileSensitiveChangeSummaryDto>>(
             list.Data!.Items
@@ -156,6 +157,9 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.DoesNotContain("SuperannuationAccountSummary", listJson);
         Assert.Equal("22226789", detail.Data!.BankAccountNumber);
         Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
+        Assert.Contains("bankAccountNumber", submitted.Data.ChangedFields);
+        Assert.Contains("bankAccountNumber", detail.Data.ChangedFields);
+        Assert.Contains("bankAccountNumber", selfDetail.Data!.ChangedFields);
     }
 
     [Fact]
@@ -197,6 +201,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.Equal("VALIDATION_ERROR", missingReason.ErrorCode);
         Assert.True(rejected.Success);
         Assert.Equal("无法核验", rejected.Data!.ReviewReason);
+        Assert.Contains("bankAccountNumber", rejected.Data.ChangedFields);
         Assert.Equal("approved-account", (await _db.Queryable<EmployeeProfile>().FirstAsync()).BankACC);
     }
 

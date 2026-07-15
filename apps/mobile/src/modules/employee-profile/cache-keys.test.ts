@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   getCashierBarcodeQueryKey,
   getEmployeeProfileQueryKey,
+  getEmployeeSensitiveChangeQueryKey,
   resolveEmployeeProfileIdentity,
   shouldResetEmployeeProfileDraft,
 } from "./cache-keys";
@@ -19,6 +20,16 @@ assert.notDeepEqual(
   getCashierBarcodeQueryKey(resolveEmployeeProfileIdentity(userA)),
   getCashierBarcodeQueryKey(resolveEmployeeProfileIdentity(userB)),
   "不同账号的收银条码查询键必须隔离"
+);
+assert.notDeepEqual(
+  getEmployeeSensitiveChangeQueryKey(resolveEmployeeProfileIdentity(userA)),
+  getEmployeeSensitiveChangeQueryKey(resolveEmployeeProfileIdentity(userB)),
+  "不同账号的敏感资料审核查询键必须隔离"
+);
+assert.deepEqual(
+  getEmployeeSensitiveChangeQueryKey("user-a").slice(0, 2),
+  ["employee-profile", "sensitive-change-request"],
+  "敏感审核缓存必须归属员工资料命名空间，便于登出统一清理"
 );
 assert.equal(shouldResetEmployeeProfileDraft("user-a", "user-b"), true, "账号变化必须重置草稿初始化状态");
 assert.equal(shouldResetEmployeeProfileDraft("user-a", "user-a"), false, "同一账号刷新图片不得重置草稿");
