@@ -106,6 +106,13 @@ export function shouldInitializePosPermissionDraft(
   return initializedScopeKey !== nextScopeKey;
 }
 
+export function shouldPreventPosPermissionRemoval(
+  dirty: boolean,
+  allowRemove: boolean
+) {
+  return dirty && !allowRemove;
+}
+
 export function groupPosPermissions(
   permissions: PosTerminalPermissionOption[]
 ): PosPermissionGroup[] {

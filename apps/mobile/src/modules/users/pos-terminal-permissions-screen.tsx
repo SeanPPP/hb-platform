@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import {
+  Stack,
   useLocalSearchParams,
   useNavigation,
   useRouter,
 } from "expo-router";
+import {
+  usePreventRemove,
+  type NavigationAction,
+} from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ActivityIndicator,
@@ -31,6 +36,7 @@ import {
   groupPosPermissions,
   setPosPermissionGroupSelection,
   shouldInitializePosPermissionDraft,
+  shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "@/modules/users/pos-terminal-permissions";
 import type { StoreUserPosTerminalPermissions } from "@/modules/users/types";
@@ -79,8 +85,9 @@ export default function PosTerminalPermissionsScreen() {
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [baselineCodes, setBaselineCodes] = useState<string[]>([]);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [allowRemove, setAllowRemove] = useState(false);
   const initializedScopeKeyRef = useRef<string | null>(null);
-  const allowLeaveOnceRef = useRef(false);
+  const pendingActionRef = useRef<NavigationAction | null>(null);
   const busy = updateMutation.isPending || restoreMutation.isPending;
   const dirty = !arePermissionCodeSetsEqual(selectedCodes, baselineCodes);
 
@@ -115,15 +122,9 @@ export default function PosTerminalPermissionsScreen() {
     }
   }, [applyServerPermissions, permissionsQuery.data, scopeKey]);
 
-  useEffect(() => {
-    return navigation.addListener("beforeRemove", (event) => {
-      if (allowLeaveOnceRef.current) {
-        allowLeaveOnceRef.current = false;
-        return;
-      }
-      if (!dirty) return;
-
-      event.preventDefault();
+  usePreventRemove(
+    shouldPreventPosPermissionRemoval(dirty, allowRemove),
+    ({ data }) => {
       Alert.alert(
         t("posPermissions.unsaved.title"),
         t("posPermissions.unsaved.description"),
@@ -133,15 +134,24 @@ export default function PosTerminalPermissionsScreen() {
             text: t("posPermissions.unsaved.discard"),
             style: "destructive",
             onPress: () => {
-              // 仅放行原始导航 action 一次，避免 beforeRemove 递归拦截。
-              allowLeaveOnceRef.current = true;
-              navigation.dispatch(event.data.action);
+              // 保存原始 action，下一次渲染先解除阻止再统一派发，兼容返回键与手势。
+              pendingActionRef.current = data.action;
+              setAllowRemove(true);
             },
           },
         ]
       );
-    });
-  }, [dirty, navigation, t]);
+    }
+  );
+
+  useEffect(() => {
+    if (!allowRemove || !pendingActionRef.current) return;
+
+    const pendingAction = pendingActionRef.current;
+    pendingActionRef.current = null;
+    // usePreventRemove 已在本次渲染关闭阻止，派发时不会递归进入确认框。
+    navigation.dispatch(pendingAction);
+  }, [allowRemove, navigation]);
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -415,6 +425,7 @@ export default function PosTerminalPermissionsScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
+      <Stack.Screen options={{ headerBackButtonMenuEnabled: false }} />
       {renderHeader()}
       <View style={styles.body}>{content}</View>
       <Snackbar

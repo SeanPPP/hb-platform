@@ -9,6 +9,7 @@ import {
   groupPosPermissions,
   setPosPermissionGroupSelection,
   shouldInitializePosPermissionDraft,
+  shouldPreventPosPermissionRemoval,
   togglePosPermissionCode,
 } from "./pos-terminal-permissions";
 import { PERMISSIONS } from "../../shared/utils/access";
@@ -121,6 +122,22 @@ assert.equal(
   shouldInitializePosPermissionDraft("store-a:user-a", "store-b:user-a"),
   true,
   "切换用户或分店 scope 后应重新初始化草稿"
+);
+
+assert.equal(
+  shouldPreventPosPermissionRemoval(true, false),
+  true,
+  "存在未保存草稿且尚未放行时应阻止页面移除"
+);
+assert.equal(
+  shouldPreventPosPermissionRemoval(true, true),
+  false,
+  "用户确认放弃后应放行待处理的原始导航 action"
+);
+assert.equal(
+  shouldPreventPosPermissionRemoval(false, false),
+  false,
+  "没有未保存草稿时不应阻止返回或手势离开"
 );
 
 const groupedPermissions = groupPosPermissions([
