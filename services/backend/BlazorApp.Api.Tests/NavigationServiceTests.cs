@@ -578,6 +578,21 @@ public class NavigationServiceTests
         );
     }
 
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public void BuildAppMenu_四种系统管理员别名均显示敏感资料审核(string roleName)
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, roleName));
+
+        Assert.Contains(
+            _service.BuildAppMenu(user),
+            menu => menu.RouteName == "employee-profile-review"
+        );
+    }
+
     [Fact]
     public void BuildAppMenu_ShowsLocalSupplierInvoicesWithLocalPurchaseViewPermission()
     {

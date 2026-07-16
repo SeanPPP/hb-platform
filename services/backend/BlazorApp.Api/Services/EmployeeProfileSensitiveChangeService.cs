@@ -1,5 +1,6 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -15,11 +16,10 @@ public sealed class EmployeeProfileSensitiveChangeService
     public const string ReviewScopeForbiddenCode =
         "EMPLOYEE_PROFILE_SENSITIVE_REVIEW_SCOPE_FORBIDDEN";
 
-    private static readonly string[] AdminRoleAliases = ["Admin", "管理员"];
     private static readonly string[] StoreManagerRoleAliases = ["StoreManager", "店长", "经理"];
     private static readonly string[] ProtectedTargetRoleAliases =
     [
-        "Admin", "管理员", "SuperAdmin", "超级管理员",
+        .. Permissions.SuperAdminRoleNames,
         "WarehouseManager", "仓库经理", "StoreManager", "店长", "经理",
     ];
 
@@ -161,19 +161,25 @@ public sealed class EmployeeProfileSensitiveChangeService
         );
         if (!access.IsAdmin)
         {
-            // 关键逻辑：先收敛可审核员工，再进入 Count/Skip/Take，避免分页后过滤造成越权或缺页。
-            var candidateUserGuids = await db.Queryable<UserStore>()
-                .Where(item => !item.IsDeleted && access.StoreGuids.Contains(item.StoreGUID))
-                .Select(item => item.UserGUID)
-                .Distinct()
-                .ToListAsync();
-            var protectedUserGuids = await GetProtectedTargetUserGuidsAsync(candidateUserGuids);
-            var eligibleUserGuids = candidateUserGuids
-                .Where(userGuid => !userGuid.Equals(access.UserGuid, StringComparison.OrdinalIgnoreCase))
-                .Where(userGuid => !protectedUserGuids.Contains(userGuid))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            source = source.Where((request, user, profile) => eligibleUserGuids.Contains(request.UserGUID));
+            var protectedTargetRoleAliases = ProtectedTargetRoleAliases;
+            // 关键逻辑：范围、自审和受保护角色全部在主查询分页前过滤，禁止把整店员工 GUID 拉入内存拼接大 IN。
+            source = source.Where((request, user, profile) =>
+                request.UserGUID != access.UserGuid
+                && SqlSugar.SqlFunc.Subqueryable<UserStore>()
+                    .Where(userStore =>
+                        userStore.UserGUID == request.UserGUID
+                        && !userStore.IsDeleted
+                        && access.StoreGuids.Contains(userStore.StoreGUID))
+                    .Any()
+                && !SqlSugar.SqlFunc.Subqueryable<UserRole>()
+                    .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                    .Where((userRole, role) =>
+                        userRole.UserGUID == request.UserGUID
+                        && !userRole.IsDeleted
+                        && !role.IsDeleted
+                        && protectedTargetRoleAliases.Contains(role.RoleName))
+                    .Any()
+            );
         }
         if (status.HasValue)
         {
@@ -880,8 +886,11 @@ public sealed class EmployeeProfileSensitiveChangeService
             ChangedFields = ResolveChangedFields(profile, request),
             CurrentSnapshot = MapCurrentSnapshot(profile),
         };
-        if (_storage is not null && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
+        if (_storage is not null
+            && request.Status == EmployeeProfileSensitiveChangeStatus.Pending
+            && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
         {
+            // 关键逻辑：待审对象在驳回或作废后可能已被删除，终态详情不得继续签发访问地址。
             var signed = _storage.GetSignedDownload(request.IdentityPhotoObjectKey, 300);
             dto.IdentityPhotoUrl = signed.Url;
             dto.IdentityPhotoUrlExpiresAt = signed.ExpiresAtUtc;
@@ -905,7 +914,6 @@ public sealed class EmployeeProfileSensitiveChangeService
         BaseSensitiveRevision = request.BaseSensitiveRevision,
         SubmittedAt = request.SubmittedAt,
         ReviewedAt = request.ReviewedAt,
-        ReviewReason = request.ReviewReason,
         // 列表只返回受控字段标识；完整正式值和申请值只在服务端内存中参与比较。
         ChangedFields = ResolveChangedFields(profile, request),
     };
@@ -941,7 +949,7 @@ public sealed class EmployeeProfileSensitiveChangeService
         }
 
         // scope.IsAdmin 同时包含仓库经理；必须再核对真实角色，不能据此放宽敏感资料审核。
-        if (HasAnyRole(user, AdminRoleAliases))
+        if (HasAnyRole(user, Permissions.SuperAdminRoleNames))
         {
             return new ReviewAccess(true, scope.UserGuid, []);
         }

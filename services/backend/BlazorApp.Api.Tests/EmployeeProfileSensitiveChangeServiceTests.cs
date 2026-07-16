@@ -511,6 +511,67 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReviewDetail_驳回覆盖和管理员作废后不再签发待审照片地址()
+    {
+        await SeedAsync();
+        var storage = new FakeStorage();
+        var self = CreateService("user-self", "self_user", storage);
+        var admin = CreateService("admin-user", "admin", storage);
+
+        var rejectedRequest = await self.ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/rejected.png"
+        );
+        var rejected = await admin.RejectAsync(
+            rejectedRequest.Data!.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "照片不清晰" }
+        );
+        var rejectedDetail = await admin.GetReviewDetailAsync(rejectedRequest.Data.RequestId);
+
+        Assert.Null(rejected.Data!.IdentityPhotoUrl);
+        Assert.Null(rejectedDetail.Data!.IdentityPhotoUrl);
+
+        var overwrittenRequest = await self.ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/overwritten.png"
+        );
+        var currentRequest = await self.ReplacePendingIdentityPhotoAsync(
+            "employee-profiles/user-self/identity/current-pending.png"
+        );
+        var overwrittenDetail = await admin.GetReviewDetailAsync(
+            overwrittenRequest.Data!.RequestId
+        );
+
+        Assert.Null(overwrittenDetail.Data!.IdentityPhotoUrl);
+        var pendingBeforeInvalidation = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == currentRequest.Data!.RequestId);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, pendingBeforeInvalidation.Status);
+        Assert.Equal(
+            "employee-profiles/user-self/identity/current-pending.png",
+            pendingBeforeInvalidation.IdentityPhotoObjectKey
+        );
+
+        await _db.Updateable<EmployeeProfileSensitiveChangeRequest>()
+            .SetColumns(item => new EmployeeProfileSensitiveChangeRequest
+            {
+                Status = EmployeeProfileSensitiveChangeStatus.Superseded,
+                SupersededAt = DateTime.UtcNow,
+                SupersededBy = "admin",
+            })
+            .Where(item => item.RequestId == currentRequest.Data!.RequestId)
+            .ExecuteCommandAsync();
+        const string invalidatedObjectKey =
+            "employee-profiles/user-self/identity/current-pending.png";
+        await admin.CleanupSupersededObjectsAsync("user-self", [invalidatedObjectKey]);
+        // 模拟管理员直改完成后的下一次独立 API 请求，验证已作废对象不会继续签名。
+        var invalidatedDetail = await CreateService("admin-user", "admin", storage)
+            .GetReviewDetailAsync(currentRequest.Data!.RequestId);
+
+        Assert.Contains(invalidatedObjectKey, storage.DeletedKeys);
+        Assert.True(invalidatedDetail.Success, invalidatedDetail.Message);
+        Assert.Equal("Superseded", invalidatedDetail.Data!.Status);
+        Assert.Null(invalidatedDetail.Data.IdentityPhotoUrl);
+    }
+
+    [Fact]
     public async Task DeletePendingIdentityPhotoAsync_LegacyUrlOnly_固化删除意图并在批准后清空正式照片()
     {
         await SeedAsync();
@@ -893,6 +954,139 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, warehouseList.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public async Task ReviewScope_四种系统管理员别名均可访问全部审核申请(string roleName)
+    {
+        await SeedReviewScopeAsync();
+        var service = CreateService(
+            "global-admin",
+            "global_admin",
+            roles: [roleName],
+            scopeIsAdmin: true
+        );
+
+        var list = await service.GetReviewListAsync(new() { Status = "Pending" });
+
+        Assert.True(list.Success);
+        Assert.Equal(4, list.Data!.Total);
+    }
+
+    [Fact]
+    public async Task ReviewList_序列化不返回审核自由文本但详情仍返回原因()
+    {
+        await SeedAsync();
+        var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "rejected-account",
+        });
+        var admin = CreateService("admin-user", "admin");
+        const string reviewReason = "仅允许在详情中查看的审核说明";
+        await admin.RejectAsync(
+            submitted.Data!.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = reviewReason }
+        );
+
+        var list = await admin.GetReviewListAsync(new() { Status = "Rejected" });
+        var detail = await admin.GetReviewDetailAsync(submitted.Data.RequestId);
+        var serializedSummary = JsonSerializer.Serialize(Assert.Single(list.Data!.Items!));
+        var serializedDetail = JsonSerializer.Serialize(detail.Data);
+
+        Assert.DoesNotContain("ReviewReason", serializedSummary);
+        Assert.DoesNotContain(reviewReason, serializedSummary);
+        Assert.Equal(reviewReason, detail.Data!.ReviewReason);
+        Assert.Contains("ReviewReason", serializedDetail);
+    }
+
+    [Fact]
+    public async Task ReviewList_超过2100名员工仍在数据库分页前过滤范围和受保护角色()
+    {
+        await SeedReviewScopeAsync();
+        const int bulkUserCount = 2101;
+        var now = DateTime.UtcNow.AddDays(1);
+        var users = new List<User>(bulkUserCount);
+        var assignments = new List<UserStore>(bulkUserCount);
+        var requests = new List<EmployeeProfileSensitiveChangeRequest>(bulkUserCount);
+        for (var index = 0; index < bulkUserCount; index++)
+        {
+            var userGuid = $"bulk-user-{index:D4}";
+            users.Add(new User
+            {
+                UserGUID = userGuid,
+                Username = userGuid,
+                Email = $"{userGuid}@example.com",
+                PasswordHash = "hashed",
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+            assignments.Add(new UserStore
+            {
+                UserGUID = userGuid,
+                StoreGUID = "store-a",
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+            requests.Add(CreatePendingRequest(userGuid, $"account-{index:D4}", now.AddSeconds(index)));
+        }
+        await _db.Insertable(users).ExecuteCommandAsync();
+        await _db.Insertable(assignments).ExecuteCommandAsync();
+        await _db.Insertable(requests).ExecuteCommandAsync();
+        const string protectedUserGuid = "bulk-user-2100";
+        await _db.Insertable(new UserRole
+        {
+            UserGUID = protectedUserGuid,
+            RoleGUID = "role-store-manager",
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ExecuteCommandAsync();
+
+        var sqlStatements = new List<string>();
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+            {
+                sqlStatements.Add(sql);
+            }
+        };
+        var manager = CreateService(
+            "manager-a",
+            "manager_a",
+            roles: ["StoreManager"],
+            storeGuids: ["store-a"]
+        );
+
+        var list = await manager.GetReviewListAsync(new() { Page = 1, PageSize = 100 });
+        _db.Aop.OnLogExecuting = null;
+        var protectedSearch = await manager.GetReviewListAsync(new()
+        {
+            Search = protectedUserGuid,
+        });
+
+        Assert.True(list.Success);
+        Assert.Equal(2101, list.Data!.Total);
+        Assert.DoesNotContain(list.Data.Items!, item => item.UserGuid == protectedUserGuid);
+        Assert.Equal(0, protectedSearch.Data!.Total);
+        var countSql = Assert.Single(sqlStatements, sql =>
+            sql.TrimStart().StartsWith("SELECT COUNT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("EmployeeProfileSensitiveChangeRequest", StringComparison.OrdinalIgnoreCase)
+        );
+        var pageSql = Assert.Single(sqlStatements, sql =>
+            !sql.TrimStart().StartsWith("SELECT COUNT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("EmployeeProfileSensitiveChangeRequest", StringComparison.OrdinalIgnoreCase)
+        );
+        foreach (var permissionSql in new[] { countSql, pageSql })
+        {
+            Assert.Contains("EXISTS", permissionSql, StringComparison.OrdinalIgnoreCase);
+            Assert.Matches(@"(?is)\bNOT\s*(?:\(\s*)?EXISTS\b", permissionSql);
+            Assert.DoesNotContain("bulk-user-0000", permissionSql, StringComparison.OrdinalIgnoreCase);
+            Assert.True(permissionSql.Length < 10_000, $"范围 SQL 过长：{permissionSql.Length}");
+        }
+    }
+
     [Fact]
     public async Task ReviewDetail_管理员可查看全部且CurrentSnapshot返回当前正式敏感资料和安全照片地址()
     {
@@ -1248,7 +1442,10 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             var attributes = typeof(EmployeeProfilesController).GetMethod(methodName)!
                 .GetCustomAttributes<AuthorizeAttribute>()
                 .ToList();
-            Assert.Contains(attributes, item => item.Roles == "Admin,管理员");
+            Assert.Contains(
+                attributes,
+                item => item.Roles == "Admin,管理员,SuperAdmin,超级管理员"
+            );
             Assert.Contains(attributes, item => item.Policy == "EmployeeProfiles.Edit");
         }
 
@@ -1263,7 +1460,11 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             var attributes = typeof(EmployeeProfilesController).GetMethod(methodName)!
                 .GetCustomAttributes<AuthorizeAttribute>()
                 .ToList();
-            Assert.Contains(attributes, item => item.Roles == "Admin,管理员,StoreManager,店长,经理");
+            Assert.Contains(
+                attributes,
+                item => item.Roles
+                    == "Admin,管理员,SuperAdmin,超级管理员,StoreManager,店长,经理"
+            );
             Assert.Contains(
                 attributes,
                 item => item.Policy == Permissions.EmployeeProfiles.ReviewSensitiveManagedStore

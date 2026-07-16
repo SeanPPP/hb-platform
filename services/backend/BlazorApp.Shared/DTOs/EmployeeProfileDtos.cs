@@ -197,7 +197,6 @@ namespace BlazorApp.Shared.DTOs
         public int BaseSensitiveRevision { get; set; }
         public DateTime SubmittedAt { get; set; }
         public DateTime? ReviewedAt { get; set; }
-        public string? ReviewReason { get; set; }
         public List<string> ChangedFields { get; set; } = new();
         public List<string> StoreCodes { get; set; } = new();
         public List<string> StoreNames { get; set; } = new();
@@ -231,6 +230,7 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? IdentityPhotoUrlExpiresAt { get; set; }
         public string? SubmittedBy { get; set; }
         public string? ReviewedBy { get; set; }
+        public string? ReviewReason { get; set; }
         public EmployeeProfileSensitiveSnapshotDto? CurrentSnapshot { get; set; }
     }
 

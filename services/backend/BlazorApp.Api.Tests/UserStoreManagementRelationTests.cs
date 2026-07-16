@@ -697,6 +697,8 @@ namespace BlazorApp.Api.Tests
         [Theory]
         [InlineData("Admin")]
         [InlineData("管理员")]
+        [InlineData("SuperAdmin")]
+        [InlineData("超级管理员")]
         [InlineData("WarehouseManager")]
         [InlineData("仓库经理")]
         public async Task GetScopeAsync_WhenCurrentUserIsUnrestrictedAlias_ReturnsAdminScope(
