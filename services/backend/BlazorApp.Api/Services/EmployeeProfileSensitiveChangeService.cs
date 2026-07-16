@@ -3,6 +3,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
+using System.Data;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -279,7 +280,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             _logger
         ))
         {
-            await db.Ado.BeginTranAsync();
+            // 关键逻辑：审核范围、目标分店和受保护角色校验必须与批准写入处于不可穿透的原子区。
+            await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
                 // 关键逻辑：锁内事务重新读取申请与正式版本，不能使用取得锁之前的旧快照做审批。
@@ -448,7 +450,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             _logger
         ))
         {
-            await db.Ado.BeginTranAsync();
+            // 关键逻辑：驳回也要锁定授权读取窗口，避免目标移店或提权后仍被旧权限处理。
+            await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
                 // 关键逻辑：拒绝也必须在共用锁内重读状态，不能处理已被覆盖的新旧申请快照。

@@ -965,9 +965,130 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             .FirstAsync(item => item.UserGUID == "privileged-manager");
 
         var detail = await manager.GetReviewDetailAsync(request.RequestId);
+        var approve = await manager.ApproveAsync(
+            request.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+        var reject = await manager.RejectAsync(
+            request.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "受保护账号" }
+        );
 
         Assert.False(detail.Success);
         Assert.Equal("REQUEST_NOT_FOUND", detail.ErrorCode);
+        Assert.Equal("REQUEST_NOT_FOUND", approve.ErrorCode);
+        Assert.Equal("REQUEST_NOT_FOUND", reject.ErrorCode);
+        Assert.Equal(
+            EmployeeProfileSensitiveChangeStatus.Pending,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.RequestId == request.RequestId)).Status
+        );
+    }
+
+    [Fact]
+    public async Task ReviewMutation_批准和驳回事务必须显式使用Serializable隔离级别()
+    {
+        var source = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Services/EmployeeProfileSensitiveChangeService.cs"
+        ));
+
+        Assert.Equal(
+            2,
+            source.Split("BeginTranAsync(IsolationLevel.Serializable)", StringSplitOptions.None).Length - 1
+        );
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task ReviewMutation_授权读取到写入期间目标移店或提升角色_并发管理写入不能穿透(
+        bool approve,
+        bool elevateRole
+    )
+    {
+        await SeedReviewScopeAsync();
+        var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "employee-a");
+        if (elevateRole)
+        {
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "role-admin-target",
+                RoleName = "Admin",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+        using var reviewDb = CreateAdditionalDb();
+        using var managementDb = CreateAdditionalDb();
+        var authorizationRead = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        using var releaseReview = new ManualResetEventSlim(false);
+        var barrierEntered = 0;
+        System.Data.IsolationLevel? observedIsolation = null;
+        reviewDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            var isAuthorizationRead = sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && (elevateRole
+                    ? sql.Contains("UserRole", StringComparison.OrdinalIgnoreCase)
+                    : sql.Contains("UserStore", StringComparison.OrdinalIgnoreCase));
+            if (isAuthorizationRead && Interlocked.Exchange(ref barrierEntered, 1) == 0)
+            {
+                observedIsolation = reviewDb.Ado.Transaction?.IsolationLevel;
+                authorizationRead.TrySetResult();
+                Assert.True(releaseReview.Wait(TimeSpan.FromSeconds(10)), "授权并发屏障等待超时");
+            }
+        };
+        var reviewer = CreateService(
+            "manager-a",
+            "manager_a",
+            db: reviewDb,
+            roles: ["StoreManager"],
+            storeGuids: ["store-a"]
+        );
+        var reviewTask = Task.Run(() => approve
+            ? reviewer.ApproveAsync(request.RequestId, new EmployeeProfileSensitiveReviewDto())
+            : reviewer.RejectAsync(
+                request.RequestId,
+                new EmployeeProfileSensitiveRejectDto { Reason = "并发授权测试" }
+            ));
+        await authorizationRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var managementTask = Task.Run(async () =>
+        {
+            if (elevateRole)
+            {
+                return await managementDb.Insertable(new UserRole
+                {
+                    UserGUID = request.UserGUID,
+                    RoleGUID = "role-admin-target",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                }).ExecuteCommandAsync();
+            }
+            return await managementDb.Updateable<UserStore>()
+                .SetColumns(item => item.IsDeleted == true)
+                .Where(item => item.UserGUID == request.UserGUID
+                    && item.StoreGUID == "store-a"
+                    && !item.IsDeleted)
+                .ExecuteCommandAsync();
+        });
+        var managementCompletedInsideAuthorizationWindow = await Task.WhenAny(
+            managementTask,
+            Task.Delay(TimeSpan.FromMilliseconds(400))
+        ) == managementTask;
+        releaseReview.Set();
+
+        var review = await reviewTask.WaitAsync(TimeSpan.FromSeconds(10));
+        var managementWrites = await managementTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(System.Data.IsolationLevel.Serializable, observedIsolation);
+        Assert.False(managementCompletedInsideAuthorizationWindow);
+        Assert.True(review.Success);
+        Assert.Equal(1, managementWrites);
     }
 
     [Theory]
@@ -1505,6 +1626,24 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static string FindRepoRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var servicePath = Path.Combine(
+                directory.FullName,
+                "services/backend/BlazorApp.Api/Services/EmployeeProfileSensitiveChangeService.cs"
+            );
+            if (File.Exists(servicePath))
+            {
+                return directory.FullName;
+            }
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("无法定位仓库根目录");
     }
 
     private sealed class FakeStorage : TencentCloudUploadService
