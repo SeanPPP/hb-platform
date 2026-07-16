@@ -253,6 +253,18 @@ namespace BlazorApp.Api.Services
                         profile = await db.Queryable<EmployeeProfile>()
                             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
                         var sensitiveChanged = HasSensitiveChanges(profile, dto);
+                        var currentSensitiveRevision = profile?.SensitiveRevision ?? 0;
+                        if (sensitiveChanged
+                            && dto.ExpectedSensitiveRevision.HasValue
+                            && dto.ExpectedSensitiveRevision.Value != currentSensitiveRevision)
+                        {
+                            // 敏感表单 CAS 与写入共用锁和事务；过期表单不得顺带写入非敏感字段。
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "正式敏感资料已变化，请刷新后重试",
+                                EmployeeProfileSensitiveChangeService.VersionConflictCode
+                            );
+                        }
                         var hasPendingSensitiveChange = sensitiveChanged
                             && await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
                                 .AnyAsync(item =>
@@ -402,8 +414,9 @@ namespace BlazorApp.Api.Services
                         profile = await db.Queryable<EmployeeProfile>()
                             .FirstAsync(item => item.EmployeeInfoId == profile.EmployeeInfoId);
                     }
-                    if (HasLegacySensitivePayload(dto))
+                    if (HasLegacySensitivePayload(dto) && HasLegacySensitiveChanges(profile, dto))
                     {
+                        // 旧 App 会在普通保存中回传完整敏感字段；等值回传不得覆盖真实待审申请。
                         legacySensitiveDto = BuildLegacySensitiveSnapshot(profile, dto);
                     }
                 }
@@ -519,6 +532,7 @@ namespace BlazorApp.Api.Services
                 CreatedBy = profile?.CreatedBy,
                 UpdatedAt = profile?.UpdatedAt,
                 UpdatedBy = profile?.UpdatedBy,
+                SensitiveRevision = profile?.SensitiveRevision ?? 0,
             };
         }
 
@@ -543,6 +557,25 @@ namespace BlazorApp.Api.Services
             || dto.SuperannuationAccountNumber is not null
             || dto.IdentityType is not null
             || dto.IdentityId is not null;
+
+        private static bool HasLegacySensitiveChanges(
+            EmployeeProfile? profile,
+            EmployeeProfileUpsertDto dto
+        ) =>
+            (dto.BankBsb is not null
+                && !string.Equals(profile?.BankBSB, Normalize(dto.BankBsb), StringComparison.Ordinal))
+            || (dto.BankAccountNumber is not null
+                && !string.Equals(profile?.BankACC, Normalize(dto.BankAccountNumber), StringComparison.Ordinal))
+            || (dto.SuperannuationCompanyName is not null
+                && !string.Equals(profile?.SuperannuationCompanyName, Normalize(dto.SuperannuationCompanyName), StringComparison.Ordinal))
+            || (dto.SuperannuationCompanyCode is not null
+                && !string.Equals(profile?.SuperannuationCompanyCode, Normalize(dto.SuperannuationCompanyCode), StringComparison.Ordinal))
+            || (dto.SuperannuationAccountNumber is not null
+                && !string.Equals(profile?.SuperannuationAccount, Normalize(dto.SuperannuationAccountNumber), StringComparison.Ordinal))
+            || (dto.IdentityType is not null
+                && !string.Equals(profile?.IdentityType, Normalize(dto.IdentityType), StringComparison.Ordinal))
+            || (dto.IdentityId is not null
+                && !string.Equals(profile?.IdentityId, Normalize(dto.IdentityId), StringComparison.Ordinal));
 
         private static bool HasSensitiveChanges(EmployeeProfile? profile, EmployeeProfileUpsertDto dto) =>
             !string.Equals(profile?.BankBSB, Normalize(dto.BankBsb), StringComparison.Ordinal)

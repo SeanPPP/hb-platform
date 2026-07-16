@@ -28,7 +28,7 @@ async function main() {
         },
       };
     }
-    return { data: { UserName: "employee-a", Phone: "0400000000", IdentityType: "passport" } };
+    return { data: { UserName: "employee-a", Phone: "0400000000", IdentityType: "passport", SensitiveRevision: 3 } };
   },
 
   put: async (path: string, payload: unknown) => {
@@ -50,6 +50,7 @@ async function main() {
   const formal = await api.getMyEmployeeProfile();
   assert.equal(formal.phone, "0400000000", "正式资料响应必须映射 phone");
   assert.equal(formal.identityType, "passport", "正式资料响应必须映射 identityType");
+  assert.equal(formal.sensitiveRevision, 3, "正式资料响应必须映射敏感 revision");
 
   const request = await api.getMySensitiveChangeRequest();
   assert.equal(request?.requestId, 42);
@@ -65,8 +66,14 @@ async function main() {
     superannuationAccountNumber: "",
     identityType: "",
     identityId: "",
+    expectedSensitiveRevision: 3,
   });
   assert.equal(updated.requestId, 43);
+  assert.equal(
+    (calls[2]?.payload as { expectedSensitiveRevision?: number }).expectedSensitiveRevision,
+    3,
+    "敏感申请必须提交打开表单时的 revision"
+  );
 
   await api.updateMyEmployeeProfile({
     phone: "0499999999",

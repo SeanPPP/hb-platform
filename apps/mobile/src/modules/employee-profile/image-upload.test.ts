@@ -19,6 +19,7 @@ async function main() {
     identityId: "",
     identityPhotoUrl: "",
     address: "",
+    sensitiveRevision: 0,
   };
 
   const result = await completeEmployeeProfileImageUpload(

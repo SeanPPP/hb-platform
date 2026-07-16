@@ -123,6 +123,7 @@ export default function EmployeeProfileScreen() {
   const [sensitiveFormValues, setSensitiveFormValues] = useState<SensitiveEmployeeProfilePayload>(
     EMPTY_SENSITIVE_FORM
   );
+  const sensitiveEditRevisionRef = useRef<number | undefined>(undefined);
   const [sensitiveEditing, setSensitiveEditing] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarVisible, setSnackbarVisible] = useState(false);
@@ -325,6 +326,8 @@ export default function EmployeeProfileScreen() {
       return;
     }
     setSensitiveFormValues(selectSensitiveDraft(profileQuery.data, sensitiveQuery.data));
+    // 敏感表单固定使用打开时 revision，后台刷新不得把过期表单伪装成最新版本。
+    sensitiveEditRevisionRef.current = profileQuery.data.sensitiveRevision;
     setSensitiveEditing(true);
   };
 
@@ -338,7 +341,10 @@ export default function EmployeeProfileScreen() {
 
   const handleSensitiveSubmit = async () => {
     try {
-      await sensitiveMutation.mutateAsync(normalizeSensitiveDraft(sensitiveFormValues));
+      await sensitiveMutation.mutateAsync(normalizeSensitiveDraft({
+        ...sensitiveFormValues,
+        expectedSensitiveRevision: sensitiveEditRevisionRef.current,
+      }));
     } catch {
       // mutation 回调统一展示错误，避免敏感值进入日志。
     }

@@ -97,7 +97,8 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _service.UpsertAdminAsync(userGuid, dto);
-                if (result.ErrorCode == EmployeeProfileService.PendingChangeConfirmationRequiredCode)
+                if (result.ErrorCode == EmployeeProfileService.PendingChangeConfirmationRequiredCode
+                    || result.ErrorCode == EmployeeProfileSensitiveChangeService.VersionConflictCode)
                 {
                     return Conflict(result);
                 }
@@ -210,9 +211,7 @@ namespace BlazorApp.Api.Controllers
         )
         {
             var result = await _sensitiveChangeService.ApproveAsync(requestId, dto);
-            return result.ErrorCode == EmployeeProfileSensitiveChangeService.VersionConflictCode
-                ? Conflict(result)
-                : Ok(result);
+            return MapSensitiveReviewResult(result);
         }
 
         [HttpPost("admin/change-requests/{requestId:int}/reject")]
@@ -227,8 +226,18 @@ namespace BlazorApp.Api.Controllers
             {
                 return BadRequest(ApiResponse<object>.Error("拒绝原因必填", "VALIDATION_ERROR", ModelState));
             }
-            return Ok(await _sensitiveChangeService.RejectAsync(requestId, dto));
+            return MapSensitiveReviewResult(await _sensitiveChangeService.RejectAsync(requestId, dto));
         }
+
+        private IActionResult MapSensitiveReviewResult(
+            ApiResponse<EmployeeProfileSensitiveChangeDetailDto> result
+        ) => result.ErrorCode switch
+        {
+            EmployeeProfileSensitiveChangeService.VersionConflictCode => Conflict(result),
+            "REQUEST_NOT_PENDING" => Conflict(result),
+            "REQUEST_NOT_FOUND" => NotFound(result),
+            _ => Ok(result),
+        };
 
         [HttpPost("me/image-upload-signature")]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]

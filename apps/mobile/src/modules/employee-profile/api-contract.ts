@@ -45,6 +45,7 @@ export function normalizeEmployeeProfile(payload: unknown): EmployeeProfile {
     address: asString(data.address ?? data.Address),
     createdAt: asString(data.createdAt ?? data.CreatedAt) || undefined,
     updatedAt: asString(data.updatedAt ?? data.UpdatedAt) || undefined,
+    sensitiveRevision: Number(data.sensitiveRevision ?? data.SensitiveRevision) || 0,
   };
 }
 

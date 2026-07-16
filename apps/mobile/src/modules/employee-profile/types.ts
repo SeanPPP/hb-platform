@@ -30,6 +30,7 @@ export interface EmployeeProfile {
   address: string;
   createdAt?: string;
   updatedAt?: string;
+  sensitiveRevision: number;
 }
 
 export interface UpdateEmployeeProfilePayload {
@@ -54,6 +55,7 @@ export interface SensitiveEmployeeProfilePayload {
   superannuationAccountNumber: string;
   identityType: string;
   identityId: string;
+  expectedSensitiveRevision?: number;
 }
 
 export interface EmployeeProfileSensitiveChangeRequest extends SensitiveEmployeeProfilePayload {

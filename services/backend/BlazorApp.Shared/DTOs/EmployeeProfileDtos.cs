@@ -63,6 +63,7 @@ namespace BlazorApp.Shared.DTOs
         public string? CreatedBy { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
+        public int SensitiveRevision { get; set; }
     }
 
     public class EmployeeProfileUpsertDto
@@ -110,6 +111,9 @@ namespace BlazorApp.Shared.DTOs
 
         /// <summary>管理员确认本次敏感资料直改可以原子作废现有待审申请。</summary>
         public bool? ConfirmSupersedePendingSensitiveChangeRequest { get; set; }
+
+        [Range(0, int.MaxValue)]
+        public int? ExpectedSensitiveRevision { get; set; }
     }
 
     public sealed class EmployeeImageUploadSignatureRequest
@@ -158,6 +162,8 @@ namespace BlazorApp.Shared.DTOs
         public string? IdentityType { get; set; }
         [StringLength(100)]
         public string? IdentityId { get; set; }
+        [Range(0, int.MaxValue)]
+        public int? ExpectedSensitiveRevision { get; set; }
     }
 
     public sealed class EmployeeProfileSensitiveReviewDto

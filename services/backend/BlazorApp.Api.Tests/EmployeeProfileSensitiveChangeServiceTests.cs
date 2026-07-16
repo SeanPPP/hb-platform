@@ -373,6 +373,76 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LegacySelfPut_NoOpSensitiveSnapshot_PreservesRealPendingButSameSuffixDifferenceReplacesIt()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "11113333";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var sensitive = CreateService("user-self", "self_user");
+        var realPending = await sensitive.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "22223333",
+        });
+        var profileService = CreateProfileService("user-self", "self_user", sensitive);
+
+        var noOp = await profileService.UpsertSelfAsync(new EmployeeProfileUpsertDto
+        {
+            Address = "legacy saved address",
+            BankAccountNumber = " 11113333 ",
+        });
+
+        Assert.True(noOp.Success);
+        var afterNoOp = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().ToListAsync();
+        Assert.Single(afterNoOp);
+        Assert.Equal(realPending.Data!.RequestId, afterNoOp.Single().RequestId);
+        Assert.Equal("22223333", afterNoOp.Single().BankAccountNumber);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, afterNoOp.Single().Status);
+
+        var changed = await profileService.UpsertSelfAsync(new EmployeeProfileUpsertDto
+        {
+            BankAccountNumber = "77773333",
+        });
+        Assert.True(changed.Success);
+        var afterChanged = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .OrderBy(item => item.RequestId)
+            .ToListAsync();
+        Assert.Equal(2, afterChanged.Count);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Superseded, afterChanged[0].Status);
+        Assert.Equal("77773333", afterChanged[1].BankAccountNumber);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, afterChanged[1].Status);
+    }
+
+    [Fact]
+    public async Task UpsertSelfSensitive_WhenExpectedRevisionIsStale_WritesNothingAndCurrentRevisionSucceeds()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.BankACC = "admin-v4";
+        profile.SensitiveRevision = 4;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var service = CreateService("user-self", "self_user");
+
+        var stale = await service.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "employee-from-v3",
+            ExpectedSensitiveRevision = 3,
+        });
+        Assert.False(stale.Success);
+        Assert.Equal(EmployeeProfileSensitiveChangeService.VersionConflictCode, stale.ErrorCode);
+        Assert.Equal(0, await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().CountAsync());
+        Assert.Equal("admin-v4", (await _db.Queryable<EmployeeProfile>().FirstAsync()).BankACC);
+
+        var current = await service.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "employee-from-v4",
+            ExpectedSensitiveRevision = 4,
+        });
+        Assert.True(current.Success);
+        Assert.Equal(4, current.Data!.BaseSensitiveRevision);
+    }
+
+    [Fact]
     public async Task IdentityPhoto_IsPendingUntilApprove_AndReplaceRejectCleanPendingObjects()
     {
         await SeedAsync();
@@ -725,7 +795,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ApproveController_MapsRevisionConflictTo409_AndAdminEndpointsRequireRoleAndEditPolicy()
+    public async Task ReviewController_MapsConflictsAndMissingRequests_AndAdminEndpointsRequireRoleAndEditPolicy()
     {
         await SeedAsync();
         var submitted = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
@@ -742,10 +812,13 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         var profileService = new Mock<IEmployeeProfileService>();
         profileService
             .Setup(service => service.UpsertAdminAsync("user-self", It.IsAny<EmployeeProfileUpsertDto>()))
-            .ReturnsAsync(ApiResponse<EmployeeProfileDetailDto>.Error(
-                "存在待审核敏感资料变更，请确认后重试",
-                EmployeeProfileService.PendingChangeConfirmationRequiredCode
-            ));
+            .ReturnsAsync((string _, EmployeeProfileUpsertDto dto) =>
+                ApiResponse<EmployeeProfileDetailDto>.Error(
+                    "冲突",
+                    dto.ExpectedSensitiveRevision == 99
+                        ? EmployeeProfileSensitiveChangeService.VersionConflictCode
+                        : EmployeeProfileService.PendingChangeConfirmationRequiredCode
+                ));
         var controller = new EmployeeProfilesController(
             profileService.Object,
             NullLogger<EmployeeProfilesController>.Instance,
@@ -769,6 +842,32 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.IsType<ConflictObjectResult>(await controller.UpsertAdmin(
             "user-self",
             new EmployeeProfileUpsertDto { BankAccountNumber = "admin-new" }
+        ));
+        Assert.IsType<ConflictObjectResult>(await controller.UpsertAdmin(
+            "user-self",
+            new EmployeeProfileUpsertDto { BankAccountNumber = "admin-new", ExpectedSensitiveRevision = 99 }
+        ));
+        profile.SensitiveRevision = submitted.Data.BaseSensitiveRevision;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        Assert.IsType<OkObjectResult>(await controller.ApproveSensitiveChangeRequest(
+            submitted.Data.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        ));
+        Assert.IsType<ConflictObjectResult>(await controller.ApproveSensitiveChangeRequest(
+            submitted.Data.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        ));
+        Assert.IsType<ConflictObjectResult>(await controller.RejectSensitiveChangeRequest(
+            submitted.Data.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "重复处理" }
+        ));
+        Assert.IsType<NotFoundObjectResult>(await controller.ApproveSensitiveChangeRequest(
+            999999,
+            new EmployeeProfileSensitiveReviewDto()
+        ));
+        Assert.IsType<NotFoundObjectResult>(await controller.RejectSensitiveChangeRequest(
+            999999,
+            new EmployeeProfileSensitiveRejectDto { Reason = "不存在" }
         ));
         foreach (var methodName in new[]
         {

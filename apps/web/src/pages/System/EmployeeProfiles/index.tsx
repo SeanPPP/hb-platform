@@ -38,7 +38,11 @@ import type {
   EmployeeProfileSummaryDto,
 } from '../../../types/employeeProfile'
 import SensitiveChangeReviewPanel from './SensitiveChangeReviewPanel'
-import { maskSensitiveSummary, saveAdminProfileWithPendingConfirmation } from './logic'
+import {
+  getExpectedSensitiveRevision,
+  maskSensitiveSummary,
+  saveAdminProfileWithPendingConfirmation,
+} from './logic'
 
 interface EmployeeProfileFormValues {
   userGUID?: string
@@ -233,7 +237,7 @@ export default function SystemEmployeeProfilesPage() {
 
     try {
       const values = await form.validateFields()
-      const payload = {
+      const formPayload = {
         id: editingProfile.id,
         userGUID: editingProfile.userGUID ?? values.userGUID,
         userId: editingProfile.userId ?? values.userId,
@@ -252,6 +256,10 @@ export default function SystemEmployeeProfilesPage() {
         identityType: values.identityType?.trim() || undefined,
         identityPhotoUrl: values.identityPhotoUrl?.trim() || undefined,
         address: values.address?.trim() || undefined,
+      }
+      const payload = {
+        ...formPayload,
+        expectedSensitiveRevision: getExpectedSensitiveRevision(editingProfile),
       }
       setEditLoading(true)
       const result = await saveAdminProfileWithPendingConfirmation(

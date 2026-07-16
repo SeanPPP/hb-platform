@@ -32,7 +32,9 @@ export interface EmployeeProfileSummaryDto {
   updatedAt?: string
 }
 
-export interface EmployeeProfileDetailDto extends EmployeeProfileSummaryDto {}
+export interface EmployeeProfileDetailDto extends EmployeeProfileSummaryDto {
+  sensitiveRevision: number
+}
 
 export interface SaveEmployeeProfilePayload {
   id?: string
@@ -54,6 +56,7 @@ export interface SaveEmployeeProfilePayload {
   identityPhotoUrl?: string
   address?: string
   confirmSupersedePendingSensitiveChangeRequest?: boolean
+  expectedSensitiveRevision?: number
 }
 
 export type EmployeeProfileSensitiveChangeStatus = 'Pending' | 'Approved' | 'Rejected' | 'Superseded'

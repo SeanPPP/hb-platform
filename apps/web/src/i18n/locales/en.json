@@ -3582,6 +3582,7 @@
         "approve": "Approve", "reject": "Reject", "approveSuccess": "Sensitive data request approved", "rejectSuccess": "Sensitive data request rejected",
         "approveFailed": "Failed to approve the request", "rejectFailed": "Failed to reject the request",
         "versionConflict": "Official data changed. Details and the list were refreshed for review.",
+        "terminalConflict": "This request was already processed. Details, the list, and the pending count were refreshed.",
         "statuses": { "Pending": "Pending", "Approved": "Approved", "Rejected": "Rejected", "Superseded": "Invalidated" },
         "fields": {
           "bankBsb": "BSB", "bankAccountNumber": "Bank account number", "superannuationCompanyName": "Superannuation company",

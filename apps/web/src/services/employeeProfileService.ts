@@ -47,7 +47,8 @@ function mapEmployeeProfile<T extends EmployeeProfileSummaryDto>(raw: BackendEmp
     address: asString(raw.address) ?? asString(raw.Address),
     createdAt: asString(raw.createdAt) ?? asString(raw.CreatedAt),
     updatedAt: asString(raw.updatedAt) ?? asString(raw.UpdatedAt),
-  } as T
+    sensitiveRevision: asNumber(raw.sensitiveRevision ?? raw.SensitiveRevision),
+  } as unknown as T
 }
 
 function toBackendPayload(payload: SaveEmployeeProfilePayload) {
@@ -67,6 +68,7 @@ function toBackendPayload(payload: SaveEmployeeProfilePayload) {
     identityPhotoUrl: payload.identityPhotoUrl,
     address: payload.address,
     confirmSupersedePendingSensitiveChangeRequest: payload.confirmSupersedePendingSensitiveChangeRequest,
+    expectedSensitiveRevision: payload.expectedSensitiveRevision,
   }
 }
 
@@ -87,7 +89,7 @@ export async function getAdminEmployeeProfiles(params: EmployeeProfileQueryDto):
 
 export async function getAdminEmployeeProfile(id: string): Promise<EmployeeProfileDetailDto> {
   const response = await request.get<ApiResponse<EmployeeProfileDetailDto>>(`${ADMIN_BASE_PATH}/${id}`)
-  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as BackendEmployeeProfile)
+  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as unknown as BackendEmployeeProfile)
 }
 
 export async function saveAdminEmployeeProfile(payload: SaveEmployeeProfilePayload): Promise<EmployeeProfileDetailDto> {
@@ -99,17 +101,17 @@ export async function saveAdminEmployeeProfile(payload: SaveEmployeeProfilePaylo
     `${ADMIN_BASE_PATH}/${userGuid}`,
     toBackendPayload(payload),
   )
-  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as BackendEmployeeProfile)
+  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as unknown as BackendEmployeeProfile)
 }
 
 export async function getMyEmployeeProfile(): Promise<EmployeeProfileDetailDto> {
   const response = await request.get<ApiResponse<EmployeeProfileDetailDto>>(ME_BASE_PATH)
-  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as BackendEmployeeProfile)
+  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as unknown as BackendEmployeeProfile)
 }
 
 export async function updateMyEmployeeProfile(payload: SaveEmployeeProfilePayload): Promise<EmployeeProfileDetailDto> {
   const response = await request.put<ApiResponse<EmployeeProfileDetailDto>>(ME_BASE_PATH, toBackendPayload(payload))
-  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as BackendEmployeeProfile)
+  return mapEmployeeProfile<EmployeeProfileDetailDto>(unwrapApiData(response) as unknown as BackendEmployeeProfile)
 }
 
 function asNumber(value: unknown, fallback = 0) {

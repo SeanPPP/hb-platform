@@ -2,6 +2,7 @@ import {
   approveAdminSensitiveChangeRequest,
   getAdminSensitiveChangeRequest,
   getAdminSensitiveChangeRequests,
+  getAdminEmployeeProfile,
   rejectAdminSensitiveChangeRequest,
   saveAdminEmployeeProfile,
 } from './employeeProfileService'
@@ -63,6 +64,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           status: url.endsWith('/reject') ? 'Rejected' : 'Approved',
           submittedAt: '2026-07-16T00:00:00Z',
           baseSensitiveRevision: 3,
+          sensitiveRevision: 4,
         }
 
   return new Response(JSON.stringify({ success: true, data }), {
@@ -102,6 +104,7 @@ try {
     userGUID: 'user-guid-7',
     bankAccountNumber: 'admin-new',
     confirmSupersedePendingSensitiveChangeRequest: true,
+    expectedSensitiveRevision: 4,
   })
   assertEqual(calls[4]?.url, '/api/EmployeeProfiles/admin/user-guid-7', '管理员保存应使用员工路径')
   assertEqual(
@@ -109,6 +112,10 @@ try {
     true,
     '管理员确认重试必须把确认标志传给后端',
   )
+  assertEqual(JSON.parse(String(calls[4]?.init?.body)).expectedSensitiveRevision, 4, '管理员保存必须传递敏感 revision')
+
+  const employeeDetail = await getAdminEmployeeProfile('user-guid-7')
+  assertEqual(employeeDetail.sensitiveRevision, 4, '管理员详情必须映射敏感 revision')
 
   console.log('employeeProfileService.sensitiveChange.test: ok')
 } finally {

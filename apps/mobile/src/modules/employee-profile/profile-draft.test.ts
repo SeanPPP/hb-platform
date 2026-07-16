@@ -17,6 +17,7 @@ const profile = {
   identityId: "",
   identityPhotoUrl: "",
   address: "server-address",
+  sensitiveRevision: 0,
 };
 const draft = {
   phone: "draft-phone",

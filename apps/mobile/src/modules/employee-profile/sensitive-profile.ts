@@ -64,9 +64,13 @@ export function buildNonSensitiveProfilePayload(
 export function normalizeSensitiveDraft(
   draft: SensitiveEmployeeProfilePayload
 ): SensitiveEmployeeProfilePayload {
-  return Object.fromEntries(
+  const normalized = Object.fromEntries(
     SENSITIVE_FIELDS.map((field) => [field, normalizeSensitiveValue(draft[field])])
   ) as unknown as SensitiveEmployeeProfilePayload;
+  return {
+    ...normalized,
+    expectedSensitiveRevision: draft.expectedSensitiveRevision,
+  };
 }
 
 export function getChangedSensitiveFields(

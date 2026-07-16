@@ -488,7 +488,16 @@ public sealed class EmployeeProfileSensitiveChangeService
         var db = _context.Db;
         var actor = _currentUser.GetCurrentUsername();
         var now = DateTime.UtcNow;
-        var profile = await EnsureProfileAsync(userGuid, actor, now);
+        var profile = await db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+        var currentSensitiveRevision = profile?.SensitiveRevision ?? 0;
+        if (dto.ExpectedSensitiveRevision.HasValue
+            && dto.ExpectedSensitiveRevision.Value != currentSensitiveRevision)
+        {
+            // 员工敏感表单也以打开时 revision 做 CAS；冲突发生在任何申请写入之前。
+            return VersionConflict();
+        }
+        profile ??= await EnsureProfileAsync(userGuid, actor, now);
         var old = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .FirstAsync(item => item.UserGUID == userGuid
                 && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);

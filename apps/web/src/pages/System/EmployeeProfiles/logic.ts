@@ -1,5 +1,8 @@
 import { RequestError } from '../../../utils/request'
-import type { EmployeeProfileSensitiveField } from '../../../types/employeeProfile'
+import type {
+  EmployeeProfileSensitiveChangeStatus,
+  EmployeeProfileSensitiveField,
+} from '../../../types/employeeProfile'
 
 export const SENSITIVE_PROFILE_FIELDS = [
   'bankBsb',
@@ -43,6 +46,33 @@ export function maskSensitiveSummary(value?: string | null) {
 
 export function isRejectReasonValid(reason?: string | null) {
   return Boolean(reason?.trim())
+}
+
+export function getReviewChangedFields(
+  current: SensitiveProfileSnapshot,
+  proposed: SensitiveProfileSnapshot,
+  identityPhotoChanged: boolean,
+) {
+  const compared = new Set(getChangedSensitiveFields(current, proposed))
+  // 私有证件照 URL 是短效签名，照片是否变化只能使用后端持久化的对象级字段快照。
+  compared.delete('identityPhotoUrl')
+  if (identityPhotoChanged) {
+    compared.add('identityPhotoUrl')
+  }
+  return SENSITIVE_PROFILE_FIELDS.filter((field) => compared.has(field))
+}
+
+export function getExpectedSensitiveRevision(
+  current: SensitiveProfileSnapshot & { sensitiveRevision?: unknown },
+) {
+  // 新后台始终回传打开详情时的 revision；后端仅在实际敏感差异存在时执行 CAS。
+  return typeof current.sensitiveRevision === 'number'
+    ? current.sensitiveRevision
+    : undefined
+}
+
+export function isSensitiveRequestReviewable(status?: EmployeeProfileSensitiveChangeStatus) {
+  return status === 'Pending'
 }
 
 export function createLatestRequestGuard() {
@@ -114,16 +144,31 @@ export function isSensitiveVersionConflict(error: unknown) {
     && readErrorCode(error.payload) === 'EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT'
 }
 
+export type SensitiveReviewConflictKind = 'version' | 'terminal'
+
+function getSensitiveReviewConflictKind(error: unknown): SensitiveReviewConflictKind | false {
+  if (!(error instanceof RequestError) || error.status !== 409) {
+    return false
+  }
+  const code = readErrorCode(error.payload)
+  if (code === 'EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT') {
+    return 'version'
+  }
+  return code === 'REQUEST_NOT_PENDING' ? 'terminal' : false
+}
+
 export async function handleSensitiveReviewFailure(
   error: unknown,
   refreshDetail: () => Promise<unknown>,
   refreshList: () => Promise<unknown>,
+  refreshPendingCount: () => Promise<unknown>,
 ) {
-  if (!isSensitiveVersionConflict(error)) {
+  const conflictKind = getSensitiveReviewConflictKind(error)
+  if (!conflictKind) {
     return false
   }
 
-  // 409 表示正式资料已变化，详情与列表必须一起刷新，避免继续审核过期快照。
-  await Promise.all([refreshDetail(), refreshList()])
-  return true
+  // 任一审核冲突都同步刷新三处状态，终态详情返回后会立即撤下操作按钮。
+  await Promise.all([refreshDetail(), refreshList(), refreshPendingCount()])
+  return conflictKind
 }

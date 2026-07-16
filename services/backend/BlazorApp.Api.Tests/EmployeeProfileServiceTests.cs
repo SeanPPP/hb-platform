@@ -290,6 +290,7 @@ namespace BlazorApp.Api.Tests
                     BankAccountNumber = "admin-new",
                     Address = "new address",
                     ConfirmSupersedePendingSensitiveChangeRequest = true,
+                    ExpectedSensitiveRevision = 3,
                 }
             );
             Assert.True(confirmedSave.Success);
@@ -300,6 +301,54 @@ namespace BlazorApp.Api.Tests
                 EmployeeProfileSensitiveChangeStatus.Superseded,
                 (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
             );
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_UsesOptionalSensitiveRevisionCasOnlyForSensitiveChanges()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-v4",
+                Address = "old address",
+                SensitiveRevision = 4,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("admin-user", "admin");
+            var detail = await service.GetAdminDetailAsync("user-self");
+            Assert.Equal(4, detail.Data!.SensitiveRevision);
+
+            var nonSensitive = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "formal-v4",
+                Address = "new address",
+                ExpectedSensitiveRevision = 3,
+            });
+            Assert.True(nonSensitive.Success);
+
+            var stale = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "stale-write",
+                Address = "must-not-write",
+                ExpectedSensitiveRevision = 3,
+            });
+            Assert.False(stale.Success);
+            Assert.Equal(EmployeeProfileSensitiveChangeService.VersionConflictCode, stale.ErrorCode);
+            var unchanged = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("formal-v4", unchanged.BankACC);
+            Assert.Equal("new address", unchanged.Address);
+            Assert.Equal(4, unchanged.SensitiveRevision);
+
+            var current = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "current-write",
+                Address = "current address",
+                ExpectedSensitiveRevision = 4,
+            });
+            Assert.True(current.Success);
+            Assert.Equal(5, current.Data!.SensitiveRevision);
         }
 
         [Fact]

@@ -6,6 +6,7 @@ import {
   getSensitiveAccountSummary,
   getSensitiveStatusView,
   isSensitiveVersionConflict,
+  normalizeSensitiveDraft,
   refreshEmployeeProfileAfterIdentityMutation,
   selectSensitiveDraft,
   shouldRefreshSensitiveProfile,
@@ -18,6 +19,7 @@ import type {
 
 const formal: EmployeeProfile = {
   username: "employee-a",
+  sensitiveRevision: 3,
   phone: "0400000000",
   bankBsb: "123-456",
   bankAccountNumber: "111122223333",
@@ -83,6 +85,11 @@ const sameLastFourDraft: SensitiveEmployeeProfilePayload = {
   ...selectSensitiveDraft(formal, null),
   bankAccountNumber: "777766663333",
 };
+assert.equal(
+  normalizeSensitiveDraft({ ...sameLastFourDraft, expectedSensitiveRevision: 3 }).expectedSensitiveRevision,
+  3,
+  "规范化敏感表单时必须保留打开表单时的 revision"
+);
 assert.ok(
   getChangedSensitiveFields(formal, sameLastFourDraft).includes("bankAccountNumber"),
   "末四位相同但完整账号不同仍必须识别为变更"

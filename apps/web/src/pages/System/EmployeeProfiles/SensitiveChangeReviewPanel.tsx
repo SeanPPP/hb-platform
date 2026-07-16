@@ -36,10 +36,11 @@ import type {
   EmployeeProfileSensitiveChangeSummaryDto,
 } from '../../../types/employeeProfile'
 import {
-  getChangedSensitiveFields,
+  getReviewChangedFields,
   handleSensitiveReviewFailure,
   isRejectReasonValid,
   createLatestRequestGuard,
+  isSensitiveRequestReviewable,
   type SensitiveProfileField,
 } from './logic'
 
@@ -175,7 +176,7 @@ export default function SensitiveChangeReviewPanel({
   }
 
   const submitReview = async (action: 'approve' | 'reject') => {
-    if (!reviewDetail || reviewDetail.status !== 'Pending') {
+    if (!reviewDetail || !isSensitiveRequestReviewable(reviewDetail.status)) {
       return
     }
 
@@ -198,16 +199,15 @@ export default function SensitiveChangeReviewPanel({
       closeReview()
       await Promise.all([loadList(page, pageSize), refreshPendingCount()])
     } catch (error) {
-      const conflictHandled = await handleSensitiveReviewFailure(
+      const conflictKind = await handleSensitiveReviewFailure(
         error,
         () => loadReviewDetail(requestId),
-        async () => {
-          await Promise.all([loadList(page, pageSize), refreshPendingCount()])
-        },
+        () => loadList(page, pageSize),
+        refreshPendingCount,
       )
-      message[conflictHandled ? 'warning' : 'error'](
-        t(conflictHandled
-          ? 'system.employeeProfiles.review.versionConflict'
+      message[conflictKind ? 'warning' : 'error'](
+        t(conflictKind
+          ? `system.employeeProfiles.review.${conflictKind === 'terminal' ? 'terminalConflict' : 'versionConflict'}`
           : `system.employeeProfiles.review.${action}Failed`),
       )
     } finally {
@@ -274,7 +274,11 @@ export default function SensitiveChangeReviewPanel({
       { key: 'identityId', current: currentProfile.identityId, proposed: reviewDetail.identityId },
       { key: 'identityPhotoUrl', current: currentProfile.identityPhotoUrl, proposed: reviewDetail.identityPhotoUrl },
     ]
-    const changed = new Set(getChangedSensitiveFields(currentProfile, reviewDetail))
+    const changed = new Set(getReviewChangedFields(
+      currentProfile,
+      reviewDetail,
+      reviewDetail.changedFields.includes('identityPhotoUrl'),
+    ))
     return definitions.map((item) => ({ ...item, changed: changed.has(item.key) }))
   }, [currentProfile, reviewDetail])
 
@@ -327,7 +331,7 @@ export default function SensitiveChangeReviewPanel({
         title={t('system.employeeProfiles.review.drawerTitle', {
           name: reviewDetail?.username || reviewDetail?.userGuid || '',
         })}
-        extra={reviewDetail?.status === 'Pending' ? (
+        extra={isSensitiveRequestReviewable(reviewDetail?.status) ? (
           <Space>
             <Button
               danger

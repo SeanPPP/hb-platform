@@ -2,9 +2,12 @@ import { RequestError } from '../../../utils/request'
 import { readFileSync } from 'node:fs'
 import {
   createLatestRequestGuard,
+  getExpectedSensitiveRevision,
   getChangedSensitiveFields,
+  getReviewChangedFields,
   handleSensitiveReviewFailure,
   isRejectReasonValid,
+  isSensitiveRequestReviewable,
   maskSensitiveSummary,
   saveAdminProfileWithPendingConfirmation,
 } from './logic'
@@ -46,6 +49,23 @@ const proposed = {
 const changed = getChangedSensitiveFields(current, proposed)
 assertEqual(changed.join(','), 'bankAccountNumber,superannuationAccountNumber,identityPhotoUrl', '应只计算真正变化的敏感字段')
 assertEqual(getChangedSensitiveFields(current, { ...current, bankBsb: ' 123-456 ' }).length, 0, '比较前应规范化首尾空白')
+assertEqual(
+  getReviewChangedFields(
+    { ...current, identityPhotoUrl: 'https://cdn/photo.jpg?signature=old' },
+    { ...current, identityPhotoUrl: 'https://cdn/photo.jpg?signature=new' },
+    false,
+  ).includes('identityPhotoUrl'),
+  false,
+  '同一证件对象的不同短效签名 URL 不得误判为照片变更',
+)
+assertEqual(
+  getReviewChangedFields(current, current, true).includes('identityPhotoUrl'),
+  true,
+  '证件照差异必须直接信任后端持久化 changedFields',
+)
+assertEqual(getExpectedSensitiveRevision({ ...current, sensitiveRevision: 4 }), 4, '后台保存必须携带打开详情时的 revision')
+assertEqual(isSensitiveRequestReviewable('Pending'), true, 'Pending 申请应显示审核按钮')
+assertEqual(isSensitiveRequestReviewable('Approved'), false, '终态申请刷新后必须禁用审核按钮')
 
 const masked = maskSensitiveSummary('full-sensitive-account-6789')
 assertEqual(masked, '****6789', '列表摘要只保留末四位')
@@ -88,7 +108,7 @@ assertEqual(appliedDetails.join(','), 'B', '关闭抽屉后旧响应不得重新
 const retryPayloads: Array<Record<string, unknown>> = []
 let confirmationCalls = 0
 const retryResult = await saveAdminProfileWithPendingConfirmation(
-  { userGUID: 'user-guid', bankAccountNumber: 'admin-new' },
+  { userGUID: 'user-guid', bankAccountNumber: 'admin-new', expectedSensitiveRevision: 3 },
   async (payload) => {
     retryPayloads.push(payload)
     if (retryPayloads.length === 1) {
@@ -111,9 +131,11 @@ assertEqual(
   true,
   '重试请求必须携带原子确认标志',
 )
+assertEqual(retryPayloads[1]?.expectedSensitiveRevision, 3, '确认重试必须保留最初表单 revision')
 
 let detailRefreshes = 0
 let listRefreshes = 0
+let pendingCountRefreshes = 0
 const conflict = new RequestError('版本冲突', 409, {
   success: false,
   errorCode: 'EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT',
@@ -122,15 +144,42 @@ const handled = await handleSensitiveReviewFailure(
   conflict,
   async () => { detailRefreshes += 1 },
   async () => { listRefreshes += 1 },
+  async () => { pendingCountRefreshes += 1 },
 )
-assertEqual(handled, true, '敏感资料版本冲突应被识别')
+assertEqual(handled, 'version', '敏感资料版本冲突应被识别')
 assertEqual(detailRefreshes, 1, '版本冲突后应刷新审核详情')
 assertEqual(listRefreshes, 1, '版本冲突后应刷新审核列表')
+assertEqual(pendingCountRefreshes, 1, '版本冲突后应刷新待审数量')
+
+const terminalHandled = await handleSensitiveReviewFailure(
+  new RequestError('申请已处理', 409, { errorCode: 'REQUEST_NOT_PENDING' }),
+  async () => { detailRefreshes += 1 },
+  async () => { listRefreshes += 1 },
+  async () => { pendingCountRefreshes += 1 },
+)
+assertEqual(terminalHandled, 'terminal', '申请终态冲突应被识别')
+assertEqual(detailRefreshes, 2, '终态冲突后应刷新详情使审核按钮失效')
+assertEqual(listRefreshes, 2, '终态冲突后应刷新列表')
+assertEqual(pendingCountRefreshes, 2, '终态冲突后应刷新待审数量')
+
+const refreshBarrier = deferred<void>()
+const controlledRefreshes: string[] = []
+const controlledTerminalHandling = handleSensitiveReviewFailure(
+  new RequestError('申请已处理', 409, { errorCode: 'REQUEST_NOT_PENDING' }),
+  async () => { controlledRefreshes.push('detail'); await refreshBarrier.promise },
+  async () => { controlledRefreshes.push('list'); await refreshBarrier.promise },
+  async () => { controlledRefreshes.push('pending'); await refreshBarrier.promise },
+)
+await Promise.resolve()
+assertEqual(controlledRefreshes.sort().join(','), 'detail,list,pending', '终态冲突必须并发启动三处刷新')
+refreshBarrier.resolve()
+assertEqual(await controlledTerminalHandling, 'terminal', '三处刷新完成后才结束冲突处理')
 
 const genericHandled = await handleSensitiveReviewFailure(
   new RequestError('普通错误', 500, { errorCode: 'INTERNAL_SERVER_ERROR' }),
   async () => { detailRefreshes += 1 },
   async () => { listRefreshes += 1 },
+  async () => { pendingCountRefreshes += 1 },
 )
 assertEqual(genericHandled, false, '普通错误不得误判为版本冲突')
 
