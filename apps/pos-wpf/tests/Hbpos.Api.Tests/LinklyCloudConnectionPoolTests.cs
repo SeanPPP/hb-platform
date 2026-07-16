@@ -4,11 +4,30 @@ using System.Text;
 using Hbpos.Api;
 using Hbpos.Api.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 
 namespace Hbpos.Api.Tests;
 
 public sealed class LinklyCloudConnectionPoolTests
 {
+    [Fact]
+    public void Token_and_rest_clients_disable_factory_handler_rotation()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposApiServices();
+
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>();
+
+        Assert.Equal(
+            Timeout.InfiniteTimeSpan,
+            options.Get(nameof(ILinklyCloudBackendTokenProvider)).HandlerLifetime);
+        Assert.Equal(
+            Timeout.InfiniteTimeSpan,
+            options.Get(nameof(ILinklyCloudBackendAsyncTransport)).HandlerLifetime);
+    }
+
     [Fact]
     public async Task Token_and_rest_clients_each_keep_at_most_one_real_connection()
     {

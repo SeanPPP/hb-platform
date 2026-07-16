@@ -96,18 +96,22 @@ public static class ServiceRegistration
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
         })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
             .UseSocketsHttpHandler((handler, _) =>
             {
-                // REST 请求共用一条持久连接，避免单个环境持续扩张真实 TCP 连接池。
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；REST 池始终最多一条真实连接。
+                handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
                 handler.MaxConnectionsPerServer = 1;
             });
         services.AddHttpClient<ILinklyCloudBackendTokenProvider, HttpLinklyCloudBackendTokenProvider>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
         })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
             .UseSocketsHttpHandler((handler, _) =>
             {
-                // Token 请求独立共用一条持久连接，与 REST 池合计最多保留两条连接。
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；Token 与 REST 合计最多两条连接。
+                handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
                 handler.MaxConnectionsPerServer = 1;
             });
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
