@@ -24,13 +24,17 @@ export interface EmployeeProfileSummaryDto {
   employmentType?: EmployeeEmploymentType
   avatarUrl?: string
   identityId?: string
+  identityType?: string
   identityPhotoUrl?: string
+  identityPhotoUrlExpiresAt?: string
   address?: string
   createdAt?: string
   updatedAt?: string
 }
 
-export interface EmployeeProfileDetailDto extends EmployeeProfileSummaryDto {}
+export interface EmployeeProfileDetailDto extends EmployeeProfileSummaryDto {
+  sensitiveRevision: number
+}
 
 export interface SaveEmployeeProfilePayload {
   id?: string
@@ -48,6 +52,62 @@ export interface SaveEmployeeProfilePayload {
   employmentType?: EmployeeEmploymentType
   avatarUrl?: string
   identityId?: string
+  identityType?: string
   identityPhotoUrl?: string
   address?: string
+  confirmSupersedePendingSensitiveChangeRequest?: boolean
+  expectedSensitiveRevision?: number
+}
+
+export type EmployeeProfileSensitiveChangeStatus = 'Pending' | 'Approved' | 'Rejected' | 'Superseded'
+export type EmployeeProfileSensitiveField =
+  | 'bankBsb'
+  | 'bankAccountNumber'
+  | 'superannuationCompanyName'
+  | 'superannuationCompanyCode'
+  | 'superannuationAccountNumber'
+  | 'identityType'
+  | 'identityId'
+  | 'identityPhotoUrl'
+
+export interface EmployeeProfileSensitiveChangeQueryDto {
+  keyword?: string
+  page?: number
+  pageSize?: number
+  status?: EmployeeProfileSensitiveChangeStatus
+}
+
+export interface EmployeeProfileSensitiveChangeSummaryDto {
+  requestId: number
+  userGuid: string
+  username?: string
+  status: EmployeeProfileSensitiveChangeStatus
+  baseSensitiveRevision: number
+  submittedAt: string
+  reviewedAt?: string
+  reviewReason?: string
+  changedFields: EmployeeProfileSensitiveField[]
+}
+
+export interface EmployeeProfileSensitiveChangeDetailDto extends EmployeeProfileSensitiveChangeSummaryDto {
+  bankBsb?: string
+  bankAccountNumber?: string
+  superannuationCompanyName?: string
+  superannuationCompanyCode?: string
+  superannuationAccountNumber?: string
+  identityType?: string
+  identityId?: string
+  hasIdentityPhoto: boolean
+  identityPhotoUrl?: string
+  identityPhotoUrlExpiresAt?: string
+  submittedBy?: string
+  reviewedBy?: string
+}
+
+export interface EmployeeProfileSensitiveReviewPayload {
+  reason?: string
+}
+
+export interface EmployeeProfileSensitiveRejectPayload {
+  reason: string
 }

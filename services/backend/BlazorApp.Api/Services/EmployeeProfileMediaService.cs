@@ -10,18 +10,21 @@ namespace BlazorApp.Api.Services
         private readonly ICurrentUserService _currentUser;
         private readonly TencentCloudUploadService _uploadService;
         private readonly ILogger<EmployeeProfileMediaService> _logger;
+        private readonly EmployeeProfileSensitiveChangeService? _sensitiveChangeService;
 
         public EmployeeProfileMediaService(
             SqlSugarContext context,
             ICurrentUserService currentUser,
             TencentCloudUploadService uploadService,
-            ILogger<EmployeeProfileMediaService> logger
+            ILogger<EmployeeProfileMediaService> logger,
+            EmployeeProfileSensitiveChangeService? sensitiveChangeService = null
         )
         {
             _context = context;
             _currentUser = currentUser;
             _uploadService = uploadService;
             _logger = logger;
+            _sensitiveChangeService = sensitiveChangeService;
         }
 
         public async Task<ApiResponse<DirectUploadSignature>> CreateUploadSignatureAsync(
@@ -221,6 +224,35 @@ namespace BlazorApp.Api.Services
             else if (ticket.Status == EmployeeImageUploadStatus.Processing)
             {
                 return ApiResponse<bool>.Error("图片正在处理，请稍后重试", "IMAGE_UPLOAD_IN_PROGRESS");
+            }
+
+            if (kind == "identity" && _sensitiveChangeService is not null)
+            {
+                // 关键逻辑：证件照只关联待审快照；审批前绝不触碰正式 EmployeeProfile。
+                var pending = await _sensitiveChangeService.ReplacePendingIdentityPhotoAsync(finalObjectKey);
+                if (!pending.Success)
+                {
+                    await MarkFailedAndCleanupAsync(ticket, deleteFinal: true);
+                    return ApiResponse<bool>.Error(pending.Message, pending.ErrorCode);
+                }
+                var pendingCompletedAt = DateTime.UtcNow;
+                var completedPending = await db.Updateable<EmployeeImageUploadTicket>()
+                    .SetColumns(item => new EmployeeImageUploadTicket
+                    {
+                        Status = EmployeeImageUploadStatus.Completed,
+                        CompletedAt = pendingCompletedAt,
+                        StageChangedAt = pendingCompletedAt,
+                        SensitiveChangeRequestId = pending.Data!.RequestId,
+                    })
+                    .Where(item => item.PendingObjectKey == pendingObjectKey
+                        && item.Status == EmployeeImageUploadStatus.Promoted)
+                    .ExecuteCommandAsync(cancellationToken);
+                if (completedPending != 1)
+                {
+                    return await ResolveTransitionFailureAsync(pendingObjectKey);
+                }
+                _ = await _uploadService.DeleteObjectAsync(pendingObjectKey, CancellationToken.None);
+                return ApiResponse<bool>.OK(true, "证件照已提交审批");
             }
 
             var profile = await db.Queryable<EmployeeProfile>()
@@ -434,6 +466,13 @@ namespace BlazorApp.Api.Services
                 cancellationToken
             ))
             {
+                if (normalizedKind == "identity" && _sensitiveChangeService is not null)
+                {
+                    var pending = await _sensitiveChangeService.DeletePendingIdentityPhotoAsync();
+                    return pending.Success
+                        ? ApiResponse<bool>.OK(true, "证件照删除已提交审批")
+                        : ApiResponse<bool>.Error(pending.Message, pending.ErrorCode);
+                }
                 return await DeleteLockedAsync(userGuid, normalizedKind, cancellationToken);
             }
         }

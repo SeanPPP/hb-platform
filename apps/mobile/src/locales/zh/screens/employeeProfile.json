@@ -8,6 +8,7 @@
     "updatedAt": "更新时间"
   },
   "fields": {
+    "phone": "电话",
     "bankBsb": "BSB",
     "bankAccountNumber": "银行账号",
     "superannuationCompanyName": "养老金公司",
@@ -18,6 +19,7 @@
     "employmentType": "员工类型",
     "avatarUrl": "头像",
     "identityId": "证件号",
+    "identityType": "证件类型",
     "identityPhotoUrl": "证件照片",
     "address": "地址"
   },
@@ -30,7 +32,8 @@
     "superannuation": "养老金信息",
     "personal": "个人资料",
     "identity": "身份信息",
-    "images": "图片"
+    "images": "图片",
+    "sensitiveStatus": "敏感资料审核状态"
   },
   "genderOptions": {
     "male": "男",
@@ -44,6 +47,9 @@
   },
   "actions": {
     "save": "保存资料",
+    "savePersonal": "保存个人资料",
+    "editSensitive": "填报修改",
+    "submitSensitive": "提交审核",
     "takePhoto": "拍照",
     "choosePhoto": "相册",
     "retakePhoto": "重新拍照",
@@ -67,7 +73,30 @@
     "cameraCaptureFailed": "相机拍摄失败，请重试或改用相册图片。",
     "libraryPermissionBlocked": "相册权限已被永久拒绝，请在系统设置中允许访问。",
     "permissionRequired": "需要相机权限才能拍照上传。",
-    "cameraReady": "拍摄清晰照片后上传。"
+    "cameraReady": "拍摄清晰照片后上传。",
+    "sensitiveLoadFailed": "加载敏感资料审核状态失败。",
+    "sensitiveSubmitSuccess": "敏感资料已提交审核。",
+    "sensitiveSubmitFailed": "提交敏感资料审核失败。",
+    "identitySubmitSuccess": "证件照片已提交审核，正式照片将在批准后更新。",
+    "identityRemoveSubmitSuccess": "删除证件照片的申请已提交审核，正式照片将在批准前保留。",
+    "identityStatusRefreshFailed": "已提交，状态刷新失败，请手动刷新。",
+    "versionConflict": "正式资料已更新，请刷新后重新填报。"
+  },
+  "status": {
+    "empty": "暂无审核申请",
+    "pending": "待审核",
+    "approved": "已批准",
+    "rejected": "已拒绝",
+    "superseded": "已被新申请或管理员更新替代"
+  },
+  "sensitive": {
+    "confirmed": "已确认资料",
+    "pendingSnapshot": "待审核资料",
+    "submittedAt": "提交时间：{{time}}",
+    "changedFields": "变更字段",
+    "fieldSeparator": "、",
+    "rejectionReason": "拒绝原因：{{reason}}",
+    "pendingPhotoRemoval": "待审核申请将移除证件照片。"
   },
   "preview": {
     "avatar": "头像预览",

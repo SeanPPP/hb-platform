@@ -1,5 +1,6 @@
 import { EditOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
+  Badge,
   Button,
   Card,
   Col,
@@ -8,10 +9,12 @@ import {
   Form,
   Image,
   Input,
+  Modal,
   Row,
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Typography,
   message,
@@ -25,6 +28,7 @@ import PageContainer from '../../../components/PageContainer'
 import {
   getAdminEmployeeProfile,
   getAdminEmployeeProfiles,
+  getAdminSensitiveChangeRequests,
   saveAdminEmployeeProfile,
 } from '../../../services/employeeProfileService'
 import type {
@@ -33,6 +37,12 @@ import type {
   EmployeeProfileGender,
   EmployeeProfileSummaryDto,
 } from '../../../types/employeeProfile'
+import SensitiveChangeReviewPanel from './SensitiveChangeReviewPanel'
+import {
+  getExpectedSensitiveRevision,
+  maskSensitiveSummary,
+  saveAdminProfileWithPendingConfirmation,
+} from './logic'
 
 interface EmployeeProfileFormValues {
   userGUID?: string
@@ -49,6 +59,7 @@ interface EmployeeProfileFormValues {
   employmentType?: EmployeeEmploymentType
   avatarUrl?: string
   identityId?: string
+  identityType?: string
   identityPhotoUrl?: string
   address?: string
 }
@@ -100,6 +111,7 @@ function mapProfileToFormValues(profile: EmployeeProfileDetailDto): EmployeeProf
     employmentType: profile.employmentType,
     avatarUrl: profile.avatarUrl,
     identityId: profile.identityId,
+    identityType: profile.identityType,
     identityPhotoUrl: profile.identityPhotoUrl,
     address: profile.address,
   }
@@ -116,6 +128,7 @@ export default function SystemEmployeeProfilesPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingProfile, setEditingProfile] = useState<EmployeeProfileDetailDto | null>(null)
+  const [pendingCount, setPendingCount] = useState(0)
   const [form] = Form.useForm<EmployeeProfileFormValues>()
 
   const avatarUrl = Form.useWatch('avatarUrl', form)
@@ -178,8 +191,18 @@ export default function SystemEmployeeProfilesPage() {
     }
   }
 
+  const loadPendingCount = async () => {
+    try {
+      const result = await getAdminSensitiveChangeRequests({ page: 1, pageSize: 1, status: 'Pending' })
+      setPendingCount(result.total)
+    } catch {
+      // 数量标记是辅助信息，列表页已有独立错误态，这里保持主页面可用。
+    }
+  }
+
   useEffect(() => {
     void loadData(1, pageSize)
+    void loadPendingCount()
   }, [])
 
   const handleEdit = async (record: EmployeeProfileSummaryDto) => {
@@ -214,8 +237,7 @@ export default function SystemEmployeeProfilesPage() {
 
     try {
       const values = await form.validateFields()
-      setEditLoading(true)
-      await saveAdminEmployeeProfile({
+      const formPayload = {
         id: editingProfile.id,
         userGUID: editingProfile.userGUID ?? values.userGUID,
         userId: editingProfile.userId ?? values.userId,
@@ -231,14 +253,38 @@ export default function SystemEmployeeProfilesPage() {
         employmentType: values.employmentType,
         avatarUrl: values.avatarUrl?.trim() || undefined,
         identityId: values.identityId?.trim() || undefined,
+        identityType: values.identityType?.trim() || undefined,
         identityPhotoUrl: values.identityPhotoUrl?.trim() || undefined,
         address: values.address?.trim() || undefined,
-      })
+      }
+      const payload = {
+        ...formPayload,
+        expectedSensitiveRevision: getExpectedSensitiveRevision(editingProfile),
+      }
+      setEditLoading(true)
+      const result = await saveAdminProfileWithPendingConfirmation(
+        payload,
+        saveAdminEmployeeProfile,
+        () => new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: t('system.employeeProfiles.pendingSupersede.title'),
+            content: t('system.employeeProfiles.pendingSupersede.content'),
+            okText: t('system.employeeProfiles.pendingSupersede.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          })
+        }),
+      )
+      if (result.status === 'cancelled') {
+        return
+      }
       message.success(t('system.employeeProfiles.saveSuccess'))
       setEditOpen(false)
       setEditingProfile(null)
       form.resetFields()
       void loadData(page, pageSize)
+      void loadPendingCount()
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -279,7 +325,7 @@ export default function SystemEmployeeProfilesPage() {
       title: t('system.employeeProfiles.bankSummary'),
       key: 'bankSummary',
       width: 220,
-      render: (_, record) => joinSummary([record.bankBsb, record.bankAccountNumber]),
+      render: (_, record) => joinSummary([record.bankBsb, maskSensitiveSummary(record.bankAccountNumber)]),
     },
     {
       title: t('system.employeeProfiles.superSummary'),
@@ -289,7 +335,7 @@ export default function SystemEmployeeProfilesPage() {
         joinSummary([
           record.superannuationCompanyName,
           record.superannuationCompanyCode,
-          record.superannuationAccountNumber,
+          maskSensitiveSummary(record.superannuationAccountNumber),
         ]),
     },
     {
@@ -316,38 +362,60 @@ export default function SystemEmployeeProfilesPage() {
       subtitle={t('system.employeeProfiles.pageSubtitle')}
     >
       <Card>
-        <Space wrap style={{ marginBottom: 16 }}>
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder={t('system.employeeProfiles.searchPlaceholder')}
-            style={{ width: 300 }}
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            onPressEnter={() => void loadData(1, pageSize)}
-          />
-          <Button type="primary" onClick={() => void loadData(1, pageSize)}>
-            {t('common.query')}
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
-            {t('common.refresh')}
-          </Button>
-        </Space>
+        <Tabs
+          items={[
+            {
+              key: 'profiles',
+              label: t('system.employeeProfiles.tabs.profiles'),
+              children: (
+                <>
+                  <Space wrap style={{ marginBottom: 16 }}>
+                    <Input
+                      allowClear
+                      prefix={<SearchOutlined />}
+                      placeholder={t('system.employeeProfiles.searchPlaceholder')}
+                      style={{ width: 300 }}
+                      value={keyword}
+                      onChange={(event) => setKeyword(event.target.value)}
+                      onPressEnter={() => void loadData(1, pageSize)}
+                    />
+                    <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+                      {t('common.query')}
+                    </Button>
+                    <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+                      {t('common.refresh')}
+                    </Button>
+                  </Space>
 
-        <Table
-          rowKey={(record) => getProfileKey(record)}
-          loading={loading}
-          columns={columns}
-          dataSource={data}
-          scroll={{ x: 1180 }}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
+                  <Table
+                    rowKey={(record) => getProfileKey(record)}
+                    loading={loading}
+                    columns={columns}
+                    dataSource={data}
+                    scroll={{ x: 1180 }}
+                    pagination={{
+                      current: page,
+                      pageSize,
+                      total,
+                      onChange: (nextPage, nextPageSize) => {
+                        void loadData(nextPage, nextPageSize)
+                      },
+                    }}
+                  />
+                </>
+              ),
             },
-          }}
+            {
+              key: 'pending',
+              label: (
+                <Space size={6}>
+                  {t('system.employeeProfiles.tabs.pending')}
+                  <Badge count={pendingCount} overflowCount={99} />
+                </Space>
+              ),
+              children: <SensitiveChangeReviewPanel refreshPendingCount={loadPendingCount} />,
+            },
+          ]}
         />
       </Card>
 
@@ -419,6 +487,11 @@ export default function SystemEmployeeProfilesPage() {
                     <Col span={12}>
                       <Form.Item name="birthday" label={t('system.employeeProfiles.birthday')}>
                         <DatePicker style={{ width: '100%' }} placeholder={t('system.employeeProfiles.placeholders.birthday')} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item name="identityType" label={t('system.employeeProfiles.identityType')}>
+                        <Input placeholder={t('system.employeeProfiles.placeholders.identityType')} />
                       </Form.Item>
                     </Col>
                     <Col span={12}>

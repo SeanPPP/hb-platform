@@ -86,5 +86,7 @@ namespace BlazorApp.Shared.Models
         public EmployeeImageObjectCleanupStatus PreviousObjectCleanupStatus { get; set; }
         [SugarColumn(IsNullable = true)]
         public DateTime? PreviousObjectCleanupStartedAt { get; set; }
+        [SugarColumn(IsNullable = true)]
+        public int? SensitiveChangeRequestId { get; set; }
     }
 }

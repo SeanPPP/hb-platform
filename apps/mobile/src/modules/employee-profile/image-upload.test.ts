@@ -5,6 +5,7 @@ async function main() {
   const calls: string[] = [];
   const savedProfile = {
     username: "admin",
+    phone: "",
     bankBsb: "",
     bankAccountNumber: "",
     superannuationCompanyName: "",
@@ -14,9 +15,11 @@ async function main() {
     gender: "",
     employmentType: "",
     avatarUrl: "https://cdn/avatar.jpg",
+    identityType: "",
     identityId: "",
     identityPhotoUrl: "",
     address: "",
+    sensitiveRevision: 0,
   };
 
   const result = await completeEmployeeProfileImageUpload(

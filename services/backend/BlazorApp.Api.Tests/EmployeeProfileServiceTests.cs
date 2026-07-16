@@ -43,8 +43,33 @@ namespace BlazorApp.Api.Tests
             _db.CodeFirst.InitTables(
                 typeof(User), typeof(EmployeeProfile), typeof(CashRegisterUser),
                 typeof(CashierBarcodeReservation), typeof(EmployeeCashierBarcode),
-                typeof(EmployeeCashierBarcodePrintAttempt), typeof(EmployeeImageUploadTicket)
+                typeof(EmployeeCashierBarcodePrintAttempt), typeof(EmployeeImageUploadTicket),
+                typeof(EmployeeProfileSensitiveChangeRequest)
             );
+        }
+
+        [Fact]
+        public async Task GetAdminListAsync_MasksAccountNumbers_ButDetailKeepsFullValues()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "123456789",
+                SuperannuationAccount = "SUPER98765",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("user-self", "admin");
+
+            var list = await service.GetAdminListAsync(new EmployeeProfileQueryDto());
+            var detail = await service.GetAdminDetailAsync("user-self");
+
+            var item = Assert.Single(list.Data!.Items!, row => row.UserGUID == "user-self");
+            Assert.Equal("****6789", item.BankAccountNumber);
+            Assert.Equal("****8765", item.SuperannuationAccountNumber);
+            Assert.Equal("123456789", detail.Data!.BankAccountNumber);
+            Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
         }
 
         [Fact]
@@ -99,6 +124,231 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(EmployeeGender.Female, selfProfile.Gender);
             Assert.Equal(EmployeeType.PartTime, selfProfile.EmployeeType);
             Assert.Equal("Original other address", otherProfile.Address);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_UsesNonSensitiveWhitelist_AndPreservesAdminSensitiveData()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "admin-new",
+                SensitiveRevision = 4,
+                Address = "old address",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var selfDb = CreateAdditionalDb();
+            var updates = new List<string>();
+            selfDb.Aop.OnLogExecuting = (sql, _) =>
+            {
+                if (sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase)
+                    && sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+                {
+                    updates.Add(sql);
+                }
+            };
+            var result = await CreateService("user-self", "self_user", selfDb).UpsertSelfAsync(new()
+            {
+                Address = "self address",
+                ConfirmSupersedePendingSensitiveChangeRequest = true,
+            });
+
+            Assert.True(result.Success);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("self address", profile.Address);
+            Assert.Equal("admin-new", profile.BankACC);
+            Assert.Equal(4, profile.SensitiveRevision);
+            var updateSql = Assert.Single(updates);
+            Assert.DoesNotContain("BankACC", updateSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("SensitiveRevision", updateSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("IdentityId", updateSql, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenAnotherAdminCommitsWhileWaiting_UsesLatestRevision()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-old",
+                SensitiveRevision = 3,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var adminADb = CreateAdditionalDb();
+            using var adminBDb = CreateAdditionalDb();
+            var adminARead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            adminADb.Aop.OnLogExecuted = (sql, _) =>
+            {
+                if (sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase)
+                    && sql.Contains("SELECT", StringComparison.OrdinalIgnoreCase))
+                {
+                    adminARead.TrySetResult();
+                }
+            };
+
+            var adminBLock = await EmployeeProfileMediaLock.AcquireAsync(
+                adminBDb,
+                "user-self",
+                "sensitive-change"
+            );
+            var adminASave = CreateService("user-self", "admin-a", adminADb).UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto { BankAccountNumber = "admin-a" }
+            );
+            await Task.Delay(200);
+            var readBeforeAdminBReleasedLock = adminARead.Task.IsCompleted;
+            await adminBDb.Updateable<EmployeeProfile>()
+                .SetColumns(item => item.BankACC == "admin-b")
+                .SetColumns(item => item.SensitiveRevision == 4)
+                .Where(item => item.UserGUID == "user-self")
+                .ExecuteCommandAsync();
+            await adminBLock.DisposeAsync();
+
+            Assert.True((await adminASave).Success);
+            Assert.False(readBeforeAdminBReleasedLock);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("admin-a", profile.BankACC);
+            Assert.Equal(5, profile.SensitiveRevision);
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_WhenPendingRequestAppearsWhileWaiting_RequiresAtomicConfirmation()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-old",
+                Address = "old address",
+                SensitiveRevision = 3,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            using var adminDb = CreateAdditionalDb();
+            using var writerDb = CreateAdditionalDb();
+            var writerLock = await EmployeeProfileMediaLock.AcquireAsync(
+                writerDb,
+                "user-self",
+                "sensitive-change"
+            );
+            var service = CreateService(
+                "admin-user",
+                "admin",
+                adminDb,
+                includeSensitiveChangeService: true
+            );
+
+            var blockedSave = service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto { BankAccountNumber = "admin-new" }
+            );
+            await Task.Delay(200);
+            await writerDb.Insertable(new EmployeeProfileSensitiveChangeRequest
+            {
+                UserGUID = "user-self",
+                BankAccountNumber = "employee-proposed",
+                Status = EmployeeProfileSensitiveChangeStatus.Pending,
+                BaseSensitiveRevision = 3,
+                SubmittedAt = DateTime.UtcNow,
+                SubmittedBy = "employee",
+            }).ExecuteCommandAsync();
+            await writerLock.DisposeAsync();
+
+            var confirmationRequired = await blockedSave;
+            Assert.False(confirmationRequired.Success);
+            Assert.Equal(
+                EmployeeProfileService.PendingChangeConfirmationRequiredCode,
+                confirmationRequired.ErrorCode
+            );
+            var unchanged = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("formal-old", unchanged.BankACC);
+            Assert.Equal("old address", unchanged.Address);
+            Assert.Equal(3, unchanged.SensitiveRevision);
+
+            var nonSensitiveSave = await service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto
+                {
+                    BankAccountNumber = "formal-old",
+                    Address = "new address",
+                }
+            );
+            Assert.True(nonSensitiveSave.Success);
+            Assert.Equal(
+                EmployeeProfileSensitiveChangeStatus.Pending,
+                (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+            );
+
+            var confirmedSave = await service.UpsertAdminAsync(
+                "user-self",
+                new EmployeeProfileUpsertDto
+                {
+                    BankAccountNumber = "admin-new",
+                    Address = "new address",
+                    ConfirmSupersedePendingSensitiveChangeRequest = true,
+                    ExpectedSensitiveRevision = 3,
+                }
+            );
+            Assert.True(confirmedSave.Success);
+            var saved = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("admin-new", saved.BankACC);
+            Assert.Equal(4, saved.SensitiveRevision);
+            Assert.Equal(
+                EmployeeProfileSensitiveChangeStatus.Superseded,
+                (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>().FirstAsync()).Status
+            );
+        }
+
+        [Fact]
+        public async Task UpsertAdminAsync_UsesOptionalSensitiveRevisionCasOnlyForSensitiveChanges()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                BankACC = "formal-v4",
+                Address = "old address",
+                SensitiveRevision = 4,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("admin-user", "admin");
+            var detail = await service.GetAdminDetailAsync("user-self");
+            Assert.Equal(4, detail.Data!.SensitiveRevision);
+
+            var nonSensitive = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "formal-v4",
+                Address = "new address",
+                ExpectedSensitiveRevision = 3,
+            });
+            Assert.True(nonSensitive.Success);
+
+            var stale = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "stale-write",
+                Address = "must-not-write",
+                ExpectedSensitiveRevision = 3,
+            });
+            Assert.False(stale.Success);
+            Assert.Equal(EmployeeProfileSensitiveChangeService.VersionConflictCode, stale.ErrorCode);
+            var unchanged = await _db.Queryable<EmployeeProfile>().FirstAsync();
+            Assert.Equal("formal-v4", unchanged.BankACC);
+            Assert.Equal("new address", unchanged.Address);
+            Assert.Equal(4, unchanged.SensitiveRevision);
+
+            var current = await service.UpsertAdminAsync("user-self", new()
+            {
+                BankAccountNumber = "current-write",
+                Address = "current address",
+                ExpectedSensitiveRevision = 4,
+            });
+            Assert.True(current.Success);
+            Assert.Equal(5, current.Data!.SensitiveRevision);
         }
 
         [Fact]
@@ -919,6 +1169,14 @@ namespace BlazorApp.Api.Tests
         }
 
         private EmployeeProfileService CreateService(string userGuid, string username)
+            => CreateService(userGuid, username, _db);
+
+        private EmployeeProfileService CreateService(
+            string userGuid,
+            string username,
+            ISqlSugarClient db,
+            bool includeSensitiveChangeService = false
+        )
         {
             var httpContextAccessor = new HttpContextAccessor
             {
@@ -931,14 +1189,31 @@ namespace BlazorApp.Api.Tests
             };
 
             var currentUserService = new CurrentUserService(httpContextAccessor);
-            var context = CreateSqlSugarContext(_db);
+            var context = CreateSqlSugarContext(db);
+
+            var sensitiveChangeService = includeSensitiveChangeService
+                ? new EmployeeProfileSensitiveChangeService(
+                    context,
+                    currentUserService,
+                    NullLogger<EmployeeProfileSensitiveChangeService>.Instance
+                )
+                : null;
 
             return new EmployeeProfileService(
                 context,
                 currentUserService,
-                NullLogger<EmployeeProfileService>.Instance
+                NullLogger<EmployeeProfileService>.Instance,
+                sensitiveChangeService: sensitiveChangeService
             );
         }
+
+        private SqlSugarClient CreateAdditionalDb() => new(new ConnectionConfig
+        {
+            ConnectionString = _sqliteConnection.ConnectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
 
         private EmployeeCashierBarcodeService CreateBarcodeService(
             string userGuid,

@@ -7,22 +7,28 @@ namespace BlazorApp.Api.Services
 {
     public class EmployeeProfileService : IEmployeeProfileService
     {
+        public const string PendingChangeConfirmationRequiredCode =
+            "EMPLOYEE_PROFILE_PENDING_CHANGE_CONFIRMATION_REQUIRED";
+
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
         private readonly ILogger<EmployeeProfileService> _logger;
         private readonly TencentCloudUploadService? _uploadService;
+        private readonly EmployeeProfileSensitiveChangeService? _sensitiveChangeService;
 
         public EmployeeProfileService(
             SqlSugarContext context,
             ICurrentUserService currentUserService,
             ILogger<EmployeeProfileService> logger,
-            TencentCloudUploadService? uploadService = null
+            TencentCloudUploadService? uploadService = null,
+            EmployeeProfileSensitiveChangeService? sensitiveChangeService = null
         )
         {
             _context = context;
             _currentUserService = currentUserService;
             _logger = logger;
             _uploadService = uploadService;
+            _sensitiveChangeService = sensitiveChangeService;
         }
 
         public async Task<ApiResponse<PagedResult<EmployeeProfileListItemDto>>> GetAdminListAsync(
@@ -112,10 +118,11 @@ namespace BlazorApp.Api.Services
                         HasProfile = row.EmployeeInfoId > 0,
                         Phone = row.Phone,
                         BankBsb = row.BankBSB,
-                        BankAccountNumber = row.BankACC,
+                        // 管理列表只返回摘要；完整账号仅允许通过授权详情接口读取。
+                        BankAccountNumber = MaskAccount(row.BankACC),
                         SuperannuationCompanyName = row.SuperannuationCompanyName,
                         SuperannuationCompanyCode = row.SuperannuationCompanyCode,
-                        SuperannuationAccountNumber = row.SuperannuationAccount,
+                        SuperannuationAccountNumber = MaskAccount(row.SuperannuationAccount),
                         Gender = FormatGender(row.Gender),
                         EmployeeType = FormatEmployeeType(row.EmployeeType),
                         Birthday = row.Birthday,
@@ -150,12 +157,12 @@ namespace BlazorApp.Api.Services
             return GetByUserGuidAsync(userGuid);
         }
 
-        public Task<ApiResponse<EmployeeProfileDetailDto>> UpsertAdminAsync(
+        public async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertAdminAsync(
             string userGuid,
             EmployeeProfileUpsertDto dto
         )
         {
-            return UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: true);
+            return await UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: true, isAdmin: true);
         }
 
         public Task<ApiResponse<EmployeeProfileDetailDto>> GetSelfAsync()
@@ -164,10 +171,10 @@ namespace BlazorApp.Api.Services
             return GetByUserGuidAsync(userGuid);
         }
 
-        public Task<ApiResponse<EmployeeProfileDetailDto>> UpsertSelfAsync(EmployeeProfileUpsertDto dto)
+        public async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertSelfAsync(EmployeeProfileUpsertDto dto)
         {
             var userGuid = _currentUserService.GetCurrentUserGuid();
-            return UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: false);
+            return await UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: false, isAdmin: false);
         }
 
         private async Task<ApiResponse<EmployeeProfileDetailDto>> GetByUserGuidAsync(string userGuid)
@@ -206,7 +213,8 @@ namespace BlazorApp.Api.Services
         private async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertForUserAsync(
             string userGuid,
             EmployeeProfileUpsertDto dto,
-            bool allowLegacyImageUrls
+            bool allowLegacyImageUrls,
+            bool isAdmin
         )
         {
             if (string.IsNullOrWhiteSpace(userGuid))
@@ -227,27 +235,200 @@ namespace BlazorApp.Api.Services
 
                 var actor = _currentUserService.GetCurrentUsername();
                 var now = DateTime.UtcNow;
-                var profile = await db.Queryable<EmployeeProfile>()
-                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
-
-                if (profile == null)
+                EmployeeProfile? profile;
+                EmployeeProfileSensitiveChangeUpsertDto? legacySensitiveDto = null;
+                var supersededKeys = new List<string>();
+                if (isAdmin)
                 {
-                    profile = new EmployeeProfile
+                    // 关键逻辑：管理员必须先取得敏感资料锁，再在事务内读取最新版本。
+                    await using var adminSensitiveLock = await EmployeeProfileMediaLock.AcquireAsync(
+                        db,
+                        userGuid,
+                        "sensitive-change",
+                        _logger
+                    );
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
-                        UserGUID = userGuid,
-                        CreatedAt = now,
-                        CreatedBy = actor,
-                        UpdatedAt = now,
-                        UpdatedBy = actor,
-                    };
-
-                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: true, allowLegacyImageUrls);
-                    await db.Insertable(profile).ExecuteCommandAsync();
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        var sensitiveChanged = HasSensitiveChanges(profile, dto);
+                        var currentSensitiveRevision = profile?.SensitiveRevision ?? 0;
+                        if (sensitiveChanged
+                            && dto.ExpectedSensitiveRevision.HasValue
+                            && dto.ExpectedSensitiveRevision.Value != currentSensitiveRevision)
+                        {
+                            // 敏感表单 CAS 与写入共用锁和事务；过期表单不得顺带写入非敏感字段。
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "正式敏感资料已变化，请刷新后重试",
+                                EmployeeProfileSensitiveChangeService.VersionConflictCode
+                            );
+                        }
+                        var hasPendingSensitiveChange = sensitiveChanged
+                            && await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                                .AnyAsync(item =>
+                                    item.UserGUID == userGuid
+                                    && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
+                                );
+                        if (hasPendingSensitiveChange
+                            && dto.ConfirmSupersedePendingSensitiveChangeRequest != true)
+                        {
+                            // 确认检查与后续写入共用敏感资料锁和事务，失败时不得写入任何资料。
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "存在待审核敏感资料变更，请确认后重试",
+                                PendingChangeConfirmationRequiredCode
+                            );
+                        }
+                        if (profile == null)
+                        {
+                            profile = new EmployeeProfile
+                            {
+                                UserGUID = userGuid,
+                                CreatedAt = now,
+                                CreatedBy = actor,
+                                UpdatedAt = now,
+                                UpdatedBy = actor,
+                            };
+                            ApplyChanges(
+                                profile,
+                                dto,
+                                userGuid,
+                                actor,
+                                now,
+                                isCreate: true,
+                                allowLegacyImageUrls,
+                                allowSensitiveChanges: true
+                            );
+                            profile.SensitiveRevision = sensitiveChanged ? 1 : 0;
+                            profile.EmployeeInfoId = await db.Insertable(profile)
+                                .ExecuteReturnIdentityAsync();
+                        }
+                        else
+                        {
+                            var baseRevision = profile.SensitiveRevision;
+                            ApplyChanges(
+                                profile,
+                                dto,
+                                userGuid,
+                                actor,
+                                now,
+                                isCreate: false,
+                                allowLegacyImageUrls,
+                                allowSensitiveChanges: true
+                            );
+                            var nextRevision = sensitiveChanged
+                                ? baseRevision + 1
+                                : baseRevision;
+                            var update = db.Updateable<EmployeeProfile>()
+                                .SetColumns(item => item.Phone == profile.Phone)
+                                .SetColumns(item => item.BankBSB == profile.BankBSB)
+                                .SetColumns(item => item.BankACC == profile.BankACC)
+                                .SetColumns(item => item.SuperannuationCompanyName == profile.SuperannuationCompanyName)
+                                .SetColumns(item => item.SuperannuationCompanyCode == profile.SuperannuationCompanyCode)
+                                .SetColumns(item => item.SuperannuationAccount == profile.SuperannuationAccount)
+                                .SetColumns(item => item.Birthday == profile.Birthday)
+                                .SetColumns(item => item.Gender == profile.Gender)
+                                .SetColumns(item => item.EmployeeType == profile.EmployeeType)
+                                .SetColumns(item => item.AvatarUrl == profile.AvatarUrl)
+                                .SetColumns(item => item.IdentityType == profile.IdentityType)
+                                .SetColumns(item => item.IdentityId == profile.IdentityId)
+                                .SetColumns(item => item.Address == profile.Address)
+                                .SetColumns(item => item.UpdatedAt == now)
+                                .SetColumns(item => item.UpdatedBy == actor)
+                                .SetColumns(item => item.IsDeleted == false)
+                                .SetColumns(item => item.SensitiveRevision == nextRevision);
+                            if (string.IsNullOrWhiteSpace(profile.IdentityPhotoObjectKey))
+                            {
+                                update = update.SetColumns(item =>
+                                    item.IdentityPhotoUrl == profile.IdentityPhotoUrl
+                                );
+                            }
+                            var changed = await update
+                                .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId
+                                    && item.SensitiveRevision == baseRevision)
+                                .ExecuteCommandAsync();
+                            if (changed != 1)
+                            {
+                                throw new InvalidOperationException("管理员保存时敏感资料版本已改变");
+                            }
+                            profile.SensitiveRevision = nextRevision;
+                        }
+                        if (sensitiveChanged && _sensitiveChangeService is not null)
+                        {
+                            // 管理员直改与待审申请失效必须处在同一事务内。
+                            supersededKeys = await _sensitiveChangeService
+                                .SupersedePendingWithinTransactionAsync(userGuid, actor);
+                        }
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
+                    }
                 }
                 else
                 {
-                    ApplyChanges(profile, dto, userGuid, actor, now, isCreate: false, allowLegacyImageUrls);
-                    await db.Updateable(profile).ExecuteCommandAsync();
+                    profile = await db.Queryable<EmployeeProfile>()
+                        .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                    if (profile == null)
+                    {
+                        profile = new EmployeeProfile
+                        {
+                            UserGUID = userGuid,
+                            CreatedAt = now,
+                            CreatedBy = actor,
+                            UpdatedAt = now,
+                            UpdatedBy = actor,
+                        };
+                        ApplyChanges(
+                            profile,
+                            dto,
+                            userGuid,
+                            actor,
+                            now,
+                            isCreate: true,
+                            allowLegacyImageUrls: false,
+                            allowSensitiveChanges: false
+                        );
+                        profile.EmployeeInfoId = await db.Insertable(profile)
+                            .ExecuteReturnIdentityAsync();
+                    }
+                    else
+                    {
+                        // 员工自助保存只更新非敏感白名单列，绝不写回敏感字段或 revision。
+                        var birthday = dto.Birthday?.Date;
+                        await db.Updateable<EmployeeProfile>()
+                            .SetColumns(item => item.Phone == Normalize(dto.Phone))
+                            .SetColumns(item => item.Birthday == birthday)
+                            .SetColumns(item => item.Gender == ParseGender(dto.Gender))
+                            .SetColumns(item => item.EmployeeType == ParseEmployeeType(dto.EmploymentType))
+                            .SetColumns(item => item.Address == Normalize(dto.Address))
+                            .SetColumns(item => item.UpdatedAt == now)
+                            .SetColumns(item => item.UpdatedBy == actor)
+                            .SetColumns(item => item.IsDeleted == false)
+                            .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId)
+                            .ExecuteCommandAsync();
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.EmployeeInfoId == profile.EmployeeInfoId);
+                    }
+                    if (HasLegacySensitivePayload(dto) && HasLegacySensitiveChanges(profile, dto))
+                    {
+                        // 旧 App 会在普通保存中回传完整敏感字段；等值回传不得覆盖真实待审申请。
+                        legacySensitiveDto = BuildLegacySensitiveSnapshot(profile, dto);
+                    }
+                }
+
+                if (isAdmin && supersededKeys.Count > 0 && _sensitiveChangeService is not null)
+                {
+                    await _sensitiveChangeService.CleanupSupersededObjectsAsync(userGuid, supersededKeys);
+                }
+                if (legacySensitiveDto is not null && _sensitiveChangeService is not null)
+                {
+                    // 旧客户端仍可提交同一 DTO，但敏感字段只能进入审批快照。
+                    await _sensitiveChangeService.UpsertSelfAsync(legacySensitiveDto);
                 }
 
                 return ApiResponse<EmployeeProfileDetailDto>.OK(
@@ -272,16 +453,20 @@ namespace BlazorApp.Api.Services
             string actor,
             DateTime now,
             bool isCreate,
-            bool allowLegacyImageUrls
+            bool allowLegacyImageUrls,
+            bool allowSensitiveChanges
         )
         {
             profile.UserGUID = userGuid;
             profile.Phone = Normalize(dto.Phone);
-            profile.BankBSB = Normalize(dto.BankBsb);
-            profile.BankACC = Normalize(dto.BankAccountNumber);
-            profile.SuperannuationCompanyName = Normalize(dto.SuperannuationCompanyName);
-            profile.SuperannuationCompanyCode = Normalize(dto.SuperannuationCompanyCode);
-            profile.SuperannuationAccount = Normalize(dto.SuperannuationAccountNumber);
+            if (allowSensitiveChanges)
+            {
+                profile.BankBSB = Normalize(dto.BankBsb);
+                profile.BankACC = Normalize(dto.BankAccountNumber);
+                profile.SuperannuationCompanyName = Normalize(dto.SuperannuationCompanyName);
+                profile.SuperannuationCompanyCode = Normalize(dto.SuperannuationCompanyCode);
+                profile.SuperannuationAccount = Normalize(dto.SuperannuationAccountNumber);
+            }
             profile.Birthday = dto.Birthday?.Date;
             profile.Gender = ParseGender(dto.Gender);
             profile.EmployeeType = ParseEmployeeType(dto.EmploymentType);
@@ -294,7 +479,11 @@ namespace BlazorApp.Api.Services
                     profile.IdentityPhotoUrl = Normalize(dto.IdentityPhotoUrl);
                 }
             }
-            profile.IdentityId = Normalize(dto.IdentityId);
+            if (allowSensitiveChanges)
+            {
+                profile.IdentityType = Normalize(dto.IdentityType);
+                profile.IdentityId = Normalize(dto.IdentityId);
+            }
             profile.Address = Normalize(dto.Address);
             profile.UpdatedAt = now;
             profile.UpdatedBy = actor;
@@ -335,6 +524,7 @@ namespace BlazorApp.Api.Services
                 EmploymentType = FormatEmployeeType(profile?.EmployeeType),
                 AvatarUrl = profile?.AvatarUrl,
                 IdentityId = profile?.IdentityId,
+                IdentityType = profile?.IdentityType,
                 IdentityPhotoUrl = identityPhotoUrl,
                 IdentityPhotoUrlExpiresAt = identityPhotoUrlExpiresAt,
                 Address = profile?.Address,
@@ -342,6 +532,7 @@ namespace BlazorApp.Api.Services
                 CreatedBy = profile?.CreatedBy,
                 UpdatedAt = profile?.UpdatedAt,
                 UpdatedBy = profile?.UpdatedBy,
+                SensitiveRevision = profile?.SensitiveRevision ?? 0,
             };
         }
 
@@ -349,6 +540,67 @@ namespace BlazorApp.Api.Services
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
+
+        private static string? MaskAccount(string? value)
+        {
+            var normalized = Normalize(value);
+            return normalized is null
+                ? null
+                : $"****{normalized[^Math.Min(4, normalized.Length)..]}";
+        }
+
+        private static bool HasLegacySensitivePayload(EmployeeProfileUpsertDto dto) =>
+            dto.BankBsb is not null
+            || dto.BankAccountNumber is not null
+            || dto.SuperannuationCompanyName is not null
+            || dto.SuperannuationCompanyCode is not null
+            || dto.SuperannuationAccountNumber is not null
+            || dto.IdentityType is not null
+            || dto.IdentityId is not null;
+
+        private static bool HasLegacySensitiveChanges(
+            EmployeeProfile? profile,
+            EmployeeProfileUpsertDto dto
+        ) =>
+            (dto.BankBsb is not null
+                && !string.Equals(profile?.BankBSB, Normalize(dto.BankBsb), StringComparison.Ordinal))
+            || (dto.BankAccountNumber is not null
+                && !string.Equals(profile?.BankACC, Normalize(dto.BankAccountNumber), StringComparison.Ordinal))
+            || (dto.SuperannuationCompanyName is not null
+                && !string.Equals(profile?.SuperannuationCompanyName, Normalize(dto.SuperannuationCompanyName), StringComparison.Ordinal))
+            || (dto.SuperannuationCompanyCode is not null
+                && !string.Equals(profile?.SuperannuationCompanyCode, Normalize(dto.SuperannuationCompanyCode), StringComparison.Ordinal))
+            || (dto.SuperannuationAccountNumber is not null
+                && !string.Equals(profile?.SuperannuationAccount, Normalize(dto.SuperannuationAccountNumber), StringComparison.Ordinal))
+            || (dto.IdentityType is not null
+                && !string.Equals(profile?.IdentityType, Normalize(dto.IdentityType), StringComparison.Ordinal))
+            || (dto.IdentityId is not null
+                && !string.Equals(profile?.IdentityId, Normalize(dto.IdentityId), StringComparison.Ordinal));
+
+        private static bool HasSensitiveChanges(EmployeeProfile? profile, EmployeeProfileUpsertDto dto) =>
+            !string.Equals(profile?.BankBSB, Normalize(dto.BankBsb), StringComparison.Ordinal)
+            || !string.Equals(profile?.BankACC, Normalize(dto.BankAccountNumber), StringComparison.Ordinal)
+            || !string.Equals(profile?.SuperannuationCompanyName, Normalize(dto.SuperannuationCompanyName), StringComparison.Ordinal)
+            || !string.Equals(profile?.SuperannuationCompanyCode, Normalize(dto.SuperannuationCompanyCode), StringComparison.Ordinal)
+            || !string.Equals(profile?.SuperannuationAccount, Normalize(dto.SuperannuationAccountNumber), StringComparison.Ordinal)
+            || !string.Equals(profile?.IdentityType, Normalize(dto.IdentityType), StringComparison.Ordinal)
+            || !string.Equals(profile?.IdentityId, Normalize(dto.IdentityId), StringComparison.Ordinal)
+            || (string.IsNullOrWhiteSpace(profile?.IdentityPhotoObjectKey)
+                && !string.Equals(profile?.IdentityPhotoUrl, Normalize(dto.IdentityPhotoUrl), StringComparison.Ordinal));
+
+        private static EmployeeProfileSensitiveChangeUpsertDto BuildLegacySensitiveSnapshot(
+            EmployeeProfile? profile,
+            EmployeeProfileUpsertDto dto
+        ) => new()
+        {
+            BankBsb = dto.BankBsb ?? profile?.BankBSB,
+            BankAccountNumber = dto.BankAccountNumber ?? profile?.BankACC,
+            SuperannuationCompanyName = dto.SuperannuationCompanyName ?? profile?.SuperannuationCompanyName,
+            SuperannuationCompanyCode = dto.SuperannuationCompanyCode ?? profile?.SuperannuationCompanyCode,
+            SuperannuationAccountNumber = dto.SuperannuationAccountNumber ?? profile?.SuperannuationAccount,
+            IdentityType = dto.IdentityType ?? profile?.IdentityType,
+            IdentityId = dto.IdentityId ?? profile?.IdentityId,
+        };
 
         private static EmployeeGender? ParseGender(string? value)
         {

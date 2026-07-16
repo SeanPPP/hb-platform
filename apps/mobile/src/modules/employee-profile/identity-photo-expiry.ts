@@ -14,3 +14,10 @@ export function getIdentityPhotoRefetchDelay(
   }
   return Math.max(MINIMUM_REFETCH_DELAY_MS, expiresAtMs - now - REFRESH_SAFETY_WINDOW_MS);
 }
+
+export function shouldRefreshIdentityPhotoAfterLoadError(
+  imageUrl: string | undefined,
+  lastAttemptedUrl: string
+) {
+  return Boolean(imageUrl && imageUrl !== lastAttemptedUrl);
+}

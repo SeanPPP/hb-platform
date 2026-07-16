@@ -2,15 +2,10 @@ import type { EmployeeProfile, UpdateEmployeeProfilePayload } from "./types";
 
 export function toEmployeeProfileDraft(profile: EmployeeProfile): UpdateEmployeeProfilePayload {
   return {
-    bankBsb: profile.bankBsb,
-    bankAccountNumber: profile.bankAccountNumber,
-    superannuationCompanyName: profile.superannuationCompanyName,
-    superannuationCompanyCode: profile.superannuationCompanyCode,
-    superannuationAccountNumber: profile.superannuationAccountNumber,
+    phone: profile.phone ?? "",
     birthday: profile.birthday,
     gender: profile.gender,
     employmentType: profile.employmentType,
-    identityId: profile.identityId,
     address: profile.address,
   };
 }

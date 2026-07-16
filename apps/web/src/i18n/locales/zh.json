@@ -3526,6 +3526,7 @@
     "employeeProfiles": {
       "pageTitle": "员工个人信息维护",
       "pageSubtitle": "管理员可在这里维护员工的银行、公积金和身份资料。",
+      "tabs": { "profiles": "员工资料", "pending": "待审核" },
       "searchPlaceholder": "搜索账号 / 姓名",
       "loadListFailed": "加载员工信息列表失败",
       "loadDetailFailed": "加载员工信息详情失败",
@@ -3544,6 +3545,7 @@
       "employmentType": "员工类型",
       "gender": "性别",
       "birthday": "生日",
+      "identityType": "证件类型",
       "identityId": "证件号码",
       "avatarUrl": "头像链接",
       "identityPhotoUrl": "证件照片链接",
@@ -3561,6 +3563,33 @@
       "updatedAt": "更新时间",
       "lastUpdated": "最近更新",
       "noImage": "暂无图片预览",
+      "pendingSupersede": {
+        "title": "确认直接修改敏感资料",
+        "content": "该员工存在待审核申请。保存本次敏感资料修改后，该待审申请将作废。",
+        "confirm": "确认保存并作废申请"
+      },
+      "review": {
+        "employee": "员工", "changedFields": "变更字段", "submittedAt": "提交时间", "status": "状态",
+        "reviewAction": "审核", "searchPlaceholder": "搜索员工账号 / 姓名",
+        "loadListFailed": "加载待审核列表失败", "loadDetailFailed": "加载审核详情失败",
+        "loadingDetail": "正在加载审核详情...", "detailUnavailable": "审核详情暂不可用，请刷新后重试。",
+        "empty": "暂无待审核申请", "viewDetailForFields": "进入详情查看变更字段",
+        "drawerTitle": "敏感资料审核 - {{name}}", "field": "字段", "currentValue": "当前正式值",
+        "proposedValue": "员工填报值", "changed": "有变更", "hasPhoto": "有证件照片", "noPhoto": "无证件照片",
+        "currentPhoto": "当前正式证件照", "proposedPhoto": "待审证件照",
+        "authorizedDetailNotice": "仅授权审核详情显示完整账号。请勿复制到列表、备注或日志。",
+        "reason": "审核原因", "reasonHint": "批准原因可选，拒绝原因必填。", "reasonRequired": "请输入拒绝原因",
+        "approve": "批准", "reject": "拒绝", "approveSuccess": "敏感资料申请已批准", "rejectSuccess": "敏感资料申请已拒绝",
+        "approveFailed": "批准申请失败", "rejectFailed": "拒绝申请失败",
+        "versionConflict": "正式资料已变化，已刷新详情和列表，请重新核对。",
+        "terminalConflict": "该申请已被处理，已刷新详情、列表和待审数量。",
+        "statuses": { "Pending": "待审核", "Approved": "已批准", "Rejected": "已拒绝", "Superseded": "已作废" },
+        "fields": {
+          "bankBsb": "BSB", "bankAccountNumber": "银行账号", "superannuationCompanyName": "公积金公司",
+          "superannuationCompanyCode": "公积金代码", "superannuationAccountNumber": "公积金账号",
+          "identityType": "证件类型", "identityId": "证件号码", "identityPhotoUrl": "证件照片"
+        }
+      },
       "sections": {
         "account": "账号信息",
         "media": "头像与证件照片",
@@ -3585,6 +3614,7 @@
         "employmentType": "请选择员工类型",
         "gender": "请选择性别",
         "birthday": "请选择生日",
+        "identityType": "请输入证件类型",
         "identityId": "请输入证件号码",
         "avatarUrl": "请输入头像链接",
         "identityPhotoUrl": "请输入证件照片链接",

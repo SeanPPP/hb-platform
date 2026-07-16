@@ -5,6 +5,51 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task StartupSchemaMigrator_创建员工敏感审批表和Pending过滤唯一索引()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains("EnsureEmployeeProfileSensitiveChangeSchemaAsync", migrator);
+        Assert.Contains("EmployeeProfileSensitiveChangeRequest", migrator);
+        Assert.Contains("SensitiveRevision", migrator);
+        Assert.Contains("UX_EmployeeProfileSensitiveChangeRequest_User_Pending", migrator);
+        Assert.Contains("WHERE [Status] = 0", migrator);
+        Assert.Contains("SensitiveChangeRequestId", migrator);
+        Assert.Contains("[ChangedFieldsJson] nvarchar(1000) NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
+            migrator
+        );
+        Assert.Contains("[RemoveIdentityPhoto] bit NOT NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL",
+            migrator
+        );
+
+        var migration = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/Migrations/20260715_CreateEmployeeProfileSensitiveChangeRequest.sql"
+            )
+        );
+        Assert.Contains("[ChangedFieldsJson] nvarchar(1000) NULL", migration);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL",
+            migration
+        );
+        Assert.Contains("[RemoveIdentityPhoto] bit NOT NULL", migration);
+        Assert.Contains(
+            "COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL",
+            migration
+        );
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建用户分店Pos权限表和唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(

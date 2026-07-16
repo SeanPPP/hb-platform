@@ -17,18 +17,21 @@ namespace BlazorApp.Api.Controllers
         private readonly ILogger<EmployeeProfilesController> _logger;
         private readonly EmployeeProfileMediaService _mediaService;
         private readonly EmployeeCashierBarcodeService _barcodeService;
+        private readonly EmployeeProfileSensitiveChangeService _sensitiveChangeService;
 
         public EmployeeProfilesController(
             IEmployeeProfileService service,
             ILogger<EmployeeProfilesController> logger,
             EmployeeProfileMediaService mediaService,
-            EmployeeCashierBarcodeService barcodeService
+            EmployeeCashierBarcodeService barcodeService,
+            EmployeeProfileSensitiveChangeService sensitiveChangeService
         )
         {
             _service = service;
             _logger = logger;
             _mediaService = mediaService;
             _barcodeService = barcodeService;
+            _sensitiveChangeService = sensitiveChangeService;
         }
 
         [HttpGet("admin")]
@@ -93,7 +96,14 @@ namespace BlazorApp.Api.Controllers
                     );
                 }
 
-                return Ok(await _service.UpsertAdminAsync(userGuid, dto));
+                var result = await _service.UpsertAdminAsync(userGuid, dto);
+                if (result.ErrorCode == EmployeeProfileService.PendingChangeConfirmationRequiredCode
+                    || result.ErrorCode == EmployeeProfileSensitiveChangeService.VersionConflictCode)
+                {
+                    return Conflict(result);
+                }
+
+                return Ok(result);
             }
             catch (Exception ex)
             {
@@ -160,6 +170,74 @@ namespace BlazorApp.Api.Controllers
                 );
             }
         }
+
+        [HttpGet("me/sensitive-change-request")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
+        public async Task<IActionResult> GetSelfSensitiveChangeRequest() =>
+            Ok(await _sensitiveChangeService.GetSelfAsync());
+
+        [HttpPut("me/sensitive-change-request")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        public async Task<IActionResult> UpsertSelfSensitiveChangeRequest(
+            [FromBody] EmployeeProfileSensitiveChangeUpsertDto dto
+        )
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ApiResponse<object>.Error("请求参数验证失败", "VALIDATION_ERROR", ModelState));
+            }
+            return Ok(await _sensitiveChangeService.UpsertSelfAsync(dto));
+        }
+
+        [HttpGet("admin/change-requests")]
+        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        public async Task<IActionResult> GetAdminSensitiveChangeRequests(
+            [FromQuery] EmployeeProfileSensitiveChangeQueryDto query
+        ) => Ok(await _sensitiveChangeService.GetAdminListAsync(query));
+
+        [HttpGet("admin/change-requests/{requestId:int}")]
+        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        public async Task<IActionResult> GetAdminSensitiveChangeRequest(int requestId) =>
+            Ok(await _sensitiveChangeService.GetAdminDetailAsync(requestId));
+
+        [HttpPost("admin/change-requests/{requestId:int}/approve")]
+        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        public async Task<IActionResult> ApproveSensitiveChangeRequest(
+            int requestId,
+            [FromBody] EmployeeProfileSensitiveReviewDto dto
+        )
+        {
+            var result = await _sensitiveChangeService.ApproveAsync(requestId, dto);
+            return MapSensitiveReviewResult(result);
+        }
+
+        [HttpPost("admin/change-requests/{requestId:int}/reject")]
+        [Authorize(Roles = "Admin,管理员")]
+        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        public async Task<IActionResult> RejectSensitiveChangeRequest(
+            int requestId,
+            [FromBody] EmployeeProfileSensitiveRejectDto dto
+        )
+        {
+            if (!ModelState.IsValid || string.IsNullOrWhiteSpace(dto.Reason))
+            {
+                return BadRequest(ApiResponse<object>.Error("拒绝原因必填", "VALIDATION_ERROR", ModelState));
+            }
+            return MapSensitiveReviewResult(await _sensitiveChangeService.RejectAsync(requestId, dto));
+        }
+
+        private IActionResult MapSensitiveReviewResult(
+            ApiResponse<EmployeeProfileSensitiveChangeDetailDto> result
+        ) => result.ErrorCode switch
+        {
+            EmployeeProfileSensitiveChangeService.VersionConflictCode => Conflict(result),
+            "REQUEST_NOT_PENDING" => Conflict(result),
+            "REQUEST_NOT_FOUND" => NotFound(result),
+            _ => Ok(result),
+        };
 
         [HttpPost("me/image-upload-signature")]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]

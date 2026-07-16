@@ -48,6 +48,9 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, Length = 100)]
         public string? IdentityId { get; set; }
 
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? IdentityType { get; set; }
+
         [SugarColumn(IsNullable = true, Length = 500)]
         public string? IdentityPhotoUrl { get; set; }
 
@@ -56,6 +59,9 @@ namespace BlazorApp.Shared.Models
 
         [SugarColumn(IsNullable = true, Length = 500)]
         public string? Address { get; set; }
+
+        /// <summary>正式敏感资料版本；仅正式敏感字段变化时递增。</summary>
+        public int SensitiveRevision { get; set; }
 
         [Navigate(NavigateType.OneToOne, nameof(UserGUID), nameof(User.UserGUID))]
         public User? User { get; set; }

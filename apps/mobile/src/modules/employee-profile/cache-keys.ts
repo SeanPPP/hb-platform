@@ -17,6 +17,10 @@ export function getCashierBarcodeQueryKey(identity: string) {
   return ["employee-profile", "cashier-barcode", "me", identity] as const;
 }
 
+export function getEmployeeSensitiveChangeQueryKey(identity: string) {
+  return ["employee-profile", "sensitive-change-request", "me", identity] as const;
+}
+
 export function shouldResetEmployeeProfileDraft(previousIdentity: string, nextIdentity: string) {
   return previousIdentity !== nextIdentity;
 }

@@ -22,7 +22,90 @@ namespace BlazorApp.Api.Data
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
             await EnsureEmployeeProfileImageSchemaAsync(db, logger);
+            await EnsureEmployeeProfileSensitiveChangeSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureEmployeeProfileSensitiveChangeSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[EmployeeProfile]', N'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.EmployeeProfile', 'SensitiveRevision') IS NULL
+        ALTER TABLE [dbo].[EmployeeProfile] ADD [SensitiveRevision] int NOT NULL CONSTRAINT [DF_EmployeeProfile_SensitiveRevision] DEFAULT(0);
+    IF COL_LENGTH('dbo.EmployeeProfile', 'IdentityType') IS NULL
+        ALTER TABLE [dbo].[EmployeeProfile] ADD [IdentityType] nvarchar(50) NULL;
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[EmployeeProfileSensitiveChangeRequest] (
+        [RequestId] int IDENTITY(1,1) NOT NULL CONSTRAINT [PK_EmployeeProfileSensitiveChangeRequest] PRIMARY KEY,
+        [UserGUID] nvarchar(50) NOT NULL,
+        [BankBsb] nvarchar(20) NULL,
+        [BankAccountNumber] nvarchar(50) NULL,
+        [SuperannuationCompanyName] nvarchar(200) NULL,
+        [SuperannuationCompanyCode] nvarchar(100) NULL,
+        [SuperannuationAccountNumber] nvarchar(100) NULL,
+        [IdentityType] nvarchar(50) NULL,
+        [IdentityId] nvarchar(100) NULL,
+        [IdentityPhotoObjectKey] nvarchar(500) NULL,
+        [RemoveIdentityPhoto] bit NOT NULL CONSTRAINT [DF_EmployeeProfileSensitiveChangeRequest_RemoveIdentityPhoto] DEFAULT(0),
+        [ChangedFieldsJson] nvarchar(1000) NULL,
+        [Status] int NOT NULL,
+        [BaseSensitiveRevision] int NOT NULL,
+        [SubmittedAt] datetime2 NOT NULL,
+        [SubmittedBy] nvarchar(100) NULL,
+        [ReviewedAt] datetime2 NULL,
+        [ReviewedBy] nvarchar(100) NULL,
+        [ReviewReason] nvarchar(1000) NULL,
+        [SupersededAt] datetime2 NULL,
+        [SupersededBy] nvarchar(100) NULL
+    );
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'RemoveIdentityPhoto') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeProfileSensitiveChangeRequest]
+        ADD [RemoveIdentityPhoto] bit NOT NULL
+            CONSTRAINT [DF_EmployeeProfileSensitiveChangeRequest_RemoveIdentityPhoto] DEFAULT(0) WITH VALUES;
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeProfileSensitiveChangeRequest', 'ChangedFieldsJson') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeProfileSensitiveChangeRequest]
+        ADD [ChangedFieldsJson] nvarchar(1000) NULL;
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes
+       WHERE [name] = 'UX_EmployeeProfileSensitiveChangeRequest_User_Pending'
+         AND [object_id] = OBJECT_ID(N'[dbo].[EmployeeProfileSensitiveChangeRequest]')
+   )
+BEGIN
+    -- Pending=0；过滤唯一索引是并发请求下“每人最多一条待审”的数据库最终约束。
+    CREATE UNIQUE INDEX [UX_EmployeeProfileSensitiveChangeRequest_User_Pending]
+        ON [dbo].[EmployeeProfileSensitiveChangeRequest]([UserGUID])
+        WHERE [Status] = 0;
+END;
+IF OBJECT_ID(N'[dbo].[EmployeeImageUploadTickets]', N'U') IS NOT NULL
+   AND COL_LENGTH('dbo.EmployeeImageUploadTickets', 'SensitiveChangeRequestId') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [SensitiveChangeRequestId] int NULL;
+END;
+""";
+
+            try
+            {
+                await db.Ado.ExecuteCommandAsync(sql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "初始化员工敏感资料审批结构失败");
+                throw;
+            }
         }
 
         private static async Task EnsureUserStorePosPermissionSchemaAsync(
@@ -100,7 +183,8 @@ BEGIN
         [StageChangedAt] datetime2 NULL,
         [PreviousObjectKey] nvarchar(500) NULL,
         [PreviousObjectCleanupStatus] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_PreviousCleanup] DEFAULT(0),
-        [PreviousObjectCleanupStartedAt] datetime2 NULL
+        [PreviousObjectCleanupStartedAt] datetime2 NULL,
+        [SensitiveChangeRequestId] int NULL
     );
     CREATE INDEX [IX_EmployeeImageUploadTickets_Expiry]
         ON [dbo].[EmployeeImageUploadTickets]([Status], [ExpiresAt]);
@@ -127,6 +211,8 @@ BEGIN
         ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PreviousObjectCleanupStatus] int NOT NULL CONSTRAINT [DF_EmployeeImageUploadTickets_PreviousCleanup] DEFAULT(0);
     IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'PreviousObjectCleanupStartedAt') IS NULL
         ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [PreviousObjectCleanupStartedAt] datetime2 NULL;
+    IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'SensitiveChangeRequestId') IS NULL
+        ALTER TABLE [dbo].[EmployeeImageUploadTickets] ADD [SensitiveChangeRequestId] int NULL;
     IF COL_LENGTH('dbo.EmployeeImageUploadTickets', 'Completed') IS NOT NULL
         EXEC(N'UPDATE [dbo].[EmployeeImageUploadTickets] SET [Status] = 3, [CompletedAt] = COALESCE([CompletedAt], [ExpiresAt]) WHERE [Completed] = 1 AND [Status] = 0');
     UPDATE [dbo].[EmployeeImageUploadTickets]
