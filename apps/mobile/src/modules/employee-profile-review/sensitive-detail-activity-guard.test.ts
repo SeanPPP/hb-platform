@@ -65,9 +65,102 @@ async function testInactiveLateCallbacks() {
   assert.equal(queryClient.getQueryCache().findAll({ queryKey }).length, 0);
 }
 
+function createInterleavingHarness(requestId: number) {
+  const queryClient = new QueryClient();
+  const queryKey = employeeProfileReviewDetailQueryKey(requestId);
+  let appIsActive = true;
+  let activityGeneration = 0;
+  const clearCache = async () => {
+    await queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.removeQueries({ queryKey, exact: true });
+  };
+  const guard = createEmployeeProfileSensitiveDetailActivityGuard({
+    isActive: () => appIsActive,
+    getActivityGeneration: () => activityGeneration,
+    clearCache,
+  });
+  return {
+    guard,
+    queryClient,
+    queryKey,
+    async enterInactive() {
+      appIsActive = false;
+      activityGeneration += 1;
+      await clearCache();
+    },
+    enterActiveNewGeneration() {
+      appIsActive = true;
+      activityGeneration += 1;
+    },
+    writeNewGeneration() {
+      queryClient.setQueryData(queryKey, { requestId, marker: "NEW-GENERATION" });
+    },
+  };
+}
+
+async function testOldFetchDoesNotClearNewGeneration() {
+  const harness = createInterleavingHarness(84);
+  let resolveRequest: ((value: { requestId: number }) => void) | undefined;
+  const pending = harness.guard.fetch(() => new Promise<{ requestId: number }>((resolve) => {
+    resolveRequest = resolve;
+  }));
+  const rejected = assert.rejects(
+    pending,
+    (error: unknown) => isSensitiveDetailFetchBlockedError(error)
+  );
+
+  await harness.enterInactive();
+  harness.enterActiveNewGeneration();
+  harness.writeNewGeneration();
+  resolveRequest?.({ requestId: 84 });
+  await rejected;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.queryClient.getQueryData(harness.queryKey), {
+    requestId: 84,
+    marker: "NEW-GENERATION",
+  });
+}
+
+async function testOldRunIfActiveDoesNotClearNewGeneration() {
+  const harness = createInterleavingHarness(85);
+  let resolveAction: (() => void) | undefined;
+  const pending = harness.guard.runIfActive(() => new Promise<void>((resolve) => {
+    resolveAction = resolve;
+  }));
+
+  await harness.enterInactive();
+  harness.enterActiveNewGeneration();
+  harness.writeNewGeneration();
+  resolveAction?.();
+  assert.equal(await pending, false);
+  assert.deepEqual(harness.queryClient.getQueryData(harness.queryKey), {
+    requestId: 85,
+    marker: "NEW-GENERATION",
+  });
+}
+
+async function testOldMutationCallbackDoesNotClearNewGeneration() {
+  const harness = createInterleavingHarness(86);
+  const oldMutationGeneration = 0;
+
+  await harness.enterInactive();
+  harness.enterActiveNewGeneration();
+  harness.writeNewGeneration();
+  assert.equal(
+    harness.guard.shouldIgnoreLateCallback(oldMutationGeneration),
+    true
+  );
+  // 等待一轮，确保任何误触的异步清理都会暴露为新世代缓存丢失。
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.queryClient.getQueryData(harness.queryKey), {
+    requestId: 86,
+    marker: "NEW-GENERATION",
+  });
+}
+
 async function testRequestSpanningBackgroundIsDiscarded() {
   const queryClient = new QueryClient();
-  const queryKey = employeeProfileReviewDetailQueryKey(84);
+  const queryKey = employeeProfileReviewDetailQueryKey(87);
   let appIsActive = true;
   let activityGeneration = 0;
   let resolveRequest: ((value: { requestId: number }) => void) | undefined;
@@ -94,13 +187,16 @@ async function testRequestSpanningBackgroundIsDiscarded() {
   await clearCache();
   appIsActive = true;
   activityGeneration += 1;
-  resolveRequest?.({ requestId: 84 });
+  resolveRequest?.({ requestId: 87 });
   await rejected;
   assert.equal(queryClient.getQueryCache().findAll({ queryKey }).length, 0);
 }
 
 async function main() {
   await testInactiveLateCallbacks();
+  await testOldFetchDoesNotClearNewGeneration();
+  await testOldRunIfActiveDoesNotClearNewGeneration();
+  await testOldMutationCallbackDoesNotClearNewGeneration();
   await testRequestSpanningBackgroundIsDiscarded();
 }
 
