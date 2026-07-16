@@ -229,7 +229,8 @@ public sealed class EmployeeProfileSensitiveChangeService
         }
         if (!await CanReviewTargetAsync(access, request.UserGUID))
         {
-            return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+            // 对有审核范围但无权查看的目标统一伪装为不存在，避免通过 requestId 枚举员工。
+            return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
         }
         var profile = await _context.Db.Queryable<EmployeeProfile>()
             .FirstAsync(item => item.UserGUID == request!.UserGUID && !item.IsDeleted);
@@ -292,10 +293,17 @@ public sealed class EmployeeProfileSensitiveChangeService
                         "REQUEST_NOT_FOUND"
                     );
                 }
-                if (!await CanReviewTargetAsync(access, request.UserGUID))
+                // 关键逻辑：等待媒体锁期间审核者主分店可能被撤销，锁内事务必须重新获取范围。
+                var lockedAccess = await GetReviewAccessAsync();
+                if (lockedAccess is null)
                 {
                     await db.Ado.RollbackTranAsync();
                     return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+                }
+                if (!await CanReviewTargetAsync(lockedAccess, request.UserGUID))
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
                 }
                 if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
                 {
@@ -382,6 +390,9 @@ public sealed class EmployeeProfileSensitiveChangeService
                 {
                     await ScheduleTicketCleanupAsync(requestId, oldPhoto, request.UserGUID);
                 }
+                // 审批写入后在同一事务与媒体锁内重读，响应快照不得继续引用审批前的正式资料。
+                profile = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
                 await db.Ado.CommitTranAsync();
             }
             catch (SensitiveRevisionConflictException)
@@ -451,10 +462,17 @@ public sealed class EmployeeProfileSensitiveChangeService
                         "REQUEST_NOT_FOUND"
                     );
                 }
-                if (!await CanReviewTargetAsync(access, request.UserGUID))
+                // 驳回同样在锁内重取最新审核范围，不能复用锁外缓存的 StoreGuids。
+                var lockedAccess = await GetReviewAccessAsync();
+                if (lockedAccess is null)
                 {
                     await db.Ado.RollbackTranAsync();
                     return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+                }
+                if (!await CanReviewTargetAsync(lockedAccess, request.UserGUID))
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
                 }
                 if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
                 {
@@ -906,10 +924,7 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             snapshot.IdentityPhotoUrl = _storage.GetSignedDownload(profile.IdentityPhotoObjectKey, 300).Url;
         }
-        else if (string.IsNullOrWhiteSpace(profile?.IdentityPhotoObjectKey))
-        {
-            snapshot.IdentityPhotoUrl = profile?.IdentityPhotoUrl;
-        }
+        // legacy URL 未经过当前对象存储签名链验证，审核接口只返回照片存在标记，不原样透传。
         return snapshot;
     }
 
@@ -1021,6 +1036,9 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     private static ApiResponse<T> ReviewScopeForbidden<T>() =>
         ApiResponse<T>.Error("当前账号无权审核该员工的敏感资料", ReviewScopeForbiddenCode);
+
+    private static ApiResponse<T> RequestNotFound<T>() =>
+        ApiResponse<T>.Error("申请不存在", "REQUEST_NOT_FOUND");
 
     private sealed record ReviewAccess(bool IsAdmin, string UserGuid, IReadOnlyList<string> StoreGuids);
     private sealed record StoreLabels(List<string> Codes, List<string> Names);

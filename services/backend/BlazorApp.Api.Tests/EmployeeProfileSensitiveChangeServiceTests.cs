@@ -495,6 +495,15 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             new EmployeeProfileSensitiveReviewDto()
         );
         Assert.True(approved.Success);
+        Assert.NotNull(approved.Data!.CurrentSnapshot);
+        Assert.Contains(
+            "/approved.png",
+            approved.Data.CurrentSnapshot!.IdentityPhotoUrl
+        );
+        Assert.DoesNotContain(
+            "/formal.png",
+            approved.Data.CurrentSnapshot.IdentityPhotoUrl
+        );
         Assert.Equal("employee-profiles/user-self/identity/approved.png",
             (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self"))
                 .IdentityPhotoObjectKey);
@@ -836,7 +845,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
                 .FirstAsync(item => item.UserGUID == forbiddenUser);
             var detail = await storeManager.GetReviewDetailAsync(request.RequestId);
             Assert.False(detail.Success);
-            Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, detail.ErrorCode);
+            Assert.Equal("REQUEST_NOT_FOUND", detail.ErrorCode);
         }
 
         var storeBRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
@@ -853,8 +862,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             storeBRequest.RequestId,
             new EmployeeProfileSensitiveRejectDto { Reason = "无权审核" }
         );
-        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, forbiddenApprove.ErrorCode);
-        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, forbiddenReject.ErrorCode);
+        Assert.Equal("REQUEST_NOT_FOUND", forbiddenApprove.ErrorCode);
+        Assert.Equal("REQUEST_NOT_FOUND", forbiddenReject.ErrorCode);
         Assert.Equal(
             EmployeeProfileSensitiveChangeStatus.Pending,
             (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
@@ -921,6 +930,116 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.NotNull(snapshot.IdentityPhotoUrl);
         Assert.StartsWith("https://", snapshot.IdentityPhotoUrl);
         Assert.Contains("q-sign-algorithm", snapshot.IdentityPhotoUrl);
+
+        profile.IdentityPhotoObjectKey = null;
+        profile.IdentityPhotoUrl = "https://legacy-untrusted.example/identity.jpg";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var legacyDetail = await admin.GetReviewDetailAsync(request.RequestId);
+        Assert.True(legacyDetail.Data!.CurrentSnapshot!.HasIdentityPhoto);
+        Assert.Null(legacyDetail.Data.CurrentSnapshot.IdentityPhotoUrl);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    [InlineData("WarehouseManager")]
+    [InlineData("仓库经理")]
+    [InlineData("StoreManager")]
+    [InlineData("店长")]
+    [InlineData("经理")]
+    public async Task ReviewScope_店长查询所有受保护角色目标统一返回不存在(string protectedRole)
+    {
+        await SeedReviewScopeAsync();
+        var role = await _db.Queryable<Role>().FirstAsync();
+        role.RoleName = protectedRole;
+        await _db.Updateable(role).ExecuteCommandAsync();
+        var manager = CreateService(
+            "manager-a",
+            "manager_a",
+            roles: ["StoreManager"],
+            storeGuids: ["store-a"]
+        );
+        var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "privileged-manager");
+
+        var detail = await manager.GetReviewDetailAsync(request.RequestId);
+
+        Assert.False(detail.Success);
+        Assert.Equal("REQUEST_NOT_FOUND", detail.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ReviewMutation_等待媒体锁期间审核范围被撤销_锁内重取范围且数据库不变(bool approve)
+    {
+        await SeedReviewScopeAsync();
+        var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "employee-a");
+        using var reviewDb = CreateAdditionalDb();
+        var requestRead = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        reviewDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsSensitiveRequestSelect(sql))
+            {
+                requestRead.TrySetResult();
+            }
+        };
+        var currentScope = new CurrentUserManageableStoreScope
+        {
+            IsAllowed = true,
+            IsAuthenticated = true,
+            UserGuid = "manager-a",
+            ActorLabel = "manager_a",
+            StoreGuids = ["store-a"],
+        };
+        var scope = new Mock<ICurrentUserManageableStoreScopeService>();
+        scope.Setup(service => service.GetScopeAsync()).ReturnsAsync(() => currentScope);
+        var reviewer = CreateService(
+            "manager-a",
+            "manager_a",
+            db: reviewDb,
+            roles: ["StoreManager"],
+            scopeService: scope.Object
+        );
+        var heldLock = await EmployeeProfileMediaLock.AcquireAsync(
+            reviewDb,
+            request.UserGUID,
+            "sensitive-change"
+        );
+        var reviewTask = Task.Run(() => approve
+            ? reviewer.ApproveAsync(request.RequestId, new EmployeeProfileSensitiveReviewDto())
+            : reviewer.RejectAsync(
+                request.RequestId,
+                new EmployeeProfileSensitiveRejectDto { Reason = "资料无法核验" }
+            ));
+        await requestRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        currentScope = new CurrentUserManageableStoreScope
+        {
+            IsAuthenticated = true,
+            UserGuid = "manager-a",
+            ActorLabel = "manager_a",
+            Message = "管理分店已撤销",
+        };
+        await heldLock.DisposeAsync();
+
+        var result = await reviewTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.Success);
+        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, result.ErrorCode);
+        Assert.Equal(
+            EmployeeProfileSensitiveChangeStatus.Pending,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.RequestId == request.RequestId)).Status
+        );
+        var profile = await _db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == request.UserGUID);
+        Assert.Equal(2, profile.SensitiveRevision);
+        Assert.Equal("formal-employee-a", profile.BankACC);
     }
 
     [Fact]
@@ -1037,15 +1156,18 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         );
         var forbiddenRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .FirstAsync(item => item.UserGUID == "user-self");
-        Assert.IsType<ObjectResult>(await forbiddenController.GetReviewSensitiveChangeRequest(
+        Assert.IsType<NotFoundObjectResult>(await forbiddenController.GetReviewSensitiveChangeRequest(
             forbiddenRequest.RequestId
         ));
-        Assert.Equal(
-            StatusCodes.Status403Forbidden,
-            ((ObjectResult)await forbiddenController.GetReviewSensitiveChangeRequest(
-                forbiddenRequest.RequestId
-            )).StatusCode
+
+        var noScopeController = CreateController(
+            CreateService("manager-a", "manager_a", roles: ["StoreManager"]),
+            storage
         );
+        var noScopeResult = Assert.IsType<ObjectResult>(
+            await noScopeController.GetReviewSensitiveChangeRequest(forbiddenRequest.RequestId)
+        );
+        Assert.Equal(StatusCodes.Status403Forbidden, noScopeResult.StatusCode);
     }
 
     public void Dispose()
@@ -1164,7 +1286,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         ISqlSugarClient? db = null,
         IReadOnlyList<string>? roles = null,
         IReadOnlyList<string>? storeGuids = null,
-        bool scopeIsAdmin = false
+        bool scopeIsAdmin = false,
+        ICurrentUserManageableStoreScopeService? scopeService = null
     )
     {
         roles ??= username.Equals("admin", StringComparison.OrdinalIgnoreCase) ? ["Admin"] : [];
@@ -1183,7 +1306,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             CreateContext(db ?? _db),
             new CurrentUserService(accessor),
             NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
-            scope.Object,
+            scopeService ?? scope.Object,
             accessor,
             storage
         );
