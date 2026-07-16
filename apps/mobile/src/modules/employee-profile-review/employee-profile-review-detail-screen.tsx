@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Image, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -27,10 +27,15 @@ import {
   maskSensitiveValue,
   shouldDisableReviewActions,
 } from "./review-logic";
-import type {
-  EmployeeProfileReviewDetail,
-  EmployeeProfileSensitiveField,
-} from "./types";
+import type { EmployeeProfileSensitiveField } from "./types";
+import {
+  clearEmployeeProfileReviewDetailCache,
+  employeeProfileReviewDetailQueryKey,
+} from "./review-cache";
+import {
+  createIdentityPhotoErrorRefetchGuard,
+  getIdentityPhotoRefreshDelay,
+} from "./identity-photo-refresh";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
@@ -41,10 +46,6 @@ const MASKED_FIELDS = new Set<EmployeeProfileSensitiveField>([
   "superannuationAccountNumber",
   "identityId",
 ]);
-
-function detailQueryKey(requestId: number) {
-  return ["employeeProfileReview", "detail", requestId] as const;
-}
 
 function formatValue(value: string) {
   return value.trim() || "--";
@@ -63,6 +64,8 @@ export function EmployeeProfileReviewDetailScreen() {
   const sessionKind = useAuthStore((state) => state.sessionKind);
   const navigationItems = useAppNavigationStore((state) => state.items);
   const navigationReady = useAppNavigationStore((state) => state.isReady);
+  const mountedRef = useRef(true);
+  const photoErrorRefetchGuard = useRef(createIdentityPhotoErrorRefetchGuard());
   const reviewAccess = useMemo(
     () => getEmployeeProfileReviewAccess({
       roleNames: currentUser?.roleNames,
@@ -73,9 +76,11 @@ export function EmployeeProfileReviewDetailScreen() {
     [currentUser?.permissions, currentUser?.roleNames, navigationItems, sessionKind]
   );
   const detailQuery = useQuery({
-    queryKey: detailQueryKey(requestId),
+    queryKey: employeeProfileReviewDetailQueryKey(requestId),
     enabled: navigationReady && reviewAccess.allowed && validRequestId,
     queryFn: () => getEmployeeProfileReviewDetailApi(requestId),
+    // 完整敏感值离开页面后不保留默认五分钟缓存。
+    gcTime: 0,
   });
   const [revealedFields, setRevealedFields] = useState<Set<EmployeeProfileSensitiveField>>(
     () => new Set()
@@ -84,13 +89,75 @@ export function EmployeeProfileReviewDetailScreen() {
   const [reason, setReason] = useState("");
   const [staleAfterConflict, setStaleAfterConflict] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [isLeavingSensitiveDetail, setIsLeavingSensitiveDetail] = useState(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (validRequestId) {
+        void clearEmployeeProfileReviewDetailCache(queryClient, requestId);
+      }
+    };
+  }, [queryClient, requestId, validRequestId]);
+
+  const leaveDetail = useCallback(async (target: "/(tabs)/settings" | "/(tabs)/employee-profile-review") => {
+    if (mountedRef.current) {
+      // 离开前立即清除已揭示状态，缓存取消在途请求后再彻底移除。
+      setIsLeavingSensitiveDetail(true);
+      setRevealedFields(new Set());
+      setDialogAction(null);
+      setReason("");
+    }
+    if (validRequestId) {
+      await clearEmployeeProfileReviewDetailCache(queryClient, requestId);
+    }
+    if (mountedRef.current) {
+      router.replace(target);
+    }
+  }, [queryClient, requestId, router, validRequestId]);
 
   useEffect(() => {
     if (navigationReady && (!reviewAccess.allowed || !validRequestId)) {
       // 权限失效、设备模式、iOS 审核会话或非法参数都不得触发详情 API。
-      router.replace("/(tabs)/settings");
+      void leaveDetail("/(tabs)/settings");
     }
-  }, [navigationReady, reviewAccess.allowed, router, validRequestId]);
+  }, [leaveDetail, navigationReady, reviewAccess.allowed, validRequestId]);
+
+  const detailAccessForbidden = getReviewFailureKind(detailQuery.error) === "forbidden";
+
+  useEffect(() => {
+    if (detailAccessForbidden) {
+      // 详情 GET 的 403 与审核 mutation 一样立即销毁完整值并退出。
+      void leaveDetail("/(tabs)/settings");
+    }
+  }, [detailAccessForbidden, leaveDetail]);
+
+  useEffect(() => {
+    const delay = getIdentityPhotoRefreshDelay(
+      detailQuery.data?.identityPhotoUrlExpiresAt
+    );
+    if (delay === null) {
+      return;
+    }
+    let active = true;
+    const timer = setTimeout(() => {
+      if (active && mountedRef.current) {
+        void detailQuery.refetch();
+      }
+    }, delay);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [detailQuery.data?.identityPhotoUrlExpiresAt, detailQuery.refetch]);
+
+  const handlePhotoError = useCallback((url: string) => {
+    // 每个签名 URL 最多触发一次受控刷新，避免坏图造成 refetch 循环。
+    if (photoErrorRefetchGuard.current.shouldRefetch(url) && mountedRef.current) {
+      void detailQuery.refetch();
+    }
+  }, [detailQuery.refetch]);
 
   const reviewMutation = useMutation({
     mutationFn: async () => {
@@ -102,15 +169,22 @@ export function EmployeeProfileReviewDetailScreen() {
       }
       throw new Error("Review action is not selected");
     },
-    onSuccess: async (result) => {
-      queryClient.setQueryData(detailQueryKey(requestId), result);
-      setDialogAction(null);
-      setReason("");
-      setSnackbarMessage(t(`messages.${result.status === "Approved" ? "approveSuccess" : "rejectSuccess"}`));
-      await queryClient.invalidateQueries({ queryKey: ["employeeProfileReview", "requests"] });
+    onSuccess: async () => {
+      const listRefresh = queryClient.invalidateQueries({
+        queryKey: ["employeeProfileReview", "requests"],
+      });
+      await leaveDetail("/(tabs)/employee-profile-review");
+      await listRefresh;
     },
     onError: async (error) => {
       const kind = getReviewFailureKind(error);
+      if (kind === "forbidden") {
+        await leaveDetail("/(tabs)/settings");
+        return;
+      }
+      if (!mountedRef.current) {
+        return;
+      }
       setDialogAction(null);
       if (kind === "conflict") {
         // 关键逻辑：冲突后立即刷新，但保留 stale 标记，避免对旧详情重复提交审核。
@@ -120,11 +194,6 @@ export function EmployeeProfileReviewDetailScreen() {
           detailQuery.refetch(),
           queryClient.invalidateQueries({ queryKey: ["employeeProfileReview", "requests"] }),
         ]);
-        return;
-      }
-      if (kind === "forbidden") {
-        setStaleAfterConflict(true);
-        setSnackbarMessage(t("messages.permissionChanged"));
         return;
       }
       setSnackbarMessage(t("messages.reviewFailed"));
@@ -142,6 +211,10 @@ export function EmployeeProfileReviewDetailScreen() {
       return next;
     });
   };
+
+  if (isLeavingSensitiveDetail || detailAccessForbidden) {
+    return <View style={styles.centered} />;
+  }
 
   if (!navigationReady || (detailQuery.isLoading && !detailQuery.data)) {
     return (
@@ -286,6 +359,7 @@ export function EmployeeProfileReviewDetailScreen() {
                 uri={detail.currentSnapshot.identityPhotoUrl}
                 emptyLabel={t("detail.noPhoto")}
                 unavailableLabel={t("detail.previewUnavailable")}
+                onError={handlePhotoError}
               />
               <PhotoPreview
                 label={t("detail.proposedValue")}
@@ -293,6 +367,7 @@ export function EmployeeProfileReviewDetailScreen() {
                 uri={detail.identityPhotoUrl}
                 emptyLabel={t("detail.noPhoto")}
                 unavailableLabel={t("detail.previewUnavailable")}
+                onError={handlePhotoError}
               />
             </View>
           </Card.Content>
@@ -401,12 +476,14 @@ function PhotoPreview({
   uri,
   emptyLabel,
   unavailableLabel,
+  onError,
 }: {
   label: string;
   hasPhoto: boolean;
   uri: string;
   emptyLabel: string;
   unavailableLabel: string;
+  onError: (url: string) => void;
 }) {
   return (
     <View style={styles.photoColumn}>
@@ -417,6 +494,7 @@ function PhotoPreview({
           style={styles.photo}
           resizeMode="contain"
           accessibilityLabel={label}
+          onError={() => onError(uri)}
         />
       ) : (
         <View style={styles.photoEmpty}>

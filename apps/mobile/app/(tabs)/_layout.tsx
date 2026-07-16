@@ -17,6 +17,7 @@ import {
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
 import {
   EMPLOYEE_PROFILE_REVIEW_ROUTE,
+  filterEmployeeProfileReviewRouteNames,
   getEmployeeProfileReviewAccess,
 } from "@/modules/employee-profile-review/access";
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
@@ -214,26 +215,6 @@ export default function TabsLayout() {
       ),
     [canCreateOrder, isWarehouseStaffOnly, navigationItems]
   );
-  const visibleRouteNames = useMemo(
-    () =>
-      new Set(
-        getVisibleTabRouteNames({
-          routeNames: accountRouteNames,
-          isDeviceMode,
-          canViewAttendanceManagement,
-        })
-      ),
-    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
-  );
-  const orderedVisibleRouteNames = useMemo(
-    () =>
-      getVisibleTabRouteNames({
-        routeNames: accountRouteNames,
-        isDeviceMode,
-        canViewAttendanceManagement,
-      }),
-    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
-  );
   const employeeProfileReviewAccess = useMemo(
     () => getEmployeeProfileReviewAccess({
       roleNames: currentUser?.roleNames,
@@ -242,6 +223,26 @@ export default function TabsLayout() {
       sessionKind,
     }),
     [currentUser?.permissions, currentUser?.roleNames, navigationItems, sessionKind]
+  );
+  const orderedVisibleRouteNames = useMemo(
+    () => filterEmployeeProfileReviewRouteNames(
+      getVisibleTabRouteNames({
+        routeNames: accountRouteNames,
+        isDeviceMode,
+        canViewAttendanceManagement,
+      }),
+      employeeProfileReviewAccess.allowed
+    ),
+    [
+      accountRouteNames,
+      canViewAttendanceManagement,
+      employeeProfileReviewAccess.allowed,
+      isDeviceMode,
+    ]
+  );
+  const visibleRouteNames = useMemo(
+    () => new Set(orderedVisibleRouteNames),
+    [orderedVisibleRouteNames]
   );
   const pendingReviewQuery = useQuery({
     queryKey: ["employeeProfileReview", "requests", "Pending", "count"],

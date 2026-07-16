@@ -19,6 +19,7 @@ const [tabsLayout, tabRoute, detailRoute, rootLayout, iosReviewMenu, detailScree
 
 assert.match(tabsLayout, /name="employee-profile-review"/);
 assert.match(tabsLayout, /tabs\.employeeProfileReview/);
+assert.match(tabsLayout, /filterEmployeeProfileReviewRouteNames/);
 assert.match(tabRoute, /EmployeeProfileReviewListScreen/);
 assert.match(detailRoute, /EmployeeProfileReviewDetailScreen/);
 assert.match(detailScreen, /maskSensitiveValue/);
@@ -29,6 +30,20 @@ assert.match(detailScreen, /getReviewFailureKind/);
 assert.match(detailScreen, /setStaleAfterConflict\(true\)/);
 assert.match(detailScreen, /detailQuery\.refetch\(\)/);
 assert.match(detailScreen, /isRejectReasonValid/);
+assert.match(detailScreen, /clearEmployeeProfileReviewDetailCache/);
+assert.match(detailScreen, /employeeProfileReviewDetailQueryKey/);
+assert.match(detailScreen, /gcTime:\s*0/);
+assert.match(detailScreen, /getReviewFailureKind\(detailQuery\.error\)/);
+assert.match(detailScreen, /setRevealedFields\(new Set\(\)\)/);
+assert.match(detailScreen, /leaveDetail\("\/\(tabs\)\/settings"\)/);
+assert.match(detailScreen, /getIdentityPhotoRefreshDelay/);
+assert.match(detailScreen, /createIdentityPhotoErrorRefetchGuard/);
+assert.match(detailScreen, /onError=/);
+assert.doesNotMatch(
+  detailScreen,
+  /queryClient\.setQueryData\(/,
+  "审核成功后不得把含完整敏感值的详情重新写入缓存"
+);
 assert.match(rootLayout, /name="employee-profile-review"/);
 assert.doesNotMatch(
   iosReviewMenu,

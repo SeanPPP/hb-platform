@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
   EMPLOYEE_PROFILE_REVIEW_PERMISSION,
+  filterEmployeeProfileReviewRouteNames,
   getEmployeeProfileReviewAccess,
 } from "./access";
+import { resolveDefaultTabRoute } from "../navigation/default-route";
 
 function access(
   roleNames: string[],
@@ -40,8 +42,16 @@ assert.equal(
   "role"
 );
 assert.equal(
-  access(["仓库经理", "店长"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).reason,
-  "role"
+  access(["WarehouseManager", "StoreManager"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).allowed,
+  true
+);
+assert.equal(
+  access(["仓库经理", "店长"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).allowed,
+  true
+);
+assert.equal(
+  access(["WarehouseManager", "经理"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).allowed,
+  true
 );
 assert.equal(
   access(["Admin"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION], ["employee-profile-review"], "iosReview").reason,
@@ -52,3 +62,30 @@ assert.equal(
   "device"
 );
 assert.equal(access(["User"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).reason, "role");
+
+assert.deepEqual(
+  filterEmployeeProfileReviewRouteNames(
+    ["home", "employee-profile-review", "settings"],
+    false
+  ),
+  ["home", "settings"]
+);
+assert.deepEqual(
+  filterEmployeeProfileReviewRouteNames(
+    ["home", "employee-profile-review", "settings"],
+    true
+  ),
+  ["home", "employee-profile-review", "settings"]
+);
+
+assert.equal(
+  resolveDefaultTabRoute({
+    isDeviceMode: false,
+    routeNames: filterEmployeeProfileReviewRouteNames(
+      ["employee-profile-review", "settings"],
+      false
+    ),
+  }),
+  "/(tabs)/settings",
+  "客户端审核 guard 拒绝时，审核入口不能成为默认路由"
+);

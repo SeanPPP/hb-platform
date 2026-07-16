@@ -9,7 +9,6 @@ const ADMIN_ROLE_ALIASES = new Set([
   "超级管理员",
 ]);
 const STORE_MANAGER_ROLE_ALIASES = new Set(["storemanager", "店长", "经理"]);
-const WAREHOUSE_MANAGER_ROLE_ALIASES = new Set(["warehousemanager", "仓库经理"]);
 
 export type EmployeeProfileReviewAccessReason =
   | "allowed"
@@ -57,11 +56,8 @@ export function getEmployeeProfileReviewAccess({
     return { allowed: true, reason: "allowed" };
   }
 
-  // 仓库经理不是分店敏感资料审核人；同时存在店长别名时也保持拒绝。
-  if (
-    hasAny(roles, WAREHOUSE_MANAGER_ROLE_ALIASES)
-    || !hasAny(roles, STORE_MANAGER_ROLE_ALIASES)
-  ) {
+  // 纯仓库经理不具备店长别名会自然拒绝；双角色按后端店长分店范围授权。
+  if (!hasAny(roles, STORE_MANAGER_ROLE_ALIASES)) {
     return { allowed: false, reason: "role" };
   }
 
@@ -72,4 +68,14 @@ export function getEmployeeProfileReviewAccess({
     return { allowed: false, reason: "menu" };
   }
   return { allowed: true, reason: "allowed" };
+}
+
+export function filterEmployeeProfileReviewRouteNames(
+  routeNames: Iterable<string>,
+  reviewAllowed: boolean
+) {
+  const orderedRouteNames = Array.from(routeNames);
+  return reviewAllowed
+    ? orderedRouteNames
+    : orderedRouteNames.filter((routeName) => routeName !== EMPLOYEE_PROFILE_REVIEW_ROUTE);
 }
