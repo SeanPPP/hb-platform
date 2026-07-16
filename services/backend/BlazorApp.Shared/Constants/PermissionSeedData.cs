@@ -85,6 +85,7 @@ namespace BlazorApp.Shared.Constants
                 Permissions.PosTerminal.Audit.View,
                 Permissions.Users.View,
                 Permissions.Users.ManagePosTerminalPermissions,
+                Permissions.EmployeeProfiles.ReviewSensitiveManagedStore,
             };
 
         public static IReadOnlyList<string> PosTerminalLineDiscountPermissionCodes { get; } =
@@ -192,6 +193,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Users.ResetPassword, "重置密码", "用户管理", "页面 /system/users - 重置用户登录密码"),
                 new(Permissions.EmployeeProfiles.View, "查看员工个人信息", "用户管理", "页面 /system/employee-profiles - 查看员工个人信息维护列表与详情"),
                 new(Permissions.EmployeeProfiles.Edit, "维护员工个人信息", "用户管理", "页面 /system/employee-profiles - 编辑员工身份、银行、养老金、地址等资料"),
+                new(Permissions.EmployeeProfiles.ReviewSensitiveManagedStore, "审核管理分店员工敏感资料", "用户管理", "移动端员工敏感资料审核 - 审核管理分店内普通员工提交的敏感资料变更"),
                 new(Permissions.Roles.View, "查看角色", "角色管理", "页面 /system/roles 与 /system/permissions - 查看角色和权限配置"),
                 new(Permissions.Roles.Create, "创建角色", "角色管理", "页面 /system/roles - 创建角色"),
                 new(Permissions.Roles.Edit, "编辑角色", "角色管理", "页面 /system/roles - 编辑角色基础信息"),
@@ -373,8 +375,8 @@ namespace BlazorApp.Shared.Constants
                 ),
                 new("StoreManager", StoreManagerPermissionCodes),
                 // 中文店长别名只补用户查看和 POS 权限管理，不扩大其他系统管理能力。
-                new("店长", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions }),
-                new("经理", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions }),
+                new("店长", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions, Permissions.EmployeeProfiles.ReviewSensitiveManagedStore }),
+                new("经理", new[] { Permissions.PosTerminal.Audit.View, Permissions.Users.View, Permissions.Users.ManagePosTerminalPermissions, Permissions.EmployeeProfiles.ReviewSensitiveManagedStore }),
                 new("Manager", AttendanceSelfServicePermissionCodes),
                 new("User", AttendanceSelfServicePermissionCodes),
                 new("StoreStaff", AttendanceSelfServicePermissionCodes),

@@ -103,6 +103,30 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void EmployeeProfileReviewPermissionSeeds_三个店长模板仅增加独立审核权限()
+        {
+            var permission = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.EmployeeProfiles.ReviewSensitiveManagedStore
+            );
+            Assert.Equal("审核管理分店员工敏感资料", permission.Name);
+
+            foreach (var roleName in new[] { "StoreManager", "店长", "经理" })
+            {
+                var template = Assert.Single(
+                    PermissionSeedData.RolePermissionTemplates,
+                    item => item.RoleName == roleName
+                );
+                Assert.Contains(
+                    Permissions.EmployeeProfiles.ReviewSensitiveManagedStore,
+                    template.PermissionCodes
+                );
+                Assert.DoesNotContain(Permissions.EmployeeProfiles.View, template.PermissionCodes);
+                Assert.DoesNotContain(Permissions.EmployeeProfiles.Edit, template.PermissionCodes);
+            }
+        }
+
+        [Fact]
         public async Task InitializePermissionSeedsAsync_迁移旧折扣关联后停用旧定义且保持幂等()
         {
             var role = CreateRole("role-store", "StoreManager", "Store manager");

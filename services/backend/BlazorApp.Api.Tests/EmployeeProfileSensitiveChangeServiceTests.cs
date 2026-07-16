@@ -7,6 +7,7 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -40,6 +41,10 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         });
         _db.CodeFirst.InitTables(
             typeof(User),
+            typeof(Store),
+            typeof(UserStore),
+            typeof(Role),
+            typeof(UserRole),
             typeof(EmployeeProfile),
             typeof(EmployeeProfileSensitiveChangeRequest),
             typeof(EmployeeImageUploadTicket)
@@ -152,10 +157,11 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             BankAccountNumber = "22226789",
             SuperannuationAccountNumber = "SUPER98765",
         });
-
-        var list = await service.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto());
-        var detail = await service.GetAdminDetailAsync(submitted.Data!.RequestId);
         var selfDetail = await service.GetSelfAsync();
+
+        var admin = CreateService("admin-user", "admin");
+        var list = await admin.GetAdminListAsync(new EmployeeProfileSensitiveChangeQueryDto());
+        var detail = await admin.GetAdminDetailAsync(submitted.Data!.RequestId);
 
         var listItems = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeProfileSensitiveChangeSummaryDto>>(
             list.Data!.Items
@@ -171,7 +177,9 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.Equal("SUPER98765", detail.Data.SuperannuationAccountNumber);
         Assert.Contains("bankAccountNumber", submitted.Data.ChangedFields);
         Assert.Contains("bankAccountNumber", detail.Data.ChangedFields);
-        Assert.Contains("bankAccountNumber", selfDetail.Data!.ChangedFields);
+        Assert.True(selfDetail.Success, selfDetail.Message);
+        Assert.NotNull(selfDetail.Data);
+        Assert.Contains("bankAccountNumber", selfDetail.Data.ChangedFields);
     }
 
     [Fact]
@@ -795,6 +803,127 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReviewScope_店长只可审核管理分店普通员工且仓库经理自审高权限目标全部拒绝()
+    {
+        await SeedReviewScopeAsync();
+        var storeManager = CreateService(
+            "manager-a",
+            "manager_a",
+            roles: ["StoreManager"],
+            storeGuids: ["store-a"]
+        );
+
+        var list = await storeManager.GetReviewListAsync(new()
+        {
+            Page = 1,
+            PageSize = 1,
+            Status = "Pending",
+        });
+
+        Assert.True(list.Success);
+        Assert.Equal(1, list.Data!.Total);
+        var summary = Assert.Single(list.Data.Items!);
+        Assert.Equal("employee-a", summary.UserGuid);
+        Assert.Equal(["A"], summary.StoreCodes);
+        Assert.Equal(["门店 A"], summary.StoreNames);
+        var serialized = JsonSerializer.Serialize(summary);
+        Assert.DoesNotContain("pending-a-account", serialized);
+        Assert.DoesNotContain("BankAccountNumber", serialized);
+
+        foreach (var forbiddenUser in new[] { "employee-b", "manager-a", "privileged-manager" })
+        {
+            var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.UserGUID == forbiddenUser);
+            var detail = await storeManager.GetReviewDetailAsync(request.RequestId);
+            Assert.False(detail.Success);
+            Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, detail.ErrorCode);
+        }
+
+        var storeBRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "employee-b");
+        var beforeProfile = await _db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == "employee-b");
+        var beforeRevision = beforeProfile.SensitiveRevision;
+        var beforeAccount = beforeProfile.BankACC;
+        var forbiddenApprove = await storeManager.ApproveAsync(
+            storeBRequest.RequestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+        var forbiddenReject = await storeManager.RejectAsync(
+            storeBRequest.RequestId,
+            new EmployeeProfileSensitiveRejectDto { Reason = "无权审核" }
+        );
+        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, forbiddenApprove.ErrorCode);
+        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, forbiddenReject.ErrorCode);
+        Assert.Equal(
+            EmployeeProfileSensitiveChangeStatus.Pending,
+            (await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.RequestId == storeBRequest.RequestId)).Status
+        );
+        var afterProfile = await _db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == "employee-b");
+        Assert.Equal(beforeRevision, afterProfile.SensitiveRevision);
+        Assert.Equal(beforeAccount, afterProfile.BankACC);
+
+        var storeARequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "employee-a");
+        Assert.True((await storeManager.ApproveAsync(
+            storeARequest.RequestId,
+            new EmployeeProfileSensitiveReviewDto { Reason = "已核验" }
+        )).Success);
+
+        var warehouseManager = CreateService(
+            "warehouse-manager",
+            "warehouse_manager",
+            roles: ["WarehouseManager"],
+            storeGuids: ["store-a"],
+            scopeIsAdmin: true
+        );
+        var warehouseList = await warehouseManager.GetReviewListAsync(new());
+        Assert.False(warehouseList.Success);
+        Assert.Equal(EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode, warehouseList.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ReviewDetail_管理员可查看全部且CurrentSnapshot返回当前正式敏感资料和安全照片地址()
+    {
+        await SeedReviewScopeAsync();
+        var profile = await _db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == "employee-b");
+        profile.BankBSB = "123-456";
+        profile.BankACC = "formal-current-account";
+        profile.SuperannuationCompanyName = "Current Super";
+        profile.SuperannuationCompanyCode = "CURRENT-CODE";
+        profile.SuperannuationAccount = "CURRENT-SUPER-ACCOUNT";
+        profile.IdentityType = "passport";
+        profile.IdentityId = "CURRENT-ID";
+        profile.IdentityPhotoObjectKey = "employee-profiles/employee-b/identity/current.png";
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var request = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "employee-b");
+        var admin = CreateService("admin-user", "admin", new FakeStorage());
+
+        var list = await admin.GetReviewListAsync(new() { Status = "Pending" });
+        var detail = await admin.GetReviewDetailAsync(request.RequestId);
+
+        Assert.True(list.Success);
+        Assert.Equal(4, list.Data!.Total);
+        Assert.True(detail.Success);
+        var snapshot = Assert.IsType<EmployeeProfileSensitiveSnapshotDto>(detail.Data!.CurrentSnapshot);
+        Assert.Equal("123-456", snapshot.BankBsb);
+        Assert.Equal("formal-current-account", snapshot.BankAccountNumber);
+        Assert.Equal("Current Super", snapshot.SuperannuationCompanyName);
+        Assert.Equal("CURRENT-CODE", snapshot.SuperannuationCompanyCode);
+        Assert.Equal("CURRENT-SUPER-ACCOUNT", snapshot.SuperannuationAccountNumber);
+        Assert.Equal("passport", snapshot.IdentityType);
+        Assert.Equal("CURRENT-ID", snapshot.IdentityId);
+        Assert.True(snapshot.HasIdentityPhoto);
+        Assert.NotNull(snapshot.IdentityPhotoUrl);
+        Assert.StartsWith("https://", snapshot.IdentityPhotoUrl);
+        Assert.Contains("q-sign-algorithm", snapshot.IdentityPhotoUrl);
+    }
+
+    [Fact]
     public async Task ReviewController_MapsConflictsAndMissingRequests_AndAdminEndpointsRequireRoleAndEditPolicy()
     {
         await SeedAsync();
@@ -806,7 +935,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         profile.SensitiveRevision++;
         await _db.Updateable(profile).ExecuteCommandAsync();
         var storage = new FakeStorage();
-        var sensitive = CreateService("admin-user", "admin", storage);
+        var sensitive = CreateService("admin-user", "admin", storage, roles: ["Admin"]);
         var current = CreateCurrentUser("admin-user", "admin");
         var context = CreateContext(_db);
         var profileService = new Mock<IEmployeeProfileService>();
@@ -832,8 +961,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             new EmployeeCashierBarcodeService(context, current),
             sensitive
         );
-
-        var action = await controller.ApproveSensitiveChangeRequest(
+        var action = await controller.ApproveReviewSensitiveChangeRequest(
             submitted.Data!.RequestId,
             new EmployeeProfileSensitiveReviewDto()
         );
@@ -883,6 +1011,41 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             Assert.Contains(attributes, item => item.Roles == "Admin,管理员");
             Assert.Contains(attributes, item => item.Policy == "EmployeeProfiles.Edit");
         }
+
+        foreach (var methodName in new[]
+        {
+            nameof(EmployeeProfilesController.GetReviewSensitiveChangeRequests),
+            nameof(EmployeeProfilesController.GetReviewSensitiveChangeRequest),
+            nameof(EmployeeProfilesController.ApproveReviewSensitiveChangeRequest),
+            nameof(EmployeeProfilesController.RejectReviewSensitiveChangeRequest),
+        })
+        {
+            var attributes = typeof(EmployeeProfilesController).GetMethod(methodName)!
+                .GetCustomAttributes<AuthorizeAttribute>()
+                .ToList();
+            Assert.Contains(attributes, item => item.Roles == "Admin,管理员,StoreManager,店长,经理");
+            Assert.Contains(
+                attributes,
+                item => item.Policy == Permissions.EmployeeProfiles.ReviewSensitiveManagedStore
+            );
+        }
+        Assert.IsType<NotFoundObjectResult>(await controller.GetReviewSensitiveChangeRequest(999999));
+
+        var forbiddenController = CreateController(
+            CreateService("manager-a", "manager_a", roles: ["StoreManager"], storeGuids: ["store-a"]),
+            storage
+        );
+        var forbiddenRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.UserGUID == "user-self");
+        Assert.IsType<ObjectResult>(await forbiddenController.GetReviewSensitiveChangeRequest(
+            forbiddenRequest.RequestId
+        ));
+        Assert.Equal(
+            StatusCodes.Status403Forbidden,
+            ((ObjectResult)await forbiddenController.GetReviewSensitiveChangeRequest(
+                forbiddenRequest.RequestId
+            )).StatusCode
+        );
     }
 
     public void Dispose()
@@ -915,18 +1078,139 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedReviewScopeAsync()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var userGuid in new[]
+        {
+            "employee-a", "employee-b", "manager-a", "privileged-manager", "warehouse-manager",
+        })
+        {
+            await _db.Insertable(new User
+            {
+                UserGUID = userGuid,
+                Username = userGuid,
+                Email = $"{userGuid}@example.com",
+                PasswordHash = "hashed",
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = userGuid,
+                BankACC = $"formal-{userGuid}",
+                SensitiveRevision = 2,
+                CreatedAt = now,
+                UpdatedAt = now,
+            }).ExecuteCommandAsync();
+        }
+        await _db.Insertable(new[]
+        {
+            new Store { StoreGUID = "store-a", StoreCode = "A", StoreName = "门店 A", CreatedAt = now, UpdatedAt = now },
+            new Store { StoreGUID = "store-b", StoreCode = "B", StoreName = "门店 B", CreatedAt = now, UpdatedAt = now },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new UserStore { UserGUID = "employee-a", StoreGUID = "store-a", IsPrimary = true, CreatedAt = now, UpdatedAt = now },
+            new UserStore { UserGUID = "employee-a", StoreGUID = "store-b", CreatedAt = now, UpdatedAt = now },
+            new UserStore { UserGUID = "employee-b", StoreGUID = "store-b", IsPrimary = true, CreatedAt = now, UpdatedAt = now },
+            new UserStore { UserGUID = "manager-a", StoreGUID = "store-a", IsPrimary = true, CreatedAt = now, UpdatedAt = now },
+            new UserStore { UserGUID = "privileged-manager", StoreGUID = "store-a", IsPrimary = true, CreatedAt = now, UpdatedAt = now },
+        }).ExecuteCommandAsync();
+        var role = new Role
+        {
+            RoleGUID = "role-store-manager",
+            RoleName = "StoreManager",
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        await _db.Insertable(role).ExecuteCommandAsync();
+        await _db.Insertable(new UserRole
+        {
+            UserGUID = "privileged-manager",
+            RoleGUID = role.RoleGUID,
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreatePendingRequest("employee-a", "pending-a-account", now),
+            CreatePendingRequest("employee-b", "pending-b-account", now.AddMinutes(1)),
+            CreatePendingRequest("manager-a", "pending-self-account", now.AddMinutes(2)),
+            CreatePendingRequest("privileged-manager", "pending-privileged-account", now.AddMinutes(3)),
+        }).ExecuteCommandAsync();
+    }
+
+    private static EmployeeProfileSensitiveChangeRequest CreatePendingRequest(
+        string userGuid,
+        string bankAccountNumber,
+        DateTime submittedAt
+    ) => new()
+    {
+        UserGUID = userGuid,
+        BankAccountNumber = bankAccountNumber,
+        BaseSensitiveRevision = 2,
+        Status = EmployeeProfileSensitiveChangeStatus.Pending,
+        SubmittedAt = submittedAt,
+        SubmittedBy = userGuid,
+        ChangedFieldsJson = "[\"bankAccountNumber\"]",
+    };
+
     private EmployeeProfileSensitiveChangeService CreateService(
         string userGuid,
         string username,
         TencentCloudUploadService? storage = null,
-        ISqlSugarClient? db = null
+        ISqlSugarClient? db = null,
+        IReadOnlyList<string>? roles = null,
+        IReadOnlyList<string>? storeGuids = null,
+        bool scopeIsAdmin = false
     )
     {
+        roles ??= username.Equals("admin", StringComparison.OrdinalIgnoreCase) ? ["Admin"] : [];
+        var accessor = CreateHttpContextAccessor(userGuid, username, roles);
+        var scope = new Mock<ICurrentUserManageableStoreScopeService>();
+        scope.Setup(service => service.GetScopeAsync()).ReturnsAsync(new CurrentUserManageableStoreScope
+        {
+            IsAllowed = roles.Count > 0,
+            IsAuthenticated = true,
+            IsAdmin = scopeIsAdmin || roles.Any(role => role is "Admin" or "管理员"),
+            UserGuid = userGuid,
+            ActorLabel = username,
+            StoreGuids = storeGuids ?? [],
+        });
         return new EmployeeProfileSensitiveChangeService(
             CreateContext(db ?? _db),
-            CreateCurrentUser(userGuid, username),
+            new CurrentUserService(accessor),
             NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
+            scope.Object,
+            accessor,
             storage
+        );
+    }
+
+    private EmployeeProfilesController CreateController(
+        EmployeeProfileSensitiveChangeService sensitive,
+        TencentCloudUploadService storage
+    )
+    {
+        var current = Mock.Of<ICurrentUserService>(service =>
+            service.GetCurrentUserGuid() == "manager-a"
+            && service.GetCurrentUsername() == "manager_a"
+        );
+        var context = CreateContext(_db);
+        return new EmployeeProfilesController(
+            Mock.Of<IEmployeeProfileService>(),
+            NullLogger<EmployeeProfilesController>.Instance,
+            new EmployeeProfileMediaService(
+                context,
+                current,
+                storage,
+                NullLogger<EmployeeProfileMediaService>.Instance,
+                sensitive
+            ),
+            new EmployeeCashierBarcodeService(context, current),
+            sensitive
         );
     }
 
@@ -1037,6 +1321,17 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     );
 
     private static CurrentUserService CreateCurrentUser(string userGuid, string username)
+        => new(CreateHttpContextAccessor(
+            userGuid,
+            username,
+            username.Equals("admin", StringComparison.OrdinalIgnoreCase) ? ["Admin"] : []
+        ));
+
+    private static HttpContextAccessor CreateHttpContextAccessor(
+        string userGuid,
+        string username,
+        IReadOnlyList<string> roles
+    )
     {
         var accessor = new HttpContextAccessor
         {
@@ -1048,10 +1343,10 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
                     new Claim("userId", userGuid),
                     new Claim(ClaimTypes.NameIdentifier, userGuid),
                     new Claim(ClaimTypes.Name, username),
-                }, "TestAuth")),
+                }.Concat(roles.Select(role => new Claim(ClaimTypes.Role, role))), "TestAuth")),
             },
         };
-        return new CurrentUserService(accessor);
+        return accessor;
     }
 
     private EmployeeProfileService CreateProfileService(

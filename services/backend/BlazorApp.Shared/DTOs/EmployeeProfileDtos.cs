@@ -199,6 +199,21 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? ReviewedAt { get; set; }
         public string? ReviewReason { get; set; }
         public List<string> ChangedFields { get; set; } = new();
+        public List<string> StoreCodes { get; set; } = new();
+        public List<string> StoreNames { get; set; } = new();
+    }
+
+    public sealed class EmployeeProfileSensitiveSnapshotDto
+    {
+        public string? BankBsb { get; set; }
+        public string? BankAccountNumber { get; set; }
+        public string? SuperannuationCompanyName { get; set; }
+        public string? SuperannuationCompanyCode { get; set; }
+        public string? SuperannuationAccountNumber { get; set; }
+        public string? IdentityType { get; set; }
+        public string? IdentityId { get; set; }
+        public bool HasIdentityPhoto { get; set; }
+        public string? IdentityPhotoUrl { get; set; }
     }
 
     public sealed class EmployeeProfileSensitiveChangeDetailDto
@@ -216,6 +231,7 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? IdentityPhotoUrlExpiresAt { get; set; }
         public string? SubmittedBy { get; set; }
         public string? ReviewedBy { get; set; }
+        public EmployeeProfileSensitiveSnapshotDto? CurrentSnapshot { get; set; }
     }
 
     public sealed class EmployeeCashierBarcodePrintConfirmationRequest
