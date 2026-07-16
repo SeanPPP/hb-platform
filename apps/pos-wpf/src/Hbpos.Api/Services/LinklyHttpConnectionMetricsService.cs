@@ -87,20 +87,39 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
 
         foreach (var group in candidates.GroupBy(candidate => candidate.Origin))
         {
-            if (group.Skip(1).Any())
+            var assignments = group.ToArray();
+            if (assignments.Length > 1)
             {
-                var owners = string.Join(",", group
+                var owners = string.Join(",", assignments
                     .Select(candidate => $"{candidate.Environment}/{candidate.Role}")
                     .Order(StringComparer.Ordinal));
+                var environments = assignments
+                    .Select(candidate => candidate.Environment)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var environment = environments.Length == 1 ? environments[0] : "Shared";
+                var sharedAssignment = new OriginAssignment(
+                    environment,
+                    ConnectionRole.Shared,
+                    assignments[0].Origin,
+                    assignments[0].DisplayOrigin);
+                _origins.Add(sharedAssignment.Origin, sharedAssignment);
+                foreach (var owner in assignments)
+                {
+                    _roleOrigins.TryAdd(
+                        new EnvironmentRole(owner.Environment, owner.Role),
+                        owner.DisplayOrigin);
+                }
+
                 _logger.LogWarning(
-                    "{Prefix}duplicate Linkly origin excluded origin={Origin} owners={Owners}",
+                    "{Prefix}duplicate Linkly origin counted as shared origin={Origin} owners={Owners}",
                     LogPrefix,
-                    group.First().DisplayOrigin,
+                    sharedAssignment.DisplayOrigin,
                     owners);
                 continue;
             }
 
-            var assignment = group.Single();
+            var assignment = assignments[0];
             _origins.Add(assignment.Origin, assignment);
             _roleOrigins.Add(new EnvironmentRole(assignment.Environment, assignment.Role), assignment.DisplayOrigin);
         }
@@ -114,11 +133,10 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
         if (!TryNormalizeOrigin(value, out var origin, out var displayOrigin))
         {
             _logger.LogWarning(
-                "{Prefix}invalid Linkly URL skipped environment={Environment} role={Role} url={Url}",
+                "{Prefix}invalid Linkly URL skipped environment={Environment} role={Role} url=<invalid>",
                 LogPrefix,
                 environment,
-                role,
-                string.IsNullOrWhiteSpace(value) ? "<empty>" : value);
+                role);
             return null;
         }
 
@@ -236,7 +254,13 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
             // 固定窗口只合并首个 250ms 内的事件，避免持续流量无限推迟首次连接快照。
             _flushPending = false;
 
-            foreach (var environment in new[] { "Production", "Sandbox" })
+            var environments = new[] { "Production", "Sandbox" }
+                .Concat(_connections.Keys.Select(key => key.Environment))
+                .Concat(_lastLoggedTotals.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            foreach (var environment in environments)
             {
                 var relevant = _connections
                     .Where(pair => pair.Key.Environment == environment && pair.Value > 0)
@@ -247,8 +271,11 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
                 var restConnections = relevant
                     .Where(pair => pair.Key.Role == ConnectionRole.Rest)
                     .Sum(pair => pair.Value);
-                var totalConnections = tokenConnections + restConnections;
-                var totals = new ConnectionTotals(tokenConnections, restConnections, totalConnections);
+                var sharedConnections = relevant
+                    .Where(pair => pair.Key.Role == ConnectionRole.Shared)
+                    .Sum(pair => pair.Value);
+                var totalConnections = tokenConnections + restConnections + sharedConnections;
+                var totals = new ConnectionTotals(tokenConnections, restConnections, sharedConnections, totalConnections);
 
                 if (!_lastLoggedTotals.TryGetValue(environment, out var previous))
                 {
@@ -274,6 +301,12 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
                         .Sum(pair => pair.Value),
                     GetRoleOrigin(environment, ConnectionRole.Token),
                     GetRoleOrigin(environment, ConnectionRole.Rest),
+                    relevant
+                        .Where(pair => pair.Key.Role == ConnectionRole.Shared)
+                        .Select(pair => _origins[pair.Key.Origin].DisplayOrigin)
+                        .Distinct(StringComparer.Ordinal)
+                        .Order(StringComparer.Ordinal)
+                        .ToArray(),
                     relevant.Select(pair => pair.Key.PeerAddress).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     relevant.Select(pair => pair.Key.ProtocolVersion).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
             }
@@ -298,6 +331,7 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
             {
                 tokenConnections = snapshot.Totals.Token,
                 restConnections = snapshot.Totals.Rest,
+                sharedConnections = snapshot.Totals.Shared,
                 totalConnections = snapshot.Totals.Total,
                 activeConnections = snapshot.Active,
                 idleConnections = snapshot.Idle,
@@ -305,6 +339,7 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
                 withinLimit = snapshot.Totals.Total <= 2,
                 tokenOrigin = snapshot.TokenOrigin,
                 restOrigin = snapshot.RestOrigin,
+                sharedOrigins = snapshot.SharedOrigins,
                 peerAddresses = snapshot.PeerAddresses,
                 protocolVersions = snapshot.ProtocolVersions
             }
@@ -454,7 +489,8 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
     private enum ConnectionRole
     {
         Token,
-        Rest
+        Rest,
+        Shared
     }
 
     private readonly record struct OriginKey(string Scheme, string Host, int Port);
@@ -482,7 +518,7 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
         string PeerAddress,
         string ProtocolVersion);
 
-    private readonly record struct ConnectionTotals(long Token, long Rest, long Total);
+    private readonly record struct ConnectionTotals(long Token, long Rest, long Shared, long Total);
 
     private sealed record LogSnapshot(
         string Environment,
@@ -491,6 +527,7 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
         long Idle,
         string? TokenOrigin,
         string? RestOrigin,
+        IReadOnlyList<string> SharedOrigins,
         IReadOnlyList<string> PeerAddresses,
         IReadOnlyList<string> ProtocolVersions);
 }

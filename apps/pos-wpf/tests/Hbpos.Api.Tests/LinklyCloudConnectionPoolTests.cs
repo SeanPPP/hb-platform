@@ -323,6 +323,7 @@ public sealed class LinklyCloudConnectionPoolTests
     [Fact]
     public async Task Metrics_service_warns_and_starts_when_urls_are_invalid_or_share_an_origin()
     {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using var sharedServer = new KeepAliveHttpServer();
         var logger = new RecordingLogger<LinklyHttpConnectionMetricsService>();
         var sharedOrigin = sharedServer.BaseAddress.ToString();
@@ -338,13 +339,20 @@ public sealed class LinklyCloudConnectionPoolTests
         var exception = await Record.ExceptionAsync(() => service.StartAsync(CancellationToken.None));
 
         Assert.Null(exception);
-        Assert.Contains(logger.Entries, entry => entry.Level == LogLevel.Warning && entry.Message.Contains("not-a-valid-url", StringComparison.Ordinal));
+        Assert.Contains(logger.Entries, entry => entry.Level == LogLevel.Warning && entry.Message.Contains("<invalid>", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Entries, entry => entry.Message.Contains("not-a-valid-url", StringComparison.Ordinal));
         Assert.Contains(logger.Entries, entry => entry.Level == LogLevel.Warning && entry.Message.Contains(sharedServer.BaseAddress.Authority, StringComparison.Ordinal));
         using var handler = new SocketsHttpHandler();
         using var client = new HttpClient(handler);
         await SendRequestAsync(client, sharedServer.BaseAddress, CancellationToken.None);
-        await Task.Delay(TimeSpan.FromMilliseconds(500));
-        Assert.Empty(logger.Snapshots);
+        var snapshot = await WaitForSnapshotAsync(
+            logger,
+            value => value.Environment == "Shared" && value.TotalConnections == 1,
+            timeout.Token);
+        Assert.Equal(0, snapshot.TokenConnections);
+        Assert.Equal(0, snapshot.RestConnections);
+        Assert.Equal(1, snapshot.SharedConnections);
+        Assert.Equal([ToOrigin(sharedServer.BaseAddress)], snapshot.SharedOrigins);
         await service.StopAsync(CancellationToken.None);
     }
 
@@ -655,6 +663,7 @@ public sealed class LinklyCloudConnectionPoolTests
                 root.GetProperty("environment").GetString()!,
                 details.GetProperty("tokenConnections").GetInt64(),
                 details.GetProperty("restConnections").GetInt64(),
+                details.GetProperty("sharedConnections").GetInt64(),
                 details.GetProperty("totalConnections").GetInt64(),
                 details.GetProperty("activeConnections").GetInt64(),
                 details.GetProperty("idleConnections").GetInt64(),
@@ -662,6 +671,7 @@ public sealed class LinklyCloudConnectionPoolTests
                 details.GetProperty("withinLimit").GetBoolean(),
                 details.GetProperty("tokenOrigin").GetString(),
                 details.GetProperty("restOrigin").GetString(),
+                details.GetProperty("sharedOrigins").EnumerateArray().Select(value => value.GetString()!).ToArray(),
                 details.GetProperty("peerAddresses").EnumerateArray().Select(value => value.GetString()!).ToArray(),
                 details.GetProperty("protocolVersions").EnumerateArray().Select(value => value.GetString()!).ToArray());
         }
@@ -679,6 +689,7 @@ public sealed class LinklyCloudConnectionPoolTests
         string Environment,
         long TokenConnections,
         long RestConnections,
+        long SharedConnections,
         long TotalConnections,
         long ActiveConnections,
         long IdleConnections,
@@ -686,6 +697,7 @@ public sealed class LinklyCloudConnectionPoolTests
         bool WithinLimit,
         string? TokenOrigin,
         string? RestOrigin,
+        IReadOnlyList<string> SharedOrigins,
         IReadOnlyList<string> PeerAddresses,
         IReadOnlyList<string> ProtocolVersions);
 }
