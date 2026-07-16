@@ -95,11 +95,21 @@ public static class ServiceRegistration
         services.AddHttpClient<ILinklyCloudBackendAsyncTransport, HttpLinklyCloudBackendAsyncTransport>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
-        });
+        })
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                // REST 请求共用一条持久连接，避免单个环境持续扩张真实 TCP 连接池。
+                handler.MaxConnectionsPerServer = 1;
+            });
         services.AddHttpClient<ILinklyCloudBackendTokenProvider, HttpLinklyCloudBackendTokenProvider>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
-        });
+        })
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                // Token 请求独立共用一条持久连接，与 REST 池合计最多保留两条连接。
+                handler.MaxConnectionsPerServer = 1;
+            });
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaSqlExecutor, SqlSugarLinklyCloudBackendAsyncSchemaSqlExecutor>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaInitializer, SqlSugarLinklyCloudBackendAsyncSchemaInitializer>();
