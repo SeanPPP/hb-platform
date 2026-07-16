@@ -1,12 +1,15 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useFocusEffect, useRouter } from "expo-router";
 import { ActivityIndicator, Badge, Button, Card, Chip, Text, useTheme } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { getEmployeeProfileReviewAccess } from "./access";
 import { getEmployeeProfileReviewRequestsApi } from "./api";
+import { clearEmployeeProfileReviewListCache } from "./review-cache";
+import { getReviewFailureKind } from "./review-logic";
+import { mergeUniqueEmployeeProfileReviewPages } from "./pagination";
 import type { EmployeeProfileReviewSummary } from "./types";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -31,12 +34,15 @@ function formatDateTime(value: string, language: string) {
 
 export function EmployeeProfileReviewListScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const theme = useTheme();
   const { t, language } = useAppTranslation("employeeProfileReview");
   const currentUser = useAuthStore((state) => state.user);
   const sessionKind = useAuthStore((state) => state.sessionKind);
   const navigationItems = useAppNavigationStore((state) => state.items);
   const navigationReady = useAppNavigationStore((state) => state.isReady);
+  const mountedRef = useRef(true);
+  const [listPrivacyHidden, setListPrivacyHidden] = useState(false);
   const reviewAccess = useMemo(
     () => getEmployeeProfileReviewAccess({
       roleNames: currentUser?.roleNames,
@@ -62,11 +68,42 @@ export function EmployeeProfileReviewListScreen() {
   });
 
   useEffect(() => {
-    if (navigationReady && !reviewAccess.allowed) {
-      // 直接深链也必须在发起详情请求前关闭，最终授权仍由后端执行。
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const clearListAndExit = useCallback(async () => {
+    if (mountedRef.current) {
+      setListPrivacyHidden(true);
+    }
+    await clearEmployeeProfileReviewListCache(queryClient);
+    if (mountedRef.current) {
       router.replace("/(tabs)/settings");
     }
-  }, [navigationReady, reviewAccess.allowed, router]);
+  }, [queryClient, router]);
+
+  const listScopeInvalidated = getReviewFailureKind(reviewQuery.error) === "forbidden";
+
+  useEffect(() => {
+    if (navigationReady && (!reviewAccess.allowed || listScopeInvalidated)) {
+      // 直接深链也必须在发起详情请求前关闭，最终授权仍由后端执行。
+      void clearListAndExit();
+    }
+  }, [clearListAndExit, listScopeInvalidated, navigationReady, reviewAccess.allowed]);
+
+  useFocusEffect(useCallback(() => {
+    if (!navigationReady || !reviewAccess.allowed || listScopeInvalidated) {
+      return;
+    }
+    setListPrivacyHidden(false);
+    // offset 分页重新聚焦时丢弃旧后续页，从新首页重新建立稳定分页窗口。
+    void queryClient.resetQueries({
+      queryKey: employeeProfileReviewListQueryKey,
+      exact: true,
+    });
+  }, [listScopeInvalidated, navigationReady, queryClient, reviewAccess.allowed]));
 
   const openDetail = (item: EmployeeProfileReviewSummary) => {
     router.push({
@@ -74,6 +111,10 @@ export function EmployeeProfileReviewListScreen() {
       params: { requestId: String(item.requestId) },
     });
   };
+
+  if (listPrivacyHidden || listScopeInvalidated) {
+    return <SafeAreaView style={styles.centered} edges={["top"]} />;
+  }
 
   if (!navigationReady || (reviewQuery.isLoading && !reviewQuery.data)) {
     return (
@@ -107,7 +148,7 @@ export function EmployeeProfileReviewListScreen() {
     );
   }
 
-  const items = reviewQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = mergeUniqueEmployeeProfileReviewPages(reviewQuery.data?.pages ?? []);
   const total = reviewQuery.data?.pages[0]?.total ?? 0;
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={["top"]}>

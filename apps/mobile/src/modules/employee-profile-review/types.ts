@@ -66,3 +66,9 @@ export interface EmployeeProfileReviewQuery {
   status?: EmployeeProfileReviewStatus;
   search?: string;
 }
+
+/** Mutation 只保留审核结果标识，完整敏感详情绝不进入 MutationCache。 */
+export interface EmployeeProfileReviewMutationResult {
+  requestId: number;
+  status: EmployeeProfileReviewStatus;
+}

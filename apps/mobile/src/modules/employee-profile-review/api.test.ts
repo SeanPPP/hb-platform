@@ -96,9 +96,14 @@ const api = createEmployeeProfileReviewApi({
 
 await api.getRequests({ page: 2, pageSize: 10, status: "Pending" });
 await api.getDetail(42);
-await api.approve(42, " checked ");
-await api.reject(42, " incorrect account ");
+const approveResult = await api.approve(42, " checked ");
+const rejectResult = await api.reject(42, " incorrect account ");
 await assert.rejects(() => api.reject(42, "   "), /reason is required/i);
+
+assert.deepEqual(approveResult, { requestId: 42, status: "Pending" });
+assert.deepEqual(rejectResult, { requestId: 42, status: "Pending" });
+assert.equal("bankAccountNumber" in approveResult, false);
+assert.equal("identityPhotoUrl" in rejectResult, false);
 
 assert.deepEqual(calls, [
   {

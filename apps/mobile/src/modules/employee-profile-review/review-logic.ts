@@ -40,6 +40,10 @@ export function getReviewFailureKind(error: unknown): ReviewFailureKind {
   if (status === 403) {
     return "forbidden";
   }
+  if (status === 404 && readErrorCode(error) === "REQUEST_NOT_FOUND") {
+    // 后端为防枚举会把范围撤销伪装成不存在，客户端必须按权限失效清理。
+    return "forbidden";
+  }
   if (status === 409) {
     const code = readErrorCode(error);
     if (

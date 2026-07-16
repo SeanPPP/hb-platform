@@ -24,4 +24,10 @@ assert.equal(
   "conflict"
 );
 assert.equal(getReviewFailureKind({ response: { status: 403 } }), "forbidden");
+assert.equal(
+  getReviewFailureKind({
+    response: { status: 404, data: { errorCode: "REQUEST_NOT_FOUND" } },
+  }),
+  "forbidden"
+);
 assert.equal(getReviewFailureKind(new Error("network")), "other");

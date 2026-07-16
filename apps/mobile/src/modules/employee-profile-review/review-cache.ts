@@ -13,3 +13,9 @@ export async function clearEmployeeProfileReviewDetailCache(
   await queryClient.cancelQueries({ queryKey, exact: true });
   queryClient.removeQueries({ queryKey, exact: true });
 }
+
+export async function clearEmployeeProfileReviewListCache(queryClient: QueryClient) {
+  const queryKey = ["employeeProfileReview", "requests"] as const;
+  await queryClient.cancelQueries({ queryKey });
+  queryClient.removeQueries({ queryKey });
+}

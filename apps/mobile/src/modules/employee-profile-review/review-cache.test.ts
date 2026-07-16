@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { QueryClient } from "@tanstack/react-query";
 import {
   clearEmployeeProfileReviewDetailCache,
+  clearEmployeeProfileReviewListCache,
   employeeProfileReviewDetailQueryKey,
 } from "./review-cache";
 
@@ -17,6 +18,18 @@ async function main() {
 
   await clearEmployeeProfileReviewDetailCache(queryClient, 42);
   assert.equal(queryClient.getQueryData(queryKey), undefined);
+
+  queryClient.setQueryData(["employeeProfileReview", "requests", "Pending"], {
+    items: [{ requestId: 42, username: "employee42" }],
+  });
+  queryClient.setQueryData(["employeeProfileReview", "requests", "Pending", "count"], {
+    total: 1,
+  });
+  await clearEmployeeProfileReviewListCache(queryClient);
+  assert.equal(
+    queryClient.getQueryCache().findAll({ queryKey: ["employeeProfileReview", "requests"] }).length,
+    0
+  );
 }
 
 void main();

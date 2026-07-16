@@ -68,5 +68,12 @@
     "rejectSuccess": "The request was rejected.",
     "conflict": "This request or the confirmed details changed. The latest state was loaded and the old action is disabled.",
     "reviewFailed": "The review could not be saved. Try again."
+  },
+  "privacy": {
+    "title": "Sensitive details hidden",
+    "description": "Rechecking your review access before showing this page.",
+    "refreshing": "Rechecking review access",
+    "refreshFailed": "The details remain hidden because access could not be rechecked.",
+    "retry": "Check access again"
   }
 }

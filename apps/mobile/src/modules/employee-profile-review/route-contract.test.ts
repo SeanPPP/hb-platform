@@ -30,6 +30,10 @@ assert.match(detailScreen, /getReviewFailureKind/);
 assert.match(detailScreen, /setStaleAfterConflict\(true\)/);
 assert.match(detailScreen, /detailQuery\.refetch\(\)/);
 assert.match(detailScreen, /isRejectReasonValid/);
+assert.match(detailScreen, /AppState\.addEventListener/);
+assert.match(detailScreen, /createEmployeeProfileReviewAppStateHandler/);
+assert.match(detailScreen, /privacyShielded/);
+assert.match(detailScreen, /queryClient\.fetchQuery/);
 assert.match(detailScreen, /clearEmployeeProfileReviewDetailCache/);
 assert.match(detailScreen, /employeeProfileReviewDetailQueryKey/);
 assert.match(detailScreen, /gcTime:\s*0/);
@@ -55,6 +59,10 @@ assert.doesNotMatch(
 const listScreen = await read("src/modules/employee-profile-review/employee-profile-review-list-screen.tsx");
 assert.doesNotMatch(listScreen, /\.bankAccountNumber|\.superannuationAccountNumber|\.identityId/);
 assert.match(listScreen, /getEmployeeProfileReviewAccess/);
+assert.match(listScreen, /clearEmployeeProfileReviewListCache/);
+assert.match(listScreen, /mergeUniqueEmployeeProfileReviewPages/);
+assert.match(listScreen, /useFocusEffect/);
+assert.match(listScreen, /resetQueries/);
 assert.match(detailRoute, /EmployeeProfileReviewDetailScreen/);
 
 }

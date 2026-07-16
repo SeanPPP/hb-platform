@@ -68,5 +68,12 @@
     "rejectSuccess": "申请已拒绝。",
     "conflict": "申请或正式资料已变化，已加载最新状态并停用旧操作。",
     "reviewFailed": "审核保存失败，请重试。"
+  },
+  "privacy": {
+    "title": "敏感资料已隐藏",
+    "description": "正在重新核验审核权限，通过后才会显示资料。",
+    "refreshing": "正在重新核验审核权限",
+    "refreshFailed": "暂时无法重新核验权限，敏感资料继续隐藏。",
+    "retry": "重新核验权限"
   }
 }

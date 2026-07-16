@@ -1,5 +1,6 @@
 import type {
   EmployeeProfileReviewDetail,
+  EmployeeProfileReviewMutationResult,
   EmployeeProfileReviewPage,
   EmployeeProfileReviewQuery,
   EmployeeProfileReviewStatus,
@@ -151,6 +152,19 @@ export function normalizeEmployeeProfileReviewDetail(payload: unknown): Employee
   };
 }
 
+export function normalizeEmployeeProfileReviewMutationResult(
+  payload: unknown
+): EmployeeProfileReviewMutationResult {
+  const data = asRecord(payload);
+  const requestId = asPositiveInteger(read(data, "requestId", "RequestId"));
+  const status = asStatus(read(data, "status", "Status"));
+  if (!requestId || !status) {
+    throw new Error("Employee profile review mutation response is invalid");
+  }
+  // 不复用详情 normalizer；显式白名单阻止账号、证件号和照片 URL 进入 MutationCache。
+  return { requestId, status };
+}
+
 export function createEmployeeProfileReviewApi(client: ReviewHttpClient) {
   return {
     async getRequests(query: EmployeeProfileReviewQuery = {}) {
@@ -172,7 +186,7 @@ export function createEmployeeProfileReviewApi(client: ReviewHttpClient) {
       const response = await client.post(`${REVIEW_BASE_PATH}/${requestId}/approve`, {
         reason: reason?.trim() || undefined,
       });
-      return normalizeEmployeeProfileReviewDetail(response.data);
+      return normalizeEmployeeProfileReviewMutationResult(response.data);
     },
     async reject(requestId: number, reason: string) {
       const normalizedReason = reason.trim();
@@ -182,7 +196,7 @@ export function createEmployeeProfileReviewApi(client: ReviewHttpClient) {
       const response = await client.post(`${REVIEW_BASE_PATH}/${requestId}/reject`, {
         reason: normalizedReason,
       });
-      return normalizeEmployeeProfileReviewDetail(response.data);
+      return normalizeEmployeeProfileReviewMutationResult(response.data);
     },
   };
 }
