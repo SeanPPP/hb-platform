@@ -16,6 +16,7 @@ export type AppTabPath =
   | "/(tabs)/product-query"
   | "/(tabs)/users"
   | "/(tabs)/employee-profile"
+  | "/(tabs)/employee-profile-review"
   | "/(tabs)/device-management"
   | "/(tabs)/settings";
 
@@ -37,6 +38,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "product-query": "/(tabs)/product-query",
   users: "/(tabs)/users",
   "employee-profile": "/(tabs)/employee-profile",
+  "employee-profile-review": "/(tabs)/employee-profile-review",
   "device-management": "/(tabs)/device-management",
   settings: "/(tabs)/settings",
 };
@@ -46,6 +48,7 @@ export const SETTINGS_FALLBACK_ROUTE_NAME = "settings";
 
 const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "attendance-management",
+  "employee-profile-review",
   "device-management",
   "reports",
 ]);

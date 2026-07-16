@@ -50,6 +50,7 @@
     "productQuery": "Products",
     "users": "Users",
     "employeeProfile": "Employee",
+    "employeeProfileReview": "Profile Review",
     "deviceManagement": "Devices",
     "settings": "Settings"
   },

@@ -6,6 +6,7 @@ import cartEn from "@/locales/en/screens/cart.json";
 import domesticPurchaseEn from "@/locales/en/screens/domesticPurchase.json";
 import deviceManagementEn from "@/locales/en/screens/deviceManagement.json";
 import employeeProfileEn from "@/locales/en/screens/employeeProfile.json";
+import employeeProfileReviewEn from "@/locales/en/screens/employeeProfileReview.json";
 import homeEn from "@/locales/en/screens/home.json";
 import installmentOrdersEn from "@/locales/en/screens/installmentOrders.json";
 import localSupplierInvoicesEn from "@/locales/en/screens/localSupplierInvoices.json";
@@ -25,6 +26,7 @@ import cartZh from "@/locales/zh/screens/cart.json";
 import domesticPurchaseZh from "@/locales/zh/screens/domesticPurchase.json";
 import deviceManagementZh from "@/locales/zh/screens/deviceManagement.json";
 import employeeProfileZh from "@/locales/zh/screens/employeeProfile.json";
+import employeeProfileReviewZh from "@/locales/zh/screens/employeeProfileReview.json";
 import homeZh from "@/locales/zh/screens/home.json";
 import installmentOrdersZh from "@/locales/zh/screens/installmentOrders.json";
 import localSupplierInvoicesZh from "@/locales/zh/screens/localSupplierInvoices.json";
@@ -57,6 +59,7 @@ const resources = {
     domesticPurchase: domesticPurchaseZh,
     deviceManagement: deviceManagementZh,
     employeeProfile: employeeProfileZh,
+    employeeProfileReview: employeeProfileReviewZh,
     orders: ordersZh,
     advertisements: advertisementsZh,
     promotions: promotionsZh,
@@ -78,6 +81,7 @@ const resources = {
     domesticPurchase: domesticPurchaseEn,
     deviceManagement: deviceManagementEn,
     employeeProfile: employeeProfileEn,
+    employeeProfileReview: employeeProfileReviewEn,
     orders: ordersEn,
     advertisements: advertisementsEn,
     promotions: promotionsEn,
@@ -112,7 +116,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

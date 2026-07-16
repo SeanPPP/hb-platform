@@ -50,6 +50,7 @@
     "productQuery": "商品维护",
     "users": "用户",
     "employeeProfile": "员工",
+    "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",
     "settings": "设置"
   },

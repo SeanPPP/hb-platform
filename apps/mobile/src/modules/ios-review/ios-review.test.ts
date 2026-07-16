@@ -6,6 +6,7 @@ import { sha256 } from "js-sha256";
 import { TAB_PATHS } from "../navigation/default-route";
 import {
   IOS_REVIEW_DOMAIN_NAMES,
+  IOS_REVIEW_EXCLUDED_ROUTE_NAMES,
   IOS_REVIEW_LOCATION,
   IOS_REVIEW_MENU_ITEMS,
   IOS_REVIEW_PERMISSION_CODES,
@@ -234,15 +235,24 @@ const backendRouteNames = Array.from(
   (match) => match[1]
 );
 const sortedReviewRoutes = [...IOS_REVIEW_ROUTE_NAMES].sort();
+const expectedReviewRoutes = Object.keys(TAB_PATHS)
+  .filter((routeName) => !IOS_REVIEW_EXCLUDED_ROUTE_NAMES.includes(
+    routeName as (typeof IOS_REVIEW_EXCLUDED_ROUTE_NAMES)[number]
+  ))
+  .sort();
 assert.deepEqual(
   sortedReviewRoutes,
-  Object.keys(TAB_PATHS).sort(),
-  "审核菜单必须与移动端 TAB_PATHS 保持集合一致"
+  expectedReviewRoutes,
+  "审核菜单必须覆盖可离线演示的 TAB_PATHS，并排除真实敏感资料审核入口"
 );
 assert.deepEqual(
   sortedReviewRoutes,
-  [...new Set(backendRouteNames)].sort(),
-  "审核菜单必须与后端 FullAppMenu 保持集合一致"
+  [...new Set(backendRouteNames)]
+    .filter((routeName) => !IOS_REVIEW_EXCLUDED_ROUTE_NAMES.includes(
+      routeName as (typeof IOS_REVIEW_EXCLUDED_ROUTE_NAMES)[number]
+    ))
+    .sort(),
+  "审核菜单必须与后端可离线演示的 FullAppMenu 保持集合一致"
 );
 
 const dataStore = createIosReviewDataStore(new Date("2026-07-16T00:00:00.000Z"));

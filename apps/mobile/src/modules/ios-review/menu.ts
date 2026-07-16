@@ -1,5 +1,8 @@
 import type { AppNavigationMenuItem } from "../navigation/types";
 
+// iOS 商店审核会话完全离线，真实员工敏感资料审核入口必须显式排除。
+export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = ["employee-profile-review"] as const;
+
 export const IOS_REVIEW_MENU_ITEMS: ReadonlyArray<AppNavigationMenuItem> = [
   { routeName: "home", titleKey: "tabs.home", icon: "home", permission: "Orders.Create", order: 10 },
   { routeName: "orders", titleKey: "tabs.orders", icon: "clipboard-list", permission: "Orders.View", order: 20 },
