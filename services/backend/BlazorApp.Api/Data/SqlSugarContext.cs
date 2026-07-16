@@ -81,6 +81,8 @@ namespace BlazorApp.Api.Data
                     {
                         IsAutoRemoveDataCache = true,
                         IsWithNoLockQuery = dbType == DbType.SqlServer, // ⭐ PostgreSQL不支持WITH(NOLOCK)
+                        // 关键逻辑：事务内必须遵循隔离级别持锁，避免授权读取被 NOLOCK 绕过。
+                        DisableWithNoLockWithTran = true,
                         // 🚀 优化并发性能配置
                         SqlServerCodeFirstNvarchar = dbType == DbType.SqlServer,
                         DefaultCacheDurationInSeconds = 600,
