@@ -190,20 +190,20 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpGet("admin/change-requests")]
-        [Authorize(Roles = "Admin,管理员")]
+        [EmployeeProfileSensitiveRoles]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
         public async Task<IActionResult> GetAdminSensitiveChangeRequests(
             [FromQuery] EmployeeProfileSensitiveChangeQueryDto query
         ) => Ok(await _sensitiveChangeService.GetAdminListAsync(query));
 
         [HttpGet("admin/change-requests/{requestId:int}")]
-        [Authorize(Roles = "Admin,管理员")]
+        [EmployeeProfileSensitiveRoles]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
         public async Task<IActionResult> GetAdminSensitiveChangeRequest(int requestId) =>
             Ok(await _sensitiveChangeService.GetAdminDetailAsync(requestId));
 
         [HttpPost("admin/change-requests/{requestId:int}/approve")]
-        [Authorize(Roles = "Admin,管理员")]
+        [EmployeeProfileSensitiveRoles]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
         public async Task<IActionResult> ApproveSensitiveChangeRequest(
             int requestId,
@@ -215,9 +215,51 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpPost("admin/change-requests/{requestId:int}/reject")]
-        [Authorize(Roles = "Admin,管理员")]
+        [EmployeeProfileSensitiveRoles]
         [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
         public async Task<IActionResult> RejectSensitiveChangeRequest(
+            int requestId,
+            [FromBody] EmployeeProfileSensitiveRejectDto dto
+        )
+        {
+            if (!ModelState.IsValid || string.IsNullOrWhiteSpace(dto.Reason))
+            {
+                return BadRequest(ApiResponse<object>.Error("拒绝原因必填", "VALIDATION_ERROR", ModelState));
+            }
+            return MapSensitiveReviewResult(await _sensitiveChangeService.RejectAsync(requestId, dto));
+        }
+
+        [HttpGet("review/change-requests")]
+        [EmployeeProfileSensitiveRoles(includeStoreManagers: true)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.ReviewSensitiveManagedStore)]
+        public async Task<IActionResult> GetReviewSensitiveChangeRequests(
+            [FromQuery] EmployeeProfileSensitiveChangeQueryDto query
+        )
+        {
+            var result = await _sensitiveChangeService.GetReviewListAsync(query);
+            return result.ErrorCode == EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode
+                ? StatusCode(StatusCodes.Status403Forbidden, result)
+                : Ok(result);
+        }
+
+        [HttpGet("review/change-requests/{requestId:int}")]
+        [EmployeeProfileSensitiveRoles(includeStoreManagers: true)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.ReviewSensitiveManagedStore)]
+        public async Task<IActionResult> GetReviewSensitiveChangeRequest(int requestId) =>
+            MapSensitiveReviewResult(await _sensitiveChangeService.GetReviewDetailAsync(requestId));
+
+        [HttpPost("review/change-requests/{requestId:int}/approve")]
+        [EmployeeProfileSensitiveRoles(includeStoreManagers: true)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.ReviewSensitiveManagedStore)]
+        public async Task<IActionResult> ApproveReviewSensitiveChangeRequest(
+            int requestId,
+            [FromBody] EmployeeProfileSensitiveReviewDto dto
+        ) => MapSensitiveReviewResult(await _sensitiveChangeService.ApproveAsync(requestId, dto));
+
+        [HttpPost("review/change-requests/{requestId:int}/reject")]
+        [EmployeeProfileSensitiveRoles(includeStoreManagers: true)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.ReviewSensitiveManagedStore)]
+        public async Task<IActionResult> RejectReviewSensitiveChangeRequest(
             int requestId,
             [FromBody] EmployeeProfileSensitiveRejectDto dto
         )
@@ -236,6 +278,8 @@ namespace BlazorApp.Api.Controllers
             EmployeeProfileSensitiveChangeService.VersionConflictCode => Conflict(result),
             "REQUEST_NOT_PENDING" => Conflict(result),
             "REQUEST_NOT_FOUND" => NotFound(result),
+            EmployeeProfileSensitiveChangeService.ReviewScopeForbiddenCode =>
+                StatusCode(StatusCodes.Status403Forbidden, result),
             _ => Ok(result),
         };
 
@@ -285,5 +329,19 @@ namespace BlazorApp.Api.Controllers
         public async Task<IActionResult> ConfirmCashierBarcodePrint(
             [FromBody] EmployeeCashierBarcodePrintConfirmationRequest request
         ) => Ok(await _barcodeService.ConfirmPrintAsync(request));
+    }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    internal sealed class EmployeeProfileSensitiveRolesAttribute : AuthorizeAttribute
+    {
+        private static readonly string[] StoreManagerRoleNames = ["StoreManager", "店长", "经理"];
+
+        public EmployeeProfileSensitiveRolesAttribute(bool includeStoreManagers = false)
+        {
+            // 关键逻辑：控制器从系统统一管理员别名生成角色契约，避免菜单、策略和 API 各自维护名单。
+            Roles = string.Join(",", includeStoreManagers
+                ? Permissions.SuperAdminRoleNames.Concat(StoreManagerRoleNames)
+                : Permissions.SuperAdminRoleNames);
+        }
     }
 }

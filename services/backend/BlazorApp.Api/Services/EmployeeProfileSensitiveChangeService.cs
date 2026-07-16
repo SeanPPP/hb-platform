@@ -1,6 +1,11 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
+using System.Data;
+using System.Security.Claims;
 using System.Text.Json;
 
 namespace BlazorApp.Api.Services;
@@ -8,6 +13,15 @@ namespace BlazorApp.Api.Services;
 public sealed class EmployeeProfileSensitiveChangeService
 {
     public const string VersionConflictCode = "EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT";
+    public const string ReviewScopeForbiddenCode =
+        "EMPLOYEE_PROFILE_SENSITIVE_REVIEW_SCOPE_FORBIDDEN";
+
+    private static readonly string[] StoreManagerRoleAliases = ["StoreManager", "店长", "经理"];
+    private static readonly string[] ProtectedTargetRoleAliases =
+    [
+        .. Permissions.SuperAdminRoleNames,
+        "WarehouseManager", "仓库经理", "StoreManager", "店长", "经理",
+    ];
 
     private static readonly string[] SensitiveFieldNames =
     [
@@ -24,18 +38,24 @@ public sealed class EmployeeProfileSensitiveChangeService
     private readonly SqlSugarContext _context;
     private readonly ICurrentUserService _currentUser;
     private readonly ILogger<EmployeeProfileSensitiveChangeService> _logger;
+    private readonly ICurrentUserManageableStoreScopeService _manageableStoreScope;
+    private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly TencentCloudUploadService? _storage;
 
     public EmployeeProfileSensitiveChangeService(
         SqlSugarContext context,
         ICurrentUserService currentUser,
         ILogger<EmployeeProfileSensitiveChangeService> logger,
+        ICurrentUserManageableStoreScopeService manageableStoreScope,
+        IHttpContextAccessor httpContextAccessor,
         TencentCloudUploadService? storage = null
     )
     {
         _context = context;
         _currentUser = currentUser;
         _logger = logger;
+        _manageableStoreScope = manageableStoreScope;
+        _httpContextAccessor = httpContextAccessor;
         _storage = storage;
     }
 
@@ -115,8 +135,17 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     public async Task<ApiResponse<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>> GetAdminListAsync(
         EmployeeProfileSensitiveChangeQueryDto query
+    ) => await GetReviewListAsync(query);
+
+    public async Task<ApiResponse<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>> GetReviewListAsync(
+        EmployeeProfileSensitiveChangeQueryDto query
     )
     {
+        var access = await GetReviewAccessAsync();
+        if (access is null)
+        {
+            return ReviewScopeForbidden<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>();
+        }
         var db = _context.Db;
         var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
@@ -130,6 +159,28 @@ public sealed class EmployeeProfileSensitiveChangeService
                 request.UserGUID == profile.UserGUID && !profile.IsDeleted,
             }
         );
+        if (!access.IsAdmin)
+        {
+            var protectedTargetRoleAliases = ProtectedTargetRoleAliases;
+            // 关键逻辑：范围、自审和受保护角色全部在主查询分页前过滤，禁止把整店员工 GUID 拉入内存拼接大 IN。
+            source = source.Where((request, user, profile) =>
+                request.UserGUID != access.UserGuid
+                && SqlSugar.SqlFunc.Subqueryable<UserStore>()
+                    .Where(userStore =>
+                        userStore.UserGUID == request.UserGUID
+                        && !userStore.IsDeleted
+                        && access.StoreGuids.Contains(userStore.StoreGUID))
+                    .Any()
+                && !SqlSugar.SqlFunc.Subqueryable<UserRole>()
+                    .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                    .Where((userRole, role) =>
+                        userRole.UserGUID == request.UserGUID
+                        && !userRole.IsDeleted
+                        && !role.IsDeleted
+                        && protectedTargetRoleAliases.Contains(role.RoleName))
+                    .Any()
+            );
+        }
         if (status.HasValue)
         {
             source = source.Where((request, user, profile) => request.Status == status.Value);
@@ -150,9 +201,17 @@ public sealed class EmployeeProfileSensitiveChangeService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
+        var storeLabels = await GetStoreLabelsAsync(
+            rows.Select(row => row.Request.UserGUID).ToList(),
+            access.IsAdmin ? null : access.StoreGuids
+        );
         return ApiResponse<PagedResult<EmployeeProfileSensitiveChangeSummaryDto>>.OK(new()
         {
-            Items = rows.Select(row => MapSummary(row.Request, row.Username, row.Profile)).ToList(),
+            Items = rows.Select(row =>
+            {
+                storeLabels.TryGetValue(row.Request.UserGUID, out var labels);
+                return MapSummary(row.Request, row.Username, row.Profile, labels);
+            }).ToList(),
             Total = total,
             Page = page,
             PageSize = pageSize,
@@ -160,16 +219,39 @@ public sealed class EmployeeProfileSensitiveChangeService
     }
 
     public async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> GetAdminDetailAsync(int requestId)
+        => await GetReviewDetailAsync(requestId);
+
+    public async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> GetReviewDetailAsync(int requestId)
     {
+        var access = await GetReviewAccessAsync();
+        if (access is null)
+        {
+            return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+        }
         var request = await _context.Db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .FirstAsync(item => item.RequestId == requestId);
-        var profile = request is null
-            ? null
-            : await _context.Db.Queryable<EmployeeProfile>()
-                .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
-        return request is null
-            ? ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请不存在", "REQUEST_NOT_FOUND")
-            : ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile));
+        if (request is null)
+        {
+            return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("申请不存在", "REQUEST_NOT_FOUND");
+        }
+        if (!await CanReviewTargetAsync(access, request.UserGUID))
+        {
+            // 对有审核范围但无权查看的目标统一伪装为不存在，避免通过 requestId 枚举员工。
+            return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
+        }
+        var profile = await _context.Db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == request!.UserGUID && !item.IsDeleted);
+        var username = await _context.Db.Queryable<User>()
+            .Where(item => item.UserGUID == request.UserGUID)
+            .Select(item => item.Username)
+            .FirstAsync();
+        var labels = (await GetStoreLabelsAsync(
+            [request!.UserGUID],
+            access.IsAdmin ? null : access.StoreGuids
+        )).GetValueOrDefault(request.UserGUID);
+        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(
+            MapDetail(request, profile, username, labels)
+        );
     }
 
     public async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> ApproveAsync(
@@ -177,6 +259,11 @@ public sealed class EmployeeProfileSensitiveChangeService
         EmployeeProfileSensitiveReviewDto dto
     )
     {
+        var access = await GetReviewAccessAsync();
+        if (access is null)
+        {
+            return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+        }
         var db = _context.Db;
         var userGuid = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .Where(item => item.RequestId == requestId)
@@ -199,7 +286,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             _logger
         ))
         {
-            await db.Ado.BeginTranAsync();
+            // 关键逻辑：审核范围、目标分店和受保护角色校验必须与批准写入处于不可穿透的原子区。
+            await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
                 // 关键逻辑：锁内事务重新读取申请与正式版本，不能使用取得锁之前的旧快照做审批。
@@ -212,6 +300,18 @@ public sealed class EmployeeProfileSensitiveChangeService
                         "申请不存在",
                         "REQUEST_NOT_FOUND"
                     );
+                }
+                // 关键逻辑：等待媒体锁期间审核者主分店可能被撤销，锁内事务必须重新获取范围。
+                var lockedAccess = await GetReviewAccessAsync();
+                if (lockedAccess is null)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+                }
+                if (!await CanReviewTargetAsync(lockedAccess, request.UserGUID))
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
                 }
                 if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
                 {
@@ -298,6 +398,9 @@ public sealed class EmployeeProfileSensitiveChangeService
                 {
                     await ScheduleTicketCleanupAsync(requestId, oldPhoto, request.UserGUID);
                 }
+                // 审批写入后在同一事务与媒体锁内重读，响应快照不得继续引用审批前的正式资料。
+                profile = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == request.UserGUID && !item.IsDeleted);
                 await db.Ado.CommitTranAsync();
             }
             catch (SensitiveRevisionConflictException)
@@ -328,6 +431,11 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error("拒绝原因必填", "VALIDATION_ERROR");
         }
+        var access = await GetReviewAccessAsync();
+        if (access is null)
+        {
+            return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+        }
         var db = _context.Db;
         var userGuid = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
             .Where(item => item.RequestId == requestId)
@@ -348,7 +456,8 @@ public sealed class EmployeeProfileSensitiveChangeService
             _logger
         ))
         {
-            await db.Ado.BeginTranAsync();
+            // 关键逻辑：驳回也要锁定授权读取窗口，避免目标移店或提权后仍被旧权限处理。
+            await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
                 // 关键逻辑：拒绝也必须在共用锁内重读状态，不能处理已被覆盖的新旧申请快照。
@@ -361,6 +470,18 @@ public sealed class EmployeeProfileSensitiveChangeService
                         "申请不存在",
                         "REQUEST_NOT_FOUND"
                     );
+                }
+                // 驳回同样在锁内重取最新审核范围，不能复用锁外缓存的 StoreGuids。
+                var lockedAccess = await GetReviewAccessAsync();
+                if (lockedAccess is null)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return ReviewScopeForbidden<EmployeeProfileSensitiveChangeDetailDto>();
+                }
+                if (!await CanReviewTargetAsync(lockedAccess, request.UserGUID))
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return RequestNotFound<EmployeeProfileSensitiveChangeDetailDto>();
                 }
                 if (request.Status != EmployeeProfileSensitiveChangeStatus.Pending)
                 {
@@ -734,13 +855,18 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     private EmployeeProfileSensitiveChangeDetailDto MapDetail(
         EmployeeProfileSensitiveChangeRequest request,
-        EmployeeProfile? profile
+        EmployeeProfile? profile,
+        string? username = null,
+        StoreLabels? storeLabels = null
     )
     {
         var dto = new EmployeeProfileSensitiveChangeDetailDto
         {
             RequestId = request.RequestId,
             UserGuid = request.UserGUID,
+            Username = username,
+            StoreCodes = storeLabels?.Codes ?? [],
+            StoreNames = storeLabels?.Names ?? [],
             Status = FormatStatus(request.Status),
             BankBsb = request.BankBsb,
             BankAccountNumber = request.BankAccountNumber,
@@ -758,9 +884,13 @@ public sealed class EmployeeProfileSensitiveChangeService
             ReviewReason = request.ReviewReason,
             // 详情只暴露受控字段标识；历史记录缺少快照时才动态回退。
             ChangedFields = ResolveChangedFields(profile, request),
+            CurrentSnapshot = MapCurrentSnapshot(profile),
         };
-        if (_storage is not null && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
+        if (_storage is not null
+            && request.Status == EmployeeProfileSensitiveChangeStatus.Pending
+            && !string.IsNullOrWhiteSpace(request.IdentityPhotoObjectKey))
         {
+            // 关键逻辑：待审对象在驳回或作废后可能已被删除，终态详情不得继续签发访问地址。
             var signed = _storage.GetSignedDownload(request.IdentityPhotoObjectKey, 300);
             dto.IdentityPhotoUrl = signed.Url;
             dto.IdentityPhotoUrlExpiresAt = signed.ExpiresAtUtc;
@@ -771,20 +901,158 @@ public sealed class EmployeeProfileSensitiveChangeService
     private static EmployeeProfileSensitiveChangeSummaryDto MapSummary(
         EmployeeProfileSensitiveChangeRequest request,
         string? username,
-        EmployeeProfile? profile
+        EmployeeProfile? profile,
+        StoreLabels? storeLabels = null
     ) => new()
     {
         RequestId = request.RequestId,
         UserGuid = request.UserGUID,
         Username = username,
+        StoreCodes = storeLabels?.Codes ?? [],
+        StoreNames = storeLabels?.Names ?? [],
         Status = FormatStatus(request.Status),
         BaseSensitiveRevision = request.BaseSensitiveRevision,
         SubmittedAt = request.SubmittedAt,
         ReviewedAt = request.ReviewedAt,
-        ReviewReason = request.ReviewReason,
         // 列表只返回受控字段标识；完整正式值和申请值只在服务端内存中参与比较。
         ChangedFields = ResolveChangedFields(profile, request),
     };
+
+    private EmployeeProfileSensitiveSnapshotDto MapCurrentSnapshot(EmployeeProfile? profile)
+    {
+        var snapshot = new EmployeeProfileSensitiveSnapshotDto
+        {
+            BankBsb = profile?.BankBSB,
+            BankAccountNumber = profile?.BankACC,
+            SuperannuationCompanyName = profile?.SuperannuationCompanyName,
+            SuperannuationCompanyCode = profile?.SuperannuationCompanyCode,
+            SuperannuationAccountNumber = profile?.SuperannuationAccount,
+            IdentityType = profile?.IdentityType,
+            IdentityId = profile?.IdentityId,
+            HasIdentityPhoto = HasFormalIdentityPhoto(profile),
+        };
+        if (_storage is not null && !string.IsNullOrWhiteSpace(profile?.IdentityPhotoObjectKey))
+        {
+            snapshot.IdentityPhotoUrl = _storage.GetSignedDownload(profile.IdentityPhotoObjectKey, 300).Url;
+        }
+        // legacy URL 未经过当前对象存储签名链验证，审核接口只返回照片存在标记，不原样透传。
+        return snapshot;
+    }
+
+    private async Task<ReviewAccess?> GetReviewAccessAsync()
+    {
+        var scope = await _manageableStoreScope.GetScopeAsync();
+        var user = _httpContextAccessor.HttpContext?.User;
+        if (!scope.IsAllowed || !scope.IsAuthenticated || user?.Identity?.IsAuthenticated != true)
+        {
+            return null;
+        }
+
+        // scope.IsAdmin 同时包含仓库经理；必须再核对真实角色，不能据此放宽敏感资料审核。
+        if (HasAnyRole(user, Permissions.SuperAdminRoleNames))
+        {
+            return new ReviewAccess(true, scope.UserGuid, []);
+        }
+        if (!HasAnyRole(user, StoreManagerRoleAliases) || scope.StoreGuids.Count == 0)
+        {
+            return null;
+        }
+        return new ReviewAccess(false, scope.UserGuid, scope.StoreGuids);
+    }
+
+    private async Task<bool> CanReviewTargetAsync(ReviewAccess access, string targetUserGuid)
+    {
+        if (access.IsAdmin)
+        {
+            return true;
+        }
+        if (targetUserGuid.Equals(access.UserGuid, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var inManagedStore = await _context.Db.Queryable<UserStore>()
+            .AnyAsync(item => item.UserGUID == targetUserGuid
+                && !item.IsDeleted
+                && access.StoreGuids.Contains(item.StoreGUID));
+        if (!inManagedStore)
+        {
+            return false;
+        }
+        return !(await GetProtectedTargetUserGuidsAsync([targetUserGuid])).Contains(targetUserGuid);
+    }
+
+    private async Task<HashSet<string>> GetProtectedTargetUserGuidsAsync(IReadOnlyCollection<string> userGuids)
+    {
+        if (userGuids.Count == 0)
+        {
+            return new(StringComparer.OrdinalIgnoreCase);
+        }
+        var roleRows = await _context.Db.Queryable<UserRole, Role>((userRole, role) =>
+                userRole.RoleGUID == role.RoleGUID)
+            .Where((userRole, role) =>
+                userGuids.Contains(userRole.UserGUID)
+                && !userRole.IsDeleted
+                && !role.IsDeleted)
+            .Select((userRole, role) => new { userRole.UserGUID, role.RoleName })
+            .ToListAsync();
+        return roleRows
+            .Where(item => ProtectedTargetRoleAliases.Contains(
+                item.RoleName,
+                StringComparer.OrdinalIgnoreCase
+            ))
+            .Select(item => item.UserGUID)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<Dictionary<string, StoreLabels>> GetStoreLabelsAsync(
+        IReadOnlyCollection<string> userGuids,
+        IReadOnlyList<string>? allowedStoreGuids
+    )
+    {
+        if (userGuids.Count == 0)
+        {
+            return new(StringComparer.OrdinalIgnoreCase);
+        }
+        var query = _context.Db.Queryable<UserStore, Store>((userStore, store) =>
+                userStore.StoreGUID == store.StoreGUID)
+            .Where((userStore, store) =>
+                userGuids.Contains(userStore.UserGUID) && !userStore.IsDeleted && !store.IsDeleted);
+        if (allowedStoreGuids is not null)
+        {
+            query = query.Where((userStore, store) => allowedStoreGuids.Contains(userStore.StoreGUID));
+        }
+        var rows = await query.Select((userStore, store) => new
+        {
+            userStore.UserGUID,
+            store.StoreCode,
+            store.StoreName,
+        }).ToListAsync();
+        return rows.GroupBy(item => item.UserGUID, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => new StoreLabels(
+                    group.Select(item => item.StoreCode).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    group.Select(item => item.StoreName).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                ),
+                StringComparer.OrdinalIgnoreCase
+            );
+    }
+
+    private static bool HasAnyRole(ClaimsPrincipal user, IReadOnlyCollection<string> roles) =>
+        user.Claims.Any(claim =>
+            (claim.Type.Equals(ClaimTypes.Role, StringComparison.OrdinalIgnoreCase)
+                || claim.Type.Equals("role", StringComparison.OrdinalIgnoreCase))
+            && roles.Contains(claim.Value, StringComparer.OrdinalIgnoreCase)
+        );
+
+    private static ApiResponse<T> ReviewScopeForbidden<T>() =>
+        ApiResponse<T>.Error("当前账号无权审核该员工的敏感资料", ReviewScopeForbiddenCode);
+
+    private static ApiResponse<T> RequestNotFound<T>() =>
+        ApiResponse<T>.Error("申请不存在", "REQUEST_NOT_FOUND");
+
+    private sealed record ReviewAccess(bool IsAdmin, string UserGuid, IReadOnlyList<string> StoreGuids);
+    private sealed record StoreLabels(List<string> Codes, List<string> Names);
 
     private static List<string> ResolveChangedFields(
         EmployeeProfile? profile,

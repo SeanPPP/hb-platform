@@ -1,0 +1,79 @@
+{
+  "list": {
+    "title": "敏感资料审核",
+    "subtitle": "审核你所管理分店员工提交的敏感资料变更。",
+    "loading": "正在加载敏感资料审核申请",
+    "loadingMore": "正在加载更多审核申请",
+    "loadMoreFailed": "重试加载更多申请",
+    "pendingCount": "{{count}} 条待审核申请",
+    "empty": "暂无待审核申请",
+    "emptyDescription": "员工提交的新申请会显示在这里。",
+    "openRequest": "审核 {{name}} 的申请",
+    "storeUnavailable": "分店信息不可用"
+  },
+  "detail": {
+    "title": "审核敏感资料",
+    "loading": "正在加载审核详情",
+    "securityNotice": "完整资料仅在此授权审核页显示。请逐项核对变更后再处理。",
+    "changed": "有变更",
+    "currentValue": "已确认资料",
+    "proposedValue": "员工填报资料",
+    "noPhoto": "无证件照片",
+    "previewUnavailable": "已有证件照片，安全预览暂不可用",
+    "reviewReason": "审核原因"
+  },
+  "fields": {
+    "bankBsb": "BSB",
+    "bankAccountNumber": "银行账号",
+    "superannuationCompanyName": "养老金公司",
+    "superannuationCompanyCode": "养老金公司代码",
+    "superannuationAccountNumber": "养老金账号",
+    "identityType": "证件类型",
+    "identityId": "证件号码",
+    "identityPhotoUrl": "证件照片"
+  },
+  "statuses": {
+    "Pending": "待审核",
+    "Approved": "已批准",
+    "Rejected": "已拒绝",
+    "Superseded": "已失效"
+  },
+  "actions": {
+    "review": "审核",
+    "refresh": "刷新",
+    "retry": "重试",
+    "reveal": "显示完整值",
+    "hide": "隐藏完整值",
+    "approve": "批准",
+    "reject": "拒绝",
+    "confirm": "确认",
+    "cancel": "取消",
+    "back": "返回"
+  },
+  "dialog": {
+    "approveTitle": "确认批准申请？",
+    "approveDescription": "批准后，员工填报的敏感资料将替换当前已确认资料。",
+    "rejectTitle": "确认拒绝申请？",
+    "rejectDescription": "当前已确认资料不会变化，请向员工说明清晰的拒绝原因。",
+    "reasonOptional": "审核备注（选填）",
+    "reasonRequired": "拒绝原因",
+    "reasonRequiredMessage": "拒绝原因必填。"
+  },
+  "messages": {
+    "listLoadFailed": "无法加载审核申请。",
+    "detailLoadFailed": "无法加载审核详情。",
+    "retryHint": "请检查网络后重试。",
+    "permissionChanged": "你的审核权限已变化，请刷新权限或联系管理员。",
+    "approveSuccess": "申请已批准。",
+    "rejectSuccess": "申请已拒绝。",
+    "conflict": "申请或正式资料已变化，已加载最新状态并停用旧操作。",
+    "reviewFailed": "审核保存失败，请重试。"
+  },
+  "privacy": {
+    "title": "敏感资料已隐藏",
+    "description": "正在重新核验审核权限，通过后才会显示资料。",
+    "refreshing": "正在重新核验审核权限",
+    "refreshFailed": "暂时无法重新核验权限，敏感资料继续隐藏。",
+    "retry": "重新核验权限"
+  }
+}

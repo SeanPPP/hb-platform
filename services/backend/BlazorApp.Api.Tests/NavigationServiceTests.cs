@@ -516,7 +516,7 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(19, menu.Count);
+        Assert.Equal(20, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
@@ -550,6 +550,47 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
+    }
+
+    [Fact]
+    public void BuildAppMenu_敏感资料审核仅按独立权限显示且设备菜单不出现()
+    {
+        var authorized = CreateUser(new Claim(
+            "permission",
+            Permissions.EmployeeProfiles.ReviewSensitiveManagedStore
+        ));
+        var unauthorized = CreateUser(new Claim("permission", Permissions.EmployeeProfiles.View));
+
+        var item = Assert.Single(
+            _service.BuildAppMenu(authorized),
+            menu => menu.RouteName == "employee-profile-review"
+        );
+        Assert.Equal("tabs.employeeProfileReview", item.TitleKey);
+        Assert.Equal("account-check-outline", item.Icon);
+        Assert.Equal(Permissions.EmployeeProfiles.ReviewSensitiveManagedStore, item.Permission);
+        Assert.DoesNotContain(
+            _service.BuildAppMenu(unauthorized),
+            menu => menu.RouteName == "employee-profile-review"
+        );
+        Assert.DoesNotContain(
+            _service.BuildDeviceAppMenu("Mobile"),
+            menu => menu.RouteName == "employee-profile-review"
+        );
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public void BuildAppMenu_四种系统管理员别名均显示敏感资料审核(string roleName)
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, roleName));
+
+        Assert.Contains(
+            _service.BuildAppMenu(user),
+            menu => menu.RouteName == "employee-profile-review"
+        );
     }
 
     [Fact]

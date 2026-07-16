@@ -292,6 +292,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "employee-profile-review",
+                TitleKey = "tabs.employeeProfileReview",
+                Icon = "account-check-outline",
+                Permission = Permissions.EmployeeProfiles.ReviewSensitiveManagedStore,
+                Order = 58,
+            },
+            new()
+            {
                 RouteName = "device-management",
                 TitleKey = "tabs.deviceManagement",
                 Icon = "cellphone-cog",

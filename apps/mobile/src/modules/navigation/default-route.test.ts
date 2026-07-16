@@ -69,12 +69,29 @@ assertEqual(
 
 assertEqual(
   getVisibleTabRouteNames({
-    routeNames: ["home", "attendance", "device-management", "reports", "settings"],
+    routeNames: ["home", "attendance", "employee-profile-review", "device-management", "reports", "settings"],
     isDeviceMode: true,
     canViewAttendanceManagement: true,
   }).join(","),
   "home,attendance-personal,settings",
   "shared visible routes expand legacy attendance and hide management-only/report routes in device mode"
+);
+
+assertEqual(
+  TAB_PATHS["employee-profile-review"],
+  "/(tabs)/employee-profile-review",
+  "employee profile review route is registered as a valid tab path"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "employee-profile-review",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: true,
+    routeNames: ["employee-profile-review", "settings"],
+  }),
+  "/(tabs)/settings",
+  "device mode redirects away from sensitive employee profile review"
 );
 
 assertEqual(

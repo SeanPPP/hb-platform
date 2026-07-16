@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
 
@@ -8,11 +9,8 @@ namespace BlazorApp.Api.Services
 {
     public class CurrentUserManageableStoreScopeService : ICurrentUserManageableStoreScopeService
     {
-        internal static IReadOnlyList<string> AdminRoleAliases { get; } = new[]
-        {
-            "Admin",
-            "管理员",
-        };
+        internal static IReadOnlyList<string> AdminRoleAliases { get; } =
+            Permissions.SuperAdminRoleNames;
 
         internal static IReadOnlyList<string> StoreManagerRoleAliases { get; } = new[]
         {

@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -14,6 +15,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
 using BlazorApp.Api.Models;
 using SqlSugar;
 using Xunit;
@@ -1195,7 +1197,9 @@ namespace BlazorApp.Api.Tests
                 ? new EmployeeProfileSensitiveChangeService(
                     context,
                     currentUserService,
-                    NullLogger<EmployeeProfileSensitiveChangeService>.Instance
+                    NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
+                    Mock.Of<ICurrentUserManageableStoreScopeService>(),
+                    httpContextAccessor
                 )
                 : null;
 

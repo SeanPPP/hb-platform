@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ActivityIndicator, View } from "react-native";
 import { Tabs, usePathname, useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -14,12 +15,19 @@ import {
   resolveTabRouteCorrection,
 } from "@/modules/navigation/default-route";
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
+import {
+  EMPLOYEE_PROFILE_REVIEW_ROUTE,
+  filterEmployeeProfileReviewRouteNames,
+  getEmployeeProfileReviewAccess,
+} from "@/modules/employee-profile-review/access";
+import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 
 export default function TabsLayout() {
   const router = useRouter();
   const pathname = usePathname();
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
+  const currentUser = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const sessionKind = useAuthStore((state) => state.sessionKind);
   const isLoading = useAuthStore((state) => state.isLoading);
@@ -207,26 +215,48 @@ export default function TabsLayout() {
       ),
     [canCreateOrder, isWarehouseStaffOnly, navigationItems]
   );
-  const visibleRouteNames = useMemo(
-    () =>
-      new Set(
-        getVisibleTabRouteNames({
-          routeNames: accountRouteNames,
-          isDeviceMode,
-          canViewAttendanceManagement,
-        })
-      ),
-    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
+  const employeeProfileReviewAccess = useMemo(
+    () => getEmployeeProfileReviewAccess({
+      roleNames: currentUser?.roleNames,
+      permissions: currentUser?.permissions,
+      menuRouteNames: navigationItems.map((item) => item.routeName),
+      sessionKind,
+    }),
+    [currentUser?.permissions, currentUser?.roleNames, navigationItems, sessionKind]
   );
   const orderedVisibleRouteNames = useMemo(
-    () =>
+    () => filterEmployeeProfileReviewRouteNames(
       getVisibleTabRouteNames({
         routeNames: accountRouteNames,
         isDeviceMode,
         canViewAttendanceManagement,
       }),
-    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
+      employeeProfileReviewAccess.allowed
+    ),
+    [
+      accountRouteNames,
+      canViewAttendanceManagement,
+      employeeProfileReviewAccess.allowed,
+      isDeviceMode,
+    ]
   );
+  const visibleRouteNames = useMemo(
+    () => new Set(orderedVisibleRouteNames),
+    [orderedVisibleRouteNames]
+  );
+  const pendingReviewQuery = useQuery({
+    queryKey: ["employeeProfileReview", "requests", "Pending", "count"],
+    enabled:
+      navigationReady
+      && employeeProfileReviewAccess.allowed
+      && visibleRouteNames.has(EMPLOYEE_PROFILE_REVIEW_ROUTE),
+    queryFn: () => getEmployeeProfileReviewRequestsApi({
+      page: 1,
+      pageSize: 1,
+      status: "Pending",
+    }),
+    staleTime: 30_000,
+  });
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
   const isRouteVisible = (routeName: string) =>
@@ -456,6 +486,20 @@ export default function TabsLayout() {
           title: t("tabs.employeeProfile"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="card-account-details-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="employee-profile-review"
+        options={{
+          href: isRouteVisible(EMPLOYEE_PROFILE_REVIEW_ROUTE) ? undefined : null,
+          title: t("tabs.employeeProfileReview"),
+          tabBarBadge:
+            pendingReviewQuery.data?.total && pendingReviewQuery.data.total > 0
+              ? pendingReviewQuery.data.total
+              : undefined,
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="account-check-outline" color={color} size={size} />
           ),
         }}
       />
