@@ -29,9 +29,9 @@
         "NSBluetoothAlwaysUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
         "NSBluetoothPeripheralUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
         "NSMicrophoneUsageDescription": "Used for audio feedback",
-        "NSLocationWhenInUseUsageDescription": "Used to capture precise location when signing in and submitting attendance punches",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Used to sample attendance location every 20 minutes while you are clocked in",
-        "NSLocationAlwaysUsageDescription": "Used to sample attendance location every 20 minutes while you are clocked in",
+        "NSLocationWhenInUseUsageDescription": "Used to verify sign-in and attendance punches with your current precise location",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Used during an active shift, including when the app is in the background, for attendance verification",
+        "NSLocationAlwaysUsageDescription": "Used during an active shift, including when the app is in the background, for attendance verification",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -70,9 +70,9 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Used to sample attendance location every 20 minutes while you are clocked in",
-          "locationAlwaysPermission": "Used to sample attendance location every 20 minutes while you are clocked in",
-          "locationWhenInUsePermission": "Used to capture precise location when signing in and submitting attendance punches",
+          "locationAlwaysAndWhenInUsePermission": "Used during an active shift, including when the app is in the background, for attendance verification",
+          "locationAlwaysPermission": "Used during an active shift, including when the app is in the background, for attendance verification",
+          "locationWhenInUsePermission": "Used to verify sign-in and attendance punches with your current precise location",
           "isIosBackgroundLocationEnabled": true,
           "isAndroidBackgroundLocationEnabled": true
         }

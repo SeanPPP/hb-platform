@@ -79,8 +79,13 @@
   },
   "backgroundLocation": {
     "title": "班中定位说明",
-    "description": "上班打卡后，App 会在你下班打卡前每 20 分钟记录一次当前位置，只用于考勤核对，不用于广告跟踪。",
+    "description": "在活动班次期间（包括 App 在后台运行时），App 会使用你的位置信息用于考勤核对。",
     "confirm": "继续打卡"
+  },
+  "locationPermission": {
+    "title": "需要定位权限",
+    "description": "打卡需要定位权限；活动班次期间的考勤核对还需要允许后台定位。请前往系统设置授权后重试。",
+    "openSettingsFailed": "无法打开系统设置，请手动打开“设置”并允许 HB 使用定位。"
   },
   "week": {
     "empty": "暂无本周排班",
@@ -263,7 +268,7 @@
     "punchFailed": "打卡失败",
     "punchVerificationSentForReview": "定位或网络校验未完成，已按复核信息一并提交。",
     "locationRequiredForPunch": "打卡需要采集当前位置。请允许精确定位后重试。",
-    "backgroundLocationRequiredForClockIn": "上班打卡后需要每 20 分钟记录一次班中位置，请允许始终定位后重试。",
+    "backgroundLocationRequiredForClockIn": "活动班次期间的考勤核对需要定位权限，请允许定位后重试。",
     "locationTrackingFailed": "打卡已提交，但班中定位任务启动失败，请重新打开应用或联系管理员。",
     "openMapFailedTitle": "无法打开地图",
     "openMapFailed": "当前设备没有可用的地图应用或系统拒绝打开地图链接。",

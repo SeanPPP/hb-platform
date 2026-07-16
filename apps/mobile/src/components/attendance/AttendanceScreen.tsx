@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Alert,
+  Linking,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import {
@@ -743,7 +750,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
           t("backgroundLocation.description"),
           [
             {
-              text: t("common:cancel"),
+              text: t("common:actions.cancel"),
               style: "cancel",
               onPress: () => resolve(false),
             },
@@ -761,8 +768,37 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     [t],
   );
 
+  const openLocationSettings = useCallback(() => {
+    // 只有用户明确选择前往设置时才离开 App，避免权限拒绝后自动跳转。
+    void Linking.openSettings().catch(() => {
+      showMessage(t("locationPermission.openSettingsFailed"));
+    });
+  }, [showMessage, t]);
+
+  const showLocationPermissionSettingsPrompt = useCallback(() => {
+    Alert.alert(
+      t("locationPermission.title"),
+      t("locationPermission.description"),
+      [
+        {
+          text: t("common:actions.cancel"),
+          style: "cancel",
+        },
+        {
+          text: t("common:actions.goToSettings"),
+          onPress: openLocationSettings,
+        },
+      ],
+    );
+  }, [openLocationSettings, t]);
+
   const handlePunch = async (punchType: AttendancePunchType) => {
     const nextVerification = await refreshVerification();
+
+    if (nextVerification.location.status === "permissionDenied") {
+      showLocationPermissionSettingsPrompt();
+      return;
+    }
 
     if (nextVerification.location.status !== "available") {
       showMessage(t("messages.locationRequiredForPunch"));
@@ -777,7 +813,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
       const backgroundAllowed = await ensureAttendanceBackgroundLocationPermission();
       if (!backgroundAllowed) {
-        showMessage(t("messages.backgroundLocationRequiredForClockIn"));
+        showLocationPermissionSettingsPrompt();
         return;
       }
     }

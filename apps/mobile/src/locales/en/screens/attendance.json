@@ -79,8 +79,13 @@
   },
   "backgroundLocation": {
     "title": "Shift location notice",
-    "description": "After clock-in, the app records your current location every 20 minutes until clock-out. It is used only for attendance review, not advertising tracking.",
+    "description": "During an active shift, including when the app is in the background, the app uses your location for attendance verification.",
     "confirm": "Continue"
+  },
+  "locationPermission": {
+    "title": "Location access required",
+    "description": "Punching requires location access. During an active shift, background location access is also required for attendance verification. Update the permission in Settings, then try again.",
+    "openSettingsFailed": "Unable to open Settings. Open the Settings app manually and allow location access for HB."
   },
   "week": {
     "empty": "No schedule this week",
@@ -263,7 +268,7 @@
     "punchFailed": "Punch failed.",
     "punchVerificationSentForReview": "Location or network verification is incomplete. The punch was prepared with review metadata.",
     "locationRequiredForPunch": "Punching requires your current precise location. Allow location access and try again.",
-    "backgroundLocationRequiredForClockIn": "After clock-in, the app must record a shift location every 20 minutes. Allow always-on location and try again.",
+    "backgroundLocationRequiredForClockIn": "Location access is required during an active shift for attendance verification. Allow location access and try again.",
     "locationTrackingFailed": "The punch was submitted, but shift location tracking could not start. Reopen the app or contact an administrator.",
     "openMapFailedTitle": "Cannot open map",
     "openMapFailed": "No map app is available on this device, or the system refused to open the map link.",
