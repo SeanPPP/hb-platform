@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -22,8 +23,22 @@ public sealed class WindowsDpapiDeviceAuthorizationProtector : IDeviceAuthorizat
             return null;
         }
 
-        var bytes = Encoding.UTF8.GetBytes(value);
-        return Convert.ToBase64String(ProtectData(bytes));
+        var plaintextBytes = Encoding.UTF8.GetBytes(value);
+        byte[]? protectedBytes = null;
+        try
+        {
+            protectedBytes = ProtectData(plaintextBytes);
+            return Convert.ToBase64String(protectedBytes);
+        }
+        finally
+        {
+            // 关键逻辑：字符串转换完成后，托管临时明文和密文副本均不再保留。
+            CryptographicOperations.ZeroMemory(plaintextBytes);
+            if (protectedBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(protectedBytes);
+            }
+        }
     }
 
     public string? Unprotect(string? protectedValue)
@@ -33,10 +48,13 @@ public sealed class WindowsDpapiDeviceAuthorizationProtector : IDeviceAuthorizat
             return null;
         }
 
+        byte[]? protectedBytes = null;
+        byte[]? plaintextBytes = null;
         try
         {
-            var bytes = Convert.FromBase64String(protectedValue);
-            return Encoding.UTF8.GetString(UnprotectData(bytes));
+            protectedBytes = Convert.FromBase64String(protectedValue);
+            plaintextBytes = UnprotectData(protectedBytes);
+            return Encoding.UTF8.GetString(plaintextBytes);
         }
         catch (FormatException)
         {
@@ -45,6 +63,19 @@ public sealed class WindowsDpapiDeviceAuthorizationProtector : IDeviceAuthorizat
         catch (Win32Exception)
         {
             return null;
+        }
+        finally
+        {
+            // 返回值是独立字符串；DPAPI 解密数组与输入副本都可立即清零。
+            if (plaintextBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(plaintextBytes);
+            }
+
+            if (protectedBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(protectedBytes);
+            }
         }
     }
 
@@ -82,13 +113,35 @@ public sealed class WindowsDpapiDeviceAuthorizationProtector : IDeviceAuthorizat
         {
             if (input.DataPointer != IntPtr.Zero)
             {
-                Marshal.FreeHGlobal(input.DataPointer);
+                try
+                {
+                    ZeroUnmanagedMemory(input.DataPointer, input.DataLength);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(input.DataPointer);
+                }
             }
 
             if (output.DataPointer != IntPtr.Zero)
             {
-                LocalFree(output.DataPointer);
+                try
+                {
+                    ZeroUnmanagedMemory(output.DataPointer, output.DataLength);
+                }
+                finally
+                {
+                    LocalFree(output.DataPointer);
+                }
             }
+        }
+    }
+
+    private static void ZeroUnmanagedMemory(IntPtr pointer, int length)
+    {
+        for (var index = 0; index < length; index++)
+        {
+            Marshal.WriteByte(pointer, index, 0);
         }
     }
 

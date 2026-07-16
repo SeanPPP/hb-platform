@@ -18,11 +18,136 @@ namespace BlazorApp.Api.Data
             await EnsureMobileAppBuildSchemaAsync(db, logger);
             await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);
             await EnsureAttendanceLocationSchemaAsync(db, logger);
+            await EnsureAttendanceQrSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
             await EnsureEmployeeProfileImageSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureAttendanceQrSchemaAsync(ISqlSugarClient db, ILogger logger)
+        {
+            const string sql = """
+SET XACT_ABORT ON;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    DECLARE @AttendanceQrSchemaLockResult int;
+    EXEC @AttendanceQrSchemaLockResult = sys.sp_getapplock
+        @Resource = N'AttendancePosQrKey_Schema_Initialization',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Transaction',
+        @LockTimeout = 30000;
+
+    IF @AttendanceQrSchemaLockResult < 0
+    BEGIN
+        THROW 51010, N'无法获取考勤二维码结构初始化锁。', 1;
+    END;
+
+IF OBJECT_ID(N'[dbo].[AttendancePosQrKey]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[AttendancePosQrKey] (
+        [Kid] nvarchar(64) NOT NULL CONSTRAINT [PK_AttendancePosQrKey] PRIMARY KEY,
+        [Algorithm] nvarchar(20) NOT NULL,
+        [ProtectedKey] nvarchar(max) NOT NULL,
+        [StoreCode] nvarchar(50) NOT NULL,
+        [DeviceCode] nvarchar(50) NOT NULL,
+        [HardwareId] nvarchar(100) NOT NULL,
+        [Status] nvarchar(20) NOT NULL,
+        [RegisteredAtUtc] datetime2 NOT NULL,
+        [RevokedAtUtc] datetime2 NULL
+    );
+END;
+
+IF COL_LENGTH('dbo.AttendancePunch', 'QrTokenId') IS NULL
+    ALTER TABLE [dbo].[AttendancePunch] ADD [QrTokenId] nvarchar(50) NULL;
+IF COL_LENGTH('dbo.AttendancePunch', 'PosDeviceCode') IS NULL
+    ALTER TABLE [dbo].[AttendancePunch] ADD [PosDeviceCode] nvarchar(50) NULL;
+IF COL_LENGTH('dbo.AttendancePunch', 'SigningKeyId') IS NULL
+    ALTER TABLE [dbo].[AttendancePunch] ADD [SigningKeyId] nvarchar(64) NULL;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE [name] = N'UX_AttendancePosQrKey_ActiveDevice'
+      AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePosQrKey]')
+)
+BEGIN
+    ;WITH [ActiveDeviceRows] AS (
+        SELECT
+            [Kid],
+            ROW_NUMBER() OVER (
+                PARTITION BY [DeviceCode]
+                ORDER BY [RegisteredAtUtc] DESC, [Kid] DESC
+            ) AS [RowNumber]
+        FROM [dbo].[AttendancePosQrKey] WITH (TABLOCKX, HOLDLOCK)
+        WHERE [Status] = N'Active'
+    )
+    UPDATE [dbo].[AttendancePosQrKey]
+    SET [Status] = N'Revoked', [RevokedAtUtc] = SYSUTCDATETIME()
+    WHERE [Kid] IN (
+        SELECT [Kid] FROM [ActiveDeviceRows] WHERE [RowNumber] > 1
+    );
+
+    CREATE UNIQUE INDEX [UX_AttendancePosQrKey_ActiveDevice]
+    ON [dbo].[AttendancePosQrKey]([DeviceCode])
+    WHERE [Status] = N'Active';
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE [name] = N'UX_AttendancePosQrKey_ActiveHardware'
+      AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePosQrKey]')
+)
+BEGIN
+    ;WITH [ActiveHardwareRows] AS (
+        SELECT
+            [Kid],
+            ROW_NUMBER() OVER (
+                PARTITION BY [HardwareId]
+                ORDER BY [RegisteredAtUtc] DESC, [Kid] DESC
+            ) AS [RowNumber]
+        FROM [dbo].[AttendancePosQrKey] WITH (TABLOCKX, HOLDLOCK)
+        WHERE [Status] = N'Active'
+    )
+    UPDATE [dbo].[AttendancePosQrKey]
+    SET [Status] = N'Revoked', [RevokedAtUtc] = SYSUTCDATETIME()
+    WHERE [Kid] IN (
+        SELECT [Kid] FROM [ActiveHardwareRows] WHERE [RowNumber] > 1
+    );
+
+    CREATE UNIQUE INDEX [UX_AttendancePosQrKey_ActiveHardware]
+    ON [dbo].[AttendancePosQrKey]([HardwareId])
+    WHERE [Status] = N'Active';
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE [name] = N'UX_AttendancePunch_User_QrTokenId'
+      AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunch]')
+)
+BEGIN
+    CREATE UNIQUE INDEX [UX_AttendancePunch_User_QrTokenId]
+    ON [dbo].[AttendancePunch]([UserGuid], [QrTokenId])
+    WHERE [QrTokenId] IS NOT NULL;
+END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0
+    BEGIN
+        ROLLBACK TRANSACTION;
+    END;
+
+    THROW;
+END CATCH;
+""";
+
+            // 关键逻辑：只追加表、列和过滤唯一索引，旧打卡记录保持 NULL，不参与幂等约束。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("考勤二维码密钥与打卡审计结构检查完成");
         }
 
         private static async Task EnsureUserStorePosPermissionSchemaAsync(

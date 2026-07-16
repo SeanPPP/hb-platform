@@ -2386,4 +2386,16 @@
   <data name="operationAuthorization.ticketInvalid" xml:space="preserve"><value>授权员工票据无效或已过期。</value></data>
   <data name="operationAuthorization.permissionDenied" xml:space="preserve"><value>该员工没有批准此操作所需的权限。</value></data>
   <data name="operationAuthorization.exception" xml:space="preserve"><value>授权验证失败：{0}</value></data>
+  <data name="attendance.qr.title" xml:space="preserve"><value>考勤二维码</value></data>
+  <data name="attendance.qr.scanHint" xml:space="preserve"><value>扫码上班 / 下班打卡</value></data>
+  <data name="attendance.qr.enableOnline" xml:space="preserve"><value>请先联网启用离线考勤二维码。</value></data>
+  <data name="attendance.qr.setupFailed" xml:space="preserve"><value>考勤二维码启用失败，正在自动重试。</value></data>
+  <data name="attendance.qr.clockInvalid" xml:space="preserve"><value>检测到时钟变化，请联网重新校时。</value></data>
+  <data name="attendance.qr.offlineSigned" xml:space="preserve"><value>离线签名</value></data>
+  <data name="attendance.qr.onlineVerified" xml:space="preserve"><value>在线验证</value></data>
+  <data name="attendance.qr.open" xml:space="preserve"><value>打开考勤二维码</value></data>
+  <data name="attendance.qr.close" xml:space="preserve"><value>关闭考勤二维码</value></data>
+  <data name="attendance.qr.closeHelp" xml:space="preserve"><value>关闭考勤二维码扫码弹窗</value></data>
+  <data name="attendance.qr.device" xml:space="preserve"><value>POS 设备</value></data>
+  <data name="attendance.qr.seconds" xml:space="preserve"><value>秒</value></data>
 </root>

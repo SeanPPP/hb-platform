@@ -32,7 +32,7 @@ const DEFAULT_VERIFICATION_STATE: AttendancePunchVerificationState = {
   },
 };
 
-async function verifyNetworkReachability() {
+export async function verifyAttendanceNetworkReachability() {
   const host = await getStoredApiHost();
   const apiBaseUrl = buildApiBaseUrl(host);
   const healthUrl = `${apiBaseUrl.replace(/\/api$/, "")}/health`;
@@ -66,7 +66,7 @@ async function verifyNetworkReachability() {
 
 async function collectVerificationState(): Promise<AttendancePunchVerificationState> {
   const [networkResult, locationResult] = await Promise.allSettled([
-    verifyNetworkReachability(),
+    verifyAttendanceNetworkReachability(),
     collectRequiredLocation(),
   ]);
   const checkedAt = new Date().toISOString();

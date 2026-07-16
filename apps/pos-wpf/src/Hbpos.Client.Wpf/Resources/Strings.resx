@@ -878,4 +878,16 @@
   <data name="operationAuthorization.ticketInvalid" xml:space="preserve"><value>The authorizing employee ticket is invalid or expired.</value></data>
   <data name="operationAuthorization.permissionDenied" xml:space="preserve"><value>This employee does not have permission to approve the operation.</value></data>
   <data name="operationAuthorization.exception" xml:space="preserve"><value>Authorization verification failed: {0}</value></data>
+  <data name="attendance.qr.title" xml:space="preserve"><value>Attendance QR</value></data>
+  <data name="attendance.qr.scanHint" xml:space="preserve"><value>Scan to clock in / out</value></data>
+  <data name="attendance.qr.enableOnline" xml:space="preserve"><value>Connect online once to enable offline attendance QR.</value></data>
+  <data name="attendance.qr.setupFailed" xml:space="preserve"><value>Attendance QR setup failed. Retrying automatically.</value></data>
+  <data name="attendance.qr.clockInvalid" xml:space="preserve"><value>Clock changed. Connect online to synchronize time.</value></data>
+  <data name="attendance.qr.offlineSigned" xml:space="preserve"><value>Offline signed</value></data>
+  <data name="attendance.qr.onlineVerified" xml:space="preserve"><value>Online verified</value></data>
+  <data name="attendance.qr.open" xml:space="preserve"><value>Open attendance QR</value></data>
+  <data name="attendance.qr.close" xml:space="preserve"><value>Close attendance QR</value></data>
+  <data name="attendance.qr.closeHelp" xml:space="preserve"><value>Close the Attendance QR scan dialog</value></data>
+  <data name="attendance.qr.device" xml:space="preserve"><value>POS device</value></data>
+  <data name="attendance.qr.seconds" xml:space="preserve"><value>seconds</value></data>
 </root>

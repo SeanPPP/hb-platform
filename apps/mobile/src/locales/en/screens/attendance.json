@@ -75,7 +75,23 @@
       "alertVerificationCaptured": "This punch will include the current verification data.",
       "alertVerificationSentForReview": "Location capture and network verification are required before punching.",
       "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
+    },
+    "qrResult": {
+      "title": "Latest QR punch",
+      "employee": "Employee: {{employee}}",
+      "store": "Store: {{store}}",
+      "posDevice": "POS device: {{device}}",
+      "action": "Action: {{action}}",
+      "serverTime": "Server time: {{time}}",
+      "status": "Attendance status: {{status}}"
     }
+  },
+  "scanner": {
+    "title": "Scan the POS attendance QR code",
+    "permissionTitle": "Camera access required",
+    "permissionDescription": "Allow camera access to scan the POS attendance QR code.",
+    "grantPermission": "Allow camera",
+    "retry": "Scan again"
   },
   "backgroundLocation": {
     "title": "Shift location notice",
@@ -203,6 +219,7 @@
     "remark": "Review note"
   },
   "actions": {
+    "scanPunch": "Scan to punch",
     "clockIn": "Clock in",
     "clockOut": "Clock out",
     "addAvailability": "Add slot",
@@ -261,6 +278,24 @@
     "cancelFailed": "Cancel failed.",
     "punchSuccess": "Punch submitted.",
     "punchFailed": "Punch failed.",
+    "qrPunchSuccess": "{{punchType}} recorded.",
+    "qrTrackingWarning": "Clock-in succeeded, but shift location tracking is not active. Allow Always location access, then retry from Attendance.",
+    "qrRequired": "Scan the POS attendance QR code to punch.",
+    "qrFormatInvalid": "This is not a valid POS attendance QR code.",
+    "qrInvalidSignature": "The QR signature is invalid. Ask the store to refresh the code.",
+    "qrDecryptFailed": "The attendance QR key could not be decrypted. Ask the store to re-register this POS.",
+    "qrKeyInvalid": "This POS attendance key is invalid. Ask the store to re-register this POS.",
+    "qrKeyUnknown": "This POS attendance key is unknown.",
+    "qrKeyRevoked": "This POS attendance key has been revoked.",
+    "qrNotActive": "This attendance QR code is not active yet.",
+    "qrExpired": "This attendance QR code has expired. Scan the refreshed code.",
+    "qrDeviceDisabled": "This POS device is disabled for attendance.",
+    "qrDeviceMismatch": "The QR code does not match its registered POS device. Ask the store to refresh it.",
+    "qrStoreForbidden": "You do not have attendance access to the QR code's store.",
+    "qrGpsRequired": "A current precise GPS location is required to punch.",
+    "qrNetworkRequired": "Your phone must be online to submit a QR punch.",
+    "qrCameraPermissionRequired": "Camera access is required to scan the attendance QR code.",
+    "qrDayComplete": "Today's clock-in and clock-out are already complete.",
     "punchVerificationSentForReview": "Location or network verification is incomplete. The punch was prepared with review metadata.",
     "locationRequiredForPunch": "Punching requires your current precise location. Allow location access and try again.",
     "backgroundLocationRequiredForClockIn": "After clock-in, the app must record a shift location every 20 minutes. Allow always-on location and try again.",

@@ -93,6 +93,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
     private readonly ApiServerSettingsViewModel? _apiServerSettings;
+    private readonly AttendanceQrPanelViewModel? _attendanceQrPanel;
     private readonly CustomerDisplayShellController _customerDisplayShellController;
     private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
     private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
@@ -386,7 +387,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IOperationAuditLogger? operationAuditLogger = null,
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        ApiRuntimeEndpointState? runtimeEndpointState = null)
+        ApiRuntimeEndpointState? runtimeEndpointState = null,
+        AttendanceQrPanelViewModel? attendanceQrPanel = null)
     {
         _core = core;
         _infra = infra;
@@ -460,6 +462,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _appUpdateChannelProvider = appUpdateChannelProvider;
         _apiServerSettings = apiServerSettings;
+        _attendanceQrPanel = attendanceQrPanel;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
         _mainChildViewModelFactory = CreateMainChildViewModelFactory();
 
@@ -1238,6 +1241,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onExitApplicationAsync: ExitApplicationAsync,
             tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync,
             onLockCashierAsync: LockCashierAsync);
+        // POS 页面在启动或重注册后才创建，考勤面板必须在此处随新页面挂载。
+        PosTerminal.AttendanceQrPanel = _attendanceQrPanel;
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
             Session,
             _screenNavigator.ShowPos,

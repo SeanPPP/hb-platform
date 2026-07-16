@@ -787,8 +787,8 @@
     </Style>
 
     <Style x:Key="PosStitchActionButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
-        <Setter Property="Height" Value="78" />
-        <Setter Property="Margin" Value="3" />
+        <Setter Property="MinHeight" Value="48" />
+        <Setter Property="Margin" Value="3,0" />
         <Setter Property="Padding" Value="7" />
         <Setter Property="Background" Value="White" />
         <Setter Property="BorderBrush" Value="Transparent" />

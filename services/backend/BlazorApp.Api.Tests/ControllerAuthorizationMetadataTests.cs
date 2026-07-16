@@ -560,6 +560,10 @@ public class ControllerAuthorizationMetadataTests
             nameof(SeasonalCardRemainingController.GetSubmission),
             Permissions.SeasonalCards.Remaining.ViewManagedStore
         );
+        yield return Policy<ReactAttendanceController>(
+            nameof(ReactAttendanceController.ResolveQr),
+            Permissions.Attendance.Punch.Self
+        );
     }
 
     [Theory]

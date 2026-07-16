@@ -3,10 +3,12 @@ import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Button, Card, Chip, Text } from "react-native-paper";
 import type {
   AttendancePunchVerificationState,
+  AttendancePunch,
   AttendancePunchType,
   AttendanceToday,
 } from "@/modules/attendance/types";
 import { openLocationInSystemMap } from "@/modules/attendance/required-location";
+import { canOpenAttendanceQrScanner } from "@/modules/attendance/attendance-qr";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function formatTime(value?: string) {
@@ -50,8 +52,11 @@ export function TodayPunchCard({
   isLoading,
   isVerificationRefreshing,
   isPunching,
+  hasAuthorizedStores,
   verification,
-  onPunch,
+  lastQrPunch,
+  trackingWarning,
+  onScan,
 }: {
   today?: AttendanceToday;
   title?: string;
@@ -62,8 +67,11 @@ export function TodayPunchCard({
   isLoading: boolean;
   isVerificationRefreshing?: boolean;
   isPunching: boolean;
+  hasAuthorizedStores: boolean;
   verification: AttendancePunchVerificationState;
-  onPunch: (punchType: AttendancePunchType) => void;
+  lastQrPunch?: AttendancePunch;
+  trackingWarning?: string;
+  onScan: () => void;
 }) {
   const { t } = useAppTranslation(["attendance", "common"]);
   const [currentTime, setCurrentTime] = useState(() => new Date());
@@ -74,10 +82,12 @@ export function TodayPunchCard({
   }, []);
 
   const nextPunchType = today?.nextPunchType ?? "ClockIn";
-  const canPunch =
-    nextPunchType === "ClockOut"
-      ? today?.canClockOut !== false
-      : today?.canClockIn !== false;
+  const canScan = canOpenAttendanceQrScanner({
+    isLoading,
+    isPunching,
+    isToday: allowPunch,
+    hasAuthorizedStores,
+  });
   const cardSubtitle =
     subtitle ?? selectedDate ?? today?.workDate ?? t("common:loading");
   const clockInPunch = getLatestPunch(today, "ClockIn");
@@ -254,26 +264,52 @@ export function TodayPunchCard({
           <Pressable
             accessibilityRole="button"
             accessibilityState={{
-              disabled: isLoading || isPunching || !allowPunch || !canPunch,
+              disabled: !canScan,
             }}
-            disabled={isLoading || isPunching || !allowPunch || !canPunch}
+            disabled={!canScan}
             style={({ pressed }) => [
               styles.punchButton,
-              isLoading || isPunching || !allowPunch || !canPunch
-                ? styles.punchButtonDisabled
-                : null,
+              !canScan ? styles.punchButtonDisabled : null,
               pressed ? styles.punchButtonPressed : null,
             ]}
-            onPress={() => onPunch(nextPunchType)}
+            onPress={onScan}
           >
             <Text variant="headlineSmall" style={styles.punchButtonText}>
               {isPunching
                 ? t("common:loading")
-                : t(
-                    `actions.${nextPunchType === "ClockOut" ? "clockOut" : "clockIn"}`,
-                  )}
+                : t("actions.scanPunch")}
             </Text>
           </Pressable>
+          {lastQrPunch ? (
+            <View style={styles.qrResult}>
+              <Text variant="titleSmall" selectable>
+                {t("today.qrResult.title")}
+              </Text>
+              <Text selectable>{t("today.qrResult.employee", {
+                employee: lastQrPunch.employeeName || lastQrPunch.userGuid || t("common:na"),
+              })}</Text>
+              <Text selectable>{t("today.qrResult.store", {
+                store: lastQrPunch.storeName || lastQrPunch.storeCode || t("common:na"),
+              })}</Text>
+              <Text selectable>{t("today.qrResult.posDevice", {
+                device: lastQrPunch.posDeviceCode || t("common:na"),
+              })}</Text>
+              <Text selectable>{t("today.qrResult.action", {
+                action: t(`punchTypes.${lastQrPunch.punchType}`, lastQrPunch.punchType),
+              })}</Text>
+              <Text selectable style={styles.tabularText}>{t("today.qrResult.serverTime", {
+                time: lastQrPunch.serverTimeUtc || lastQrPunch.punchTimeUtc || t("common:na"),
+              })}</Text>
+              <Text selectable>{t("today.qrResult.status", {
+                status: t(`statuses.${lastQrPunch.status}`, lastQrPunch.status),
+              })}</Text>
+              {trackingWarning ? (
+                <Text selectable style={styles.trackingWarning}>
+                  {trackingWarning}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.metaRow}>
@@ -507,6 +543,20 @@ const styles = StyleSheet.create({
   punchButtonText: {
     color: "#FFFFFF",
     fontWeight: "700",
+  },
+  qrResult: {
+    alignSelf: "stretch",
+    backgroundColor: "#F5F7FA",
+    borderRadius: 10,
+    gap: 4,
+    padding: 12,
+  },
+  tabularText: {
+    fontVariant: ["tabular-nums"],
+  },
+  trackingWarning: {
+    color: "#B42318",
+    fontWeight: "600",
   },
   recordBody: {
     flex: 1,

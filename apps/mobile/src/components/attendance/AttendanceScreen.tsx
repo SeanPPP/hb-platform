@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Modal, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CameraView } from "expo-camera";
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
@@ -38,13 +39,29 @@ import {
   punchAttendance,
   publishAttendanceSchedulesWeek,
   rejectAttendanceApproval,
+  resolveAttendanceQr,
   syncAttendanceHolidays,
   updateAttendanceHoliday,
   updateAttendanceSchedule,
   updateAvailability,
 } from "@/modules/attendance/api";
 import {
+  applyAttendanceTrackingLifecycle,
+  buildAttendanceQrPunchPayload,
+  getAttendancePunchErrorCode,
+  getAttendancePunchErrorKey,
+  prepareAttendanceQrPunch,
+  resolveAttendanceQrStore,
+  shouldEnableAttendanceQrScanning,
+  validateAttendanceQrToken,
+} from "@/modules/attendance/attendance-qr";
+import {
+  createAttendanceQrScanSessionGate,
+  type AttendanceQrScanSession,
+} from "@/modules/attendance/attendance-qr-scan-session";
+import {
   ensureAttendanceBackgroundLocationPermission,
+  hasAttendanceBackgroundLocationPermission,
   startAttendanceLocationTracking,
   stopAttendanceLocationTracking,
 } from "@/modules/attendance/location-tracking";
@@ -56,13 +73,16 @@ import {
 import { getAttendanceDeviceContext } from "@/modules/attendance/required-location";
 import type {
   AttendanceAvailabilityPayload,
-  AttendancePunchPayload,
-  AttendancePunchType,
+  AttendancePunch,
   AttendanceSchedulePayload,
   AttendanceScheduleUpdatePayload,
   AttendanceStoreHolidayPayload,
 } from "@/modules/attendance/types";
-import { usePunchVerification } from "@/modules/attendance/use-punch-verification";
+import {
+  usePunchVerification,
+  verifyAttendanceNetworkReachability,
+} from "@/modules/attendance/use-punch-verification";
+import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import { useStoreUsers } from "@/modules/users";
@@ -188,6 +208,26 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     useState(getWeekStartDate);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [attendanceScannerVisible, setAttendanceScannerVisible] = useState(false);
+  const [attendanceScannerError, setAttendanceScannerError] = useState("");
+  const [attendanceScannerPaused, setAttendanceScannerPaused] = useState(false);
+  const [attendanceScannerResetNonce, setAttendanceScannerResetNonce] = useState(0);
+  const [attendanceScannerSubmitting, setAttendanceScannerSubmitting] = useState(false);
+  const [lastQrPunch, setLastQrPunch] = useState<AttendancePunch>();
+  const [lastQrTrackingWarning, setLastQrTrackingWarning] = useState("");
+  const attendanceScannerSessionGateRef = useRef<
+    ReturnType<typeof createAttendanceQrScanSessionGate> | null
+  >(null);
+  const attendanceScannerSessionRef = useRef<AttendanceQrScanSession | null>(null);
+  if (!attendanceScannerSessionGateRef.current) {
+    attendanceScannerSessionGateRef.current = createAttendanceQrScanSessionGate();
+  }
+  const attendanceScannerSessionGate = attendanceScannerSessionGateRef.current;
+
+  useEffect(() => () => {
+    attendanceScannerSessionGate.invalidate();
+    attendanceScannerSessionRef.current = null;
+  }, [attendanceScannerSessionGate]);
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -364,12 +404,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     mutationFn: punchAttendance,
     onSuccess: async () => {
       await invalidateEmployeeData();
-      showMessage(t("messages.punchSuccess"));
     },
-    onError: (error) =>
-      showMessage(
-        getErrorMessage(error, "messages.punchFailed"),
-      ),
   });
 
   const createAvailabilityMutation = useMutation({
@@ -761,70 +796,237 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     [t],
   );
 
-  const handlePunch = async (punchType: AttendancePunchType) => {
-    const nextVerification = await refreshVerification();
+  const ensureQrPunchBackgroundLocationPermission = async (
+    isActive = () => true,
+  ) => {
+    const alreadyAllowed = await hasAttendanceBackgroundLocationPermission();
+    if (!isActive()) return false;
+    if (alreadyAllowed) {
+      return true;
+    }
+    const confirmed = await confirmBackgroundLocationUsage();
+    if (!isActive() || !confirmed) {
+      return false;
+    }
+    const allowed = await ensureAttendanceBackgroundLocationPermission();
+    if (!isActive() || !allowed) {
+      return false;
+    }
+    return true;
+  };
 
-    if (nextVerification.location.status !== "available") {
-      showMessage(t("messages.locationRequiredForPunch"));
+  const pauseAttendanceScanner = (message: string) => {
+    setAttendanceScannerError(message);
+    setAttendanceScannerPaused(true);
+  };
+
+  const failAttendanceQrScan = (
+    session: AttendanceQrScanSession,
+    message: string,
+  ) => {
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+    pauseAttendanceScanner(message);
+    attendanceScannerSessionGate.finishSubmitting(session);
+    setAttendanceScannerSubmitting(false);
+  };
+
+  const handleAttendanceQrScan = async (qrToken: string) => {
+    const session = attendanceScannerSessionRef.current;
+    if (!session
+        || !attendanceScannerSessionGate.isActive(session)
+        || !attendanceScannerSessionGate.tryStartSubmitting(session)) {
       return;
     }
-
-    if (punchType === "ClockIn") {
-      const confirmed = await confirmBackgroundLocationUsage();
-      if (!confirmed) {
-        return;
-      }
-
-      const backgroundAllowed = await ensureAttendanceBackgroundLocationPermission();
-      if (!backgroundAllowed) {
-        showMessage(t("messages.backgroundLocationRequiredForClockIn"));
-        return;
-      }
-    }
-
-    const deviceContext = await getAttendanceDeviceContext();
-    let didStartLocationTracking = false;
-    if (punchType === "ClockIn" && selectedStoreCode) {
-      try {
-        await startAttendanceLocationTracking({
-          storeCode: selectedStoreCode,
-          ...deviceContext,
-        });
-        didStartLocationTracking = true;
-      } catch (error) {
-        showMessage(getErrorMessage(error, "messages.locationTrackingFailed"));
-        return;
-      }
-    }
-
-    const payload: AttendancePunchPayload = {
-      punchType,
-      storeCode: selectedStoreCode,
-      deviceId: deviceContext.hardwareId,
-      hardwareId: deviceContext.hardwareId,
-      systemDeviceNumber: deviceContext.systemDeviceNumber,
-      deviceSystem: deviceContext.deviceSystem,
-      ...nextVerification.payload,
-    };
-
+    setAttendanceScannerError("");
+    setAttendanceScannerSubmitting(true);
     try {
-      await punchMutation.mutateAsync(payload);
-    } catch {
-      if (didStartLocationTracking) {
-        await stopAttendanceLocationTracking().catch((error) => {
-          console.warn("[attendance-location] 打卡失败后停止后台定位失败", error);
-        });
+      validateAttendanceQrToken(qrToken);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : undefined;
+      failAttendanceQrScan(
+        session,
+        t(getAttendancePunchErrorKey(code) ?? "messages.qrFormatInvalid"),
+      );
+      return;
+    }
+
+    const network = await verifyAttendanceNetworkReachability();
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+    if (network.status !== "available") {
+      failAttendanceQrScan(session, t("messages.qrNetworkRequired"));
+      return;
+    }
+
+    let resolvedQr;
+    try {
+      // 关键逻辑：客户端不解码身份，只信任后端解密并校验后的门店和设备。
+      resolvedQr = await resolveAttendanceQr(qrToken);
+    } catch (error) {
+      if (!attendanceScannerSessionGate.isActive(session)) return;
+      const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
+      failAttendanceQrScan(
+        session,
+        errorKey ? t(errorKey) : getErrorMessage(error, "messages.punchFailed"),
+      );
+      return;
+    }
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+
+    let qrStore: Store;
+    try {
+      qrStore = resolveAttendanceQrStore(resolvedQr, stores);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : undefined;
+      failAttendanceQrScan(
+        session,
+        t(getAttendancePunchErrorKey(code) ?? "messages.qrStoreForbidden"),
+      );
+      return;
+    }
+    await handleSelectStore(qrStore);
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+
+    let qrToday;
+    try {
+      // 必须读取二维码门店的实时状态，不能复用切店前闭包里的 Today 数据。
+      qrToday = await getMyAttendanceToday(qrStore.storeCode, todayDate);
+    } catch (error) {
+      if (attendanceScannerSessionGate.isActive(session)) {
+        failAttendanceQrScan(
+          session,
+          getErrorMessage(error, "messages.qrNetworkRequired"),
+        );
+      }
+      return;
+    }
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+    queryClient.setQueryData(
+      attendanceKeys.today(qrStore.storeCode, todayDate),
+      qrToday,
+    );
+
+    const preparation = await prepareAttendanceQrPunch(qrToday.nextPunchType, {
+      isActive: () => attendanceScannerSessionGate.isActive(session),
+      ensureBackgroundPermission: () => ensureQrPunchBackgroundLocationPermission(
+        () => attendanceScannerSessionGate.isActive(session),
+      ),
+      refreshVerification,
+    });
+    if (preparation.status === "stale") return;
+    if (preparation.status !== "ready") {
+      const messageKey = preparation.status === "backgroundRequired"
+        ? "messages.backgroundLocationRequiredForClockIn"
+        : preparation.status === "gpsRequired"
+          ? "messages.qrGpsRequired"
+          : "messages.qrNetworkRequired";
+      failAttendanceQrScan(session, t(messageKey));
+      return;
+    }
+
+    let result: AttendancePunch;
+    try {
+      result = await punchMutation.mutateAsync(
+        buildAttendanceQrPunchPayload(qrToken, preparation.verification.payload),
+      );
+    } catch (error) {
+      if (attendanceScannerSessionGate.isActive(session)) {
+        const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
+        failAttendanceQrScan(
+          session,
+          errorKey ? t(errorKey) : getErrorMessage(error, "messages.punchFailed"),
+        );
       }
       return;
     }
 
-    if (punchType === "ClockOut") {
-      try {
-        // 关键位置：ClockOut 成功后立即停止后台定位，结束本班次定位样本。
-        await stopAttendanceLocationTracking();
-      } catch (error) {
-        showMessage(getErrorMessage(error, "messages.locationTrackingFailed"));
-      }
+    let trackingWarning = "";
+    try {
+      // 关键逻辑：服务端成功后必须完成纯 tracking 生命周期，不受 UI 会话失效影响。
+      await applyAttendanceTrackingLifecycle(result, qrStore.storeCode, {
+        start: async (storeCode) => startAttendanceLocationTracking({
+          storeCode,
+          ...(await getAttendanceDeviceContext()),
+        }),
+        stop: stopAttendanceLocationTracking,
+      });
+    } catch (error) {
+      trackingWarning = getErrorMessage(
+        error,
+        result.punchType === "ClockOut"
+          ? "messages.locationTrackingFailed"
+          : "messages.qrTrackingWarning",
+      );
+    }
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+
+    closeAttendanceScanner(true);
+    setLastQrPunch(result);
+    setLastQrTrackingWarning(trackingWarning);
+    showMessage(t("messages.qrPunchSuccess", {
+      punchType: t(`punchTypes.${result.punchType}`, result.punchType),
+    }));
+    if (trackingWarning) showMessage(trackingWarning);
+  };
+
+  const attendanceCameraScan = useCameraScan({
+    disabled: !shouldEnableAttendanceQrScanning({
+      isVisible: attendanceScannerVisible,
+      isSubmitting: attendanceScannerSubmitting,
+      isPaused: attendanceScannerPaused,
+    }),
+    ignoreWhileProcessing: true,
+    resetKey: `${attendanceScannerVisible}:${attendanceScannerResetNonce}`,
+    onBarcode: handleAttendanceQrScan,
+  });
+
+  const resetAttendanceScannerUi = () => {
+    setAttendanceScannerError("");
+    setAttendanceScannerPaused(false);
+    setAttendanceScannerSubmitting(false);
+    setAttendanceScannerResetNonce((value) => value + 1);
+  };
+
+  const beginAttendanceScannerSession = () => {
+    attendanceScannerSessionRef.current = attendanceScannerSessionGate.begin();
+    resetAttendanceScannerUi();
+  };
+
+  const closeAttendanceScanner = (force = false) => {
+    const session = attendanceScannerSessionRef.current;
+    if (!force && session && attendanceScannerSessionGate.isSubmitting(session)) return;
+    attendanceScannerSessionGate.invalidate();
+    attendanceScannerSessionRef.current = null;
+    setAttendanceScannerVisible(false);
+    resetAttendanceScannerUi();
+  };
+
+  const requestAttendanceCameraPermission = async () => {
+    const session = attendanceScannerSessionRef.current;
+    if (!session) return false;
+    const permission = await attendanceCameraScan.requestPermission();
+    if (!attendanceScannerSessionGate.isActive(session)) return false;
+    if (permission.granted) {
+      resetAttendanceScannerUi();
+    } else {
+      pauseAttendanceScanner(t("messages.qrCameraPermissionRequired"));
+    }
+    return permission.granted;
+  };
+
+  const retryAttendanceScan = async () => {
+    const session = attendanceScannerSessionRef.current;
+    if (session && attendanceScannerSessionGate.isSubmitting(session)) return;
+    beginAttendanceScannerSession();
+    if (!attendanceCameraScan.permission?.granted) {
+      await requestAttendanceCameraPermission();
+    }
+  };
+
+  const openAttendanceScanner = async () => {
+    beginAttendanceScannerSession();
+    setAttendanceScannerVisible(true);
+    if (!attendanceCameraScan.permission?.granted) {
+      await requestAttendanceCameraPermission();
     }
   };
 
@@ -1020,8 +1222,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 isLoading={todayQuery.isFetching}
                 isVerificationRefreshing={isRefreshingVerification}
                 isPunching={punchMutation.isPending}
+                hasAuthorizedStores={stores.length > 0}
                 verification={verification}
-                onPunch={handlePunch}
+                lastQrPunch={lastQrPunch}
+                trackingWarning={lastQrTrackingWarning}
+                onScan={() => void openAttendanceScanner()}
               />
             ) : null}
             {isAvailabilityWeekTab ? (
@@ -1201,6 +1406,85 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
           </>
         ) : null}
       </ScrollView>
+      {attendanceScannerVisible ? (
+        <Modal
+          animationType="slide"
+          presentationStyle="fullScreen"
+          visible
+          onRequestClose={() => closeAttendanceScanner()}
+        >
+        <SafeAreaView style={styles.cameraContainer}>
+          {attendanceCameraScan.permission?.granted ? (
+            <CameraView
+              style={styles.cameraView}
+              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+              {...attendanceCameraScan.cameraProps}
+            />
+          ) : (
+            <View style={styles.cameraPermission}>
+              <Text variant="titleMedium" selectable>
+                {t("scanner.permissionTitle")}
+              </Text>
+              <Text selectable>{t("scanner.permissionDescription")}</Text>
+              {attendanceScannerError && !attendanceScannerSubmitting ? (
+                <Text selectable style={styles.cameraError}>
+                  {attendanceScannerError}
+                </Text>
+              ) : null}
+              <Button
+                mode="contained"
+                onPress={() => void (
+                  attendanceScannerError
+                    ? retryAttendanceScan()
+                    : requestAttendanceCameraPermission()
+                )}
+              >
+                {t(attendanceScannerError ? "scanner.retry" : "scanner.grantPermission")}
+              </Button>
+              <Button onPress={() => closeAttendanceScanner()}>
+                {t("common:actions.cancel")}
+              </Button>
+            </View>
+          )}
+          {attendanceCameraScan.permission?.granted ? (
+            <View style={styles.cameraOverlay} pointerEvents="box-none">
+              {attendanceScannerError && !attendanceScannerSubmitting ? (
+                <Text selectable style={styles.cameraError}>
+                  {attendanceScannerError}
+                </Text>
+              ) : (
+                <Text variant="titleLarge" style={styles.cameraTitle} selectable>
+                  {t("scanner.title")}
+                </Text>
+              )}
+              <View style={styles.cameraFrame} />
+              {attendanceScannerError && !attendanceScannerSubmitting ? (
+                <Button
+                  mode="contained"
+                  buttonColor="#FFFFFF"
+                  textColor="#111827"
+                  onPress={() => void retryAttendanceScan()}
+                >
+                  {t("scanner.retry")}
+                </Button>
+              ) : null}
+              {attendanceScannerSubmitting ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Button
+                  mode="contained"
+                  buttonColor="#FFFFFF"
+                  textColor="#111827"
+                  onPress={() => closeAttendanceScanner()}
+                >
+                  {t("common:actions.cancel")}
+                </Button>
+              )}
+            </View>
+          ) : null}
+        </SafeAreaView>
+        </Modal>
+      ) : null}
       <Snackbar
         visible={snackbarVisible}
         onDismiss={() => setSnackbarVisible(false)}
@@ -1232,6 +1516,50 @@ const styles = StyleSheet.create({
   },
   container: {
     backgroundColor: "#F7F8FA",
+    flex: 1,
+  },
+  cameraContainer: {
+    backgroundColor: "#000000",
+    flex: 1,
+  },
+  cameraFrame: {
+    borderColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 3,
+    height: 240,
+    width: 240,
+  },
+  cameraError: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 10,
+    color: "#B42318",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    textAlign: "center",
+  },
+  cameraOverlay: {
+    alignItems: "center",
+    bottom: 32,
+    gap: 24,
+    justifyContent: "space-between",
+    left: 24,
+    position: "absolute",
+    right: 24,
+    top: 32,
+  },
+  cameraPermission: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    flex: 1,
+    gap: 16,
+    justifyContent: "center",
+    padding: 24,
+  },
+  cameraTitle: {
+    color: "#FFFFFF",
+    textAlign: "center",
+  },
+  cameraView: {
     flex: 1,
   },
   content: {

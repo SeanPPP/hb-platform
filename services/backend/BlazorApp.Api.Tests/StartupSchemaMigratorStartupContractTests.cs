@@ -5,6 +5,74 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task AttendanceQrSchemaScripts_use_the_same_transaction_scoped_application_lock()
+    {
+        var repoRoot = FindRepoRoot();
+        var hbposInitializer = await File.ReadAllTextAsync(Path.Combine(
+            repoRoot,
+            "apps/pos-wpf/src/Hbpos.Api/Services/AttendanceQrKeySchemaInitializer.cs"));
+        var backendMigrator = await File.ReadAllTextAsync(Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"));
+
+        var hbposSqlStart = hbposInitializer.IndexOf(
+            "EnsureAttendanceQrKeySchemaSql = \"\"\"",
+            StringComparison.Ordinal);
+        var hbposSqlEnd = hbposInitializer.IndexOf(
+            "public Task InitializeAsync",
+            hbposSqlStart,
+            StringComparison.Ordinal);
+        var backendSqlStart = backendMigrator.IndexOf(
+            "private static async Task EnsureAttendanceQrSchemaAsync",
+            StringComparison.Ordinal);
+        var backendSqlEnd = backendMigrator.IndexOf(
+            "private static async Task EnsureUserStorePosPermissionSchemaAsync",
+            backendSqlStart,
+            StringComparison.Ordinal);
+
+        Assert.True(hbposSqlStart >= 0 && hbposSqlEnd > hbposSqlStart);
+        Assert.True(backendSqlStart >= 0 && backendSqlEnd > backendSqlStart);
+
+        foreach (var source in new[]
+        {
+            hbposInitializer[hbposSqlStart..hbposSqlEnd],
+            backendMigrator[backendSqlStart..backendSqlEnd]
+        })
+        {
+            Assert.Contains("SET XACT_ABORT ON", source);
+            Assert.Contains("BEGIN TRANSACTION", source);
+            Assert.Contains("sys.sp_getapplock", source);
+            Assert.Contains("@Resource = N'AttendancePosQrKey_Schema_Initialization'", source);
+            Assert.Contains("@LockMode = N'Exclusive'", source);
+            Assert.Contains("@LockOwner = N'Transaction'", source);
+            Assert.Contains("@LockTimeout = 30000", source);
+            Assert.Contains("IF @AttendanceQrSchemaLockResult < 0", source);
+            Assert.Contains("THROW 51010", source);
+            Assert.Contains("COMMIT TRANSACTION", source);
+            Assert.Contains("BEGIN CATCH", source);
+            Assert.Contains("ROLLBACK TRANSACTION", source);
+            Assert.Contains("THROW;", source);
+            Assert.Contains("WITH (TABLOCKX, HOLDLOCK)", source);
+        }
+    }
+
+    [Fact]
+    public async Task StartupSchemaMigrator_考勤二维码密钥与幂等索引使用追加式迁移()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"));
+
+        Assert.Contains("AttendancePosQrKey", migrator);
+        Assert.Contains("[ProtectedKey] nvarchar(max) NOT NULL", migrator);
+        Assert.Contains("UX_AttendancePosQrKey_ActiveDevice", migrator);
+        Assert.Contains("PARTITION BY [DeviceCode]", migrator);
+        Assert.Contains("UX_AttendancePosQrKey_ActiveHardware", migrator);
+        Assert.Contains("PARTITION BY [HardwareId]", migrator);
+        Assert.Contains("UX_AttendancePunch_User_QrTokenId", migrator);
+        Assert.Contains("WHERE [QrTokenId] IS NOT NULL", migrator);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建用户分店Pos权限表和唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(
@@ -36,6 +104,13 @@ public sealed class StartupSchemaMigratorStartupContractTests
             "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
             program
         );
+        var createTablesIndex = program.IndexOf("dbContext.CreateTable();", StringComparison.Ordinal);
+        var startupMigratorIndex = program.IndexOf(
+            "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
+            StringComparison.Ordinal);
+        Assert.True(
+            createTablesIndex >= 0 && startupMigratorIndex > createTablesIndex,
+            "空库必须先由 CodeFirst 创建 AttendancePunch 等基础表，再执行考勤二维码增量迁移");
         Assert.DoesNotContain(
             "await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
             program

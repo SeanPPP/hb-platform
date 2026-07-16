@@ -239,6 +239,8 @@ public sealed class OperationAuditControllerTests
                 services.AddSingleton(ingestService);
                 services.RemoveAll<IStoreSchemaInitializer>();
                 services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
+                services.RemoveAll<IAttendanceQrKeySchemaInitializer>();
+                services.AddSingleton<IAttendanceQrKeySchemaInitializer>(new TestNoOpAttendanceQrKeySchemaInitializer());
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton<IAdvertisementSchemaInitializer>(new NoOpAdvertisementSchemaInitializer());
                 services.RemoveAll<ILinklyCloudCredentialSchemaInitializer>();

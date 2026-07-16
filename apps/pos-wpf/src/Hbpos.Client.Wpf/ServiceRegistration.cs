@@ -167,6 +167,13 @@ public static class ServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(3);
         })
         .AddRuntimeApiEndpoint();
+        services.AddHttpClient<IAttendanceSigningKeyApiClient, AttendanceSigningKeyApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IPosRuntimeStatusApiClient, PosRuntimeStatusApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -270,6 +277,15 @@ public static class ServiceRegistration
         services.AddSingleton<IAppUpdateInstallerLauncher, AppUpdateInstallerLauncher>();
         services.AddSingleton<IAppUpdatePromptService, WpfAppUpdatePromptService>();
         services.AddSingleton<IAppUpdateCoordinator, AppUpdateCoordinator>();
+        services.AddSingleton(sp => new AttendanceQrPanelViewModel(
+            sp.GetRequiredService<IAttendanceSigningKeyApiClient>(),
+            sp.GetRequiredService<IConnectivityApiClient>(),
+            sp.GetRequiredService<ILocalDeviceRepository>(),
+            sp.GetRequiredService<IDeviceFingerprintService>(),
+            sp.GetRequiredService<ILocalAppSettingsRepository>(),
+            sp.GetRequiredService<IDeviceAuthorizationProtector>(),
+            sp.GetRequiredService<ILocalizationService>(),
+            endpointState: sp.GetRequiredService<ApiRuntimeEndpointState>()));
         services.AddSingleton<ICashPaymentWorkflowService, CashPaymentWorkflowService>();
         services.AddSingleton<CardPaymentRecoveryService>();
         services.AddSingleton<ISquarePaymentRecoveryService, SquarePaymentRecoveryService>();
@@ -455,7 +471,8 @@ public static class ServiceRegistration
              operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
                 apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>(),
                 operationAuthorizationService: sp.GetRequiredService<IOperationAuthorizationService>(),
-                runtimeEndpointState: sp.GetRequiredService<ApiRuntimeEndpointState>());
+                runtimeEndpointState: sp.GetRequiredService<ApiRuntimeEndpointState>(),
+                attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>());
             sp.GetRequiredService<ApiServerSwitchRuntime>().ConfigureShell(
                 () => new ApiServerPaymentSafetyState(
                     viewModel.CashPayment?.IsCardPaymentInProgress == true,

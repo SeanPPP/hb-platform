@@ -11,6 +11,8 @@
              xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
              mc:Ignorable="d"
              AutomationProperties.AutomationId="PosTerminalScreen"
+             Focusable="True"
+             KeyDown="AttendanceQrView_KeyDown"
              d:DesignHeight="688"
              d:DesignWidth="1366"
              Background="{StaticResource PosScreenBackgroundBrush}">
@@ -344,9 +346,9 @@
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="56*" MinWidth="640" />
-            <ColumnDefinition Width="22*" MinWidth="300" />
-            <ColumnDefinition Width="22*" MinWidth="250" />
+            <ColumnDefinition Width="52*" MinWidth="540" />
+            <ColumnDefinition Width="26*" MinWidth="280" />
+            <ColumnDefinition Width="22*" MinWidth="240" />
         </Grid.ColumnDefinitions>
 
         <Grid Grid.Column="0" Background="{StaticResource PosScreenBackgroundBrush}">
@@ -1054,9 +1056,10 @@
             </Grid>
         </Grid>
 
-        <Grid Grid.Column="2" Background="#FFE7E8EB">
+        <Grid x:Name="AttendanceQrSidebar" Grid.Column="2" Background="#FFE7E8EB">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
@@ -1146,6 +1149,7 @@
 
             <ContentControl Grid.Row="1"
                             Margin="12,0,12,12"
+                            MaxHeight="96"
                             Padding="12"
                             Template="{StaticResource PosStatusCardTemplate}"
                             Tag="{Binding StatusPulseToken, NotifyOnTargetUpdated=True}">
@@ -1160,6 +1164,113 @@
                     </Border>
                 </StackPanel>
             </ContentControl>
+
+            <Button x:Name="AttendanceQrLauncher"
+                    Grid.Row="2"
+                    Height="56"
+                    Margin="12,0,12,12"
+                    Padding="12,6"
+                    HorizontalContentAlignment="Stretch"
+                    Background="White"
+                    BorderBrush="#FFD7E7DD"
+                    BorderThickness="1"
+                    Click="AttendanceQrLauncher_Click"
+                    AutomationProperties.Name="{loc:Loc attendance.qr.open}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <materialDesign:PackIcon Kind="Qrcode" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc attendance.qr.title}" FontSize="12" FontWeight="Black" />
+                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis">
+                            <Run Text="{Binding AttendanceQrPanel.VerificationStatusText, Mode=OneWay}" />
+                            <Run Text=" " />
+                            <Run Text="{Binding AttendanceQrPanel.MessageText, Mode=OneWay}" />
+                        </TextBlock>
+                    </StackPanel>
+                    <TextBlock Grid.Column="2" Text="{Binding AttendanceQrPanel.SecondsRemaining}" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                </Grid>
+            </Button>
+        </Grid>
+
+        <!-- 关键逻辑：弹窗属于纯视图状态，覆盖收银区三列，不扩展业务 ViewModel。 -->
+        <Grid x:Name="AttendanceQrOverlay"
+              Grid.Column="0"
+              Grid.ColumnSpan="3"
+              Panel.ZIndex="100"
+              Background="#99000000"
+              Visibility="Collapsed"
+              AutomationProperties.Name="{loc:Loc attendance.qr.title}"
+              AutomationProperties.HelpText="{loc:Loc attendance.qr.scanHint}"
+              MouseLeftButtonDown="AttendanceQrOverlay_Click">
+            <Border x:Name="AttendanceQrDialog"
+                    Width="360"
+                    Height="430"
+                    Padding="18"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="White"
+                    BorderBrush="#FFD7E7DD"
+                    BorderThickness="1"
+                    CornerRadius="16"
+                    KeyboardNavigation.TabNavigation="Cycle"
+                    MouseLeftButtonDown="AttendanceQrDialog_Click">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="44" />
+                        <RowDefinition Height="260" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <StackPanel>
+                            <TextBlock Text="{loc:Loc attendance.qr.title}" FontSize="18" FontWeight="Black" Foreground="{StaticResource PosPrimaryDarkBrush}" />
+                            <TextBlock Text="{loc:Loc attendance.qr.scanHint}" FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </StackPanel>
+                        <Button x:Name="AttendanceQrCloseButton" Width="44" Height="44" HorizontalAlignment="Right" VerticalAlignment="Top" Background="Transparent" BorderThickness="0" Click="AttendanceQrCloseButton_Click" AutomationProperties.Name="{loc:Loc attendance.qr.close}" AutomationProperties.HelpText="{loc:Loc attendance.qr.closeHelp}">
+                            <materialDesign:PackIcon Kind="Close" Width="24" Height="24" />
+                        </Button>
+                    </Grid>
+                    <Border Grid.Row="1" Width="260" Height="260" HorizontalAlignment="Center" Background="White" BorderBrush="#FFE5E7EB" BorderThickness="1" CornerRadius="6">
+                        <Grid>
+                            <Image Width="260" Height="260" Source="{Binding AttendanceQrPanel.QrImage}" Stretch="None" RenderOptions.BitmapScalingMode="NearestNeighbor" SnapsToDevicePixels="True" AutomationProperties.Name="{loc:Loc attendance.qr.title}" />
+                            <TextBlock Text="{Binding AttendanceQrPanel.MessageText}" Margin="24" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding AttendanceQrPanel.QrImage}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+                    </Border>
+                    <Grid Grid.Row="2" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{Binding AttendanceQrPanel.StoreText}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Margin="0,3,0,0" FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                <Run Text="{loc:Loc attendance.qr.device}" />
+                                <Run Text=": " />
+                                <Run Text="{Binding AttendanceQrPanel.DeviceText, Mode=OneWay}" />
+                            </TextBlock>
+                            <TextBlock Text="{Binding AttendanceQrPanel.VerificationStatusText}" Margin="0,3,0,0" FontSize="11" FontWeight="SemiBold" Foreground="#FF16794A" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                            <TextBlock Text="{Binding AttendanceQrPanel.SecondsRemaining}" FontSize="24" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" />
+                            <TextBlock Text="{loc:Loc attendance.qr.seconds}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>

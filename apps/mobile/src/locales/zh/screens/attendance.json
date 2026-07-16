@@ -75,7 +75,23 @@
       "alertVerificationCaptured": "本次打卡将携带当前采集到的校验信息提交。",
       "alertVerificationSentForReview": "打卡前必须完成定位采集和网络校验。",
       "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
+    },
+    "qrResult": {
+      "title": "最近一次扫码打卡",
+      "employee": "员工：{{employee}}",
+      "store": "门店：{{store}}",
+      "posDevice": "POS 设备：{{device}}",
+      "action": "动作：{{action}}",
+      "serverTime": "服务器时间：{{time}}",
+      "status": "考勤状态：{{status}}"
     }
+  },
+  "scanner": {
+    "title": "扫描 POS 考勤二维码",
+    "permissionTitle": "需要相机权限",
+    "permissionDescription": "允许使用相机后即可扫描 POS 考勤二维码。",
+    "grantPermission": "允许相机权限",
+    "retry": "重新扫描"
   },
   "backgroundLocation": {
     "title": "班中定位说明",
@@ -203,6 +219,7 @@
     "remark": "审核备注"
   },
   "actions": {
+    "scanPunch": "扫码打卡",
     "clockIn": "上班打卡",
     "clockOut": "下班打卡",
     "addAvailability": "添加时间段",
@@ -261,6 +278,24 @@
     "cancelFailed": "取消失败",
     "punchSuccess": "打卡已提交",
     "punchFailed": "打卡失败",
+    "qrPunchSuccess": "{{punchType}}已记录",
+    "qrTrackingWarning": "上班打卡已成功，但班中定位尚未启动。请允许始终定位后返回考勤页重试。",
+    "qrRequired": "请扫描 POS 考勤二维码后打卡",
+    "qrFormatInvalid": "这不是有效的 POS 考勤二维码",
+    "qrInvalidSignature": "二维码签名无效，请门店刷新二维码",
+    "qrDecryptFailed": "考勤二维码密钥无法解密，请门店重新注册此 POS",
+    "qrKeyInvalid": "此 POS 的考勤密钥无效，请门店重新注册",
+    "qrKeyUnknown": "未找到此 POS 的考勤密钥",
+    "qrKeyRevoked": "此 POS 的考勤密钥已撤销",
+    "qrNotActive": "此考勤二维码尚未生效",
+    "qrExpired": "考勤二维码已过期，请扫描刷新后的二维码",
+    "qrDeviceDisabled": "此 POS 设备已停用考勤功能",
+    "qrDeviceMismatch": "二维码与已登记的 POS 设备不匹配，请门店刷新二维码",
+    "qrStoreForbidden": "你没有二维码所属门店的考勤权限",
+    "qrGpsRequired": "打卡需要当前精确 GPS 位置",
+    "qrNetworkRequired": "手机必须联网后才能提交扫码打卡",
+    "qrCameraPermissionRequired": "扫码打卡需要相机权限",
+    "qrDayComplete": "今天的上班和下班打卡均已完成",
     "punchVerificationSentForReview": "定位或网络校验未完成，已按复核信息一并提交。",
     "locationRequiredForPunch": "打卡需要采集当前位置。请允许精确定位后重试。",
     "backgroundLocationRequiredForClockIn": "上班打卡后需要每 20 分钟记录一次班中位置，请允许始终定位后重试。",

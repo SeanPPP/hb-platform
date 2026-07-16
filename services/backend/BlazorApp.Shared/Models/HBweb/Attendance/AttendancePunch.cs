@@ -59,6 +59,15 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = false, Length = 30)]
         public string Source { get; set; } = "App";
 
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? QrTokenId { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? PosDeviceCode { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 64)]
+        public string? SigningKeyId { get; set; }
+
         [SugarColumn(IsNullable = true, Length = 500)]
         public string? Remark { get; set; }
     }

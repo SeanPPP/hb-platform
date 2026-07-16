@@ -7,28 +7,10 @@ import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tr
 import { isUnauthenticatedApiPayload } from "@/shared/api/auth-error";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
+import { unwrapApiEnvelope } from "@/shared/api/api-envelope";
 import { preserveApiClientError } from "@/shared/api/client-error";
 import { isLogCenterIngestUrl } from "@/shared/logging/log-center";
 import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
-
-function unwrapEnvelope<T>(payload: unknown): T {
-  let current = payload;
-  for (let depth = 0; depth < 3; depth++) {
-    if (typeof current !== "object" || current === null || !("data" in current)) break;
-    const keys = Object.keys(current);
-    const isEnvelope =
-      keys.includes("data") &&
-      (keys.includes("success") || keys.includes("isSuccess") || keys.includes("message"));
-    if (!isEnvelope) break;
-    const envelope = current as Record<string, unknown>;
-    const success = envelope.success ?? envelope.isSuccess;
-    if (success === false) {
-      throw new Error(extractApiErrorMessage(envelope, "Request failed"));
-    }
-    current = envelope.data;
-  }
-  return current as T;
-}
 
 export const apiClient = axios.create({
   baseURL: DEFAULT_API_BASE_URL,
@@ -199,7 +181,7 @@ apiClient.interceptors.response.use(
     }
 
     try {
-      response.data = unwrapEnvelope(response.data);
+      response.data = unwrapApiEnvelope(response.data);
     } catch (error) {
       reportApiErrorLog(error, response.config as InternalAxiosRequestConfig, {
         responseStatus: response.status,

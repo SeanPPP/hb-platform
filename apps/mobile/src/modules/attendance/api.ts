@@ -1,4 +1,8 @@
 import { apiClient } from "@/shared/api/client";
+import {
+  normalizeAttendancePunchMutationResult,
+  normalizeAttendanceQrResolveResult,
+} from "@/modules/attendance/attendance-qr";
 import type {
   AttendanceApproval,
   AttendanceApprovalPayload,
@@ -15,6 +19,7 @@ import type {
   AttendancePublishWeekPayload,
   AttendancePunch,
   AttendancePunchPayload,
+  AttendanceQrResolveResult,
   AttendancePunchType,
   AttendanceSchedule,
   AttendanceSchedulePayload,
@@ -170,6 +175,10 @@ function normalizePunch(raw: ApiRecord): AttendancePunch {
     locationAccuracy: asOptionalNumber(pick(raw, "locationAccuracy", "LocationAccuracy", "locationAccuracyMeters", "LocationAccuracyMeters")),
     locationPermissionStatus: asOptionalString(pick(raw, "locationPermissionStatus", "LocationPermissionStatus")),
     locationCapturedAtUtc: asOptionalString(pick(raw, "locationCapturedAtUtc", "LocationCapturedAtUtc")),
+    userGuid: asOptionalString(pick(raw, "userGuid", "UserGuid")),
+    employeeName: asOptionalString(pick(raw, "employeeName", "EmployeeName")),
+    posDeviceCode: asOptionalString(pick(raw, "posDeviceCode", "PosDeviceCode")),
+    serverTimeUtc: asOptionalString(pick(raw, "serverTimeUtc", "ServerTimeUtc")),
   };
 }
 
@@ -542,7 +551,20 @@ export async function punchAttendance(
     `${ATTENDANCE_BASE}/punch`,
     sanitizePayload({ ...payload }),
   );
-  return normalizePunch(isRecord(response.data) ? response.data : {});
+  return normalizeAttendancePunchMutationResult(
+    response.data,
+    normalizePunch(isRecord(response.data) ? response.data : {}),
+  );
+}
+
+export async function resolveAttendanceQr(
+  qrToken: string,
+): Promise<AttendanceQrResolveResult> {
+  const response = await apiClient.post(
+    `${ATTENDANCE_BASE}/qr/resolve`,
+    { qrToken },
+  );
+  return normalizeAttendanceQrResolveResult(response.data);
 }
 
 export async function createAttendanceLocationSample(

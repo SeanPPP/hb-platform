@@ -172,6 +172,122 @@ public sealed class PosTerminalViewLayoutTests
                 element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == key));
     }
 
+    [Theory]
+    [InlineData(1080, 720)]
+    [InlineData(1366, 768)]
+    [InlineData(1920, 1080)]
+    public void Attendance_sidebar_keeps_five_action_rows_touchable_at_supported_sizes(int width, int height)
+    {
+        var repoRoot = FindRepoRoot();
+        var mainWindow = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "MainWindow.xaml"));
+        Assert.True(width >= (double)mainWindow.Root!.Attribute("MinWidth")!);
+        Assert.True(height >= (double)mainWindow.Root.Attribute("MinHeight")!);
+
+        var view = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Views", "Screens", "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var rootColumns = Assert.Single(view.Root!.Elements(presentation + "Grid"))
+            .Element(presentation + "Grid.ColumnDefinitions")!
+            .Elements(presentation + "ColumnDefinition")
+            .ToArray();
+        Assert.Equal(3, rootColumns.Length);
+        Assert.True(rootColumns.Sum(column => (double)column.Attribute("MinWidth")!) <= (double)mainWindow.Root.Attribute("MinWidth")!);
+
+        var theme = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Themes", "PosTheme.xaml"));
+        AssertStyleSetter(theme, x, "PosStitchActionButtonStyle", "MinHeight", "48");
+        var actionStyle = FindStyle(theme, x, "PosStitchActionButtonStyle");
+        var actionButtonMargin = ParseVerticalMargin((string?)Assert.Single(actionStyle.Elements().Where(element =>
+            element.Name.LocalName == "Setter" && (string?)element.Attribute("Property") == "Margin")).Attribute("Value"));
+
+        var sidebar = Assert.Single(view.Descendants().Where(element => (string?)element.Attribute(x + "Name") == "AttendanceQrSidebar"));
+        var actionGrid = Assert.Single(sidebar.Elements(presentation + "UniformGrid"));
+        Assert.Equal(10, actionGrid.Elements(presentation + "Button").Count());
+        var status = Assert.Single(sidebar.Elements(presentation + "ContentControl"));
+        var launcher = Assert.Single(sidebar.Elements(presentation + "Button").Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrLauncher"));
+        Assert.True((double)launcher.Attribute("Height")! <= 56);
+        var requiredHeight = (5 * (48 + actionButtonMargin))
+            + ParseVerticalMargin((string?)actionGrid.Attribute("Margin"))
+            + (double)status.Attribute("MaxHeight")!
+            + ParseVerticalMargin((string?)status.Attribute("Margin"))
+            + (double)launcher.Attribute("Height")!
+            + ParseVerticalMargin((string?)launcher.Attribute("Margin"));
+        Assert.True(requiredHeight <= 720 - 48 - 32);
+    }
+
+    private static double ParseVerticalMargin(string? value)
+    {
+        var parts = value!.Split(',').Select(double.Parse).ToArray();
+        return parts.Length switch
+        {
+            1 => parts[0] * 2,
+            2 => parts[1] * 2,
+            4 => parts[1] + parts[3],
+            _ => throw new FormatException("无效的 Thickness。"),
+        };
+    }
+
+    [Fact]
+    public void Attendance_qr_uses_compact_launcher_and_native_overlay_dialog()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Views", "Screens", "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var sidebar = Assert.Single(view.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrSidebar"));
+        var rows = Assert.Single(sidebar.Elements().Where(element => element.Name.LocalName == "Grid.RowDefinitions")).Elements().ToArray();
+        Assert.Equal(["*", "Auto", "Auto"], rows.Select(row => (string?)row.Attribute("Height")));
+
+        Assert.DoesNotContain(sidebar.Descendants(), element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrCard");
+        var launcher = Assert.Single(sidebar.Elements().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrLauncher"));
+        Assert.Equal("56", (string?)launcher.Attribute("Height"));
+        Assert.Equal("AttendanceQrLauncher_Click", (string?)launcher.Attribute("Click"));
+
+        var overlay = Assert.Single(view.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrOverlay"));
+        Assert.Equal("0", (string?)overlay.Attribute("Grid.Column"));
+        Assert.Equal("3", (string?)overlay.Attribute("Grid.ColumnSpan"));
+        Assert.Equal("AttendanceQrOverlay_Click", (string?)overlay.Attribute("MouseLeftButtonDown"));
+        Assert.Equal("{loc:Loc attendance.qr.title}", (string?)overlay.Attribute("AutomationProperties.Name"));
+        Assert.Equal("{loc:Loc attendance.qr.scanHint}", (string?)overlay.Attribute("AutomationProperties.HelpText"));
+        var dialog = Assert.Single(overlay.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrDialog"));
+        Assert.Equal("360", (string?)dialog.Attribute("Width"));
+        Assert.Equal("430", (string?)dialog.Attribute("Height"));
+
+        var image = Assert.Single(dialog.Descendants().Where(element =>
+            element.Name.LocalName == "Image"
+            && ((string?)element.Attribute("Source"))?.Contains("AttendanceQrPanel.QrImage", StringComparison.Ordinal) == true));
+        Assert.Equal("260", (string?)image.Attribute("Width"));
+        Assert.Equal("260", (string?)image.Attribute("Height"));
+        Assert.Equal("None", (string?)image.Attribute("Stretch"));
+        Assert.Equal("NearestNeighbor", (string?)image.Attribute("RenderOptions.BitmapScalingMode"));
+        var closeButton = Assert.Single(dialog.Descendants().Where(element => element.Name.LocalName == "Button"
+            && (string?)element.Attribute("Click") == "AttendanceQrCloseButton_Click"));
+        Assert.Equal("{loc:Loc attendance.qr.closeHelp}", (string?)closeButton.Attribute("AutomationProperties.HelpText"));
+        Assert.Equal("AttendanceQrView_KeyDown", (string?)view.Root!.Attribute("KeyDown"));
+
+        var panelRunBindings = view.Descendants(presentation + "Run")
+            .Select(run => (string?)run.Attribute("Text"))
+            .Where(text => text?.StartsWith("{Binding AttendanceQrPanel.", StringComparison.Ordinal) == true)
+            .ToArray();
+        Assert.Equal(
+            [
+                "{Binding AttendanceQrPanel.VerificationStatusText, Mode=OneWay}",
+                "{Binding AttendanceQrPanel.MessageText, Mode=OneWay}",
+                "{Binding AttendanceQrPanel.DeviceText, Mode=OneWay}",
+            ],
+            panelRunBindings);
+
+        var english = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Resources", "Strings.resx"));
+        var chinese = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Resources", "Strings.zh-CN.resx"));
+        Assert.Contains(english.Descendants("data"), element => (string?)element.Attribute("name") == "attendance.qr.closeHelp");
+        Assert.Contains(chinese.Descendants("data"), element => (string?)element.Attribute("name") == "attendance.qr.closeHelp");
+    }
+
     private static XElement FindStyle(XDocument document, XNamespace x, string key) =>
         Assert.Single(document.Descendants().Where(element =>
             element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == key));

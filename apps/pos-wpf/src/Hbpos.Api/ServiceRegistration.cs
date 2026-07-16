@@ -1,6 +1,7 @@
 using Hbpos.Api.Auth;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
+using Hbpos.Api.Security;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace Hbpos.Api;
@@ -29,6 +30,13 @@ public static class ServiceRegistration
             dataProtection
                 .SetApplicationName(configuration["DataProtection:ApplicationName"] ?? "Hbpos.Api")
                 .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+            // 关键逻辑：沿用同一绝对 key-ring 路径，但考勤密钥使用固定隔离应用名和 purpose。
+            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(keysPath));
+        }
+        else
+        {
+            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(
+                Path.Combine(AppContext.BaseDirectory, "App_Data", "DataProtectionKeys")));
         }
         services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
         services.AddMemoryCache();
@@ -65,6 +73,9 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+        services.AddScoped<IAttendanceSigningKeyRegistrationService, AttendanceSigningKeyRegistrationService>();
+        services.AddScoped<IAttendanceQrKeySchemaSqlExecutor, SqlSugarAttendanceQrKeySchemaSqlExecutor>();
+        services.AddScoped<IAttendanceQrKeySchemaInitializer, SqlSugarAttendanceQrKeySchemaInitializer>();
         services.AddScoped<IDeviceRuntimeStatusSchemaSqlExecutor, SqlSugarDeviceRuntimeStatusSchemaSqlExecutor>();
         services.AddScoped<IDeviceRuntimeStatusSchemaInitializer, SqlSugarDeviceRuntimeStatusSchemaInitializer>();
         services.AddScoped<ICashierService, CashierService>();

@@ -100,6 +100,11 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> Punch([FromBody] AttendancePunchRequestDto request) =>
             Ok(await _service.PunchAsync(request));
 
+        [HttpPost("qr/resolve")]
+        [Authorize(Policy = Permissions.Attendance.Punch.Self)]
+        public async Task<IActionResult> ResolveQr([FromBody] AttendanceQrResolveRequestDto request) =>
+            Ok(await _service.ResolveAttendanceQrAsync(request));
+
         [HttpPost("location-samples")]
         [Authorize(Policy = Permissions.Attendance.Punch.Self)]
         public async Task<IActionResult> CreateLocationSample([FromBody] AttendanceLocationSampleRequestDto request) =>

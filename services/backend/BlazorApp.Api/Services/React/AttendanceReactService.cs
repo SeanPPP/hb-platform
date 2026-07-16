@@ -1,11 +1,14 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Attendance;
+using BlazorApp.Api.Security;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
@@ -26,6 +29,9 @@ namespace BlazorApp.Api.Services.React
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly ILogger<AttendanceReactService> _logger;
         private readonly TencentCloudUploadService _uploadService;
+        private readonly IAttendancePosDeviceStatusProvider? _attendancePosDeviceStatusProvider;
+        private readonly TimeProvider _timeProvider;
+        private readonly AttendanceQrKeyProtector _attendanceQrKeyProtector;
 
         public AttendanceReactService(
             SqlSugarContext context,
@@ -33,7 +39,10 @@ namespace BlazorApp.Api.Services.React
             ICurrentUserManageableStoreScopeService scopeService,
             IHttpContextAccessor httpContextAccessor,
             ILogger<AttendanceReactService> logger,
-            TencentCloudUploadService uploadService
+            TencentCloudUploadService uploadService,
+            IAttendancePosDeviceStatusProvider? attendancePosDeviceStatusProvider = null,
+            TimeProvider? timeProvider = null,
+            AttendanceQrKeyProtector? attendanceQrKeyProtector = null
         )
         {
             _db = context.Db;
@@ -42,6 +51,10 @@ namespace BlazorApp.Api.Services.React
             _httpContextAccessor = httpContextAccessor;
             _logger = logger;
             _uploadService = uploadService;
+            _attendancePosDeviceStatusProvider = attendancePosDeviceStatusProvider;
+            _timeProvider = timeProvider ?? TimeProvider.System;
+            _attendanceQrKeyProtector = attendanceQrKeyProtector
+                ?? throw new ArgumentNullException(nameof(attendanceQrKeyProtector));
         }
 
         public async Task<ApiResponse<List<AttendanceScheduleDto>>> GetSchedulesAsync(
@@ -257,7 +270,7 @@ namespace BlazorApp.Api.Services.React
             {
                 WorkDate = today,
                 Schedules = schedules.Select(item => ToDto(item)).ToList(),
-                Punches = punches.Select(ToDto).ToList(),
+                Punches = punches.Select(item => ToDto(item)).ToList(),
                 Holidays = holidays.Select(ToDto).ToList(),
             });
         }
@@ -417,11 +430,82 @@ namespace BlazorApp.Api.Services.React
         public async Task<ApiResponse<AttendancePunchDto>> PunchAsync(AttendancePunchRequestDto request)
         {
             var userGuid = ResolveCurrentUserGuid();
-            var storeCode = request.StoreCode?.Trim();
-            if (string.IsNullOrWhiteSpace(storeCode))
+            if (string.IsNullOrWhiteSpace(request.QrToken))
             {
-                return ApiResponse<AttendancePunchDto>.Error("请选择分店后再打卡", "STORE_REQUIRED");
+                return ApiResponse<AttendancePunchDto>.Error("请扫描 POS 考勤二维码后打卡", "QR_REQUIRED");
             }
+
+            if (!AttendanceQrTokenCodec.TryGetKeyId(request.QrToken, out var signingKeyId, out var tokenError))
+            {
+                return ApiResponse<AttendancePunchDto>.Error("考勤二维码格式无效", tokenError);
+            }
+
+            var signingKey = await _db.Queryable<AttendancePosQrKey>()
+                .FirstAsync(item => item.Kid == signingKeyId);
+            if (signingKey == null)
+            {
+                return ApiResponse<AttendancePunchDto>.Error("考勤二维码密钥未知", "ATTENDANCE_QR_KEY_UNKNOWN");
+            }
+            if (!string.Equals(signingKey.Status, "Active", StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendancePunchDto>.Error("考勤二维码密钥已撤销", "ATTENDANCE_QR_KEY_REVOKED");
+            }
+            if (!string.Equals(signingKey.Algorithm, "A256GCM", StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "考勤二维码密钥算法无效", "ATTENDANCE_QR_KEY_INVALID");
+            }
+
+            var serverNow = _timeProvider.GetUtcNow().UtcDateTime;
+            byte[] qrKey;
+            try
+            {
+                qrKey = _attendanceQrKeyProtector.Unprotect(signingKey.ProtectedKey);
+            }
+            catch (Exception exception) when (exception is CryptographicException or FormatException)
+            {
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "考勤二维码密钥无法安全读取",
+                    "ATTENDANCE_QR_KEY_DECRYPT_FAILED");
+            }
+
+            AttendanceQrTokenPayload? tokenPayload;
+            try
+            {
+                if (!AttendanceQrTokenCodec.TryDecryptIdentity(
+                        request.QrToken,
+                        qrKey,
+                        out tokenPayload,
+                        out _,
+                        out tokenError))
+                {
+                    return ApiResponse<AttendancePunchDto>.Error("考勤二维码验证失败", tokenError);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(qrKey);
+            }
+
+            // 关键逻辑：门店和设备只信任签名载荷及登记记录，忽略手机请求中的同名字段。
+            if (!string.Equals(tokenPayload!.StoreCode, signingKey.StoreCode, StringComparison.Ordinal)
+                || !string.Equals(tokenPayload.DeviceCode, signingKey.DeviceCode, StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "考勤二维码与登记设备不匹配",
+                    "ATTENDANCE_QR_DEVICE_MISMATCH");
+            }
+
+            if (_attendancePosDeviceStatusProvider == null
+                || !await _attendancePosDeviceStatusProvider.IsActiveAsync(
+                    signingKey.DeviceCode,
+                    signingKey.StoreCode,
+                    signingKey.HardwareId))
+            {
+                return ApiResponse<AttendancePunchDto>.Error("POS 设备已停用", "POS_DEVICE_DISABLED");
+            }
+
+            var storeCode = tokenPayload.StoreCode;
 
             var access = await ResolveRelatedStoreAccessAsync(userGuid, storeCode);
             if (!access.Success)
@@ -429,10 +513,31 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendancePunchDto>.Error(access.Message, access.ErrorCode);
             }
 
+            var employee = await _db.Queryable<User>().FirstAsync(item => item.UserGUID == userGuid);
+            var store = await _db.Queryable<Store>().FirstAsync(item => item.StoreCode == storeCode);
+            var employeeName = employee?.FullName ?? employee?.Username;
+            var storeName = store?.StoreName;
+
+            var tokenId = tokenPayload.TokenId.ToString();
+            var existingTokenPunch = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
+                item.UserGuid == userGuid && item.QrTokenId == tokenId);
+            if (existingTokenPunch != null)
+            {
+                return ApiResponse<AttendancePunchDto>.OK(
+                    ToDto(existingTokenPunch, employeeName, storeName, serverNow),
+                    "打卡已保存");
+            }
+
+            if (!AttendanceQrTokenCodec.TryValidateLifetime(tokenPayload, serverNow, out tokenError))
+            {
+                return ApiResponse<AttendancePunchDto>.Error("考勤二维码验证失败", tokenError);
+            }
+
             var locationValidation = RequiredLocationValidator.Validate(
                 request.LocationLatitude,
                 request.LocationLongitude,
-                request.LocationPermissionStatus,
+                // Expo 仅发送真实 GPS 样本；操作系统权限状态不作为可伪造的网络字段上传。
+                "granted",
                 request.LocationCapturedAtUtc,
                 "打卡需要位置信息",
                 TimeSpan.FromMinutes(5)
@@ -445,11 +550,25 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, request.StoreTimeZone);
-            var punchUtc = DateTime.SpecifyKind(request.PunchTimeUtc ?? DateTime.UtcNow, DateTimeKind.Utc);
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, null);
+            var punchUtc = DateTime.SpecifyKind(serverNow, DateTimeKind.Utc);
             var punchLocal = ConvertUtcToStoreLocal(punchUtc, storeTimeZone);
             var workDate = punchLocal.Date;
-            var punchType = NormalizePunchType(request.PunchType);
+            var todayPunches = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.StoreCode == storeCode
+                    && item.UserGuid == userGuid
+                    && item.WorkDate == workDate)
+                .ToListAsync();
+            var hasClockIn = todayPunches.Any(item => item.PunchType == "ClockIn");
+            var hasClockOut = todayPunches.Any(item => item.PunchType == "ClockOut");
+            if (hasClockIn && hasClockOut)
+            {
+                return ApiResponse<AttendancePunchDto>.Error("今日打卡已完成", "DAY_COMPLETE");
+            }
+
+            var punchType = hasClockIn ? "ClockOut" : "ClockIn";
             var settings = await GetOrCreateSettingsModelAsync();
 
             var schedule = await FindScheduleForPunchAsync(storeCode, userGuid, workDate, punchLocal.TimeOfDay);
@@ -467,7 +586,7 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendancePunchDto>.Error("当前没有排班，无法打卡", "NO_SCHEDULE");
             }
 
-            var now = DateTime.UtcNow;
+            var now = serverNow;
             var punch = new AttendancePunch
             {
                 PunchGuid = Guid.NewGuid().ToString(),
@@ -486,19 +605,148 @@ namespace BlazorApp.Api.Services.React
                 LocationAccuracyMeters = request.LocationAccuracy,
                 LocationPermissionStatus = NormalizeOptional(request.LocationPermissionStatus, 30),
                 LocationCapturedAtUtc = NormalizeUtc(request.LocationCapturedAtUtc),
-                Source = "App",
+                Source = "PosQr",
+                QrTokenId = tokenId,
+                PosDeviceCode = signingKey.DeviceCode,
+                SigningKeyId = signingKey.Kid,
                 Remark = request.Remark,
                 CreatedAt = now,
                 CreatedBy = _currentUserService.GetCurrentUsername(),
             };
 
-            await _db.Insertable(punch).ExecuteCommandAsync();
-            if (RequiresApproval(status, settings))
+            try
             {
-                await CreatePendingApprovalAsync("Punch", punch.PunchGuid, punch.StoreCode, userGuid);
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    await _db.Insertable(punch).ExecuteCommandAsync();
+                    if (RequiresApproval(status, settings))
+                    {
+                        await CreatePendingApprovalAsync("Punch", punch.PunchGuid, punch.StoreCode, userGuid);
+                    }
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception exception) when (
+                AttendancePunchPersistenceException.IsUniqueConstraintViolation(exception))
+            {
+                // 关键逻辑：并发重复扫码由数据库唯一索引裁决，输掉竞争的请求返回首次结果，不能翻转动作。
+                var firstResult = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
+                    item.UserGuid == userGuid && item.QrTokenId == tokenId);
+                if (firstResult != null)
+                {
+                    return ApiResponse<AttendancePunchDto>.OK(
+                        ToDto(firstResult, employeeName, storeName, serverNow),
+                        "打卡已保存");
+                }
+
+                throw;
+            }
+            return ApiResponse<AttendancePunchDto>.OK(
+                ToDto(punch, employeeName, storeName, serverNow),
+                "打卡已保存");
+        }
+
+        public async Task<ApiResponse<AttendanceQrResolveDto>> ResolveAttendanceQrAsync(
+            AttendanceQrResolveRequestDto request)
+        {
+            var userGuid = ResolveCurrentUserGuid();
+            if (string.IsNullOrWhiteSpace(request.QrToken))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error("请扫描 POS 考勤二维码", "QR_REQUIRED");
             }
 
-            return ApiResponse<AttendancePunchDto>.OK(ToDto(punch), "打卡已保存");
+            if (!AttendanceQrTokenCodec.TryGetKeyId(request.QrToken, out var kid, out var tokenError))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error("考勤二维码格式无效", tokenError);
+            }
+
+            var qrKeyRecord = await _db.Queryable<AttendancePosQrKey>()
+                .FirstAsync(item => item.Kid == kid);
+            if (qrKeyRecord == null)
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(
+                    "考勤二维码密钥未知", "ATTENDANCE_QR_KEY_UNKNOWN");
+            }
+            if (!string.Equals(qrKeyRecord.Status, "Active", StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(
+                    "考勤二维码密钥已撤销", "ATTENDANCE_QR_KEY_REVOKED");
+            }
+            if (!string.Equals(qrKeyRecord.Algorithm, "A256GCM", StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(
+                    "考勤二维码密钥算法无效", "ATTENDANCE_QR_KEY_INVALID");
+            }
+
+            byte[] qrKey;
+            try
+            {
+                qrKey = _attendanceQrKeyProtector.Unprotect(qrKeyRecord.ProtectedKey);
+            }
+            catch (Exception exception) when (exception is CryptographicException or FormatException)
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(
+                    "考勤二维码密钥无法安全读取", "ATTENDANCE_QR_KEY_DECRYPT_FAILED");
+            }
+
+            AttendanceQrTokenPayload? payload;
+            try
+            {
+                if (!AttendanceQrTokenCodec.TryDecryptIdentity(
+                        request.QrToken, qrKey, out payload, out _, out tokenError))
+                {
+                    return ApiResponse<AttendanceQrResolveDto>.Error("考勤二维码验证失败", tokenError);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(qrKey);
+            }
+
+            // 关键逻辑：resolve 只返回服务端重验后的设备身份；Punch 仍会对原始令牌完整重验。
+            if (!string.Equals(payload!.StoreCode, qrKeyRecord.StoreCode, StringComparison.Ordinal)
+                || !string.Equals(payload.DeviceCode, qrKeyRecord.DeviceCode, StringComparison.Ordinal))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(
+                    "考勤二维码与登记设备不匹配", "ATTENDANCE_QR_DEVICE_MISMATCH");
+            }
+
+            if (_attendancePosDeviceStatusProvider == null
+                || !await _attendancePosDeviceStatusProvider.IsActiveAsync(
+                    qrKeyRecord.DeviceCode,
+                    qrKeyRecord.StoreCode,
+                    qrKeyRecord.HardwareId))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error("POS 设备已停用", "POS_DEVICE_DISABLED");
+            }
+
+            var access = await ResolveRelatedStoreAccessAsync(userGuid, payload.StoreCode);
+            if (!access.Success)
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error(access.Message, access.ErrorCode);
+            }
+
+            var serverNow = _timeProvider.GetUtcNow().UtcDateTime;
+            if (!AttendanceQrTokenCodec.TryValidateLifetime(payload, serverNow, out tokenError))
+            {
+                return ApiResponse<AttendanceQrResolveDto>.Error("考勤二维码验证失败", tokenError);
+            }
+
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreCode == payload.StoreCode);
+            return ApiResponse<AttendanceQrResolveDto>.OK(new AttendanceQrResolveDto
+            {
+                StoreCode = payload.StoreCode,
+                DeviceCode = payload.DeviceCode,
+                StoreName = store?.StoreName,
+                ExpiresAtUtc = payload.ExpiresAtUtc,
+            });
         }
 
         public async Task<ApiResponse<AttendanceLocationSampleDto>> CreateLocationSampleAsync(
@@ -759,7 +1007,7 @@ namespace BlazorApp.Api.Services.React
                 .WhereIF(!string.IsNullOrWhiteSpace(query.Status), item => item.Status == query.Status!.Trim())
                 .OrderByDescending(item => item.PunchTimeUtc)
                 .ToListAsync();
-            return ApiResponse<List<AttendancePunchDto>>.OK(rows.Select(ToDto).ToList());
+            return ApiResponse<List<AttendancePunchDto>>.OK(rows.Select(item => ToDto(item)).ToList());
         }
 
         public async Task<ApiResponse<List<AttendanceLocationSampleDto>>> GetLocationSamplesAsync(
@@ -1823,7 +2071,11 @@ namespace BlazorApp.Api.Services.React
             Remark = item.Remark,
         };
 
-        private static AttendancePunchDto ToDto(AttendancePunch item) => new()
+        private static AttendancePunchDto ToDto(
+            AttendancePunch item,
+            string? employeeName = null,
+            string? storeName = null,
+            DateTime? serverTimeUtc = null) => new()
         {
             PunchGuid = item.PunchGuid,
             ScheduleGuid = item.ScheduleGuid,
@@ -1842,6 +2094,12 @@ namespace BlazorApp.Api.Services.React
             LocationPermissionStatus = item.LocationPermissionStatus,
             LocationCapturedAtUtc = item.LocationCapturedAtUtc,
             Source = item.Source,
+            QrTokenId = item.QrTokenId,
+            PosDeviceCode = item.PosDeviceCode,
+            SigningKeyId = item.SigningKeyId,
+            EmployeeName = employeeName,
+            StoreName = storeName,
+            ServerTimeUtc = serverTimeUtc,
             Remark = item.Remark,
         };
 
