@@ -32,10 +32,7 @@ async function main() {
     () => api.approve(42, "ok"),
     () => api.reject(42, "wrong"),
   ]) {
-    const mutation = queryClient.getMutationCache().build(queryClient, {
-      mutationFn,
-      gcTime: 0,
-    });
+    const mutation = queryClient.getMutationCache().build(queryClient, { mutationFn });
     await mutation.execute(undefined);
   }
 

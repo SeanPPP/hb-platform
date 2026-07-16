@@ -37,6 +37,10 @@ import {
   getIdentityPhotoRefreshDelay,
 } from "./identity-photo-refresh";
 import { createEmployeeProfileReviewAppStateHandler } from "./privacy-state";
+import {
+  createEmployeeProfileSensitiveDetailActivityGuard,
+  isSensitiveDetailFetchBlockedError,
+} from "./sensitive-detail-activity-guard";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
@@ -68,6 +72,7 @@ export function EmployeeProfileReviewDetailScreen() {
   const mountedRef = useRef(true);
   const appIsActiveRef = useRef(AppState.currentState === "active");
   const resumeGenerationRef = useRef(0);
+  const reviewMutationGenerationRef = useRef(0);
   const photoErrorRefetchGuard = useRef(createIdentityPhotoErrorRefetchGuard());
   const reviewAccess = useMemo(
     () => getEmployeeProfileReviewAccess({
@@ -77,6 +82,25 @@ export function EmployeeProfileReviewDetailScreen() {
       sessionKind,
     }),
     [currentUser?.permissions, currentUser?.roleNames, navigationItems, sessionKind]
+  );
+  const clearDetailCache = useCallback(async () => {
+    if (validRequestId) {
+      await clearEmployeeProfileReviewDetailCache(queryClient, requestId);
+    }
+  }, [queryClient, requestId, validRequestId]);
+  const sensitiveDetailActivityGuard = useMemo(
+    () => createEmployeeProfileSensitiveDetailActivityGuard({
+      isActive: () => appIsActiveRef.current,
+      getActivityGeneration: () => resumeGenerationRef.current,
+      clearCache: clearDetailCache,
+    }),
+    [clearDetailCache]
+  );
+  const fetchSensitiveDetail = useCallback(
+    () => sensitiveDetailActivityGuard.fetch(
+      () => getEmployeeProfileReviewDetailApi(requestId)
+    ),
+    [requestId, sensitiveDetailActivityGuard]
   );
   const [privacyShielded, setPrivacyShielded] = useState(
     AppState.currentState !== "active"
@@ -89,10 +113,17 @@ export function EmployeeProfileReviewDetailScreen() {
       && reviewAccess.allowed
       && validRequestId
       && !privacyShielded,
-    queryFn: () => getEmployeeProfileReviewDetailApi(requestId),
+    queryFn: fetchSensitiveDetail,
+    // 前后台重新鉴权由本页面统一控制，禁止 Query 自动焦点/重连刷新绕过闸门。
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     // 完整敏感值离开页面后不保留默认五分钟缓存。
     gcTime: 0,
   });
+  const refetchSensitiveDetail = useCallback(
+    () => sensitiveDetailActivityGuard.runIfActive(() => detailQuery.refetch()),
+    [detailQuery.refetch, sensitiveDetailActivityGuard]
+  );
   const [revealedFields, setRevealedFields] = useState<Set<EmployeeProfileSensitiveField>>(
     () => new Set()
   );
@@ -106,11 +137,9 @@ export function EmployeeProfileReviewDetailScreen() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (validRequestId) {
-        void clearEmployeeProfileReviewDetailCache(queryClient, requestId);
-      }
+      void clearDetailCache();
     };
-  }, [queryClient, requestId, validRequestId]);
+  }, [clearDetailCache]);
 
   const clearSensitiveUiState = useCallback(() => {
     if (!mountedRef.current) {
@@ -129,13 +158,11 @@ export function EmployeeProfileReviewDetailScreen() {
       setIsLeavingSensitiveDetail(true);
       clearSensitiveUiState();
     }
-    if (validRequestId) {
-      await clearEmployeeProfileReviewDetailCache(queryClient, requestId);
-    }
+    await clearDetailCache();
     if (mountedRef.current) {
       router.replace(target);
     }
-  }, [clearSensitiveUiState, queryClient, requestId, router, validRequestId]);
+  }, [clearDetailCache, clearSensitiveUiState, router]);
 
   const resumeDetailAfterForeground = useCallback(async () => {
     const generation = ++resumeGenerationRef.current;
@@ -145,12 +172,17 @@ export function EmployeeProfileReviewDetailScreen() {
     }
     setPrivacyRefreshFailed(false);
     try {
-      await clearEmployeeProfileReviewDetailCache(queryClient, requestId);
-      await queryClient.fetchQuery({
-        queryKey: employeeProfileReviewDetailQueryKey(requestId),
-        queryFn: () => getEmployeeProfileReviewDetailApi(requestId),
-        gcTime: 0,
-      });
+      await clearDetailCache();
+      const refreshed = await sensitiveDetailActivityGuard.runIfActive(
+        () => queryClient.fetchQuery({
+          queryKey: employeeProfileReviewDetailQueryKey(requestId),
+          queryFn: fetchSensitiveDetail,
+          gcTime: 0,
+        })
+      );
+      if (!refreshed) {
+        return;
+      }
       if (
         mountedRef.current
         && appIsActiveRef.current
@@ -159,6 +191,11 @@ export function EmployeeProfileReviewDetailScreen() {
         setPrivacyShielded(false);
       }
     } catch (error) {
+      if (!appIsActiveRef.current || isSensitiveDetailFetchBlockedError(error)) {
+        // 前台校验途中退到后台时保持遮罩，等待下一次 active 再重新鉴权。
+        await clearDetailCache();
+        return;
+      }
       if (getReviewFailureKind(error) === "forbidden") {
         await leaveDetail("/(tabs)/settings");
         return;
@@ -171,12 +208,21 @@ export function EmployeeProfileReviewDetailScreen() {
         setPrivacyRefreshFailed(true);
       }
     }
-  }, [leaveDetail, queryClient, requestId, reviewAccess.allowed, validRequestId]);
+  }, [
+    clearDetailCache,
+    fetchSensitiveDetail,
+    leaveDetail,
+    queryClient,
+    requestId,
+    reviewAccess.allowed,
+    sensitiveDetailActivityGuard,
+    validRequestId,
+  ]);
 
   useEffect(() => {
     const handleAppState = createEmployeeProfileReviewAppStateHandler({
       onInactive: () => {
-        // inactive 在系统快照前触发：先同步遮罩和清表单，再取消/移除敏感详情。
+        // 必须是 AppState 回调第一步：同步关闸后，任何迟到 callback 都无法发起详情请求。
         appIsActiveRef.current = false;
         resumeGenerationRef.current += 1;
         if (mountedRef.current) {
@@ -184,7 +230,7 @@ export function EmployeeProfileReviewDetailScreen() {
           setPrivacyRefreshFailed(false);
           clearSensitiveUiState();
         }
-        void clearEmployeeProfileReviewDetailCache(queryClient, requestId);
+        void clearDetailCache();
       },
       onActive: () => {
         appIsActiveRef.current = true;
@@ -193,7 +239,7 @@ export function EmployeeProfileReviewDetailScreen() {
     });
     const subscription = AppState.addEventListener("change", handleAppState);
     return () => subscription.remove();
-  }, [clearSensitiveUiState, queryClient, requestId, resumeDetailAfterForeground]);
+  }, [clearDetailCache, clearSensitiveUiState, resumeDetailAfterForeground]);
 
   useEffect(() => {
     if (navigationReady && (!reviewAccess.allowed || !validRequestId)) {
@@ -224,34 +270,43 @@ export function EmployeeProfileReviewDetailScreen() {
     let active = true;
     const timer = setTimeout(() => {
       if (active && mountedRef.current) {
-        void detailQuery.refetch();
+        void refetchSensitiveDetail();
       }
     }, delay);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [detailQuery.data?.identityPhotoUrlExpiresAt, detailQuery.refetch, privacyShielded]);
+  }, [detailQuery.data?.identityPhotoUrlExpiresAt, privacyShielded, refetchSensitiveDetail]);
 
   const handlePhotoError = useCallback((url: string) => {
     // 每个签名 URL 最多触发一次受控刷新，避免坏图造成 refetch 循环。
     if (photoErrorRefetchGuard.current.shouldRefetch(url) && mountedRef.current) {
-      void detailQuery.refetch();
+      void refetchSensitiveDetail();
     }
-  }, [detailQuery.refetch]);
+  }, [refetchSensitiveDetail]);
 
   const reviewMutation = useMutation({
-    gcTime: 0,
     mutationFn: async () => {
+      reviewMutationGenerationRef.current = resumeGenerationRef.current;
       if (dialogAction === "approve") {
-        return approveEmployeeProfileReviewApi(requestId, reason);
+        return sensitiveDetailActivityGuard.fetch(
+          () => approveEmployeeProfileReviewApi(requestId, reason)
+        );
       }
       if (dialogAction === "reject") {
-        return rejectEmployeeProfileReviewApi(requestId, reason);
+        return sensitiveDetailActivityGuard.fetch(
+          () => rejectEmployeeProfileReviewApi(requestId, reason)
+        );
       }
       throw new Error("Review action is not selected");
     },
     onSuccess: async () => {
+      if (sensitiveDetailActivityGuard.shouldIgnoreLateCallback(
+        reviewMutationGenerationRef.current
+      )) {
+        return;
+      }
       const listRefresh = queryClient.invalidateQueries({
         queryKey: ["employeeProfileReview", "requests"],
       });
@@ -259,6 +314,11 @@ export function EmployeeProfileReviewDetailScreen() {
       await listRefresh;
     },
     onError: async (error) => {
+      if (sensitiveDetailActivityGuard.shouldIgnoreLateCallback(
+        reviewMutationGenerationRef.current
+      )) {
+        return;
+      }
       const kind = getReviewFailureKind(error);
       if (kind === "forbidden") {
         await leaveDetail("/(tabs)/settings");
@@ -273,7 +333,7 @@ export function EmployeeProfileReviewDetailScreen() {
         setStaleAfterConflict(true);
         setSnackbarMessage(t("messages.conflict"));
         await Promise.all([
-          detailQuery.refetch(),
+          refetchSensitiveDetail(),
           queryClient.invalidateQueries({ queryKey: ["employeeProfileReview", "requests"] }),
         ]);
         return;
@@ -347,7 +407,7 @@ export function EmployeeProfileReviewDetailScreen() {
           icon="refresh"
           mode="contained"
           contentStyle={styles.touchTarget}
-          onPress={() => void detailQuery.refetch()}
+          onPress={() => void refetchSensitiveDetail()}
         >
           {t("actions.retry")}
         </Button>

@@ -28,15 +28,36 @@ assert.match(detailScreen, /approveEmployeeProfileReviewApi/);
 assert.match(detailScreen, /rejectEmployeeProfileReviewApi/);
 assert.match(detailScreen, /getReviewFailureKind/);
 assert.match(detailScreen, /setStaleAfterConflict\(true\)/);
-assert.match(detailScreen, /detailQuery\.refetch\(\)/);
+assert.equal(
+  detailScreen.match(/detailQuery\.refetch\(/g)?.length,
+  1,
+  "敏感详情只能在统一 refetch guard 内调用一次底层 refetch"
+);
+assert.match(
+  detailScreen,
+  /sensitiveDetailActivityGuard\.runIfActive\(\(\) => detailQuery\.refetch\(\)\)/
+);
 assert.match(detailScreen, /isRejectReasonValid/);
 assert.match(detailScreen, /AppState\.addEventListener/);
 assert.match(detailScreen, /createEmployeeProfileReviewAppStateHandler/);
 assert.match(detailScreen, /privacyShielded/);
 assert.match(detailScreen, /queryClient\.fetchQuery/);
+assert.match(detailScreen, /createEmployeeProfileSensitiveDetailActivityGuard/);
+assert.match(detailScreen, /sensitiveDetailActivityGuard\.runIfActive/);
+assert.match(detailScreen, /sensitiveDetailActivityGuard\.fetch/);
 assert.match(detailScreen, /clearEmployeeProfileReviewDetailCache/);
 assert.match(detailScreen, /employeeProfileReviewDetailQueryKey/);
 assert.match(detailScreen, /gcTime:\s*0/);
+const reviewMutationSource = detailScreen.slice(
+  detailScreen.indexOf("const reviewMutation = useMutation"),
+  detailScreen.indexOf("const toggleReveal")
+);
+assert.ok(reviewMutationSource, "必须能定位审核 mutation 源码片段");
+assert.doesNotMatch(
+  reviewMutationSource,
+  /gcTime\s*:/,
+  "白名单审核结果可按默认生命周期回收，不能用 0ms GC 触发 observer 循环"
+);
 assert.match(detailScreen, /getReviewFailureKind\(detailQuery\.error\)/);
 assert.match(detailScreen, /setRevealedFields\(new Set\(\)\)/);
 assert.match(detailScreen, /leaveDetail\("\/\(tabs\)\/settings"\)/);
