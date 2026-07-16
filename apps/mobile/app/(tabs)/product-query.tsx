@@ -84,6 +84,8 @@ import {
   buildLocalSupplierInvoicesRestoreHref,
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { IOS_REVIEW_SAMPLE_BARCODE } from "@/modules/ios-review/helpers";
 
 type LookupTrigger = "manual" | "scan" | "refresh" | "deep-link";
 
@@ -2443,6 +2445,25 @@ function ProductQueryContent() {
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
+      {isIosReviewSessionActive() ? (
+        <Button
+          compact
+          mode="text"
+          icon="barcode-scan"
+          accessibilityLabel="Use sample barcode 9330000000017 / 使用示例条码 9330000000017"
+          disabled={scannerInputBlocked}
+          style={styles.sampleBarcodeButton}
+          onPress={() => {
+            // 一键填入稳定样例并沿用现有查询反馈流，审核员无需外部条码。
+            setKeyword(IOS_REVIEW_SAMPLE_BARCODE);
+            void handleLookup(IOS_REVIEW_SAMPLE_BARCODE, "manual");
+          }}
+        >
+          {language === "zh"
+            ? `使用示例条码 ${IOS_REVIEW_SAMPLE_BARCODE}`
+            : `Use sample barcode ${IOS_REVIEW_SAMPLE_BARCODE}`}
+        </Button>
+      ) : null}
       <CameraScanModeSelector
         value={cameraScanMode}
         onChange={handleCameraScanModeChange}
@@ -3149,6 +3170,11 @@ const styles = StyleSheet.create({
   cameraModeSelector: {
     marginHorizontal: 12,
     marginBottom: 6,
+  },
+  sampleBarcodeButton: {
+    alignSelf: "flex-start",
+    marginHorizontal: 12,
+    marginBottom: 2,
   },
   inlineCameraPanel: {
     marginHorizontal: 12,

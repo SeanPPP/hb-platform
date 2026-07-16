@@ -15,6 +15,10 @@ import type {
   PersistedDeviceSession,
 } from "@/modules/device/types";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import {
+  isIosReviewAuthenticatedSessionActive,
+  isIosReviewSessionActive,
+} from "@/modules/ios-review/session";
 
 interface DeviceState {
   session: PersistedDeviceSession | null;
@@ -38,6 +42,11 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   isLoading: false,
 
   async hydrate() {
+    if (isIosReviewAuthenticatedSessionActive()) {
+      // 审核账号不读取普通设备绑定，也不让历史设备会话切换认证模式。
+      set({ session: null, isReady: true, isLoading: false });
+      return null;
+    }
     const session = await DeviceStorage.getSession();
     console.info("[device-session] hydrate", {
       hasSession: Boolean(session),
@@ -50,6 +59,19 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async register(payload) {
+    if (isIosReviewSessionActive()) {
+      // 返回可展示的模拟结果，但不写 DeviceStorage、不设置 device session。
+      return {
+        hardwareId: "ios-review-device",
+        authCode: "",
+        storeCode: payload.storeCode,
+        storeName: payload.storeName ?? payload.storeCode,
+        systemDeviceNumber: "REV-IOS-001",
+        status: 1,
+        statusDescription: "App Review Demo",
+        resolvedFromExisting: true,
+      };
+    }
     set({ isLoading: true });
     try {
       const hardwareId = await DeviceStorage.getInstallationId();
@@ -81,6 +103,18 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async syncFromProfile(profile, options) {
+    if (isIosReviewSessionActive()) {
+      return {
+        hardwareId: "ios-review-device",
+        authCode: "",
+        storeCode: profile.storeCode || "REV001",
+        storeName: options?.storeName ?? profile.storeName ?? "Demo Brisbane",
+        systemDeviceNumber: "REV-IOS-001",
+        status: 1,
+        statusDescription: "App Review Demo",
+        resolvedFromExisting: true,
+      };
+    }
     const session: PersistedDeviceSession = {
       hardwareId: profile.hardwareId,
       authCode: profile.authCode,
@@ -98,6 +132,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async validate(auditPayload) {
+    if (isIosReviewSessionActive()) {
+      return true;
+    }
     const currentSession = get().session ?? (await DeviceStorage.getSession());
     if (!currentSession?.hardwareId || !currentSession.authCode) {
       set({ session: null, isReady: true, isLoading: false });
@@ -186,6 +223,11 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async unbind() {
+    if (isIosReviewSessionActive()) {
+      // 审核模式模拟解绑完成，不清理真实设备持久化数据，也不切换 device mode。
+      set({ session: null, isReady: true, isLoading: false });
+      return;
+    }
     const currentSession = get().session ?? (await DeviceStorage.getSession());
     if (!currentSession?.hardwareId || !currentSession.authCode) {
       await get().clear();
@@ -207,6 +249,10 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async clear() {
+    if (isIosReviewSessionActive()) {
+      set({ session: null, isReady: true, isLoading: false });
+      return;
+    }
     // 关键位置：设备会话被清理时同步停止班中定位，避免旧设备上下文继续上传。
     await stopAttendanceLocationTracking().catch((error) => {
       console.warn("[attendance-location] 清理设备时停止后台定位失败", error);

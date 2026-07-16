@@ -3,6 +3,8 @@ import { apiClient } from "@/shared/api/client";
 import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
 import { useDeviceStore } from "@/store/device-store";
 import { normalizeWarehouseProduct } from "@/modules/warehouse/api-normalization";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 import type {
   DirectUploadSignature,
   WarehouseLocationBindRequest,
@@ -140,9 +142,13 @@ export async function getWarehouseImageUploadSignature(
 }
 
 export async function uploadFileToSignedUrl(uri: string, signature: DirectUploadSignature) {
+  if (isIosReviewSessionActive()) {
+    // 审核模式保留本地预览，模拟对象存储完成且不读取/上传文件。
+    return signature.objectKey || `ios-review/warehouse/${Date.now()}`;
+  }
   let blob: Blob;
   try {
-    const fileResponse = await fetch(uri);
+    const fileResponse = await reviewAwareFetch(uri);
     blob = await fileResponse.blob();
   } catch (error) {
     reportExternalFetchFailure({
@@ -161,7 +167,7 @@ export async function uploadFileToSignedUrl(uri: string, signature: DirectUpload
 
   let result: Response;
   try {
-    result = await fetch(signature.url, {
+    result = await reviewAwareFetch(signature.url, {
       method: "PUT",
       headers: signature.headers,
       body: blob,

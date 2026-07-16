@@ -10,6 +10,10 @@ import { extractApiErrorMessage } from "@/shared/api/error-message";
 import { preserveApiClientError } from "@/shared/api/client-error";
 import { isLogCenterIngestUrl } from "@/shared/logging/log-center";
 import { reportApplicationLog } from "@/shared/logging/log-center-runtime";
+import {
+  iosReviewAxiosAdapter,
+} from "@/modules/ios-review/transport";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 
 function unwrapEnvelope<T>(payload: unknown): T {
   let current = payload;
@@ -166,6 +170,18 @@ async function redirectToLoginAfterUnauthenticated(message?: string) {
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    if (isIosReviewSessionActive()) {
+      // 关键位置：审核会话在任何 base URL、token、设备认证读取之前强制切到本地 adapter。
+      config.adapter = iosReviewAxiosAdapter;
+      config.baseURL = undefined;
+      if (config.headers) {
+        delete config.headers.Authorization;
+        delete config.headers["X-Device-Id"];
+        delete config.headers["X-Auth-Code"];
+      }
+      return config;
+    }
+
     config.baseURL = await syncApiBaseUrl();
     const token = await SecureStorage.getToken();
     if (token && config.headers) {

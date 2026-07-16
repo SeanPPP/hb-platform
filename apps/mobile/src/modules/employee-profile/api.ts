@@ -1,6 +1,8 @@
 import { apiClient } from "@/shared/api/client";
 import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
 import { buildCashierBarcodePrintConfirmationRequest } from "@/modules/employee-profile/cashier-barcode";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 import type {
   DirectUploadRequest,
   DirectUploadSignature,
@@ -110,9 +112,12 @@ export async function uploadEmployeeProfileImageBlobToSignedUrl(
   blob: Blob,
   signature: DirectUploadSignature
 ) {
+  if (isIosReviewSessionActive()) {
+    return signature.objectKey;
+  }
   let response: Response;
   try {
-    response = await fetch(signature.url, {
+    response = await reviewAwareFetch(signature.url, {
       method: "PUT",
       headers: signature.headers,
       body: blob,

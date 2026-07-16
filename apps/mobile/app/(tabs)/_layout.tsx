@@ -21,9 +21,11 @@ export default function TabsLayout() {
   const { t } = useAppTranslation("common");
   const userGuid = useAuthStore((state) => state.user?.userGUID);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const sessionKind = useAuthStore((state) => state.sessionKind);
   const isLoading = useAuthStore((state) => state.isLoading);
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
+  const setSessionKind = useAuthStore((state) => state.setSessionKind);
   const deviceSession = useDeviceStore((state) => state.session);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
@@ -43,8 +45,12 @@ export default function TabsLayout() {
   const hasStoredDeviceSession = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
   );
+  const isIosReviewSession = sessionKind === "iosReview";
   useAppDeviceStatusHeartbeat({
-    enabled: heartbeatReady && (hasUserSession || hasStoredDeviceSession),
+    enabled:
+      !isIosReviewSession &&
+      heartbeatReady &&
+      (hasUserSession || hasStoredDeviceSession),
     useDeviceSession: heartbeatUsesDeviceSession,
   });
 
@@ -54,6 +60,14 @@ export default function TabsLayout() {
     }
 
     if (!deviceHydrated) {
+      return;
+    }
+
+    if (isIosReviewSession) {
+      // 审核会话完全离线，不校验已保存设备，也不启动设备状态心跳。
+      hasRestored.current = true;
+      setHeartbeatReady(false);
+      setHeartbeatUsesDeviceSession(false);
       return;
     }
 
@@ -106,6 +120,8 @@ export default function TabsLayout() {
             validateDevice,
           });
           if (isReady && !cancelled) {
+            // 设备完成在线校验后才解除 review 构建的 Root 副作用守卫。
+            setSessionKind("device");
             setHeartbeatUsesDeviceSession(true);
             setHeartbeatReady(true);
           }
@@ -175,8 +191,10 @@ export default function TabsLayout() {
     deviceSession,
     hasStoredDeviceSession,
     hasUserSession,
+    isIosReviewSession,
     restoreSession,
     router,
+    setSessionKind,
     validateDevice,
   ]);
 

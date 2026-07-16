@@ -2,6 +2,10 @@ import { Linking, Platform } from "react-native";
 import * as Location from "expo-location";
 import { DeviceStorage } from "@/modules/device/storage";
 import type { DeviceProfile } from "@/modules/device/types";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { IOS_REVIEW_LOCATION } from "@/modules/ios-review/helpers";
+
+const IOS_REVIEW_HARDWARE_ID = "ios-review-device";
 
 export class RequiredLocationError extends Error {
   code = "LOCATION_REQUIRED";
@@ -56,6 +60,16 @@ export function isRequiredLocationError(error: unknown) {
 }
 
 export async function collectRequiredLocation(): Promise<CapturedLocationPayload> {
+  if (isIosReviewSessionActive()) {
+    // 审核模式使用稳定的 Brisbane 演示坐标，不请求系统定位权限。
+    return {
+      locationLatitude: IOS_REVIEW_LOCATION.latitude,
+      locationLongitude: IOS_REVIEW_LOCATION.longitude,
+      locationAccuracy: IOS_REVIEW_LOCATION.accuracy,
+      locationPermissionStatus: "granted",
+      locationCapturedAtUtc: new Date().toISOString(),
+    };
+  }
   const permission = await Location.requestForegroundPermissionsAsync();
   if (permission.status !== "granted") {
     throw new RequiredLocationError();
@@ -76,6 +90,13 @@ export async function collectRequiredLocation(): Promise<CapturedLocationPayload
 }
 
 export async function getAttendanceDeviceContext(): Promise<AttendanceDeviceContext> {
+  if (isIosReviewSessionActive()) {
+    return {
+      hardwareId: IOS_REVIEW_HARDWARE_ID,
+      systemDeviceNumber: "REV-IOS-001",
+      deviceSystem: "iOS",
+    };
+  }
   const [hardwareId, session] = await Promise.all([
     DeviceStorage.getInstallationId(),
     DeviceStorage.getSession(),
@@ -102,6 +123,14 @@ export async function collectLoginDeviceLocation(
 export async function collectLoginDeviceContext(
   profile?: Pick<DeviceProfile, "systemDeviceNumber" | "deviceSystem" | "storeCode"> | null,
 ): Promise<LoginDeviceContextPayload> {
+  if (isIosReviewSessionActive()) {
+    return {
+      hardwareId: IOS_REVIEW_HARDWARE_ID,
+      systemDeviceNumber: toOptionalString(profile?.systemDeviceNumber) ?? "REV-IOS-001",
+      deviceSystem: toOptionalString(profile?.deviceSystem) ?? "iOS",
+      storeCode: toOptionalString(profile?.storeCode) ?? "REV001",
+    };
+  }
   const [hardwareId, session] = await Promise.all([
     DeviceStorage.getInstallationId(),
     DeviceStorage.getSession(),
@@ -141,6 +170,10 @@ export async function openLocationInSystemMap(
   longitude: number,
   label = "Attendance location",
 ): Promise<boolean> {
+  if (isIosReviewSessionActive()) {
+    // 审核演示不跳转外部地图，页面仍保留固定坐标供核验。
+    return false;
+  }
   const encodedLabel = encodeURIComponent(label);
   const urls =
     Platform.OS === "ios"

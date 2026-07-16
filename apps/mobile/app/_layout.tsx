@@ -17,6 +17,8 @@ import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { queryClient } from "@/shared/api/query-client";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
+import { useAuthStore } from "@/store/auth-store";
+import { IosReviewBanner } from "@/modules/ios-review/IosReviewBanner";
 import "@/modules/attendance/location-tracking";
 
 const MIN_SPLASH_VISIBLE_MS = 900;
@@ -43,28 +45,48 @@ const theme = {
 export default function RootLayout() {
   const [appReady, setAppReady] = useState(false);
   const [startupError, setStartupError] = useState<unknown>(null);
+  const sessionKind = useAuthStore((state) => state.sessionKind);
+  const iosReviewOfflineGuardActive = useAuthStore(
+    (state) => state.iosReviewOfflineGuardActive
+  );
+  const hydrateIosReviewSession = useAuthStore(
+    (state) => state.hydrateIosReviewSession
+  );
+  const isIosReviewSession = sessionKind === "iosReview";
+  const sideEffectsEnabled =
+    appReady && !startupError && !iosReviewOfflineGuardActive;
   const automaticUpdatesEnabled =
-    appReady
-    && !startupError
-    && shouldRunAutomaticAppUpdatesForProfile(Constants.expoConfig?.extra?.nativeAppBuildProfile);
+    sideEffectsEnabled &&
+    shouldRunAutomaticAppUpdatesForProfile(
+      Constants.expoConfig?.extra?.nativeAppBuildProfile
+    );
 
-  usePrinterAutoConnect();
+  usePrinterAutoConnect({ enabled: sideEffectsEnabled });
   useAutomaticAppUpdate({ enabled: automaticUpdatesEnabled });
   useAutomaticNativeAppUpdate({ enabled: automaticUpdatesEnabled });
 
   useEffect(() => {
+    if (!sideEffectsEnabled) {
+      return;
+    }
     return installGlobalErrorLogging();
-  }, []);
+  }, [sideEffectsEnabled]);
 
   useEffect(() => {
     let mounted = true;
 
     async function prepareApp() {
+      const prepareReviewAwareDeviceState = async () => {
+        // 关键位置：先恢复审核 marker，避免读取并恢复普通设备绑定会话。
+        await hydrateIosReviewSession();
+        await useDeviceStore.getState().hydrate();
+      };
+
       // 等待语言与设备缓存完成，避免启动页过早消失后露出空白过渡。
       const result = await waitForStartupReadiness(
         [
           initI18n(),
-          useDeviceStore.getState().hydrate(),
+          prepareReviewAwareDeviceState(),
         ],
         MIN_SPLASH_VISIBLE_MS,
       );
@@ -95,7 +117,7 @@ export default function RootLayout() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [hydrateIosReviewSession]);
 
   useEffect(() => {
     if (!appReady && !startupError) {
@@ -145,11 +167,14 @@ export default function RootLayout() {
           <PaperProvider theme={theme}>
             {/* 浅色业务页面统一使用深色系统图标，避免白底白字看不清。 */}
             <StatusBar style="dark" />
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(tabs)" />
-            </Stack>
+            <View style={styles.appContent}>
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="index" />
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="(tabs)" />
+              </Stack>
+              {isIosReviewSession ? <IosReviewBanner /> : null}
+            </View>
           </PaperProvider>
         </I18nextProvider>
       </QueryClientProvider>
@@ -158,6 +183,9 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
+  appContent: {
+    flex: 1,
+  },
   splashFallback: {
     flex: 1,
     alignItems: "center",

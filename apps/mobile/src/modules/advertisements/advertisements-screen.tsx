@@ -57,6 +57,8 @@ import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 const PAGE_SIZE = 20;
 
@@ -386,13 +388,19 @@ export function AdvertisementsScreen() {
       const fileSize =
         typeof asset.fileSize === "number"
           ? asset.fileSize
-          : (await fetch(asset.uri).then((response) => response.blob())).size;
-      const signature = await createAdvertisementUploadSignature({
-        fileName,
-        contentType,
-        fileSize,
-      });
-      const uploaded = await uploadAdvertisementAssetToSignedUrl(asset.uri, signature);
+          : (await reviewAwareFetch(asset.uri).then((response) => response.blob())).size;
+      const uploaded = isIosReviewSessionActive()
+        ? await uploadAdvertisementAssetToSignedUrl(asset.uri, {
+            url: asset.uri,
+            objectKey: `ios-review/advertisements/${Date.now()}`,
+            mediaUrl: asset.uri,
+            headers: {},
+          })
+        : await createAdvertisementUploadSignature({
+            fileName,
+            contentType,
+            fileSize,
+          }).then((signature) => uploadAdvertisementAssetToSignedUrl(asset.uri, signature));
 
       return {
         uploaded,

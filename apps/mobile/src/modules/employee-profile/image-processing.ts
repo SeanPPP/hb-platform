@@ -1,4 +1,5 @@
 import type { EmployeeProfileImageKind } from "@/modules/employee-profile/types";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 export const EMPLOYEE_PROFILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -76,7 +77,7 @@ function buildActions(source: ImageSource, maxSide: number): ImageAction[] {
 }
 
 async function readBlobSize(uri: string) {
-  const response = await fetch(uri);
+  const response = await reviewAwareFetch(uri);
   const blob = await response.blob();
   if (!blob.size) {
     throw new Error("empty blob");

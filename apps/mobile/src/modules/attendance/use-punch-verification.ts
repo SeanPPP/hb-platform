@@ -11,6 +11,8 @@ import {
   collectRequiredLocation,
   isRequiredLocationError,
 } from "@/modules/attendance/required-location";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 const NETWORK_CHECK_TIMEOUT_MS = 5000;
 
@@ -33,6 +35,14 @@ const DEFAULT_VERIFICATION_STATE: AttendancePunchVerificationState = {
 };
 
 async function verifyNetworkReachability() {
+  if (isIosReviewSessionActive()) {
+    // 离线 Demo 的业务请求由本地 adapter 处理，无需探测生产 health endpoint。
+    return {
+      status: "available" as const,
+      reason: "captured" as const,
+      verificationStatus: "online" as const,
+    };
+  }
   const host = await getStoredApiHost();
   const apiBaseUrl = buildApiBaseUrl(host);
   const healthUrl = `${apiBaseUrl.replace(/\/api$/, "")}/health`;
@@ -43,7 +53,7 @@ async function verifyNetworkReachability() {
   );
 
   try {
-    await fetch(healthUrl, {
+    await reviewAwareFetch(healthUrl, {
       method: "GET",
       headers: { Accept: "application/json" },
       signal: controller.signal,

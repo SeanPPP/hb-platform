@@ -61,6 +61,8 @@ import {
 import { toggleWarehouseProductGradeSelection } from "@/modules/warehouse/product-grade";
 import { buildWarehouseProductPatchRequest, isWarehouseStatusOnlyPatch, type WarehouseProductPatchField } from "@/modules/warehouse/product-patch";
 import { printWarehouseLocationLabel, printWarehouseProductLabel } from "@/modules/printer/api";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 type SegmentValue = "product" | "location";
 type ScannerTarget = "product" | "location" | "bindProduct" | "productLocation";
@@ -1047,16 +1049,20 @@ export default function WarehouseScreen() {
         throw new Error(t("messages.uploadFailed"));
       }
       setSnackbar(t("messages.photoCaptured"));
-      const fileName = picture.uri.split("/").pop() || `${product.productCode}.jpg`;
-      const fileBlob = await fetch(picture.uri).then((response) => response.blob());
-      const signature = await getWarehouseImageUploadSignature(product.productCode, {
-        fileName,
-        contentType: "image/jpeg",
-        fileSize: fileBlob.size,
-      });
-      await uploadFileToSignedUrl(picture.uri, signature);
-      const downloadUrl = signature.url.split("?")[0];
-      const saved = await patchWarehouseProduct(product.productCode, { productImage: downloadUrl });
+      let productImage = picture.uri;
+      if (!isIosReviewSessionActive()) {
+        const fileName = picture.uri.split("/").pop() || `${product.productCode}.jpg`;
+        const fileBlob = await reviewAwareFetch(picture.uri).then((response) => response.blob());
+        const signature = await getWarehouseImageUploadSignature(product.productCode, {
+          fileName,
+          contentType: "image/jpeg",
+          fileSize: fileBlob.size,
+        });
+        await uploadFileToSignedUrl(picture.uri, signature);
+        productImage = signature.url.split("?")[0];
+      }
+      // 审核模式把本地 URI 写入内存商品，跨页面立即可见且不触发外部上传。
+      const saved = await patchWarehouseProduct(product.productCode, { productImage });
       applyProduct(saved);
       setPhotoVisible(false);
       setSnackbar(t("messages.saved"));

@@ -22,7 +22,11 @@ import {
   Modal,
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
-import { useAuthStore } from "@/store/auth-store";
+import {
+  getIosReviewBuildContext,
+  useAuthStore,
+  waitForLocalSessionClear,
+} from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { getDeviceProfileApi } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
@@ -53,6 +57,10 @@ import {
   normalizeApiHost,
   setStoredApiHost,
 } from "@/shared/api/config";
+import {
+  isIosReviewBuildEnabled,
+  isIosReviewUsername,
+} from "@/modules/ios-review/config";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
 const BRAND_RED = "#E53935";
@@ -114,7 +122,18 @@ export default function Login() {
   const router = useRouter();
   const { t } = useAppTranslation(["login", "common"]);
   const loginFn = useAuthStore((s) => s.login);
-  const clearLocalAuthSession = useAuthStore((s) => s.clearLocalSession);
+  const clearAccountSessionForDeviceLogin = useAuthStore(
+    (s) => s.clearAccountSessionForDeviceLogin
+  );
+  const authSessionKind = useAuthStore((s) => s.sessionKind);
+  const iosReviewOfflineGuardActive = useAuthStore(
+    (s) => s.iosReviewOfflineGuardActive
+  );
+  const beginStandardAuth = useAuthStore((s) => s.beginStandardAuth);
+  const rearmIosReviewPreAuth = useAuthStore(
+    (s) => s.rearmIosReviewPreAuth
+  );
+  const setSessionKind = useAuthStore((s) => s.setSessionKind);
   const syncDeviceFromProfile = useDeviceStore((s) => s.syncFromProfile);
   const validateDevice = useDeviceStore((s) => s.validate);
   const [username, setUsername] = useState("");
@@ -134,6 +153,12 @@ export default function Login() {
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
   const [updateRestartReady, setUpdateRestartReady] = useState(false);
+  const reviewBuildEnabled = isIosReviewBuildEnabled(getIosReviewBuildContext());
+  const shouldRunLoginSideEffects = Boolean(
+    rememberReady &&
+      !iosReviewOfflineGuardActive &&
+      authSessionKind !== "iosReview"
+  );
 
   // 动画 refs
   const logoScale = useRef(new Animated.Value(0)).current;
@@ -144,6 +169,7 @@ export default function Login() {
   const passwordSlide = useRef(new Animated.Value(0)).current;
   const buttonOpacity = useRef(new Animated.Value(0)).current;
   const buttonPulse = useRef(new Animated.Value(1)).current;
+  const deviceLookupGeneration = useRef(0);
 
   useEffect(() => {
     Animated.sequence([
@@ -177,7 +203,20 @@ export default function Login() {
   }, []);
 
   useEffect(() => {
-    if (!shouldRunAutomaticAppUpdatesForProfile(Constants.expoConfig?.extra?.nativeAppBuildProfile)) {
+    // 审核用户名和空用户名都不能触发设备探测，保证错误密码路径同样零网络。
+    if (!shouldRunLoginSideEffects) {
+      return;
+    }
+    void identifyRegisteredDevice();
+  }, [shouldRunLoginSideEffects]);
+
+  useEffect(() => {
+    if (
+      !shouldRunLoginSideEffects ||
+      !shouldRunAutomaticAppUpdatesForProfile(
+        Constants.expoConfig?.extra?.nativeAppBuildProfile
+      )
+    ) {
       return;
     }
 
@@ -201,7 +240,7 @@ export default function Login() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [shouldRunLoginSideEffects]);
 
   useEffect(() => {
     if (!rememberReady) return;
@@ -227,11 +266,14 @@ export default function Login() {
     const host = await getStoredApiHost();
     setApiHost(host);
     setApiHostDraft(host);
-    await identifyRegisteredDevice();
   }
 
   async function identifyRegisteredDevice() {
+    const requestGeneration = ++deviceLookupGeneration.current;
     const session = await DeviceStorage.getSession();
+    if (requestGeneration !== deviceLookupGeneration.current) {
+      return;
+    }
     if (!session?.systemDeviceNumber || !session.hardwareId) {
       setDetectedHardwareId("");
       setRegisteredDevice(null);
@@ -244,9 +286,15 @@ export default function Login() {
     try {
       setDetectedHardwareId(session.hardwareId);
       const profile = await getDeviceProfileApi(session.hardwareId);
+      if (requestGeneration !== deviceLookupGeneration.current) {
+        return;
+      }
       setRegisteredDevice(profile);
       setLoginMode("device");
     } catch (err) {
+      if (requestGeneration !== deviceLookupGeneration.current) {
+        return;
+      }
       setRegisteredDevice(null);
       setLoginMode("user");
 
@@ -260,7 +308,9 @@ export default function Login() {
         setSnackbarVisible(true);
       }
     } finally {
-      setDeviceLookupLoading(false);
+      if (requestGeneration === deviceLookupGeneration.current) {
+        setDeviceLookupLoading(false);
+      }
     }
   }
 
@@ -282,11 +332,30 @@ export default function Login() {
   }
 
   async function handleLogin() {
+    const isReviewLoginAttempt =
+      reviewBuildEnabled && isIosReviewUsername(username);
+    if (isReviewLoginAttempt) {
+      // 审核用户名一经提交便同步恢复离线守卫，并让所有设备查询结果失效。
+      rearmIosReviewPreAuth();
+      deviceLookupGeneration.current += 1;
+      setDeviceLookupLoading(false);
+    }
     setError("");
     setLoading(true);
     try {
-      const auditPayload = await collectOptionalLoginDeviceLocation(registeredDevice);
-      await loginFn({ username, password, ...auditPayload });
+      await waitForLocalSessionClear();
+      if (isReviewLoginAttempt) {
+        rearmIosReviewPreAuth();
+        // 关键位置：审核登录先走本地认证，密码错误也不会采集定位或回落真实 API。
+        await loginFn({ username, password });
+      } else {
+        // 只有用户实际提交普通账号时才解除 pre-auth 守卫；逐字输入不会触网。
+        beginStandardAuth();
+        const auditPayload = await collectOptionalLoginDeviceLocation(
+          registeredDevice
+        );
+        await loginFn({ username, password, ...auditPayload });
+      }
       router.replace(
         resolveDefaultTabRoute({
           isDeviceMode: false,
@@ -294,6 +363,9 @@ export default function Login() {
         }) as Parameters<typeof router.replace>[0]
       );
     } catch (err) {
+      if (!isReviewLoginAttempt) {
+        rearmIosReviewPreAuth();
+      }
       setError(
         isRequiredLocationError(err)
           ? t("errors.locationRequired")
@@ -313,13 +385,16 @@ export default function Login() {
     setError("");
     setDeviceLoginLoading(true);
     try {
+      await waitForLocalSessionClear();
+      beginStandardAuth("device");
       const auditPayload = await collectLoginDeviceLocation(registeredDevice);
       const isReady = await prepareDeviceLoginSession(registeredDevice, {
-        clearAccountSession: clearLocalAuthSession,
+        clearAccountSession: clearAccountSessionForDeviceLogin,
         syncDeviceFromProfile,
         validateDevice: () => validateDevice(auditPayload),
       });
       if (isReady) {
+        setSessionKind("device");
         router.replace(
           resolveDefaultTabRoute({
             isDeviceMode: true,
@@ -329,9 +404,11 @@ export default function Login() {
         return;
       }
 
+      rearmIosReviewPreAuth();
       setError(t("device.notReadyMessage"));
       setSnackbarVisible(true);
     } catch (err) {
+      rearmIosReviewPreAuth();
       setError(
         isRequiredLocationError(err)
           ? t("errors.locationRequired")
@@ -355,6 +432,36 @@ export default function Login() {
   const openApiHostSettings = () => {
     setApiHostDraft(apiHost);
     setApiHostModalVisible(true);
+  };
+  const handleUsernameChange = (value: string) => {
+    setUsername(value);
+    if (reviewBuildEnabled && isIosReviewUsername(value)) {
+      // 输入命中审核账号时同步回到 fail-closed，拒绝稍后返回的设备查询覆盖页面状态。
+      rearmIosReviewPreAuth();
+      deviceLookupGeneration.current += 1;
+      setDeviceLookupLoading(false);
+      setRegisteredDevice(null);
+      setLoginMode("user");
+    }
+  };
+  const handleSelectUserMode = () => {
+    // 切回账号登录立即关闭普通网络通道，并废弃所有在途设备查询。
+    rearmIosReviewPreAuth();
+    deviceLookupGeneration.current += 1;
+    setDeviceLookupLoading(false);
+    setLoginMode("user");
+  };
+  const handleSelectDeviceMode = () => {
+    const selectionGeneration = ++deviceLookupGeneration.current;
+    setLoginMode("device");
+    // 设备模式按钮是审核构建解除网络守卫的显式动作，但仍等待旧会话清理结束。
+    void waitForLocalSessionClear().then(() => {
+      if (selectionGeneration !== deviceLookupGeneration.current) {
+        return;
+      }
+      beginStandardAuth("device");
+      void identifyRegisteredDevice();
+    });
   };
   const handleRestartForUpdate = () => {
     void reloadAppToApplyUpdate();
@@ -436,7 +543,7 @@ export default function Login() {
                   mode={loginMode === "device" ? "contained" : "outlined"}
                   buttonColor={loginMode === "device" ? BRAND_RED : undefined}
                   textColor={loginMode === "device" ? "#FFFFFF" : BRAND_RED}
-                  onPress={() => setLoginMode("device")}
+                  onPress={handleSelectDeviceMode}
                   style={styles.loginModeButton}
                 >
                   {t("device.mode")}
@@ -446,7 +553,7 @@ export default function Login() {
                   mode={loginMode === "user" ? "contained" : "outlined"}
                   buttonColor={loginMode === "user" ? BRAND_RED : undefined}
                   textColor={loginMode === "user" ? "#FFFFFF" : BRAND_RED}
-                  onPress={() => setLoginMode("user")}
+                  onPress={handleSelectUserMode}
                   style={styles.loginModeButton}
                 >
                   {t("userMode")}
@@ -498,7 +605,7 @@ export default function Login() {
                 >
                   {t("device.login")}
                 </Button>
-                <Button mode="text" textColor={BRAND_RED} onPress={() => setLoginMode("user")}>
+                <Button mode="text" textColor={BRAND_RED} onPress={handleSelectUserMode}>
                   {t("device.switchToUser")}
                 </Button>
                 <Button mode="text" icon="cog-outline" textColor={BRAND_RED} onPress={openApiHostSettings}>
@@ -516,7 +623,7 @@ export default function Login() {
                   <TextInput
                     label={t("username")}
                     value={username}
-                    onChangeText={setUsername}
+                    onChangeText={handleUsernameChange}
                     mode="outlined"
                     autoCapitalize="none"
                     style={styles.input}
@@ -572,8 +679,12 @@ export default function Login() {
                     {t("common:actions.login")}
                   </Button>
                   {registeredDevice ? (
-                    <Button mode="text" textColor={BRAND_RED} onPress={() => setLoginMode("device")}>
+                    <Button mode="text" textColor={BRAND_RED} onPress={handleSelectDeviceMode}>
                       {t("device.switchToDevice")}
+                    </Button>
+                  ) : reviewBuildEnabled && iosReviewOfflineGuardActive ? (
+                    <Button mode="text" textColor={BRAND_RED} onPress={handleSelectDeviceMode}>
+                      {t("device.mode")}
                     </Button>
                   ) : null}
                   <Button mode="text" icon="cog-outline" textColor={BRAND_RED} onPress={openApiHostSettings}>

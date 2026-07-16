@@ -3,6 +3,8 @@ import type {
   AttendanceLeaveAttachmentUploadResult,
 } from "@/modules/attendance/types";
 import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 function toDownloadUrl(url: string) {
   const [downloadUrl = ""] = url.split("?");
@@ -13,9 +15,16 @@ export async function uploadAttendanceLeaveAttachmentToSignedUrl(
   uri: string,
   signature: AttendanceDirectUploadSignature
 ): Promise<AttendanceLeaveAttachmentUploadResult> {
+  if (isIosReviewSessionActive()) {
+    // 保留本地 URI 作为预览，模拟上传成功且不请求签名地址。
+    return {
+      objectKey: signature.objectKey || `ios-review/attendance/${Date.now()}`,
+      downloadUrl: uri,
+    };
+  }
   let fileResponse: Response;
   try {
-    fileResponse = await fetch(uri);
+    fileResponse = await reviewAwareFetch(uri);
   } catch (error) {
     reportExternalFetchFailure({
       message: "请假附件本地文件读取失败",
@@ -34,7 +43,7 @@ export async function uploadAttendanceLeaveAttachmentToSignedUrl(
   const blob = await fileResponse.blob();
   let response: Response;
   try {
-    response = await fetch(signature.url, {
+    response = await reviewAwareFetch(signature.url, {
       method: "PUT",
       headers: signature.headers,
       body: blob,

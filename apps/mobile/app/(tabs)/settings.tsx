@@ -18,7 +18,7 @@ import {
 } from "@/modules/printer/api";
 import { usePrinterStore, useReceiptPrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
-import { setAppLanguage } from "@/shared/i18n/i18n";
+import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { AppLanguage } from "@/shared/i18n/types";
@@ -27,6 +27,7 @@ import { useDeviceStore } from "@/store/device-store";
 import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
 import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { isRequiredLocationError } from "@/modules/attendance/required-location";
 import { buildAppUpdateInfoRows, formatAppPackageVersion } from "@/modules/updates/app-update-info";
 import {
@@ -372,6 +373,13 @@ export default function Settings() {
   };
 
   const handleDeviceUnbind = (mode: "unbind" | "rebind") => {
+    if (isIosReviewSessionActive()) {
+      Alert.alert(
+        "App Review Demo",
+        "Device binding is simulated and does not change this device. / 设备绑定为本地演示，不会修改当前设备。",
+      );
+      return;
+    }
     Alert.alert(
       mode === "rebind" ? t("dialogs.rebindDeviceTitle") : t("dialogs.unbindDeviceTitle"),
       mode === "rebind" ? t("dialogs.rebindDeviceMessage") : t("dialogs.unbindDeviceMessage"),
@@ -401,6 +409,11 @@ export default function Settings() {
 
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
     setLanguageMenuVisible(false);
+    if (isIosReviewSessionActive()) {
+      // 审核模式仅切换当前内存语言，不覆盖普通用户的持久化偏好。
+      await i18n.changeLanguage(nextLanguage);
+      return;
+    }
     await setAppLanguage(nextLanguage);
   };
 
@@ -417,6 +430,17 @@ export default function Settings() {
     }
 
     try {
+      if (isIosReviewSessionActive()) {
+        // 审核模式不持久化 API Host，所有业务请求仍由本地 adapter 处理。
+        setApiHost(normalizedHost);
+        setApiHostDraft(normalizedHost);
+        setApiHostModalVisible(false);
+        Alert.alert(
+          "App Review Demo",
+          "Server settings are temporary in offline demo mode. / 离线演示中的服务器设置仅当前会话有效。",
+        );
+        return;
+      }
       // 保存后无需手动刷新客户端，API 拦截器会在后续请求前同步新的 baseURL。
       const host = await setStoredApiHost(normalizedHost);
       setApiHost(host);
@@ -432,6 +456,13 @@ export default function Settings() {
   };
 
   const handleCheckUpdates = async () => {
+    if (isIosReviewSessionActive()) {
+      Alert.alert(
+        "App Review Demo",
+        "Updates are disabled in offline demo mode. / 离线演示模式不检查更新。",
+      );
+      return;
+    }
     setUpdateBusy(true);
     try {
       // 手动检查只负责下载更新，避免在扫码、保存等操作中主动重载 App。

@@ -6,6 +6,8 @@ import {
 import { completeEmployeeProfileImageUpload } from "@/modules/employee-profile/image-upload-workflow";
 import type { EmployeeProfileImageKind } from "@/modules/employee-profile/types";
 import { i18n } from "@/shared/i18n/i18n";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 export class EmployeeProfileImageUploadError extends Error {
   code: "signature_unavailable" | "upload_failed";
@@ -34,11 +36,15 @@ export async function uploadEmployeeProfileImage(params: {
 }) {
   const contentType = params.contentType ?? "image/jpeg";
   try {
+    if (isIosReviewSessionActive()) {
+      // 审核模式直接由本地 adapter 完成资料变更，跳过 Blob、签名和对象存储。
+      return await completeEmployeeProfileImageUploadApi(params.kind, params.uri);
+    }
     return await completeEmployeeProfileImageUpload(
       { ...params, contentType },
       {
         readBlob: async (uri) => {
-          const response = await fetch(uri);
+          const response = await reviewAwareFetch(uri);
           return response.blob();
         },
         requestSignature: getEmployeeProfileImageUploadSignature,

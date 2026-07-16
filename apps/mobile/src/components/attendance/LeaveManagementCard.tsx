@@ -33,6 +33,8 @@ import type {
 import type { StoreUserListItem } from "@/modules/users/types";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 type LeaveFormState = AttendanceLeaveRequestPayload & {
   userGuid: string;
@@ -231,7 +233,16 @@ export function LeaveManagementCard({
         throw new Error(t("leaveManagement.messages.captureFailed"));
       }
 
-      const fileResponse = await fetch(photo.uri);
+      if (isIosReviewSessionActive()) {
+        // 审核模式直接保留相机本地 URI，不申请签名或上传对象存储。
+        setField("attachmentUrl", photo.uri);
+        setUploadPreviewUri(photo.uri);
+        setCameraVisible(false);
+        onShowMessage?.(t("leaveManagement.messages.attachmentUploaded"));
+        return;
+      }
+
+      const fileResponse = await reviewAwareFetch(photo.uri);
       const fileBlob = await fileResponse.blob();
       if (!fileBlob.size) {
         throw new Error(t("leaveManagement.messages.uploadFailed"));

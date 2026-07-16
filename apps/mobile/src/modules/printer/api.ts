@@ -5,7 +5,7 @@ import {
 import {
   connectPrinter,
   disconnectPrinter,
-  getPrinterStatus,
+  getPrinterStatus as getNativePrinterStatus,
   printNativeBigDiscountLabel,
   printNativeClearanceLabel,
   printNativeDiscountLabel,
@@ -26,6 +26,16 @@ import type {
   WarehouseLocationLabelPrintPayload,
   WarehouseProductLabelPrintPayload,
 } from "@/modules/printer/types";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+
+const IOS_REVIEW_LABEL_PRINTER: SavedPrinter = {
+  name: "App Review Label Printer",
+  address: "IOS-REVIEW-LABEL",
+};
+const IOS_REVIEW_RECEIPT_PRINTER: SavedPrinter = {
+  name: "App Review Receipt Printer",
+  address: "IOS-REVIEW-RECEIPT",
+};
 
 interface ProductLabelOverrides {
   barcode?: string | null;
@@ -113,8 +123,12 @@ function normalizeWarehouseLocationLabelPayload(
 }
 
 async function ensureConnectedPrinter() {
+  if (isIosReviewSessionActive()) {
+    // 审核模式只展示打印成功结果，不能读取蓝牙状态或连接真实设备。
+    return;
+  }
   const store = usePrinterStore.getState();
-  const status = await getPrinterStatus();
+  const status = await getNativePrinterStatus();
   const savedPrinter = await PrinterStorage.getPrinter();
   if (status.connected && savedPrinter?.address && status.address === savedPrinter.address) {
     store.setStatus("connected");
@@ -149,12 +163,36 @@ async function ensureConnectedPrinter() {
 }
 
 export async function scanPrinterDevices() {
+  if (isIosReviewSessionActive()) {
+    // 固定演示设备让审核员可完整体验扫描、选择和测试流程。
+    return [
+      { ...IOS_REVIEW_LABEL_PRINTER, bonded: true, connected: false },
+      { ...IOS_REVIEW_RECEIPT_PRINTER, bonded: true, connected: false },
+    ];
+  }
   return scanPrinters();
 }
 
-export { getPrinterStatus };
+export async function getPrinterStatus() {
+  if (isIosReviewSessionActive()) {
+    return {
+      supported: true,
+      enabled: true,
+      connected: true,
+      address: IOS_REVIEW_LABEL_PRINTER.address,
+    };
+  }
+  return getNativePrinterStatus();
+}
 
 export async function selectPrinter(device: PrinterDevice) {
+  if (isIosReviewSessionActive()) {
+    const store = usePrinterStore.getState();
+    store.setSavedPrinter(toSavedPrinter(device));
+    store.setLastError(null);
+    store.setStatus("connected");
+    return true;
+  }
   const nextPrinter = toSavedPrinter(device);
   await PrinterStorage.setPrinter(nextPrinter);
   const store = usePrinterStore.getState();
@@ -168,14 +206,27 @@ export async function selectPrinter(device: PrinterDevice) {
 }
 
 export async function getSavedPrinter() {
+  if (isIosReviewSessionActive()) {
+    return IOS_REVIEW_LABEL_PRINTER;
+  }
   return PrinterStorage.getPrinter();
 }
 
 export async function getSavedReceiptPrinter() {
+  if (isIosReviewSessionActive()) {
+    return IOS_REVIEW_RECEIPT_PRINTER;
+  }
   return PrinterStorage.getReceiptPrinter();
 }
 
 export async function clearSavedPrinter() {
+  if (isIosReviewSessionActive()) {
+    const store = usePrinterStore.getState();
+    store.setSavedPrinter(null);
+    store.setLastError(null);
+    store.setStatus("idle");
+    return;
+  }
   await disconnectPrinter();
   await PrinterStorage.clearPrinter();
   const store = usePrinterStore.getState();
@@ -186,6 +237,13 @@ export async function clearSavedPrinter() {
 }
 
 export async function hydrateSavedPrinter() {
+  if (isIosReviewSessionActive()) {
+    const store = usePrinterStore.getState();
+    store.setSavedPrinter(IOS_REVIEW_LABEL_PRINTER);
+    store.setStatus("connected");
+    store.setHydrated(true);
+    return IOS_REVIEW_LABEL_PRINTER;
+  }
   const savedPrinter = await PrinterStorage.getPrinter();
   const store = usePrinterStore.getState();
   store.setSavedPrinter(savedPrinter);
@@ -194,6 +252,13 @@ export async function hydrateSavedPrinter() {
 }
 
 export async function hydrateSavedReceiptPrinter() {
+  if (isIosReviewSessionActive()) {
+    const store = useReceiptPrinterStore.getState();
+    store.setSavedPrinter(IOS_REVIEW_RECEIPT_PRINTER);
+    store.setStatus("idle");
+    store.setHydrated(true);
+    return IOS_REVIEW_RECEIPT_PRINTER;
+  }
   const savedPrinter = await PrinterStorage.getReceiptPrinter();
   const store = useReceiptPrinterStore.getState();
   store.setSavedPrinter(savedPrinter);
@@ -202,6 +267,13 @@ export async function hydrateSavedReceiptPrinter() {
 }
 
 export async function connectSavedPrinter(options?: { status?: "connecting" | "reconnecting" }) {
+  if (isIosReviewSessionActive()) {
+    const store = usePrinterStore.getState();
+    store.setSavedPrinter(IOS_REVIEW_LABEL_PRINTER);
+    store.setLastError(null);
+    store.setStatus("connected");
+    return true;
+  }
   const savedPrinter = await PrinterStorage.getPrinter();
   if (!savedPrinter?.address) {
     usePrinterStore.getState().setStatus("disconnected");
@@ -230,6 +302,13 @@ export async function startPrinterAutoConnect() {
 }
 
 export async function disconnectCurrentPrinter(options?: { pauseAutoReconnect?: boolean }) {
+  if (isIosReviewSessionActive()) {
+    const pause = options?.pauseAutoReconnect ?? false;
+    const store = usePrinterStore.getState();
+    store.setLastError(null);
+    store.setStatus(pause ? "paused" : "disconnected");
+    return true;
+  }
   await disconnectPrinter();
   const pause = options?.pauseAutoReconnect ?? false;
   const store = usePrinterStore.getState();
@@ -252,6 +331,19 @@ export function stopPrinterAutoReconnect() {
 }
 
 export async function syncPrinterStatus() {
+  if (isIosReviewSessionActive()) {
+    const status = {
+      supported: true,
+      enabled: true,
+      connected: true,
+      address: IOS_REVIEW_LABEL_PRINTER.address,
+    };
+    const store = usePrinterStore.getState();
+    store.setSavedPrinter(IOS_REVIEW_LABEL_PRINTER);
+    store.setLastError(null);
+    store.setStatus("connected");
+    return status;
+  }
   const nativeStatus = await getPrinterStatus();
   const store = usePrinterStore.getState();
 
@@ -273,11 +365,21 @@ export async function syncPrinterStatus() {
 }
 
 export async function testPrinterConnection() {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printRawCommand("! 0 200 200 160 1\r\nPAGE-WIDTH 570\r\nTEXT 7 0 20 30 HB LABEL PRINTER\r\nTEXT 4 0 20 78 Connection OK\r\nTEXT 4 0 20 118 TEST\r\nPRINT\r\n");
 }
 
 export async function selectReceiptPrinter(device: PrinterDevice) {
+  if (isIosReviewSessionActive()) {
+    const store = useReceiptPrinterStore.getState();
+    store.setSavedPrinter(toSavedPrinter(device));
+    store.setLastError(null);
+    store.setStatus("idle");
+    return true;
+  }
   const nextPrinter = toSavedPrinter(device);
   await PrinterStorage.setReceiptPrinter(nextPrinter);
   const store = useReceiptPrinterStore.getState();
@@ -289,6 +391,13 @@ export async function selectReceiptPrinter(device: PrinterDevice) {
 }
 
 export async function clearSavedReceiptPrinter() {
+  if (isIosReviewSessionActive()) {
+    const store = useReceiptPrinterStore.getState();
+    store.setSavedPrinter(null);
+    store.setLastError(null);
+    store.setStatus("idle");
+    return;
+  }
   const savedPrinter = await PrinterStorage.getReceiptPrinter();
   const nativeStatus = await getPrinterStatus();
   if (savedPrinter?.address && nativeStatus.connected && nativeStatus.address === savedPrinter.address) {
@@ -304,6 +413,9 @@ export async function clearSavedReceiptPrinter() {
 }
 
 export async function testReceiptPrinterConnection() {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   const savedPrinter = await PrinterStorage.getReceiptPrinter();
   const receiptStore = useReceiptPrinterStore.getState();
   if (!savedPrinter?.address) {
@@ -382,36 +494,57 @@ export async function testReceiptPrinterConnection() {
 }
 
 export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides, printType?: string | null) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeProductLabel(buildPayload(detail, overrides), printType);
 }
 
 export async function printProductLabelPayload(payload: ProductLabelPrintPayload, printType?: string | null) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeProductLabel(payload, printType);
 }
 
 export async function printDiscountLabel(detail: ProductDetail, printType?: string | null) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeDiscountLabel(buildPayload(detail), printType);
 }
 
 export async function printClearanceLabel(detail: ProductDetail) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeClearanceLabel(buildPayload(detail));
 }
 
 export async function printBigDiscountLabel(detail: ProductDetail, printType?: string | null) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeBigDiscountLabel(buildPayload(detail), printType);
 }
 
 export async function printWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeWarehouseProductLabel(normalizeWarehouseProductLabelPayload(payload));
 }
 
 export async function printWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   await ensureConnectedPrinter();
   return printNativeWarehouseLocationLabel(normalizeWarehouseLocationLabelPayload(payload));
 }
@@ -419,6 +552,9 @@ export async function printWarehouseLocationLabel(payload: WarehouseLocationLabe
 export async function printEmployeeCashierBarcodeLabel(
   payload: EmployeeCashierBarcodeLabelPrintPayload
 ) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   const status = await getPrinterStatus();
   if (status.supported && !status.enabled) {
     throw new Error("Bluetooth is disabled.");

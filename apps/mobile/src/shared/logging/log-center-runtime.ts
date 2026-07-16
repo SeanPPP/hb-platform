@@ -6,6 +6,8 @@ import {
   type LogCenterConfig,
   normalizeLogCenterConfig,
 } from "@/shared/logging/log-center";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import { reviewAwareFetch } from "@/modules/ios-review/network";
 
 interface QueuedApplicationLog {
   item: ApplicationLogIngestItem;
@@ -121,6 +123,12 @@ function requeueLogs(batch: QueuedApplicationLog[], config: LogCenterConfig) {
 }
 
 async function flushPendingLogs() {
+  if (isIosReviewSessionActive()) {
+    // 审核会话不得把历史或当前日志发送到外部日志中心。
+    pendingLogs = [];
+    clearFlushTimer();
+    return;
+  }
   if (flushInFlight || !pendingLogs.length) {
     return;
   }
@@ -135,7 +143,7 @@ async function flushPendingLogs() {
   const batch = pendingLogs.splice(0, config.batchSize);
 
   try {
-    const response = await fetch(config.endpoint, {
+    const response = await reviewAwareFetch(config.endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -171,6 +179,10 @@ function clearFlushTimer() {
 }
 
 export function reportApplicationLog(input: ApplicationLogInput) {
+  if (isIosReviewSessionActive()) {
+    // 审核模式日志为 no-op，避免排队定时器和任何后续网络副作用。
+    return;
+  }
   try {
     const config = getLogCenterConfig();
     if (!config.enabled) {

@@ -1,6 +1,7 @@
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import { createAttendanceLocationSample } from "@/modules/attendance/api";
+import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import type { AttendanceLocationSamplePayload } from "@/modules/attendance/types";
 import {
   ATTENDANCE_LOCATION_TASK,
@@ -25,6 +26,10 @@ function shouldUpload(lastUploadedAtUtc?: string) {
 
 if (!TaskManager.isTaskDefined(ATTENDANCE_LOCATION_TASK)) {
   TaskManager.defineTask(ATTENDANCE_LOCATION_TASK, async ({ data, error }) => {
+    if (isIosReviewSessionActive()) {
+      // 审核会话即使收到遗留系统回调，也不得读取上下文或上传位置样本。
+      return;
+    }
     if (error) {
       console.warn("[attendance-location] 后台定位任务失败", error);
       return;
@@ -69,6 +74,9 @@ if (!TaskManager.isTaskDefined(ATTENDANCE_LOCATION_TASK)) {
 }
 
 export async function ensureAttendanceBackgroundLocationPermission() {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
   const foreground = await Location.requestForegroundPermissionsAsync();
   if (foreground.status !== "granted") {
     return false;
@@ -81,6 +89,10 @@ export async function ensureAttendanceBackgroundLocationPermission() {
 export async function startAttendanceLocationTracking(
   context: Omit<ActiveShiftLocationContext, "lastUploadedAtUtc">,
 ) {
+  if (isIosReviewSessionActive()) {
+    // 审核模式仅模拟班中定位状态，不写本地任务上下文或启动后台定位。
+    return;
+  }
   await writeActiveShiftContext(context);
 
   const hasStarted = await Location.hasStartedLocationUpdatesAsync(

@@ -10,7 +10,9 @@ import { i18n } from "@/shared/i18n/i18n";
 
 const RECONNECT_INTERVAL_MS = 5000;
 
-export function usePrinterAutoConnect() {
+export function usePrinterAutoConnect(
+  { enabled = true }: { enabled?: boolean } = {}
+) {
   const savedPrinter = usePrinterStore((state) => state.savedPrinter);
   const autoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const hydrated = usePrinterStore((state) => state.hydrated);
@@ -22,11 +24,15 @@ export function usePrinterAutoConnect() {
   const connectInFlightRef = useRef(false);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     void hydrateSavedPrinter();
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     if (
+      !enabled ||
       !hydrated ||
       !savedPrinter ||
       autoReconnectPaused ||
@@ -69,10 +75,18 @@ export function usePrinterAutoConnect() {
     return () => {
       cancelled = true;
     };
-  }, [autoReconnectPaused, hydrated, savedPrinter, setLastError, setStatus, status]);
+  }, [
+    autoReconnectPaused,
+    enabled,
+    hydrated,
+    savedPrinter,
+    setLastError,
+    setStatus,
+    status,
+  ]);
 
   useEffect(() => {
-    if (!hydrated || !savedPrinter) {
+    if (!enabled || !hydrated || !savedPrinter) {
       return;
     }
 
@@ -148,7 +162,7 @@ export function usePrinterAutoConnect() {
         clearInterval(intervalId);
       }
     };
-  }, [hydrated, savedPrinter, setLastError, setStatus]);
+  }, [enabled, hydrated, savedPrinter, setLastError, setStatus]);
 
   return {
     status,
