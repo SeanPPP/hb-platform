@@ -125,6 +125,7 @@ public static class ServiceRegistration
                 handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
                 handler.MaxConnectionsPerServer = 1;
             });
+        services.AddHostedService<LinklyHttpConnectionMetricsService>();
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaSqlExecutor, SqlSugarLinklyCloudBackendAsyncSchemaSqlExecutor>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaInitializer, SqlSugarLinklyCloudBackendAsyncSchemaInitializer>();

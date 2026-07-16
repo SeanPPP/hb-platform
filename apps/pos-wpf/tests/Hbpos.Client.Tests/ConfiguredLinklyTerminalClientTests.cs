@@ -69,8 +69,9 @@ public sealed class ConfiguredLinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_falls_back_to_next_mode_after_cashier_confirms_fallback()
+    public async Task PurchaseAsync_does_not_fallback_when_cloud_backend_communication_fails()
     {
+        var localFactory = new FakeLinklyEftClientFactory();
         var cloud = new FakeCloudTerminalClient(new PaymentAuthorizationResult(
             true,
             "ANZCLOUD:DIRECT-1",
@@ -82,62 +83,10 @@ public sealed class ConfiguredLinklyTerminalClientTests
             "ANZ Linkly Cloud backend communication failed.",
             StatusKey: "linkly.backend.communicationFailed",
             FallbackAllowed: true));
-        var prompt = new FakeLinklyFallbackPromptService(true);
         var client = new ConfiguredLinklyTerminalClient(
-            new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
+            new LinklyTerminalClient(localFactory),
             cloud,
-            backend,
-            prompt);
-
-        var result = await client.PurchaseAsync(
-            10m,
-            CreateSession(),
-            CreateSettings(
-                LinklyConnectionMode.CloudBackendAsync,
-                [
-                    LinklyConnectionMode.CloudBackendAsync,
-                    LinklyConnectionMode.CloudDirectSync,
-                    LinklyConnectionMode.LocalIp
-                ]));
-
-        Assert.True(result.Approved);
-        Assert.Equal("ANZCLOUD:DIRECT-1", result.Reference);
-        Assert.Equal(1, backend.PurchaseCallCount);
-        Assert.Equal(1, cloud.PurchaseCallCount);
-        Assert.Equal(1, prompt.CallCount);
-        Assert.Equal(LinklyConnectionMode.CloudBackendAsync, prompt.Requests[0].FailedMode);
-        Assert.Equal(LinklyConnectionMode.CloudDirectSync, prompt.Requests[0].NextMode);
-        Assert.True(result.FallbackSucceeded);
-        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.RequestedConnectionMode);
-        Assert.Equal(LinklyConnectionMode.CloudDirectSync.ToString(), result.ActualConnectionMode);
-        Assert.Equal(
-            [
-                LinklyConnectionMode.CloudBackendAsync.ToString(),
-                LinklyConnectionMode.CloudDirectSync.ToString()
-            ],
-            result.FallbackAttemptedModes);
-    }
-
-    [Fact]
-    public async Task PurchaseAsync_does_not_fallback_when_cashier_declines_fallback_prompt()
-    {
-        var cloud = new FakeCloudTerminalClient(new PaymentAuthorizationResult(
-            true,
-            "ANZCLOUD:DIRECT-1",
-            AuthorizedAmount: 10m,
-            ConnectionMode: LinklyConnectionMode.CloudDirectSync.ToString()));
-        var backend = new FakeBackendTerminalClient(new PaymentAuthorizationResult(
-            false,
-            null,
-            "ANZ Linkly Cloud backend communication failed.",
-            StatusKey: "linkly.backend.communicationFailed",
-            FallbackAllowed: true));
-        var prompt = new FakeLinklyFallbackPromptService(false);
-        var client = new ConfiguredLinklyTerminalClient(
-            new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
-            cloud,
-            backend,
-            prompt);
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
@@ -151,11 +100,14 @@ public sealed class ConfiguredLinklyTerminalClientTests
                 ]));
 
         Assert.False(result.Approved);
-        Assert.Equal("payment.linklyFallback.cancelled", result.StatusKey);
+        Assert.Equal("linkly.backend.communicationFailed", result.StatusKey);
         Assert.Equal(1, backend.PurchaseCallCount);
         Assert.Equal(0, cloud.PurchaseCallCount);
-        Assert.Equal(1, prompt.CallCount);
+        Assert.Equal(0, localFactory.Client.ConnectCallCount);
         Assert.False(result.FallbackSucceeded);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.RequestedConnectionMode);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.ActualConnectionMode);
         Assert.Equal(
             [
                 LinklyConnectionMode.CloudBackendAsync.ToString()
@@ -176,8 +128,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
             cloud,
-            backend,
-            new FakeLinklyFallbackPromptService(true));
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
@@ -211,8 +162,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
             cloud,
-            backend,
-            new FakeLinklyFallbackPromptService(true));
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
@@ -245,8 +195,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
             cloud,
-            backend,
-            new FakeLinklyFallbackPromptService(true));
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
@@ -267,7 +216,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_stops_fallback_chain_when_cashier_declines_second_prompt()
+    public async Task PurchaseAsync_does_not_fallback_when_cloud_direct_communication_fails()
     {
         var localFactory = new FakeLinklyEftClientFactory(connectResult: false);
         var cloud = new FakeCloudTerminalClient(new PaymentAuthorizationResult(
@@ -282,32 +231,36 @@ public sealed class ConfiguredLinklyTerminalClientTests
             "ANZ Linkly Cloud backend communication failed.",
             StatusKey: "linkly.backend.communicationFailed",
             FallbackAllowed: true));
-        var prompt = new FakeLinklyFallbackPromptService(true, false);
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(localFactory),
             cloud,
-            backend,
-            prompt);
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
             CreateSession(),
             CreateSettings(
-                LinklyConnectionMode.CloudBackendAsync,
+                LinklyConnectionMode.CloudDirectSync,
                 [
-                    LinklyConnectionMode.CloudBackendAsync,
                     LinklyConnectionMode.CloudDirectSync,
+                    LinklyConnectionMode.CloudBackendAsync,
                     LinklyConnectionMode.LocalIp
                 ]));
 
         Assert.False(result.Approved);
-        Assert.Equal("payment.linklyFallback.cancelled", result.StatusKey);
-        Assert.Equal(1, backend.PurchaseCallCount);
+        Assert.Equal("linkly.cloud.communicationFailed", result.StatusKey);
+        Assert.Equal(0, backend.PurchaseCallCount);
         Assert.Equal(1, cloud.PurchaseCallCount);
         Assert.Equal(0, localFactory.Client.ConnectCallCount);
-        Assert.Equal(2, prompt.CallCount);
-        Assert.Equal(LinklyConnectionMode.CloudDirectSync, prompt.Requests[1].FailedMode);
-        Assert.Equal(LinklyConnectionMode.LocalIp, prompt.Requests[1].NextMode);
+        Assert.False(result.FallbackSucceeded);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal(LinklyConnectionMode.CloudDirectSync.ToString(), result.RequestedConnectionMode);
+        Assert.Equal(LinklyConnectionMode.CloudDirectSync.ToString(), result.ActualConnectionMode);
+        Assert.Equal(
+            [
+                LinklyConnectionMode.CloudDirectSync.ToString()
+            ],
+            result.FallbackAttemptedModes);
     }
 
     [Fact]
@@ -343,7 +296,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_returns_summary_when_all_priority_modes_have_communication_failures()
+    public async Task PurchaseAsync_does_not_fallback_when_local_ip_connection_fails()
     {
         var localFactory = new FakeLinklyEftClientFactory(connectResult: false);
         var cloud = new FakeCloudTerminalClient(new PaymentAuthorizationResult(
@@ -361,39 +314,37 @@ public sealed class ConfiguredLinklyTerminalClientTests
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(localFactory),
             cloud,
-            backend,
-            new FakeLinklyFallbackPromptService(true, true));
+            backend);
 
         var result = await client.PurchaseAsync(
             10m,
             CreateSession(),
             CreateSettings(
-                LinklyConnectionMode.CloudBackendAsync,
+                LinklyConnectionMode.LocalIp,
                 [
+                    LinklyConnectionMode.LocalIp,
                     LinklyConnectionMode.CloudBackendAsync,
-                    LinklyConnectionMode.CloudDirectSync,
-                    LinklyConnectionMode.LocalIp
+                    LinklyConnectionMode.CloudDirectSync
                 ]));
 
         Assert.False(result.Approved);
-        Assert.Equal("payment.linklyFallback.allFailed", result.StatusKey);
-        Assert.Contains("CloudBackendAsync", result.Message, StringComparison.Ordinal);
-        Assert.Contains("CloudDirectSync", result.Message, StringComparison.Ordinal);
-        Assert.Contains("LocalIp", result.Message, StringComparison.Ordinal);
-        Assert.Equal(1, backend.PurchaseCallCount);
-        Assert.Equal(1, cloud.PurchaseCallCount);
+        Assert.Equal("linkly.local.connectionFailed", result.StatusKey);
+        Assert.Equal(0, backend.PurchaseCallCount);
+        Assert.Equal(0, cloud.PurchaseCallCount);
         Assert.Equal(1, localFactory.Client.ConnectCallCount);
+        Assert.False(result.FallbackSucceeded);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), result.RequestedConnectionMode);
+        Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), result.ActualConnectionMode);
         Assert.Equal(
             [
-                LinklyConnectionMode.CloudBackendAsync.ToString(),
-                LinklyConnectionMode.CloudDirectSync.ToString(),
                 LinklyConnectionMode.LocalIp.ToString()
             ],
             result.FallbackAttemptedModes);
     }
 
     [Fact]
-    public async Task PurchaseWithReferenceAsync_uses_supplied_txn_ref_for_local_mode_and_preserves_fallback_priority()
+    public async Task PurchaseWithReferenceAsync_does_not_fallback_from_local_ip_mode()
     {
         var localFactory = new FakeLinklyEftClientFactory(connectResult: false);
         var backend = new FakeBackendTerminalClient(new PaymentAuthorizationResult(
@@ -401,12 +352,10 @@ public sealed class ConfiguredLinklyTerminalClientTests
             "ANZBACKEND:ASYNC-1",
             AuthorizedAmount: 10m,
             ConnectionMode: LinklyConnectionMode.CloudBackendAsync.ToString()));
-        var prompt = new FakeLinklyFallbackPromptService(true);
         var client = new ConfiguredLinklyTerminalClient(
             new LinklyTerminalClient(localFactory),
             new FakeCloudTerminalClient(),
-            backend,
-            prompt);
+            backend);
 
         var result = await client.PurchaseWithReferenceAsync(
             10m,
@@ -419,14 +368,65 @@ public sealed class ConfiguredLinklyTerminalClientTests
                 ]),
             "LOCAL-TXN-001");
 
-        Assert.True(result.Approved);
-        Assert.Equal("ANZBACKEND:ASYNC-1", result.Reference);
+        Assert.False(result.Approved);
+        Assert.Equal("linkly.local.connectionFailed", result.StatusKey);
         Assert.Equal(1, localFactory.Client.ConnectCallCount);
-        Assert.Equal(1, backend.PurchaseCallCount);
-        Assert.Equal(1, prompt.CallCount);
-        Assert.True(result.FallbackSucceeded);
+        Assert.Equal(0, backend.PurchaseCallCount);
+        Assert.False(result.FallbackSucceeded);
         Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), result.RequestedConnectionMode);
+        Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), result.ActualConnectionMode);
+        Assert.Equal(
+            [
+                LinklyConnectionMode.LocalIp.ToString()
+            ],
+            result.FallbackAttemptedModes);
+    }
+
+    [Fact]
+    public async Task RefundAsync_does_not_fallback_when_cloud_backend_communication_fails()
+    {
+        var localFactory = new FakeLinklyEftClientFactory();
+        var cloud = new FakeCloudTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZCLOUD:DIRECT-1",
+            AuthorizedAmount: 10m));
+        var backend = new FakeBackendTerminalClient(new PaymentAuthorizationResult(
+            false,
+            null,
+            "ANZ Linkly Cloud backend communication failed.",
+            StatusKey: "linkly.backend.communicationFailed",
+            FallbackAllowed: true));
+        var client = new ConfiguredLinklyTerminalClient(
+            new LinklyTerminalClient(localFactory),
+            cloud,
+            backend);
+
+        var result = await client.RefundAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(
+                LinklyConnectionMode.CloudBackendAsync,
+                [
+                    LinklyConnectionMode.CloudBackendAsync,
+                    LinklyConnectionMode.CloudDirectSync,
+                    LinklyConnectionMode.LocalIp
+                ]),
+            "ORIGINAL-REF-001");
+
+        Assert.False(result.Approved);
+        Assert.Equal("linkly.backend.communicationFailed", result.StatusKey);
+        Assert.Equal(1, backend.RefundCallCount);
+        Assert.Equal(0, cloud.RefundCallCount);
+        Assert.Equal(0, localFactory.Client.ConnectCallCount);
+        Assert.False(result.FallbackSucceeded);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.RequestedConnectionMode);
         Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.ActualConnectionMode);
+        Assert.Equal(
+            [
+                LinklyConnectionMode.CloudBackendAsync.ToString()
+            ],
+            result.FallbackAttemptedModes);
     }
 
     private static PosSessionState CreateSession()
@@ -460,6 +460,8 @@ public sealed class ConfiguredLinklyTerminalClientTests
     {
         public int PurchaseCallCount { get; private set; }
 
+        public int RefundCallCount { get; private set; }
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalSettings settings,
             string storeCode,
@@ -486,6 +488,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
             string? originalReference,
             CancellationToken cancellationToken = default)
         {
+            RefundCallCount++;
             return Task.FromResult(result ?? new PaymentAuthorizationResult(false, null, "Cloud direct should not be called."));
         }
     }
@@ -494,6 +497,8 @@ public sealed class ConfiguredLinklyTerminalClientTests
         PaymentAuthorizationResult? result = null) : ILinklyBackendTerminalClient
     {
         public int PurchaseCallCount { get; private set; }
+
+        public int RefundCallCount { get; private set; }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalEnvironment environment,
@@ -526,6 +531,7 @@ public sealed class ConfiguredLinklyTerminalClientTests
             string? originalReference,
             CancellationToken cancellationToken = default)
         {
+            RefundCallCount++;
             return Task.FromResult(result ?? new PaymentAuthorizationResult(false, null, "Backend async should not be called."));
         }
 
@@ -566,23 +572,6 @@ public sealed class ConfiguredLinklyTerminalClientTests
             CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
-        }
-    }
-
-    private sealed class FakeLinklyFallbackPromptService(params bool[] results) : ILinklyFallbackPromptService
-    {
-        private readonly Queue<bool> _results = new(results);
-
-        public List<LinklyFallbackPromptRequest> Requests { get; } = [];
-
-        public int CallCount => Requests.Count;
-
-        public Task<bool> ConfirmFallbackAsync(
-            LinklyFallbackPromptRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            Requests.Add(request);
-            return Task.FromResult(_results.Count == 0 || _results.Dequeue());
         }
     }
 
