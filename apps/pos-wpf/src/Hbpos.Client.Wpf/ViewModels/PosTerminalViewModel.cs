@@ -1545,7 +1545,15 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IsMatchesPopupOpen = false;
         IsTouchKeyboardOpen = false;
         ScanText = string.Empty;
-        SetStatusText(T("shell.cashierLogin.succeeded", "收银员登录成功"), StatusFeedbackKind.Success);
+        // 未注入本地化服务时保留旧中文提示；正常路径缓存资源键以支持运行时切换语言。
+        if (_localization is null)
+        {
+            SetStatusText("收银员登录成功", StatusFeedbackKind.Success);
+        }
+        else
+        {
+            SetStatusCore("shell.cashierLogin.status.success", [], StatusFeedbackKind.Success);
+        }
         ConsoleLog.Write(
             "CashierLogin",
             $"scanner fallback cashier login succeeded source={plan.Source} device={plan.DevicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)}");
