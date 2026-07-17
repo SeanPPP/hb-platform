@@ -7,8 +7,10 @@ import {
   buildPermissionSourceMap,
   getCheckedPermissionKeys,
   getEditablePosPermissionCodes,
+  getPosPermissionGroupSelectionState,
   isCurrentPosPermissionRequest,
   isInheritedPosPermissionMode,
+  setPosPermissionGroupSelection,
   shouldEnablePosPermissionSave,
   toggleDirectPermission,
 } from './userPermissions'
@@ -110,6 +112,59 @@ assertArrayEqual(
   ),
   [`${posSalesPrefix}LineManualDiscount`],
   'POS effective selection should not expose permissions outside the API whitelist',
+)
+
+assertArrayEqual(
+  setPosPermissionGroupSelection(
+    ['Permissions.PosTerminal.Payment.View', `${posSalesPrefix}LineManualDiscount`],
+    [
+      `${posSalesPrefix}LineManualDiscount`,
+      `${posSalesPrefix}LineQuickDiscount10Percent`,
+      `${posSalesPrefix}LineQuickDiscount10Percent`,
+    ],
+    true,
+  ),
+  [
+    'Permissions.PosTerminal.Payment.View',
+    `${posSalesPrefix}LineManualDiscount`,
+    `${posSalesPrefix}LineQuickDiscount10Percent`,
+  ],
+  'Selecting a POS permission group should add unique group codes and preserve other groups',
+)
+
+assertArrayEqual(
+  setPosPermissionGroupSelection(
+    [
+      'Permissions.PosTerminal.Payment.View',
+      `${posSalesPrefix}LineManualDiscount`,
+      `${posSalesPrefix}LineQuickDiscount10Percent`,
+    ],
+    [
+      `${posSalesPrefix}LineManualDiscount`,
+      `${posSalesPrefix}LineQuickDiscount10Percent`,
+    ],
+    false,
+  ),
+  ['Permissions.PosTerminal.Payment.View'],
+  'Clearing a POS permission group should remove only that group and preserve other groups',
+)
+
+assertEqual(
+  JSON.stringify(getPosPermissionGroupSelectionState([], ['pos.view', 'pos.edit'])),
+  JSON.stringify({ checked: false, indeterminate: false }),
+  'A POS permission group without selected permissions should be unchecked',
+)
+
+assertEqual(
+  JSON.stringify(getPosPermissionGroupSelectionState(['pos.view'], ['pos.view', 'pos.edit'])),
+  JSON.stringify({ checked: false, indeterminate: true }),
+  'A partially selected POS permission group should be indeterminate',
+)
+
+assertEqual(
+  JSON.stringify(getPosPermissionGroupSelectionState(['pos.view', 'pos.edit'], ['pos.view', 'pos.edit'])),
+  JSON.stringify({ checked: true, indeterminate: false }),
+  'A fully selected POS permission group should be checked',
 )
 
 assertEqual(

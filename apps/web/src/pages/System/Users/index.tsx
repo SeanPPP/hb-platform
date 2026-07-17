@@ -79,8 +79,10 @@ import {
   buildPermissionSourceMap,
   deriveDirectPermissionKeysFromChecked,
   getEditablePosPermissionCodes,
+  getPosPermissionGroupSelectionState,
   isCurrentPosPermissionRequest,
   isInheritedPosPermissionMode,
+  setPosPermissionGroupSelection,
   shouldEnablePosPermissionSave,
   uniquePermissionCodes,
 } from './userPermissions'
@@ -1652,66 +1654,89 @@ export default function SystemUsersPage() {
               {posPermissionSections.length ? posPermissionSections.map((section) => (
                 <Card key={section.module} title={section.displayName} size="small">
                   <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                    {section.groups.map((group) => (
-                      <div key={group.key}>
-                        <Typography.Text strong>{group.displayName}</Typography.Text>
-                        <List
-                          size="small"
-                          dataSource={group.permissions}
-                          locale={{ emptyText: t('system.users.noPosPermissionData', '暂无收银权限数据') }}
-                          renderItem={(permission) => {
-                            const isSelected = selectedPosPermissionSet.has(permission.code)
-                            const isEffective = effectivePosPermissionSet.has(permission.code)
-                            const hasDraftChange = isSelected !== isEffective
-                            return (
-                              <List.Item>
-                                <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                                  <Checkbox
-                                    checked={isSelected}
-                                    disabled={posPermissionSaving || posPermissionRestoring}
-                                    onChange={(event) => {
-                                      setSelectedPosPermissionCodes((current) => {
-                                        const next = new Set(current)
-                                        if (event.target.checked) next.add(permission.code)
-                                        else next.delete(permission.code)
-                                        return Array.from(next)
-                                      })
-                                    }}
-                                  >
-                                    {permission.name}
-                                  </Checkbox>
-                                  <Space wrap size={[4, 4]} style={{ paddingLeft: 24 }}>
-                                    {inheritedPosPermissionSet.has(permission.code) ? (
-                                      <Tag>{t('system.users.accountInherited', '账号继承')}</Tag>
-                                    ) : null}
-                                    {overriddenPosPermissionSet.has(permission.code) ? (
-                                      <Tag color="processing">{t('system.users.storeOverridden', '分店已覆盖')}</Tag>
-                                    ) : null}
-                                    <Tag color={isEffective ? 'success' : 'default'}>
-                                      {isEffective
-                                        ? t('system.users.permissionEffective', '当前有效')
-                                        : t('system.users.permissionIneffective', '当前无效')}
-                                    </Tag>
-                                    {hasDraftChange ? (
-                                      <Tag color="warning">
-                                        {isSelected
-                                          ? t('system.users.pendingEnable', '待保存启用')
-                                          : t('system.users.pendingDisable', '待保存停用')}
+                    {section.groups.map((group) => {
+                      const groupPermissionCodes = group.permissions.map((permission) => permission.code)
+                      const groupSelectionState = getPosPermissionGroupSelectionState(
+                        selectedPosPermissionCodes,
+                        groupPermissionCodes,
+                      )
+
+                      return (
+                        <div key={group.key}>
+                          <Checkbox
+                            checked={groupSelectionState.checked}
+                            indeterminate={groupSelectionState.indeterminate}
+                            disabled={posPermissionSaving || posPermissionRestoring}
+                            onChange={(event) => {
+                              setSelectedPosPermissionCodes((current) =>
+                                setPosPermissionGroupSelection(
+                                  current,
+                                  groupPermissionCodes,
+                                  event.target.checked,
+                                ),
+                              )
+                            }}
+                          >
+                            <Typography.Text strong>{group.displayName}</Typography.Text>
+                          </Checkbox>
+                          <List
+                            size="small"
+                            dataSource={group.permissions}
+                            locale={{ emptyText: t('system.users.noPosPermissionData', '暂无收银权限数据') }}
+                            renderItem={(permission) => {
+                              const isSelected = selectedPosPermissionSet.has(permission.code)
+                              const isEffective = effectivePosPermissionSet.has(permission.code)
+                              const hasDraftChange = isSelected !== isEffective
+                              return (
+                                <List.Item>
+                                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                    <Checkbox
+                                      checked={isSelected}
+                                      disabled={posPermissionSaving || posPermissionRestoring}
+                                      onChange={(event) => {
+                                        setSelectedPosPermissionCodes((current) => {
+                                          const next = new Set(current)
+                                          if (event.target.checked) next.add(permission.code)
+                                          else next.delete(permission.code)
+                                          return Array.from(next)
+                                        })
+                                      }}
+                                    >
+                                      {permission.name}
+                                    </Checkbox>
+                                    <Space wrap size={[4, 4]} style={{ paddingLeft: 24 }}>
+                                      {inheritedPosPermissionSet.has(permission.code) ? (
+                                        <Tag>{t('system.users.accountInherited', '账号继承')}</Tag>
+                                      ) : null}
+                                      {overriddenPosPermissionSet.has(permission.code) ? (
+                                        <Tag color="processing">{t('system.users.storeOverridden', '分店已覆盖')}</Tag>
+                                      ) : null}
+                                      <Tag color={isEffective ? 'success' : 'default'}>
+                                        {isEffective
+                                          ? t('system.users.permissionEffective', '当前有效')
+                                          : t('system.users.permissionIneffective', '当前无效')}
                                       </Tag>
+                                      {hasDraftChange ? (
+                                        <Tag color="warning">
+                                          {isSelected
+                                            ? t('system.users.pendingEnable', '待保存启用')
+                                            : t('system.users.pendingDisable', '待保存停用')}
+                                        </Tag>
+                                      ) : null}
+                                    </Space>
+                                    {permission.description ? (
+                                      <Typography.Text type="secondary" style={{ paddingLeft: 24, fontSize: 12 }}>
+                                        {permission.description}
+                                      </Typography.Text>
                                     ) : null}
                                   </Space>
-                                  {permission.description ? (
-                                    <Typography.Text type="secondary" style={{ paddingLeft: 24, fontSize: 12 }}>
-                                      {permission.description}
-                                    </Typography.Text>
-                                  ) : null}
-                                </Space>
-                              </List.Item>
-                            )
-                          }}
-                        />
-                      </div>
-                    ))}
+                                </List.Item>
+                              )
+                            }}
+                          />
+                        </div>
+                      )
+                    })}
                   </Space>
                 </Card>
               )) : (

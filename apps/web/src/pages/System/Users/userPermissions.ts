@@ -144,6 +144,38 @@ export function buildGrantedPosPermissionCodes(
   return getEditablePosPermissionCodes(selectedPermissionCodes, assignablePermissions)
 }
 
+export function setPosPermissionGroupSelection(
+  selectedPermissionCodes: string[],
+  groupPermissionCodes: string[],
+  checked: boolean,
+): string[] {
+  const next = new Set(selectedPermissionCodes)
+
+  // 分类批量操作只改动当前分类，避免覆盖其他分类已经完成的草稿选择。
+  groupPermissionCodes.forEach((permissionCode) => {
+    if (checked) next.add(permissionCode)
+    else next.delete(permissionCode)
+  })
+
+  return Array.from(next)
+}
+
+export function getPosPermissionGroupSelectionState(
+  selectedPermissionCodes: string[],
+  groupPermissionCodes: string[],
+) {
+  const selectedPermissionSet = new Set(selectedPermissionCodes)
+  const selectedCount = groupPermissionCodes.filter((permissionCode) =>
+    selectedPermissionSet.has(permissionCode),
+  ).length
+  const checked = groupPermissionCodes.length > 0 && selectedCount === groupPermissionCodes.length
+
+  return {
+    checked,
+    indeterminate: selectedCount > 0 && !checked,
+  }
+}
+
 export function isInheritedPosPermissionMode(mode: string | undefined) {
   const normalizedMode = mode?.trim().toLowerCase()
   return normalizedMode === 'inherited' || normalizedMode === 'inherit'

@@ -1,62 +1,83 @@
-export type InstallmentOrderStatus = number | null;
+export type InstallmentOrderStatus = 1 | 2 | 3 | 4 | null;
+export type InstallmentPaymentStatus = 1 | 2 | null;
+export type InstallmentCancellationKind = 1 | 2 | null;
 
 export interface InstallmentOrderFilters {
   startDate?: string;
   endDate?: string;
   branchCode?: string;
   status?: InstallmentOrderStatus;
-  orderType?: number | null;
-  userPhone?: string;
-  userName?: string;
+  customerPhone?: string;
+  customerName?: string;
 }
 
 export interface InstallmentOrderListItem {
-  orderGuid: string;
-  branchCode: string;
-  branchName: string;
-  abn: string;
-  brandName: string;
-  deviceCode: string;
-  orderNo: string;
-  orderTime: string;
-  customerPhone: string;
+  installmentGuid: string;
+  installmentNumber: string;
+  storeCode: string;
+  storeName: string;
+  cashierName: string;
   customerName: string;
-  skuCount: number | null;
-  itemCount: number | null;
+  customerPhone: string;
+  createdAt: string;
   totalAmount: number | null;
-  discountAmount: number | null;
-  actualAmount: number | null;
+  minimumDownPayment: number | null;
+  downPaymentAmount: number | null;
+  paidAmount: number | null;
+  balanceAmount: number | null;
   status: InstallmentOrderStatus;
+  updatedAt: string;
 }
 
 export interface InstallmentPaymentRecord {
   paymentGuid: string;
-  orderGuid: string;
-  paymentTime: string;
-  paymentMethod: number | null;
-  paymentMethodName: string;
+  method: number | null;
   amount: number | null;
   reference: string;
+  status: InstallmentPaymentStatus;
+  recordedAt: string;
   cashierId: string;
-  cashierName: string;
-  createdBy: string;
-  updatedBy: string;
+  deviceCode: string;
+}
+
+export interface InstallmentOrderDetailOrder extends InstallmentOrderListItem {
+  deviceCode: string;
+  cashierId: string;
+  note: string;
+}
+
+export interface InstallmentPickupInfo {
+  pickedUpAt: string;
+  pickedUpBy: string;
+  pickupNote: string;
+}
+
+export interface InstallmentCancellationInfo {
+  cancellationKind: InstallmentCancellationKind;
+  cancelledAt: string;
+  cancelledBy: string;
+  cancellationReason: string;
 }
 
 export interface InstallmentOrderDetailLine {
-  productImage: string;
+  installmentLineGuid: string;
   productCode: string;
-  productName: string;
+  referenceCode: string;
+  displayName: string;
+  lookupCode: string;
   quantity: number | null;
   unitPrice: number | null;
   discountAmount: number | null;
   actualAmount: number | null;
+  itemNumber: string;
 }
 
 export interface InstallmentOrderDetail {
-  order: InstallmentOrderListItem | null;
-  orderDetails: InstallmentOrderDetailLine[];
-  paymentDetails: InstallmentPaymentRecord[];
+  order: InstallmentOrderDetailOrder | null;
+  lines: InstallmentOrderDetailLine[];
+  payments: InstallmentPaymentRecord[];
+  pickupInfo: InstallmentPickupInfo | null;
+  cancellationInfo: InstallmentCancellationInfo | null;
 }
 
 export interface PagedResult<T> {

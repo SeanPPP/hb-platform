@@ -5,6 +5,9 @@ namespace BlazorApp.Api.Data
 {
     public static class StartupSchemaMigrator
     {
+        public static Task EnsurePosmAsync(ISqlSugarClient posmDb, ILogger logger) =>
+            InstallmentOrderSchemaMigrator.EnsureAsync(posmDb, logger);
+
         public static async Task EnsureAsync(ISqlSugarClient db, ILogger logger)
         {
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)

@@ -30,6 +30,7 @@ export interface IosReviewEntity {
 }
 
 export interface ReviewDataStore {
+  getNow(): Date;
   list(domain: IosReviewDomainName): IosReviewEntity[];
   get(domain: IosReviewDomainName, id: string): IosReviewEntity | undefined;
   create(
@@ -98,6 +99,8 @@ export function createIosReviewDataStore(now = new Date()): ReviewDataStore {
   reset();
 
   return {
+    // 路由 fixture 与数据仓库必须共享同一时钟，保证审核模式日期筛选可重复。
+    getNow: () => new Date(now.getTime()),
     list: (domain) => requireRows(domain).map(cloneEntity),
     get: (domain, id) => {
       const entity = requireRows(domain).find((item) => item.id === id);

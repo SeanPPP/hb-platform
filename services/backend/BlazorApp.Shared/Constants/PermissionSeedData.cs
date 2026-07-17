@@ -344,6 +344,7 @@ namespace BlazorApp.Shared.Constants
                         Permissions.Orders.Create,
                         Permissions.Orders.Edit,
                         Permissions.Orders.Delete,
+                        Permissions.InstallmentOrders.View,
                         Permissions.Container.View,
                         Permissions.Container.Create,
                         Permissions.Container.Edit,

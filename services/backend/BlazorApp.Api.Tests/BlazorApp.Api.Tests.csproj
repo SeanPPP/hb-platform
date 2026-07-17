@@ -107,6 +107,10 @@
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
     <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="PosmSalesOrderReactServiceTests.cs" />
+    <Compile Include="InstallmentOrderReactServiceTests.cs" />
+    <Compile Include="InstallmentOrdersControllerTests.cs" />
+    <Compile Include="InstallmentOrderContractTests.cs" />
+    <Compile Include="InstallmentOrderSchemaMigratorTests.cs" />
     <Compile Include="ReactProductHqSyncContractTests.cs" />
     <Compile Include="StoreRetailPriceHqSyncContractTests.cs" />
     <Compile Include="StorePriceTransferJobServiceTests.cs" />

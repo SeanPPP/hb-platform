@@ -1,15 +1,17 @@
 import type {
   InstallmentOrderDetail,
+  InstallmentOrderDetailOrder,
   InstallmentOrderDetailLine,
   InstallmentOrderFilters,
   InstallmentOrderListItem,
+  InstallmentOrderStatus,
   InstallmentPaymentRecord,
+  InstallmentPaymentStatus,
   PagedResult,
 } from "@/modules/installment-orders/types";
 
-const BASE_PATH = "/react/v1/posm-sales-orders";
+const BASE_PATH = "/react/v1/installment-orders";
 const LIST_PAGE_SIZES = [20, 50, 100] as const;
-const DEFAULT_ORDER_TYPE = 4;
 
 async function getApiClient() {
   const { apiClient } = await import("@/shared/api/client");
@@ -75,21 +77,10 @@ function trimText(value?: string) {
   return trimmed ? trimmed : undefined;
 }
 
-function buildKeyword(filters?: InstallmentOrderFilters) {
-  const parts = [trimText(filters?.userPhone), trimText(filters?.userName)].filter(
-    (value): value is string => Boolean(value)
-  );
-  return parts.length ? parts.join(" ") : undefined;
-}
-
-function normalizeOrderType(filters?: InstallmentOrderFilters) {
-  const raw = filters?.orderType;
-  return typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : DEFAULT_ORDER_TYPE;
-}
-
-function normalizeStatus(filters?: InstallmentOrderFilters) {
+function normalizeStatus(filters?: InstallmentOrderFilters): InstallmentOrderStatus | undefined {
   const raw = filters?.status;
-  return typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : undefined;
+  // WPF 分期状态固定为 1 至 4，避免把旧销售单状态发送给专用接口。
+  return raw === 1 || raw === 2 || raw === 3 || raw === 4 ? raw : undefined;
 }
 
 function unwrapListPayload(payload: unknown): Record<string, unknown> {
@@ -103,6 +94,17 @@ function getArray(raw: Record<string, unknown>, ...keys: string[]) {
   return Array.isArray(value) ? value : [];
 }
 
+function normalizeInstallmentStatus(value: unknown): InstallmentOrderStatus {
+  const status = asNullableInt(value);
+  return status === 1 || status === 2 || status === 3 || status === 4 ? status : null;
+}
+
+function normalizePaymentStatus(value: unknown): InstallmentPaymentStatus {
+  const status = asNullableInt(value);
+  // WPF 仅定义 1=已记录、2=已作废，未知值不得伪装成有效付款。
+  return status === 1 || status === 2 ? status : null;
+}
+
 export function buildInstallmentOrderListPayload(query: {
   page?: number;
   pageSize?: number;
@@ -112,9 +114,9 @@ export function buildInstallmentOrderListPayload(query: {
     startDate: trimText(query.filters?.startDate),
     endDate: trimText(query.filters?.endDate),
     branchCode: trimText(query.filters?.branchCode),
-    orderType: normalizeOrderType(query.filters),
     status: normalizeStatus(query.filters),
-    keyword: buildKeyword(query.filters),
+    customerPhone: trimText(query.filters?.customerPhone),
+    customerName: trimText(query.filters?.customerName),
     pageNumber: normalizePage(query.page),
     pageSize: normalizePageSize(query.pageSize),
   };
@@ -123,58 +125,68 @@ export function buildInstallmentOrderListPayload(query: {
 export function normalizeInstallmentOrder(raw: unknown): InstallmentOrderListItem {
   const item = asRecord(raw) ?? {};
   return {
-    orderGuid: asString(pick(item, "orderGuid", "OrderGuid", "orderGUID", "OrderGUID")),
-    branchCode: asString(pick(item, "branchCode", "BranchCode", "storeCode", "StoreCode")),
-    branchName: asString(pick(item, "branchName", "BranchName", "storeName", "StoreName")),
-    abn: asString(pick(item, "abn", "ABN")),
-    brandName: asString(pick(item, "brandName", "BrandName")),
-    deviceCode: asString(pick(item, "deviceCode", "DeviceCode")),
-    orderNo: asString(pick(item, "orderNo", "OrderNo")),
-    orderTime: asString(pick(item, "orderTime", "OrderTime")),
-    customerPhone: asString(
-      pick(item, "customerPhone", "CustomerPhone", "userPhone", "UserPhone", "phone", "Phone")
-    ),
-    customerName: asString(
-      pick(item, "customerName", "CustomerName", "userName", "UserName", "name", "Name")
-    ),
-    skuCount: asNullableInt(pick(item, "skuCount", "SkuCount")),
-    itemCount: asNullableInt(pick(item, "itemCount", "ItemCount")),
+    installmentGuid: asString(pick(item, "installmentGuid", "InstallmentGuid")),
+    installmentNumber: asString(pick(item, "installmentNumber", "InstallmentNumber")),
+    storeCode: asString(pick(item, "storeCode", "StoreCode")),
+    storeName: asString(pick(item, "storeName", "StoreName")),
+    cashierName: asString(pick(item, "cashierName", "CashierName")),
+    customerName: asString(pick(item, "customerName", "CustomerName")),
+    customerPhone: asString(pick(item, "customerPhone", "CustomerPhone")),
+    createdAt: asString(pick(item, "createdAt", "CreatedAt")),
     totalAmount: asNullableNumber(pick(item, "totalAmount", "TotalAmount")),
-    discountAmount: asNullableNumber(pick(item, "discountAmount", "DiscountAmount")),
-    actualAmount: asNullableNumber(pick(item, "actualAmount", "ActualAmount")),
-    status: asNullableInt(pick(item, "status", "Status")),
+    minimumDownPayment: asNullableNumber(
+      pick(item, "minimumDownPayment", "MinimumDownPayment")
+    ),
+    downPaymentAmount: asNullableNumber(pick(item, "downPaymentAmount", "DownPaymentAmount")),
+    paidAmount: asNullableNumber(pick(item, "paidAmount", "PaidAmount")),
+    balanceAmount: asNullableNumber(pick(item, "balanceAmount", "BalanceAmount")),
+    status: normalizeInstallmentStatus(pick(item, "status", "Status")),
+    updatedAt: asString(pick(item, "updatedAt", "UpdatedAt")),
   };
 }
 
 export function normalizeInstallmentPaymentRecord(raw: unknown): InstallmentPaymentRecord {
   const item = asRecord(raw) ?? {};
   return {
-    paymentGuid: asString(pick(item, "paymentGuid", "PaymentGuid", "PaymentGUID")),
-    orderGuid: asString(pick(item, "orderGuid", "OrderGuid", "OrderGUID")),
-    paymentTime: asString(
-      pick(item, "paymentTime", "PaymentTime", "createdTime", "CreatedTime")
-    ),
-    paymentMethod: asNullableInt(pick(item, "paymentMethod", "PaymentMethod")),
-    paymentMethodName: asString(pick(item, "paymentMethodName", "PaymentMethodName")),
+    paymentGuid: asString(pick(item, "paymentGuid", "PaymentGuid")),
+    method: asNullableInt(pick(item, "method", "Method")),
     amount: asNullableNumber(pick(item, "amount", "Amount")),
     reference: asString(pick(item, "reference", "Reference")),
+    status: normalizePaymentStatus(pick(item, "status", "Status")),
+    recordedAt: asString(pick(item, "recordedAt", "RecordedAt")),
     cashierId: asString(pick(item, "cashierId", "CashierId")),
-    cashierName: asString(pick(item, "cashierName", "CashierName")),
-    createdBy: asString(pick(item, "createdBy", "CreatedBy")),
-    updatedBy: asString(pick(item, "updatedBy", "UpdatedBy")),
+    deviceCode: asString(pick(item, "deviceCode", "DeviceCode")),
+  };
+}
+
+function normalizeInstallmentOrderDetailOrder(
+  raw: Record<string, unknown>,
+  root: Record<string, unknown>
+): InstallmentOrderDetailOrder {
+  return {
+    ...normalizeInstallmentOrder(raw),
+    // 设备编码属于详情契约，列表摘要不会再读取或保留该字段。
+    deviceCode: asString(pick(raw, "deviceCode", "DeviceCode")),
+    cashierId: asString(pick(raw, "cashierId", "CashierId")),
+    // 当前后端把备注放在详情主单中，同时兼容顶层备注以保持契约演进安全。
+    note: asString(pick(raw, "note", "Note") ?? pick(root, "note", "Note")),
   };
 }
 
 export function normalizeInstallmentOrderDetailLine(raw: unknown): InstallmentOrderDetailLine {
   const item = asRecord(raw) ?? {};
   return {
-    productImage: asString(pick(item, "productImage", "ProductImage")),
+    installmentLineGuid: asString(pick(item, "installmentLineGuid", "InstallmentLineGuid")),
     productCode: asString(pick(item, "productCode", "ProductCode")),
-    productName: asString(pick(item, "productName", "ProductName")),
-    quantity: asNullableInt(pick(item, "quantity", "Quantity")),
-    unitPrice: asNullableNumber(pick(item, "unitPrice", "UnitPrice", "price", "Price")),
+    referenceCode: asString(pick(item, "referenceCode", "ReferenceCode")),
+    displayName: asString(pick(item, "displayName", "DisplayName")),
+    lookupCode: asString(pick(item, "lookupCode", "LookupCode")),
+    // 商品可能按重量销售，数量不能截断为整数。
+    quantity: asNullableNumber(pick(item, "quantity", "Quantity")),
+    unitPrice: asNullableNumber(pick(item, "unitPrice", "UnitPrice")),
     discountAmount: asNullableNumber(pick(item, "discountAmount", "DiscountAmount")),
     actualAmount: asNullableNumber(pick(item, "actualAmount", "ActualAmount")),
+    itemNumber: asString(pick(item, "itemNumber", "ItemNumber")),
   };
 }
 
@@ -193,15 +205,36 @@ export function normalizeInstallmentOrdersResponse(
 export function normalizeInstallmentOrderDetail(payload: unknown): InstallmentOrderDetail {
   const root = asRecord(payload) ?? {};
   const orderPayload = asRecord(pick(root, "order", "Order"));
-  const orderRecord = orderPayload ?? root;
+  const pickupPayload = asRecord(pick(root, "pickupInfo", "PickupInfo"));
+  const cancellationPayload = asRecord(
+    pick(root, "cancellationInfo", "CancellationInfo")
+  );
   return {
-    order: orderPayload || pick(root, "order", "Order") ? normalizeInstallmentOrder(orderRecord) : null,
-    orderDetails: getArray(root, "orderDetails", "OrderDetails", "details", "Details").map(
-      normalizeInstallmentOrderDetailLine
-    ),
-    paymentDetails: getArray(root, "paymentDetails", "PaymentDetails", "payments", "Payments").map(
-      normalizeInstallmentPaymentRecord
-    ),
+    order: orderPayload ? normalizeInstallmentOrderDetailOrder(orderPayload, root) : null,
+    lines: getArray(root, "lines", "Lines").map(normalizeInstallmentOrderDetailLine),
+    payments: getArray(root, "payments", "Payments").map(normalizeInstallmentPaymentRecord),
+    pickupInfo: pickupPayload
+      ? {
+          pickedUpAt: asString(pick(pickupPayload, "pickedUpAt", "PickedUpAt")),
+          pickedUpBy: asString(pick(pickupPayload, "pickedUpBy", "PickedUpBy")),
+          pickupNote: asString(pick(pickupPayload, "pickupNote", "PickupNote")),
+        }
+      : null,
+    cancellationInfo: cancellationPayload
+      ? {
+          cancellationKind: (() => {
+            const kind = asNullableInt(
+              pick(cancellationPayload, "cancellationKind", "CancellationKind")
+            );
+            return kind === 1 || kind === 2 ? kind : null;
+          })(),
+          cancelledAt: asString(pick(cancellationPayload, "cancelledAt", "CancelledAt")),
+          cancelledBy: asString(pick(cancellationPayload, "cancelledBy", "CancelledBy")),
+          cancellationReason: asString(
+            pick(cancellationPayload, "cancellationReason", "CancellationReason")
+          ),
+        }
+      : null,
   };
 }
 
@@ -215,8 +248,8 @@ export async function fetchInstallmentOrders(query: {
   return normalizeInstallmentOrdersResponse(response.data);
 }
 
-export async function fetchInstallmentOrderDetail(orderGuid: string) {
+export async function fetchInstallmentOrderDetail(installmentGuid: string) {
   const client = await getApiClient();
-  const response = await client.get(`${BASE_PATH}/detail/${encodeURIComponent(orderGuid)}`);
+  const response = await client.get(`${BASE_PATH}/detail/${encodeURIComponent(installmentGuid)}`);
   return normalizeInstallmentOrderDetail(response.data);
 }

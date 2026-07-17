@@ -45,24 +45,35 @@ import { resolveQrDisplayValue } from "@/shared/utils/qr-display";
 type DateFilterKey = "startDate" | "endDate";
 type StatusOption = {
   key: string;
-  value: number;
+  value: NonNullable<InstallmentOrderStatus>;
   labelKey: string;
 };
 
 const PAGE_SIZE = 20;
 const INSTALLMENT_STATUS_OPTIONS: StatusOption[] = [
-  { key: "0", value: 0, labelKey: "statuses.pending" },
-  { key: "4", value: 4, labelKey: "statuses.installment" },
-  { key: "1", value: 1, labelKey: "statuses.paid" },
-  { key: "2", value: 2, labelKey: "statuses.cancelled" },
-  { key: "3", value: 3, labelKey: "statuses.refunded" },
+  { key: "1", value: 1, labelKey: "statuses.active" },
+  { key: "2", value: 2, labelKey: "statuses.paidOff" },
+  { key: "3", value: 3, labelKey: "statuses.pickedUp" },
+  { key: "4", value: 4, labelKey: "statuses.cancelled" },
 ];
 const INSTALLMENT_STATUS_LABEL_KEYS: Record<number, string> = {
-  0: "statuses.pending",
-  1: "statuses.paid",
-  2: "statuses.cancelled",
-  3: "statuses.refunded",
-  4: "statuses.installment",
+  1: "statuses.active",
+  2: "statuses.paidOff",
+  3: "statuses.pickedUp",
+  4: "statuses.cancelled",
+};
+const PAYMENT_METHOD_LABEL_KEYS: Record<number, string> = {
+  1: "paymentMethods.cash",
+  2: "paymentMethods.card",
+  3: "paymentMethods.voucher",
+};
+const PAYMENT_STATUS_LABEL_KEYS: Record<number, string> = {
+  1: "paymentStatuses.recorded",
+  2: "paymentStatuses.voided",
+};
+const CANCELLATION_KIND_LABEL_KEYS: Record<number, string> = {
+  1: "cancellationKinds.refundCancel",
+  2: "cancellationKinds.voidCancel",
 };
 
 function formatDateTime(value?: string | null, localeTag = "en-AU") {
@@ -101,6 +112,20 @@ function getStatusLabelKey(status?: InstallmentOrderStatus) {
   return INSTALLMENT_STATUS_LABEL_KEYS[status] ?? "statuses.unknown";
 }
 
+function getPaymentMethodLabelKey(method?: number | null) {
+  return method == null ? "paymentMethods.unknown" : PAYMENT_METHOD_LABEL_KEYS[method] ?? "paymentMethods.unknown";
+}
+
+function getPaymentStatusLabelKey(status?: number | null) {
+  return status == null ? "paymentStatuses.unknown" : PAYMENT_STATUS_LABEL_KEYS[status] ?? "paymentStatuses.unknown";
+}
+
+function getCancellationKindLabelKey(kind?: number | null) {
+  return kind == null
+    ? "cancellationKinds.unknown"
+    : CANCELLATION_KIND_LABEL_KEYS[kind] ?? "cancellationKinds.unknown";
+}
+
 function StatusBadge({
   status,
   label,
@@ -109,11 +134,10 @@ function StatusBadge({
   label: string;
 }) {
   const toneMap: Record<string, { backgroundColor: string; borderColor: string; textColor: string }> = {
-    "0": { backgroundColor: "#FFF7E6", borderColor: "#F7C58B", textColor: "#AD6800" },
-    "1": { backgroundColor: "#F6FFED", borderColor: "#B7EB8F", textColor: "#237804" },
-    "2": { backgroundColor: "#FFF1F0", borderColor: "#FFA39E", textColor: "#A8071A" },
+    "1": { backgroundColor: "#FFF7E6", borderColor: "#F7C58B", textColor: "#AD6800" },
+    "2": { backgroundColor: "#F6FFED", borderColor: "#B7EB8F", textColor: "#237804" },
     "3": { backgroundColor: "#E6F4FF", borderColor: "#91CAFF", textColor: "#0958D9" },
-    "4": { backgroundColor: "#F4EEFF", borderColor: "#C7AEFF", textColor: "#6B3FD6" },
+    "4": { backgroundColor: "#FFF1F0", borderColor: "#FFA39E", textColor: "#A8071A" },
     unknown: { backgroundColor: "#F5F5F5", borderColor: "#D9D9D9", textColor: "#595959" },
   };
   const tone = toneMap[String(status ?? "unknown")] ?? toneMap.unknown;
@@ -138,7 +162,7 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
       <Text variant="labelMedium" style={styles.summaryLabel}>
         {label}
       </Text>
-      <Text variant="titleMedium" style={styles.summaryValue}>
+      <Text selectable variant="titleMedium" style={styles.summaryValue}>
         {value}
       </Text>
     </View>
@@ -151,8 +175,23 @@ function DetailLine({ label, value }: { label: string; value: string }) {
       <Text variant="labelMedium" style={styles.detailLineLabel}>
         {label}
       </Text>
-      <Text variant="bodyMedium" style={styles.detailLineValue}>
+      <Text selectable variant="bodyMedium" style={styles.detailLineValue}>
         {value}
+      </Text>
+    </View>
+  );
+}
+
+
+function PaymentStatusBadge({ status, label }: { status?: number | null; label: string }) {
+  const isVoided = status === 2;
+  return (
+    <View style={[styles.paymentStatusBadge, isVoided && styles.paymentStatusBadgeVoided]}>
+      <Text
+        variant="labelSmall"
+        style={[styles.paymentStatusBadgeText, isVoided && styles.paymentStatusBadgeTextVoided]}
+      >
+        {label}
       </Text>
     </View>
   );
@@ -217,9 +256,12 @@ export default function InstallmentOrdersScreen() {
   const pageCount = getPageCount(total, PAGE_SIZE);
   const currentDateFilterValue = datePickerTarget ? draftFilters[datePickerTarget] : undefined;
   const detailOrder = detail?.order ?? selectedOrder;
-  const detailOrderQrValue = resolveQrDisplayValue(detailOrder?.orderNo, detailOrder?.orderGuid);
-  const paymentRecords = detail?.paymentDetails ?? [];
-  const orderLines = detail?.orderDetails ?? [];
+  const detailOrderQrValue = resolveQrDisplayValue(
+    detailOrder?.installmentNumber,
+    detailOrder?.installmentGuid
+  );
+  const paymentRecords = detail?.payments ?? [];
+  const orderLines = detail?.lines ?? [];
 
   const loadOrders = useCallback(
     async (refresh = false) => {
@@ -260,7 +302,7 @@ export default function InstallmentOrdersScreen() {
   }, [loadOrders]);
 
   useEffect(() => {
-    if (!selectedOrder?.orderGuid) {
+    if (!selectedOrder?.installmentGuid) {
       return;
     }
 
@@ -268,7 +310,7 @@ export default function InstallmentOrdersScreen() {
     setDetail(null);
     setDetailLoading(true);
 
-    fetchInstallmentOrderDetail(selectedOrder.orderGuid)
+    fetchInstallmentOrderDetail(selectedOrder.installmentGuid)
       .then((result) => {
         if (active) {
           setDetail(result);
@@ -288,7 +330,7 @@ export default function InstallmentOrdersScreen() {
     return () => {
       active = false;
     };
-  }, [getErrorMessage, selectedOrder?.orderGuid, t]);
+  }, [getErrorMessage, selectedOrder?.installmentGuid, t]);
 
   useEffect(() => {
     if (!deviceBoundStoreCode) {
@@ -387,34 +429,51 @@ export default function InstallmentOrdersScreen() {
     </View>
   );
 
-  const renderPaymentRecord = (record: InstallmentPaymentRecord) => (
-    <View key={record.paymentGuid || `${record.paymentTime}-${record.amount}`} style={styles.recordRow}>
-      <View style={styles.recordHeader}>
-        <Text variant="titleSmall" style={styles.recordTitle}>
-          {record.paymentMethodName || t("labels.paymentMethod")}
-        </Text>
-        <Text variant="titleSmall" style={styles.moneyText}>
-          {formatMoney(record.amount)}
-        </Text>
+  const renderPaymentRecord = (record: InstallmentPaymentRecord) => {
+    const isVoided = record.status === 2;
+    return (
+      <View
+        key={record.paymentGuid || `${record.recordedAt}-${record.amount}`}
+        style={[styles.recordRow, isVoided && styles.voidedRecordRow]}
+      >
+        <View style={styles.recordHeader}>
+          <View style={styles.recordTitleGroup}>
+            <Text variant="titleSmall" style={[styles.recordTitle, isVoided && styles.voidedText]}>
+              {t(getPaymentMethodLabelKey(record.method))}
+            </Text>
+            <PaymentStatusBadge
+              status={record.status}
+              label={t(getPaymentStatusLabelKey(record.status))}
+            />
+          </View>
+          <Text
+            selectable
+            variant="titleSmall"
+            style={[styles.moneyText, isVoided && styles.voidedMoneyText]}
+          >
+            {formatMoney(record.amount)}
+          </Text>
+        </View>
+        <DetailLine label={t("labels.paymentTime")} value={formatDateTime(record.recordedAt, localeTag)} />
+        <DetailLine label={t("labels.cashier")} value={record.cashierId || "--"} />
+        <DetailLine label={t("labels.deviceCode")} value={record.deviceCode || "--"} />
+        <DetailLine label={t("labels.reference")} value={record.reference || "--"} />
       </View>
-      <DetailLine label={t("labels.paymentTime")} value={formatDateTime(record.paymentTime, localeTag)} />
-      <DetailLine label={t("labels.cashier")} value={record.cashierName || record.cashierId || "--"} />
-      <DetailLine label={t("labels.reference")} value={record.reference || "--"} />
-    </View>
-  );
+    );
+  };
 
   const renderOrderLine = (line: InstallmentOrderDetailLine, index: number) => (
-    <View key={`${line.productCode}-${index}`} style={styles.recordRow}>
+    <View key={line.installmentLineGuid || `${line.productCode}-${index}`} style={styles.recordRow}>
       <View style={styles.recordHeader}>
         <View style={styles.recordTitleGroup}>
           <Text variant="titleSmall" style={styles.recordTitle} numberOfLines={2}>
-            {line.productName || line.productCode || `#${index + 1}`}
+            {line.displayName || line.productCode || `#${index + 1}`}
           </Text>
           <Text variant="bodySmall" style={styles.secondaryText}>
-            {line.productCode || "--"}
+            {line.referenceCode || line.productCode || "--"}
           </Text>
         </View>
-        <Text variant="titleSmall" style={styles.moneyText}>
+        <Text selectable variant="titleSmall" style={styles.moneyText}>
           {formatMoney(line.actualAmount)}
         </Text>
       </View>
@@ -422,6 +481,8 @@ export default function InstallmentOrdersScreen() {
         <Text variant="bodySmall">{t("labels.quantity")}: {formatNumber(line.quantity)}</Text>
         <Text variant="bodySmall">{t("labels.unitPrice")}: {formatMoney(line.unitPrice)}</Text>
         <Text variant="bodySmall">{t("labels.discountAmount")}: {formatMoney(line.discountAmount)}</Text>
+        <Text variant="bodySmall">{t("labels.lookupCode")}: {line.lookupCode || "--"}</Text>
+        <Text variant="bodySmall">{t("labels.itemNumber")}: {line.itemNumber || "--"}</Text>
       </View>
     </View>
   );
@@ -474,22 +535,22 @@ export default function InstallmentOrdersScreen() {
             <TextInput
               dense
               keyboardType="phone-pad"
-              label={t("filters.userPhone")}
+              label={t("filters.customerPhone")}
               mode="outlined"
               style={styles.filterInput}
-              value={draftFilters.userPhone ?? ""}
+              value={draftFilters.customerPhone ?? ""}
               onChangeText={(value) =>
-                setDraftFilters((current) => ({ ...current, userPhone: value || undefined }))
+                setDraftFilters((current) => ({ ...current, customerPhone: value || undefined }))
               }
             />
             <TextInput
               dense
-              label={t("filters.userName")}
+              label={t("filters.customerName")}
               mode="outlined"
               style={styles.filterInput}
-              value={draftFilters.userName ?? ""}
+              value={draftFilters.customerName ?? ""}
               onChangeText={(value) =>
-                setDraftFilters((current) => ({ ...current, userName: value || undefined }))
+                setDraftFilters((current) => ({ ...current, customerName: value || undefined }))
               }
             />
 
@@ -548,10 +609,14 @@ export default function InstallmentOrdersScreen() {
         ) : items.length ? (
           <View style={styles.list}>
             {items.map((order) => (
-              <Card key={order.orderGuid || order.orderNo} mode="outlined" style={styles.card}>
+              <Card
+                key={order.installmentGuid || order.installmentNumber}
+                mode="outlined"
+                style={styles.card}
+              >
                 <Card.Title
-                  title={order.orderNo || order.orderGuid}
-                  subtitle={formatDateTime(order.orderTime, localeTag)}
+                  title={order.installmentNumber || order.installmentGuid}
+                  subtitle={formatDateTime(order.createdAt, localeTag)}
                   right={(props) => (
                     <IconButton
                       {...props}
@@ -563,17 +628,30 @@ export default function InstallmentOrdersScreen() {
                 />
                 <Card.Content style={styles.cardContent}>
                   <View style={styles.tagRow}>
-                    <EntityTag kind="store" code={order.branchCode} label={order.branchName || order.branchCode} />
+                    <EntityTag kind="store" code={order.storeCode} label={order.storeName || order.storeCode} />
                     <StatusBadge status={order.status} label={t(getStatusLabelKey(order.status))} />
                   </View>
                   <View style={styles.summaryGrid}>
-                    <SummaryMetric label={t("labels.actualAmount")} value={formatMoney(order.actualAmount)} />
                     <SummaryMetric label={t("labels.totalAmount")} value={formatMoney(order.totalAmount)} />
-                    <SummaryMetric label={t("labels.itemCount")} value={formatNumber(order.itemCount)} />
-                    <SummaryMetric label={t("labels.skuCount")} value={formatNumber(order.skuCount)} />
+                    <SummaryMetric
+                      label={t("labels.minimumDownPayment")}
+                      value={formatMoney(order.minimumDownPayment)}
+                    />
+                    <SummaryMetric
+                      label={t("labels.downPaymentAmount")}
+                      value={formatMoney(order.downPaymentAmount)}
+                    />
+                    <SummaryMetric label={t("labels.paidAmount")} value={formatMoney(order.paidAmount)} />
+                    <SummaryMetric
+                      label={t("labels.balanceAmount")}
+                      value={formatMoney(order.balanceAmount)}
+                    />
                   </View>
                   <Text variant="bodyMedium">
                     {t("labels.customer")}: {order.customerName || "--"} / {order.customerPhone || "--"}
+                  </Text>
+                  <Text variant="bodyMedium">
+                    {t("labels.cashier")}: {order.cashierName || "--"}
                   </Text>
                 </Card.Content>
                 <Card.Actions>
@@ -598,9 +676,11 @@ export default function InstallmentOrdersScreen() {
         <Modal visible={Boolean(selectedOrder)} onDismiss={closeDetail} contentContainerStyle={styles.modal}>
           <View style={styles.modalHeader}>
             <View style={styles.modalTitleGroup}>
-              <Text variant="titleMedium">{detailOrder?.orderNo || detailOrder?.orderGuid || "--"}</Text>
-              <Text variant="bodySmall" style={styles.subtitle}>
-                {formatDateTime(detailOrder?.orderTime, localeTag)}
+              <Text variant="titleMedium">
+                {detailOrder?.installmentNumber || detailOrder?.installmentGuid || "--"}
+              </Text>
+              <Text selectable variant="bodySmall" style={styles.subtitle}>
+                {formatDateTime(detailOrder?.createdAt, localeTag)}
               </Text>
             </View>
             <IconButton accessibilityLabel={t("common:actions.close")} icon="close" onPress={closeDetail} />
@@ -618,8 +698,8 @@ export default function InstallmentOrdersScreen() {
                 <View style={styles.tagRow}>
                   <EntityTag
                     kind="store"
-                    code={detailOrder?.branchCode}
-                    label={detailOrder?.branchName || detailOrder?.branchCode}
+                    code={detailOrder?.storeCode}
+                    label={detailOrder?.storeName || detailOrder?.storeCode}
                   />
                   <StatusBadge
                     status={detailOrder?.status}
@@ -627,13 +707,80 @@ export default function InstallmentOrdersScreen() {
                   />
                 </View>
                 <View style={styles.summaryGrid}>
-                  <SummaryMetric label={t("labels.actualAmount")} value={formatMoney(detailOrder?.actualAmount)} />
                   <SummaryMetric label={t("labels.totalAmount")} value={formatMoney(detailOrder?.totalAmount)} />
-                  <SummaryMetric label={t("labels.discountAmount")} value={formatMoney(detailOrder?.discountAmount)} />
+                  <SummaryMetric
+                    label={t("labels.minimumDownPayment")}
+                    value={formatMoney(detailOrder?.minimumDownPayment)}
+                  />
+                  <SummaryMetric
+                    label={t("labels.downPaymentAmount")}
+                    value={formatMoney(detailOrder?.downPaymentAmount)}
+                  />
+                  <SummaryMetric
+                    label={t("labels.paidAmount")}
+                    value={formatMoney(detailOrder?.paidAmount)}
+                  />
+                  <SummaryMetric
+                    label={t("labels.balanceAmount")}
+                    value={formatMoney(detailOrder?.balanceAmount)}
+                  />
                 </View>
                 <DetailLine label={t("labels.customerName")} value={detailOrder?.customerName || "--"} />
                 <DetailLine label={t("labels.customerPhone")} value={detailOrder?.customerPhone || "--"} />
+                <DetailLine label={t("labels.cashier")} value={detailOrder?.cashierName || "--"} />
+                <DetailLine label={t("labels.deviceCode")} value={detail?.order?.deviceCode || "--"} />
+                {detail?.order?.note ? (
+                  <DetailLine label={t("labels.note")} value={detail.order.note} />
+                ) : null}
               </View>
+
+              {detail?.pickupInfo ? (
+                <>
+                  <SectionTitle>{t("labels.pickupInfo")}</SectionTitle>
+                  <View style={styles.recordRow}>
+                    <DetailLine
+                      label={t("labels.pickedUpAt")}
+                      value={formatDateTime(detail.pickupInfo.pickedUpAt, localeTag)}
+                    />
+                    <DetailLine
+                      label={t("labels.pickedUpBy")}
+                      value={detail.pickupInfo.pickedUpBy || "--"}
+                    />
+                    <DetailLine
+                      label={t("labels.pickupNote")}
+                      value={detail.pickupInfo.pickupNote || "--"}
+                    />
+                  </View>
+                </>
+              ) : null}
+
+              {detail?.cancellationInfo ? (
+                <>
+                  <SectionTitle>{t("labels.cancellationInfo")}</SectionTitle>
+                  <View style={[styles.recordRow, styles.cancellationRecordRow]}>
+                    <DetailLine
+                      label={t("labels.cancellationKind")}
+                      value={t(
+                        getCancellationKindLabelKey(
+                          detail.cancellationInfo.cancellationKind
+                        )
+                      )}
+                    />
+                    <DetailLine
+                      label={t("labels.cancelledAt")}
+                      value={formatDateTime(detail.cancellationInfo.cancelledAt, localeTag)}
+                    />
+                    <DetailLine
+                      label={t("labels.cancelledBy")}
+                      value={detail.cancellationInfo.cancelledBy || "--"}
+                    />
+                    <DetailLine
+                      label={t("labels.cancellationReason")}
+                      value={detail.cancellationInfo.cancellationReason || "--"}
+                    />
+                  </View>
+                </>
+              ) : null}
 
               <SectionTitle>{t("labels.paymentRecords")}</SectionTitle>
               {paymentRecords.length ? (
@@ -843,6 +990,7 @@ const styles = StyleSheet.create({
     color: "#667085",
   },
   summaryValue: {
+    fontVariant: ["tabular-nums"],
     fontWeight: "700",
   },
   pagination: {
@@ -927,7 +1075,45 @@ const styles = StyleSheet.create({
   },
   moneyText: {
     color: "#047857",
+    fontVariant: ["tabular-nums"],
     fontWeight: "700",
+  },
+  paymentStatusBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "#F6FFED",
+    borderColor: "#B7EB8F",
+    borderRadius: 999,
+    borderWidth: 1,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  paymentStatusBadgeVoided: {
+    backgroundColor: "#F5F5F5",
+    borderColor: "#D9D9D9",
+  },
+  paymentStatusBadgeText: {
+    color: "#237804",
+    fontWeight: "600",
+  },
+  paymentStatusBadgeTextVoided: {
+    color: "#667085",
+  },
+  voidedRecordRow: {
+    backgroundColor: "#F9FAFB",
+    borderColor: "#D0D5DD",
+  },
+  voidedText: {
+    color: "#667085",
+    textDecorationLine: "line-through",
+  },
+  voidedMoneyText: {
+    color: "#667085",
+    textDecorationLine: "line-through",
+  },
+  cancellationRecordRow: {
+    backgroundColor: "#FFF8F7",
+    borderColor: "#FDA29B",
   },
   secondaryText: {
     color: "#667085",

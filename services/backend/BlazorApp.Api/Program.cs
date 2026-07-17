@@ -666,6 +666,7 @@ builder.Services.AddScoped<ISeasonalCardRemainingReactService, SeasonalCardRemai
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();
 builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactService>();
+builder.Services.AddScoped<IInstallmentOrderReactService, InstallmentOrderReactService>();
 builder.Services.AddScoped<IStoreVoucherReactService, StoreVoucherReactService>();
 builder.Services.AddScoped<IDeviceRegistrationReactService, DeviceRegistrationReactService>();
 builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
@@ -771,6 +772,7 @@ try
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
         dbContext.EnsureLoginSessionSchema();
         await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
+        await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);
         await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await DeviceRuntimeStatusSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await EmergencyLoginGrantSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);

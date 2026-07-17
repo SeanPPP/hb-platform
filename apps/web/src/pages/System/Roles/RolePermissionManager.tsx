@@ -8,6 +8,7 @@ import {
   getPermissionCatalog,
   getRolePermissionState,
 } from '../../../services/roleService'
+import { sortRolePermissionCategories } from './rolePermissionCategories'
 
 interface RolePermissionManagerProps {
   roleGuid: string
@@ -129,7 +130,7 @@ export default function RolePermissionManager({
         />
       )}
 
-      {categories.map((cat) => {
+      {sortRolePermissionCategories(categories).map((cat) => {
         const codes = cat.permissions.map((p) => p.name)
         const allChecked = codes.length > 0 && codes.every((c) => checkedKeys.has(c))
         const someChecked = codes.some((c) => checkedKeys.has(c))

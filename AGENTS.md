@@ -7,18 +7,18 @@ This project is indexed by GitNexus as **hb-platform** (51281 symbols, 147728 re
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
+- **MUST run impact analysis before editing any symbol.** Prefer GitNexus MCP `impact({target: "symbolName", direction: "upstream"})` when exposed; otherwise run `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo hb-platform`. Report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run change detection before committing.** Prefer MCP `detect_changes()` when exposed; otherwise run `node .gitnexus/run.cjs detect-changes --scope staged --repo hb-platform`. For regression review, use `--scope compare --base-ref main`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- When exploring unfamiliar code, prefer MCP `query({query: "concept"})`; otherwise run `node .gitnexus/run.cjs query "concept" --repo hb-platform`.
+- For full symbol context, prefer MCP `context({name: "symbolName"})`; otherwise run `node .gitnexus/run.cjs context "symbolName" --repo hb-platform`.
 
 ## Never Do
 
 - NEVER edit a function, class, or method without first running `impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
+- NEVER rename symbols with blind find-and-replace. If a semantic rename tool is unavailable, use LSP rename or a complete caller/reference list plus focused edits and verification; GitNexus CLI has no rename command.
+- NEVER commit changes without running MCP `detect_changes()` or the CLI fallback above to check affected scope.
 
 ## Resources
 
@@ -33,16 +33,16 @@ This project is indexed by GitNexus as **hb-platform** (51281 symbols, 147728 re
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Understand architecture / "How does X work?" | `gitnexus-exploring` skill |
+| Blast radius / "What breaks if I change X?" | `gitnexus-impact-analysis` skill |
+| Trace bugs / "Why is X failing?" | `gitnexus-debugging` skill |
+| Rename / extract / split / refactor | `gitnexus-refactoring` skill |
+| Tools, resources, schema reference | `gitnexus-guide` skill |
+| Index, status, clean, wiki CLI commands | `gitnexus-cli` skill |
 
 <!-- gitnexus:end -->
 
 ## Notes
 
 - 提交添加 reasonix
-- 子代理默认使用 GPT-5.5；复杂任务、验证和代码审查使用 GPT-5.5 high。
+- 子代理默认使用 GPT-5.6 Sol；复杂任务、验证和代码审查使用 GPT-5.6 Sol xhigh。
