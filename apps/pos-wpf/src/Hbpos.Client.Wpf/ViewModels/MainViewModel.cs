@@ -2153,13 +2153,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e)
     {
         _lastCompletedOrder = e.Order;
-        await RefreshPendingSyncAsync();
-        await PaymentSuccess.LoadFromOrderAsync(e.Order);
+        // 中文注释：先同步切走支付页，避免收据设置和同步状态刷新期间仍可误触支付操作。
+        PaymentSuccess.LoadFromOrder(e.Order);
         CurrentScreen = PaymentSuccess;
         // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
         _userFeedbackService.Play(UserFeedbackCue.Checkout);
-
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
+
+        await PaymentSuccess.LoadFromOrderAsync(e.Order);
+        await RefreshPendingSyncAsync();
         if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
         {
             var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);

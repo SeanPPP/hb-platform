@@ -1224,6 +1224,58 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Full_card_tender_opens_success_screen_before_pending_sync_refresh_completes()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-CARD-SCREEN", "930SCREEN"));
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(
+            cart,
+            checkout,
+            orderRepository,
+            syncQueue,
+            new ApprovedCardTerminalClient("CARD-SCREEN"));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        // 中文注释：初始化完成后才阻塞同步概览，精确复现支付完成后的刷新窗口。
+        syncQueue.Overview = new SyncQueueOverview(1, 0, 0, null);
+        syncQueue.OverviewReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        syncQueue.ReleaseOverviewRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = viewModel.CashPayment!;
+        LocalOrder? completedOrder = null;
+        payment.PaymentCompleted += (_, e) => completedOrder = e.Order;
+        Task? selectCardTask = null;
+
+        try
+        {
+            selectCardTask = payment.SelectCardCommand.ExecuteAsync(null);
+            await syncQueue.OverviewReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
+            Assert.NotNull(completedOrder);
+            Assert.Equal(completedOrder!.OrderGuid, viewModel.PaymentSuccess.TransactionId);
+            Assert.NotSame(payment, viewModel.CurrentScreen);
+        }
+        finally
+        {
+            syncQueue.ReleaseOverviewRead.TrySetResult();
+            if (selectCardTask is not null)
+            {
+                await selectCardTask;
+            }
+
+            if (syncQueue.OverviewReadStarted.Task.IsCompleted)
+            {
+                await WaitUntilAsync(() => viewModel.PendingUploadCount == 1);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Partial_card_tender_is_blocked_and_back_to_pos_allowed()
     {
         var cart = new PosCartService();
@@ -6081,6 +6133,10 @@ public sealed class MainViewModelScannerTests
 
         public int ThrowOnReadAfterCount { get; set; } = -1;
 
+        public TaskCompletionSource? OverviewReadStarted { get; set; }
+
+        public TaskCompletionSource? ReleaseOverviewRead { get; set; }
+
         private int _readCount;
 
         public Task<int> CountPendingAsync(CancellationToken cancellationToken = default)
@@ -6089,10 +6145,17 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult(Overview.PendingCount);
         }
 
-        public Task<SyncQueueOverview> GetOverviewAsync(CancellationToken cancellationToken = default)
+        public async Task<SyncQueueOverview> GetOverviewAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfConfigured();
-            return Task.FromResult(Overview);
+            OverviewReadStarted?.TrySetResult();
+            if (ReleaseOverviewRead is not null)
+            {
+                // 中文注释：默认不阻塞；仅由并发回归测试控制支付完成后的同步刷新窗口。
+                await ReleaseOverviewRead.Task.WaitAsync(cancellationToken);
+            }
+
+            return Overview;
         }
 
         public Task<IReadOnlyList<SyncQueueListItem>> GetActiveItemsAsync(int take = 20, CancellationToken cancellationToken = default)
