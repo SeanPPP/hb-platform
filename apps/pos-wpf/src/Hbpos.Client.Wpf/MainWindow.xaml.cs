@@ -158,6 +158,25 @@ public partial class MainWindow : Window
             }));
     }
 
+    private void OperationAuthorizationOverlayIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        // 关键逻辑：遮罩开关都清空两路未完成输入，授权条码不得泄漏到下一页面。
+        _keyboardScannerFallback.Clear();
+        _rawScannerService.ClearPendingInput();
+        if (e.NewValue is not true)
+        {
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                OperationAuthorizationCancelButton.Focus();
+                Keyboard.Focus(OperationAuthorizationCancelButton);
+            }));
+    }
+
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindowLoaded;
@@ -330,6 +349,24 @@ public partial class MainWindow : Window
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
         _uiPriorityCoordinator.NotifyUserInput();
+        var isOperationAuthorizationOpen = _viewModel.OperationAuthorization?.IsPromptOpen == true;
+        if (isOperationAuthorizationOpen)
+        {
+            if (e.Key == Key.Escape)
+            {
+                _keyboardScannerFallback.Clear();
+                _rawScannerService.ClearPendingInput();
+                _viewModel.OperationAuthorization?.Cancel();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Tab)
+            {
+                return;
+            }
+        }
+
         var isForceUpdateBlocking = _viewModel.AppUpdate.IsForceUpdateBlocking;
         var isConfirmationDialogOpen = _viewModel.ConfirmationDialog.IsOpen;
         if (IsKeyboardScannerFallbackBlocked(isForceUpdateBlocking, isConfirmationDialogOpen))
@@ -353,6 +390,8 @@ public partial class MainWindow : Window
         var result = _keyboardScannerFallback.Process(e.Key, timestamp, e.ImeProcessedKey);
         if (result is null)
         {
+            // 授权遮罩打开时吞掉普通按键；仅 Tab 用于焦点导航，Enter 只用于完成扫码。
+            e.Handled = isOperationAuthorizationOpen;
             return;
         }
 

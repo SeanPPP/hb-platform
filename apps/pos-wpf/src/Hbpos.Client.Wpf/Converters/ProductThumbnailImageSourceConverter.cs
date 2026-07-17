@@ -23,6 +23,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static readonly object RemoteImageLoaderLock = new();
     private static readonly SemaphoreSlim RemoteImageDownloadGate = new(4);
     private static Func<Uri, CancellationToken, Task<byte[]>> RemoteImageBytesLoader = DownloadRemoteImageBytesAsync;
+    private static Func<Uri> ApiBaseAddressProvider = ServiceRegistration.GetApiBaseAddress;
     private static int nextAsyncLoadVersion;
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
@@ -351,6 +352,23 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             var previous = RemoteImageBytesLoader;
             RemoteImageBytesLoader = loader;
             return new RemoteImageLoaderScope(previous);
+        }
+    }
+
+    internal static void ConfigureApiBaseAddressProvider(Func<Uri> provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Volatile.Write(ref ApiBaseAddressProvider, provider);
+    }
+
+    internal static IDisposable UseApiBaseAddressProviderForTests(Func<Uri> provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        lock (RemoteImageLoaderLock)
+        {
+            var previous = ApiBaseAddressProvider;
+            ApiBaseAddressProvider = provider;
+            return new ApiBaseAddressProviderScope(previous);
         }
     }
 
@@ -902,7 +920,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return false;
         }
 
-        var baseUri = ServiceRegistration.GetApiBaseAddress();
+        var baseUri = Volatile.Read(ref ApiBaseAddressProvider)();
         if (!Uri.TryCreate(baseUri, normalizedPath, out var createdUri) || createdUri is null)
         {
             return false;
@@ -1145,6 +1163,24 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             }
 
             _disposed = true;
+        }
+    }
+
+    private sealed class ApiBaseAddressProviderScope(Func<Uri> previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (RemoteImageLoaderLock)
+            {
+                ApiBaseAddressProvider = previous;
+            }
         }
     }
 }

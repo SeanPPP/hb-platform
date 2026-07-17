@@ -34,7 +34,7 @@ const DEFAULT_VERIFICATION_STATE: AttendancePunchVerificationState = {
   },
 };
 
-async function verifyNetworkReachability() {
+export async function verifyAttendanceNetworkReachability() {
   if (isIosReviewSessionActive()) {
     // 离线 Demo 的业务请求由本地 adapter 处理，无需探测生产 health endpoint。
     return {
@@ -76,7 +76,7 @@ async function verifyNetworkReachability() {
 
 async function collectVerificationState(): Promise<AttendancePunchVerificationState> {
   const [networkResult, locationResult] = await Promise.allSettled([
-    verifyNetworkReachability(),
+    verifyAttendanceNetworkReachability(),
     collectRequiredLocation(),
   ]);
   const checkedAt = new Date().toISOString();

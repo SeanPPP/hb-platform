@@ -1256,7 +1256,121 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("11111111-1111-4111-8111-111111111111", handler.RequestBodies[0].RootElement.GetProperty("posId").GetString());
         Assert.Equal("secret-pos-02", handler.RequestBodies[1].RootElement.GetProperty("secret").GetString());
         Assert.Equal("22222222-2222-4222-8222-222222222222", handler.RequestBodies[1].RootElement.GetProperty("posId").GetString());
-        Assert.Equal(new bool?[] { true, true }, handler.ConnectionCloseHeaders);
+        Assert.Equal(new bool?[] { null, null }, handler.ConnectionCloseHeaders);
+    }
+
+    [Fact]
+    public async Task Same_linkly_terminal_outbound_requests_share_a_maximum_concurrency_of_two()
+    {
+        var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
+        {
+            StoreCode = "S01",
+            Environment = "Sandbox",
+            Username = "merchant-user",
+            Password = "merchant-password",
+            UpdatedAt = DateTime.UtcNow
+        });
+        var terminalRepository = new CapturingTerminalCredentialRepository(new LinklyCloudBackendTerminalCredentialRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            Secret = "secret-pos-01",
+            PosId = "11111111-1111-4111-8111-111111111111"
+        });
+        using var handler = new ConcurrentLinklyHttpMessageHandler();
+        using var tokenHttpClient = new HttpClient(handler, disposeHandler: false);
+        using var transportHttpClient = new HttpClient(handler, disposeHandler: false);
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            terminalRepository,
+            tokenHttpClient,
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }));
+        var transport = new HttpLinklyCloudBackendAsyncTransport(transportHttpClient);
+
+        await Task.WhenAll(
+            provider.GetTokenAsync("Sandbox", "S01", "POS-01", CancellationToken.None),
+            transport.GetTransactionAsync(
+                new LinklyCloudBackendTransportSessionRequest(
+                    "Sandbox",
+                    "https://rest.sandbox.example/v1/",
+                    "access-token",
+                    "session-1",
+                    "S01",
+                    "POS-01"),
+                CancellationToken.None),
+            transport.GetTransactionAsync(
+                new LinklyCloudBackendTransportSessionRequest(
+                    "Sandbox",
+                    "https://rest.sandbox.example/v1/",
+                    "access-token",
+                    "session-2",
+                    "S01",
+                    "POS-01"),
+                CancellationToken.None));
+
+        Assert.True(
+            handler.MaxConcurrency <= 2,
+            $"Linkly 出站 HTTP 请求峰值并发为 {handler.MaxConcurrency}，必须不超过 2。");
+    }
+
+    [Fact]
+    public async Task Different_linkly_terminals_do_not_share_the_same_two_request_limit()
+    {
+        var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
+        {
+            StoreCode = "S01",
+            Environment = "Sandbox",
+            Username = "merchant-user",
+            Password = "merchant-password",
+            UpdatedAt = DateTime.UtcNow
+        });
+        var terminalRepository = new CapturingTerminalCredentialRepository(
+            new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                DeviceCode = "POS-01",
+                Secret = "secret-pos-01",
+                PosId = "11111111-1111-4111-8111-111111111111"
+            },
+            new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                DeviceCode = "POS-02",
+                Secret = "secret-pos-02",
+                PosId = "22222222-2222-4222-8222-222222222222"
+            });
+        using var handler = new ConcurrentLinklyHttpMessageHandler();
+        using var httpClient = new HttpClient(handler);
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            terminalRepository,
+            httpClient,
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }));
+
+        await Task.WhenAll(
+            provider.GetTokenAsync("Sandbox", "S01", "POS-01", CancellationToken.None),
+            provider.GetTokenAsync("Sandbox", "S01", "POS-01", CancellationToken.None),
+            provider.GetTokenAsync("Sandbox", "S01", "POS-02", CancellationToken.None),
+            provider.GetTokenAsync("Sandbox", "S01", "POS-02", CancellationToken.None));
+
+        Assert.Equal(4, handler.MaxConcurrency);
     }
 
     [Fact]
@@ -1338,11 +1452,13 @@ namespace Hbpos.Api.Tests;
                 new Dictionary<string, string> { ["OPR"] = "C001|Cashier" },
                 new LinklyCloudBackendNotificationRequest(
                     "https://public.example/api/v1/linkly/cloud-notifications/Sandbox/session-1/transaction",
-                    "Bearer callback-secret")),
+                    "Bearer callback-secret"),
+                "S01",
+                "POS-01"),
             CancellationToken.None);
 
         Assert.NotNull(handler.LastRequest);
-        Assert.True(handler.LastRequest!.Headers.ConnectionClose);
+        Assert.Null(handler.LastRequest!.Headers.ConnectionClose);
         using var requestLog = FindLinklyLog(logger.Lines, "transaction", "request");
         Assert.Equal("api-backend-transport", requestLog.RootElement.GetProperty("source").GetString());
         Assert.Equal("POST", requestLog.RootElement.GetProperty("details").GetProperty("method").GetString());
@@ -1386,7 +1502,9 @@ namespace Hbpos.Api.Tests;
                 "Sandbox",
                 "https://rest.sandbox.example/v1/",
                 "access-token",
-                "status-session-1"),
+                "status-session-1",
+                "S01",
+                "POS-01"),
             CancellationToken.None);
 
         Assert.NotNull(handler.LastRequest);
@@ -1452,7 +1570,9 @@ namespace Hbpos.Api.Tests;
                 "Sandbox",
                 "https://rest.sandbox.example/v1/",
                 "access-token",
-                "logon-session-1"),
+                "logon-session-1",
+                "S01",
+                "POS-01"),
             CancellationToken.None);
 
         Assert.NotNull(handler.LastRequest);
@@ -1507,7 +1627,9 @@ namespace Hbpos.Api.Tests;
                 "access-token",
                 "sendkey-session-1",
                 "0",
-                null),
+                null,
+                "S01",
+                "POS-01"),
             CancellationToken.None);
 
         Assert.NotNull(handler.LastRequest);
@@ -2742,6 +2864,46 @@ namespace Hbpos.Api.Tests;
                     expirySeconds = 300
                 })
             };
+        }
+    }
+
+    private sealed class ConcurrentLinklyHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly object _sync = new();
+        private int _currentConcurrency;
+
+        public int MaxConcurrency { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            lock (_sync)
+            {
+                _currentConcurrency++;
+                MaxConcurrency = Math.Max(MaxConcurrency, _currentConcurrency);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken);
+                var isTokenRequest = request.RequestUri?.AbsolutePath.EndsWith(
+                    "/tokens/cloudpos",
+                    StringComparison.Ordinal) == true;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = isTokenRequest
+                        ? JsonContent.Create(new { token = "access-token", expirySeconds = 300 })
+                        : JsonContent.Create(new { SessionId = "session", Response = (object?)null })
+                };
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    _currentConcurrency--;
+                }
+            }
         }
     }
 

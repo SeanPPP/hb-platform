@@ -26,7 +26,9 @@ public sealed class DeviceAuthorizationMessageHandler(
         }
 
         request.Headers.Remove(CashierAuthorizationConstants.HeaderName);
-        var cashierSession = cashierSessionContext.CurrentSession;
+        // 中文注释：只有受控授权 scope 生效时才临时使用授权者票据，不修改当前收银员会话。
+        var cashierSession = OperationAuthorizationScope.CurrentAuthorizingSession
+            ?? cashierSessionContext.CurrentSession;
         if (!string.IsNullOrWhiteSpace(cashierSession?.AuthorizationToken) &&
             cashierSession.AuthorizationExpiresAtUtc > DateTimeOffset.UtcNow)
         {

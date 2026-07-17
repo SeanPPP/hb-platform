@@ -19,6 +19,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly bool _enforcePermissions;
     private readonly Action? _returnToPos;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private DailyCloseReport? _currentReport;
     private int _archivePreviewVersion;
 
@@ -65,7 +66,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         Action? returnToPos = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
@@ -74,6 +76,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -201,10 +204,19 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     public async Task SaveAndPrintAsync(CancellationToken cancellationToken = default)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.Save))
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.DailyClose.Save,
+            "daily-close",
+            "save-and-print",
+            Session,
+            cancellationToken);
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (!CanSaveAndPrint())
         {
@@ -311,10 +323,19 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private async Task ReprintSelectedArchiveAsync(CancellationToken cancellationToken = default)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.Reprint))
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.DailyClose.Reprint,
+            "daily-close",
+            "reprint-archive",
+            Session,
+            cancellationToken);
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (!CanReprintSelectedArchive())
         {

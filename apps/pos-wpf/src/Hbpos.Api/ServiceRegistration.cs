@@ -1,6 +1,7 @@
 using Hbpos.Api.Auth;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
+using Hbpos.Api.Security;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace Hbpos.Api;
@@ -29,6 +30,13 @@ public static class ServiceRegistration
             dataProtection
                 .SetApplicationName(configuration["DataProtection:ApplicationName"] ?? "Hbpos.Api")
                 .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+            // 关键逻辑：沿用同一绝对 key-ring 路径，但考勤密钥使用固定隔离应用名和 purpose。
+            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(keysPath));
+        }
+        else
+        {
+            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(
+                Path.Combine(AppContext.BaseDirectory, "App_Data", "DataProtectionKeys")));
         }
         services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
         services.AddMemoryCache();
@@ -65,6 +73,9 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+        services.AddScoped<IAttendanceSigningKeyRegistrationService, AttendanceSigningKeyRegistrationService>();
+        services.AddScoped<IAttendanceQrKeySchemaSqlExecutor, SqlSugarAttendanceQrKeySchemaSqlExecutor>();
+        services.AddScoped<IAttendanceQrKeySchemaInitializer, SqlSugarAttendanceQrKeySchemaInitializer>();
         services.AddScoped<IDeviceRuntimeStatusSchemaSqlExecutor, SqlSugarDeviceRuntimeStatusSchemaSqlExecutor>();
         services.AddScoped<IDeviceRuntimeStatusSchemaInitializer, SqlSugarDeviceRuntimeStatusSchemaInitializer>();
         services.AddScoped<ICashierService, CashierService>();
@@ -95,11 +106,26 @@ public static class ServiceRegistration
         services.AddHttpClient<ILinklyCloudBackendAsyncTransport, HttpLinklyCloudBackendAsyncTransport>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
-        });
+        })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；REST 池始终最多一条真实连接。
+                handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
+                handler.MaxConnectionsPerServer = 1;
+            });
         services.AddHttpClient<ILinklyCloudBackendTokenProvider, HttpLinklyCloudBackendTokenProvider>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
-        });
+        })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+            .UseSocketsHttpHandler((handler, _) =>
+            {
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；Token 与 REST 合计最多两条连接。
+                handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
+                handler.MaxConnectionsPerServer = 1;
+            });
+        services.AddHostedService<LinklyHttpConnectionMetricsService>();
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaSqlExecutor, SqlSugarLinklyCloudBackendAsyncSchemaSqlExecutor>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaInitializer, SqlSugarLinklyCloudBackendAsyncSchemaInitializer>();

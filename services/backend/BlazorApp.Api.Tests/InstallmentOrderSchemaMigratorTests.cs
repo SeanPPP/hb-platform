@@ -99,8 +99,9 @@ public sealed class InstallmentOrderSchemaMigratorTests : IDisposable
         Assert.Contains("InstallmentOrderSchemaMigrator.EnsureAsync(posmDb, logger)", startupSource, StringComparison.Ordinal);
         Assert.Contains("await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);", programSource, StringComparison.Ordinal);
         Assert.True(
+            // 主库 CodeFirst 可因其他迁移前置；POSM 分期结构只需在 Web 服务启动前完成。
             programSource.IndexOf("StartupSchemaMigrator.EnsurePosmAsync", StringComparison.Ordinal)
-            < programSource.IndexOf("dbContext.CreateTable();", StringComparison.Ordinal),
+            < programSource.IndexOf("app.Run();", StringComparison.Ordinal),
             "POSM 分期表必须在应用开始服务前完成初始化"
         );
     }

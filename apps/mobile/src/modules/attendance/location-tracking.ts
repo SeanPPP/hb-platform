@@ -77,12 +77,26 @@ export async function ensureAttendanceBackgroundLocationPermission() {
   if (isIosReviewSessionActive()) {
     return true;
   }
+
+  if (await hasAttendanceBackgroundLocationPermission()) {
+    return true;
+  }
+
   const foreground = await Location.requestForegroundPermissionsAsync();
   if (foreground.status !== "granted") {
     return false;
   }
 
   const background = await Location.requestBackgroundPermissionsAsync();
+  return background.status === "granted";
+}
+
+export async function hasAttendanceBackgroundLocationPermission() {
+  const foreground = await Location.getForegroundPermissionsAsync();
+  if (foreground.status !== "granted") {
+    return false;
+  }
+  const background = await Location.getBackgroundPermissionsAsync();
   return background.status === "granted";
 }
 

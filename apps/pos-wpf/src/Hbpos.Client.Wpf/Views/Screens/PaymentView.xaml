@@ -129,8 +129,8 @@
         </Style>
 
         <Style x:Key="InstallmentMethodToggleStyle" TargetType="ToggleButton">
-            <Setter Property="MinHeight" Value="86" />
-            <Setter Property="Padding" Value="14,12" />
+            <Setter Property="MinHeight" Value="38" />
+            <Setter Property="Padding" Value="6,4" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Background" Value="White" />
@@ -201,8 +201,19 @@
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" Padding="20,16" Background="{StaticResource PosScreenBackgroundBrush}">
-                <StackPanel>
-                    <Button Command="{Binding BackToPosCommand}"
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Row="0"
+                            Grid.Column="0"
+                            Command="{Binding BackToPosCommand}"
                             Style="{StaticResource PosSecondaryButtonStyle}"
                             HorizontalAlignment="Left"
                             MinHeight="38"
@@ -212,7 +223,73 @@
                             <TextBlock Text="{loc:Loc shell.backToPos}" FontWeight="Bold" />
                         </StackPanel>
                     </Button>
-                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <ToggleButton Grid.Row="0"
+                                  Grid.Column="1"
+                                  AutomationProperties.AutomationId="InstallmentPaymentToggle"
+                                  AutomationProperties.Name="{Binding InstallmentMethodText}"
+                                  ToolTip="{loc:Loc payment.installment.switchHelp}"
+                                  ToolTipService.ShowOnDisabled="True"
+                                  IsChecked="{Binding IsInstallmentPaymentEnabled, Mode=TwoWay}"
+                                  HorizontalAlignment="Left"
+                                  Margin="8,0,0,0">
+                        <ToggleButton.Style>
+                            <Style TargetType="ToggleButton" BasedOn="{StaticResource InstallmentMethodToggleStyle}">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsInstallmentEntryVisible}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsInstallmentSwitchLocked}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ToggleButton.Style>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="6" />
+                                <ColumnDefinition Width="44" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding InstallmentMethodText}"
+                                       VerticalAlignment="Center"
+                                       FontSize="12"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosTextBrush}" />
+                            <Border Grid.Column="2"
+                                    Width="44"
+                                    Height="24"
+                                    CornerRadius="12"
+                                    VerticalAlignment="Center">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="#FFE5E7EB" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
+                                                <Setter Property="Background" Value="#FF2563EB" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Ellipse Width="18" Height="18" Fill="White" VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="HorizontalAlignment" Value="Left" />
+                                            <Setter Property="Margin" Value="3,0,0,0" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
+                                                    <Setter Property="HorizontalAlignment" Value="Right" />
+                                                    <Setter Property="Margin" Value="0,0,3,0" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                            </Border>
+                        </Grid>
+                    </ToggleButton>
+                    <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,6,0,0">
                         <Border Padding="8,3" Background="#1A0056D2" CornerRadius="4">
                             <TextBlock FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosPrimaryBrush}">
                                 <Run Text="{Binding CartLines.Count, Mode=OneWay}" />
@@ -222,7 +299,7 @@
                         </Border>
                         <TextBlock Text="{Binding OrderSummaryText}" Margin="8,0,0,0" VerticalAlignment="Center" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
                     </StackPanel>
-                </StackPanel>
+                </Grid>
             </Border>
 
             <Border Grid.Row="1" Margin="20,0,20,10" Padding="12" Background="White" BorderBrush="#FFCBD5E1" BorderThickness="1" CornerRadius="8">
@@ -648,64 +725,6 @@
                         <TextBlock Grid.Column="2" Text="{Binding VoucherMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
                     </Grid>
                 </Button>
-                <ToggleButton IsChecked="{Binding IsInstallmentPaymentEnabled, Mode=TwoWay}"
-                              Margin="0,8,0,0">
-                    <ToggleButton.Style>
-                        <Style TargetType="ToggleButton" BasedOn="{StaticResource InstallmentMethodToggleStyle}">
-                            <Setter Property="Visibility" Value="Visible" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsInstallmentEntryVisible}" Value="False">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding IsInstallmentSwitchLocked}" Value="True">
-                                    <Setter Property="IsEnabled" Value="False" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ToggleButton.Style>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="46" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="62" />
-                        </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" Width="46" Height="46" Background="#FFE0F2FE" CornerRadius="10">
-                            <materialDesign:PackIcon Kind="CalendarClock" Width="28" Height="28" Foreground="#FF2563EB" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <StackPanel Grid.Column="1" Margin="14,0,12,0" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding InstallmentMethodText}" FontSize="17" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
-                            <TextBlock Text="{loc:Loc payment.installment.switchHelp}" Margin="0,4,0,0" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosMutedForegroundBrush}" TextWrapping="Wrap" />
-                        </StackPanel>
-                        <Border Grid.Column="2" Width="54" Height="30" CornerRadius="15" VerticalAlignment="Center" HorizontalAlignment="Right">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Setter Property="Background" Value="#FFE5E7EB" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
-                                            <Setter Property="Background" Value="#FF2563EB" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
-                            <Grid>
-                                <Ellipse Width="24" Height="24" Fill="White" VerticalAlignment="Center">
-                                    <Ellipse.Style>
-                                        <Style TargetType="Ellipse">
-                                            <Setter Property="HorizontalAlignment" Value="Left" />
-                                            <Setter Property="Margin" Value="3,0,0,0" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
-                                                    <Setter Property="HorizontalAlignment" Value="Right" />
-                                                    <Setter Property="Margin" Value="0,0,3,0" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Ellipse.Style>
-                                </Ellipse>
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </ToggleButton>
                 <TextBox Text="{Binding VoucherCodeText, UpdateSourceTrigger=PropertyChanged}"
                          materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
                          Height="40"

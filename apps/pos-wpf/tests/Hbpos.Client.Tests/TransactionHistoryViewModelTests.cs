@@ -5,6 +5,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using InstallmentPaymentDto = Hbpos.Contracts.Installments.InstallmentPaymentDto;
 
 namespace Hbpos.Client.Tests;
 

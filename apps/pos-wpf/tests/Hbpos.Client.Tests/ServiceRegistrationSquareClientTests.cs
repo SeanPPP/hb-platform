@@ -30,6 +30,22 @@ public sealed class ServiceRegistrationSquareClientTests
     }
 
     [Fact]
+    public async Task AddHbposClientServices_attaches_attendance_qr_panel_after_pos_is_created()
+    {
+        var startupOptions = new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null);
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(startupOptions);
+
+        using var provider = services.BuildServiceProvider();
+        var panel = provider.GetRequiredService<AttendanceQrPanelViewModel>();
+        var mainViewModel = provider.GetRequiredService<MainViewModel>();
+
+        await mainViewModel.InitializeAsync(startupOptions);
+
+        Assert.Same(panel, mainViewModel.PosTerminal?.AttendanceQrPanel);
+    }
+
+    [Fact]
     public void AddHbposClientServices_configures_square_terminal_clients_with_hbpos_api_base_and_device_auth_handler()
     {
         using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>

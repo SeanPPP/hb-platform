@@ -41,6 +41,10 @@ using (var scope = app.Services.CreateScope())
     var storeSchemaInitializer = scope.ServiceProvider.GetRequiredService<IStoreSchemaInitializer>();
     await storeSchemaInitializer.InitializeAsync();
 
+    // 关键逻辑：考勤签名服务依赖 MainDb 密钥表，初始化失败时直接阻止 API 启动。
+    var attendanceQrKeySchemaInitializer = scope.ServiceProvider.GetRequiredService<IAttendanceQrKeySchemaInitializer>();
+    await attendanceQrKeySchemaInitializer.InitializeAsync();
+
     var advertisementSchemaInitializer = scope.ServiceProvider.GetRequiredService<IAdvertisementSchemaInitializer>();
     await advertisementSchemaInitializer.InitializeAsync();
 

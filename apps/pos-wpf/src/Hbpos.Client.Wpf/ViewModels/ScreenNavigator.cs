@@ -309,6 +309,7 @@ internal sealed class ScreenNavigator
 #endif
 
         Settings ??= _factory.CreateSettingsViewModel(
+            session: Session,
             downloadCatalogAsync: async cancellationToken =>
             {
                 await _syncCatalogAndReloadAsync(cancellationToken);
@@ -684,6 +685,11 @@ internal sealed class ScreenNavigator
         if (DailyClose is not null)
         {
             DailyClose.Session = Session;
+        }
+
+        if (Settings is not null)
+        {
+            Settings.Session = Session;
         }
 
         InstallmentCenter?.Prepare(Session, CreateCurrentCartSnapshot());

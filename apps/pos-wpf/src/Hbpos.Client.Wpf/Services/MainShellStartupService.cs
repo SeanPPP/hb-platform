@@ -18,6 +18,11 @@ public interface IMainShellStartupService
         bool previewMode,
         CancellationToken cancellationToken = default);
 
+    Task<MainShellStartupResult> EvaluateAfterServerSwitchAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default) =>
+        EvaluateAsync(session, previewMode: false, cancellationToken);
+
     void SetAuthorizedDevice(
         string deviceCode,
         string storeCode,
@@ -33,6 +38,75 @@ public sealed class MainShellStartupService(
     DeviceAuthorizationState deviceAuthorizationState,
     IDeviceApiClient? deviceApiClient = null) : IMainShellStartupService
 {
+    public async Task<MainShellStartupResult> EvaluateAfterServerSwitchAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var cachedDevice = await deviceRepository.GetLatestAsync(cancellationToken);
+        var hardwareId = fingerprintService.GetHardwareId();
+        if (cachedDevice is null ||
+            !cachedDevice.IsAllowed ||
+            string.IsNullOrWhiteSpace(cachedDevice.AuthorizationCode) ||
+            !string.Equals(cachedDevice.HardwareId, hardwareId, StringComparison.OrdinalIgnoreCase) ||
+            deviceApiClient is null)
+        {
+            deviceAuthorizationState.Clear();
+            return new MainShellStartupResult(session, true, cachedDevice);
+        }
+
+        DeviceVerifyResponse verification;
+        try
+        {
+            verification = await deviceApiClient.VerifyAsync(
+                new DeviceVerifyRequest(
+                    cachedDevice.DeviceCode,
+                    cachedDevice.StoreCode,
+                    hardwareId,
+                    Environment.MachineName),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or CatalogApiException or JsonException)
+        {
+            // 热切换后禁止沿用旧服务器的离线授权；目标服务器 Verify 不成功即返回注册页。
+            deviceAuthorizationState.Clear();
+            ConsoleLog.Write(
+                "DeviceServerSwitch",
+                $"target verify failed; registration required error={ex.GetType().Name} message={ex.Message}");
+            return new MainShellStartupResult(session, true, cachedDevice);
+        }
+
+        deviceAuthorizationState.Clear();
+        await deviceRepository.SaveAsync(verification, hardwareId, cancellationToken);
+        var verifiedDevice = CreateLocalDeviceCache(verification, hardwareId);
+        if (verification.DeviceStatus != 1 ||
+            !verification.IsAllowed ||
+            string.IsNullOrWhiteSpace(verification.AuthorizationCode) ||
+            !string.Equals(verification.DeviceCode, cachedDevice.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(verification.StoreCode, cachedDevice.StoreCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return new MainShellStartupResult(session, true, verifiedDevice);
+        }
+
+        SetAuthorizedDevice(
+            verification.DeviceCode,
+            verification.StoreCode,
+            hardwareId,
+            verification.AuthorizationCode);
+        return new MainShellStartupResult(
+            session with
+            {
+                StoreCode = verification.StoreCode,
+                StoreName = verification.StoreName,
+                DeviceCode = verification.DeviceCode
+            },
+            false,
+            verifiedDevice);
+    }
+
     public async Task<MainShellStartupResult> EvaluateAsync(
         PosSessionState session,
         bool previewMode,

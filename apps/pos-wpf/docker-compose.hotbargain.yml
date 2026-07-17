@@ -11,6 +11,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5003
       - ASPNETCORE_HTTP_PORTS=5003
+      - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       # WPF API 主库与 POSM 库复用服务器 .env，仓库内不保存连接串明文。
       - ConnectionStrings__MainConnection=${CONNECTION_STRING_DEFAULT}
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
@@ -38,6 +39,7 @@ services:
       - Square__WebhookSignatureKeys__Sandbox=${SQUARE_WEBHOOK_SIGNATURE_KEY_SANDBOX:-}
     volumes:
       - hbpos-api-logs:/app/logs
+      - ../../services/backend/data-protection-keys:/app/App_Data/DataProtectionKeys
     restart: unless-stopped
     networks:
       - hb-network

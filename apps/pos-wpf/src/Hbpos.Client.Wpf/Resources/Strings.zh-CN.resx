@@ -2368,4 +2368,34 @@
   <data name="appUpdate.force.exit" xml:space="preserve"><value>退出</value></data>
   <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>请先完成或清空当前交易，再重试安装更新。</value></data>
   <data name="appUpdate.install.failed" xml:space="preserve"><value>无法启动更新安装器。{0}</value></data>
+  <data name="shell.operationAuthorization.title" xml:space="preserve"><value>需要操作授权</value></data>
+  <data name="shell.operationAuthorization.message" xml:space="preserve"><value>当前收银员没有执行此操作的权限。</value></data>
+  <data name="shell.operationAuthorization.operationLabel" xml:space="preserve"><value>当前操作</value></data>
+  <data name="shell.operationAuthorization.screenLabel" xml:space="preserve"><value>所在页面：</value></data>
+  <data name="shell.operationAuthorization.permissionLabel" xml:space="preserve"><value>缺少权限：</value></data>
+  <data name="shell.operationAuthorization.scanHint" xml:space="preserve"><value>请让有权限的用户扫描其收银员条码。</value></data>
+  <data name="operationAuthorization.noSession" xml:space="preserve"><value>当前没有收银员会话。</value></data>
+  <data name="operationAuthorization.pending" xml:space="preserve"><value>已有操作正在等待授权。</value></data>
+  <data name="operationAuthorization.prompt" xml:space="preserve"><value>请扫描具备 {0} 权限的授权员工条码。</value></data>
+  <data name="operationAuthorization.waiting" xml:space="preserve"><value>等待授权扫码。</value></data>
+  <data name="operationAuthorization.cancelled" xml:space="preserve"><value>授权已取消。</value></data>
+  <data name="operationAuthorization.verifying" xml:space="preserve"><value>正在验证授权员工。</value></data>
+  <data name="operationAuthorization.success" xml:space="preserve"><value>授权成功。</value></data>
+  <data name="operationAuthorization.emergencyDenied" xml:space="preserve"><value>紧急授权会话不能批准权限提升。</value></data>
+  <data name="operationAuthorization.scopeMismatch" xml:space="preserve"><value>授权员工会话与当前门店或设备不匹配。</value></data>
+  <data name="operationAuthorization.ticketInvalid" xml:space="preserve"><value>授权员工票据无效或已过期。</value></data>
+  <data name="operationAuthorization.permissionDenied" xml:space="preserve"><value>该员工没有批准此操作所需的权限。</value></data>
+  <data name="operationAuthorization.exception" xml:space="preserve"><value>授权验证失败：{0}</value></data>
+  <data name="attendance.qr.title" xml:space="preserve"><value>考勤二维码</value></data>
+  <data name="attendance.qr.scanHint" xml:space="preserve"><value>扫码上班 / 下班打卡</value></data>
+  <data name="attendance.qr.enableOnline" xml:space="preserve"><value>请先联网启用离线考勤二维码。</value></data>
+  <data name="attendance.qr.setupFailed" xml:space="preserve"><value>考勤二维码启用失败，正在自动重试。</value></data>
+  <data name="attendance.qr.clockInvalid" xml:space="preserve"><value>检测到时钟变化，请联网重新校时。</value></data>
+  <data name="attendance.qr.offlineSigned" xml:space="preserve"><value>离线签名</value></data>
+  <data name="attendance.qr.onlineVerified" xml:space="preserve"><value>在线验证</value></data>
+  <data name="attendance.qr.open" xml:space="preserve"><value>打开考勤二维码</value></data>
+  <data name="attendance.qr.close" xml:space="preserve"><value>关闭考勤二维码</value></data>
+  <data name="attendance.qr.closeHelp" xml:space="preserve"><value>关闭考勤二维码扫码弹窗</value></data>
+  <data name="attendance.qr.device" xml:space="preserve"><value>POS 设备</value></data>
+  <data name="attendance.qr.seconds" xml:space="preserve"><value>秒</value></data>
 </root>

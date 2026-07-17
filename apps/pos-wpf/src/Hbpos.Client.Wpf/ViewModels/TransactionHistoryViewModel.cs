@@ -65,6 +65,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
 
@@ -117,17 +118,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
     {
     }
 
@@ -145,8 +146,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null,
-        IOperationAuditLogger? operationAuditLogger = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, initialize: true)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, initialize: true)
     {
     }
 
@@ -165,6 +167,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IInstallmentOrderService? installmentOrderService,
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync,
         IOperationAuditLogger? operationAuditLogger,
+        IOperationAuthorizationService? operationAuthorizationService,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -180,6 +183,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -207,7 +211,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RecallOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(RecallOrderAsync, CanRecallOrder);
         ContinueInstallmentPaymentCommand = new AsyncRelayCommand<HistoryOrderListItem>(ContinueInstallmentPaymentAsync, CanContinueInstallmentPayment);
         ConfirmInstallmentPickupCommand = new AsyncRelayCommand<HistoryOrderListItem>(ConfirmInstallmentPickupAsync, CanConfirmInstallmentPickup);
-        ReprintCommand = new RelayCommand(ReprintSelected, CanReprintSelected);
+        ReprintCommand = new AsyncRelayCommand(ReprintSelectedAsync, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
     }
 
@@ -659,12 +663,15 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task RecallOrderAsync(HistoryOrderListItem? order)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.History.Recall))
+        var orderSnapshot = order;
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.History.Recall, "recall-order");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
-        if (!CanRecallOrder(order) || _suspendedOrderService is null)
+        if (!CanRecallOrder(orderSnapshot) || _suspendedOrderService is null)
         {
             return;
         }
@@ -673,7 +680,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         var recallCompleted = false;
         try
         {
-            var recalledOrder = await _suspendedOrderService.RecallOrderAsync(order!.OrderGuid);
+            var recalledOrder = await _suspendedOrderService.RecallOrderAsync(orderSnapshot!.OrderGuid);
             OperationAuditEvents.RecordCartChange(
                 _operationAuditLogger,
                 OperationAuditTypes.OrderRecall,
@@ -681,7 +688,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 new OperationAuditCartSnapshot(0m, 0m, 0m, []),
                 OperationAuditEvents.CaptureSuspendedOrder(recalledOrder),
                 reasonCode: "SUSPENDED_ORDER",
-                orderGuid: order.OrderGuid.ToString("D"),
+                orderGuid: orderSnapshot.OrderGuid.ToString("D"),
                 correlationId: correlation.CorrelationId,
                 traceId: correlation.TraceId);
             recallCompleted = true;
@@ -703,7 +710,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                     Session,
                     reasonCode: "SUSPENDED_ORDER",
                     safeMessage: ex.GetType().Name,
-                    orderGuid: order?.OrderGuid.ToString("D"),
+                    orderGuid: orderSnapshot?.OrderGuid.ToString("D"),
                     correlationId: correlation.CorrelationId,
                     traceId: correlation.TraceId);
             }
@@ -799,13 +806,16 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.ConfirmPickup))
+        var orderSnapshot = order;
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.ConfirmPickup, "confirm-installment-pickup");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         // 中文注释：历史页提货入口复用分期中心同一接口，成功后刷新列表和右侧预览状态。
-        var result = await _installmentOrderService.ConfirmPickupAsync(order!.InstallmentOrder!.OrderId, Session);
+        var result = await _installmentOrderService.ConfirmPickupAsync(orderSnapshot!.InstallmentOrder!.OrderId, Session);
         StatusMessage = result.Message;
         if (result.Succeeded)
         {
@@ -818,15 +828,26 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
-    private void ReprintSelected()
+    private async Task ReprintSelectedAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.History.Reprint))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.History.Reprint, "reprint-selected");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         ReprintRequested?.Invoke(this, EventArgs.Empty);
     }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(string permissionCode, string action) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            permissionCode,
+            "transaction-history",
+            action,
+            Session);
 
     private bool TryRequirePermission(string permissionCode)
     {

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Windows;
 using System.Globalization;
 using System.Reflection;
@@ -18,12 +19,115 @@ using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using InstallmentPaymentDto = Hbpos.Contracts.Installments.InstallmentPaymentDto;
+using InstallmentPickupInfoDto = Hbpos.Contracts.Installments.InstallmentPickupInfoDto;
 
 namespace Hbpos.Client.Tests;
 
 [Collection(ProductThumbnailImageSourceConverterTestCollection.Name)]
 public sealed class MainViewModelScannerTests
 {
+    [Fact]
+    public async Task Operation_authorization_prompt_takes_scanner_page_and_routes_both_scan_sources()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        authorization.Open();
+
+        Assert.Equal(authorization.ScannerPageId, scanner.ActivePageId);
+        scanner.Emit("RAW-AUTH");
+        Assert.True(viewModel.TryProcessKeyboardScannerInput("KEYBOARD-AUTH"));
+        Assert.Equal(["RAW-AUTH", "KEYBOARD-AUTH"], authorization.Barcodes);
+
+        authorization.Close();
+
+        Assert.Equal(PosTerminalViewModel.PageId, scanner.ActivePageId);
+    }
+
+    [Fact]
+    public async Task Navigation_cancels_pending_operation_authorization_and_restores_new_screen_scanner_page()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        authorization.Open();
+
+        viewModel.ShowReturnsCommand.Execute(null);
+
+        Assert.Equal(1, authorization.CancelCount);
+        Assert.Equal(ReceiptReturnsViewModel.PageId, scanner.ActivePageId);
+    }
+
+    [Fact]
+    public async Task Api_server_switch_freezes_scanner_and_common_navigation()
+    {
+        var scanner = new FakeRawScannerService();
+        var authorization = new FakeOperationAuthorizationService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            operationAuthorizationService: authorization);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var originalScreen = viewModel.CurrentScreen;
+
+        viewModel.IsApiServerSwitching = true;
+        viewModel.ShowReturnsCommand.Execute(null);
+        var handled = viewModel.TryProcessKeyboardScannerInput("SWITCH-SCAN");
+
+        Assert.True(handled);
+        Assert.Same(originalScreen, viewModel.CurrentScreen);
+        Assert.Empty(authorization.Barcodes);
+        Assert.Null(scanner.ActivePageId);
+    }
+
+    [Fact]
+    public async Task Server_switch_reinitialize_waits_for_post_show_startup_continuation()
+    {
+        var recoveryCompletion = new TaskCompletionSource<CardPaymentRecoveryResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovery = new FakeCardPaymentRecoveryService(
+            (_, _, _) => recoveryCompletion.Task);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            mainShellStartupService: new SwitchReadyMainShellStartupService());
+
+        var reinitialize = viewModel.ReinitializeAfterServerSwitchAsync(CancellationToken.None);
+        await WaitUntilAsync(() => recovery.CallCount > 0);
+
+        Assert.False(reinitialize.IsCompleted);
+
+        recoveryCompletion.SetResult(CardPaymentRecoveryResult.None);
+        await reinitialize.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Server_switch_reinitialize_propagates_post_show_startup_failure()
+    {
+        var expected = new InvalidOperationException("post-show startup failed");
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromException<CardPaymentRecoveryResult>(expected));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            mainShellStartupService: new SwitchReadyMainShellStartupService());
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            viewModel.ReinitializeAfterServerSwitchAsync(CancellationToken.None));
+
+        Assert.Same(expected, actual);
+    }
+
     [Fact]
     public void Expired_emergency_session_is_cleared_by_clock_guard()
     {
@@ -89,6 +193,43 @@ public sealed class MainViewModelScannerTests
         Assert.False(report.IsOnline);
         Assert.Equal("CASHIER-1", report.CashierId);
         Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Fact]
+    public async Task Cashier_login_passes_current_offline_state_to_login_service()
+    {
+        var login = new RecordingAttemptCashierLoginService(
+            CashierLoginResult.Success(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: login);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        await viewModel.LoginCashierByBarcodeAsync("BAR-1");
+
+        Assert.False(login.AttemptOnline);
+    }
+
+    [Fact]
+    public async Task Cashier_login_closes_overlay_before_runtime_status_report_completes()
+    {
+        var runtimeStatus = new DeferredRuntimeStatusApiClient();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var loginTask = viewModel.LoginCashierByBarcodeAsync("BAR-1");
+        await runtimeStatus.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.False(loginTask.IsCompleted);
+
+        runtimeStatus.Complete();
+        await loginTask;
     }
 
     [Fact]
@@ -1082,6 +1223,58 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
         Assert.Empty(cart.Lines);
         Assert.Empty(viewModel.CashPayment.PaymentTenders);
+    }
+
+    [Fact]
+    public async Task Full_card_tender_opens_success_screen_before_pending_sync_refresh_completes()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-CARD-SCREEN", "930SCREEN"));
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(
+            cart,
+            checkout,
+            orderRepository,
+            syncQueue,
+            new ApprovedCardTerminalClient("CARD-SCREEN"));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        // 中文注释：初始化完成后才阻塞同步概览，精确复现支付完成后的刷新窗口。
+        syncQueue.Overview = new SyncQueueOverview(1, 0, 0, null);
+        syncQueue.OverviewReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        syncQueue.ReleaseOverviewRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = viewModel.CashPayment!;
+        LocalOrder? completedOrder = null;
+        payment.PaymentCompleted += (_, e) => completedOrder = e.Order;
+        Task? selectCardTask = null;
+
+        try
+        {
+            selectCardTask = payment.SelectCardCommand.ExecuteAsync(null);
+            await syncQueue.OverviewReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
+            Assert.NotNull(completedOrder);
+            Assert.Equal(completedOrder!.OrderGuid, viewModel.PaymentSuccess.TransactionId);
+            Assert.NotSame(payment, viewModel.CurrentScreen);
+        }
+        finally
+        {
+            syncQueue.ReleaseOverviewRead.TrySetResult();
+            if (selectCardTask is not null)
+            {
+                await selectCardTask;
+            }
+
+            if (syncQueue.OverviewReadStarted.Task.IsCompleted)
+            {
+                await WaitUntilAsync(() => viewModel.PendingUploadCount == 1);
+            }
+        }
     }
 
     [Fact]
@@ -3042,7 +3235,7 @@ public sealed class MainViewModelScannerTests
         var viewModel = CreateAuthorizedMainViewModel(customerDisplayWindow);
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(1, customerDisplayWindow.SetModeCallCount);
         Assert.Equal(CustomerDisplayWindowMode.Normal, customerDisplayWindow.LastSetMode);
@@ -3077,21 +3270,21 @@ public sealed class MainViewModelScannerTests
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Normal, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Normal, viewModel.CustomerDisplayWindowMode);
         Assert.True(viewModel.IsCustomerDisplayOpen);
         Assert.Equal("Customer display opened in a normal window on the second display.", viewModel.StatusMessage);
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Fullscreen, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Fullscreen, viewModel.CustomerDisplayWindowMode);
         Assert.True(viewModel.IsCustomerDisplayOpen);
         Assert.Equal("Customer display opened full screen on the second display.", viewModel.StatusMessage);
 
-        viewModel.ToggleCustomerDisplayWindow(null);
+        await viewModel.ToggleCustomerDisplayWindow(null);
 
         Assert.Equal(CustomerDisplayWindowMode.Closed, customerDisplayWindow.LastSetMode);
         Assert.Equal(CustomerDisplayWindowMode.Closed, viewModel.CustomerDisplayWindowMode);
@@ -4270,7 +4463,9 @@ public sealed class MainViewModelScannerTests
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
         IInstallmentOrderService? installmentOrderService = null,
         IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null,
         IUserFeedbackService? userFeedbackService = null,
+        IMainShellStartupService? mainShellStartupService = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -4304,7 +4499,10 @@ public sealed class MainViewModelScannerTests
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
+            mainShellStartupService ?? new MainShellStartupService(
+                deviceRepository,
+                fingerprintService,
+                new DeviceAuthorizationState()),
             orderRepository,
             new ShellSyncCenterService(syncQueue),
             localization,
@@ -4325,6 +4523,7 @@ public sealed class MainViewModelScannerTests
             cashierLoginService: cashierLoginService,
             runtimeStatusApiClient: runtimeStatusApiClient,
             operationAuditLogger: operationAuditLogger,
+            operationAuthorizationService: operationAuthorizationService,
             enforceCashierPermissions: enforceCashierPermissions);
     }
 
@@ -4755,6 +4954,81 @@ public sealed class MainViewModelScannerTests
         }
     }
 
+    private sealed class FakeOperationAuthorizationService : IOperationAuthorizationService
+    {
+        private bool _isPromptOpen;
+
+        public FakeOperationAuthorizationService()
+        {
+            CancelCommand = new RelayCommand(Cancel);
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public event EventHandler? StatusChanged;
+
+        public string ScannerPageId => "OperationAuthorizationTest";
+
+        public bool IsPromptOpen => _isPromptOpen;
+
+        public bool IsBusy => false;
+
+        public string PromptMessage => string.Empty;
+
+        public string StatusMessage => string.Empty;
+
+        public string PermissionCode => Permissions.PosTerminal.Sales.AddItem;
+
+        public string Screen => "POS";
+
+        public string Action => "Add item";
+
+        public IRelayCommand CancelCommand { get; }
+
+        public List<string> Barcodes { get; } = [];
+
+        public int CancelCount { get; private set; }
+
+        public Task<OperationAuthorizationScope?> AuthorizeAsync(
+            string permissionCode,
+            string screen,
+            string action,
+            PosSessionState session,
+            CancellationToken cancellationToken = default) => Task.FromResult<OperationAuthorizationScope?>(null);
+
+        public bool ProcessScannerBarcode(string barcode)
+        {
+            Barcodes.Add(barcode);
+            return true;
+        }
+
+        public void Cancel()
+        {
+            if (!_isPromptOpen)
+            {
+                return;
+            }
+
+            CancelCount++;
+            Close();
+        }
+
+        public void RevokeAll() => Cancel();
+
+        public void Open()
+        {
+            _isPromptOpen = true;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPromptOpen)));
+        }
+
+        public void Close()
+        {
+            _isPromptOpen = false;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPromptOpen)));
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     private sealed class FakeLocalSchemaService : ILocalSchemaService
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -4787,9 +5061,26 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(CashierLoginResult.Success(session));
+        }
+    }
+
+    private sealed class RecordingAttemptCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        public bool? AttemptOnline { get; private set; }
+
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            bool attemptOnline = true,
+            CancellationToken cancellationToken = default)
+        {
+            AttemptOnline = attemptOnline;
+            return Task.FromResult(result);
         }
     }
 
@@ -4799,6 +5090,7 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(result);
@@ -4811,6 +5103,7 @@ public sealed class MainViewModelScannerTests
             string storeCode,
             string deviceCode,
             string userBarcode,
+            bool attemptOnline = true,
             CancellationToken cancellationToken = default)
         {
             if (exception is not null)
@@ -5260,6 +5553,72 @@ public sealed class MainViewModelScannerTests
             Reports.Add(report);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class SwitchReadyMainShellStartupService : IMainShellStartupService
+    {
+        public Task<MainShellStartupResult> EvaluateAsync(
+            PosSessionState session,
+            bool previewMode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CreateResult(session));
+        }
+
+        public Task<MainShellStartupResult> EvaluateAfterServerSwitchAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CreateResult(session));
+        }
+
+        public void SetAuthorizedDevice(
+            string deviceCode,
+            string storeCode,
+            string hardwareId,
+            string authorizationCode)
+        {
+        }
+
+        public void ClearAuthorization()
+        {
+        }
+
+        private static MainShellStartupResult CreateResult(PosSessionState session)
+        {
+            var cashier = CreateCashierSession();
+            return new MainShellStartupResult(
+                session with
+                {
+                    StoreCode = cashier.StoreCode,
+                    StoreName = "Main Branch",
+                    DeviceCode = cashier.DeviceCode,
+                    CashierId = cashier.CashierId,
+                    CashierName = cashier.CashierName,
+                    CashierSession = cashier
+                },
+                RequiresDeviceRegistration: false,
+                CachedDevice: null);
+        }
+    }
+
+    private sealed class DeferredRuntimeStatusApiClient : IPosRuntimeStatusApiClient
+    {
+        private readonly TaskCompletionSource _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ReportAsync(
+            PosRuntimeStatusReport report,
+            CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await _completion.Task.WaitAsync(cancellationToken);
+        }
+
+        public void Complete() => _completion.TrySetResult();
     }
 
     private sealed class FakeLocalDeviceRepository : ILocalDeviceRepository
@@ -5776,6 +6135,10 @@ public sealed class MainViewModelScannerTests
 
         public int ThrowOnReadAfterCount { get; set; } = -1;
 
+        public TaskCompletionSource? OverviewReadStarted { get; set; }
+
+        public TaskCompletionSource? ReleaseOverviewRead { get; set; }
+
         private int _readCount;
 
         public Task<int> CountPendingAsync(CancellationToken cancellationToken = default)
@@ -5784,10 +6147,17 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult(Overview.PendingCount);
         }
 
-        public Task<SyncQueueOverview> GetOverviewAsync(CancellationToken cancellationToken = default)
+        public async Task<SyncQueueOverview> GetOverviewAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfConfigured();
-            return Task.FromResult(Overview);
+            OverviewReadStarted?.TrySetResult();
+            if (ReleaseOverviewRead is not null)
+            {
+                // 中文注释：默认不阻塞；仅由并发回归测试控制支付完成后的同步刷新窗口。
+                await ReleaseOverviewRead.Task.WaitAsync(cancellationToken);
+            }
+
+            return Overview;
         }
 
         public Task<IReadOnlyList<SyncQueueListItem>> GetActiveItemsAsync(int take = 20, CancellationToken cancellationToken = default)

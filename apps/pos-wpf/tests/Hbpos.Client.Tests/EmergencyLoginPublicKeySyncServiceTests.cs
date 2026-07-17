@@ -25,7 +25,7 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
 
         Assert.True(result);
         Assert.Equal(2, (await cache.GetAsync())?.Version);
-        Assert.Single(api.AcknowledgedVersions, 2);
+        Assert.Equal(2, Assert.Single(api.AcknowledgedVersions));
         Assert.DoesNotContain("BEGIN PUBLIC KEY", Assert.Single(settings.Values).Value, StringComparison.Ordinal);
     }
 
@@ -95,7 +95,7 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
         Assert.True(result);
         Assert.Null(Assert.Single(api.RequestedVersions));
         Assert.Equal(10, (await cache.GetAsync())?.Version);
-        Assert.Single(api.AcknowledgedVersions, 10);
+        Assert.Equal(10, Assert.Single(api.AcknowledgedVersions));
     }
 
     [Fact]

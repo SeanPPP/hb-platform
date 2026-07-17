@@ -192,7 +192,7 @@
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>Starting change store registration...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>Operation canceled.</value></data>
   <data name="settings.serverAddress.title" xml:space="preserve"><value>API Server</value></data>
-  <data name="settings.serverAddress.description" xml:space="preserve"><value>Test and save the HBPOS API address. A changed address takes effect after restart.</value></data>
+  <data name="settings.serverAddress.description" xml:space="preserve"><value>Test and switch the HBPOS API server. Switching signs out the cashier and loads the selected server's isolated local data.</value></data>
   <data name="settings.serverAddress.address" xml:space="preserve"><value>Server Address</value></data>
   <data name="settings.serverAddress.test" xml:space="preserve"><value>Test Connection</value></data>
   <data name="settings.serverAddress.save" xml:space="preserve"><value>Save Address</value></data>
@@ -204,4 +204,16 @@
   <data name="settings.serverAddress.status.saveFailed" xml:space="preserve"><value>Could not save the server address. Check Windows permissions and try again.</value></data>
   <data name="settings.serverAddress.status.saved" xml:space="preserve"><value>Server address saved.</value></data>
   <data name="settings.serverAddress.status.savedRestartRequired" xml:space="preserve"><value>Server address saved. Restart HBPOS to use the new address.</value></data>
+  <data name="settings.serverAddress.useDevelopment" xml:space="preserve"><value>Use Local</value></data>
+  <data name="settings.serverAddress.useRelease" xml:space="preserve"><value>Use Remote</value></data>
+  <data name="settings.serverAddress.status.switching" xml:space="preserve"><value>Checking safety and switching server...</value></data>
+  <data name="settings.serverAddress.status.switched" xml:space="preserve"><value>Server switched. Sign in again to continue.</value></data>
+  <data name="settings.serverAddress.status.sameAddress" xml:space="preserve"><value>This server is already active. The current session was kept.</value></data>
+  <data name="settings.serverAddress.status.blocked" xml:space="preserve"><value>The server cannot be switched while POS work is active.</value></data>
+  <data name="settings.serverAddress.status.preCommitFailed" xml:space="preserve"><value>The target server could not be prepared. The current server is unchanged.</value></data>
+  <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>Shell reset failed. HBPOS rolled back to the previous server.</value></data>
+  <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>Clear the cart before switching servers.</value></data>
+  <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>Finish or cancel the current payment before switching servers.</value></data>
+  <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>Resolve all pending, failed, or syncing orders before switching servers.</value></data>
+  <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>Wait for pending operation audit events to upload before switching servers.</value></data>
 </root>

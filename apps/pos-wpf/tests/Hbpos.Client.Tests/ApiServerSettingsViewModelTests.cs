@@ -11,6 +11,20 @@ namespace Hbpos.Client.Tests;
 public sealed class ApiServerSettingsViewModelTests
 {
     [Fact]
+    public void Quick_fill_commands_reuse_service_constants_without_saving()
+    {
+        var savedAddresses = new List<string>();
+        var viewModel = CreateViewModel(_ => OnlineResponse(), savedAddresses: savedAddresses);
+
+        viewModel.UseDevelopmentAddressCommand.Execute(null);
+        Assert.Equal(ApiServerSettingsService.DevelopmentApiBaseAddress, viewModel.ServerAddressText);
+
+        viewModel.UseReleaseAddressCommand.Execute(null);
+        Assert.Equal(ApiServerSettingsService.ReleaseApiBaseAddress, viewModel.ServerAddressText);
+        Assert.Empty(savedAddresses);
+    }
+
+    [Fact]
     public void Load_reads_current_server_address()
     {
         var viewModel = CreateViewModel(

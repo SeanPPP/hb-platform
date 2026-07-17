@@ -78,6 +78,10 @@ export interface AttendancePunch {
   locationAccuracy?: number;
   locationPermissionStatus?: AttendanceLocationPermissionStatus | string;
   locationCapturedAtUtc?: string;
+  userGuid?: string;
+  employeeName?: string;
+  posDeviceCode?: string;
+  serverTimeUtc?: string;
 }
 
 export interface AttendancePunchVerificationPayload {
@@ -89,14 +93,19 @@ export interface AttendancePunchVerificationPayload {
   networkVerificationStatus?: AttendanceNetworkVerificationStatus | string;
 }
 
-export interface AttendancePunchPayload
-  extends AttendancePunchVerificationPayload {
-  punchType: AttendancePunchType;
-  storeCode?: string;
-  deviceId?: string;
-  hardwareId?: string;
-  systemDeviceNumber?: string;
-  deviceSystem?: string;
+export interface AttendancePunchPayload {
+  qrToken: string;
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationAccuracy?: number;
+  locationCapturedAtUtc?: string;
+}
+
+export interface AttendanceQrResolveResult {
+  storeCode: string;
+  deviceCode: string;
+  expiresAtUtc: string;
+  storeName?: string;
 }
 
 export interface AttendanceLocationSamplePayload {

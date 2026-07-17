@@ -9,6 +9,7 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
 {
     private readonly ApiServerSettingsService _settingsService;
     private readonly ILocalizationService _localization;
+    private readonly IApiServerSwitchCoordinator? _switchCoordinator;
 
     [ObservableProperty]
     private string _serverAddressText = string.Empty;
@@ -24,17 +25,29 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
 
     public ApiServerSettingsViewModel(
         ApiServerSettingsService settingsService,
-        ILocalizationService localization)
+        ILocalizationService localization,
+        IApiServerSwitchCoordinator? switchCoordinator = null)
     {
         _settingsService = settingsService;
         _localization = localization;
+        _switchCoordinator = switchCoordinator;
         TestConnectionCommand = new AsyncRelayCommand(TestConnectionAsync, CanRun);
         SaveCommand = new AsyncRelayCommand(SaveAsync, CanRun);
+        UseDevelopmentAddressCommand = new RelayCommand(
+            () => ServerAddressText = ApiServerSettingsService.DevelopmentApiBaseAddress,
+            () => !IsBusy);
+        UseReleaseAddressCommand = new RelayCommand(
+            () => ServerAddressText = ApiServerSettingsService.ReleaseApiBaseAddress,
+            () => !IsBusy);
     }
 
     public IAsyncRelayCommand TestConnectionCommand { get; }
 
     public IAsyncRelayCommand SaveCommand { get; }
+
+    public IRelayCommand UseDevelopmentAddressCommand { get; }
+
+    public IRelayCommand UseReleaseAddressCommand { get; }
 
     public void Load()
     {
@@ -90,6 +103,12 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
         IsBusy = true;
         try
         {
+            if (_switchCoordinator is not null)
+            {
+                await SwitchRuntimeAsync(cancellationToken);
+                return;
+            }
+
             string normalized;
             try
             {
@@ -145,6 +164,37 @@ public sealed partial class ApiServerSettingsViewModel : ObservableObject
     {
         TestConnectionCommand.NotifyCanExecuteChanged();
         SaveCommand.NotifyCanExecuteChanged();
+        UseDevelopmentAddressCommand.NotifyCanExecuteChanged();
+        UseReleaseAddressCommand.NotifyCanExecuteChanged();
+    }
+
+    private async Task SwitchRuntimeAsync(CancellationToken cancellationToken)
+    {
+        SetStatus("settings.serverAddress.status.switching");
+        var result = await _switchCoordinator!.SwitchAsync(ServerAddressText, cancellationToken);
+        RestartRequired = false;
+        switch (result.Status)
+        {
+            case ApiServerSwitchStatus.Success:
+                ServerAddressText = _settingsService.GetCurrentAddress();
+                SetStatus("settings.serverAddress.status.switched");
+                break;
+            case ApiServerSwitchStatus.SameAddress:
+                ServerAddressText = _settingsService.GetCurrentAddress();
+                SetStatus("settings.serverAddress.status.sameAddress");
+                break;
+            case ApiServerSwitchStatus.Blocked:
+                SetStatus(result.BlockReason ?? "settings.serverAddress.status.blocked");
+                break;
+            case ApiServerSwitchStatus.PostCommitFailed:
+                SetStatus("settings.serverAddress.status.postCommitFailed");
+                break;
+            default:
+                SetStatus(result.ErrorMessage?.StartsWith("settings.", StringComparison.Ordinal) == true
+                    ? result.ErrorMessage
+                    : "settings.serverAddress.status.preCommitFailed");
+                break;
+        }
     }
 
     private void SetStatus(string key)

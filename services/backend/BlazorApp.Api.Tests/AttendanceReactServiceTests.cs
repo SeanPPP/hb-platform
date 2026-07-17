@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -10,10 +11,16 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Api.Services.Attendance;
+using BlazorApp.Api.Security;
+using AttendanceQrKeyDataProtection = BlazorApp.Api.Security.AttendanceQrKeyDataProtection;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Security;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -26,6 +33,10 @@ namespace BlazorApp.Api.Tests
         private readonly string _dbPath;
         private readonly SqliteConnection _sqliteConnection;
         private readonly SqlSugarClient _db;
+        private readonly byte[] _attendanceKey = RandomNumberGenerator.GetBytes(32);
+        private readonly AttendanceQrKeyProtector _attendanceProtector =
+            AttendanceQrKeyDataProtection.CreateProtector(new EphemeralDataProtectionProvider());
+        private readonly MutableTimeProvider _timeProvider = new(DateTimeOffset.UtcNow);
 
         public AttendanceReactServiceTests()
         {
@@ -53,8 +64,286 @@ namespace BlazorApp.Api.Tests
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
                 typeof(AttendanceSettings),
-                typeof(EmployeeProfile)
+                typeof(EmployeeProfile),
+                typeof(AttendancePosQrKey)
             );
+            SeedAttendanceSigningKeyAsync().GetAwaiter().GetResult();
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenQrTokenMissing_ReturnsQrRequired()
+        {
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(new AttendancePunchRequestDto());
+
+            Assert.False(result.Success);
+            Assert.Equal("QR_REQUIRED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ResolveAttendanceQrAsync_ValidToken_ReturnsTrustedDeviceAndExpiry()
+        {
+            await SeedStoreScopeAsync();
+            var issuedAt = new DateTime(
+                DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond * TimeSpan.TicksPerMillisecond,
+                DateTimeKind.Utc);
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(10));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+            {
+                QrToken = CreateQrToken(issuedAt),
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("BRI", result.Data!.StoreCode);
+            Assert.Equal("POS-001", result.Data.DeviceCode);
+            Assert.Equal("Brisbane", result.Data.StoreName);
+            Assert.Equal(issuedAt.AddSeconds(15), result.Data.ExpiresAtUtc);
+        }
+
+        [Fact]
+        public async Task ResolveAttendanceQrAsync_WhenActiveKeyAlgorithmDrifts_RejectsBeforeDecrypt()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Updateable<AttendancePosQrKey>()
+                .SetColumns(item => item.Algorithm == "ES256")
+                .SetColumns(item => item.ProtectedKey == "not-protected-data")
+                .Where(item => item.Kid == "K1")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+                {
+                    QrToken = CreateQrToken(DateTime.UtcNow),
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("ATTENDANCE_QR_KEY_INVALID", result.ErrorCode);
+        }
+
+        [Theory]
+        [InlineData(false, "POS_DEVICE_DISABLED")]
+        [InlineData(true, "FORBIDDEN_STORE")]
+        public async Task ResolveAttendanceQrAsync_DisabledPosOrStoreForbidden_Rejects(
+            bool posActive,
+            string expectedError)
+        {
+            await SeedStoreScopeAsync();
+            var userGuid = posActive ? "outside-user" : "staff-user";
+            var result = await CreateService(userGuid, "user", posActive, "StoreStaff")
+                .ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+                {
+                    QrToken = CreateQrToken(DateTime.UtcNow),
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal(expectedError, result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithValidQrToken_AutomaticallyClocksInThenOutAndCompletesDay()
+        {
+            await SeedStoreScopeAsync();
+            var now = DateTime.UtcNow;
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var clockInRequest = CreateQrPunchRequest(now, Guid.NewGuid());
+            // Expo 严格白名单不发送客户端权限状态，服务端只验证真实坐标与采集时间。
+            clockInRequest.LocationPermissionStatus = null;
+            var clockIn = await service.PunchAsync(clockInRequest);
+            var duplicate = await service.PunchAsync(clockInRequest);
+            _timeProvider.SetUtcNow(now.AddSeconds(31));
+            var expiredDuplicate = await service.PunchAsync(clockInRequest);
+            var forgedRequest = CreateQrPunchRequest(now, Guid.NewGuid());
+            var signatureSeparator = clockInRequest.QrToken!.LastIndexOf('.');
+            var signatureOffset = signatureSeparator + 1;
+            forgedRequest.QrToken = clockInRequest.QrToken[..signatureOffset]
+                + (clockInRequest.QrToken[signatureOffset] == 'A' ? 'B' : 'A')
+                + clockInRequest.QrToken[(signatureOffset + 1)..];
+            _timeProvider.SetUtcNow(now.AddSeconds(31));
+            var forged = await service.PunchAsync(forgedRequest);
+            var clockOut = await service.PunchAsync(CreateQrPunchRequest(now, Guid.NewGuid()));
+            var complete = await service.PunchAsync(CreateQrPunchRequest(now, Guid.NewGuid()));
+
+            Assert.True(clockIn.Success);
+            Assert.Equal("ClockIn", clockIn.Data!.PunchType);
+            Assert.Equal("PosQr", clockIn.Data.Source);
+            Assert.Equal("POS-001", clockIn.Data.PosDeviceCode);
+            Assert.Equal("staff", clockIn.Data.EmployeeName);
+            Assert.Equal("Brisbane", clockIn.Data.StoreName);
+            Assert.Equal(clockIn.Data.PunchTimeUtc, clockIn.Data.ServerTimeUtc);
+            Assert.Equal(clockIn.Data.PunchGuid, duplicate.Data!.PunchGuid);
+            Assert.Equal(clockIn.Data.PunchGuid, expiredDuplicate.Data!.PunchGuid);
+            Assert.False(forged.Success);
+            Assert.Equal("ATTENDANCE_QR_AUTH_INVALID", forged.ErrorCode);
+            Assert.True(clockOut.Success);
+            Assert.Equal("ClockOut", clockOut.Data!.PunchType);
+            Assert.False(complete.Success);
+            Assert.Equal("DAY_COMPLETE", complete.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithRevokedOrUnknownKey_Rejects()
+        {
+            await SeedStoreScopeAsync();
+            var now = DateTime.UtcNow;
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            await _db.Updateable<AttendancePosQrKey>()
+                .SetColumns(item => item.Status == "Revoked")
+                .Where(item => item.Kid == "K1")
+                .ExecuteCommandAsync();
+
+            var revoked = await service.PunchAsync(CreateQrPunchRequest(now, Guid.NewGuid()));
+            var unknownRequest = CreateQrPunchRequest(now, Guid.NewGuid());
+            unknownRequest.QrToken = AttendanceQrTokenCodec.Encrypt(new AttendanceQrTokenPayload
+            {
+                TokenId = Guid.NewGuid(), StoreCode = "BRI", DeviceCode = "POS-001", IssuedAtUtc = now,
+            }, "K2", RandomNumberGenerator.GetBytes(32));
+            var unknown = await service.PunchAsync(unknownRequest);
+
+            Assert.Equal("ATTENDANCE_QR_KEY_REVOKED", revoked.ErrorCode);
+            Assert.Equal("ATTENDANCE_QR_KEY_UNKNOWN", unknown.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenProtectedKeyCannotBeDecrypted_ReturnsSecurityError()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Updateable<AttendancePosQrKey>()
+                .SetColumns(item => item.ProtectedKey == "not-protected-data")
+                .Where(item => item.Kid == "K1")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .PunchAsync(CreateQrPunchRequest(DateTime.UtcNow, Guid.NewGuid()));
+
+            Assert.False(result.Success);
+            Assert.Equal("ATTENDANCE_QR_KEY_DECRYPT_FAILED", result.ErrorCode);
+            Assert.DoesNotContain("not-protected-data", result.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenActiveKeyAlgorithmDrifts_RejectsBeforeDecrypt()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Updateable<AttendancePosQrKey>()
+                .SetColumns(item => item.Algorithm == string.Empty)
+                .SetColumns(item => item.ProtectedKey == "not-protected-data")
+                .Where(item => item.Kid == "K1")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .PunchAsync(CreateQrPunchRequest(DateTime.UtcNow, Guid.NewGuid()));
+
+            Assert.False(result.Success);
+            Assert.Equal("ATTENDANCE_QR_KEY_INVALID", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithExpiredNotActiveOrMismatchedToken_Rejects()
+        {
+            await SeedStoreScopeAsync();
+            var issuedAt = DateTime.UtcNow;
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var expiredRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(15));
+            var expired = await service.PunchAsync(expiredRequest);
+            var notActiveRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(-1));
+            var notActive = await service.PunchAsync(notActiveRequest);
+            var mismatchRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            mismatchRequest.QrToken = CreateQrToken(issuedAt, deviceCode: "POS-002");
+            _timeProvider.SetUtcNow(issuedAt);
+            var mismatch = await service.PunchAsync(mismatchRequest);
+            var storeMismatchRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            storeMismatchRequest.QrToken = CreateQrToken(issuedAt, storeCode: "OTHER");
+            var storeMismatch = await service.PunchAsync(storeMismatchRequest);
+
+            Assert.Equal("ATTENDANCE_QR_EXPIRED", expired.ErrorCode);
+            Assert.Equal("ATTENDANCE_QR_NOT_ACTIVE", notActive.ErrorCode);
+            Assert.Equal("ATTENDANCE_QR_DEVICE_MISMATCH", mismatch.ErrorCode);
+            Assert.Equal("ATTENDANCE_QR_DEVICE_MISMATCH", storeMismatch.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenPosDisabledOrEmployeeHasNoStoreAccess_Rejects()
+        {
+            await SeedStoreScopeAsync();
+            var now = DateTime.UtcNow;
+            var disabled = await CreateService("staff-user", "staff", false, "StoreStaff")
+                .PunchAsync(CreateQrPunchRequest(now, Guid.NewGuid()));
+            var forbidden = await CreateService("outside-user", "outside", "StoreStaff")
+                .PunchAsync(CreateQrPunchRequest(now, Guid.NewGuid()));
+
+            Assert.Equal("POS_DEVICE_DISABLED", disabled.ErrorCode);
+            Assert.Equal("FORBIDDEN_STORE", forbidden.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_TwoEmployeesCanUseSameQrToken()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new User
+            {
+                UserGUID = "second-user",
+                Username = "second",
+                Email = "second@example.com",
+                PasswordHash = "hash",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = "second-store-bri",
+                UserGUID = "second-user",
+                StoreGUID = "store-bri",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var now = DateTime.UtcNow;
+            var request = CreateQrPunchRequest(now, Guid.NewGuid());
+
+            var first = await CreateService("staff-user", "staff", "StoreStaff").PunchAsync(request);
+            var second = await CreateService("second-user", "second", "StoreStaff").PunchAsync(request);
+
+            Assert.True(first.Success);
+            Assert.True(second.Success);
+            Assert.NotEqual(first.Data!.PunchGuid, second.Data!.PunchGuid);
+        }
+
+        [Theory]
+        [InlineData(2601)]
+        [InlineData(2627)]
+        public void AttendancePunchPersistenceException_DetectsDirectAndWrappedUniqueSqlErrors(int number)
+        {
+            var sqlException = CreateSqlException(number);
+            var sugarWrapper = new SqlSugarException("SqlSugar insert failed");
+            typeof(Exception).GetField("_innerException", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(sugarWrapper, sqlException);
+
+            Assert.True(AttendancePunchPersistenceException.IsUniqueConstraintViolation(sqlException));
+            Assert.True(AttendancePunchPersistenceException.IsUniqueConstraintViolation(sugarWrapper));
+        }
+
+        [Fact]
+        public void AttendancePunchPersistenceException_DoesNotHideOtherDatabaseErrors()
+        {
+            Assert.False(AttendancePunchPersistenceException.IsUniqueConstraintViolation(CreateSqlException(50000)));
+            Assert.False(AttendancePunchPersistenceException.IsUniqueConstraintViolation(
+                new SqlSugarException("connection failed")));
+        }
+
+        [Fact]
+        public async Task PunchAsync_PersistsPunchAndApprovalInsideOneTransaction()
+        {
+            var source = await File.ReadAllTextAsync(Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Services/React/AttendanceReactService.cs"));
+
+            Assert.Contains("BeginTranAsync", source);
+            Assert.Contains("CommitTranAsync", source);
+            Assert.Contains("RollbackTranAsync", source);
         }
 
         [Fact]
@@ -336,12 +625,15 @@ namespace BlazorApp.Api.Tests
         {
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
+            var now = DateTime.Parse("2026-01-01T13:30:00Z").ToUniversalTime();
+            _timeProvider.SetUtcNow(now);
 
             var result = await service.PunchAsync(new AttendancePunchRequestDto
             {
+                QrToken = CreateQrToken(now),
                 StoreCode = "BRI",
                 PunchType = "ClockIn",
-                PunchTimeUtc = DateTime.Parse("2026-01-01T13:30:00Z").ToUniversalTime(),
+                PunchTimeUtc = now,
                 LocationLatitude = -27.4698,
                 LocationLongitude = 153.0251,
                 LocationAccuracy = 12.5,
@@ -349,7 +641,7 @@ namespace BlazorApp.Api.Tests
                 LocationCapturedAtUtc = DateTime.UtcNow,
             });
 
-            Assert.True(result.Success);
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
             Assert.Equal("Australia/Brisbane", result.Data!.StoreTimeZone);
             Assert.Equal("2026-01-01", result.Data.WorkDate.ToString("yyyy-MM-dd"));
         }
@@ -367,11 +659,25 @@ namespace BlazorApp.Api.Tests
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
             await SeedScheduleAsync();
+            var request = CreatePunchRequest(punchType, punchTimeUtc);
+            if (punchType == "ClockOut")
+            {
+                await _db.Insertable(new AttendancePunch
+                {
+                    PunchGuid = Guid.NewGuid().ToString(),
+                    StoreCode = "BRI",
+                    UserGuid = "staff-user",
+                    WorkDate = DateTime.Parse(punchTimeUtc).ToUniversalTime().AddHours(10).Date,
+                    StoreTimeZone = "Australia/Brisbane",
+                    PunchType = "ClockIn",
+                    PunchTimeUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime().AddHours(-8),
+                    PunchTimeLocal = DateTime.Parse(punchTimeUtc).ToUniversalTime().AddHours(2),
+                    Status = "Normal",
+                    CreatedAt = DateTime.UtcNow,
+                }).ExecuteCommandAsync();
+            }
 
-            var result = await service.PunchAsync(CreatePunchRequest(
-                punchType,
-                punchTimeUtc
-            ));
+            var result = await service.PunchAsync(request);
 
             Assert.True(result.Success);
             Assert.Equal(expectedStatus, result.Data!.Status);
@@ -383,9 +689,12 @@ namespace BlazorApp.Api.Tests
         {
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
+            var now = DateTime.UtcNow;
+            _timeProvider.SetUtcNow(now);
 
             var result = await service.PunchAsync(new AttendancePunchRequestDto
             {
+                QrToken = CreateQrToken(now),
                 StoreCode = "BRI",
                 StoreTimeZone = "Australia/Brisbane",
                 PunchType = "ClockIn",
@@ -401,18 +710,21 @@ namespace BlazorApp.Api.Tests
         {
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
+            var now = DateTime.UtcNow;
+            _timeProvider.SetUtcNow(now);
 
             var result = await service.PunchAsync(new AttendancePunchRequestDto
             {
+                QrToken = CreateQrToken(now),
                 StoreCode = "BRI",
                 StoreTimeZone = "Australia/Brisbane",
                 PunchType = "ClockIn",
-                PunchTimeUtc = DateTime.UtcNow,
+                PunchTimeUtc = now,
                 LocationLatitude = -27.4698,
                 LocationLongitude = 153.0251,
                 LocationAccuracy = 12.5,
                 LocationPermissionStatus = "granted",
-                LocationCapturedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+                LocationCapturedAtUtc = now.AddMinutes(-10),
             });
 
             Assert.False(result.Success);
@@ -426,9 +738,11 @@ namespace BlazorApp.Api.Tests
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
             var capturedAt = DateTime.UtcNow;
+            _timeProvider.SetUtcNow(capturedAt);
 
             var result = await service.PunchAsync(new AttendancePunchRequestDto
             {
+                QrToken = CreateQrToken(capturedAt),
                 StoreCode = "BRI",
                 StoreTimeZone = "Australia/Brisbane",
                 PunchType = "ClockIn",
@@ -841,7 +1155,42 @@ namespace BlazorApp.Api.Tests
             }
         }
 
-        private static AttendancePunchRequestDto CreatePunchRequest(
+        private async Task SeedAttendanceSigningKeyAsync()
+        {
+            await _db.Insertable(new AttendancePosQrKey
+            {
+                Kid = "K1",
+                Algorithm = "A256GCM",
+                ProtectedKey = _attendanceProtector.Protect(_attendanceKey),
+                StoreCode = "BRI",
+                DeviceCode = "POS-001",
+                HardwareId = "HW-001",
+                Status = "Active",
+                RegisteredAtUtc = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private AttendancePunchRequestDto CreateQrPunchRequest(DateTime now, Guid tokenId)
+        {
+            _timeProvider.SetUtcNow(now);
+            return new AttendancePunchRequestDto
+            {
+                QrToken = AttendanceQrTokenCodec.Encrypt(new AttendanceQrTokenPayload
+                {
+                    TokenId = tokenId,
+                    StoreCode = "BRI",
+                    DeviceCode = "POS-001",
+                    IssuedAtUtc = now,
+                }, "K1", _attendanceKey),
+                LocationLatitude = -27.4698,
+                LocationLongitude = 153.0251,
+                LocationAccuracy = 12.5,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = now,
+            };
+        }
+
+        private AttendancePunchRequestDto CreatePunchRequest(
             string punchType,
             string punchTimeUtc,
             string storeTimeZone = "Australia/Brisbane",
@@ -849,8 +1198,10 @@ namespace BlazorApp.Api.Tests
         )
         {
             var punchAtUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime();
+            _timeProvider.SetUtcNow(punchAtUtc);
             return new AttendancePunchRequestDto
             {
+                QrToken = CreateQrToken(punchAtUtc),
                 StoreCode = storeCode,
                 StoreTimeZone = storeTimeZone,
                 PunchType = punchType,
@@ -864,6 +1215,13 @@ namespace BlazorApp.Api.Tests
         }
 
         private AttendanceReactService CreateService(string userGuid, string username, params string[] roles)
+            => CreateService(userGuid, username, true, roles);
+
+        private AttendanceReactService CreateService(
+            string userGuid,
+            string username,
+            bool posDeviceActive,
+            params string[] roles)
         {
             var httpContextAccessor = new HttpContextAccessor
             {
@@ -899,8 +1257,62 @@ namespace BlazorApp.Api.Tests
                 scopeService,
                 httpContextAccessor,
                 NullLogger<AttendanceReactService>.Instance,
-                uploadService
+                uploadService,
+                new StubAttendancePosDeviceStatusProvider(posDeviceActive),
+                _timeProvider,
+                _attendanceProtector
             );
+        }
+
+        private string CreateQrToken(DateTime now, string storeCode = "BRI", string deviceCode = "POS-001") =>
+            AttendanceQrTokenCodec.Encrypt(new AttendanceQrTokenPayload
+            {
+                TokenId = Guid.NewGuid(),
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
+                IssuedAtUtc = now,
+            }, "K1", _attendanceKey);
+
+        private sealed class StubAttendancePosDeviceStatusProvider(bool isActive)
+            : IAttendancePosDeviceStatusProvider
+        {
+            public Task<bool> IsActiveAsync(
+                string deviceCode,
+                string storeCode,
+                string hardwareId,
+                CancellationToken cancellationToken = default) => Task.FromResult(isActive);
+        }
+
+        private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+        {
+            private DateTimeOffset _utcNow = utcNow;
+            public override DateTimeOffset GetUtcNow() => _utcNow;
+            public void SetUtcNow(DateTime utcNow) => _utcNow = new DateTimeOffset(utcNow.ToUniversalTime());
+        }
+
+        private static SqlException CreateSqlException(int number)
+        {
+            var error = (SqlError)RuntimeHelpers.GetUninitializedObject(typeof(SqlError));
+            typeof(SqlError).GetField("_number", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(error, number);
+            var errors = (SqlErrorCollection)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true)!;
+            typeof(SqlErrorCollection).GetMethod("Add", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(errors, new object[] { error });
+            var exception = (SqlException)RuntimeHelpers.GetUninitializedObject(typeof(SqlException));
+            typeof(SqlException).GetField("_errors", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(exception, errors);
+            return exception;
+        }
+
+        private static string FindRepoRoot()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null && !Directory.Exists(Path.Combine(directory.FullName, "services")))
+            {
+                directory = directory.Parent;
+            }
+
+            return directory?.FullName ?? throw new DirectoryNotFoundException("找不到仓库根目录");
         }
 
         private async Task SeedStoreScopeAsync()

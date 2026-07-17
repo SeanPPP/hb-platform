@@ -16,10 +16,10 @@ public sealed class ApiServerSettingsService
     private readonly Func<string> _getCurrentAddress;
     private readonly Action<string> _saveUserAddress;
 
-    public ApiServerSettingsService(HttpClient httpClient)
+    public ApiServerSettingsService(HttpClient httpClient, ApiRuntimeEndpointState? endpointState = null)
         : this(
             httpClient,
-            () => ServiceRegistration.GetApiBaseAddress().ToString(),
+            () => endpointState?.CurrentAddress.AbsoluteUri ?? ServiceRegistration.GetApiBaseAddress().ToString(),
             address => Environment.SetEnvironmentVariable(
                 "HBPOS_API_BASE_URL",
                 address,
@@ -98,6 +98,7 @@ public sealed class ApiServerSettingsService
 
         try
         {
+            // 候选健康检查客户端未接入运行时端点处理器，必须始终直达用户输入的地址。
             using var response = await _httpClient.GetAsync(
                 new Uri(baseAddress, "api/v1/health"),
                 timeout.Token);

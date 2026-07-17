@@ -343,6 +343,32 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public void Convert_resolves_relative_path_from_current_runtime_endpoint_after_switch()
+    {
+        var state = new ApiRuntimeEndpointState("https://first.example.test/pos-api/");
+        var converter = new ProductThumbnailImageSourceConverter();
+        var requestedUris = new List<string>();
+        using var endpoint = ProductThumbnailImageSourceConverter.UseApiBaseAddressProviderForTests(
+            () => state.CurrentAddress);
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
+        {
+            requestedUris.Add(uri.AbsoluteUri);
+            return Task.FromResult(OnePixelPngBytes());
+        });
+
+        converter.Convert("images/first.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
+        state.Switch("https://second.example.test/other-base/");
+        converter.Convert("images/second.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
+
+        Assert.Equal(
+            [
+                "https://first.example.test/pos-api/images/first.png",
+                "https://second.example.test/other-base/images/second.png"
+            ],
+            requestedUris);
+    }
+
+    [Fact]
     public void Convert_returns_null_for_invalid_data_image()
     {
         var converter = new ProductThumbnailImageSourceConverter();

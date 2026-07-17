@@ -752,6 +752,9 @@ public sealed class SquareControllerTests
                 services.RemoveAll<IStoreSchemaInitializer>();
                 services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
 
+                services.RemoveAll<IAttendanceQrKeySchemaInitializer>();
+                services.AddSingleton<IAttendanceQrKeySchemaInitializer>(new TestNoOpAttendanceQrKeySchemaInitializer());
+
                 services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
                 services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOpDeviceRuntimeStatusSchemaInitializer());
 

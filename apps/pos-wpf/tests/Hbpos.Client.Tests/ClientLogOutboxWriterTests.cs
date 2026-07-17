@@ -11,6 +11,150 @@ namespace Hbpos.Client.Tests;
 public sealed class ClientLogOutboxWriterTests
 {
     [Fact]
+    public async Task Audit_revision_rejects_commit_when_audit_arrives_after_final_database_check()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("revision-instance", "1.0.0"));
+
+        try
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await writer.StartAsync(CancellationToken.None);
+            Assert.Equal(0, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
+            var revision = writer.CaptureOperationAuditRevision();
+
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.Parse("34343434-3434-3434-3434-343434343434"),
+                OperationType = "API_SERVER_SWITCH_RACE",
+                Outcome = "Succeeded"
+            });
+            await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+
+            var published = false;
+            var committed = writer.TryPublishForOperationAuditRevision(revision, () => published = true);
+
+            Assert.Equal(0, writer.PendingOperationAuditPersistenceCount);
+            Assert.Equal(1, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
+            Assert.False(committed);
+            Assert.False(published);
+        }
+        finally
+        {
+            if (writer.ExecuteTask is { IsCompleted: false })
+            {
+                using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await writer.StopAsync(cleanupBudget.Token);
+            }
+
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Audit_record_cannot_cross_atomic_revision_check_and_publish()
+    {
+        var writer = new ClientLogOutboxWriter(
+            new ClientLogOutboxStore(CreateDatabasePath()),
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("revision-race-instance", "1.0.0"));
+        var publishEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releasePublish = new ManualResetEventSlim();
+
+        try
+        {
+            var revision = writer.CaptureOperationAuditRevision();
+            var commit = Task.Run(() => writer.TryPublishForOperationAuditRevision(revision, () =>
+            {
+                publishEntered.TrySetResult();
+                releasePublish.Wait(TimeSpan.FromSeconds(2));
+            }));
+            await publishEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var record = Task.Run(() => writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.Parse("56565656-5656-5656-5656-565656565656"),
+                OperationType = "API_SERVER_SWITCH_ATOMIC",
+                Outcome = "Succeeded"
+            }));
+            await Task.Delay(50);
+
+            Assert.False(record.IsCompleted);
+            releasePublish.Set();
+            Assert.True(await commit.WaitAsync(TimeSpan.FromSeconds(2)));
+            await record.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.NotEqual(revision, writer.CaptureOperationAuditRevision());
+        }
+        finally
+        {
+            releasePublish.Set();
+            writer.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Operation_audit_flush_waits_until_in_memory_event_is_persisted()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("flush-instance", "1.0.0"));
+        var writeGateField = typeof(ClientLogOutboxStore)
+            .GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic);
+        var writeGate = Assert.IsType<SemaphoreSlim>(writeGateField!.GetValue(store));
+
+        try
+        {
+            await writer.StartAsync(CancellationToken.None);
+            await writeGate.WaitAsync(CancellationToken.None);
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.Parse("12121212-1212-1212-1212-121212121212"),
+                OperationType = "API_SERVER_SWITCH",
+                Outcome = "Succeeded"
+            });
+
+            var flush = writer.WaitForOperationAuditFlushAsync(CancellationToken.None);
+            await Task.Delay(50);
+
+            Assert.Equal(1, writer.PendingOperationAuditPersistenceCount);
+            Assert.False(flush.IsCompleted);
+
+            writeGate.Release();
+            await flush.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(0, writer.PendingOperationAuditPersistenceCount);
+        }
+        finally
+        {
+            if (writeGate.CurrentCount == 0)
+            {
+                writeGate.Release();
+            }
+
+            if (writer.ExecuteTask is { IsCompleted: false })
+            {
+                using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await writer.StopAsync(cleanupBudget.Token);
+            }
+
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Temp_database_cleanup_is_best_effort_while_windows_handle_is_still_open()
     {
         var databasePath = CreateDatabasePath();

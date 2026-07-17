@@ -29,6 +29,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     private readonly IRawScannerService? _rawScannerService;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly object _specialItemsGate = new();
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly Func<IEnumerable<string?>, int, CancellationToken, Task<int>> _thumbnailPreloadAsync;
@@ -91,7 +92,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
         Func<IEnumerable<string?>, int, CancellationToken, Task<int>>? thumbnailPreloadAsync = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _workflowService = workflowService ?? new SpecialProductsWorkflowService(
             priceIndex,
@@ -105,6 +107,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _rawScannerService = rawScannerService;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -118,11 +121,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(SearchText));
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
         DownloadCommand = new AsyncRelayCommand(DownloadSpecialProductsAsync, CanDownloadSpecialProducts);
-        ToggleEditModeCommand = new RelayCommand(ToggleEditMode, () => !IsBusy);
+        ToggleEditModeCommand = new AsyncRelayCommand(ToggleEditModeAsync, () => !IsBusy);
         PreviousPageCommand = new RelayCommand(ShowPreviousPage, CanShowPreviousPage);
         NextPageCommand = new RelayCommand(ShowNextPage, CanShowNextPage);
-        AddToCartCommand = new RelayCommand<SellableItemDto>(AddToCart);
-        SpecialItemCardCommand = new RelayCommand<SellableItemDto>(HandleSpecialItemCard);
+        AddToCartCommand = new AsyncRelayCommand<SellableItemDto>(AddToCartAsync);
+        SpecialItemCardCommand = new AsyncRelayCommand<SellableItemDto>(HandleSpecialItemCardAsync);
         AddSpecialProductCommand = new AsyncRelayCommand<SellableItemDto>(AddSpecialProductAsync, CanMutateItem);
         RemoveSpecialProductCommand = new AsyncRelayCommand<SellableItemDto>(RemoveSpecialProductAsync, CanMutateItem);
         MoveUpCommand = new AsyncRelayCommand<SellableItemDto>(item => MoveSpecialProductAsync(item, -1), CanMoveUp);
@@ -468,7 +471,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         OnPropertyChanged(nameof(HasSearchResults));
     }
 
-    private void HandleSpecialItemCard(SellableItemDto? item)
+    private async Task HandleSpecialItemCardAsync(SellableItemDto? item)
     {
         if (item is null)
         {
@@ -482,17 +485,20 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             return;
         }
 
-        AddToCart(item);
+        await AddToCartAsync(item);
     }
 
-    private void AddToCart(SellableItemDto? item)
+    private async Task AddToCartAsync(SellableItemDto? item)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.AddToCart))
+        var itemSnapshot = item;
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.AddToCart, "add-to-cart");
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
-        if (item is null)
+        if (itemSnapshot is null)
         {
             Log($"operation=add-to-cart store={Session.StoreCode} success=false reason=null-item totalElapsedMs=0");
             return;
@@ -501,27 +507,29 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            var result = _workflowService.AddToCart(item);
-            SetStatus("specialProducts.status.addedToCart", item.DisplayName);
+            var result = _workflowService.AddToCart(itemSnapshot);
+            SetStatus("specialProducts.status.addedToCart", itemSnapshot.DisplayName);
             Back();
             _onCartLineAdded?.Invoke(result.Line);
             stopwatch.Stop();
-            Log($"operation=add-to-cart store={Session.StoreCode} productCode={item.ProductCode} lookupCode={item.LookupCode} success=true revealRequested={_onCartLineAdded is not null} cartLines={result.CartLineCount} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
+            Log($"operation=add-to-cart store={Session.StoreCode} productCode={itemSnapshot.ProductCode} lookupCode={itemSnapshot.LookupCode} success=true revealRequested={_onCartLineAdded is not null} cartLines={result.CartLineCount} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            Log($"operation=add-to-cart store={Session.StoreCode} productCode={item.ProductCode} lookupCode={item.LookupCode} success=false totalElapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            Log($"operation=add-to-cart store={Session.StoreCode} productCode={itemSnapshot.ProductCode} lookupCode={itemSnapshot.LookupCode} success=false totalElapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
             throw;
         }
     }
 
     private async Task DownloadSpecialProductsAsync(CancellationToken cancellationToken)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.Manage, "download", cancellationToken);
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         if (IsBusy || !EnsureOnlineMutationAllowed())
         {
@@ -593,33 +601,39 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task AddSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        var itemSnapshot = item;
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.Manage, "add", cancellationToken);
+        if (authorization is null)
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        if (itemSnapshot is null || !IsEditMode || !EnsureOnlineMutationAllowed())
         {
             return;
         }
 
-        if (item is null || !IsEditMode || !EnsureOnlineMutationAllowed())
-        {
-            return;
-        }
-
-        await MarkSpecialProductAsync(item, true, cancellationToken);
+        await MarkSpecialProductAsync(itemSnapshot, true, cancellationToken);
         SearchCatalog();
     }
 
     private async Task RemoveSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        var itemSnapshot = item;
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.Manage, "remove", cancellationToken);
+        if (authorization is null)
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        if (itemSnapshot is null || !IsEditMode || !EnsureOnlineMutationAllowed())
         {
             return;
         }
 
-        if (item is null || !IsEditMode || !EnsureOnlineMutationAllowed())
-        {
-            return;
-        }
-
-        await MarkSpecialProductAsync(item, false, cancellationToken);
+        await MarkSpecialProductAsync(itemSnapshot, false, cancellationToken);
     }
 
     private async Task MarkSpecialProductAsync(
@@ -666,17 +680,22 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task MoveSpecialProductAsync(SellableItemDto? item, int delta)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        var itemSnapshot = item;
+        using var authorization = await AuthorizeAsync(
+            Permissions.PosTerminal.SpecialProducts.Manage,
+            delta < 0 ? "move-up" : "move-down");
+        if (authorization is null)
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        if (itemSnapshot is null || IsBusy || !IsEditMode)
         {
             return;
         }
 
-        if (item is null || IsBusy || !IsEditMode)
-        {
-            return;
-        }
-
-        var currentIndex = SpecialItems.IndexOf(item);
+        var currentIndex = SpecialItems.IndexOf(itemSnapshot);
         var nextIndex = currentIndex + delta;
         if (currentIndex < 0 || nextIndex < 0 || nextIndex >= SpecialItems.Count)
         {
@@ -688,7 +707,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         var result = await _workflowService.ReorderAsync(
             Session.StoreCode,
             SpecialItems.ToArray(),
-            item.ProductCode,
+            itemSnapshot.ProductCode,
             delta,
             CancellationToken.None);
         saveStopwatch.Stop();
@@ -703,18 +722,36 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         SetStatus("specialProducts.status.orderSaved");
         RefreshCommandStates();
         totalStopwatch.Stop();
-        Log($"operation=move store={Session.StoreCode} productCode={item.ProductCode} fromIndex={currentIndex} toIndex={nextIndex} saveElapsedMs={saveStopwatch.ElapsedMilliseconds} pageRefreshElapsedMs={pageStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        Log($"operation=move store={Session.StoreCode} productCode={itemSnapshot.ProductCode} fromIndex={currentIndex} toIndex={nextIndex} saveElapsedMs={saveStopwatch.ElapsedMilliseconds} pageRefreshElapsedMs={pageStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
     }
 
-    private void ToggleEditMode()
+    private async Task ToggleEditModeAsync()
     {
-        if (!IsEditMode && !TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        var wasEditMode = IsEditMode;
+        using var authorization = wasEditMode
+            ? null
+            : await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.Manage, "enter-edit-mode");
+        if (!wasEditMode && authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization?.Activate();
 
         IsEditMode = !IsEditMode;
     }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(
+        string permissionCode,
+        string action,
+        CancellationToken cancellationToken = default) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            permissionCode,
+            "special-products",
+            action,
+            Session,
+            cancellationToken);
 
     private bool TryRequirePermission(string permissionCode)
     {

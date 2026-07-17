@@ -21,6 +21,7 @@
     "test:domestic-purchase-keyboard": "npx --yes tsx src/modules/domestic-purchase/create-batch-keyboard-source.test.ts",
     "test:native-app-update": "npx --yes tsx src/modules/updates/native-app-update.test.ts",
     "test:public-holiday-sync": "npx --yes tsx src/modules/attendance/public-holiday-sync.test.ts",
+    "test:attendance-qr": "npx --yes tsx src/modules/attendance/attendance-qr.test.ts && npx --yes tsx src/modules/attendance/attendance-api.test.ts && npx --yes tsx src/modules/attendance/attendance-qr-scan-session.test.ts && npx --yes tsx src/components/attendance/attendance-qr-ui-contract.test.ts && npx --yes tsx src/shared/api/api-envelope.test.ts",
     "test:reports": "npx --yes tsx src/modules/reports/revenue-api-normalization.test.ts && npx --yes tsx src/modules/reports/growth-rate.test.ts && npx --yes tsx src/modules/reports/revenue-format.test.ts && npx --yes tsx src/modules/reports/revenue-periods.test.ts && npx --yes tsx src/modules/reports/statistics-freshness.test.ts && npx --yes tsx src/modules/reports/report-refresh.test.ts && npx --yes tsx src/modules/reports/report-timeout.test.ts && npx --yes tsx src/components/attendance/month-date-picker-range.test.ts",
     "web": "expo start --web"
   },

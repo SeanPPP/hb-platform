@@ -1,7 +1,10 @@
+using System.ComponentModel;
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using BlazorApp.Shared.DTOs;
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -116,6 +119,51 @@ public sealed class CashierPermissionTests
         Assert.Equal("C001", second.Session.CashierId);
         Assert.DoesNotContain(settings.Keys, key => key.Contains("BAR-1", StringComparison.Ordinal));
         Assert.All(settings.Values, value => Assert.StartsWith("protected:", value, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Cashier_login_known_offline_reads_cache_without_calling_api()
+    {
+        var settings = new InMemoryAppSettingsRepository();
+        var protector = new PassthroughProtector();
+        var onlineSession = CreateSession(allowedStoreCodes: ["S001"]);
+        var seedService = new CashierLoginService(
+            new SequenceCashierLoginApiClient(CashierLoginAttempt.OnlineAccepted(onlineSession)),
+            settings,
+            protector);
+        Assert.True((await seedService.LoginAsync("S001", "POS-01", "BAR-1")).Succeeded);
+
+        var api = new NeverCompletingCashierLoginApiClient();
+        var service = new CashierLoginService(api, settings, protector);
+        var result = await service.LoginAsync(
+            "S001",
+            "POS-01",
+            "BAR-1",
+            attemptOnline: false).WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.Session!.IsOfflineCached);
+        Assert.Equal(0, api.CallCount);
+    }
+
+    [Fact]
+    public async Task Cashier_login_known_offline_cache_miss_fails_without_calling_api()
+    {
+        var api = new NeverCompletingCashierLoginApiClient();
+        var service = new CashierLoginService(
+            api,
+            new InMemoryAppSettingsRepository(),
+            new PassthroughProtector());
+
+        var result = await service.LoginAsync(
+            "S001",
+            "POS-01",
+            "BAR-MISSING",
+            attemptOnline: false).WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("CASHIER_LOGIN_API_UNAVAILABLE", result.ErrorCode);
+        Assert.Equal(0, api.CallCount);
     }
 
     [Fact]
@@ -747,7 +795,7 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
-    public async Task Card_tender_auto_complete_requires_confirm_permission()
+    public async Task Card_tender_auto_complete_requires_confirm_permission_before_terminal_charge()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem());
@@ -763,9 +811,9 @@ public sealed class CashierPermissionTests
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
 
-        Assert.Equal(1, workflow.AddTenderCallCount);
+        Assert.Equal(0, workflow.AddTenderCallCount);
         Assert.Equal(0, workflow.CompletePaymentCallCount);
-        Assert.Single(viewModel.PaymentTenders);
+        Assert.Empty(viewModel.PaymentTenders);
         Assert.Equal("当前收银员没有确认付款权限", viewModel.StatusMessage);
     }
 
@@ -811,6 +859,41 @@ public sealed class CashierPermissionTests
         Assert.Equal(string.Empty, viewModel.ScanText);
         Assert.False(viewModel.IsMatchesPopupOpen);
         Assert.Equal("收银员登录成功", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_cashier_login_success_status_follows_current_culture()
+    {
+        var localization = new FakeLocalizationService();
+        var cashierBarcode = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            workflowService: new FakePosTerminalWorkflowService(),
+            localization: localization,
+            tryLoginCashierFromScannerFallbackAsync: (barcode, _) =>
+            {
+                cashierBarcode.TrySetResult(barcode);
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: true);
+
+        Assert.True(viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw"));
+        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        for (var attempt = 0; attempt < 20 && viewModel.StatusFeedbackKind != StatusFeedbackKind.Success; attempt++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal("Cashier login successful.", viewModel.StatusMessage);
+        Assert.DoesNotContain("[[", viewModel.StatusMessage, StringComparison.Ordinal);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("收银员登录成功。", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -869,7 +952,7 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
-    public async Task Pos_terminal_scanner_with_cashier_without_add_permission_tries_cashier_login_fallback_when_not_catalog_match()
+    public async Task Pos_terminal_scanner_with_cashier_without_add_permission_never_switches_cashier_on_unknown_barcode()
     {
         var cart = new PosCartService();
         var workflow = new FakePosTerminalWorkflowService
@@ -900,20 +983,16 @@ public sealed class CashierPermissionTests
         var processed = viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw");
 
         Assert.True(processed);
-        for (var attempt = 0; attempt < 20 && !fallbackCalled; attempt++)
+        for (var attempt = 0; attempt < 20 && string.IsNullOrEmpty(viewModel.StatusMessage); attempt++)
         {
             await Task.Delay(25);
         }
 
-        Assert.True(fallbackCalled);
+        Assert.False(fallbackCalled);
         Assert.Equal(0, workflow.ProcessScanAsyncCalls);
         Assert.Empty(viewModel.CartLines);
-        Assert.False(string.IsNullOrWhiteSpace(viewModel.StatusMessage));
-        /*
-        Assert.Equal("鏀堕摱鍛樼櫥褰曟垚鍔?, viewModel.StatusMessage);
-    }
-
-        */
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Sales.AddItem, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
     }
 
     [Fact]
@@ -953,6 +1032,46 @@ public sealed class CashierPermissionTests
         Assert.Empty(viewModel.CartLines);
         Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Sales.AddItem, out var deniedMessage));
         Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_scanner_with_authorized_cashier_catalog_miss_never_switches_cashier()
+    {
+        var cart = new PosCartService();
+        var workflow = new FakePosTerminalWorkflowService
+        {
+            ScanResult = new PosTerminalWorkflowResult
+            {
+                StatusKey = "pos.status.noLocalMatch",
+                Matches = []
+            }
+        };
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]));
+        var fallbackCalled = false;
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            cart,
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow,
+            tryLoginCashierFromScannerFallbackAsync: (_, _) =>
+            {
+                fallbackCalled = true;
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: cashierContext,
+            enforcePermissionsWhenNoCashier: true);
+
+        Assert.True(viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw"));
+        for (var attempt = 0; attempt < 40 && workflow.ProcessScanAsyncCalls == 0; attempt++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(1, workflow.ProcessScanAsyncCalls);
+        Assert.False(fallbackCalled);
+        Assert.Empty(viewModel.CartLines);
     }
 
     [Fact]
@@ -1136,6 +1255,20 @@ public sealed class CashierPermissionTests
         }
     }
 
+    private sealed class NeverCompletingCashierLoginApiClient : ICashierLoginApiClient
+    {
+        public int CallCount { get; private set; }
+
+        public Task<CashierLoginAttempt> LoginAsync(
+            CashierBarcodeLoginRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return new TaskCompletionSource<CashierLoginAttempt>(
+                TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        }
+    }
+
     private sealed class SequenceCashierSessionRefreshApiClient(params CashierSessionRefreshAttempt[] attempts)
         : ICashierSessionRefreshApiClient
     {
@@ -1257,6 +1390,46 @@ public sealed class CashierPermissionTests
                 _lines.Add(line);
             }
         }
+    }
+
+    private sealed class FakeLocalizationService : ILocalizationService
+    {
+        private readonly IReadOnlyDictionary<(string CultureName, string Key), string> _translations =
+            new Dictionary<(string CultureName, string Key), string>
+            {
+                [("en-US", "shell.cashierLogin.status.success")] = "Cashier login successful.",
+                [("zh-CN", "shell.cashierLogin.status.success")] = "收银员登录成功。"
+            };
+
+        public IReadOnlyList<CultureInfo> AvailableCultures { get; } =
+            [CultureInfo.GetCultureInfo("en-US"), CultureInfo.GetCultureInfo("zh-CN")];
+
+        public CultureInfo CurrentCulture { get; private set; } = CultureInfo.GetCultureInfo("en-US");
+
+        public event EventHandler? CultureChanged;
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public void SetCulture(string cultureName) => SetCulture(CultureInfo.GetCultureInfo(cultureName));
+
+        public void SetCulture(CultureInfo culture)
+        {
+            CurrentCulture = culture;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentCulture)));
+            CultureChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public Task SetCultureAsync(string cultureName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SetCulture(cultureName);
+            return Task.CompletedTask;
+        }
+
+        public string T(string key) =>
+            _translations.TryGetValue((CurrentCulture.Name, key), out var value)
+                ? value
+                : $"[[{key}]]";
     }
 
     private sealed class FakePosTerminalWorkflowService : IPosTerminalWorkflowService

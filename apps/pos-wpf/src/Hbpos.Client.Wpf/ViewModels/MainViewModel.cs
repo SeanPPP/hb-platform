@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
@@ -7,6 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Security;
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Client.Wpf.Converters;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
@@ -81,6 +83,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly ICashierLoginService? _cashierLoginService;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
     private readonly bool _enforceCashierPermissions;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
@@ -90,6 +93,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
     private readonly ApiServerSettingsViewModel? _apiServerSettings;
+    private readonly AttendanceQrPanelViewModel? _attendanceQrPanel;
     private readonly CustomerDisplayShellController _customerDisplayShellController;
     private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
     private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
@@ -109,6 +113,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private bool _startupCardRecoveryPendingAfterCashierLogin;
     private bool _shutdownLogoutRecorded;
+    private bool _allowApiServerSwitchNavigation;
+    private object? _apiServerSwitchFrozenScreen;
     private int _applicationExitStarted;
 
     private SyncOrchestrator? _syncOrchestrator;
@@ -121,7 +127,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public object? CurrentScreen
     {
         get => _screenNavigator.CurrentScreen;
-        set => _screenNavigator.SetCurrentScreen(value);
+        set
+        {
+            if (IsApiServerSwitching && !_allowApiServerSwitchNavigation)
+            {
+                return;
+            }
+
+            _screenNavigator.SetCurrentScreen(value);
+        }
     }
 
     public PosTerminalViewModel? CachedPosTerminalScreen => _screenNavigator.CachedPosTerminalScreen;
@@ -131,6 +145,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public SpecialProductsViewModel? CachedSpecialProductsScreen => _screenNavigator.CachedSpecialProductsScreen;
 
     public AppUpdateState AppUpdate { get; }
+
+    public IOperationAuthorizationService? OperationAuthorization => _operationAuthorizationService;
 
     [ObservableProperty]
     private string _selectedCultureName = LocalizationService.DefaultCultureName;
@@ -153,6 +169,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _isApiServerSwitching;
 
     [ObservableProperty]
     private string _currentTime = string.Empty;
@@ -366,7 +385,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         bool enforceCashierPermissions = false,
         IOperationAuditLogger? operationAuditLogger = null,
-        ApiServerSettingsViewModel? apiServerSettings = null)
+        ApiServerSettingsViewModel? apiServerSettings = null,
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        ApiRuntimeEndpointState? runtimeEndpointState = null,
+        AttendanceQrPanelViewModel? attendanceQrPanel = null)
     {
         _core = core;
         _infra = infra;
@@ -427,6 +449,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _cashierLoginService = cashierLoginService;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
+        if (runtimeEndpointState is not null && Application.Current is not null)
+        {
+            ProductThumbnailImageSourceConverter.ConfigureApiBaseAddressProvider(
+                () => runtimeEndpointState.CurrentAddress);
+        }
         _runtimeStatusApiClient = runtimeStatusApiClient;
         _enforceCashierPermissions = enforceCashierPermissions;
         _windowOwnerProvider = windowOwnerProvider;
@@ -434,6 +462,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _appUpdateChannelProvider = appUpdateChannelProvider;
         _apiServerSettings = apiServerSettings;
+        _attendanceQrPanel = attendanceQrPanel;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
         _mainChildViewModelFactory = CreateMainChildViewModelFactory();
 
@@ -442,6 +471,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _syncOrchestrator = CreateSyncOrchestrator();
 
         _screenNavigator = CreateScreenNavigator();
+
+        if (_operationAuthorizationService is not null)
+        {
+            // 关键逻辑：授权遮罩拥有独立扫码页，避免授权条码落入当前业务页面。
+            _operationAuthorizationService.PropertyChanged += OnOperationAuthorizationPropertyChanged;
+            _rawScannerService.Subscribe(
+                _operationAuthorizationService.ScannerPageId,
+                OnOperationAuthorizationBarcodeScanned);
+        }
 
         _screenNavigator.PaymentSuccess = _mainChildViewModelFactory.CreatePaymentSuccessViewModel();
         PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
@@ -489,10 +527,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ToggleSyncCenterCommand = _syncOrchestrator.ToggleSyncCenterCommand;
         RetrySyncOrderCommand = _syncOrchestrator.RetrySyncOrderCommand;
         RetryAllSyncOrdersCommand = _syncOrchestrator.RetryAllSyncOrdersCommand;
-        ToggleCustomerDisplayWindowCommand = new RelayCommand(ToggleCustomerDisplayWindow);
-        CloseCustomerDisplayWindowCommand = new RelayCommand(CloseCustomerDisplayWindowFromCommand);
-        ShowCustomerDisplayNormalCommand = new RelayCommand(() => SetCustomerDisplayWindowModeFromCommand(CustomerDisplayWindowMode.Normal));
-        ShowCustomerDisplayFullscreenCommand = new RelayCommand(() => SetCustomerDisplayWindowModeFromCommand(CustomerDisplayWindowMode.Fullscreen));
+        ToggleCustomerDisplayWindowCommand = new AsyncRelayCommand(ToggleCustomerDisplayWindowAsync);
+        CloseCustomerDisplayWindowCommand = new AsyncRelayCommand(CloseCustomerDisplayWindowFromCommandAsync);
+        ShowCustomerDisplayNormalCommand = new AsyncRelayCommand(() => SetCustomerDisplayWindowModeFromCommandAsync(CustomerDisplayWindowMode.Normal));
+        ShowCustomerDisplayFullscreenCommand = new AsyncRelayCommand(() => SetCustomerDisplayWindowModeFromCommandAsync(CustomerDisplayWindowMode.Fullscreen));
         ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
         ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
         LoginCashierCommand = new AsyncRelayCommand(LoginCashierFromInputAsync, CanLoginCashierFromInput);
@@ -541,9 +579,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _enforceCashierPermissions,
             _checkForAppUpdateAsync,
             _appUpdateChannelProvider,
-            _operationAuditLogger,
-            // 中文说明：组合根只转交 DI 单例，确保注册页与设置页共享同一份重启状态。
-            apiServerSettings: _apiServerSettings);
+             _operationAuditLogger,
+             // 中文说明：组合根只转交 DI 单例，确保注册页与设置页共享同一份重启状态。
+             apiServerSettings: _apiServerSettings,
+             // 中文说明：主壳与全部子页面共享同一个单次操作授权服务，授权不会变成新的登录会话。
+             operationAuthorizationService: _operationAuthorizationService);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -764,13 +804,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand RetryAllSyncOrdersCommand { get; }
 
-    public IRelayCommand ToggleCustomerDisplayWindowCommand { get; }
+    public IAsyncRelayCommand ToggleCustomerDisplayWindowCommand { get; }
 
-    public IRelayCommand CloseCustomerDisplayWindowCommand { get; }
+    public IAsyncRelayCommand CloseCustomerDisplayWindowCommand { get; }
 
-    public IRelayCommand ShowCustomerDisplayNormalCommand { get; }
+    public IAsyncRelayCommand ShowCustomerDisplayNormalCommand { get; }
 
-    public IRelayCommand ShowCustomerDisplayFullscreenCommand { get; }
+    public IAsyncRelayCommand ShowCustomerDisplayFullscreenCommand { get; }
 
     public IAsyncRelayCommand ToggleCultureCommand { get; }
 
@@ -799,6 +839,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged -= OnCartChanged;
         _localization.CultureChanged -= OnCultureChanged;
         _customerDisplayOrchestrator.Closed -= OnCustomerDisplayClosed;
+        if (_operationAuthorizationService is not null)
+        {
+            _operationAuthorizationService.RevokeAll();
+            _operationAuthorizationService.PropertyChanged -= OnOperationAuthorizationPropertyChanged;
+            _rawScannerService.Unsubscribe(_operationAuthorizationService.ScannerPageId);
+        }
         _cardRecoveryPresenter?.DetachDialogService();
 
         PaymentSuccess.NewTransactionRequested -= OnPaymentSuccessNewTransactionRequested;
@@ -837,6 +883,65 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await InitializePosExperienceAsync(startupOptions);
     }
 
+    internal async Task ReinitializeAfterServerSwitchAsync(CancellationToken cancellationToken)
+    {
+        _allowApiServerSwitchNavigation = true;
+        try
+        {
+            await ReinitializeAfterServerSwitchCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _allowApiServerSwitchNavigation = false;
+        }
+    }
+
+    private async Task ReinitializeAfterServerSwitchCoreAsync(CancellationToken cancellationToken)
+    {
+        var startupOptions = _startupOptions ?? new AppStartupOptions([], false, null, null);
+        _connectivityTimer.Stop();
+        _deviceRegistrationStoreLoadTask = null;
+        _posPostShowStartupTask = null;
+        CancelStartupCatalogIndexLoad();
+        _screenNavigator.ClearScreens();
+        _screenNavigator.SetCachedPosTerminalScreen(null);
+        _screenNavigator.SetCachedSpecialProductsScreen(null);
+        DeviceRegistration = null;
+        _mainShellStartupService.ClearAuthorization();
+
+        // 服务器边界切换后清空旧身份与门店上下文，再只使用目标分区重新建立壳层。
+        Session = Session with
+        {
+            StoreCode = string.Empty,
+            StoreName = string.Empty,
+            DeviceCode = string.Empty,
+            CashierId = string.Empty,
+            CashierName = string.Empty,
+            CashierSession = null,
+            IsOnline = false,
+            PendingSyncCount = 0
+        };
+
+        await _schema.InitializeAsync(cancellationToken);
+        var startupResult = await _mainShellStartupService.EvaluateAfterServerSwitchAsync(
+            Session,
+            cancellationToken);
+        Session = startupResult.Session;
+        if (startupResult.RequiresDeviceRegistration)
+        {
+            DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
+            _pendingDeviceRegistrationCache = startupResult.CachedDevice;
+            DeviceRegistration.Prepare(startupResult.CachedDevice);
+            CurrentScreen = DeviceRegistration;
+            _deviceRegistrationStoreLoadTask = DeviceRegistration.LoadStoresAsync(startupResult.CachedDevice);
+            return;
+        }
+
+        await InitializePosExperienceAsync(startupOptions);
+        // 热切换必须等待后续启动链完成，确保失败能进入 PostCommitFailed，壳层也不会提前解冻。
+        await ContinuePosStartupAfterShownAsync(startupOptions, CurrentOwner);
+    }
+
     public Task ContinueStartupAfterShownAsync(AppStartupOptions startupOptions, Window? owner = null)
     {
         if (startupOptions.PreviewMode)
@@ -855,6 +960,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool TryProcessKeyboardScannerInput(string barcode)
     {
+        if (IsApiServerSwitching)
+        {
+            return true;
+        }
+
+        if (_operationAuthorizationService?.IsPromptOpen == true)
+        {
+            return _operationAuthorizationService.ProcessScannerBarcode(barcode);
+        }
+
         if (EmergencyLoginTokenCodec.HasSupportedPrefix(barcode.Trim()) &&
             TryProcessCashierLoginInput(barcode))
         {
@@ -954,7 +1069,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CashierLoginResult result;
         try
         {
-            result = await _cashierLoginService.LoginAsync(Session.StoreCode, Session.DeviceCode, input, cancellationToken);
+            result = await _cashierLoginService.LoginAsync(
+                Session.StoreCode,
+                Session.DeviceCode,
+                input,
+                attemptOnline: Session.IsOnline,
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -994,7 +1114,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        var sessionApplyStopwatch = Stopwatch.StartNew();
         ApplyCashierSession(result.Session);
+        sessionApplyStopwatch.Stop();
+        ConsoleLog.Write(
+            "CashierLoginTiming",
+            $"sessionApplyMs={sessionApplyStopwatch.ElapsedMilliseconds} offlineCached={result.Session.IsOfflineCached}");
         OperationAuditEvents.RecordAction(
             _operationAuditLogger,
             OperationAuditTypes.CashierLogin,
@@ -1044,6 +1169,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ApplyCashierSession(CashierSessionDto cashierSession)
     {
+        RevokeOperationAuthorizationsForSessionChange();
         // 切换收银员时只更新当前 POS 会话；紧急授权由专用登录服务验证，不写普通缓存。
         _cashierSessionContext.SetCurrent(cashierSession);
         Session = CashierSessionContext.ApplyToSession(Session, cashierSession);
@@ -1115,6 +1241,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onExitApplicationAsync: ExitApplicationAsync,
             tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync,
             onLockCashierAsync: LockCashierAsync);
+        // POS 页面在启动或重注册后才创建，考勤面板必须在此处随新页面挂载。
+        PosTerminal.AttendanceQrPanel = _attendanceQrPanel;
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
             Session,
             _screenNavigator.ShowPos,
@@ -1219,10 +1347,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (value.CashierSession is not null)
         {
+            if (!ReferenceEquals(_cashierSessionContext.CurrentSession, value.CashierSession))
+            {
+                RevokeOperationAuthorizationsForSessionChange();
+            }
             _cashierSessionContext.SetCurrent(value.CashierSession);
         }
         else
         {
+            // 关键逻辑：登出后立即销毁待授权操作，授权不能跨收银员会话继续。
+            RevokeOperationAuthorizationsForSessionChange();
             _cashierSessionContext.Clear();
         }
 
@@ -1243,6 +1377,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private void OnScreenChanged(object? screen)
     {
+        if (IsApiServerSwitching &&
+            !_allowApiServerSwitchNavigation &&
+            !ReferenceEquals(screen, _apiServerSwitchFrozenScreen))
+        {
+            _screenNavigator.SetCurrentScreen(_apiServerSwitchFrozenScreen);
+            return;
+        }
+
+        _operationAuthorizationService?.Cancel();
         OnPropertyChanged(nameof(CurrentScreen));
         if (!ReferenceEquals(screen, _screenNavigator!.ReceiptReturns))
         {
@@ -1251,7 +1394,53 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         RaiseScreenHostStateChanged();
         OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
-        _rawScannerService.SetActivePage((screen as IScannerInputTarget)?.ScannerPageId);
+        RefreshActiveScannerPage();
+    }
+
+    private void OnOperationAuthorizationPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(IOperationAuthorizationService.IsPromptOpen))
+        {
+            return;
+        }
+
+        // 关键逻辑：授权开始时抢占扫码页，结束后恢复当前页面，不改变当前收银员或页面。
+        _rawScannerService.ClearPendingInput();
+        RefreshActiveScannerPage();
+    }
+
+    partial void OnIsApiServerSwitchingChanged(bool value)
+    {
+        if (!value)
+        {
+            _apiServerSwitchFrozenScreen = null;
+            return;
+        }
+
+        // 切换边界关闭所有常用交互入口，避免扫描、导航或临时提权生成新的旧环境工作。
+        _apiServerSwitchFrozenScreen = CurrentScreen;
+        _operationAuthorizationService?.Cancel();
+        _rawScannerService.ClearPendingInput();
+        _rawScannerService.SetActivePage(null);
+    }
+
+    private void OnOperationAuthorizationBarcodeScanned(RawBarcodeScannedEventArgs args)
+    {
+        _operationAuthorizationService?.ProcessScannerBarcode(args.Barcode);
+    }
+
+    private void RefreshActiveScannerPage()
+    {
+        if (IsApiServerSwitching)
+        {
+            _rawScannerService.SetActivePage(null);
+            return;
+        }
+
+        var pageId = _operationAuthorizationService?.IsPromptOpen == true
+            ? _operationAuthorizationService.ScannerPageId
+            : (CurrentScreen as IScannerInputTarget)?.ScannerPageId;
+        _rawScannerService.SetActivePage(pageId);
     }
 
     private void RaiseScreenHostStateChanged()
@@ -1841,11 +2030,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.Receipt.PrintLast,
+            "print-payment-success-receipt");
+        if (grant is null)
         {
             return;
         }
 
+        using var activation = grant.Activate();
         await PrintPaymentSuccessReceiptAsync();
     }
 
@@ -1960,13 +2153,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e)
     {
         _lastCompletedOrder = e.Order;
-        await RefreshPendingSyncAsync();
-        await PaymentSuccess.LoadFromOrderAsync(e.Order);
+        // 中文注释：先同步切走支付页，避免收据设置和同步状态刷新期间仍可误触支付操作。
+        PaymentSuccess.LoadFromOrder(e.Order);
         CurrentScreen = PaymentSuccess;
         // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
         _userFeedbackService.Play(UserFeedbackCue.Checkout);
-
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
+
+        await PaymentSuccess.LoadFromOrderAsync(e.Order);
+        await RefreshPendingSyncAsync();
         if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
         {
             var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
@@ -2162,15 +2357,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptWithShellPermissionAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
     {
         // 关键逻辑：自动卡支付/恢复小票是系统完成交易流程，不等同于人工补打上一张。
-        if (reason is not ReceiptPrintReason.CardAuto and
-            not ReceiptPrintReason.InstallmentAuto and
-            not ReceiptPrintReason.VoucherRefundAuto and
-            not ReceiptPrintReason.VoucherBalanceAuto &&
-            !TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
+        var isAutomatic = reason is ReceiptPrintReason.CardAuto or
+            ReceiptPrintReason.InstallmentAuto or
+            ReceiptPrintReason.VoucherRefundAuto or
+            ReceiptPrintReason.VoucherBalanceAuto;
+        if (isAutomatic)
         {
-            return new ReceiptPrintResult(false, StatusMessage, receipt.OrderGuid);
+            return await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
         }
 
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.Receipt.PrintLast,
+            "print-receipt");
+        if (grant is null)
+        {
+            return new ReceiptPrintResult(
+                false,
+                _operationAuthorizationService?.StatusMessage ?? StatusMessage,
+                receipt.OrderGuid);
+        }
+
+        using var activation = grant.Activate();
         return await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
     }
 
@@ -2199,6 +2406,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        RevokeOperationAuthorizationsForSessionChange();
+
         OperationAuditEvents.RecordAction(
             _operationAuditLogger,
             OperationAuditTypes.CashierLogout,
@@ -2219,6 +2428,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
         StatusMessage = _localization.T("shell.cashierLogin.status.locked");
         await ReportRuntimeStatusSafeAsync(Session.IsOnline, CancellationToken.None, clearCashier: true);
+    }
+
+    private void RevokeOperationAuthorizationsForSessionChange()
+    {
+        _operationAuthorizationService?.RevokeAll();
+        // 中文注释：无条码退货弹窗会暂存一次 grant；换收银员时同时关闭弹窗并销毁该 grant。
+        _screenNavigator?.ReceiptReturns?.ResetToDefault();
     }
 
     private async Task PrintPaymentSuccessReceiptAsync()
@@ -2280,9 +2496,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptAsync(ReceiptDetails receipt, ReceiptPrintReason reason) =>
         await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
 
-    private void ToggleCustomerDisplayWindow()
+    private async Task ToggleCustomerDisplayWindowAsync()
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.CustomerDisplay.Manage,
+            "toggle-customer-display");
+        if (grant is null)
         {
             return;
         }
@@ -2293,16 +2512,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        using var activation = grant.Activate();
         _customerDisplayShellController.Toggle(owner);
     }
 
-    public void ToggleCustomerDisplayWindow(Window? owner)
+    public async Task ToggleCustomerDisplayWindow(Window? owner)
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.CustomerDisplay.Manage,
+            "toggle-customer-display");
+        if (grant is null)
         {
             return;
         }
 
+        using var activation = grant.Activate();
         _customerDisplayShellController.Toggle(owner);
     }
 
@@ -2310,36 +2534,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OpenCustomerDisplayWindow(Window? owner) => _customerDisplayShellController.Open(owner);
 
-    private void CloseCustomerDisplayWindowFromCommand()
+    private async Task CloseCustomerDisplayWindowFromCommandAsync()
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.CustomerDisplay.Manage,
+            "close-customer-display");
+        if (grant is null)
         {
             return;
         }
 
+        using var activation = grant.Activate();
         _customerDisplayShellController.Close(CurrentOwner);
     }
 
-    private void SetCustomerDisplayWindowModeFromCommand(CustomerDisplayWindowMode mode)
+    private async Task SetCustomerDisplayWindowModeFromCommandAsync(CustomerDisplayWindowMode mode)
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.CustomerDisplay.Manage,
+            "set-customer-display-mode");
+        if (grant is null)
         {
             return;
         }
 
+        using var activation = grant.Activate();
         SetCustomerDisplayWindowMode(mode, CurrentOwner);
     }
 
     private async Task ResetScannerBindingAsync()
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.Settings.DeviceRegistration))
+        using var grant = await AuthorizeShellOperationAsync(
+            Permissions.PosTerminal.Settings.DeviceRegistration,
+            "reset-scanner-binding");
+        if (grant is null)
         {
             return;
         }
 
+        using var activation = grant.Activate();
         await _rawScannerService.ResetBindingAsync();
         StatusMessage = _localization.T("main.scannerBindingReset");
     }
+
+    private async Task<ViewModelAuthorizationGrant?> AuthorizeShellOperationAsync(
+        string permissionCode,
+        string action,
+        CancellationToken cancellationToken = default) =>
+        await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequireShellPermission,
+            permissionCode,
+            "main-shell",
+            action,
+            Session,
+            cancellationToken);
 
     private bool TryRequireShellPermission(string permissionCode)
     {

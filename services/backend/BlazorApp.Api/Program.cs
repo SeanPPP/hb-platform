@@ -168,6 +168,11 @@ builder.Services
     // SMTP 密码需要跨重启/部署解密，key ring 必须落在稳定目录，目录本身不提交到 git。
     .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 
+// 关键逻辑：考勤二维码密钥使用同一 key-ring，但隔离应用名和 purpose，确保两个 API 可互通且不影响全局 Data Protection。
+builder.Services.AddSingleton(
+    BlazorApp.Api.Security.AttendanceQrKeyDataProtection.CreateProtector(
+        BlazorApp.Api.Security.AttendanceQrKeyDataProtection.CreateProvider(dataProtectionKeysPath)));
+
 builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSection("TencentCloud"));
 builder.Services.Configure<ApplicationLoggingOptions>(
     builder.Configuration.GetSection("ApplicationLogging")
@@ -669,6 +674,7 @@ builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactServi
 builder.Services.AddScoped<IInstallmentOrderReactService, InstallmentOrderReactService>();
 builder.Services.AddScoped<IStoreVoucherReactService, StoreVoucherReactService>();
 builder.Services.AddScoped<IDeviceRegistrationReactService, DeviceRegistrationReactService>();
+builder.Services.AddScoped<IAttendancePosDeviceStatusProvider, AttendancePosDeviceStatusProvider>();
 builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
 builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactService>();
 builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer>();
@@ -771,13 +777,14 @@ try
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
         dbContext.EnsureLoginSessionSchema();
+        // 关键逻辑：空库先由 CodeFirst 创建 AttendancePunch 等基础表，再执行补列与索引迁移。
+        dbContext.CreateTable();
         await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
         await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);
         await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await DeviceRuntimeStatusSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await EmergencyLoginGrantSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        dbContext.CreateTable();
         // 默认关闭已有表自动同步，中心日志新增列和过滤唯一索引在这里显式升级。
         await ApplicationLogSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
         //await posmDbContext.InitializeTablesAsync();

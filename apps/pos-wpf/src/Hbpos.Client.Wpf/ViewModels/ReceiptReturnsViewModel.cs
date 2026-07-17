@@ -32,6 +32,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     private readonly Action<CartLine>? _onReturnLineAdded;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private ViewModelAuthorizationGrant? _openItemAuthorizationGrant;
     private ReceiptReturnOrder? _currentOrder;
 
     [ObservableProperty]
@@ -75,7 +77,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         IRawScannerService? rawScannerService = null,
         ILocalizationService? localization = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _workflowService = workflowService;
         _session = session;
@@ -85,6 +88,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         _localization = localization;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -96,12 +100,12 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         }
 
         LookupCommand = new AsyncRelayCommand(LookupAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ScanText));
-        AddReceiptLineCommand = new RelayCommand<ReceiptReturnOrderLineViewModel>(AddReceiptLine, CanAddReceiptLine);
+        AddReceiptLineCommand = new AsyncRelayCommand<ReceiptReturnOrderLineViewModel>(AddReceiptLineAsync, CanAddReceiptLine);
         RemovePendingLineCommand = new RelayCommand<PendingReturnLineViewModel>(RemovePendingLine);
-        ConfirmToCartCommand = new RelayCommand(ConfirmToCart, () => PendingLines.Count > 0 && !IsBusy);
-        OpenNoReceiptOpenItemDialogCommand = new RelayCommand(OpenNoReceiptOpenItemDialog, CanOpenNoReceiptOpenItemDialog);
+        ConfirmToCartCommand = new AsyncRelayCommand(ConfirmToCartAsync, () => PendingLines.Count > 0 && !IsBusy);
+        OpenNoReceiptOpenItemDialogCommand = new AsyncRelayCommand(OpenNoReceiptOpenItemDialogAsync, CanOpenNoReceiptOpenItemDialog);
         CancelNoReceiptOpenItemDialogCommand = new RelayCommand(CancelNoReceiptOpenItemDialog);
-        ConfirmNoReceiptOpenItemCommand = new RelayCommand(ConfirmNoReceiptOpenItem, CanConfirmNoReceiptOpenItem);
+        ConfirmNoReceiptOpenItemCommand = new AsyncRelayCommand(ConfirmNoReceiptOpenItemAsync, CanConfirmNoReceiptOpenItem);
         SelectOpenItemDescriptionKeyboardCommand = new RelayCommand(() => OpenItemKeyboardTarget = OpenItemKeyboardTarget.Description);
         SelectOpenItemAmountKeyboardCommand = new RelayCommand(() => OpenItemKeyboardTarget = OpenItemKeyboardTarget.Amount);
         OpenItemKeyboardInputCommand = new RelayCommand<string>(AppendOpenItemKeyboardInput);
@@ -153,6 +157,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     public void Dispose()
     {
+        DisposeOpenItemAuthorization();
         _rawScannerService?.Unsubscribe(PageId);
     }
 
@@ -248,7 +253,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         {
             if (IsNoReceiptMode)
             {
-                AddNoReceiptProduct(ScanText);
+                var querySnapshot = ScanText;
+                await AddNoReceiptProductAsync(querySnapshot);
                 return;
             }
 
@@ -295,13 +301,15 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         OnPendingLinesChanged();
     }
 
-    private void AddNoReceiptProduct(string query)
+    private async Task AddNoReceiptProductAsync(string query)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.AddNoReceiptItem, "add-no-receipt-product");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         var result = _workflowService.LookupNoReceiptProduct(Session, query);
         StatusMessage = result.StatusMessage;
         if (result.Item is null)
@@ -334,18 +342,22 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         return IsNoReceiptMode && !IsBusy;
     }
 
-    private void OpenNoReceiptOpenItemDialog()
+    private async Task OpenNoReceiptOpenItemDialogAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
+        var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.AddNoReceiptItem, "open-no-receipt-open-item");
+        if (permissionGrant is null)
         {
             return;
         }
 
         if (!CanOpenNoReceiptOpenItemDialog())
         {
+            permissionGrant.Dispose();
             return;
         }
 
+        DisposeOpenItemAuthorization();
+        _openItemAuthorizationGrant = permissionGrant;
         OpenItemDisplayName = T("returns.openItem.defaultName", DefaultOpenItemName);
         OpenItemUnitPriceText = string.Empty;
         OpenItemKeyboardTarget = OpenItemKeyboardTarget.Description;
@@ -449,13 +461,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             TryParsePositiveAmount(OpenItemUnitPriceText, out _);
     }
 
-    private void ConfirmNoReceiptOpenItem()
+    private async Task ConfirmNoReceiptOpenItemAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
-        {
-            return;
-        }
-
         if (!CanConfirmNoReceiptOpenItem() ||
             !TryParsePositiveAmount(OpenItemUnitPriceText, out var unitPrice))
         {
@@ -463,14 +470,27 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             return;
         }
 
-        var result = _workflowService.CreateNoReceiptOpenItem(Session, OpenItemDisplayName, unitPrice);
-        StatusMessage = result.StatusMessage;
-        if (result.Line is null)
+        var displayNameSnapshot = OpenItemDisplayName;
+        var permissionGrant = _openItemAuthorizationGrant ??
+            await AuthorizeAsync(Permissions.PosTerminal.Returns.AddNoReceiptItem, "confirm-no-receipt-open-item");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        AddOrIncreasePendingLine(ToPendingLineViewModel(result.Line));
+        _openItemAuthorizationGrant = null;
+        using (permissionGrant)
+        using (permissionGrant.Activate())
+        {
+            var result = _workflowService.CreateNoReceiptOpenItem(Session, displayNameSnapshot, unitPrice);
+            StatusMessage = result.StatusMessage;
+            if (result.Line is null)
+            {
+                return;
+            }
+
+            AddOrIncreasePendingLine(ToPendingLineViewModel(result.Line));
+        }
         ResetOpenItemDialog();
         RefreshCommandStates();
     }
@@ -480,40 +500,43 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         return !IsBusy && line is not null && line.AvailableRemaining > 0m;
     }
 
-    private void AddReceiptLine(ReceiptReturnOrderLineViewModel? line)
+    private async Task AddReceiptLineAsync(ReceiptReturnOrderLineViewModel? line)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddReceiptLine))
+        var lineSnapshot = line;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.AddReceiptLine, "add-receipt-line");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        if (line is null || line.AvailableRemaining <= 0m)
+        using var authorizationActivation = permissionGrant.Activate();
+        if (lineSnapshot is null || lineSnapshot.AvailableRemaining <= 0m)
         {
             return;
         }
 
-        var sourceKey = $"receipt:{line.OrderGuid:D}:{line.OrderLineGuid:D}";
+        var sourceKey = $"receipt:{lineSnapshot.OrderGuid:D}:{lineSnapshot.OrderLineGuid:D}";
         AddOrIncreasePendingLine(new PendingReturnLineViewModel(
             sourceKey,
-            line,
-            line.StoreCode,
-            line.ProductCode,
-            line.ReferenceCode,
-            line.DisplayName,
-            line.LookupCode,
-            line.ItemNumber,
+            lineSnapshot,
+            lineSnapshot.StoreCode,
+            lineSnapshot.ProductCode,
+            lineSnapshot.ReferenceCode,
+            lineSnapshot.DisplayName,
+            lineSnapshot.LookupCode,
+            lineSnapshot.ItemNumber,
             null,
             1m,
-            line.ReturnUnitAmount,
-            line.PriceSource,
-            line.PriceSourceLabel,
-            line.OrderGuid,
-            line.OrderLineGuid));
-        line.PendingQuantity += 1m;
+            lineSnapshot.ReturnUnitAmount,
+            lineSnapshot.PriceSource,
+            lineSnapshot.PriceSourceLabel,
+            lineSnapshot.OrderGuid,
+            lineSnapshot.OrderLineGuid));
+        lineSnapshot.PendingQuantity += 1m;
         StatusMessage = Format(
             "returns.status.addedReceiptLine",
             "Added return item: {0}",
-            line.DisplayName);
+            lineSnapshot.DisplayName);
         RefreshCommandStates();
     }
 
@@ -569,20 +592,23 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         RefreshCommandStates();
     }
 
-    private void ConfirmToCart()
+    private async Task ConfirmToCartAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.Confirm))
+        var pendingLinesSnapshot = PendingLines.Select(line => line.ToPendingReturnLine()).ToArray();
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.Confirm, "confirm-to-cart");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        if (PendingLines.Count == 0)
+        using var authorizationActivation = permissionGrant.Activate();
+        if (pendingLinesSnapshot.Length == 0)
         {
             return;
         }
 
         var added = _workflowService.AddReturnLinesToCart(
-            PendingLines.Select(line => line.ToPendingReturnLine()),
+            pendingLinesSnapshot,
             _currentOrder?.PaymentCapacities);
         var lastAdded = added.LastOrDefault();
         ResetToDefault();
@@ -630,11 +656,27 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void ResetOpenItemDialog()
     {
+        DisposeOpenItemAuthorization();
         IsOpenItemDialogOpen = false;
         OpenItemDisplayName = string.Empty;
         OpenItemUnitPriceText = string.Empty;
         OpenItemKeyboardTarget = OpenItemKeyboardTarget.Description;
     }
+
+    private void DisposeOpenItemAuthorization()
+    {
+        _openItemAuthorizationGrant?.Dispose();
+        _openItemAuthorizationGrant = null;
+    }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(string permissionCode, string action) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            permissionCode,
+            "receipt-returns",
+            action,
+            Session);
 
     private bool TryRequirePermission(string permissionCode)
     {

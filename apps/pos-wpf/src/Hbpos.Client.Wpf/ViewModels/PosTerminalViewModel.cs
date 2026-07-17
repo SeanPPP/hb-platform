@@ -42,6 +42,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<CancellationToken, Task<bool>>? _refreshOnlineAsync;
     private readonly Func<string, CancellationToken, Task<bool>>? _tryLoginCashierFromScannerFallbackAsync;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
@@ -113,13 +114,15 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         bool enforcePermissionsWhenNoCashier = false,
         IPromotionEvaluationService? promotionEvaluationService = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        Func<Task>? onLockCashierAsync = null)
+        Func<Task>? onLockCashierAsync = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
         _promotionEvaluationService = promotionEvaluationService;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         _actions = PosTerminalActions.FromLegacyCallbacks(
             onOpenPayment,
             onOpenReturns,
@@ -164,28 +167,28 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         NumberInputCommand = new RelayCommand<string>(AppendScanText);
         KeypadInputCommand = new RelayCommand<string>(AppendKeypadBuffer);
         ToggleTouchKeyboardCommand = new RelayCommand(ToggleTouchKeyboard);
-        AddOpenItemCommand = new RelayCommand(AddOpenItem, CanAddOpenItem);
-        AddSelectedCommand = new RelayCommand(AddSelected, () => SelectedItem is not null);
-        SelectMatchCommand = new RelayCommand<SellableItemDto>(SelectMatch);
-        RemoveLineCommand = new RelayCommand<CartLine>(RemoveLine);
-        IncreaseLineCommand = new RelayCommand<CartLine>(IncreaseLine, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
-        DecreaseLineCommand = new RelayCommand<CartLine>(DecreaseLine, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
-        ModifySelectedLineQuantityCommand = new RelayCommand(ModifySelectedLineQuantity);
-        ModifySelectedLinePriceCommand = new RelayCommand(ModifySelectedLinePrice);
-        ApplySelectedLineDiscountAmountCommand = new RelayCommand(ApplySelectedLineDiscountAmount);
-        ApplySelectedLineDiscountPercentCommand = new RelayCommand(ApplySelectedLineDiscountPercent);
-        ApplyQuickDiscountPercentCommand = new RelayCommand<string>(ApplyQuickDiscountPercent);
+        AddOpenItemCommand = new AsyncRelayCommand(AddOpenItemAsync, CanAddOpenItem);
+        AddSelectedCommand = new AsyncRelayCommand(AddSelectedAsync, () => SelectedItem is not null);
+        SelectMatchCommand = new AsyncRelayCommand<SellableItemDto>(SelectMatchAsync);
+        RemoveLineCommand = new AsyncRelayCommand<CartLine>(RemoveLineAsync);
+        IncreaseLineCommand = new AsyncRelayCommand<CartLine>(IncreaseLineAsync, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
+        DecreaseLineCommand = new AsyncRelayCommand<CartLine>(DecreaseLineAsync, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
+        ModifySelectedLineQuantityCommand = new AsyncRelayCommand(ModifySelectedLineQuantityAsync);
+        ModifySelectedLinePriceCommand = new AsyncRelayCommand(ModifySelectedLinePriceAsync);
+        ApplySelectedLineDiscountAmountCommand = new AsyncRelayCommand(ApplySelectedLineDiscountAmountAsync);
+        ApplySelectedLineDiscountPercentCommand = new AsyncRelayCommand(ApplySelectedLineDiscountPercentAsync);
+        ApplyQuickDiscountPercentCommand = new AsyncRelayCommand<string>(ApplyQuickDiscountPercentAsync);
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(ScanText));
-        ClearCartCommand = new RelayCommand(ClearCart, () => !_cart.IsEmpty);
+        ClearCartCommand = new AsyncRelayCommand(ClearCartAsync, () => !_cart.IsEmpty);
         OpenPaymentCommand = new AsyncRelayCommand(OpenPaymentAsync, () => !_cart.IsEmpty);
-        OpenReturnsCommand = new RelayCommand(OpenReturns);
+        OpenReturnsCommand = new AsyncRelayCommand(OpenReturnsAsync);
         OpenSpecialProductsCommand = new AsyncRelayCommand(OpenSpecialProductsAsync);
         HoldOrderCommand = new AsyncRelayCommand(HoldOrderAsync, () => !_cart.IsEmpty);
         RecallOrderCommand = new AsyncRelayCommand(RecallOrderAsync);
         OpenHistoryCommand = new AsyncRelayCommand(OpenHistoryAsync);
         OpenDailyCloseCommand = new AsyncRelayCommand(OpenDailyCloseAsync);
         OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
-        OpenCustomerDisplayCommand = new RelayCommand(OpenCustomerDisplay);
+        OpenCustomerDisplayCommand = new AsyncRelayCommand(OpenCustomerDisplayAsync);
         PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
         OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
         LockCashierCommand = new AsyncRelayCommand(LockCashierAsync);
@@ -752,140 +755,176 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             value > 0m;
     }
 
-    private void AddOpenItem()
+    private async Task AddOpenItemAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddOpenItem))
+        var keypadBufferSnapshot = KeypadBuffer;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddOpenItem, "add-open-item");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("add-open-item", () => _workflowService.AddOpenItem(Session, KeypadBuffer));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("add-open-item", () => _workflowService.AddOpenItem(Session, keypadBufferSnapshot));
     }
 
-    private void AddSelected()
+    private async Task AddSelectedAsync()
     {
-        if (SelectedItem is null)
+        var selectedItemSnapshot = SelectedItem;
+        if (selectedItemSnapshot is null)
         {
             return;
         }
 
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddItem, "add-selected");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         ExecuteCartMutation("manual-add-selected", () => _workflowService.AddSelectedItem(
             Session,
-            SelectedItem,
+            selectedItemSnapshot,
             clearScanText: false,
             closeMatchesPopup: false,
             operation: "manual-add-selected"));
     }
 
-    private void SelectMatch(SellableItemDto? item)
+    private async Task SelectMatchAsync(SellableItemDto? item)
     {
         if (item is null)
         {
             return;
         }
 
-        SelectedItem = item;
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+        var itemSnapshot = item;
+        SelectedItem = itemSnapshot;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddItem, "select-match");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         ExecuteCartMutation("manual-select-match", () => _workflowService.AddSelectedItem(
             Session,
-            item,
+            itemSnapshot,
             clearScanText: true,
             closeMatchesPopup: true,
             operation: "manual-select-match"));
     }
 
-    private void RemoveLine(CartLine? line)
+    private async Task RemoveLineAsync(CartLine? line)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.RemoveLine))
+        var lineSnapshot = line;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.RemoveLine, "remove-line");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("remove-line", () => _workflowService.RemoveLine(line));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("remove-line", () => _workflowService.RemoveLine(lineSnapshot));
     }
 
-    private void IncreaseLine(CartLine? line)
+    private async Task IncreaseLineAsync(CartLine? line)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        var lineSnapshot = line;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ChangeQuantity, "increase-line");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         var stopwatch = Stopwatch.StartNew();
-        var result = ExecuteCartMutation("increase-line", () => _workflowService.IncreaseLine(line));
+        var result = ExecuteCartMutation("increase-line", () => _workflowService.IncreaseLine(lineSnapshot));
         stopwatch.Stop();
-        if (line is not null && string.Equals(result.StatusKey, "pos.status.ready", StringComparison.Ordinal))
+        if (lineSnapshot is not null && string.Equals(result.StatusKey, "pos.status.ready", StringComparison.Ordinal))
         {
-            LogCartOperation("increase-line", line, success: true, stopwatch.ElapsedMilliseconds);
+            LogCartOperation("increase-line", lineSnapshot, success: true, stopwatch.ElapsedMilliseconds);
         }
     }
 
-    private void DecreaseLine(CartLine? line)
+    private async Task DecreaseLineAsync(CartLine? line)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        var lineSnapshot = line;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ChangeQuantity, "decrease-line");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("decrease-line", () => _workflowService.DecreaseLine(line));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("decrease-line", () => _workflowService.DecreaseLine(lineSnapshot));
     }
 
-    private void ModifySelectedLineQuantity()
+    private async Task ModifySelectedLineQuantityAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        var lineSnapshot = SelectedCartLine;
+        var keypadBufferSnapshot = KeypadBuffer;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ChangeQuantity, "modify-quantity");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("modify-quantity", () => _workflowService.ModifySelectedLineQuantity(SelectedCartLine, KeypadBuffer));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("modify-quantity", () => _workflowService.ModifySelectedLineQuantity(lineSnapshot, keypadBufferSnapshot));
     }
 
-    private void ModifySelectedLinePrice()
+    private async Task ModifySelectedLinePriceAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangePrice))
+        var lineSnapshot = SelectedCartLine;
+        var keypadBufferSnapshot = KeypadBuffer;
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ChangePrice, "modify-price");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("modify-price", () => _workflowService.ModifySelectedLinePrice(SelectedCartLine, KeypadBuffer));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("modify-price", () => _workflowService.ModifySelectedLinePrice(lineSnapshot, keypadBufferSnapshot));
     }
 
-    private void ApplySelectedLineDiscountAmount()
-    {
-        var permissionCode = IsWholeOrderOperation
-            ? Permissions.PosTerminal.Sales.OrderManualDiscount
-            : Permissions.PosTerminal.Sales.LineManualDiscount;
-        if (!TryRequirePermission(permissionCode))
-        {
-            return;
-        }
-
-        ExecuteCartMutation("manual-discount-amount", () => _workflowService.ApplySelectedLineDiscountAmount(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
-    }
-
-    private void ApplySelectedLineDiscountPercent()
+    private async Task ApplySelectedLineDiscountAmountAsync()
     {
         var permissionCode = IsWholeOrderOperation
             ? Permissions.PosTerminal.Sales.OrderManualDiscount
             : Permissions.PosTerminal.Sales.LineManualDiscount;
-        if (!TryRequirePermission(permissionCode))
+        var lineSnapshot = SelectedCartLine;
+        var keypadBufferSnapshot = KeypadBuffer;
+        var isWholeOrderSnapshot = IsWholeOrderOperation;
+        using var permissionGrant = await AuthorizeAsync(permissionCode, "manual-discount-amount");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("manual-discount-percent", () => _workflowService.ApplySelectedLineDiscountPercent(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("manual-discount-amount", () => _workflowService.ApplySelectedLineDiscountAmount(lineSnapshot, keypadBufferSnapshot, isWholeOrderSnapshot));
     }
 
-    private void ApplyQuickDiscountPercent(string? value)
+    private async Task ApplySelectedLineDiscountPercentAsync()
+    {
+        var permissionCode = IsWholeOrderOperation
+            ? Permissions.PosTerminal.Sales.OrderManualDiscount
+            : Permissions.PosTerminal.Sales.LineManualDiscount;
+        var lineSnapshot = SelectedCartLine;
+        var keypadBufferSnapshot = KeypadBuffer;
+        var isWholeOrderSnapshot = IsWholeOrderOperation;
+        using var permissionGrant = await AuthorizeAsync(permissionCode, "manual-discount-percent");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("manual-discount-percent", () => _workflowService.ApplySelectedLineDiscountPercent(lineSnapshot, keypadBufferSnapshot, isWholeOrderSnapshot));
+    }
+
+    private async Task ApplyQuickDiscountPercentAsync(string? value)
     {
         var permissionCode = GetQuickDiscountPermissionCode(value, IsWholeOrderOperation);
         if (permissionCode is null)
@@ -898,12 +937,17 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             return;
         }
 
-        if (!TryRequirePermission(permissionCode))
+        var lineSnapshot = SelectedCartLine;
+        var isWholeOrderSnapshot = IsWholeOrderOperation;
+        var valueSnapshot = value;
+        using var permissionGrant = await AuthorizeAsync(permissionCode, "quick-discount-percent");
+        if (permissionGrant is null)
         {
             return;
         }
 
-        ExecuteCartMutation("quick-discount-percent", () => _workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
+        using var authorizationActivation = permissionGrant.Activate();
+        ExecuteCartMutation("quick-discount-percent", () => _workflowService.ApplyQuickDiscountPercent(lineSnapshot, valueSnapshot, isWholeOrderSnapshot));
     }
 
     private static string? GetQuickDiscountPermissionCode(string? value, bool isWholeOrderOperation)
@@ -1048,24 +1092,28 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IsTouchKeyboardOpen = false;
     }
 
-    private void ClearCart()
+    private async Task ClearCartAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ClearCart))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ClearCart, "clear-cart");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         ExecuteCartMutation("clear-cart", () => _workflowService.ClearCart());
     }
 
     private async Task OpenPaymentAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Payment.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Payment.View, "open-payment");
+        if (permissionGrant is null)
         {
             return;
         }
 
         // 进入支付前等待本轮促销尝试结束，避免使用过期金额。
+        using var authorizationActivation = permissionGrant.Activate();
         await WaitForPendingPromotionEvaluationAsync();
 
         var stopwatch = Stopwatch.StartNew();
@@ -1083,23 +1131,27 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         LogCartOperation("open-payment", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
-    private void OpenReturns()
+    private async Task OpenReturnsAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Returns.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.View, "open-returns");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         _actions.OpenReturns?.Invoke();
     }
 
     private async Task OpenSpecialProductsAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.SpecialProducts.View, "open-special-products");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.OpenSpecialProductsAsync is not null)
         {
             await _actions.OpenSpecialProductsAsync();
@@ -1108,12 +1160,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task HoldOrderAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.HoldOrder))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.HoldOrder, "hold-order");
+        if (permissionGrant is null)
         {
             return;
         }
 
         // 挂单会持久化金额，必须先等当前促销重算完成。
+        using var authorizationActivation = permissionGrant.Activate();
         await WaitForPendingPromotionEvaluationAsync();
 
         if (_actions.HoldOrderAsync is not null)
@@ -1129,11 +1183,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task RecallOrderAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Sales.RecallOrder))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.RecallOrder, "recall-order");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.RecallOrderAsync is not null)
         {
             // 这里仅导航到暂存订单列表，真实取单成功由 TransactionHistoryViewModel 记录。
@@ -1143,11 +1199,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenHistoryAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.History.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.History.View, "open-history");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.OpenHistoryAsync is not null)
         {
             await _actions.OpenHistoryAsync();
@@ -1156,11 +1214,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenDailyCloseAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.DailyClose.View, "open-daily-close");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.OpenDailyCloseAsync is not null)
         {
             await _actions.OpenDailyCloseAsync();
@@ -1169,34 +1229,40 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenSettingsAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Settings.View))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Settings.View, "open-settings");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.OpenSettingsAsync is not null)
         {
             await _actions.OpenSettingsAsync();
         }
     }
 
-    private void OpenCustomerDisplay()
+    private async Task OpenCustomerDisplayAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.CustomerDisplay.Manage, "open-customer-display");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         _actions.OpenCustomerDisplay?.Invoke();
     }
 
     private async Task PrintLastReceiptAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Receipt.PrintLast))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Receipt.PrintLast, "print-last-receipt");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.PrintLastReceiptAsync is null)
         {
             return;
@@ -1220,11 +1286,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenCashDrawerAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.CashDrawer.Open))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.CashDrawer.Open, "open-cash-drawer");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.OpenCashDrawerAsync is null)
         {
             return;
@@ -1321,11 +1389,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ReregisterDeviceAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Settings.DeviceRegistration))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Settings.DeviceRegistration, "reregister-device");
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         if (_actions.ReregisterDeviceAsync is not null)
         {
             await _actions.ReregisterDeviceAsync();
@@ -1361,27 +1431,33 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         try
         {
             var hasCashierSession = _cashierSessionContext.CurrentSession is not null || Session.CashierSession is not null;
-            // 关键逻辑：已登录且本地已知商品时必须按 AddItem 权限拒绝；未登录时则优先把同码输入解释为收银员登录。
-            var hasLocalCatalogMatch = HasLocalCatalogExactMatch(plan.Barcode);
-            if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+            // 关键逻辑：只有未登录时才把扫码解释为收银员登录；已登录后的权限不足统一进入单次授权，绝不切换当前收银员。
+            var hasAddItemPermission =
+                (!_enforcePermissions && !hasCashierSession) ||
+                _cashierSessionContext.HasPermission(Permissions.PosTerminal.Sales.AddItem);
+            if (!hasAddItemPermission &&
+                !hasCashierSession &&
+                await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
             {
                 workflowStopwatch.Stop();
-                if ((!hasCashierSession || !hasLocalCatalogMatch) &&
-                    await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
-                {
-                    totalStopwatch.Stop();
-                    _scanController.LogFinished(
-                        plan,
-                        "cashier-login",
-                        false,
-                        _cart.Lines.Count,
-                        workflowStopwatch.ElapsedMilliseconds,
-                        0,
-                        totalStopwatch.ElapsedMilliseconds);
-                }
-
+                totalStopwatch.Stop();
+                _scanController.LogFinished(
+                    plan,
+                    "cashier-login",
+                    false,
+                    _cart.Lines.Count,
+                    workflowStopwatch.ElapsedMilliseconds,
+                    0,
+                    totalStopwatch.ElapsedMilliseconds);
                 return;
             }
+
+            using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddItem, "scan-add-item");
+            if (permissionGrant is null)
+            {
+                return;
+            }
+            using var authorizationActivation = permissionGrant.Activate();
 
             var auditBefore = OperationAuditEvents.CaptureCart(_cart.Lines);
             var previousSequence = _cartChangedSequence;
@@ -1392,7 +1468,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 plan.Source,
                 plan.TraceId);
             workflowStopwatch.Stop();
-            if (await TryApplyCashierLoginFallbackAsync(plan, result, CancellationToken.None))
+            if (!hasCashierSession &&
+                await TryApplyCashierLoginFallbackAsync(plan, result, CancellationToken.None))
             {
                 totalStopwatch.Stop();
                 _scanController.LogFinished(
@@ -1445,12 +1522,6 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             totalStopwatch.ElapsedMilliseconds);
     }
 
-    private bool HasLocalCatalogExactMatch(string barcode)
-    {
-        return _priceIndex.FindExactMatches(Session.StoreCode, barcode).Count > 0 ||
-            _priceIndex.FindMetadataExactMatches(Session.StoreCode, barcode).Count > 0;
-    }
-
     private async Task<bool> TryApplyCashierLoginFallbackAsync(
         PosTerminalScanPlan plan,
         PosTerminalWorkflowResult? result,
@@ -1474,7 +1545,15 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IsMatchesPopupOpen = false;
         IsTouchKeyboardOpen = false;
         ScanText = string.Empty;
-        SetStatusText(T("shell.cashierLogin.succeeded", "收银员登录成功"), StatusFeedbackKind.Success);
+        // 未注入本地化服务时保留旧中文提示；正常路径缓存资源键以支持运行时切换语言。
+        if (_localization is null)
+        {
+            SetStatusText("收银员登录成功", StatusFeedbackKind.Success);
+        }
+        else
+        {
+            SetStatusCore("shell.cashierLogin.status.success", [], StatusFeedbackKind.Success);
+        }
         ConsoleLog.Write(
             "CashierLogin",
             $"scanner fallback cashier login succeeded source={plan.Source} device={plan.DevicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)}");
@@ -1490,11 +1569,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task SyncAsync(CancellationToken cancellationToken)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.System.Sync))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.System.Sync, "sync", cancellationToken);
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         await RunCatalogDownloadAsync(
             _syncCatalogAsync,
             T("pos.catalogSync.starting", "Syncing catalog..."),
@@ -1505,11 +1586,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ResetCatalogAsync(CancellationToken cancellationToken)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Settings.CatalogReset))
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Settings.CatalogReset, "reset-catalog", cancellationToken);
+        if (permissionGrant is null)
         {
             return;
         }
 
+        using var authorizationActivation = permissionGrant.Activate();
         await RunCatalogDownloadAsync(
             _resetCatalogAsync,
             T("pos.catalogReset.starting", "Resetting catalog..."),
@@ -1698,6 +1781,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         SetStatusText(message, StatusFeedbackKind.Error, UserFeedbackCue.OperationError);
         return false;
     }
+
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(
+        string permissionCode,
+        string action,
+        CancellationToken cancellationToken = default) =>
+        ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            permissionCode,
+            "pos-terminal",
+            action,
+            Session,
+            cancellationToken);
 
     private static string? GetDeniedAuditOperationType(string permissionCode)
     {

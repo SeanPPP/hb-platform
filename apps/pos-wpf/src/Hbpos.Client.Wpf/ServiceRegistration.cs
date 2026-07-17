@@ -21,21 +21,26 @@ public static class ServiceRegistration
     {
         services.AddSingleton(startupOptions);
         services.AddSingleton<ILocalizationService, LocalizationService>();
+        var initialApiAddress = GetApiBaseAddress().AbsoluteUri;
+        services.AddSingleton(new ApiRuntimeEndpointState(initialApiAddress));
+        services.AddTransient<ApiRuntimeEndpointHandler>();
         services.AddHttpClient<ApiServerSettingsService>(client =>
         {
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
         services.AddSingleton<ApiServerSettingsViewModel>();
-        services.AddSingleton<LocalSqliteStore>(_ =>
+        services.AddSingleton(sp =>
         {
-            if (!startupOptions.PreviewMode)
-            {
-                return new LocalSqliteStore();
-            }
-
-            var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-client-preview-{Environment.ProcessId}.db");
-            return new LocalSqliteStore(databasePath);
+            var rootDirectory = startupOptions.PreviewMode
+                ? Path.Combine(Path.GetTempPath(), $"hbpos-client-preview-{Environment.ProcessId}")
+                : Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Hbpos.Client");
+            return new ApiEndpointDatabasePartitionResolver(rootDirectory, initialApiAddress);
         });
+        services.AddSingleton(sp => new LocalSqliteStore(
+            sp.GetRequiredService<ApiRuntimeEndpointState>(),
+            sp.GetRequiredService<ApiEndpointDatabasePartitionResolver>()));
         services.AddSingleton<ILocalSqliteCheckpointService>(sp => sp.GetRequiredService<LocalSqliteStore>());
         services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
@@ -49,6 +54,7 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IEmergencyLoginPublicKeySyncService, EmergencyLoginPublicKeySyncService>();
         services.AddSingleton<EmergencyLoginPublicKeySyncHostedService>();
@@ -81,6 +87,7 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = Timeout.InfiniteTimeSpan;
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton(sp => new ApplicationLogUploadService(
             sp.GetRequiredService<ClientLogOutboxStore>(),
@@ -104,11 +111,21 @@ public static class ServiceRegistration
             sp.GetRequiredService<IEmergencyLoginTokenService>()));
         services.AddSingleton<ICashierLoginService>(sp => sp.GetRequiredService<CashierLoginService>());
         services.AddSingleton<ICashierSessionCacheUpdater>(sp => sp.GetRequiredService<CashierLoginService>());
+        services.AddSingleton<IOperationAuthorizationService, OperationAuthorizationService>();
+        services.AddSingleton<ApiServerSwitchRuntime>();
+        services.AddSingleton<IApiServerSwitchRuntime>(sp => sp.GetRequiredService<ApiServerSwitchRuntime>());
+        services.AddSingleton<ApiServerSwitchCoordinator>(sp => new ApiServerSwitchCoordinator(
+            sp.GetRequiredService<ApiServerSettingsService>(),
+            sp.GetRequiredService<ApiRuntimeEndpointState>(),
+            sp.GetRequiredService<IApiServerSwitchRuntime>()));
+        services.AddSingleton<IApiServerSwitchCoordinator>(sp =>
+            sp.GetRequiredService<ApiServerSwitchCoordinator>());
         services.AddHttpClient<ICashierSessionRefreshApiClient, CashierSessionRefreshApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<CashierSessionRefreshService>();
         services.AddSingleton<CashierSessionRefreshHostedService>();
@@ -135,41 +152,55 @@ public static class ServiceRegistration
             // 商品同步由调用方令牌控制，禁止 HttpClient 隐式 100 秒超时截断冷缓存构建。
             client.Timeout = Timeout.InfiniteTimeSpan;
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IDeviceApiClient, DeviceApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IConnectivityApiClient, ConnectivityApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
-        });
+        })
+        .AddRuntimeApiEndpoint();
+        services.AddHttpClient<IAttendanceSigningKeyApiClient, AttendanceSigningKeyApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IPosRuntimeStatusApiClient, PosRuntimeStatusApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ICashierLoginApiClient, CashierLoginApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementApiClient, AdvertisementApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IPromotionApiClient, PromotionApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementMediaCache, AdvertisementMediaCacheService>(client =>
         {
@@ -181,36 +212,42 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(10);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IOrderSyncApiClient, OrderSyncApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(15);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IInstallmentApiClient, InstallmentApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(15);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IVoucherApiClient, VoucherApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(10);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISquareTokenApiClient, SquareTokenApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ILinklyCloudCredentialApiClient, LinklyCloudCredentialApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
         services.AddSingleton<IUiPriorityCoordinator, UiPriorityCoordinator>();
@@ -228,7 +265,8 @@ public static class ServiceRegistration
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        })
+        .AddRuntimeApiEndpoint();
         services.AddHttpClient<IAppUpdateDownloadService, AppUpdateDownloadService>(client =>
         {
             client.Timeout = TimeSpan.FromMinutes(5);
@@ -239,6 +277,15 @@ public static class ServiceRegistration
         services.AddSingleton<IAppUpdateInstallerLauncher, AppUpdateInstallerLauncher>();
         services.AddSingleton<IAppUpdatePromptService, WpfAppUpdatePromptService>();
         services.AddSingleton<IAppUpdateCoordinator, AppUpdateCoordinator>();
+        services.AddSingleton(sp => new AttendanceQrPanelViewModel(
+            sp.GetRequiredService<IAttendanceSigningKeyApiClient>(),
+            sp.GetRequiredService<IConnectivityApiClient>(),
+            sp.GetRequiredService<ILocalDeviceRepository>(),
+            sp.GetRequiredService<IDeviceFingerprintService>(),
+            sp.GetRequiredService<ILocalAppSettingsRepository>(),
+            sp.GetRequiredService<IDeviceAuthorizationProtector>(),
+            sp.GetRequiredService<ILocalizationService>(),
+            endpointState: sp.GetRequiredService<ApiRuntimeEndpointState>()));
         services.AddSingleton<ICashPaymentWorkflowService, CashPaymentWorkflowService>();
         services.AddSingleton<CardPaymentRecoveryService>();
         services.AddSingleton<ISquarePaymentRecoveryService, SquarePaymentRecoveryService>();
@@ -275,12 +322,14 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient(LinklyBackendReceiptPrintedNotifier.HttpClientName, client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(10);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ICardReceiptPrintedNotifier, LinklyBackendReceiptPrintedNotifier>();
         services.AddSingleton<LinklyFallbackPromptCoordinator>();
@@ -292,12 +341,14 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(15);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISquareTerminalPaymentClient, SquareTerminalPaymentClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(30);
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ICardTerminalSetupService>(sp => new CardTerminalSetupService(
             sp.GetRequiredService<ICardTerminalSettingsStore>(),
@@ -313,6 +364,7 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
+        .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IVoucherTenderClient>(sp => sp.GetRequiredService<IVoucherApiClient>());
         services.AddSingleton<IDeviceRegistrationWorkflowService, DeviceRegistrationWorkflowService>();
@@ -377,7 +429,9 @@ public static class ServiceRegistration
             sp.GetRequiredService<IApplicationExitService>(),
             sp.GetRequiredService<IConfirmationDialogService>()));
 
-        services.AddSingleton(sp => new MainViewModel(
+        services.AddSingleton(sp =>
+        {
+            var viewModel = new MainViewModel(
             sp.GetRequiredService<IPosCoreServices>(),
             sp.GetRequiredService<IPosInfrastructureFacade>(),
             sp.GetRequiredService<IPaymentTerminalFacade>(),
@@ -413,9 +467,21 @@ public static class ServiceRegistration
             cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
             cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
-            enforceCashierPermissions: true,
-            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
-            apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>()));
+             enforceCashierPermissions: true,
+             operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>(),
+                apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>(),
+                operationAuthorizationService: sp.GetRequiredService<IOperationAuthorizationService>(),
+                runtimeEndpointState: sp.GetRequiredService<ApiRuntimeEndpointState>(),
+                attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>());
+            sp.GetRequiredService<ApiServerSwitchRuntime>().ConfigureShell(
+                () => new ApiServerPaymentSafetyState(
+                    viewModel.CashPayment?.IsCardPaymentInProgress == true,
+                    viewModel.CashPayment?.IsPaymentInteractionLocked == true,
+                    viewModel.CashPayment?.PaymentTenders.Count ?? 0),
+                viewModel.ReinitializeAfterServerSwitchAsync,
+                switching => viewModel.IsApiServerSwitching = switching);
+            return viewModel;
+        });
         services.AddSingleton<MainWindow>();
 
         return services;
@@ -451,5 +517,10 @@ public static class ServiceRegistration
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Hbpos.Client",
             "hbpos_logs.db");
+    }
+
+    private static IHttpClientBuilder AddRuntimeApiEndpoint(this IHttpClientBuilder builder)
+    {
+        return builder.AddHttpMessageHandler<ApiRuntimeEndpointHandler>();
     }
 }

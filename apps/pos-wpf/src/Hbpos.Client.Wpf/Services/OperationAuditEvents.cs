@@ -33,6 +33,7 @@ internal static class OperationAuditTypes
     public const string InstallmentRepaymentCancel = "INSTALLMENT_REPAYMENT_CANCEL";
     public const string DailyCloseSave = "DAILY_CLOSE_SAVE";
     public const string DailyCloseReprint = "DAILY_CLOSE_REPRINT";
+    public const string PermissionOverride = "PERMISSION_OVERRIDE";
 }
 
 internal sealed record OperationAuditCartSnapshot(
@@ -57,6 +58,37 @@ internal sealed record OperationAuditCartLineSnapshot(
 
 internal static class OperationAuditEvents
 {
+    public static void RecordPermissionOverride(
+        IOperationAuditLogger logger,
+        PosSessionState requestingSession,
+        Hbpos.Contracts.Cashiers.CashierSessionDto? authorizingSession,
+        string permissionCode,
+        string screen,
+        string action,
+        string outcome,
+        string? reasonCode,
+        string authorizationMode)
+    {
+        var auditEvent = CreateBase(
+            OperationAuditTypes.PermissionOverride,
+            outcome,
+            requestingSession,
+            correlationId: null,
+            traceId: null);
+        auditEvent.Properties = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["requestingCashierId"] = requestingSession.CashierSession?.CashierId ?? requestingSession.CashierId,
+            ["authorizingCashierId"] = authorizingSession?.CashierId,
+            ["authorizingUserGuid"] = authorizingSession?.UserGuid,
+            ["permissionCode"] = permissionCode,
+            ["authorizationMode"] = authorizationMode,
+            ["screen"] = screen,
+            ["action"] = action
+        };
+        auditEvent.ReasonCode = reasonCode;
+        Record(logger, auditEvent);
+    }
+
     public static OperationAuditCartSnapshot CaptureCart(IReadOnlyList<CartLine> lines)
     {
         var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -291,7 +323,7 @@ internal static class OperationAuditEvents
         string? traceId)
     {
         var cashier = session.CashierSession;
-        return new OperationAuditEventDto
+        var auditEvent = new OperationAuditEventDto
         {
             EventId = Guid.NewGuid(),
             SchemaVersion = 1,
@@ -309,6 +341,25 @@ internal static class OperationAuditEvents
             CorrelationId = correlationId,
             TraceId = traceId
         };
+
+        var authorization = OperationAuthorizationScope.CurrentAuthorizationContext;
+        if (!string.Equals(operationType, OperationAuditTypes.PermissionOverride, StringComparison.OrdinalIgnoreCase) &&
+            authorization is not null)
+        {
+            // 中文注释：业务审计主体仍是请求收银员，只通过安全属性附加本次临时授权关联。
+            auditEvent.Properties = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["requestingCashierId"] = cashier?.CashierId ?? session.CashierId,
+                ["authorizingCashierId"] = authorization.AuthorizingSession.CashierId,
+                ["authorizingUserGuid"] = authorization.AuthorizingSession.UserGuid,
+                ["permissionCode"] = authorization.PermissionCode,
+                ["authorizationMode"] = authorization.AuthorizingSession.IsOfflineCached ? "offline-cache" : "online",
+                ["screen"] = authorization.Screen,
+                ["action"] = authorization.Action
+            };
+        }
+
+        return auditEvent;
     }
 
     private static void Record(IOperationAuditLogger logger, OperationAuditEventDto auditEvent)

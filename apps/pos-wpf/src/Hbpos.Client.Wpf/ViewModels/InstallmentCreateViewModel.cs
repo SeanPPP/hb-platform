@@ -21,6 +21,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -67,7 +68,8 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         ILocalizationService? localization = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IOperationAuditLogger? operationAuditLogger = null)
+        IOperationAuditLogger? operationAuditLogger = null,
+        IOperationAuthorizationService? operationAuthorizationService = null)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
@@ -77,6 +79,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
+        _operationAuthorizationService = operationAuthorizationService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -242,10 +245,18 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
 
     private async Task SubmitAsync()
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Create))
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.Installments.Create,
+            "installment-create",
+            "submit",
+            Session);
+        if (authorization is null)
         {
             return;
         }
+        using var authorizationActivation = authorization.Activate();
 
         var cartSnapshot = CartSnapshot;
         if (cartSnapshot is null)
