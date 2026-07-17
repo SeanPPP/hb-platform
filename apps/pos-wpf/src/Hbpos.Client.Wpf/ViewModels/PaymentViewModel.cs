@@ -1139,8 +1139,33 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             (IsPaymentMode || IsRefundMode))
         {
             tenderAuthorizationActivation.Dispose();
-            using var confirmAuthorizationActivation = confirmPermissionGrant?.Activate();
-            await CompletePaymentFromTendersAsync();
+            IDisposable? confirmAuthorizationActivation;
+            try
+            {
+                confirmAuthorizationActivation = confirmPermissionGrant?.Activate();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 中文注释：长时间卡交易期间授权可能被全局撤销；完成订单前必须重新确认，不能绕过权限。
+                using var refreshedConfirmPermissionGrant = await AuthorizeAsync(
+                    Permissions.PosTerminal.Payment.Confirm,
+                    "confirm-payment",
+                    method,
+                    attemptedPaymentAmount);
+                if (refreshedConfirmPermissionGrant is null)
+                {
+                    return;
+                }
+
+                using var refreshedConfirmAuthorizationActivation = refreshedConfirmPermissionGrant.Activate();
+                await CompletePaymentFromTendersAsync();
+                return;
+            }
+
+            using (confirmAuthorizationActivation)
+            {
+                await CompletePaymentFromTendersAsync();
+            }
         }
     }
 
@@ -1432,6 +1457,25 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     }
 
     private async Task CompletePaymentFromTendersAsync()
+    {
+        if (IsPaymentInteractionLocked)
+        {
+            return;
+        }
+
+        // 中文注释：自动完成和人工确认共用此入口，首次等待前同步上锁，防止同一订单并发结算。
+        IsPaymentInteractionLocked = true;
+        try
+        {
+            await CompletePaymentFromTendersCoreAsync();
+        }
+        finally
+        {
+            IsPaymentInteractionLocked = false;
+        }
+    }
+
+    private async Task CompletePaymentFromTendersCoreAsync()
     {
         if (TrySetOfflineVoucherRefundTenderStatus())
         {

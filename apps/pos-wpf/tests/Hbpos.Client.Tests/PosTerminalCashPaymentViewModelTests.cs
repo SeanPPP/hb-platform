@@ -1,9 +1,13 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
+using BlazorApp.Shared.Constants;
+using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Promotions;
@@ -2755,6 +2759,76 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_card_auto_completion_reauthorizes_after_grant_revoked_during_terminal_wait()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-146AUTH", "Authorized Card Tea", "930146AUTH", PriceSourceKind.StoreRetailPrice, 10m));
+        var completedOrder = CreateCompletedOrder(actualAmount: 10m);
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            CompletePaymentResult = new CashPaymentWorkflowResult(completedOrder, 10m, 0m, 0, Session)
+        };
+        var authorization = new RevocableOperationAuthorizationService();
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            operationAuthorizationService: authorization);
+        PaymentCompletedEventArgs? completed = null;
+        viewModel.PaymentCompleted += (_, args) => completed = args;
+
+        var payment = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        authorization.RevokeAll();
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-REAUTHORIZED"),
+            "payment.status.cardTenderAdded"));
+        await payment;
+
+        Assert.Equal(
+            [
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.Confirm,
+                Permissions.PosTerminal.Payment.Confirm
+            ],
+            authorization.RequestedPermissions);
+        Assert.Equal(1, workflow.CompletePaymentCallCount);
+        Assert.NotNull(completed);
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Payment_page_auto_completion_blocks_manual_confirmation_while_completion_is_pending()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-146RACE", "Single Completion Tea", "930146RACE", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            TenderToAdd = new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-SINGLE-COMPLETION"),
+            CompletePaymentResult = new CashPaymentWorkflowResult(CreateCompletedOrder(10m), 10m, 0m, 0, Session),
+            CompletePaymentStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            CompletePaymentRelease = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        var automaticCompletion = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.CompletePaymentStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+        Assert.Equal(1, workflow.CompletePaymentCallCount);
+
+        workflow.CompletePaymentRelease.SetResult();
+        await automaticCompletion;
+
+        Assert.Equal(1, workflow.CompletePaymentCallCount);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+    }
+
+    [Fact]
     public async Task Payment_page_card_button_blocks_partial_tender_until_remaining_is_paid()
     {
         var cart = new PosCartService();
@@ -5036,6 +5110,84 @@ public sealed class PosTerminalCashPaymentViewModelTests
         }
     }
 
+    private sealed class RevocableOperationAuthorizationService : IOperationAuthorizationService
+    {
+        private readonly List<OperationAuthorizationScope> _issuedScopes = [];
+
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler? StatusChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public string ScannerPageId => "OperationAuthorizationTest";
+
+        public bool IsPromptOpen => false;
+
+        public bool IsBusy => false;
+
+        public string PromptMessage => string.Empty;
+
+        public string StatusMessage => string.Empty;
+
+        public string PermissionCode => string.Empty;
+
+        public string Screen => string.Empty;
+
+        public string Action => string.Empty;
+
+        public IRelayCommand CancelCommand { get; } = new RelayCommand(() => { });
+
+        public List<string> RequestedPermissions { get; } = [];
+
+        public Task<OperationAuthorizationScope?> AuthorizeAsync(
+            string permissionCode,
+            string screen,
+            string action,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            RequestedPermissions.Add(permissionCode);
+            var requestingSession = new CashierSessionDto(
+                session.CashierId,
+                session.CashierId,
+                session.CashierName,
+                session.StoreCode,
+                session.DeviceCode,
+                [],
+                [],
+                [session.StoreCode],
+                false,
+                false,
+                false);
+            var scope = new OperationAuthorizationScope(requestingSession, permissionCode, screen, action);
+            _issuedScopes.Add(scope);
+            return Task.FromResult<OperationAuthorizationScope?>(scope);
+        }
+
+        public bool ProcessScannerBarcode(string barcode) => false;
+
+        public void Cancel()
+        {
+        }
+
+        public void RevokeAll()
+        {
+            foreach (var scope in _issuedScopes)
+            {
+                scope.Dispose();
+            }
+
+            _issuedScopes.Clear();
+        }
+    }
+
     private sealed class FakeCashPaymentWorkflowService : ICashPaymentWorkflowService
     {
         public PaymentTender TenderToAdd { get; set; } = new(PaymentMethodKind.Voucher, 5m, "ABC123");
@@ -5055,6 +5207,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public int AddTenderCallCount { get; private set; }
 
         public int CompletePaymentCallCount { get; private set; }
+
+        public TaskCompletionSource? CompletePaymentStarted { get; set; }
+
+        public TaskCompletionSource? CompletePaymentRelease { get; set; }
 
         public List<PaymentTender> ReleasedVoucherTenders { get; } = [];
 
@@ -5133,7 +5289,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             throw new NotSupportedException();
         }
 
-        public Task<CashPaymentWorkflowResult> CompletePaymentAsync(
+        public async Task<CashPaymentWorkflowResult> CompletePaymentAsync(
             PosCartService cart,
             PosSessionState session,
             IReadOnlyList<PaymentTender> tenders,
@@ -5141,6 +5297,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CancellationToken cancellationToken = default)
         {
             CompletePaymentCallCount++;
+            CompletePaymentStarted?.TrySetResult();
+            if (CompletePaymentRelease is not null)
+            {
+                await CompletePaymentRelease.Task;
+            }
+
             if (ThrowOnComplete is not null)
             {
                 throw ThrowOnComplete;
@@ -5149,7 +5311,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             if (CompletePaymentResult is not null)
             {
                 cart.Clear();
-                return Task.FromResult(CompletePaymentResult);
+                return CompletePaymentResult;
             }
 
             throw new NotSupportedException();
