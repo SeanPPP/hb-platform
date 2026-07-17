@@ -1,0 +1,688 @@
+{
+  "genericDescription": "Allows access to {{name}}.",
+  "genericRoleDescription": "{{name}} role.",
+  "unknownCategory": "Other permissions",
+  "categories": {
+    "POS 分期": "POS instalments",
+    "POS 历史订单": "POS order history",
+    "POS 同步": "POS sync",
+    "POS 审计": "POS audit",
+    "POS 客显": "POS customer display",
+    "POS 小票": "POS receipts",
+    "POS 收款": "POS payments",
+    "POS 日结": "POS end of day",
+    "POS 特价商品": "POS specials",
+    "POS 管理": "POS management",
+    "POS 设置": "POS settings",
+    "POS 退货": "POS returns",
+    "POS 钱箱": "POS cash drawer",
+    "POS 销售": "POS sales",
+    "仓库管理": "Warehouse management",
+    "价格管理": "Price management",
+    "促销管理": "Promotion management",
+    "分店商品管理": "Store product management",
+    "分店管理": "Store management",
+    "分店财务": "Store finance",
+    "分店运营": "Store operations",
+    "前台订货": "Store ordering",
+    "后台管理": "Back-office management",
+    "商品管理": "Product management",
+    "国内采购": "Domestic purchasing",
+    "定价策略": "Pricing rules",
+    "广告管理": "Advertisement management",
+    "报表": "Reports",
+    "排班考勤": "Scheduling and attendance",
+    "本地进货管理": "Local purchasing",
+    "澳洲供应商": "Australian suppliers",
+    "用户管理": "User management",
+    "系统管理": "System management",
+    "角色管理": "Role management",
+    "订单管理": "Order management",
+    "货柜管理": "Container management"
+  },
+  "permissions": {
+    "Advertisements.Edit": {
+      "name": "Advertisements Edit",
+      "description": "Allows access to Advertisements Edit."
+    },
+    "Advertisements.View": {
+      "name": "Advertisements View",
+      "description": "Allows access to Advertisements View."
+    },
+    "Attendance.Admin.View": {
+      "name": "Attendance Admin View",
+      "description": "Allows access to Attendance Admin View."
+    },
+    "Attendance.Approval.ReviewManagedStore": {
+      "name": "Attendance Approval Review Managed Store",
+      "description": "Allows access to Attendance Approval Review Managed Store."
+    },
+    "Attendance.Approval.ViewManagedStore": {
+      "name": "Attendance Approval View Managed Store",
+      "description": "Allows access to Attendance Approval View Managed Store."
+    },
+    "Attendance.Availability.SubmitSelf": {
+      "name": "Attendance Availability Submit Self",
+      "description": "Allows access to Attendance Availability Submit Self."
+    },
+    "Attendance.Availability.ViewManagedStore": {
+      "name": "Attendance Availability View Managed Store",
+      "description": "Allows access to Attendance Availability View Managed Store."
+    },
+    "Attendance.Holiday.EditManagedStore": {
+      "name": "Attendance Holiday Edit Managed Store",
+      "description": "Allows access to Attendance Holiday Edit Managed Store."
+    },
+    "Attendance.Holiday.ViewStore": {
+      "name": "Attendance Holiday View Store",
+      "description": "Allows access to Attendance Holiday View Store."
+    },
+    "Attendance.Leave.ApplySelf": {
+      "name": "Attendance Leave Apply Self",
+      "description": "Allows access to Attendance Leave Apply Self."
+    },
+    "Attendance.Leave.ReviewManagedStore": {
+      "name": "Attendance Leave Review Managed Store",
+      "description": "Allows access to Attendance Leave Review Managed Store."
+    },
+    "Attendance.Leave.ViewManagedStore": {
+      "name": "Attendance Leave View Managed Store",
+      "description": "Allows access to Attendance Leave View Managed Store."
+    },
+    "Attendance.Punch.Self": {
+      "name": "Attendance Punch Self",
+      "description": "Allows access to Attendance Punch Self."
+    },
+    "Attendance.Punch.ViewManagedStore": {
+      "name": "Attendance Punch View Managed Store",
+      "description": "Allows access to Attendance Punch View Managed Store."
+    },
+    "Attendance.Schedule.EditManagedStore": {
+      "name": "Attendance Schedule Edit Managed Store",
+      "description": "Allows access to Attendance Schedule Edit Managed Store."
+    },
+    "Attendance.Schedule.ViewSelf": {
+      "name": "Attendance Schedule View Self",
+      "description": "Allows access to Attendance Schedule View Self."
+    },
+    "Attendance.Schedule.ViewStore": {
+      "name": "Attendance Schedule View Store",
+      "description": "Allows access to Attendance Schedule View Store."
+    },
+    "Attendance.Settings.Edit": {
+      "name": "Attendance Settings Edit",
+      "description": "Allows access to Attendance Settings Edit."
+    },
+    "AustralianSuppliers.Edit": {
+      "name": "Australian Suppliers Edit",
+      "description": "Allows access to Australian Suppliers Edit."
+    },
+    "AustralianSuppliers.View": {
+      "name": "Australian Suppliers View",
+      "description": "Allows access to Australian Suppliers View."
+    },
+    "Container.Create": {
+      "name": "Create containers",
+      "description": "Create container records."
+    },
+    "Container.Delete": {
+      "name": "Delete containers",
+      "description": "Delete container records."
+    },
+    "Container.Edit": {
+      "name": "Edit containers",
+      "description": "Edit container records."
+    },
+    "Container.View": {
+      "name": "View containers",
+      "description": "View container lists and details."
+    },
+    "Dashboard": {
+      "name": "Dashboard",
+      "description": "Allows access to Dashboard."
+    },
+    "DeviceRegistration.Manage": {
+      "name": "Device Registration Manage",
+      "description": "Allows access to Device Registration Manage."
+    },
+    "DeviceRegistration.View": {
+      "name": "Device Registration View",
+      "description": "Allows access to Device Registration View."
+    },
+    "DomesticPurchase.ManagePrefixCodes": {
+      "name": "Domestic Purchase Manage Prefix Codes",
+      "description": "Allows access to Domestic Purchase Manage Prefix Codes."
+    },
+    "DomesticPurchase.ManageProducts": {
+      "name": "Domestic Purchase Manage Products",
+      "description": "Allows access to Domestic Purchase Manage Products."
+    },
+    "DomesticPurchase.ManageSuppliers": {
+      "name": "Domestic Purchase Manage Suppliers",
+      "description": "Allows access to Domestic Purchase Manage Suppliers."
+    },
+    "DomesticPurchase.View": {
+      "name": "Domestic Purchase View",
+      "description": "Allows access to Domestic Purchase View."
+    },
+    "EmployeeProfiles.Edit": {
+      "name": "Edit employee profiles",
+      "description": "Maintain employee profile details."
+    },
+    "EmployeeProfiles.ReviewSensitiveManagedStore": {
+      "name": "Review sensitive employee changes",
+      "description": "Review sensitive profile changes for employees in managed stores."
+    },
+    "EmployeeProfiles.View": {
+      "name": "View employee profiles",
+      "description": "View employee profile details."
+    },
+    "InstallmentOrders.View": {
+      "name": "Installment Orders View",
+      "description": "Allows access to Installment Orders View."
+    },
+    "LocalPurchase.Edit": {
+      "name": "Local Purchase Edit",
+      "description": "Allows access to Local Purchase Edit."
+    },
+    "LocalPurchase.PushToHq": {
+      "name": "Local Purchase Push To Hq",
+      "description": "Allows access to Local Purchase Push To Hq."
+    },
+    "LocalPurchase.View": {
+      "name": "Local Purchase View",
+      "description": "Allows access to Local Purchase View."
+    },
+    "OrderFront": {
+      "name": "Order Front",
+      "description": "Allows access to Order Front."
+    },
+    "Orders.Create": {
+      "name": "Orders Create",
+      "description": "Allows access to Orders Create."
+    },
+    "Orders.Delete": {
+      "name": "Orders Delete",
+      "description": "Allows access to Orders Delete."
+    },
+    "Orders.Edit": {
+      "name": "Orders Edit",
+      "description": "Allows access to Orders Edit."
+    },
+    "Orders.View": {
+      "name": "Orders View",
+      "description": "Allows access to Orders View."
+    },
+    "Permissions.PosTerminal.Audit.View": {
+      "name": "View POS audit logs",
+      "description": "View POS operation audit logs for managed stores."
+    },
+    "Permissions.PosTerminal.CashDrawer.Open": {
+      "name": "Permissions Pos Terminal Cash Drawer Open",
+      "description": "Allows access to Permissions Pos Terminal Cash Drawer Open."
+    },
+    "Permissions.PosTerminal.CustomerDisplay.Manage": {
+      "name": "Permissions Pos Terminal Customer Display Manage",
+      "description": "Allows access to Permissions Pos Terminal Customer Display Manage."
+    },
+    "Permissions.PosTerminal.DailyClose.Reprint": {
+      "name": "Permissions Pos Terminal Daily Close Reprint",
+      "description": "Allows access to Permissions Pos Terminal Daily Close Reprint."
+    },
+    "Permissions.PosTerminal.DailyClose.Save": {
+      "name": "Permissions Pos Terminal Daily Close Save",
+      "description": "Allows access to Permissions Pos Terminal Daily Close Save."
+    },
+    "Permissions.PosTerminal.DailyClose.View": {
+      "name": "Permissions Pos Terminal Daily Close View",
+      "description": "Allows access to Permissions Pos Terminal Daily Close View."
+    },
+    "Permissions.PosTerminal.History.Recall": {
+      "name": "Permissions Pos Terminal History Recall",
+      "description": "Allows access to Permissions Pos Terminal History Recall."
+    },
+    "Permissions.PosTerminal.History.Reprint": {
+      "name": "Permissions Pos Terminal History Reprint",
+      "description": "Allows access to Permissions Pos Terminal History Reprint."
+    },
+    "Permissions.PosTerminal.History.View": {
+      "name": "Permissions Pos Terminal History View",
+      "description": "Allows access to Permissions Pos Terminal History View."
+    },
+    "Permissions.PosTerminal.Installments.AddRepayment": {
+      "name": "Permissions Pos Terminal Installments Add Repayment",
+      "description": "Allows access to Permissions Pos Terminal Installments Add Repayment."
+    },
+    "Permissions.PosTerminal.Installments.Cancel": {
+      "name": "Permissions Pos Terminal Installments Cancel",
+      "description": "Allows access to Permissions Pos Terminal Installments Cancel."
+    },
+    "Permissions.PosTerminal.Installments.ConfirmPickup": {
+      "name": "Permissions Pos Terminal Installments Confirm Pickup",
+      "description": "Allows access to Permissions Pos Terminal Installments Confirm Pickup."
+    },
+    "Permissions.PosTerminal.Installments.Create": {
+      "name": "Permissions Pos Terminal Installments Create",
+      "description": "Allows access to Permissions Pos Terminal Installments Create."
+    },
+    "Permissions.PosTerminal.Installments.View": {
+      "name": "Permissions Pos Terminal Installments View",
+      "description": "Allows access to Permissions Pos Terminal Installments View."
+    },
+    "Permissions.PosTerminal.Payment.Confirm": {
+      "name": "Permissions Pos Terminal Payment Confirm",
+      "description": "Allows access to Permissions Pos Terminal Payment Confirm."
+    },
+    "Permissions.PosTerminal.Payment.RemoveTender": {
+      "name": "Permissions Pos Terminal Payment Remove Tender",
+      "description": "Allows access to Permissions Pos Terminal Payment Remove Tender."
+    },
+    "Permissions.PosTerminal.Payment.TakeCard": {
+      "name": "Permissions Pos Terminal Payment Take Card",
+      "description": "Allows access to Permissions Pos Terminal Payment Take Card."
+    },
+    "Permissions.PosTerminal.Payment.TakeCash": {
+      "name": "Permissions Pos Terminal Payment Take Cash",
+      "description": "Allows access to Permissions Pos Terminal Payment Take Cash."
+    },
+    "Permissions.PosTerminal.Payment.TakeVoucher": {
+      "name": "Permissions Pos Terminal Payment Take Voucher",
+      "description": "Allows access to Permissions Pos Terminal Payment Take Voucher."
+    },
+    "Permissions.PosTerminal.Payment.View": {
+      "name": "Permissions Pos Terminal Payment View",
+      "description": "Allows access to Permissions Pos Terminal Payment View."
+    },
+    "Permissions.PosTerminal.Receipt.PrintLast": {
+      "name": "Permissions Pos Terminal Receipt Print Last",
+      "description": "Allows access to Permissions Pos Terminal Receipt Print Last."
+    },
+    "Permissions.PosTerminal.Returns.AddNoReceiptItem": {
+      "name": "Permissions Pos Terminal Returns Add No Receipt Item",
+      "description": "Allows access to Permissions Pos Terminal Returns Add No Receipt Item."
+    },
+    "Permissions.PosTerminal.Returns.AddReceiptLine": {
+      "name": "Permissions Pos Terminal Returns Add Receipt Line",
+      "description": "Allows access to Permissions Pos Terminal Returns Add Receipt Line."
+    },
+    "Permissions.PosTerminal.Returns.Confirm": {
+      "name": "Permissions Pos Terminal Returns Confirm",
+      "description": "Allows access to Permissions Pos Terminal Returns Confirm."
+    },
+    "Permissions.PosTerminal.Returns.View": {
+      "name": "Permissions Pos Terminal Returns View",
+      "description": "Allows access to Permissions Pos Terminal Returns View."
+    },
+    "Permissions.PosTerminal.Sales.AddItem": {
+      "name": "Permissions Pos Terminal Sales Add Item",
+      "description": "Allows access to Permissions Pos Terminal Sales Add Item."
+    },
+    "Permissions.PosTerminal.Sales.AddOpenItem": {
+      "name": "Permissions Pos Terminal Sales Add Open Item",
+      "description": "Allows access to Permissions Pos Terminal Sales Add Open Item."
+    },
+    "Permissions.PosTerminal.Sales.ChangePrice": {
+      "name": "Permissions Pos Terminal Sales Change Price",
+      "description": "Allows access to Permissions Pos Terminal Sales Change Price."
+    },
+    "Permissions.PosTerminal.Sales.ChangeQuantity": {
+      "name": "Permissions Pos Terminal Sales Change Quantity",
+      "description": "Allows access to Permissions Pos Terminal Sales Change Quantity."
+    },
+    "Permissions.PosTerminal.Sales.ClearCart": {
+      "name": "Permissions Pos Terminal Sales Clear Cart",
+      "description": "Allows access to Permissions Pos Terminal Sales Clear Cart."
+    },
+    "Permissions.PosTerminal.Sales.HoldOrder": {
+      "name": "Permissions Pos Terminal Sales Hold Order",
+      "description": "Allows access to Permissions Pos Terminal Sales Hold Order."
+    },
+    "Permissions.PosTerminal.Sales.LineManualDiscount": {
+      "name": "Permissions Pos Terminal Sales Line Manual Discount",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Manual Discount."
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent": {
+      "name": "Permissions Pos Terminal Sales Line Quick Discount10 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Quick Discount10 Percent."
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent": {
+      "name": "Permissions Pos Terminal Sales Line Quick Discount20 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Quick Discount20 Percent."
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent": {
+      "name": "Permissions Pos Terminal Sales Line Quick Discount30 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Quick Discount30 Percent."
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent": {
+      "name": "Permissions Pos Terminal Sales Line Quick Discount40 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Quick Discount40 Percent."
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent": {
+      "name": "Permissions Pos Terminal Sales Line Quick Discount50 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Line Quick Discount50 Percent."
+    },
+    "Permissions.PosTerminal.Sales.OrderManualDiscount": {
+      "name": "Permissions Pos Terminal Sales Order Manual Discount",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Manual Discount."
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent": {
+      "name": "Permissions Pos Terminal Sales Order Quick Discount10 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Quick Discount10 Percent."
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent": {
+      "name": "Permissions Pos Terminal Sales Order Quick Discount20 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Quick Discount20 Percent."
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent": {
+      "name": "Permissions Pos Terminal Sales Order Quick Discount30 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Quick Discount30 Percent."
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent": {
+      "name": "Permissions Pos Terminal Sales Order Quick Discount40 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Quick Discount40 Percent."
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent": {
+      "name": "Permissions Pos Terminal Sales Order Quick Discount50 Percent",
+      "description": "Allows access to Permissions Pos Terminal Sales Order Quick Discount50 Percent."
+    },
+    "Permissions.PosTerminal.Sales.RecallOrder": {
+      "name": "Permissions Pos Terminal Sales Recall Order",
+      "description": "Allows access to Permissions Pos Terminal Sales Recall Order."
+    },
+    "Permissions.PosTerminal.Sales.RemoveLine": {
+      "name": "Permissions Pos Terminal Sales Remove Line",
+      "description": "Allows access to Permissions Pos Terminal Sales Remove Line."
+    },
+    "Permissions.PosTerminal.Sales.View": {
+      "name": "Permissions Pos Terminal Sales View",
+      "description": "Allows access to Permissions Pos Terminal Sales View."
+    },
+    "Permissions.PosTerminal.Settings.AppUpdate": {
+      "name": "Permissions Pos Terminal Settings App Update",
+      "description": "Allows access to Permissions Pos Terminal Settings App Update."
+    },
+    "Permissions.PosTerminal.Settings.CatalogDownload": {
+      "name": "Permissions Pos Terminal Settings Catalog Download",
+      "description": "Allows access to Permissions Pos Terminal Settings Catalog Download."
+    },
+    "Permissions.PosTerminal.Settings.CatalogReset": {
+      "name": "Permissions Pos Terminal Settings Catalog Reset",
+      "description": "Allows access to Permissions Pos Terminal Settings Catalog Reset."
+    },
+    "Permissions.PosTerminal.Settings.DeviceRegistration": {
+      "name": "Permissions Pos Terminal Settings Device Registration",
+      "description": "Allows access to Permissions Pos Terminal Settings Device Registration."
+    },
+    "Permissions.PosTerminal.Settings.PaymentTerminal": {
+      "name": "Permissions Pos Terminal Settings Payment Terminal",
+      "description": "Allows access to Permissions Pos Terminal Settings Payment Terminal."
+    },
+    "Permissions.PosTerminal.Settings.ReceiptPrinter": {
+      "name": "Permissions Pos Terminal Settings Receipt Printer",
+      "description": "Allows access to Permissions Pos Terminal Settings Receipt Printer."
+    },
+    "Permissions.PosTerminal.Settings.TestDataReset": {
+      "name": "Permissions Pos Terminal Settings Test Data Reset",
+      "description": "Allows access to Permissions Pos Terminal Settings Test Data Reset."
+    },
+    "Permissions.PosTerminal.Settings.View": {
+      "name": "Permissions Pos Terminal Settings View",
+      "description": "Allows access to Permissions Pos Terminal Settings View."
+    },
+    "Permissions.PosTerminal.SpecialProducts.AddToCart": {
+      "name": "Permissions Pos Terminal Special Products Add To Cart",
+      "description": "Allows access to Permissions Pos Terminal Special Products Add To Cart."
+    },
+    "Permissions.PosTerminal.SpecialProducts.Manage": {
+      "name": "Permissions Pos Terminal Special Products Manage",
+      "description": "Allows access to Permissions Pos Terminal Special Products Manage."
+    },
+    "Permissions.PosTerminal.SpecialProducts.View": {
+      "name": "Permissions Pos Terminal Special Products View",
+      "description": "Allows access to Permissions Pos Terminal Special Products View."
+    },
+    "Permissions.PosTerminal.System.Sync": {
+      "name": "Permissions Pos Terminal System Sync",
+      "description": "Allows access to Permissions Pos Terminal System Sync."
+    },
+    "PosProducts.Manage": {
+      "name": "Pos Products Manage",
+      "description": "Allows access to Pos Products Manage."
+    },
+    "PosProducts.View": {
+      "name": "Pos Products View",
+      "description": "Allows access to Pos Products View."
+    },
+    "Prices.Delete": {
+      "name": "Prices Delete",
+      "description": "Allows access to Prices Delete."
+    },
+    "Prices.Modify": {
+      "name": "Prices Modify",
+      "description": "Allows access to Prices Modify."
+    },
+    "Prices.View": {
+      "name": "Prices View",
+      "description": "Allows access to Prices View."
+    },
+    "PricingStrategy.Edit": {
+      "name": "Pricing Strategy Edit",
+      "description": "Allows access to Pricing Strategy Edit."
+    },
+    "PricingStrategy.View": {
+      "name": "Pricing Strategy View",
+      "description": "Allows access to Pricing Strategy View."
+    },
+    "Products.Create": {
+      "name": "Products Create",
+      "description": "Allows access to Products Create."
+    },
+    "Products.Delete": {
+      "name": "Products Delete",
+      "description": "Allows access to Products Delete."
+    },
+    "Products.Edit": {
+      "name": "Products Edit",
+      "description": "Allows access to Products Edit."
+    },
+    "Products.View": {
+      "name": "Products View",
+      "description": "Allows access to Products View."
+    },
+    "Promotions.Edit": {
+      "name": "Promotions Edit",
+      "description": "Allows access to Promotions Edit."
+    },
+    "Promotions.View": {
+      "name": "Promotions View",
+      "description": "Allows access to Promotions View."
+    },
+    "Reports.Export": {
+      "name": "Reports Export",
+      "description": "Allows access to Reports Export."
+    },
+    "Reports.ProductMovement.View": {
+      "name": "Reports Product Movement View",
+      "description": "Allows access to Reports Product Movement View."
+    },
+    "Reports.View": {
+      "name": "Reports View",
+      "description": "Allows access to Reports View."
+    },
+    "Roles.Create": {
+      "name": "Roles Create",
+      "description": "Allows access to Roles Create."
+    },
+    "Roles.Delete": {
+      "name": "Roles Delete",
+      "description": "Allows access to Roles Delete."
+    },
+    "Roles.Edit": {
+      "name": "Roles Edit",
+      "description": "Allows access to Roles Edit."
+    },
+    "Roles.ManagePermissions": {
+      "name": "Roles Manage Permissions",
+      "description": "Allows access to Roles Manage Permissions."
+    },
+    "Roles.ManageUsers": {
+      "name": "Roles Manage Users",
+      "description": "Allows access to Roles Manage Users."
+    },
+    "Roles.View": {
+      "name": "Roles View",
+      "description": "Allows access to Roles View."
+    },
+    "SeasonalCards.Remaining.SubmitManagedStore": {
+      "name": "Seasonal Cards Remaining Submit Managed Store",
+      "description": "Allows access to Seasonal Cards Remaining Submit Managed Store."
+    },
+    "SeasonalCards.Remaining.ViewManagedStore": {
+      "name": "Seasonal Cards Remaining View Managed Store",
+      "description": "Allows access to Seasonal Cards Remaining View Managed Store."
+    },
+    "Store.ManageInfo": {
+      "name": "Store Manage Info",
+      "description": "Allows access to Store Manage Info."
+    },
+    "Store.ManageOperations": {
+      "name": "Store Manage Operations",
+      "description": "Allows access to Store Manage Operations."
+    },
+    "StoreProducts.Create": {
+      "name": "Store Products Create",
+      "description": "Allows access to Store Products Create."
+    },
+    "StoreProducts.Edit": {
+      "name": "Store Products Edit",
+      "description": "Allows access to Store Products Edit."
+    },
+    "StoreProducts.View": {
+      "name": "Store Products View",
+      "description": "Allows access to Store Products View."
+    },
+    "Stores.Create": {
+      "name": "Stores Create",
+      "description": "Allows access to Stores Create."
+    },
+    "Stores.Delete": {
+      "name": "Stores Delete",
+      "description": "Allows access to Stores Delete."
+    },
+    "Stores.Edit": {
+      "name": "Stores Edit",
+      "description": "Allows access to Stores Edit."
+    },
+    "Stores.Sync": {
+      "name": "Stores Sync",
+      "description": "Allows access to Stores Sync."
+    },
+    "Stores.View": {
+      "name": "Stores View",
+      "description": "Allows access to Stores View."
+    },
+    "StoreVouchers.View": {
+      "name": "Store Vouchers View",
+      "description": "Allows access to Store Vouchers View."
+    },
+    "System.ManageAppDownloads": {
+      "name": "System Manage App Downloads",
+      "description": "Allows access to System Manage App Downloads."
+    },
+    "System.ManageScheduledTasks": {
+      "name": "System Manage Scheduled Tasks",
+      "description": "Allows access to System Manage Scheduled Tasks."
+    },
+    "System.ManageSettings": {
+      "name": "System Manage Settings",
+      "description": "Allows access to System Manage Settings."
+    },
+    "System.ViewAppDownloads": {
+      "name": "System View App Downloads",
+      "description": "Allows access to System View App Downloads."
+    },
+    "System.ViewLogs": {
+      "name": "System View Logs",
+      "description": "Allows access to System View Logs."
+    },
+    "Users.Create": {
+      "name": "Create users",
+      "description": "Create back-office user accounts."
+    },
+    "Users.Delete": {
+      "name": "Delete users",
+      "description": "Delete or disable user accounts."
+    },
+    "Users.Edit": {
+      "name": "Edit users",
+      "description": "Edit user account details."
+    },
+    "Users.ManagePosTerminalPermissions": {
+      "name": "Manage store POS access",
+      "description": "Maintain POS terminal access for store staff."
+    },
+    "Users.ManageRoles": {
+      "name": "Manage user roles",
+      "description": "Assign or remove roles from users."
+    },
+    "Users.ManageStores": {
+      "name": "Manage user stores",
+      "description": "Maintain user store assignments."
+    },
+    "Users.ResetPassword": {
+      "name": "Reset passwords",
+      "description": "Reset user login passwords."
+    },
+    "Users.View": {
+      "name": "View users",
+      "description": "View user lists and details."
+    },
+    "Warehouse.Manage": {
+      "name": "Warehouse Manage",
+      "description": "Allows access to Warehouse Manage."
+    },
+    "Warehouse.ManageCategories": {
+      "name": "Warehouse Manage Categories",
+      "description": "Allows access to Warehouse Manage Categories."
+    },
+    "Warehouse.ManageLocations": {
+      "name": "Warehouse Manage Locations",
+      "description": "Allows access to Warehouse Manage Locations."
+    },
+    "Warehouse.ManageOrders": {
+      "name": "Warehouse Manage Orders",
+      "description": "Allows access to Warehouse Manage Orders."
+    },
+    "Warehouse.ManageProducts": {
+      "name": "Warehouse Manage Products",
+      "description": "Allows access to Warehouse Manage Products."
+    },
+    "Warehouse.View": {
+      "name": "Warehouse View",
+      "description": "Allows access to Warehouse View."
+    }
+  },
+  "roles": {
+    "Admin": "Administrator",
+    "管理员": "Administrator",
+    "SuperAdmin": "Super administrator",
+    "超级管理员": "Super administrator",
+    "StoreManager": "Store manager",
+    "店长": "Store manager",
+    "经理": "Store manager",
+    "StoreStaff": "Store staff",
+    "店铺员工": "Store staff",
+    "WarehouseManager": "Warehouse manager",
+    "Warehouse": "Warehouse manager",
+    "仓库经理": "Warehouse manager",
+    "仓库管理员": "Warehouse manager",
+    "WarehouseAdmin": "Warehouse manager",
+    "WarehouseStaff": "Warehouse staff",
+    "仓库员工": "Warehouse staff",
+    "User": "User",
+    "用户": "User",
+    "Manager": "Manager",
+    "Order": "Order staff",
+    "订货员": "Order staff"
+  }
+}

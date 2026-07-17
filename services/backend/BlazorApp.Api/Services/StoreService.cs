@@ -29,21 +29,27 @@ namespace BlazorApp.Api.Services
         // 日志记录器，用于记录操作日志和错误信息
         private readonly ILogger<StoreService> _logger;
 
+        // 用户访问写入需要识别当前操作者；保留可选注入以兼容后台任务与既有测试。
+        private readonly ICurrentUserManageableStoreScopeService? _manageableStoreScopeService;
+
         /// <summary>
         /// 构造函数：初始化分店服务
         /// </summary>
         /// <param name="context">数据库上下文</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="hqContext">HQ数据库上下文</param>
+        /// <param name="manageableStoreScopeService">当前操作者的可管理分店范围</param>
         public StoreService(
             SqlSugarContext context,
             ILogger<StoreService> logger,
-            HqSqlSugarContext? hqContext = null
+            HqSqlSugarContext? hqContext = null,
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
         )
         {
             _context = context;
             _hqContext = hqContext;
             _logger = logger;
+            _manageableStoreScopeService = manageableStoreScopeService;
         }
 
         /// <summary>
@@ -895,6 +901,22 @@ WHEN NOT MATCHED THEN
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
+                var mutationDecision =
+                    await UserAccessMutationSecurity.ValidateStoreTargetMutationAsync(
+                        db,
+                        _manageableStoreScopeService,
+                        dto.UserGUID,
+                        storeGuid,
+                        dto.IsPrimary
+                    );
+                if (!mutationDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        mutationDecision.Message,
+                        mutationDecision.ErrorCode
+                    );
+                }
+
                 // 3. 检查用户是否已经关联到该分店，防止重复分配
                 var existingUserStore = await db.Queryable<UserStore>()
                     .Where(us => us.StoreGUID == storeGuid && us.UserGUID == dto.UserGUID)
@@ -915,8 +937,25 @@ WHEN NOT MATCHED THEN
                     AssignedAt = DateTime.UtcNow, // 分配时间
                 };
 
-                // 5. 插入关联记录到数据库
-                await db.Insertable(userStore).ExecuteCommandAsync();
+                // 5. 管理关系与派生店长角色必须在同一事务落库。
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    await db.Insertable(userStore).ExecuteCommandAsync();
+                    if (dto.IsPrimary)
+                    {
+                        await UserStoreManagerRoleSynchronizer.SynchronizeAsync(
+                            db,
+                            dto.UserGUID
+                        );
+                    }
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<bool>.OK(true, "添加用户到分店成功");
             }
@@ -954,6 +993,29 @@ WHEN NOT MATCHED THEN
                     return ApiResponse<bool>.Error("分店不存在", "STORE_NOT_FOUND");
                 }
 
+                var userExists = await db.Queryable<User>()
+                    .AnyAsync(user => user.UserGUID == userGuid && !user.IsDeleted);
+                if (!userExists)
+                {
+                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var mutationDecision =
+                    await UserAccessMutationSecurity.ValidateStoreTargetMutationAsync(
+                        db,
+                        _manageableStoreScopeService,
+                        userGuid,
+                        storeGuid,
+                        false
+                    );
+                if (!mutationDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        mutationDecision.Message,
+                        mutationDecision.ErrorCode
+                    );
+                }
+
                 // 检查用户关联是否存在
                 var userStore = await db.Queryable<UserStore>()
                     .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
@@ -977,9 +1039,20 @@ WHEN NOT MATCHED THEN
                     );
                 }
 
-                await db.Deleteable<UserStore>()
-                    .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
-                    .ExecuteCommandAsync();
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    await db.Deleteable<UserStore>()
+                        .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
+                        .ExecuteCommandAsync();
+                    await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<bool>.OK(true, "从分店移除用户成功");
             }
@@ -1021,6 +1094,13 @@ WHEN NOT MATCHED THEN
                     return ApiResponse<bool>.Error("分店不存在", "STORE_NOT_FOUND");
                 }
 
+                var userExists = await db.Queryable<User>()
+                    .AnyAsync(user => user.UserGUID == userGuid && !user.IsDeleted);
+                if (!userExists)
+                {
+                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
                 // 检查用户关联是否存在
                 var userStore = await db.Queryable<UserStore>()
                     .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
@@ -1031,12 +1111,40 @@ WHEN NOT MATCHED THEN
                     return ApiResponse<bool>.Error("用户未关联到该分店", "USER_NOT_ASSIGNED");
                 }
 
+                var mutationDecision =
+                    await UserAccessMutationSecurity.ValidateStoreTargetMutationAsync(
+                        db,
+                        _manageableStoreScopeService,
+                        userGuid,
+                        storeGuid,
+                        isPrimary
+                    );
+                if (!mutationDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        mutationDecision.Message,
+                        mutationDecision.ErrorCode
+                    );
+                }
+
                 userStore.IsPrimary = isPrimary;
                 userStore.UpdatedAt = DateTime.UtcNow;
 
-                await db.Updateable(userStore)
-                    .UpdateColumns(us => new { us.IsPrimary, us.UpdatedAt })
-                    .ExecuteCommandAsync();
+                // 设置或取消管理关系时，同步维护派生店长角色，避免两个入口产生不一致数据。
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    await db.Updateable(userStore)
+                        .UpdateColumns(us => new { us.IsPrimary, us.UpdatedAt })
+                        .ExecuteCommandAsync();
+                    await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<bool>.OK(true, $"{(isPrimary ? "设置" : "取消")}分店管理关系成功");
             }
@@ -1079,58 +1187,108 @@ WHEN NOT MATCHED THEN
                     return ApiResponse<bool>.Error("分店不存在", "STORE_NOT_FOUND");
                 }
 
-                // 根据操作类型执行相应的批量操作
-                if (dto.Action.ToLower() == "add")
+                var action = (dto.Action ?? string.Empty).Trim().ToLowerInvariant();
+                if (action is not ("add" or "remove"))
                 {
-                    // 1. 批量添加用户到分店
-                    foreach (var userGuid in dto.UserGUIDs)
+                    return ApiResponse<bool>.Error("不支持的批量操作", "INVALID_BATCH_ACTION");
+                }
+
+                var targetUserGuids = dto.UserGUIDs
+                    .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (targetUserGuids.Count == 0)
+                {
+                    return ApiResponse<bool>.Error("用户列表不能为空", "USER_LIST_REQUIRED");
+                }
+
+                var existingUserGuids = await db.Queryable<User>()
+                    .Where(user =>
+                        targetUserGuids.Contains(user.UserGUID) && !user.IsDeleted
+                    )
+                    .Select(user => user.UserGUID)
+                    .ToListAsync();
+                if (existingUserGuids.Count != targetUserGuids.Count)
+                {
+                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                foreach (var userGuid in targetUserGuids)
+                {
+                    var mutationDecision =
+                        await UserAccessMutationSecurity.ValidateStoreTargetMutationAsync(
+                            db,
+                            _manageableStoreScopeService,
+                            userGuid,
+                            storeGuid,
+                            false
+                        );
+                    if (!mutationDecision.IsAllowed)
                     {
-                        // 验证用户是否存在
-                        var user = await db.Queryable<User>()
-                            .Where(u => u.UserGUID == userGuid)
-                            .FirstAsync();
+                        return ApiResponse<bool>.Error(
+                            mutationDecision.Message,
+                            mutationDecision.ErrorCode
+                        );
+                    }
+                }
 
-                        if (user == null)
-                            continue; // 跳过不存在的用户
+                var existingRelations = await db.Queryable<UserStore>()
+                    .Where(userStore =>
+                        userStore.StoreGUID == storeGuid
+                        && targetUserGuids.Contains(userStore.UserGUID)
+                        && !userStore.IsDeleted
+                    )
+                    .ToListAsync();
+                var existingRelationUserGuids = existingRelations
+                    .Select(item => item.UserGUID)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                        // 检查关联是否已存在，避免重复添加
-                        var existingUserStore = await db.Queryable<UserStore>()
-                            .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
-                            .FirstAsync();
-
-                        if (existingUserStore == null)
-                        {
-                            // 创建新的用户分店关联
-                            var userStore = new UserStore
+                // 批量变更使用单一事务；移除管理关系时在提交前同步派生角色。
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    if (action == "add")
+                    {
+                        var newRelations = targetUserGuids
+                            .Where(userGuid => !existingRelationUserGuids.Contains(userGuid))
+                            .Select(userGuid => new UserStore
                             {
                                 UserGUID = userGuid,
                                 StoreGUID = storeGuid,
                                 UserStoreGUID = Guid.NewGuid().ToString(),
+                                IsPrimary = false,
                                 AssignedAt = DateTime.UtcNow,
-                            };
-
-                            await db.Insertable(userStore).ExecuteCommandAsync();
-                        }
-                    }
-                }
-                else if (dto.Action.ToLower() == "remove")
-                {
-                    // 2. 批量移除用户与分店的关联
-                    foreach (var userGuid in dto.UserGUIDs)
-                    {
-                        // 检查关联是否存在
-                        var userStore = await db.Queryable<UserStore>()
-                            .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
-                            .FirstAsync();
-
-                        if (userStore != null)
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow,
+                            })
+                            .ToList();
+                        if (newRelations.Count > 0)
                         {
-                            // 删除用户分店关联
-                            await db.Deleteable<UserStore>()
-                                .Where(us => us.StoreGUID == storeGuid && us.UserGUID == userGuid)
-                                .ExecuteCommandAsync();
+                            await db.Insertable(newRelations).ExecuteCommandAsync();
                         }
                     }
+                    else if (existingRelationUserGuids.Count > 0)
+                    {
+                        var relationUserGuids = existingRelationUserGuids.ToArray();
+                        await db.Deleteable<UserStore>()
+                            .Where(userStore =>
+                                userStore.StoreGUID == storeGuid
+                                && relationUserGuids.Contains(userStore.UserGUID)
+                            )
+                            .ExecuteCommandAsync();
+
+                        foreach (var userGuid in relationUserGuids)
+                        {
+                            await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
                 }
 
                 return ApiResponse<bool>.OK(true, $"批量{dto.Action}用户成功");

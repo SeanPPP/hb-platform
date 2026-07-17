@@ -78,6 +78,103 @@
     "emptyTitle": "没有可分配的 POS 权限",
     "emptyDescription": "服务器目前没有为此员工和分店提供可分配权限。你仍可在独立设置模式下恢复继承。"
   },
+  "accessManagement": {
+    "title": "账号授权",
+    "unknownUser": "未知员工",
+    "loading": "正在加载账号授权...",
+    "identity": {
+      "userId": "用户 ID：{{value}}",
+      "roleCount_one": "已分配 {{count}} 个角色",
+      "roleCount_other": "已分配 {{count}} 个角色"
+    },
+    "actions": {
+      "open": "授权",
+      "back": "返回",
+      "saveStores": "保存分店",
+      "saveRoles": "保存角色",
+      "savePermissions": "保存权限",
+      "openPos": "POS 授权"
+    },
+    "sections": {
+      "stores": "分店权限",
+      "storesTab": "分店",
+      "storesDescription": "分别设置此账号在各分店为未分配、仅查看或可管理。",
+      "roles": "角色",
+      "rolesTab": "角色",
+      "rolesDescription": "分配账号角色；店长角色由可管理分店自动派生。",
+      "permissions": "其他权限",
+      "permissionsTab": "其他权限",
+      "permissionsDescription": "继承权限只读，直接权限可独立调整。",
+      "noAccess": "当前账号没有管理此分区的权限。"
+    },
+    "stores": {
+      "unassigned": "未分配",
+      "unassignedCompact": "未分配",
+      "view": "查看",
+      "manage": "管理",
+      "adminOnlyManage": "只有管理员可以授予分店管理权限。",
+      "missingStoreGuid": "此分店缺少授权标识，无法进入 POS 授权。",
+      "emptyTitle": "没有可用分店",
+      "emptyDescription": "当前没有可用于此账号的分店。"
+    },
+    "roles": {
+      "derived": "由可管理分店派生",
+      "adminOnly": "仅管理员",
+      "searchPlaceholder": "搜索角色",
+      "noSearchResults": "没有匹配的角色。",
+      "emptyTitle": "没有可用角色",
+      "emptyDescription": "当前没有可分配给此账号的角色。"
+    },
+    "permissions": {
+      "summary": "有效 {{effective}} 项 · 继承 {{inherited}} 项 · 直接 {{direct}} 项",
+      "inherited": "继承",
+      "direct": "直接授权",
+      "implicit": "管理员默认拥有",
+      "accountDefault": "账号默认值",
+      "outsideScope": "超出你的授权范围",
+      "source": "来自 {{roles}}",
+      "categoryDescription": "{{category}}相关权限",
+      "emptyTitle": "没有可用权限",
+      "emptyDescription": "当前没有可分配给此账号的权限。"
+    },
+    "unsaved": {
+      "title": "放弃未保存的授权更改？",
+      "description": "离开后，尚未保存的分店、角色或权限更改将会丢失。",
+      "discard": "放弃更改"
+    },
+    "busy": {
+      "title": "操作处理中",
+      "description": "请等待当前保存完成后再离开此页面。"
+    },
+    "messages": {
+      "storesSaved": "分店权限已保存",
+      "rolesSaved": "角色已保存",
+      "permissionsSaved": "直接权限已保存",
+      "storesSaveFailed": "分店权限保存失败，当前草稿已保留",
+      "rolesSaveFailed": "角色保存失败，当前草稿已保留",
+      "permissionsSaveFailed": "直接权限保存失败，当前草稿已保留"
+    },
+    "errors": {
+      "invalidTitle": "账号参数不完整",
+      "invalidDescription": "缺少用户标识，请从店员管理页面重新进入账号授权。",
+      "deviceTitle": "设备模式不能管理账号授权",
+      "deviceDescription": "请使用管理员或已获授权的用户账号登录后再管理员工授权。",
+      "selfTitle": "不能管理自己的授权",
+      "selfDescription": "请由另一名有权限的管理员调整你的账号授权。",
+      "privilegedTitle": "无法管理此高权限账号",
+      "privilegedDescription": "只有管理员可以管理管理员、店长或仓库经理账号。",
+      "noAccessTitle": "没有账号授权权限",
+      "noAccessDescription": "当前账号不能管理员工的分店、角色、权限或 POS 授权。",
+      "unauthorizedTitle": "登录已失效",
+      "unauthorizedDescription": "请重新登录后再管理账号授权。",
+      "forbiddenTitle": "无法管理此账号",
+      "forbiddenDescription": "当前账号没有管理此目标或分区的权限。",
+      "notFoundTitle": "此账号已不可用",
+      "notFoundDescription": "员工账号可能已被删除或移出你的范围，请返回店员管理刷新。",
+      "networkTitle": "账号授权加载失败",
+      "networkDescription": "暂时无法连接服务器，请检查网络后重试。"
+    }
+  },
   "statuses": {
     "active": "启用中",
     "disabled": "已停用"

@@ -9,6 +9,9 @@ export const PERMISSIONS = {
     View: "EmployeeProfiles.View",
   },
   Users: {
+    ManageRoles: "Users.ManageRoles",
+    ManageStores: "Users.ManageStores",
+    ManagePos: "Users.ManagePosTerminalPermissions",
     ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
   },
   LocalPurchase: {
@@ -215,7 +218,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasAnyRole = (roles: string[]) => roles.some((role) => hasRole(role));
   const hasAllRoles = (roles: string[]) => roles.every((role) => hasRole(role));
 
-  const isAdmin = hasRole("Admin") || hasRole("管理员");
+  const isAdmin =
+    hasRole("Admin") ||
+    hasRole("管理员") ||
+    hasRole("SuperAdmin") ||
+    hasRole("超级管理员");
   const normalizedPermissions = new Set(
     currentUser.permissions?.map((item) => item.toLowerCase()) ?? []
   );
@@ -225,8 +232,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
       normalizedPermissions.has(item.toLowerCase())
     );
   const isWarehouseManager =
-    hasRole("WarehouseManager") || hasRole("仓库经理");
-  const isStoreManager = hasRole("StoreManager") || hasRole("经理");
+    hasRole("WarehouseManager") ||
+    hasRole("Warehouse") ||
+    hasRole("仓库经理") ||
+    hasRole("仓库管理员") ||
+    hasRole("WarehouseAdmin");
+  const isStoreManager =
+    hasRole("StoreManager") || hasRole("店长") || hasRole("经理");
   const isManager = isStoreManager || isWarehouseManager;
   const isUser = hasRole("User") || hasRole("用户");
   const isWarehouseStaff =

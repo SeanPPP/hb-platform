@@ -12,18 +12,11 @@ namespace BlazorApp.Api.Services
         internal static IReadOnlyList<string> AdminRoleAliases { get; } =
             Permissions.SuperAdminRoleNames;
 
-        internal static IReadOnlyList<string> StoreManagerRoleAliases { get; } = new[]
-        {
-            "StoreManager",
-            "店长",
-            "经理",
-        };
+        internal static IReadOnlyList<string> StoreManagerRoleAliases { get; } =
+            Permissions.StoreManagerRoleNames;
 
-        internal static IReadOnlyList<string> WarehouseManagerRoleAliases { get; } = new[]
-        {
-            "WarehouseManager",
-            "仓库经理",
-        };
+        internal static IReadOnlyList<string> WarehouseManagerRoleAliases { get; } =
+            Permissions.WarehouseManagerRoleNames;
 
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;

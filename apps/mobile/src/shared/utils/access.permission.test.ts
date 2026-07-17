@@ -303,6 +303,16 @@ const warehouseManagerAccess = buildAccess(
   createUser(["Orders.Create", "Orders.Edit"], ["WarehouseManager"])
 );
 
+const warehouseManagerAliasAccess = buildAccess(
+  createUser([], ["Warehouse"])
+);
+
+assertEqual(
+  warehouseManagerAliasAccess.isWarehouseManager,
+  true,
+  "legacy Warehouse alias is treated as a warehouse manager"
+);
+
 assertEqual(
   warehouseManagerAccess.isWarehouseStaffOnly,
   false,

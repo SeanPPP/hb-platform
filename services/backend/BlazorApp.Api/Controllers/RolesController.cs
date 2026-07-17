@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -110,11 +111,32 @@ namespace BlazorApp.Api.Controllers
         /// 获取所有活跃角色（不分页）
         /// </summary>
         [HttpGet("active")]
-        [Authorize(Policy = Permissions.Roles.View)]
+        [Authorize]
         public async Task<IActionResult> GetActiveRoles()
         {
             try
             {
+                var currentUserGuid = ResolveCurrentUserGuid(User);
+                if (string.IsNullOrWhiteSpace(currentUserGuid))
+                {
+                    return Forbid();
+                }
+
+                var canViewRoles = await _roleService.UserHasPermissionAsync(
+                    currentUserGuid,
+                    Permissions.Roles.View
+                );
+                var canManageUserRoles = canViewRoles?.Data == true
+                    ? null
+                    : await _roleService.UserHasPermissionAsync(
+                        currentUserGuid,
+                        Permissions.Users.ManageRoles
+                    );
+                if (canViewRoles?.Data != true && canManageUserRoles?.Data != true)
+                {
+                    return Forbid();
+                }
+
                 var result = await _roleService.GetActiveRolesAsync();
                 return Ok(result);
             }
@@ -126,6 +148,68 @@ namespace BlazorApp.Api.Controllers
                     ApiResponse<List<RoleDto>>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
                 );
             }
+        }
+
+        private static string ResolveCurrentUserGuid(ClaimsPrincipal user)
+        {
+            return user.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user.FindFirst("userGuid")?.Value
+                ?? user.FindFirst("userId")?.Value
+                ?? user.FindFirst("sub")?.Value
+                ?? string.Empty;
+        }
+
+        private async Task<bool> CurrentActorIsAdminAsync()
+        {
+            var currentUserGuid = ResolveCurrentUserGuid(User);
+            if (string.IsNullOrWhiteSpace(currentUserGuid))
+            {
+                return false;
+            }
+
+            foreach (var adminRoleName in Permissions.SuperAdminRoleNames)
+            {
+                var result = await _roleService.UserHasRoleAsync(
+                    currentUserGuid,
+                    adminRoleName
+                );
+                if (result.Data == true)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private IActionResult AdminRequiredResult()
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                ApiResponse<bool>.Error("只有管理员可以检查其他用户的角色或权限", "ADMIN_REQUIRED")
+            );
+        }
+
+        private IActionResult ToRoleAccessMutationActionResult<T>(ApiResponse<T> result)
+        {
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            return result.ErrorCode switch
+            {
+                "ADMIN_REQUIRED"
+                or "ACCESS_DELEGATOR_DENIED"
+                or "USER_ACCESS_ADMIN_REQUIRED"
+                or "USER_ACCESS_ACTOR_DENIED"
+                or "DERIVED_STORE_MANAGER_ROLE" => StatusCode(
+                    StatusCodes.Status403Forbidden,
+                    result
+                ),
+                "ROLE_NOT_FOUND" or "USER_NOT_FOUND" => NotFound(result),
+                _ => BadRequest(result),
+            };
         }
 
         /// <summary>
@@ -196,7 +280,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.CreateRoleAsync(dto);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -229,7 +313,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.UpdateRoleByGuidAsync(guid, dto);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -251,7 +335,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.DeleteRoleByGuidAsync(guid);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -276,7 +360,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.UpdateRoleStatusByGuidAsync(guid, dto.IsActive);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -333,7 +417,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.AddUsersToRoleAsync(guid, userGuids);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -355,7 +439,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.RemoveUserFromRoleAsync(guid, userGuid);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -389,7 +473,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.BatchManageRolesAsync(dto);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -457,7 +541,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetPermissionsAsync();
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -482,7 +566,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetPermissionCatalogAsync();
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -508,7 +592,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetSysPermissionsAsync();
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -533,7 +617,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetPermissionRolesAsync(code);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -562,7 +646,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.AssignRolesToPermissionAsync(code, roleGuids);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -595,7 +679,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.CreatePermissionAsync(dto);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -618,7 +702,7 @@ namespace BlazorApp.Api.Controllers
             {
                 code = Uri.UnescapeDataString(code);
                 var result = await _roleService.DeletePermissionAsync(code);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -640,7 +724,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetRolePermissionsAsync(guid);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -662,7 +746,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _roleService.GetRolePermissionStateAsync(guid);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -697,7 +781,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.AssignPermissionsToRoleAsync(guid, dto);
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -721,6 +805,11 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
+                if (!await CurrentActorIsAdminAsync())
+                {
+                    return AdminRequiredResult();
+                }
+
                 if (string.IsNullOrEmpty(userGuid) || string.IsNullOrEmpty(roleName))
                 {
                     return BadRequest(
@@ -758,6 +847,11 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
+                if (!await CurrentActorIsAdminAsync())
+                {
+                    return AdminRequiredResult();
+                }
+
                 if (string.IsNullOrEmpty(userGuid) || string.IsNullOrEmpty(permission))
                 {
                     return BadRequest(
@@ -808,7 +902,7 @@ namespace BlazorApp.Api.Controllers
                     dto.NewRoleName,
                     dto.NewDescription
                 );
-                return Ok(result);
+                return ToRoleAccessMutationActionResult(result);
             }
             catch (Exception ex)
             {

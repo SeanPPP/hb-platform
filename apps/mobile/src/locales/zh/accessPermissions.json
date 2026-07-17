@@ -1,0 +1,688 @@
+{
+  "genericDescription": "允许使用{{name}}功能。",
+  "genericRoleDescription": "{{name}}角色。",
+  "unknownCategory": "其他权限",
+  "categories": {
+    "POS 分期": "POS 分期",
+    "POS 历史订单": "POS 历史订单",
+    "POS 同步": "POS 同步",
+    "POS 审计": "POS 审计",
+    "POS 客显": "POS 客显",
+    "POS 小票": "POS 小票",
+    "POS 收款": "POS 收款",
+    "POS 日结": "POS 日结",
+    "POS 特价商品": "POS 特价商品",
+    "POS 管理": "POS 管理",
+    "POS 设置": "POS 设置",
+    "POS 退货": "POS 退货",
+    "POS 钱箱": "POS 钱箱",
+    "POS 销售": "POS 销售",
+    "仓库管理": "仓库管理",
+    "价格管理": "价格管理",
+    "促销管理": "促销管理",
+    "分店商品管理": "分店商品管理",
+    "分店管理": "分店管理",
+    "分店财务": "分店财务",
+    "分店运营": "分店运营",
+    "前台订货": "前台订货",
+    "后台管理": "后台管理",
+    "商品管理": "商品管理",
+    "国内采购": "国内采购",
+    "定价策略": "定价策略",
+    "广告管理": "广告管理",
+    "报表": "报表",
+    "排班考勤": "排班考勤",
+    "本地进货管理": "本地进货管理",
+    "澳洲供应商": "澳洲供应商",
+    "用户管理": "用户管理",
+    "系统管理": "系统管理",
+    "角色管理": "角色管理",
+    "订单管理": "订单管理",
+    "货柜管理": "货柜管理"
+  },
+  "permissions": {
+    "Advertisements.Edit": {
+      "name": "编辑广告素材",
+      "description": "页面 /pos-admin/advertisements - 新增、编辑、删除、启用与上传广告素材"
+    },
+    "Advertisements.View": {
+      "name": "查看广告素材",
+      "description": "页面 /pos-admin/advertisements - 查看广告素材列表与详情"
+    },
+    "Attendance.Admin.View": {
+      "name": "查看全部考勤管理",
+      "description": "页面 /pos-admin/schedule-attendance - 查看全部考勤管理"
+    },
+    "Attendance.Approval.ReviewManagedStore": {
+      "name": "审核管理分店考勤",
+      "description": "页面 /pos-admin/schedule-attendance - 审核管理分店考勤"
+    },
+    "Attendance.Approval.ViewManagedStore": {
+      "name": "查看管理分店审核记录",
+      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店审核记录"
+    },
+    "Attendance.Availability.SubmitSelf": {
+      "name": "上报自己的可上班时间",
+      "description": "页面 /pos-admin/schedule-attendance - 上报自己的可上班时间"
+    },
+    "Attendance.Availability.ViewManagedStore": {
+      "name": "查看管理分店可上班时间",
+      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店可上班时间"
+    },
+    "Attendance.Holiday.EditManagedStore": {
+      "name": "编辑管理分店公共假期",
+      "description": "页面 /pos-admin/schedule-attendance - 编辑管理分店公共假期"
+    },
+    "Attendance.Holiday.ViewStore": {
+      "name": "查看分店公共假期",
+      "description": "页面 /pos-admin/schedule-attendance - 查看分店公共假期"
+    },
+    "Attendance.Leave.ApplySelf": {
+      "name": "本人提交请假申请",
+      "description": "页面 /pos-admin/schedule-attendance - 本人提交请假申请"
+    },
+    "Attendance.Leave.ReviewManagedStore": {
+      "name": "审核管理分店请假申请",
+      "description": "页面 /pos-admin/schedule-attendance - 审核管理分店请假申请"
+    },
+    "Attendance.Leave.ViewManagedStore": {
+      "name": "查看管理分店请假申请",
+      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店请假申请"
+    },
+    "Attendance.Punch.Self": {
+      "name": "本人打卡",
+      "description": "页面 /pos-admin/schedule-attendance - 本人打卡"
+    },
+    "Attendance.Punch.ViewManagedStore": {
+      "name": "查看管理分店打卡记录",
+      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店打卡记录"
+    },
+    "Attendance.Schedule.EditManagedStore": {
+      "name": "编辑管理分店排班",
+      "description": "页面 /pos-admin/schedule-attendance - 编辑管理分店排班"
+    },
+    "Attendance.Schedule.ViewSelf": {
+      "name": "查看自己的排班",
+      "description": "页面 /pos-admin/schedule-attendance - 查看自己的排班"
+    },
+    "Attendance.Schedule.ViewStore": {
+      "name": "查看相关分店排班",
+      "description": "页面 /pos-admin/schedule-attendance - 查看相关分店排班"
+    },
+    "Attendance.Settings.Edit": {
+      "name": "编辑考勤设置",
+      "description": "页面 /pos-admin/schedule-attendance - 编辑考勤设置"
+    },
+    "AustralianSuppliers.Edit": {
+      "name": "编辑澳洲供应商",
+      "description": "页面 /pos-admin/suppliers - 编辑供应商资料"
+    },
+    "AustralianSuppliers.View": {
+      "name": "查看澳洲供应商",
+      "description": "页面 /pos-admin/suppliers - 查看供应商列表与详情"
+    },
+    "Container.Create": {
+      "name": "创建货柜",
+      "description": "页面 /warehouse/containers - 创建货柜"
+    },
+    "Container.Delete": {
+      "name": "删除货柜",
+      "description": "页面 /warehouse/containers - 删除货柜"
+    },
+    "Container.Edit": {
+      "name": "编辑货柜",
+      "description": "页面 /warehouse/containers - 编辑货柜"
+    },
+    "Container.View": {
+      "name": "查看货柜",
+      "description": "页面 /warehouse/containers - 查看货柜列表与明细"
+    },
+    "Dashboard": {
+      "name": "访问后台",
+      "description": "页面 /dashboard - 访问后台工作台"
+    },
+    "DeviceRegistration.Manage": {
+      "name": "管理设备注册",
+      "description": "页面 /system/device-registration - 审核、维护或管理设备注册"
+    },
+    "DeviceRegistration.View": {
+      "name": "查看设备注册",
+      "description": "页面 /system/device-registration - 查看 POS 设备注册列表与状态"
+    },
+    "DomesticPurchase.ManagePrefixCodes": {
+      "name": "管理前缀码",
+      "description": "页面 /domestic-purchase/prefix-code-management - 管理商品前缀码"
+    },
+    "DomesticPurchase.ManageProducts": {
+      "name": "管理国内商品",
+      "description": "页面 /domestic-purchase/product-creation 与 /product-import - 创建和导入商品"
+    },
+    "DomesticPurchase.ManageSuppliers": {
+      "name": "管理国内供应商",
+      "description": "页面 /domestic-purchase/china-suppliers - 管理国内供应商"
+    },
+    "DomesticPurchase.View": {
+      "name": "查看国内采购",
+      "description": "页面 /domestic-purchase - 查看国内采购模块"
+    },
+    "EmployeeProfiles.Edit": {
+      "name": "维护员工个人信息",
+      "description": "页面 /system/employee-profiles - 编辑员工身份、银行、养老金、地址等资料"
+    },
+    "EmployeeProfiles.ReviewSensitiveManagedStore": {
+      "name": "审核管理分店员工敏感资料",
+      "description": "移动端员工敏感资料审核 - 审核管理分店内普通员工提交的敏感资料变更"
+    },
+    "EmployeeProfiles.View": {
+      "name": "查看员工个人信息",
+      "description": "页面 /system/employee-profiles - 查看员工个人信息维护列表与详情"
+    },
+    "InstallmentOrders.View": {
+      "name": "查看分期付款订单",
+      "description": "分店财务 - 查看分店分期付款订单与支付记录"
+    },
+    "LocalPurchase.Edit": {
+      "name": "编辑本地进货",
+      "description": "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"
+    },
+    "LocalPurchase.PushToHq": {
+      "name": "推送本地进货到 HQ",
+      "description": "页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"
+    },
+    "LocalPurchase.View": {
+      "name": "查看本地进货",
+      "description": "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"
+    },
+    "OrderFront": {
+      "name": "前台订货",
+      "description": "前台订货 - 前台订货"
+    },
+    "Orders.Create": {
+      "name": "创建订单",
+      "description": "订单管理 - 创建订单"
+    },
+    "Orders.Delete": {
+      "name": "删除订单",
+      "description": "订单管理 - 删除订单"
+    },
+    "Orders.Edit": {
+      "name": "编辑订单",
+      "description": "订单管理 - 编辑订单"
+    },
+    "Orders.View": {
+      "name": "查看订单",
+      "description": "页面 /pos-admin/sales-orders - 查看收银记录"
+    },
+    "Permissions.PosTerminal.Audit.View": {
+      "name": "查看员工操作日志",
+      "description": "收银端操作审计 - 页面 /pos-admin/operation-logs 查看管理分店的员工操作记录"
+    },
+    "Permissions.PosTerminal.CashDrawer.Open": {
+      "name": "打开钱箱",
+      "description": "收银端钱箱 - 打开钱箱按钮"
+    },
+    "Permissions.PosTerminal.CustomerDisplay.Manage": {
+      "name": "管理客显",
+      "description": "收银端客显 - 管理客显按钮"
+    },
+    "Permissions.PosTerminal.DailyClose.Reprint": {
+      "name": "重打日结小票",
+      "description": "收银端日结页 - 重打日结小票按钮"
+    },
+    "Permissions.PosTerminal.DailyClose.Save": {
+      "name": "保存日结",
+      "description": "收银端日结页 - 保存日结按钮"
+    },
+    "Permissions.PosTerminal.DailyClose.View": {
+      "name": "查看日结页",
+      "description": "收银端日结页 - 进入日结页面"
+    },
+    "Permissions.PosTerminal.History.Recall": {
+      "name": "召回历史订单",
+      "description": "收银端历史订单页 - 召回订单按钮"
+    },
+    "Permissions.PosTerminal.History.Reprint": {
+      "name": "重打历史订单小票",
+      "description": "收银端历史订单页 - 重打小票按钮"
+    },
+    "Permissions.PosTerminal.History.View": {
+      "name": "查看历史订单页",
+      "description": "收银端历史订单页 - 进入历史订单页面"
+    },
+    "Permissions.PosTerminal.Installments.AddRepayment": {
+      "name": "添加分期还款",
+      "description": "收银端分期页 - 添加还款按钮"
+    },
+    "Permissions.PosTerminal.Installments.Cancel": {
+      "name": "取消分期",
+      "description": "收银端分期页 - 取消分期按钮"
+    },
+    "Permissions.PosTerminal.Installments.ConfirmPickup": {
+      "name": "确认分期取货",
+      "description": "收银端分期页 - 确认取货按钮"
+    },
+    "Permissions.PosTerminal.Installments.Create": {
+      "name": "创建分期",
+      "description": "收银端分期页 - 创建分期按钮"
+    },
+    "Permissions.PosTerminal.Installments.View": {
+      "name": "查看分期页",
+      "description": "收银端分期页 - 进入分期页面"
+    },
+    "Permissions.PosTerminal.Payment.Confirm": {
+      "name": "确认收款",
+      "description": "收银端收款页 - 确认完成收款按钮"
+    },
+    "Permissions.PosTerminal.Payment.RemoveTender": {
+      "name": "移除收款",
+      "description": "收银端收款页 - 移除已录入收款按钮"
+    },
+    "Permissions.PosTerminal.Payment.TakeCard": {
+      "name": "刷卡收款",
+      "description": "收银端收款页 - 刷卡收款按钮"
+    },
+    "Permissions.PosTerminal.Payment.TakeCash": {
+      "name": "现金收款",
+      "description": "收银端收款页 - 现金收款按钮"
+    },
+    "Permissions.PosTerminal.Payment.TakeVoucher": {
+      "name": "代金券收款",
+      "description": "收银端收款页 - 代金券收款按钮"
+    },
+    "Permissions.PosTerminal.Payment.View": {
+      "name": "查看收款页",
+      "description": "收银端收款页 - 进入收款页面"
+    },
+    "Permissions.PosTerminal.Receipt.PrintLast": {
+      "name": "打印上一张小票",
+      "description": "收银端小票 - 打印上一张小票按钮"
+    },
+    "Permissions.PosTerminal.Returns.AddNoReceiptItem": {
+      "name": "添加无小票退货商品",
+      "description": "收银端退货页 - 添加无小票商品按钮"
+    },
+    "Permissions.PosTerminal.Returns.AddReceiptLine": {
+      "name": "添加小票退货行",
+      "description": "收银端退货页 - 添加原小票商品按钮"
+    },
+    "Permissions.PosTerminal.Returns.Confirm": {
+      "name": "确认退货",
+      "description": "收银端退货页 - 确认退货按钮"
+    },
+    "Permissions.PosTerminal.Returns.View": {
+      "name": "查看退货页",
+      "description": "收银端退货页 - 进入退货页面"
+    },
+    "Permissions.PosTerminal.Sales.AddItem": {
+      "name": "添加扫码商品",
+      "description": "收银端销售页 - 添加扫码商品按钮"
+    },
+    "Permissions.PosTerminal.Sales.AddOpenItem": {
+      "name": "添加开放商品",
+      "description": "收银端销售页 - 添加开放商品按钮"
+    },
+    "Permissions.PosTerminal.Sales.ChangePrice": {
+      "name": "修改销售价格",
+      "description": "收银端销售页 - 修改商品单价按钮"
+    },
+    "Permissions.PosTerminal.Sales.ChangeQuantity": {
+      "name": "修改销售数量",
+      "description": "收银端销售页 - 修改商品数量按钮"
+    },
+    "Permissions.PosTerminal.Sales.ClearCart": {
+      "name": "清空购物车",
+      "description": "收银端销售页 - 清空购物车按钮"
+    },
+    "Permissions.PosTerminal.Sales.HoldOrder": {
+      "name": "挂起订单",
+      "description": "收银端销售页 - 挂起订单按钮"
+    },
+    "Permissions.PosTerminal.Sales.LineManualDiscount": {
+      "name": "单行手工折扣",
+      "description": "收银端销售页 - 单行手工折扣"
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent": {
+      "name": "单行快捷九折",
+      "description": "收银端销售页 - 单行快捷 10% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent": {
+      "name": "单行快捷八折",
+      "description": "收银端销售页 - 单行快捷 20% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent": {
+      "name": "单行快捷七折",
+      "description": "收银端销售页 - 单行快捷 30% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent": {
+      "name": "单行快捷六折",
+      "description": "收银端销售页 - 单行快捷 40% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent": {
+      "name": "单行快捷五折",
+      "description": "收银端销售页 - 单行快捷 50% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderManualDiscount": {
+      "name": "整单手工折扣",
+      "description": "收银端销售页 - 整单手工折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent": {
+      "name": "整单快捷九折",
+      "description": "收银端销售页 - 整单快捷 10% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent": {
+      "name": "整单快捷八折",
+      "description": "收银端销售页 - 整单快捷 20% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent": {
+      "name": "整单快捷七折",
+      "description": "收银端销售页 - 整单快捷 30% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent": {
+      "name": "整单快捷六折",
+      "description": "收银端销售页 - 整单快捷 40% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent": {
+      "name": "整单快捷五折",
+      "description": "收银端销售页 - 整单快捷 50% 折扣"
+    },
+    "Permissions.PosTerminal.Sales.RecallOrder": {
+      "name": "召回挂单",
+      "description": "收银端销售页 - 召回挂单按钮"
+    },
+    "Permissions.PosTerminal.Sales.RemoveLine": {
+      "name": "移除销售行",
+      "description": "收银端销售页 - 移除购物车明细按钮"
+    },
+    "Permissions.PosTerminal.Sales.View": {
+      "name": "查看销售页",
+      "description": "收银端销售页 - 进入销售页面"
+    },
+    "Permissions.PosTerminal.Settings.AppUpdate": {
+      "name": "应用更新设置",
+      "description": "收银端设置页 - 应用更新按钮"
+    },
+    "Permissions.PosTerminal.Settings.CatalogDownload": {
+      "name": "下载商品目录",
+      "description": "收银端设置页 - 下载商品目录按钮"
+    },
+    "Permissions.PosTerminal.Settings.CatalogReset": {
+      "name": "重置商品目录",
+      "description": "收银端设置页 - 重置商品目录按钮"
+    },
+    "Permissions.PosTerminal.Settings.DeviceRegistration": {
+      "name": "设备注册设置",
+      "description": "收银端设置页 - 设备注册按钮"
+    },
+    "Permissions.PosTerminal.Settings.PaymentTerminal": {
+      "name": "设置支付终端",
+      "description": "收银端设置页 - 支付终端设置按钮"
+    },
+    "Permissions.PosTerminal.Settings.ReceiptPrinter": {
+      "name": "设置小票打印机",
+      "description": "收银端设置页 - 小票打印机设置按钮"
+    },
+    "Permissions.PosTerminal.Settings.TestDataReset": {
+      "name": "重置测试数据",
+      "description": "收银端设置页 - 重置测试数据按钮"
+    },
+    "Permissions.PosTerminal.Settings.View": {
+      "name": "查看设置页",
+      "description": "收银端设置页 - 进入设置页面"
+    },
+    "Permissions.PosTerminal.SpecialProducts.AddToCart": {
+      "name": "添加特价商品到购物车",
+      "description": "收银端特价商品页 - 加入购物车按钮"
+    },
+    "Permissions.PosTerminal.SpecialProducts.Manage": {
+      "name": "管理特价商品",
+      "description": "收银端特价商品页 - 管理特价商品按钮"
+    },
+    "Permissions.PosTerminal.SpecialProducts.View": {
+      "name": "查看特价商品页",
+      "description": "收银端特价商品页 - 进入特价商品页面"
+    },
+    "Permissions.PosTerminal.System.Sync": {
+      "name": "同步收银数据",
+      "description": "收银端同步 - 手动同步按钮"
+    },
+    "PosProducts.Manage": {
+      "name": "管理 POS 商品",
+      "description": "页面 /pos-admin/products - 编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复"
+    },
+    "PosProducts.View": {
+      "name": "查看 POS 商品管理",
+      "description": "页面 /pos-admin/products - 查看 POS 商品、分类、套装码、同步和完整性检查入口"
+    },
+    "Prices.Delete": {
+      "name": "删除价格",
+      "description": "价格管理 - 删除价格"
+    },
+    "Prices.Modify": {
+      "name": "修改价格",
+      "description": "价格管理 - 修改价格"
+    },
+    "Prices.View": {
+      "name": "查看价格",
+      "description": "价格管理 - 查看价格"
+    },
+    "PricingStrategy.Edit": {
+      "name": "编辑定价策略",
+      "description": "页面 /pos-admin/pricing-strategies - 编辑自动价格策略"
+    },
+    "PricingStrategy.View": {
+      "name": "查看定价策略",
+      "description": "页面 /pos-admin/pricing-strategies - 查看自动价格策略"
+    },
+    "Products.Create": {
+      "name": "创建商品",
+      "description": "商品管理 - 创建商品"
+    },
+    "Products.Delete": {
+      "name": "删除商品",
+      "description": "商品管理 - 删除商品"
+    },
+    "Products.Edit": {
+      "name": "编辑商品",
+      "description": "商品管理 - 编辑商品"
+    },
+    "Products.View": {
+      "name": "查看商品",
+      "description": "页面 /domestic-purchase/domestic-products - 查看国内商品"
+    },
+    "Promotions.Edit": {
+      "name": "编辑促销",
+      "description": "页面 /pos-admin/promotions - 编辑促销活动"
+    },
+    "Promotions.View": {
+      "name": "查看促销",
+      "description": "页面 /pos-admin/promotions - 查看促销活动"
+    },
+    "Reports.Export": {
+      "name": "导出数据",
+      "description": "页面 /executive-sales-intelligence - 导出销售报表数据"
+    },
+    "Reports.ProductMovement.View": {
+      "name": "查看商品经营分析",
+      "description": "页面 /executive-sales-intelligence/product-movement-report - 查看商品经营分析和店长动作建议"
+    },
+    "Reports.View": {
+      "name": "查看报表",
+      "description": "页面 /executive-sales-intelligence - 查看销售看板和销售明细"
+    },
+    "Roles.Create": {
+      "name": "创建角色",
+      "description": "页面 /system/roles - 创建角色"
+    },
+    "Roles.Delete": {
+      "name": "删除角色",
+      "description": "页面 /system/roles - 删除角色"
+    },
+    "Roles.Edit": {
+      "name": "编辑角色",
+      "description": "页面 /system/roles - 编辑角色基础信息"
+    },
+    "Roles.ManagePermissions": {
+      "name": "管理角色权限",
+      "description": "页面 /system/permissions - 分配或移除角色权限"
+    },
+    "Roles.ManageUsers": {
+      "name": "管理角色用户",
+      "description": "页面 /system/roles - 管理角色关联用户"
+    },
+    "Roles.View": {
+      "name": "查看角色",
+      "description": "页面 /system/roles 与 /system/permissions - 查看角色和权限配置"
+    },
+    "SeasonalCards.Remaining.SubmitManagedStore": {
+      "name": "提交管理分店季节卡剩余",
+      "description": "页面 /seasonal-cards - 提交管理分店季节卡剩余"
+    },
+    "SeasonalCards.Remaining.ViewManagedStore": {
+      "name": "查看管理分店季节卡剩余",
+      "description": "页面 /seasonal-cards - 查看管理分店季节卡剩余上报记录"
+    },
+    "Store.ManageInfo": {
+      "name": "管理分店信息",
+      "description": "分店运营 - 管理分店信息"
+    },
+    "Store.ManageOperations": {
+      "name": "管理分店运营",
+      "description": "页面 /pos-admin/cash-register-users - 管理收银用户条码"
+    },
+    "StoreProducts.Create": {
+      "name": "创建分店商品",
+      "description": "页面 /pos-admin/store-product-price - 创建分店商品价格"
+    },
+    "StoreProducts.Edit": {
+      "name": "编辑分店商品",
+      "description": "页面 /pos-admin/store-product-price - 编辑分店商品价格"
+    },
+    "StoreProducts.View": {
+      "name": "查看分店商品",
+      "description": "页面 /pos-admin/store-product-price - 查看分店商品价格"
+    },
+    "Stores.Create": {
+      "name": "创建分店",
+      "description": "页面 /system/stores - 创建分店"
+    },
+    "Stores.Delete": {
+      "name": "删除分店",
+      "description": "页面 /system/stores - 删除分店"
+    },
+    "Stores.Edit": {
+      "name": "编辑分店",
+      "description": "页面 /system/stores - 编辑分店资料"
+    },
+    "Stores.Sync": {
+      "name": "同步分店数据",
+      "description": "页面 /system/stores - 同步分店数据"
+    },
+    "Stores.View": {
+      "name": "查看分店",
+      "description": "页面 /system/stores - 查看分店列表与详情"
+    },
+    "StoreVouchers.View": {
+      "name": "查看分店代金券",
+      "description": "分店财务 - 查看分店代金券使用情况与关联订单"
+    },
+    "System.ManageAppDownloads": {
+      "name": "管理 App 下载",
+      "description": "系统管理 - 登记 OTA 更新和生成回撤命令"
+    },
+    "System.ManageScheduledTasks": {
+      "name": "管理定时任务",
+      "description": "系统管理 - 切换定时任务调度实例和运行开关"
+    },
+    "System.ManageSettings": {
+      "name": "管理设置",
+      "description": "系统管理 - 管理设置"
+    },
+    "System.ViewAppDownloads": {
+      "name": "查看 App 下载",
+      "description": "系统管理 - 查看 App 下载页"
+    },
+    "System.ViewLogs": {
+      "name": "查看日志",
+      "description": "系统管理 - 查看日志"
+    },
+    "Users.Create": {
+      "name": "创建用户",
+      "description": "页面 /system/users - 创建后台用户"
+    },
+    "Users.Delete": {
+      "name": "删除用户",
+      "description": "页面 /system/users - 删除或停用用户"
+    },
+    "Users.Edit": {
+      "name": "编辑用户",
+      "description": "页面 /system/users - 编辑用户基础信息"
+    },
+    "Users.ManagePosTerminalPermissions": {
+      "name": "管理分店 POS 权限",
+      "description": "页面 /system/users - 按分店维护收银员 POS 终端业务权限"
+    },
+    "Users.ManageRoles": {
+      "name": "管理用户角色",
+      "description": "页面 /system/users - 分配或移除用户角色"
+    },
+    "Users.ManageStores": {
+      "name": "管理用户分店",
+      "description": "页面 /system/users - 维护用户关联分店"
+    },
+    "Users.ResetPassword": {
+      "name": "重置密码",
+      "description": "页面 /system/users - 重置用户登录密码"
+    },
+    "Users.View": {
+      "name": "查看用户",
+      "description": "页面 /system/users - 查看用户列表与详情"
+    },
+    "Warehouse.Manage": {
+      "name": "管理仓库",
+      "description": "页面 /warehouse - 管理仓库模块"
+    },
+    "Warehouse.ManageCategories": {
+      "name": "管理仓库分类",
+      "description": "页面 /warehouse/categories - 管理仓库分类"
+    },
+    "Warehouse.ManageLocations": {
+      "name": "管理仓库标签",
+      "description": "页面 /warehouse/locations - 管理仓库标签"
+    },
+    "Warehouse.ManageOrders": {
+      "name": "管理仓库订货",
+      "description": "页面 /warehouse/store-orders - 管理分店订货、明细、配货单和发票"
+    },
+    "Warehouse.ManageProducts": {
+      "name": "管理仓库商品",
+      "description": "页面 /warehouse/products 与 /warehouse/product-grade-management - 管理仓库商品和等级"
+    },
+    "Warehouse.View": {
+      "name": "查看仓库",
+      "description": "页面 /warehouse - 查看仓库模块"
+    }
+  },
+  "roles": {
+    "Admin": "管理员",
+    "管理员": "管理员",
+    "SuperAdmin": "超级管理员",
+    "超级管理员": "超级管理员",
+    "StoreManager": "店长",
+    "店长": "店长",
+    "经理": "店长",
+    "StoreStaff": "店员",
+    "店铺员工": "店员",
+    "WarehouseManager": "仓库经理",
+    "Warehouse": "仓库经理",
+    "仓库经理": "仓库经理",
+    "仓库管理员": "仓库经理",
+    "WarehouseAdmin": "仓库经理",
+    "WarehouseStaff": "仓库员工",
+    "仓库员工": "仓库员工",
+    "User": "用户",
+    "用户": "用户",
+    "Manager": "经理",
+    "Order": "订货员",
+    "订货员": "订货员"
+  }
+}

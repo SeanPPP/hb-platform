@@ -224,7 +224,7 @@ namespace BlazorApp.Api.Controllers
                     foreach (var role in user.Roles)
                     {
                         // 查询该角色的权限
-                        var rolePermissionsResult = await _roleService.GetRolePermissionsAsync(
+                        var rolePermissionsResult = await _roleService.GetRolePermissionsForAuthorizationAsync(
                             role.RoleGUID
                         );
                         if (rolePermissionsResult.Success && rolePermissionsResult.Data != null)

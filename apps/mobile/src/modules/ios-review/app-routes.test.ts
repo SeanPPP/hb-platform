@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { createIosReviewDataStore } from "./data-store";
+import { IOS_REVIEW_STORES } from "./identity";
 import { createIosReviewTransport } from "./transport";
-import {
-  resetIosReviewAppRouteState,
-} from "./app-routes";
+import { resetIosReviewAppRouteState } from "./app-routes";
 import { normalizeInvoiceGridResponse } from "../local-supplier-invoices/api";
 import {
   normalizeSeasonalCardCatalogResponse,
@@ -45,15 +44,38 @@ async function run() {
   const menu = await request("GET", "/navigation/app-menu");
   assert.equal(menu.length, 19, "审核菜单必须覆盖全部 19 个业务入口");
 
-  const stores = await request(
-    "GET",
-    "/Users/guid/review-user/stores"
-  );
+  const stores = await request("GET", "/Users/guid/review-user/stores");
   assert.equal(stores.length, 3);
   assert.equal(
     stores.every((store: { storeGUID?: string }) => Boolean(store.storeGUID)),
     true,
-    "演示门店必须携带稳定 storeGUID"
+    "演示门店必须携带稳定 storeGUID",
+  );
+
+  const accessRoles = await request(
+    "GET",
+    "/Users/guid/review-staff-001/roles",
+  );
+  assert.deepEqual(
+    accessRoles.map((role: { roleName?: string }) => role.roleName),
+    ["StoreStaff"],
+    "审核模式必须覆盖账号角色读取",
+  );
+  const accessPermissionState = await request(
+    "GET",
+    "/Users/guid/review-staff-001/permissions/state",
+  );
+  assert.equal(accessPermissionState.implicitAllPermissions, false);
+  assert.deepEqual(accessPermissionState.inheritedPermissionCodes, [
+    "Users.View",
+  ]);
+  assert.ok(
+    (await request("GET", "/Roles/active")).length > 0,
+    "审核模式必须提供角色目录",
+  );
+  assert.ok(
+    (await request("GET", "/Roles/permissions")).length > 0,
+    "审核模式必须提供权限目录",
   );
 
   const readContracts: Array<{
@@ -620,6 +642,36 @@ async function run() {
     grantedPermissionCodes: ["PosTerminal.Sales.AddItem"],
   });
   assert.deepEqual(permissions.grantedPermissionCodes, [
+    "PosTerminal.Sales.AddItem",
+  ]);
+
+  await request("POST", "/Users/guid/review-staff-001/stores", [
+    {
+      StoreGUID: IOS_REVIEW_STORES[1].storeGUID,
+      IsPrimary: true,
+    },
+  ]);
+  const updatedAccessStores = await request(
+    "GET",
+    "/Users/guid/review-staff-001/stores",
+  );
+  assert.equal(
+    updatedAccessStores[0]?.storeGUID,
+    IOS_REVIEW_STORES[1].storeGUID,
+  );
+  assert.equal(updatedAccessStores[0]?.isPrimary, true);
+
+  await request("POST", "/Users/guid/review-staff-001/roles", {
+    RoleGuids: ["review-role-store-staff"],
+  });
+  await request("POST", "/Users/guid/review-staff-001/permissions", {
+    permissions: ["PosTerminal.Sales.AddItem"],
+  });
+  const updatedPermissionState = await request(
+    "GET",
+    "/Users/guid/review-staff-001/permissions/state",
+  );
+  assert.deepEqual(updatedPermissionState.directPermissionCodes, [
     "PosTerminal.Sales.AddItem",
   ]);
 

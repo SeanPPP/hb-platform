@@ -10,6 +10,17 @@ namespace BlazorApp.Shared.Constants
         public static readonly string[] SuperAdminRoleNames =
             ["Admin", "管理员", "SuperAdmin", "超级管理员"];
 
+        public static readonly string[] StoreManagerRoleNames = ["StoreManager", "店长", "经理"];
+
+        public static readonly string[] WarehouseManagerRoleNames =
+            ["WarehouseManager", "仓库经理", "Warehouse", "仓库管理员", "WarehouseAdmin"];
+
+        public static readonly string[] HighPrivilegeRoleNames = SuperAdminRoleNames
+            .Concat(StoreManagerRoleNames)
+            .Concat(WarehouseManagerRoleNames)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         public static class Users
         {
             public const string View = "Users.View";
@@ -394,6 +405,18 @@ namespace BlazorApp.Shared.Constants
         {
             return !string.IsNullOrWhiteSpace(roleName)
                 && SuperAdminRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public static bool IsStoreManagerRole(string? roleName)
+        {
+            return !string.IsNullOrWhiteSpace(roleName)
+                && StoreManagerRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public static bool IsHighPrivilegeRole(string? roleName)
+        {
+            return !string.IsNullOrWhiteSpace(roleName)
+                && HighPrivilegeRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
         }
 
         public static IReadOnlyDictionary<string, string[]> GetPermissionAliases()

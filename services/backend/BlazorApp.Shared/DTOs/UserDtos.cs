@@ -15,10 +15,10 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 页码（兼容性属性）
         /// </summary>
-        public int PageNumber 
-        { 
-            get => Page; 
-            set => Page = value; 
+        public int PageNumber
+        {
+            get => Page;
+            set => Page = value;
         }
 
         /// <summary>
@@ -34,10 +34,10 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 搜索关键字（兼容性属性）
         /// </summary>
-        public string? SearchKeyword 
-        { 
-            get => Search; 
-            set => Search = value; 
+        public string? SearchKeyword
+        {
+            get => Search;
+            set => Search = value;
         }
 
         /// <summary>
@@ -115,7 +115,7 @@ namespace BlazorApp.Shared.DTOs
         public string? CurrentStore { get; set; } // 兼容性
         public List<string> RoleNames { get; set; } = new();
         public List<string> StoreNames { get; set; } = new();
-        public  List<RoleDto>? Roles { get; set; } = new();
+        public List<RoleDto>? Roles { get; set; } = new();
         public List<UserStoreDto>? Stores { get; set; } = new();
         /// <summary>
         /// 用户权限列表（从所有角色中聚合）
@@ -312,10 +312,21 @@ namespace BlazorApp.Shared.DTOs
     public class UserPermissionStateDto
     {
         public string UserGuid { get; set; } = string.Empty;
+        public bool IsSuperAdmin { get; set; }
+        public bool ImplicitAllPermissions { get; set; }
         public List<string> InheritedPermissionCodes { get; set; } = new();
         public List<string> DirectPermissionCodes { get; set; } = new();
         public List<string> EffectivePermissionCodes { get; set; } = new();
         public List<UserPermissionInheritedSourceDto> InheritedSources { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 用户访问权限编辑所需的作用域状态与可分配权限目录。
+    /// </summary>
+    public class UserAccessPermissionDto
+    {
+        public UserPermissionStateDto State { get; set; } = new();
+        public List<PermissionCategoryDto> Categories { get; set; } = new();
     }
 
     /// <summary>
@@ -351,10 +362,10 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 用户GUID列表（兼容性属性）
         /// </summary>
-        public List<string> UserGUIDs 
-        { 
-            get => UserGuids; 
-            set => UserGuids = value; 
+        public List<string> UserGUIDs
+        {
+            get => UserGuids;
+            set => UserGuids = value;
         }
 
         [Required(ErrorMessage = "操作类型不能为空")]
@@ -363,10 +374,10 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>
         /// 操作类型（兼容性属性）
         /// </summary>
-        public string Action 
-        { 
-            get => Operation; 
-            set => Operation = value; 
+        public string Action
+        {
+            get => Operation;
+            set => Operation = value;
         }
 
         /// <summary>

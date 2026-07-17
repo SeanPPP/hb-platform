@@ -18,6 +18,7 @@ namespace BlazorApp.Api.Services
         private readonly SqlSugarContext _context;
         private readonly ILogger<RoleService> _logger;
         private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly ICurrentUserManageableStoreScopeService? _manageableStoreScopeService;
 
         // 系统预定义权限
         private readonly List<PermissionCategoryDto> _systemPermissions = new()
@@ -293,12 +294,14 @@ namespace BlazorApp.Api.Services
         public RoleService(
             SqlSugarContext context,
             ILogger<RoleService> logger,
-            IHttpContextAccessor httpContextAccessor
+            IHttpContextAccessor httpContextAccessor,
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
         )
         {
             _context = context;
             _logger = logger;
             _httpContextAccessor = httpContextAccessor;
+            _manageableStoreScopeService = manageableStoreScopeService;
         }
 
         private string GetCurrentUsername()
@@ -770,6 +773,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<RoleDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 // 检查角色名是否已存在
                 var existingRole = await db.Queryable<Role>()
@@ -830,6 +844,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<RoleDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 // 检查角色是否存在
                 var role = await db.Queryable<Role>()
@@ -887,6 +912,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 // 检查角色是否存在
                 var role = await db.Queryable<Role>()
@@ -952,6 +988,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 var result = await db.Updateable<Role>()
                     .SetColumns(r => new Role { IsActive = isActive, UpdatedAt = DateTime.UtcNow })
@@ -1065,15 +1112,33 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!actor.IsSuperAdmin)
+                {
+                    return ApiResponse<bool>.Error(
+                        "只有管理员可以维护用户角色",
+                        "ADMIN_REQUIRED"
+                    );
+                }
 
                 // 检查角色是否存在
-                var roleExists = await db.Queryable<Role>()
+                var role = await db.Queryable<Role>()
                     .Where(r => r.RoleGUID == roleGuid)
-                    .AnyAsync();
+                    .FirstAsync();
 
-                if (!roleExists)
+                if (role == null)
                 {
                     return ApiResponse<bool>.Error("角色不存在", "ROLE_NOT_FOUND");
+                }
+                if (Permissions.IsStoreManagerRole(role.RoleName))
+                {
+                    return ApiResponse<bool>.Error(
+                        "店长角色由可管理分店关系维护",
+                        "DERIVED_STORE_MANAGER_ROLE"
+                    );
                 }
 
                 // 获取已存在的用户角色关联
@@ -1125,6 +1190,32 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!actor.IsSuperAdmin)
+                {
+                    return ApiResponse<bool>.Error(
+                        "只有管理员可以维护用户角色",
+                        "ADMIN_REQUIRED"
+                    );
+                }
+
+                var role = await db.Queryable<Role>()
+                    .Where(item => item.RoleGUID == roleGuid && !item.IsDeleted)
+                    .FirstAsync();
+                if (role == null)
+                {
+                    return ApiResponse<bool>.Error("角色不存在", "ROLE_NOT_FOUND");
+                }
+                if (Permissions.IsStoreManagerRole(role.RoleName))
+                {
+                    return ApiResponse<bool>.Error(
+                        "店长角色由可管理分店关系维护",
+                        "DERIVED_STORE_MANAGER_ROLE"
+                    );
+                }
 
                 var result = await db.Deleteable<UserRole>()
                     .Where(ur => ur.RoleGUID == roleGuid && ur.UserGUID == userGuid)
@@ -1162,6 +1253,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 switch (dto.Operation.ToLower())
                 {
@@ -1322,6 +1424,21 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<ApiResponse<List<PermissionCategoryDto>>> GetPermissionsAsync()
         {
+            var db = _context.Db;
+            var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            return adminDecision.IsAllowed
+                ? await GetPermissionsCoreAsync()
+                : ApiResponse<List<PermissionCategoryDto>>.Error(
+                    adminDecision.Message,
+                    adminDecision.ErrorCode
+                );
+        }
+
+        private async Task<ApiResponse<List<PermissionCategoryDto>>> GetPermissionsCoreAsync()
+        {
             try
             {
                 var db = _context.Db;
@@ -1366,7 +1483,20 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var permissions = await GetPermissionsAsync();
+                var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<PermissionCatalogDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
+                var permissions = await GetPermissionsCoreAsync();
                 var catalog = new PermissionCatalogDto
                 {
                     Categories = permissions.Data ?? new List<PermissionCategoryDto>(),
@@ -1403,6 +1533,25 @@ namespace BlazorApp.Api.Services
         /// 获取角色的权限列表
         /// </summary>
         public async Task<ApiResponse<List<string>>> GetRolePermissionsAsync(string roleGuid)
+        {
+            var db = _context.Db;
+            var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            return adminDecision.IsAllowed
+                ? await GetRolePermissionsCoreAsync(roleGuid)
+                : ApiResponse<List<string>>.Error(
+                    adminDecision.Message,
+                    adminDecision.ErrorCode
+                );
+        }
+
+        public Task<ApiResponse<List<string>>> GetRolePermissionsForAuthorizationAsync(
+            string roleGuid
+        ) => GetRolePermissionsCoreAsync(roleGuid);
+
+        private async Task<ApiResponse<List<string>>> GetRolePermissionsCoreAsync(string roleGuid)
         {
             try
             {
@@ -1450,6 +1599,23 @@ namespace BlazorApp.Api.Services
             string roleGuid
         )
         {
+            var db = _context.Db;
+            var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            return adminDecision.IsAllowed
+                ? await GetRolePermissionStateCoreAsync(roleGuid)
+                : ApiResponse<RolePermissionStateDto>.Error(
+                    adminDecision.Message,
+                    adminDecision.ErrorCode
+                );
+        }
+
+        private async Task<ApiResponse<RolePermissionStateDto>> GetRolePermissionStateCoreAsync(
+            string roleGuid
+        )
+        {
             try
             {
                 var db = _context.Db;
@@ -1470,7 +1636,7 @@ namespace BlazorApp.Api.Services
                     .Select(item => item.PermissionCode)
                     .ToListAsync();
 
-                var effectivePermissions = await GetRolePermissionsAsync(roleGuid);
+                var effectivePermissions = await GetRolePermissionsCoreAsync(roleGuid);
                 var isSuperAdmin = IsSuperAdminRoleName(role.RoleName);
 
                 return ApiResponse<RolePermissionStateDto>.OK(
@@ -1510,6 +1676,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!actor.IsSuperAdmin)
+                {
+                    return ApiResponse<bool>.Error(
+                        "只有管理员可以维护角色权限",
+                        "ADMIN_REQUIRED"
+                    );
+                }
+
                 var role = await db.Queryable<Role>()
                     .Where(r => r.RoleGUID == roleGuid && !r.IsDeleted)
                     .FirstAsync();
@@ -1806,6 +1984,23 @@ namespace BlazorApp.Api.Services
             string userGuid
         )
         {
+            var db = _context.Db;
+            var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            return adminDecision.IsAllowed
+                ? await GetUserPermissionStateCoreAsync(userGuid)
+                : ApiResponse<UserPermissionStateDto>.Error(
+                    adminDecision.Message,
+                    adminDecision.ErrorCode
+                );
+        }
+
+        private async Task<ApiResponse<UserPermissionStateDto>> GetUserPermissionStateCoreAsync(
+            string userGuid
+        )
+        {
             try
             {
                 var db = _context.Db;
@@ -1909,6 +2104,8 @@ namespace BlazorApp.Api.Services
                     new UserPermissionStateDto
                     {
                         UserGuid = userGuid,
+                        IsSuperAdmin = isSuperAdmin,
+                        ImplicitAllPermissions = isSuperAdmin,
                         InheritedPermissionCodes = inheritedCodes,
                         DirectPermissionCodes = normalizedDirectCodes,
                         EffectivePermissionCodes = effectiveCodes,
@@ -1923,6 +2120,137 @@ namespace BlazorApp.Api.Services
                 return ApiResponse<UserPermissionStateDto>.Error(
                     "获取用户权限状态失败",
                     "GET_USER_PERMISSION_STATE_FAILED"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<UserAccessPermissionDto>> GetUserAccessPermissionsAsync(
+            string actorUserGuid,
+            string targetUserGuid
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var actor = await UserAccessMutationSecurity.ResolveActorByUserGuidAsync(
+                    db,
+                    actorUserGuid
+                );
+                if (actor.Kind == UserAccessMutationActorKind.Denied)
+                {
+                    return ApiResponse<UserAccessPermissionDto>.Error(
+                        "当前账号不能分配员工访问权限",
+                        "ACCESS_DELEGATOR_DENIED"
+                    );
+                }
+
+                var targetDecision = await UserAccessMutationSecurity.ValidateGlobalTargetAsync(
+                    db,
+                    actor,
+                    targetUserGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<UserAccessPermissionDto>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+
+                var stateResult = await GetUserPermissionStateCoreAsync(targetUserGuid);
+                if (!stateResult.Success || stateResult.Data == null)
+                {
+                    return ApiResponse<UserAccessPermissionDto>.Error(
+                        stateResult.Message,
+                        stateResult.ErrorCode
+                    );
+                }
+
+                var categoriesResult = await GetPermissionsCoreAsync();
+                if (!categoriesResult.Success || categoriesResult.Data == null)
+                {
+                    return ApiResponse<UserAccessPermissionDto>.Error(
+                        categoriesResult.Message,
+                        categoriesResult.ErrorCode
+                    );
+                }
+
+                if (actor.IsSuperAdmin)
+                {
+                    return ApiResponse<UserAccessPermissionDto>.OK(
+                        new UserAccessPermissionDto
+                        {
+                            State = stateResult.Data,
+                            Categories = categoriesResult.Data,
+                        },
+                        "获取用户可分配权限成功"
+                    );
+                }
+
+                var actorPermissionCodes = await UserAccessMutationSecurity.GetEffectivePermissionCodesAsync(
+                    db,
+                    actor.UserGuid
+                );
+
+                // 店长只能看到自己拥有的权限；目标已有但越界的权限不会泄露，也不会在保存时被删除。
+                var scopedState = new UserPermissionStateDto
+                {
+                    UserGuid = stateResult.Data.UserGuid,
+                    IsSuperAdmin = stateResult.Data.IsSuperAdmin,
+                    ImplicitAllPermissions = stateResult.Data.ImplicitAllPermissions,
+                    InheritedPermissionCodes = stateResult.Data.InheritedPermissionCodes
+                        .Where(actorPermissionCodes.Contains)
+                        .ToList(),
+                    DirectPermissionCodes = stateResult.Data.DirectPermissionCodes
+                        .Where(actorPermissionCodes.Contains)
+                        .ToList(),
+                    EffectivePermissionCodes = stateResult.Data.EffectivePermissionCodes
+                        .Where(actorPermissionCodes.Contains)
+                        .ToList(),
+                    InheritedSources = stateResult.Data.InheritedSources
+                        .Select(source => new UserPermissionInheritedSourceDto
+                        {
+                            RoleName = source.RoleName,
+                            PermissionCodes = source.PermissionCodes
+                                .Where(actorPermissionCodes.Contains)
+                                .ToList(),
+                        })
+                        .Where(source => source.PermissionCodes.Count > 0)
+                        .ToList(),
+                };
+                var scopedCategories = categoriesResult.Data
+                    .Select(category => new PermissionCategoryDto
+                    {
+                        Category = category.Category,
+                        DisplayName = category.DisplayName,
+                        Description = category.Description,
+                        Permissions = category.Permissions
+                            .Where(permission => actorPermissionCodes.Contains(permission.Name))
+                            .ToList(),
+                    })
+                    .Where(category => category.Permissions.Count > 0)
+                    .ToList();
+
+                return ApiResponse<UserAccessPermissionDto>.OK(
+                    new UserAccessPermissionDto
+                    {
+                        State = scopedState,
+                        Categories = scopedCategories,
+                    },
+                    "获取用户可分配权限成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "获取用户可分配权限失败，ActorUserGUID: {ActorUserGUID}, TargetUserGUID: {TargetUserGUID}",
+                    actorUserGuid,
+                    targetUserGuid
+                );
+                return ApiResponse<UserAccessPermissionDto>.Error(
+                    "获取用户可分配权限失败",
+                    "GET_USER_ACCESS_PERMISSIONS_FAILED"
                 );
             }
         }
@@ -1944,6 +2272,23 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                var targetDecision = await UserAccessMutationSecurity.ValidateGlobalTargetAsync(
+                    db,
+                    actor,
+                    userGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+
                 var requestedCodes = Permissions.ExpandPermissionCodes(dto.Permissions)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -1953,6 +2298,37 @@ namespace BlazorApp.Api.Services
                         .Where(item => requestedCodes.Contains(item.Code) && !item.IsDeleted)
                         .Select(item => item.Code)
                         .ToListAsync();
+                var permissionCodesToWrite = existingCodes.ToList();
+
+                if (actor.IsEnforced && !actor.IsSuperAdmin)
+                {
+                    var actorPermissionCodes = await UserAccessMutationSecurity.GetEffectivePermissionCodesAsync(
+                        db,
+                        actor.UserGuid
+                    );
+                    var targetDirectCodes = await db.Queryable<SysUserPermission>()
+                        .Where(item => item.UserGuid == userGuid && !item.IsDeleted)
+                        .Select(item => item.PermissionCode)
+                        .ToListAsync();
+                    if (requestedCodes.Any(code => !actorPermissionCodes.Contains(code)))
+                    {
+                        return ApiResponse<bool>.Error(
+                            "不能授予当前账号自身不具备的权限",
+                            "PERMISSION_ESCALATION_DENIED"
+                        );
+                    }
+
+                    var protectedDirectCodes = targetDirectCodes.Where(code =>
+                        !Permissions.ExpandPermissionCodes(new[] { code })
+                            .Any(actorPermissionCodes.Contains)
+                    );
+
+                    // 受限操作者只替换自己能够授予的直接权限，范围外既有权限原样保留。
+                    permissionCodesToWrite = permissionCodesToWrite
+                        .Concat(protectedDirectCodes)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
 
                 await db.Ado.BeginTranAsync();
                 try
@@ -1961,9 +2337,9 @@ namespace BlazorApp.Api.Services
                         .Where(item => item.UserGuid == userGuid)
                         .ExecuteCommandAsync();
 
-                    if (existingCodes.Any())
+                    if (permissionCodesToWrite.Any())
                     {
-                        var newPermissions = existingCodes
+                        var newPermissions = permissionCodesToWrite
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .Select(code => new SysUserPermission
                             {
@@ -2012,6 +2388,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<RoleDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 // 获取源角色
                 var sourceRole = await db.Queryable<Role>()
@@ -2084,6 +2471,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<List<SysPermission>>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
                 var list = await db.Queryable<SysPermission>()
                     .Where(p => p.IsDeleted == false)
                     .OrderBy(p => p.Category)
@@ -2109,6 +2508,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<List<RoleDto>>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
                 var roles = await db.Queryable<Role>()
                     .InnerJoin<SysRolePermission>((r, rp) => r.RoleGUID == rp.RoleGuid)
                     .Where((r, rp) => rp.PermissionCode == permissionCode && rp.IsDeleted == false)
@@ -2150,6 +2561,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 await db.Ado.BeginTranAsync();
                 try
@@ -2226,6 +2648,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<List<SysPermission>>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
                 var createdPermissions = new List<SysPermission>();
                 var permissionDtos = new List<SysPermission>();
 
@@ -2323,6 +2757,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 var permission = await db.Queryable<SysPermission>()
                     .Where(p => p.Code == code && !p.IsDeleted)

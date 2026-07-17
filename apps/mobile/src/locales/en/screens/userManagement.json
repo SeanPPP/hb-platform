@@ -78,6 +78,103 @@
     "emptyTitle": "No POS permissions are assignable",
     "emptyDescription": "The server has no assignable permissions for this staff member and store. You can still restore inheritance while an override is active."
   },
+  "accessManagement": {
+    "title": "Access Management",
+    "unknownUser": "Unknown staff member",
+    "loading": "Loading account access...",
+    "identity": {
+      "userId": "User ID: {{value}}",
+      "roleCount_one": "{{count}} role assigned",
+      "roleCount_other": "{{count}} roles assigned"
+    },
+    "actions": {
+      "open": "Access",
+      "back": "Back",
+      "saveStores": "Save stores",
+      "saveRoles": "Save roles",
+      "savePermissions": "Save permissions",
+      "openPos": "POS access"
+    },
+    "sections": {
+      "stores": "Store access",
+      "storesTab": "Stores",
+      "storesDescription": "Choose whether this account is unassigned, can view, or can manage each store.",
+      "roles": "Roles",
+      "rolesTab": "Roles",
+      "rolesDescription": "Assign account roles. The store manager role is derived from managed stores.",
+      "permissions": "Other permissions",
+      "permissionsTab": "Permissions",
+      "permissionsDescription": "Inherited permissions are read-only. Direct permissions can be changed independently.",
+      "noAccess": "You do not have permission to manage this section."
+    },
+    "stores": {
+      "unassigned": "Unassigned",
+      "unassignedCompact": "None",
+      "view": "View",
+      "manage": "Manage",
+      "adminOnlyManage": "Only an administrator can grant store management access.",
+      "missingStoreGuid": "This store has no access identifier, so POS access cannot be opened.",
+      "emptyTitle": "No stores available",
+      "emptyDescription": "There are no stores available for this account."
+    },
+    "roles": {
+      "derived": "Derived from managed stores",
+      "adminOnly": "Admin only",
+      "searchPlaceholder": "Search roles",
+      "noSearchResults": "No roles match this search.",
+      "emptyTitle": "No roles available",
+      "emptyDescription": "There are no assignable roles for this account."
+    },
+    "permissions": {
+      "summary": "{{effective}} effective · {{inherited}} inherited · {{direct}} direct",
+      "inherited": "Inherited",
+      "direct": "Direct",
+      "implicit": "Administrator default",
+      "accountDefault": "Account default",
+      "outsideScope": "Outside your scope",
+      "source": "From {{roles}}",
+      "categoryDescription": "{{category}} permissions",
+      "emptyTitle": "No permissions available",
+      "emptyDescription": "There are no assignable permissions for this account."
+    },
+    "unsaved": {
+      "title": "Discard unsaved access changes?",
+      "description": "Store, role, or permission changes that have not been saved will be lost if you leave.",
+      "discard": "Discard changes"
+    },
+    "busy": {
+      "title": "Operation in progress",
+      "description": "Wait for the current save to finish before leaving this page."
+    },
+    "messages": {
+      "storesSaved": "Store access saved",
+      "rolesSaved": "Roles saved",
+      "permissionsSaved": "Direct permissions saved",
+      "storesSaveFailed": "Store access could not be saved. Your draft has been kept.",
+      "rolesSaveFailed": "Roles could not be saved. Your draft has been kept.",
+      "permissionsSaveFailed": "Direct permissions could not be saved. Your draft has been kept."
+    },
+    "errors": {
+      "invalidTitle": "Account details are incomplete",
+      "invalidDescription": "The user identifier is missing. Open Access Management again from Staff Management.",
+      "deviceTitle": "Access management is unavailable in device mode",
+      "deviceDescription": "Sign in with an administrator or authorised user account to manage staff access.",
+      "selfTitle": "You cannot manage your own access",
+      "selfDescription": "Ask another authorised administrator to update your account access.",
+      "privilegedTitle": "This privileged account cannot be managed",
+      "privilegedDescription": "Only an administrator can manage administrator, store manager, or warehouse manager accounts.",
+      "noAccessTitle": "No access management permission",
+      "noAccessDescription": "Your account cannot manage staff stores, roles, permissions, or POS access.",
+      "unauthorizedTitle": "Your session has expired",
+      "unauthorizedDescription": "Sign in again before managing account access.",
+      "forbiddenTitle": "You cannot manage this account",
+      "forbiddenDescription": "Your account does not have permission for this target or section.",
+      "notFoundTitle": "This account is no longer available",
+      "notFoundDescription": "The staff account may have been removed or moved outside your scope. Return to Staff Management and refresh.",
+      "networkTitle": "Could not load account access",
+      "networkDescription": "The server cannot be reached right now. Check your connection and try again."
+    }
+  },
   "statuses": {
     "active": "Active",
     "disabled": "Disabled"

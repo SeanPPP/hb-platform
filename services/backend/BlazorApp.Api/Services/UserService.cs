@@ -3,6 +3,7 @@ using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Utils;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -500,21 +501,19 @@ namespace BlazorApp.Api.Services
             ISqlSugarClient db
         )
         {
-            if (_manageableStoreScopeService == null)
+            var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            if (!actor.IsEnforced || actor.IsSuperAdmin)
             {
                 return UserStoreMutationScope.Unrestricted;
             }
 
-            var scope = await _manageableStoreScopeService.GetScopeAsync();
-            if (scope.IsAdmin)
-            {
-                return UserStoreMutationScope.Unrestricted;
-            }
-
-            if (scope.IsAllowed)
+            if (actor.StoreGuids.Count > 0)
             {
                 return new UserStoreMutationScope(
-                    scope.StoreGuids
+                    actor.StoreGuids
                         .Where(item => !string.IsNullOrWhiteSpace(item))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList(),
@@ -523,20 +522,7 @@ namespace BlazorApp.Api.Services
                 );
             }
 
-            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
-            {
-                return UserStoreMutationScope.Unrestricted;
-            }
-
-            var isStoreManager = await CurrentUserHasRoleAliasAsync(
-                db,
-                scope.UserGuid,
-                CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
-            );
-
-            return isStoreManager
-                ? UserStoreMutationScope.Forbidden
-                : UserStoreMutationScope.Unrestricted;
+            return UserStoreMutationScope.Forbidden;
         }
 
         private async Task<bool> CurrentUserHasRoleAliasAsync(
@@ -979,6 +965,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<UserDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
                 var storeMutationScope = await ResolveUserStoreMutationScopeAsync(db);
                 if (storeMutationScope.IsForbidden)
                 {
@@ -1117,6 +1115,17 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<BatchCreateUserResultDto>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
 
                 // 校验默认角色存在且启用
                 var role = await db.Queryable<Role>()
@@ -1466,39 +1475,201 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                var targetDecision = await UserAccessMutationSecurity.ValidateAdminTargetAsync(
+                    db,
+                    actor,
+                    userGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+
+                var requestedRoleGuids = dto.RoleGuids
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var requestedRoles = requestedRoleGuids.Count == 0
+                    ? new List<Role>()
+                    : await db.Queryable<Role>()
+                        .Where(role =>
+                            requestedRoleGuids.Contains(role.RoleGUID) && !role.IsDeleted
+                        )
+                        .ToListAsync();
+                if (requestedRoles.Count != requestedRoleGuids.Count)
+                {
+                    return ApiResponse<bool>.Error("包含不存在的角色", "ROLE_NOT_FOUND");
+                }
+
+                // 店长角色由 IsPrimary 管理关系派生，角色接口只处理非派生角色。
+                var assignableRoles = requestedRoles
+                    .Where(role => !Permissions.IsStoreManagerRole(role.RoleName))
+                    .ToList();
+                var protectedExistingRoleGuids = new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                if (actor.IsEnforced && !actor.IsSuperAdmin)
+                {
+                    var existingAssignedRoleGuids = await db.Queryable<UserRole>()
+                        .Where(item => item.UserGUID == userGuid && !item.IsDeleted)
+                        .Select(item => item.RoleGUID)
+                        .ToListAsync();
+                    if (
+                        assignableRoles.Any(role =>
+                            Permissions.IsHighPrivilegeRole(role.RoleName)
+                            && !existingAssignedRoleGuids.Contains(role.RoleGUID)
+                        )
+                    )
+                    {
+                        return ApiResponse<bool>.Error(
+                            "不能授予高权限角色",
+                            "ROLE_ESCALATION_DENIED"
+                        );
+                    }
+
+                    var actorPermissionCodes = await UserAccessMutationSecurity.GetEffectivePermissionCodesAsync(
+                        db,
+                        actor.UserGuid
+                    );
+                    var assignableRoleGuids = assignableRoles.Select(role => role.RoleGUID).ToList();
+                    var requestedRolePermissionRows = assignableRoleGuids.Count == 0
+                        ? new List<SysRolePermission>()
+                        : await db.Queryable<SysRolePermission>()
+                            .Where(item =>
+                                assignableRoleGuids.Contains(item.RoleGuid) && !item.IsDeleted
+                            )
+                            .ToListAsync();
+                    if (
+                        assignableRoles
+                            .Where(role => !existingAssignedRoleGuids.Contains(role.RoleGUID))
+                            .Any(role =>
+                                Permissions.ExpandPermissionCodes(
+                                    requestedRolePermissionRows
+                                        .Where(item => item.RoleGuid == role.RoleGUID)
+                                        .Select(item => item.PermissionCode)
+                                ).Any(code => !actorPermissionCodes.Contains(code))
+                            )
+                    )
+                    {
+                        return ApiResponse<bool>.Error(
+                            "不能授予当前账号自身不具备权限的角色",
+                            "ROLE_ESCALATION_DENIED"
+                        );
+                    }
+
+                    var existingOrdinaryRoles = await db.Queryable<UserRole>()
+                        .InnerJoin<Role>((userRole, role) =>
+                            userRole.RoleGUID == role.RoleGUID
+                        )
+                        .Where((userRole, role) =>
+                            userRole.UserGUID == userGuid
+                            && !userRole.IsDeleted
+                            && !role.IsDeleted
+                        )
+                        .Select((userRole, role) => new { role.RoleGUID, role.RoleName })
+                        .ToListAsync();
+                    var existingOrdinaryRoleGuids = existingOrdinaryRoles
+                        .Where(role => !Permissions.IsStoreManagerRole(role.RoleName))
+                        .Select(role => role.RoleGUID)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var existingRolePermissionRows = existingOrdinaryRoleGuids.Count == 0
+                        ? new List<SysRolePermission>()
+                        : await db.Queryable<SysRolePermission>()
+                            .Where(item =>
+                                existingOrdinaryRoleGuids.Contains(item.RoleGuid)
+                                && !item.IsDeleted
+                            )
+                            .ToListAsync();
+
+                    foreach (
+                        var existingRole in existingOrdinaryRoles.Where(role =>
+                            !Permissions.IsStoreManagerRole(role.RoleName)
+                        )
+                    )
+                    {
+                        var rolePermissionCodes = existingRolePermissionRows
+                            .Where(item => item.RoleGuid == existingRole.RoleGUID)
+                            .Select(item => item.PermissionCode);
+                        if (
+                            Permissions.IsHighPrivilegeRole(existingRole.RoleName)
+                            || Permissions.ExpandPermissionCodes(rolePermissionCodes)
+                                .Any(code => !actorPermissionCodes.Contains(code))
+                        )
+                        {
+                            protectedExistingRoleGuids.Add(existingRole.RoleGUID);
+                        }
+                    }
+                }
+
                 // 开启事务
                 await db.Ado.BeginTranAsync();
 
                 try
                 {
-                    // 删除现有的角色分配
-                    await db.Deleteable<UserRole>()
-                        .Where(ur => ur.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
+                    var managerRoleNames = Permissions.StoreManagerRoleNames.ToArray();
+                    var managerRoleGuids = await db.Queryable<Role>()
+                        .Where(role => managerRoleNames.Contains(role.RoleName))
+                        .Select(role => role.RoleGUID)
+                        .ToListAsync();
+
+                    var preservedRoleGuids = managerRoleGuids
+                        .Concat(protectedExistingRoleGuids)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+
+                    // 受限操作者只替换可授予的普通角色；派生角色及越权既有角色必须保留。
+                    if (preservedRoleGuids.Length == 0)
+                    {
+                        await db.Deleteable<UserRole>()
+                            .Where(ur => ur.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                    }
+                    else
+                    {
+                        await db.Deleteable<UserRole>()
+                            .Where(ur =>
+                                ur.UserGUID == userGuid
+                                && !preservedRoleGuids.Contains(ur.RoleGUID)
+                            )
+                            .ExecuteCommandAsync();
+                    }
 
                     // 添加新的角色分配
-                    if (dto.RoleGuids.Any())
+                    var rolesToInsert = assignableRoles
+                        .Where(role => !protectedExistingRoleGuids.Contains(role.RoleGUID))
+                        .ToList();
+                    if (rolesToInsert.Any())
                     {
-                        var userRoles = dto
-                            .RoleGuids.Select(roleGuid => new UserRole
-                            {
-                                UserRoleGUID = Guid.NewGuid().ToString(), // ✅ 必须设置主键
-                                UserGUID = userGuid,
-                                RoleGUID = roleGuid,
-                                CreatedAt = DateTime.UtcNow,
-                                UpdatedAt = DateTime.UtcNow,
-                            })
+                        var userRoles = rolesToInsert.Select(role => new UserRole
+                        {
+                            UserRoleGUID = Guid.NewGuid().ToString(), // ✅ 必须设置主键
+                            UserGUID = userGuid,
+                            RoleGUID = role.RoleGUID,
+                            AssignedAt = DateTime.UtcNow,
+                            CreatedAt = DateTime.UtcNow,
+                            UpdatedAt = DateTime.UtcNow,
+                        })
                             .ToList();
 
                         await db.Insertable(userRoles).ExecuteCommandAsync();
                     }
+
+                    await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
 
                     await db.Ado.CommitTranAsync();
 
                     _logger.LogInformation(
                         "用户角色分配成功，UserGUID: {UserGUID}, RoleCount: {RoleCount}",
                         userGuid,
-                        dto.RoleGuids.Count
+                        assignableRoles.Count
                     );
                     return ApiResponse<bool>.OK(true, "角色分配成功");
                 }
@@ -1537,6 +1708,27 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                var targetDecision = await UserAccessMutationSecurity.ValidateAdminTargetAsync(
+                    db,
+                    actor,
+                    userGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+
+                var existingUserStores = await db.Queryable<UserStore>()
+                    .Where(us => us.UserGUID == userGuid && !us.IsDeleted)
+                    .ToListAsync();
+
                 var storeMutationScope = await ResolveUserStoreMutationScopeAsync(db);
                 if (storeMutationScope.IsForbidden)
                 {
@@ -1553,9 +1745,6 @@ namespace BlazorApp.Api.Services
                         storeMutationScope.StoreGuids,
                         StringComparer.OrdinalIgnoreCase
                     );
-                    var existingUserStores = await db.Queryable<UserStore>()
-                        .Where(us => us.UserGUID == userGuid && !us.IsDeleted)
-                        .ToListAsync();
                     var existingInScope = existingUserStores.Any(us =>
                         scopedStoreGuids.Contains(us.StoreGUID)
                     );
@@ -1585,6 +1774,26 @@ namespace BlazorApp.Api.Services
                     effectiveStoreAssignments = storeAssignments
                         .Where(assignment => scopedStoreGuids.Contains(assignment.StoreGUID))
                         .ToList();
+                }
+
+                if (actor.IsEnforced && !actor.IsSuperAdmin)
+                {
+                    var existingManageableStoreGuids = existingUserStores
+                        .Where(item => item.IsPrimary)
+                        .Select(item => item.StoreGUID)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    if (
+                        effectiveStoreAssignments.Any(assignment =>
+                            assignment.IsPrimary
+                            && !existingManageableStoreGuids.Contains(assignment.StoreGUID)
+                        )
+                    )
+                    {
+                        return ApiResponse<bool>.Error(
+                            "只有管理员可以授予分店管理关系",
+                            "MANAGEABLE_STORE_GRANT_DENIED"
+                        );
+                    }
                 }
 
                 // 开启事务
@@ -1629,6 +1838,8 @@ namespace BlazorApp.Api.Services
 
                         await db.Insertable(userStores).ExecuteCommandAsync();
                     }
+
+                    await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
 
                     await db.Ado.CommitTranAsync();
 
@@ -1701,12 +1912,22 @@ namespace BlazorApp.Api.Services
 
                 var userRoles = await db.Queryable<UserRole>()
                     .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
-                    .Where((ur, r) => ur.UserGUID == userGuid)
+                    .Where((ur, r) =>
+                        ur.UserGUID == userGuid
+                        && !ur.IsDeleted
+                        && !r.IsDeleted
+                        && r.IsActive
+                    )
                     .Select((ur, r) => r.RoleName)
                     .ToListAsync();
 
-                var isAdminOrWarehouse =
-                    userRoles.Contains("Admin") || userRoles.Contains("Warehouse");
+                var isAdminOrWarehouse = userRoles.Any(roleName =>
+                    Permissions.IsSuperAdminRole(roleName)
+                    || Permissions.WarehouseManagerRoleNames.Contains(
+                        roleName,
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                );
 
                 List<UserStoreDto> stores;
 
@@ -1771,6 +1992,38 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                var targetDecision = await UserAccessMutationSecurity.ValidateAdminTargetAsync(
+                    db,
+                    actor,
+                    userGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+
+                var role = await db.Queryable<Role>()
+                    .Where(item => item.RoleGUID == roleGuid && !item.IsDeleted)
+                    .FirstAsync();
+                if (role == null)
+                {
+                    return ApiResponse<bool>.Error("用户角色关联不存在", "USER_ROLE_NOT_FOUND");
+                }
+                if (Permissions.IsStoreManagerRole(role.RoleName))
+                {
+                    return ApiResponse<bool>.Error(
+                        "店长角色由可管理分店关系维护",
+                        "DERIVED_STORE_MANAGER_ROLE"
+                    );
+                }
+
                 var result = await db.Deleteable<UserRole>()
                     .Where(ur => ur.UserGUID == userGuid && ur.RoleGUID == roleGuid)
                     .ExecuteCommandAsync();
@@ -1811,9 +2064,42 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
-                var result = await db.Deleteable<UserStore>()
-                    .Where(us => us.UserGUID == userGuid && us.StoreGUID == storeGuid)
-                    .ExecuteCommandAsync();
+                var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                var targetDecision = await UserAccessMutationSecurity.ValidateAdminTargetAsync(
+                    db,
+                    actor,
+                    userGuid
+                );
+                if (!targetDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        targetDecision.Message,
+                        targetDecision.ErrorCode
+                    );
+                }
+                await db.Ado.BeginTranAsync();
+                int result;
+                try
+                {
+                    result = await db.Deleteable<UserStore>()
+                        .Where(us => us.UserGUID == userGuid && us.StoreGUID == storeGuid)
+                        .ExecuteCommandAsync();
+
+                    if (result > 0)
+                    {
+                        await UserStoreManagerRoleSynchronizer.SynchronizeAsync(db, userGuid);
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 if (result == 0)
                 {

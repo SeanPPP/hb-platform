@@ -1,3 +1,5 @@
+using System.Security.Claims;
+using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
@@ -21,16 +23,19 @@ namespace BlazorApp.Api.Controllers
         private readonly IUserService _userService;
         private readonly IRoleService _roleService;
         private readonly ILogger<UsersController> _logger;
+        private readonly SqlSugarContext? _context;
 
         public UsersController(
             IUserService userService,
             IRoleService roleService,
-            ILogger<UsersController> logger
+            ILogger<UsersController> logger,
+            SqlSugarContext? context = null
         )
         {
             _userService = userService;
             _roleService = roleService;
             _logger = logger;
+            _context = context;
         }
 
         /// <summary>
@@ -233,7 +238,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.CreateUserAsync(dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -266,7 +271,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.BatchCreateUsersAsync(dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -413,7 +418,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.AssignRolesToUserAsync(guid, dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -429,13 +434,23 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户权限状态
         /// </summary>
         [HttpGet("guid/{guid}/permissions/state")]
-        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        [Authorize]
         public async Task<IActionResult> GetUserPermissionState(string guid)
         {
             try
             {
+                var access = await AuthorizeTargetReadAsync(
+                    ResolveCurrentUserGuid(User),
+                    guid,
+                    Permissions.Users.ManageRoles
+                );
+                if (access.Failure != null)
+                {
+                    return access.Failure;
+                }
+
                 var result = await _roleService.GetUserPermissionStateAsync(guid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -451,10 +466,38 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取当前操作者可为目标员工分配的权限
+        /// </summary>
+        [HttpGet("guid/{guid}/access-permissions")]
+        [Authorize]
+        public async Task<IActionResult> GetUserAccessPermissions(string guid)
+        {
+            try
+            {
+                var result = await _roleService.GetUserAccessPermissionsAsync(
+                    ResolveCurrentUserGuid(User),
+                    guid
+                );
+                return ToUserAccessActionResult(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户可分配权限失败，UserGUID: {UserGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<UserAccessPermissionDto>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
         /// 为用户分配直接权限
         /// </summary>
         [HttpPost("guid/{guid}/permissions")]
-        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        [Authorize]
         public async Task<IActionResult> AssignPermissionsToUser(
             string guid,
             [FromBody] UserPermissionAssignmentDto dto
@@ -470,7 +513,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _roleService.AssignPermissionsToUserAsync(guid, dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -502,7 +545,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.AssignStoresToUserAsync(guid, storeAssignments);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -518,13 +561,23 @@ namespace BlazorApp.Api.Controllers
         /// 获取用户的角色列表
         /// </summary>
         [HttpGet("guid/{guid}/roles")]
-        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        [Authorize]
         public async Task<IActionResult> GetUserRoles(string guid)
         {
             try
             {
+                var access = await AuthorizeTargetReadAsync(
+                    ResolveCurrentUserGuid(User),
+                    guid,
+                    Permissions.Users.ManageRoles
+                );
+                if (access.Failure != null)
+                {
+                    return access.Failure;
+                }
+
                 var result = await _userService.GetUserRolesAsync(guid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -548,82 +601,43 @@ namespace BlazorApp.Api.Controllers
         )
         {
             var currentUserGuid = currentUser.GetCurrentUserGuid();
-            var isSelf = string.Equals(currentUserGuid, guid, StringComparison.OrdinalIgnoreCase);
-            var canViewOtherUserStores =
-                CurrentUserManageableStoreScopeService.HasAnyRole(
-                    User,
-                    Permissions.SuperAdminRoleNames
-                )
-                || CurrentUserManageableStoreScopeService.HasAnyRole(
-                    User,
-                    CurrentUserManageableStoreScopeService.WarehouseManagerRoleAliases
-                );
-
-            if (!isSelf && !canViewOtherUserStores)
+            var access = await AuthorizeTargetReadAsync(
+                currentUserGuid,
+                guid,
+                Permissions.Users.ManageStores,
+                Permissions.Users.ManagePosTerminalPermissions
+            );
+            if (access.Failure != null)
             {
-                var isStoreManager = CurrentUserManageableStoreScopeService.HasAnyRole(
-                    User,
-                    CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
-                );
-                if (!isStoreManager || storeScopeService == null)
-                {
-                    return Forbid();
-                }
-
-                var permission = await _roleService.UserHasPermissionAsync(
-                    currentUserGuid,
-                    Permissions.Users.ManagePosTerminalPermissions
-                );
-                if (!permission.Success || permission.Data != true)
-                {
-                    return Forbid();
-                }
-
-                var scope = await storeScopeService.GetScopeAsync();
-                if (!scope.IsAllowed || scope.IsAdmin)
-                {
-                    return Forbid();
-                }
-
-                var targetRoles = await _userService.GetUserRolesAsync(guid);
-                var highPrivilegeRoleNames = Permissions.SuperAdminRoleNames
-                    .Concat(CurrentUserManageableStoreScopeService.StoreManagerRoleAliases)
-                    .Concat(CurrentUserManageableStoreScopeService.WarehouseManagerRoleAliases)
-                    .Concat(new[] { "仓库管理员", "WarehouseAdmin" })
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if (
-                    !targetRoles.Success
-                    || targetRoles.Data?.Any(role => highPrivilegeRoleNames.Contains(role.RoleName))
-                        == true
-                )
-                {
-                    return Forbid();
-                }
-
-                var targetStores = await _userService.GetUserStoresAsync(guid);
-                if (!targetStores.Success || targetStores.Data == null)
-                {
-                    return Ok(targetStores);
-                }
-
-                // 店长只获得目标普通用户与自身管理分店的交集，不能借多店员工查看其他分店。
-                var scopedStores = targetStores.Data
-                    .Where(store => scope.CanAccessStoreGuid(store.StoreGUID))
-                    .ToList();
-                if (scopedStores.Count == 0)
-                {
-                    return Forbid();
-                }
-
-                return Ok(
-                    ApiResponse<List<UserStoreDto>>.OK(scopedStores, "获取用户分店成功")
-                );
+                return access.Failure;
             }
 
             try
             {
                 var result = await _userService.GetUserStoresAsync(guid);
-                return Ok(result);
+                if (!result.Success || result.Data == null)
+                {
+                    return ToUserAccessActionResult(result);
+                }
+
+                if (access.Decision?.VisibleStoreGuids == null)
+                {
+                    return Ok(result);
+                }
+
+                var visibleStoreGuids = access.Decision.VisibleStoreGuids.ToHashSet(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var visibleStores = result.Data
+                    .Where(store => visibleStoreGuids.Contains(store.StoreGUID))
+                    .ToList();
+                if (access.Decision.RequiresDelegatedPermission && visibleStores.Count == 0)
+                {
+                    return Forbid();
+                }
+
+                // 本人读取返回自身真实关联；委派读取只返回双方管理范围的交集。
+                return Ok(ApiResponse<List<UserStoreDto>>.OK(visibleStores, "获取用户分店成功"));
             }
             catch (Exception ex)
             {
@@ -633,6 +647,100 @@ namespace BlazorApp.Api.Controllers
                     ApiResponse<List<UserStoreDto>>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
                 );
             }
+        }
+
+        private async Task<(IActionResult? Failure, UserAccessReadDecision? Decision)>
+            AuthorizeTargetReadAsync(
+                string currentUserGuid,
+                string targetUserGuid,
+                params string[] delegatedPermissions
+            )
+        {
+            if (_context == null)
+            {
+                return (Forbid(), null);
+            }
+
+            var decision = await UserAccessMutationSecurity.ValidateReadTargetAsync(
+                _context.Db,
+                currentUserGuid,
+                targetUserGuid
+            );
+            if (decision.IsNotFound)
+            {
+                return (
+                    NotFound(ApiResponse<object>.Error("用户不存在", "USER_NOT_FOUND")),
+                    decision
+                );
+            }
+            if (!decision.IsAllowed)
+            {
+                return (Forbid(), decision);
+            }
+
+            if (decision.RequiresDelegatedPermission)
+            {
+                var hasPermission = false;
+                foreach (var permission in delegatedPermissions)
+                {
+                    var result = await _roleService.UserHasPermissionAsync(
+                        currentUserGuid,
+                        permission
+                    );
+                    if (result?.Data == true)
+                    {
+                        hasPermission = true;
+                        break;
+                    }
+                }
+
+                if (!hasPermission)
+                {
+                    return (Forbid(), decision);
+                }
+            }
+
+            return (null, decision);
+        }
+
+        private IActionResult ToUserAccessActionResult<T>(ApiResponse<T> result)
+        {
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            if (string.Equals(result.ErrorCode, "USER_NOT_FOUND", StringComparison.Ordinal))
+            {
+                return NotFound(result);
+            }
+
+            return result.ErrorCode switch
+            {
+                "SELF_ACCESS_MANAGEMENT_DENIED"
+                or "HIGH_PRIVILEGE_TARGET_DENIED"
+                or "USER_SCOPE_DENIED"
+                or "STORE_SCOPE_DENIED"
+                or "PERMISSION_ESCALATION_DENIED"
+                or "ROLE_ESCALATION_DENIED"
+                or "MANAGEABLE_STORE_GRANT_DENIED"
+                or "ACCESS_DELEGATOR_DENIED"
+                or "ADMIN_REQUIRED"
+                or "USER_ACCESS_ACTOR_DENIED"
+                or "DERIVED_STORE_MANAGER_ROLE"
+                or "USER_ACCESS_ADMIN_REQUIRED"
+                or "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+                _ => Ok(result),
+            };
+        }
+
+        private static string ResolveCurrentUserGuid(ClaimsPrincipal user)
+        {
+            return user.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user.FindFirst("userGuid")?.Value
+                ?? user.FindFirst("userId")?.Value
+                ?? user.FindFirst("sub")?.Value
+                ?? string.Empty;
         }
 
         /// <summary>
@@ -645,7 +753,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.RemoveRoleFromUserAsync(guid, roleGuid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -672,7 +780,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.RemoveStoreFromUserAsync(guid, storeGuid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {

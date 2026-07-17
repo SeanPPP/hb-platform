@@ -383,7 +383,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _storeService.AddUserToStoreAsync(guid, dto);
-                return Ok(result);
+                return ToStoreUserMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -405,7 +405,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _storeService.RemoveUserFromStoreAsync(guid, userGuid);
-                return Ok(result);
+                return ToStoreUserMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -436,7 +436,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _storeService.SetPrimaryUserAsync(guid, userGuid, isPrimary);
-                return Ok(result);
+                return ToStoreUserMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -473,7 +473,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _storeService.BatchManageUsersAsync(guid, dto);
-                return Ok(result);
+                return ToStoreUserMutationActionResult(result);
             }
             catch (Exception ex)
             {
@@ -483,6 +483,33 @@ namespace BlazorApp.Api.Controllers
                     ApiResponse<bool>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
                 );
             }
+        }
+
+        private IActionResult ToStoreUserMutationActionResult(ApiResponse<bool> result)
+        {
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+
+            return result.ErrorCode switch
+            {
+                "STORE_NOT_FOUND"
+                or "USER_NOT_FOUND"
+                or "USER_NOT_ASSIGNED"
+                or "USER_STORE_NOT_FOUND" => NotFound(result),
+                "SELF_ACCESS_MANAGEMENT_DENIED"
+                or "HIGH_PRIVILEGE_TARGET_DENIED"
+                or "USER_SCOPE_DENIED"
+                or "STORE_SCOPE_DENIED"
+                or "MANAGEABLE_STORE_GRANT_DENIED"
+                or "ACCESS_DELEGATOR_DENIED"
+                or "ADMIN_REQUIRED"
+                or "USER_ACCESS_ACTOR_DENIED"
+                or "USER_ACCESS_ADMIN_REQUIRED"
+                or "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+                _ => BadRequest(result),
+            };
         }
 
         /// <summary>

@@ -545,6 +545,14 @@ function createInitialState(now = new Date()): AppRouteState {
       storeCode: "REV001",
       storeName: "Demo Brisbane",
       roleNames: ["StoreStaff"],
+      accessStoreAssignments: [
+        {
+          storeGUID: IOS_REVIEW_STORES[0].storeGUID,
+          isPrimary: false,
+        },
+      ],
+      accessRoleGuids: ["review-role-store-staff"],
+      directPermissionCodes: ["PosTerminal.Sales.AddItem"],
       status: "Active",
       isActive: true,
       createdAt: timestamp,
@@ -921,12 +929,109 @@ export function registerIosReviewAppRoutes(
   register(transport, ["GET"], "/auth/current", () => ({
     data: createIosReviewUser(),
   }));
-  register(transport, ["POST"], "/auth/logout", () => ({ data: { success: true } }));
-  register(transport, ["GET"], /^\/Users\/guid\/[^/]+\/stores$/i, () => ({
-    data: IOS_REVIEW_STORES.map((store) => ({ ...store })),
+  register(transport, ["POST"], "/auth/logout", () => ({
+    data: { success: true },
   }));
+  register(
+    transport,
+    ["GET", "POST"],
+    /^\/Users\/guid\/([^/]+)\/stores$/i,
+    ({ method, match, body }) => {
+      const userGuid = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, userGuid);
+      if (!user) {
+        return { data: IOS_REVIEW_STORES.map((store) => ({ ...store })) };
+      }
+
+      if (method === "POST") {
+        user.accessStoreAssignments = Array.isArray(body)
+          ? body.map((item) => {
+              const assignment = asRecord(item);
+              return {
+                storeGUID: String(
+                  assignment.StoreGUID ?? assignment.storeGUID ?? "",
+                ),
+                isPrimary: Boolean(
+                  assignment.IsPrimary ?? assignment.isPrimary,
+                ),
+              };
+            })
+          : [];
+        mirrorUpdate(
+          state(),
+          dataStore,
+          "users",
+          userGuid,
+          "User store access",
+        );
+        return { data: true };
+      }
+
+      const assignments = Array.isArray(user.accessStoreAssignments)
+        ? user.accessStoreAssignments.map(asRecord)
+        : [];
+      return {
+        data: assignments.flatMap((assignment) => {
+          const store = IOS_REVIEW_STORES.find(
+            (item) => item.storeGUID === assignment.storeGUID,
+          );
+          return store
+            ? [{ ...store, isPrimary: Boolean(assignment.isPrimary) }]
+            : [];
+        }),
+      };
+    },
+  );
   register(transport, ["GET"], "/stores/all-by-name", () => ({
     data: IOS_REVIEW_STORES.map((store) => ({ ...store })),
+  }));
+  register(transport, ["GET"], "/Roles/active", () => ({
+    data: [
+      {
+        roleGUID: "review-role-store-staff",
+        roleName: "StoreStaff",
+        description: "Standard review store account",
+        isActive: true,
+      },
+      {
+        roleGUID: "review-role-store-manager",
+        roleName: "StoreManager",
+        description: "Derived from managed stores",
+        isActive: true,
+      },
+    ],
+  }));
+  register(transport, ["GET"], "/Roles/permissions", () => ({
+    data: [
+      {
+        category: "Users",
+        displayName: "User management",
+        description: "Synthetic account access permissions",
+        permissions: [
+          {
+            name: "Users.View",
+            displayName: "View users",
+            description: "View staff accounts",
+            category: "Users",
+            isSystemPermission: true,
+          },
+        ],
+      },
+      {
+        category: "PosTerminal",
+        displayName: "POS terminal",
+        description: "Synthetic account default POS permissions",
+        permissions: [
+          {
+            name: "PosTerminal.Sales.AddItem",
+            displayName: "Add sale item",
+            description: "Account default before store override",
+            category: "PosTerminal",
+            isSystemPermission: true,
+          },
+        ],
+      },
+    ],
   }));
   register(transport, ["GET"], "/react/v1/warehouse-categories/tree", () => ({
     data: [
@@ -2117,124 +2222,314 @@ function registerUserRoutes(
       updatedAt: current.now,
     };
     current.users.push(user);
-    mirrorCreate(current, dataStore, "users", user.userGuid, String(user.fullName ?? user.username ?? "Demo user"));
+    mirrorCreate(
+      current,
+      dataStore,
+      "users",
+      user.userGuid,
+      String(user.fullName ?? user.username ?? "Demo user"),
+    );
     return { data: clone(user), status: 201 };
   });
-  register(transport, ["GET", "PUT"], /^\/react\/v1\/store-users\/([^/]+)$/i, ({ method, match, body }) => {
-    const id = decodeURIComponent(match?.[1] ?? "");
-    const user = findByAnyId(state().users, id);
-    if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
-    if (method === "PUT") {
-      Object.assign(user, asRecord(body), { userGuid: id, updatedAt: state().now });
-      mirrorUpdate(state(), dataStore, "users", id, String(user.fullName ?? user.username ?? id));
-    }
-    return { data: clone(user) };
-  });
-  register(transport, ["GET"], /^\/react\/v1\/store-users\/([^/]+)\/profile$/i, ({ match }) => {
-    const id = decodeURIComponent(match?.[1] ?? "");
-    const user = findByAnyId(state().users, id);
-    if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
-    return { data: clone({ ...user, address: "123 Demo Street, Brisbane QLD 4000" }) };
-  });
-  register(transport, ["PUT"], /^\/react\/v1\/store-users\/([^/]+)\/(status|password)$/i, ({ match, body }) => {
-    const id = decodeURIComponent(match?.[1] ?? "");
-    const action = match?.[2];
-    const user = findByAnyId(state().users, id);
-    if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
-    if (action === "status") {
-      user.status = asRecord(body).status ?? user.status;
-      user.isActive = String(user.status).toLowerCase() === "active";
-    }
-    mirrorUpdate(state(), dataStore, "users", id, String(user.fullName ?? user.username ?? id), action === "password" ? "password-reset" : String(user.status));
-    return { data: { success: true } };
-  });
-  register(transport, ["GET", "PUT", "DELETE"], /^\/Users\/guid\/[^/]+\/stores\/[^/]+\/pos-terminal-permissions$/i, ({ method, body }) => {
-    const current = state();
-    if (method === "PUT") {
-      current.posPermissionCodes = Array.isArray(asRecord(body).grantedPermissionCodes)
-        ? [...asRecord(body).grantedPermissionCodes]
+  register(
+    transport,
+    ["GET", "PUT"],
+    /^\/react\/v1\/store-users\/([^/]+)$/i,
+    ({ method, match, body }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      if (method === "PUT") {
+        Object.assign(user, asRecord(body), {
+          userGuid: id,
+          updatedAt: state().now,
+        });
+        mirrorUpdate(
+          state(),
+          dataStore,
+          "users",
+          id,
+          String(user.fullName ?? user.username ?? id),
+        );
+      }
+      return { data: clone(user) };
+    },
+  );
+  register(
+    transport,
+    ["GET"],
+    /^\/react\/v1\/store-users\/([^/]+)\/profile$/i,
+    ({ match }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      return {
+        data: clone({ ...user, address: "123 Demo Street, Brisbane QLD 4000" }),
+      };
+    },
+  );
+  register(
+    transport,
+    ["PUT"],
+    /^\/react\/v1\/store-users\/([^/]+)\/(status|password)$/i,
+    ({ match, body }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const action = match?.[2];
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      if (action === "status") {
+        user.status = asRecord(body).status ?? user.status;
+        user.isActive = String(user.status).toLowerCase() === "active";
+      }
+      mirrorUpdate(
+        state(),
+        dataStore,
+        "users",
+        id,
+        String(user.fullName ?? user.username ?? id),
+        action === "password" ? "password-reset" : String(user.status),
+      );
+      return { data: { success: true } };
+    },
+  );
+  register(
+    transport,
+    ["GET", "POST"],
+    /^\/Users\/guid\/([^/]+)\/roles$/i,
+    ({ method, match, body }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      const catalog = [
+        {
+          roleGUID: "review-role-store-staff",
+          roleName: "StoreStaff",
+          description: "Standard review store account",
+          isActive: true,
+        },
+        {
+          roleGUID: "review-role-store-manager",
+          roleName: "StoreManager",
+          description: "Derived from managed stores",
+          isActive: true,
+        },
+      ];
+      if (method === "POST") {
+        const payload = asRecord(body);
+        user.accessRoleGuids = Array.isArray(payload.RoleGuids)
+          ? [...payload.RoleGuids]
+          : [];
+        mirrorUpdate(state(), dataStore, "users", id, "User role access");
+        return { data: true };
+      }
+      const roleGuids = Array.isArray(user.accessRoleGuids)
+        ? user.accessRoleGuids
         : [];
-      mirrorUpdate(current, dataStore, "users", "pos-permissions", "POS permissions");
-    } else if (method === "DELETE") {
-      current.posPermissionCodes = [...IOS_REVIEW_PERMISSION_CODES];
-      mirrorRemove(current, dataStore, "users", "pos-permissions");
-    }
-    const assignablePermissions = IOS_REVIEW_PERMISSION_CODES.map((code) => ({
-      code,
-      name: code,
-      group: code.split(".")[0] ?? "General",
-      description: `Demo permission ${code}`,
-    }));
-    return {
-      data: {
-        mode: method === "DELETE" ? "Inherited" : "Override",
-        assignablePermissions,
-        inheritedPermissionCodes: [...IOS_REVIEW_PERMISSION_CODES],
-        overriddenPermissionCodes: clone(current.posPermissionCodes),
-        grantedPermissionCodes: clone(current.posPermissionCodes),
-        effectivePermissionCodes: clone(current.posPermissionCodes),
-      },
-    };
-  });
+      return {
+        data: catalog.filter((role) => roleGuids.includes(role.roleGUID)),
+      };
+    },
+  );
+  register(
+    transport,
+    ["GET"],
+    /^\/Users\/guid\/([^/]+)\/permissions\/state$/i,
+    ({ match }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      const directPermissionCodes = Array.isArray(user.directPermissionCodes)
+        ? [...user.directPermissionCodes]
+        : [];
+      const inheritedPermissionCodes = ["Users.View"];
+      return {
+        data: {
+          userGuid: id,
+          isSuperAdmin: false,
+          implicitAllPermissions: false,
+          inheritedPermissionCodes,
+          directPermissionCodes,
+          effectivePermissionCodes: Array.from(
+            new Set([...inheritedPermissionCodes, ...directPermissionCodes]),
+          ),
+          inheritedSources: [
+            {
+              roleName: "StoreStaff",
+              permissionCodes: inheritedPermissionCodes,
+            },
+          ],
+        },
+      };
+    },
+  );
+  register(
+    transport,
+    ["POST"],
+    /^\/Users\/guid\/([^/]+)\/permissions$/i,
+    ({ match, body }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const user = findByAnyId(state().users, id);
+      if (!user) throw new Error(`IOS_REVIEW_USER_NOT_FOUND: ${id}`);
+      const payload = asRecord(body);
+      const permissions = payload.permissions ?? payload.Permissions;
+      user.directPermissionCodes = Array.isArray(permissions)
+        ? [...permissions]
+        : [];
+      mirrorUpdate(state(), dataStore, "users", id, "User direct access");
+      return { data: true };
+    },
+  );
+  register(
+    transport,
+    ["GET", "PUT", "DELETE"],
+    /^\/Users\/guid\/[^/]+\/stores\/[^/]+\/pos-terminal-permissions$/i,
+    ({ method, body }) => {
+      const current = state();
+      if (method === "PUT") {
+        current.posPermissionCodes = Array.isArray(
+          asRecord(body).grantedPermissionCodes,
+        )
+          ? [...asRecord(body).grantedPermissionCodes]
+          : [];
+        mirrorUpdate(
+          current,
+          dataStore,
+          "users",
+          "pos-permissions",
+          "POS permissions",
+        );
+      } else if (method === "DELETE") {
+        current.posPermissionCodes = [...IOS_REVIEW_PERMISSION_CODES];
+        mirrorRemove(current, dataStore, "users", "pos-permissions");
+      }
+      const assignablePermissions = IOS_REVIEW_PERMISSION_CODES.map((code) => ({
+        code,
+        name: code,
+        group: code.split(".")[0] ?? "General",
+        description: `Demo permission ${code}`,
+      }));
+      return {
+        data: {
+          mode: method === "DELETE" ? "Inherited" : "Override",
+          assignablePermissions,
+          inheritedPermissionCodes: [...IOS_REVIEW_PERMISSION_CODES],
+          overriddenPermissionCodes: clone(current.posPermissionCodes),
+          grantedPermissionCodes: clone(current.posPermissionCodes),
+          effectivePermissionCodes: clone(current.posPermissionCodes),
+        },
+      };
+    },
+  );
 }
 
 function registerEmployeeProfileRoutes(
   transport: ReviewTransport,
   dataStore: ReviewDataStore,
-  holder: AppRouteStateHolder
+  holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
-  register(transport, ["GET", "PUT"], "/EmployeeProfiles/me", ({ method, body }) => {
-    if (method === "PUT") {
-      Object.assign(state().employeeProfile, asRecord(body), { updatedAt: state().now });
-      mirrorUpdate(state(), dataStore, "users", "employee-profile", "Employee profile");
-    }
-    return { data: clone(state().employeeProfile) };
-  });
-  register(transport, ["POST"], "/EmployeeProfiles/me/image-upload-signature", ({ body }) => ({
-    data: {
-      url: "data:application/octet-stream;base64,UkVWSUVX",
-      objectKey: `ios-review/profile/${String(asRecord(body).kind ?? "avatar")}.svg`,
-      headers: {},
+  register(
+    transport,
+    ["GET", "PUT"],
+    "/EmployeeProfiles/me",
+    ({ method, body }) => {
+      if (method === "PUT") {
+        Object.assign(state().employeeProfile, asRecord(body), {
+          updatedAt: state().now,
+        });
+        mirrorUpdate(
+          state(),
+          dataStore,
+          "users",
+          "employee-profile",
+          "Employee profile",
+        );
+      }
+      return { data: clone(state().employeeProfile) };
     },
-  }));
-  register(transport, ["POST"], "/EmployeeProfiles/me/images/complete", ({ body }) => {
-    const kind = String(asRecord(body).kind ?? "avatar");
-    const key = kind === "identity" ? "identityPhotoUrl" : "avatarUrl";
-    state().employeeProfile[key] = "data:image/svg+xml,%3Csvg%3E%3C/svg%3E";
-    state().employeeProfile.updatedAt = state().now;
-    mirrorUpdate(state(), dataStore, "users", "employee-profile", "Employee profile image");
-    return { data: clone(state().employeeProfile) };
-  });
-  register(transport, ["DELETE"], /^\/EmployeeProfiles\/me\/images\/(identity|avatar)$/i, ({ match }) => {
-    const key = match?.[1] === "identity" ? "identityPhotoUrl" : "avatarUrl";
-    state().employeeProfile[key] = "";
-    state().employeeProfile.updatedAt = state().now;
-    mirrorUpdate(state(), dataStore, "users", "employee-profile", "Employee profile image", "removed");
-    return { data: clone(state().employeeProfile) };
-  });
+  );
+  register(
+    transport,
+    ["POST"],
+    "/EmployeeProfiles/me/image-upload-signature",
+    ({ body }) => ({
+      data: {
+        url: "data:application/octet-stream;base64,UkVWSUVX",
+        objectKey: `ios-review/profile/${String(asRecord(body).kind ?? "avatar")}.svg`,
+        headers: {},
+      },
+    }),
+  );
+  register(
+    transport,
+    ["POST"],
+    "/EmployeeProfiles/me/images/complete",
+    ({ body }) => {
+      const kind = String(asRecord(body).kind ?? "avatar");
+      const key = kind === "identity" ? "identityPhotoUrl" : "avatarUrl";
+      state().employeeProfile[key] = "data:image/svg+xml,%3Csvg%3E%3C/svg%3E";
+      state().employeeProfile.updatedAt = state().now;
+      mirrorUpdate(
+        state(),
+        dataStore,
+        "users",
+        "employee-profile",
+        "Employee profile image",
+      );
+      return { data: clone(state().employeeProfile) };
+    },
+  );
+  register(
+    transport,
+    ["DELETE"],
+    /^\/EmployeeProfiles\/me\/images\/(identity|avatar)$/i,
+    ({ match }) => {
+      const key = match?.[1] === "identity" ? "identityPhotoUrl" : "avatarUrl";
+      state().employeeProfile[key] = "";
+      state().employeeProfile.updatedAt = state().now;
+      mirrorUpdate(
+        state(),
+        dataStore,
+        "users",
+        "employee-profile",
+        "Employee profile image",
+        "removed",
+      );
+      return { data: clone(state().employeeProfile) };
+    },
+  );
   register(transport, ["GET"], "/EmployeeProfiles/me/cashier-barcode", () => ({
     data: clone(state().cashierBarcode),
   }));
-  register(transport, ["POST"], "/EmployeeProfiles/me/cashier-barcode/refresh", () => {
-    state().cashierBarcode = {
-      ...state().cashierBarcode,
-      barcode: IOS_REVIEW_SAMPLE_BARCODE,
-      updatedAt: state().now,
-    };
-    return { data: clone(state().cashierBarcode) };
-  });
-  register(transport, ["POST"], "/EmployeeProfiles/me/cashier-barcode/print-confirmation", () => {
-    state().cashierBarcode.printCount += 1;
-    state().cashierBarcode.updatedAt = state().now;
-    return { data: clone(state().cashierBarcode) };
-  });
+  register(
+    transport,
+    ["POST"],
+    "/EmployeeProfiles/me/cashier-barcode/refresh",
+    () => {
+      state().cashierBarcode = {
+        ...state().cashierBarcode,
+        barcode: IOS_REVIEW_SAMPLE_BARCODE,
+        updatedAt: state().now,
+      };
+      return { data: clone(state().cashierBarcode) };
+    },
+  );
+  register(
+    transport,
+    ["POST"],
+    "/EmployeeProfiles/me/cashier-barcode/print-confirmation",
+    () => {
+      state().cashierBarcode.printCount += 1;
+      state().cashierBarcode.updatedAt = state().now;
+      return { data: clone(state().cashierBarcode) };
+    },
+  );
 }
 
 function registerDeviceRoutes(
   transport: ReviewTransport,
   dataStore: ReviewDataStore,
-  holder: AppRouteStateHolder
+  holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
   register(transport, ["GET"], "/mobile/device-management/paged", () => ({

@@ -146,6 +146,11 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<List<string>>> GetRolePermissionsAsync(string roleGuid);
 
         /// <summary>
+        /// 仅供后端授权与会话聚合使用，不对应外部角色权限读取端点。
+        /// </summary>
+        Task<ApiResponse<List<string>>> GetRolePermissionsForAuthorizationAsync(string roleGuid);
+
+        /// <summary>
         /// 获取角色权限状态
         /// </summary>
         /// <param name="roleGuid">角色GUID</param>
@@ -189,6 +194,14 @@ namespace BlazorApp.Api.Interfaces
         /// <param name="userGuid">用户GUID</param>
         /// <returns>角色继承权限、用户直接权限和最终有效权限</returns>
         Task<ApiResponse<UserPermissionStateDto>> GetUserPermissionStateAsync(string userGuid);
+
+        /// <summary>
+        /// 获取当前操作者对目标员工可见、可分配的权限状态与目录。
+        /// </summary>
+        Task<ApiResponse<UserAccessPermissionDto>> GetUserAccessPermissionsAsync(
+            string actorUserGuid,
+            string targetUserGuid
+        );
 
         /// <summary>
         /// 为用户分配直接权限
