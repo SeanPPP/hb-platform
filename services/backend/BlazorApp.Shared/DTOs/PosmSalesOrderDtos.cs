@@ -37,6 +37,7 @@ namespace BlazorApp.Shared.DTOs
         public string? DeviceCodeKeyword { get; set; }
         public TimeSpan? TimeStart { get; set; }
         public TimeSpan? TimeEnd { get; set; }
+        public int? ClientUtcOffsetMinutes { get; set; }
         public int? SkuCountMin { get; set; }
         public int? SkuCountMax { get; set; }
         public int? ItemCountMin { get; set; }

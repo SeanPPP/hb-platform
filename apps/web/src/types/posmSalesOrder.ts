@@ -63,6 +63,7 @@ export interface PosmSalesOrderQueryParams {
   deviceCodeKeyword?: string
   timeStart?: string
   timeEnd?: string
+  clientUtcOffsetMinutes?: number
   skuCountMin?: number
   skuCountMax?: number
   itemCountMin?: number

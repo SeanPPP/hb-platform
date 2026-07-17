@@ -9,10 +9,15 @@ import {
   mapPosmSalesOrderSortState,
   normalizePosmSalesOrderFilterNumber,
   isLatestPosmSalesOrderRequest,
+  resolvePosmSalesOrderClientUtcOffsetMinutes,
   syncColumnFiltersToTopFilters,
   syncTopFiltersToColumnFilters,
   validatePosmSalesOrderNumberRanges,
 } from './posmSalesOrdersLogic'
+import { formatPosmSalesOrderLocalTime, normalizePosmSalesOrderUtcTime } from './time'
+
+// 固定业务测试时区，避免 CI 机器默认 UTC 导致跨日与 offset 断言不稳定。
+process.env.TZ = 'Australia/Brisbane'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
   const actualJson = JSON.stringify(actual)
@@ -171,6 +176,7 @@ assertDeepEqual(
     deviceCodeKeyword: 'POS-2',
     timeStart: '08:30:00',
     timeEnd: '18:15:59',
+    clientUtcOffsetMinutes: 600,
     skuCountMin: 1,
     skuCountMax: 10,
     itemCountMin: 2,
@@ -213,6 +219,7 @@ assertDeepEqual(
     deviceCodeKeyword: undefined,
     timeStart: '08:30:00',
     timeEnd: '18:15:59',
+    clientUtcOffsetMinutes: 600,
     skuCountMin: 1,
     skuCountMax: 10,
     itemCountMin: 2,
@@ -316,6 +323,122 @@ assertDeepEqual(
 assert(
   validatePosmSalesOrderNumberRanges({ actualPayMin: 0, actualPayMax: 0 }).isValid,
   '相等边界应通过校验',
+)
+
+function formatLocalDate(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function formatLocalTime(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+assert(
+  resolvePosmSalesOrderClientUtcOffsetMinutes('2026-06-10', -123) === 600,
+  '客户端偏移应按选中日期的本地零点计算',
+)
+assert(
+  resolvePosmSalesOrderClientUtcOffsetMinutes('', 345) === 345 &&
+    resolvePosmSalesOrderClientUtcOffsetMinutes('2026-02-30', 345) === 345,
+  '空值或非法选中日期应回退当前客户端偏移',
+)
+
+assert(
+  normalizePosmSalesOrderUtcTime('2026-07-17T00:15:01') ===
+    '2026-07-17T00:15:01Z',
+  '无时区后缀的订单时间应补充 Z',
+)
+assert(
+  normalizePosmSalesOrderUtcTime('2026-07-17 00:15:01') ===
+    '2026-07-17 00:15:01Z',
+  '空格分隔的无后缀订单时间也应只补充 Z',
+)
+for (const timestamp of [
+  '2026-07-17T00:15:01Z',
+  '2026-07-17T00:15:01+10:00',
+  '2026-07-17T00:15:01+1000',
+]) {
+  assert(
+    normalizePosmSalesOrderUtcTime(timestamp) === timestamp,
+    `已有时区后缀的订单时间应保持不变: ${timestamp}`,
+  )
+}
+
+const utcWithoutSuffix = '2026-07-17T00:15:01'
+const utcWithoutSuffixLocal = new Date(`${utcWithoutSuffix}Z`)
+assert(
+  formatPosmSalesOrderLocalTime(utcWithoutSuffix, 'YYYY-MM-DD') ===
+    formatLocalDate(utcWithoutSuffixLocal),
+  '无时区后缀的订单 UTC 日期应转换为浏览器本地日期',
+)
+assert(
+  formatPosmSalesOrderLocalTime(utcWithoutSuffix, 'HH:mm:ss') ===
+    formatLocalTime(utcWithoutSuffixLocal),
+  '无时区后缀的订单 UTC 时间应转换为浏览器本地时间',
+)
+
+const explicitUtc = '2026-07-17T00:15:01Z'
+assert(
+  formatPosmSalesOrderLocalTime(explicitUtc, 'HH:mm:ss') ===
+    formatLocalTime(new Date(explicitUtc)),
+  '带 Z 的订单时间应按显式 UTC 转换为浏览器本地时间',
+)
+
+const explicitOffset = '2026-07-17T00:15:01+02:00'
+assert(
+  formatPosmSalesOrderLocalTime(explicitOffset, 'HH:mm:ss') ===
+    formatLocalTime(new Date(explicitOffset)),
+  '带 offset 的订单时间应保留原时区语义并转换为浏览器本地时间',
+)
+
+assert(
+  formatPosmSalesOrderLocalTime('2026-07-16T14:30:00Z', 'YYYY-MM-DD HH:mm:ss') ===
+    '2026-07-17 00:30:00',
+  'UTC 订单时间跨日后应显示 Brisbane 当地日期和时间',
+)
+
+for (const [timestamp, expected] of [
+  ['2026-07-17 00:15:01.1234567', '2026-07-17 10:15:01'],
+  ['2026-07-17T00:15:01+10:00', '2026-07-17 00:15:01'],
+  ['2026-07-17T00:15:01+1000', '2026-07-17 00:15:01'],
+]) {
+  assert(
+    formatPosmSalesOrderLocalTime(timestamp, 'YYYY-MM-DD HH:mm:ss') === expected,
+    `.NET/ISO 合法时间格式应被接受: ${timestamp}`,
+  )
+}
+
+assert(
+  formatPosmSalesOrderLocalTime('not-a-date', 'HH:mm:ss') === 'not-a-date',
+  '非法订单时间应保留原文，避免隐藏后端异常数据',
+)
+assert(
+  formatPosmSalesOrderLocalTime('2026-02-30T00:00:00Z', 'YYYY-MM-DD') ===
+    '2026-02-30T00:00:00Z',
+  '不存在的日历日期不得被 dayjs 正常化',
+)
+for (const invalidTimestamp of [
+  '0000-01-01T00:00:00Z',
+  '2026-13-01T00:00:00Z',
+  '2026-07-17T24:00:00Z',
+  '2026-07-17T00:60:00Z',
+  '2026-07-17T00:00:60Z',
+  '2026-07-17T00:00:00.12345678Z',
+  '2026-07-17T00:00:00+14:01',
+  '2026-07-17T00:00:00+1060',
+]) {
+  assert(
+    formatPosmSalesOrderLocalTime(invalidTimestamp, 'YYYY-MM-DD') === invalidTimestamp,
+    `越界或不符合 .NET/ISO 格式的订单时间应保留原文: ${invalidTimestamp}`,
+  )
+}
+assert(
+  formatPosmSalesOrderLocalTime('', 'HH:mm:ss') === '-' &&
+    formatPosmSalesOrderLocalTime(null, 'HH:mm:ss') === '-' &&
+    formatPosmSalesOrderLocalTime(undefined, 'HH:mm:ss') === '-',
+  '空订单时间应显示占位符',
 )
 
 const changedState = applyPosmSalesOrderQueryChange(currentState, {

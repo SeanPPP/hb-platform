@@ -391,6 +391,32 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         Assert.Equal(1000, result.Items.Count);
     }
 
+    [Fact]
+    public async Task 客户端时区偏移同时作用于日期和时间筛选()
+    {
+        await SeedOrderAsync("LOCAL-MATCH", new DateTime(2026, 7, 16, 14, 30, 0, DateTimeKind.Utc), "D1");
+        await SeedDetailAsync("LOCAL-MATCH", "P-1", "B-1", "当地七月十七日零点半");
+        await SeedOrderAsync("PREVIOUS-LOCAL-DAY", new DateTime(2026, 7, 16, 13, 30, 0, DateTimeKind.Utc), "D2");
+        await SeedDetailAsync("PREVIOUS-LOCAL-DAY", "P-2", "B-2", "当地七月十六日");
+        await SeedOrderAsync("NEXT-LOCAL-DAY", new DateTime(2026, 7, 17, 14, 30, 0, DateTimeKind.Utc), "D3");
+        await SeedDetailAsync("NEXT-LOCAL-DAY", "P-3", "B-3", "当地七月十八日");
+        await SeedOrderAsync("WRONG-LOCAL-TIME", new DateTime(2026, 7, 17, 0, 30, 0, DateTimeKind.Utc), "D4");
+        await SeedDetailAsync("WRONG-LOCAL-TIME", "P-4", "B-4", "当地上午十点半");
+
+        var result = await CreateService().GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams
+            {
+                StartDate = new DateTime(2026, 7, 17),
+                EndDate = new DateTime(2026, 7, 17),
+                TimeStart = new TimeSpan(0, 30, 0),
+                TimeEnd = new TimeSpan(0, 30, 0),
+                ClientUtcOffsetMinutes = 600,
+            }
+        );
+
+        Assert.Equal("LOCAL-MATCH", Assert.Single(result.Items).OrderGuid);
+    }
+
     public void Dispose()
     {
         _db.Dispose();

@@ -36,19 +36,30 @@ namespace BlazorApp.Api.Services.React
             var pageNumber = Math.Max(1, queryParams.PageNumber);
             // 限制单页上限，避免异常请求生成过大的 SQL Take 和响应体。
             var pageSize = queryParams.PageSize > 0 ? Math.Min(queryParams.PageSize, 1000) : 20;
+            var clientUtcOffsetMinutes = Math.Clamp(
+                queryParams.ClientUtcOffsetMinutes ?? 0,
+                -840,
+                840
+            );
+            var clientUtcOffsetSeconds = clientUtcOffsetMinutes * 60;
             var baseQuery = _posmContext
                 .Db.Queryable<SalesOrder>()
                 .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid);
 
             if (queryParams.StartDate.HasValue)
             {
-                var start = queryParams.StartDate.Value.Date;
-                baseQuery = baseQuery.Where(o => o.OrderTime >= start);
+                // 当地日期边界先转换成 UTC 常量，保持 OrderTime 列可直接走索引。
+                var startUtc = queryParams.StartDate.Value.Date.AddMinutes(
+                    -clientUtcOffsetMinutes
+                );
+                baseQuery = baseQuery.Where(o => o.OrderTime >= startUtc);
             }
             if (queryParams.EndDate.HasValue)
             {
-                var endExclusive = queryParams.EndDate.Value.Date.AddDays(1);
-                baseQuery = baseQuery.Where(o => o.OrderTime < endExclusive);
+                var endExclusiveUtc = queryParams
+                    .EndDate.Value.Date.AddDays(1)
+                    .AddMinutes(-clientUtcOffsetMinutes);
+                baseQuery = baseQuery.Where(o => o.OrderTime < endExclusiveUtc);
             }
 
             if (queryParams.TimeStart.HasValue)
@@ -56,9 +67,14 @@ namespace BlazorApp.Api.Services.React
                 var startSeconds = (int)queryParams.TimeStart.Value.TotalSeconds;
                 baseQuery = baseQuery.Where(o =>
                     o.OrderTime.HasValue
-                    && o.OrderTime.Value.Hour * 3600
-                            + o.OrderTime.Value.Minute * 60
-                            + o.OrderTime.Value.Second
+                    // UTC 当日秒数平移后取模，得到客户端当地时分秒。
+                    && (
+                            o.OrderTime.Value.Hour * 3600
+                                + o.OrderTime.Value.Minute * 60
+                                + o.OrderTime.Value.Second
+                                + clientUtcOffsetSeconds
+                                + 86400
+                        ) % 86400
                         >= startSeconds
                 );
             }
@@ -67,9 +83,13 @@ namespace BlazorApp.Api.Services.React
                 var endSeconds = (int)queryParams.TimeEnd.Value.TotalSeconds;
                 baseQuery = baseQuery.Where(o =>
                     o.OrderTime.HasValue
-                    && o.OrderTime.Value.Hour * 3600
-                            + o.OrderTime.Value.Minute * 60
-                            + o.OrderTime.Value.Second
+                    && (
+                            o.OrderTime.Value.Hour * 3600
+                                + o.OrderTime.Value.Minute * 60
+                                + o.OrderTime.Value.Second
+                                + clientUtcOffsetSeconds
+                                + 86400
+                        ) % 86400
                         <= endSeconds
                 );
             }
