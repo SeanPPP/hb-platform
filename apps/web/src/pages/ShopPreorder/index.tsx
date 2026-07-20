@@ -33,6 +33,7 @@ import {
   preparePreorderNavigation,
 } from './navigationGuard'
 import { usePreorderLeave } from './preorderLeaveContext'
+import { getPreorderDateDisplay } from './preorderDate'
 import {
   resolveOnlinePreorderDraftConflict,
   type OnlinePreorderDraftChoice,
@@ -1040,6 +1041,7 @@ export default function ShopPreorderPage() {
   if (!detail) return <Empty description={t('shop.preorder.notAccessible')} />
 
   const orderStatusLabel = detail.orderStatus ? t(`shop.preorder.orderStatus.${detail.orderStatus}`) : ''
+  const estimatedArrivalDate = getPreorderDateDisplay(detail.estimatedArrivalDate)
 
   return (
     <div className="shop-preorder-page">
@@ -1047,6 +1049,7 @@ export default function ShopPreorderPage() {
         <Space direction="vertical" size={4}>
           <Space wrap><Title level={2}>{detail.templateName}</Title><Tag color="processing">{t('shop.preorder.period', { sequence: detail.sequenceNumber })}</Tag></Space>
           <Text>{t('shop.preorder.storeAndDeadline', { store: selectedStore.storeName || selectedStore.storeCode, deadline: preorderDateTimeFormatter.format(new Date(detail.endAtUtc)) })}</Text>
+          {estimatedArrivalDate ? <Text>{t('shop.preorder.estimatedArrivalDate', { date: estimatedArrivalDate })}</Text> : null}
           <Text type={saveState === 'error' ? 'danger' : 'secondary'}><SaveOutlined /> {orderResponded ? t('shop.preorder.responded') : activationReadOnlyReason ? t('shop.preorder.saveReadOnly') : saveState === 'saving' ? t('shop.preorder.saveSaving') : saveState === 'error' ? t('shop.preorder.saveError') : t('shop.preorder.saveSaved')}</Text>
         </Space>
       </Card>

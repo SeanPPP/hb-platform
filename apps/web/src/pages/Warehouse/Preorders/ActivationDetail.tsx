@@ -15,9 +15,11 @@ import {
   downloadPreorderActivationExport,
   getAdminPreorderActivation,
   getPreorderActivationStatistics,
+  isPreorderActivationArrivalDateChangedError,
   isPreorderActivationStoresChangedError,
   isPreorderStatusTransitionConflictError,
   updatePreorderActivationStores,
+  updatePreorderActivationEstimatedArrivalDate,
   updatePreorderOrderStatus,
 } from '../../../services/preorderService'
 import { getStores } from '../../../services/storeService'
@@ -33,6 +35,7 @@ import {
 import { getActivationProductStores } from './activationProductStores'
 import { getActivationStoreChanges, mergeActivationStoreOptions } from './activationStoreSelection'
 import { beginModalRequest, createModalRequestGuard, invalidateModalRequest, isCurrentModalRequest } from './modalRequestGuard'
+import { getPreorderDateDisplay } from '../../ShopPreorder/preorderDate'
 import './styles.css'
 
 const { Text } = Typography
@@ -66,12 +69,17 @@ export default function PreorderActivationDetailPage() {
   const [storeOptionsLoading, setStoreOptionsLoading] = useState(false)
   const [storeOptionsLoadFailed, setStoreOptionsLoadFailed] = useState(false)
   const [storeSaving, setStoreSaving] = useState(false)
+  const [arrivalEditorOpen, setArrivalEditorOpen] = useState(false)
+  const [nextEstimatedArrivalDate, setNextEstimatedArrivalDate] = useState<Dayjs | null>(null)
+  const [arrivalSaving, setArrivalSaving] = useState(false)
   const requestGuardRef = useRef(createActivationDetailRequestGuard())
   const storeEditorRequestGuardRef = useRef(createModalRequestGuard())
+  const arrivalEditorRequestGuardRef = useRef(createModalRequestGuard())
   const returnConfirmDestroyRef = useRef<(() => void) | null>(null)
   const storeConfirmDestroyRef = useRef<(() => void) | null>(null)
   const storeConfirmSessionRef = useRef<number | null>(null)
   const nextStoreConfirmSessionRef = useRef(0)
+  const arrivalSavingRef = useRef(false)
   const currentActivationGuidRef = useRef(activationGuid)
   currentActivationGuidRef.current = activationGuid
   const dateTimeFormatter = useMemo(
@@ -94,10 +102,19 @@ export default function PreorderActivationDetailPage() {
     setStoreSaving(false)
   }, [])
 
+  const closeArrivalEditor = useCallback(() => {
+    invalidateModalRequest(arrivalEditorRequestGuardRef.current)
+    arrivalSavingRef.current = false
+    setArrivalEditorOpen(false)
+    setNextEstimatedArrivalDate(null)
+    setArrivalSaving(false)
+  }, [])
+
   const load = useCallback(async () => {
     returnConfirmDestroyRef.current?.()
     returnConfirmDestroyRef.current = null
     closeStoreEditor()
+    closeArrivalEditor()
     if (!activationGuid) {
       // 路由参数缺失时立即失效旧请求并清空页面，禁止请求空批次地址。
       invalidateActivationDetailRequest(requestGuardRef.current)
@@ -134,7 +151,7 @@ export default function PreorderActivationDetailPage() {
         setLoading(false)
       }
     }
-  }, [activationGuid, closeStoreEditor, message, t])
+  }, [activationGuid, closeArrivalEditor, closeStoreEditor, message, t])
 
   useEffect(() => {
     void load()
@@ -143,8 +160,9 @@ export default function PreorderActivationDetailPage() {
       returnConfirmDestroyRef.current = null
       invalidateActivationDetailRequest(requestGuardRef.current)
       closeStoreEditor()
+      closeArrivalEditor()
     }
-  }, [closeStoreEditor, load])
+  }, [closeArrivalEditor, closeStoreEditor, load])
 
   const changeStatus = async (row: PreorderWarehouseOrderSummary, status: PreorderOrderStatus) => {
     const targetActivationGuid = activationGuid
@@ -485,16 +503,63 @@ export default function PreorderActivationDetailPage() {
     })
     storeConfirmDestroyRef.current = confirmation.destroy
   }
+
+  const openArrivalEditor = () => {
+    if (!canAdjust || detail?.activationGuid !== activationGuid) return
+    invalidateModalRequest(arrivalEditorRequestGuardRef.current)
+    const estimatedArrivalDate = getPreorderDateDisplay(detail.estimatedArrivalDate)
+    setNextEstimatedArrivalDate(estimatedArrivalDate ? dayjs(estimatedArrivalDate) : null)
+    setArrivalSaving(false)
+    setArrivalEditorOpen(true)
+  }
+
+  const saveEstimatedArrivalDate = async () => {
+    const targetActivationGuid = activationGuid
+    const currentDetail = detail
+    if (!canAdjust || currentDetail?.activationGuid !== targetActivationGuid || arrivalSavingRef.current) return
+    arrivalSavingRef.current = true
+    const requestToken = beginModalRequest(arrivalEditorRequestGuardRef.current)
+    // DateOnly 直接格式化为年月日，不能调用 toISOString 经过时区换算。
+    const estimatedArrivalDate = nextEstimatedArrivalDate?.format('YYYY-MM-DD') ?? null
+    setArrivalSaving(true)
+    try {
+      await updatePreorderActivationEstimatedArrivalDate(targetActivationGuid, {
+        expectedEstimatedArrivalDate: getPreorderDateDisplay(currentDetail.estimatedArrivalDate),
+        estimatedArrivalDate,
+      }, requestToken.signal)
+      if (!isCurrentModalRequest(arrivalEditorRequestGuardRef.current, requestToken)
+        || currentActivationGuidRef.current !== targetActivationGuid) return
+      message.success(t('warehouse.preorders.activationDetail.arrivalDateUpdated'))
+      closeArrivalEditor()
+      await load()
+    } catch (error) {
+      if (!isCurrentModalRequest(arrivalEditorRequestGuardRef.current, requestToken)
+        || currentActivationGuidRef.current !== targetActivationGuid) return
+      if (isPreorderActivationArrivalDateChangedError(error)) {
+        message.warning(t('warehouse.preorders.activationDetail.arrivalDateConflictRefreshed'))
+        closeArrivalEditor()
+        await load()
+        return
+      }
+      message.error(t('warehouse.preorders.activationDetail.arrivalDateUpdateFailed'))
+    } finally {
+      if (isCurrentModalRequest(arrivalEditorRequestGuardRef.current, requestToken)) {
+        arrivalSavingRef.current = false
+        setArrivalSaving(false)
+      }
+    }
+  }
   return (
     <ConfigProvider locale={antdLocale}>
       <PageContainer
       title={detail ? t('warehouse.preorders.activationDetail.periodTitle', { name: detail.templateName, sequence: detail.sequenceNumber }) : t('warehouse.preorders.activationDetail.title')}
-      extra={<Space wrap><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/preorders')}>{t('warehouse.preorders.activationDetail.back')}</Button><Button icon={<DownloadOutlined />} disabled={!hasCurrentDetail} onClick={() => void downloadPreorderActivationExport(activationGuid).catch(() => message.error(t('warehouse.preorders.activationDetail.exportFailed')))}>{t('warehouse.preorders.activationDetail.exportExcel')}</Button>{canAdjust ? <Button onClick={() => void openStoreEditor()}>{t('warehouse.preorders.activationDetail.changeStores')}</Button> : null}{canAdjust && detail ? <Button onClick={() => { setNextEndAt(dayjs(detail.endAtUtc).add(1, 'day')); setExtendOpen(true) }}>{t('warehouse.preorders.activationDetail.extend')}</Button> : null}{canClose ? <Popconfirm title={t('warehouse.preorders.activationDetail.closeConfirm')} onConfirm={() => void closeNow()}><Button>{t('warehouse.preorders.activationDetail.close')}</Button></Popconfirm> : null}{canAdjust ? <Popconfirm title={t('warehouse.preorders.activationDetail.cancelConfirm')} onConfirm={() => void cancelActivation()}><Button danger icon={<StopOutlined />}>{t('warehouse.preorders.activationDetail.cancel')}</Button></Popconfirm> : null}</Space>}
+      extra={<Space wrap><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/preorders')}>{t('warehouse.preorders.activationDetail.back')}</Button><Button icon={<DownloadOutlined />} disabled={!hasCurrentDetail} onClick={() => void downloadPreorderActivationExport(activationGuid).catch(() => message.error(t('warehouse.preorders.activationDetail.exportFailed')))}>{t('warehouse.preorders.activationDetail.exportExcel')}</Button>{canAdjust ? <Button onClick={openArrivalEditor}>{t('warehouse.preorders.activationDetail.changeArrivalDate')}</Button> : null}{canAdjust ? <Button onClick={() => void openStoreEditor()}>{t('warehouse.preorders.activationDetail.changeStores')}</Button> : null}{canAdjust && detail ? <Button onClick={() => { setNextEndAt(dayjs(detail.endAtUtc).add(1, 'day')); setExtendOpen(true) }}>{t('warehouse.preorders.activationDetail.extend')}</Button> : null}{canClose ? <Popconfirm title={t('warehouse.preorders.activationDetail.closeConfirm')} onConfirm={() => void closeNow()}><Button>{t('warehouse.preorders.activationDetail.close')}</Button></Popconfirm> : null}{canAdjust ? <Popconfirm title={t('warehouse.preorders.activationDetail.cancelConfirm')} onConfirm={() => void cancelActivation()}><Button danger icon={<StopOutlined />}>{t('warehouse.preorders.activationDetail.cancel')}</Button></Popconfirm> : null}</Space>}
     >
       <Card loading={loading} className="preorder-admin-card">
         {detail ? <Descriptions size="small" column={{ xs: 1, md: 3 }} items={[
           { key: 'number', label: t('warehouse.preorders.activationNumber'), children: detail.activationNumber },
           { key: 'status', label: t('warehouse.preorders.status'), children: <Tag color={detail.status === 'Active' ? 'processing' : 'default'}>{t(`warehouse.preorders.activationStatus.${detail.status}`)}</Tag> },
+          { key: 'estimatedArrivalDate', label: t('warehouse.preorders.estimatedArrivalDate'), children: getPreorderDateDisplay(detail.estimatedArrivalDate) ?? '--' },
           { key: 'time', label: t('warehouse.preorders.effectiveTime'), children: `${dateTimeFormatter.format(new Date(detail.startAtUtc))} — ${dateTimeFormatter.format(new Date(detail.endAtUtc))}` },
         ]} /> : null}
       </Card>
@@ -554,6 +619,20 @@ export default function PreorderActivationDetailPage() {
       </Modal>
       <Modal title={t('warehouse.preorders.activationDetail.extendTitle')} open={extendOpen} onCancel={() => setExtendOpen(false)} onOk={() => void extendActivation()} okText={t('warehouse.preorders.activationDetail.confirmExtend')}>
         <DatePicker showTime value={nextEndAt} onChange={setNextEndAt} style={{ width: '100%' }} disabledDate={(date) => Boolean(detail && date.endOf('day').isBefore(dayjs(detail.endAtUtc)))} />
+      </Modal>
+      <Modal
+        title={t('warehouse.preorders.activationDetail.changeArrivalDateTitle')}
+        open={arrivalEditorOpen}
+        onCancel={() => { if (!arrivalSavingRef.current) closeArrivalEditor() }}
+        onOk={() => void saveEstimatedArrivalDate()}
+        confirmLoading={arrivalSaving}
+        cancelButtonProps={{ disabled: arrivalSaving }}
+        closable={!arrivalSaving}
+        keyboard={!arrivalSaving}
+        maskClosable={!arrivalSaving}
+        okText={t('common.save')}
+      >
+        <DatePicker allowClear format="YYYY-MM-DD" value={nextEstimatedArrivalDate} onChange={setNextEstimatedArrivalDate} style={{ width: '100%' }} />
       </Modal>
       <Modal
         title={t('warehouse.preorders.activationDetail.changeStoresTitle')}

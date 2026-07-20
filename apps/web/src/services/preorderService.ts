@@ -3,6 +3,7 @@ import type { AccessControl } from '../types/auth'
 import { P } from '../types/permissions'
 import type {
   PreorderActivationDetail,
+  PreorderActivationEstimatedArrivalDatePayload,
   PreorderActivationPayload,
   PreorderActivationStoresPayload,
   PreorderActivationStatistics,
@@ -76,6 +77,15 @@ export function isPreorderActivationStoresChangedError(error: unknown) {
     error instanceof RequestError &&
     error.status === 409 &&
     error.message.includes('PREORDER_ACTIVATION_STORES_CHANGED')
+  )
+}
+
+export function isPreorderActivationArrivalDateChangedError(error: unknown) {
+  const code = getPreorderErrorCode(error)
+  return code === 'PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED' || (
+    error instanceof RequestError &&
+    error.status === 409 &&
+    error.message.includes('PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED')
   )
 }
 
@@ -195,6 +205,18 @@ export async function updatePreorderActivationStores(
 ): Promise<PreorderActivationDetail> {
   return normalizeActivationDetail(unwrapApiData(await request.put(
     `${ADMIN_BASE}/activations/${activationGuid}/stores`,
+    payload,
+    { signal },
+  )))
+}
+
+export async function updatePreorderActivationEstimatedArrivalDate(
+  activationGuid: string,
+  payload: PreorderActivationEstimatedArrivalDatePayload,
+  signal?: AbortSignal,
+): Promise<PreorderActivationDetail> {
+  return normalizeActivationDetail(unwrapApiData(await request.put(
+    `${ADMIN_BASE}/activations/${activationGuid}/estimated-arrival-date`,
     payload,
     { signal },
   )))

@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { useStores } from "@/modules/shop/use-stores";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { formatBrisbaneBusinessDate } from "./business-date";
 import type { PreorderActivationSummary } from "./types";
 import { usePreorderGate } from "./use-preorder-gate";
 
@@ -57,30 +58,40 @@ export function PreorderListScreen() {
         data={gate.activations}
         keyExtractor={(item) => item.activationGuid}
         contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => (
-          <Card mode="outlined" style={styles.card}>
-            <Card.Content style={styles.cardContent}>
-              <View style={styles.cardHeading}>
-                <View style={styles.cardTitleWrap}>
-                  <Text variant="titleMedium" style={styles.cardTitle}>{item.templateName}</Text>
-                  <Text variant="bodySmall" style={styles.code}>{item.activationCode}</Text>
+        renderItem={({ item }) => {
+          const estimatedArrivalDate = formatBrisbaneBusinessDate(item.estimatedArrivalDate);
+          return (
+            <Card mode="outlined" style={styles.card}>
+              <Card.Content style={styles.cardContent}>
+                <View style={styles.cardHeading}>
+                  <View style={styles.cardTitleWrap}>
+                    <Text variant="titleMedium" style={styles.cardTitle}>{item.templateName}</Text>
+                    <Text variant="bodySmall" style={styles.code}>{item.activationCode}</Text>
+                  </View>
+                  <Chip compact icon="calendar-clock">{t("list.period", { period: item.periodNumber })}</Chip>
                 </View>
-                <Chip compact icon="calendar-clock">{t("list.period", { period: item.periodNumber })}</Chip>
-              </View>
-              <Text variant="bodyMedium" style={styles.deadline}>
-                {t("list.deadline", { value: formatDeadline(item.endAtUtc, language) })}
-              </Text>
-              <Button
-                mode="contained"
-                icon="arrow-right"
-                contentStyle={styles.openButtonContent}
-                onPress={() => openActivation(item)}
-              >
-                {t("list.open")}
-              </Button>
-            </Card.Content>
-          </Card>
-        )}
+                <View style={styles.scheduleRow}>
+                  <Text variant="bodyMedium" style={styles.deadline}>
+                    {t("list.deadline", { value: formatDeadline(item.endAtUtc, language) })}
+                  </Text>
+                  {estimatedArrivalDate ? (
+                    <Text variant="bodySmall" style={styles.estimatedArrival}>
+                      {t("list.estimatedArrival", { value: estimatedArrivalDate })}
+                    </Text>
+                  ) : null}
+                </View>
+                <Button
+                  mode="contained"
+                  icon="arrow-right"
+                  contentStyle={styles.openButtonContent}
+                  onPress={() => openActivation(item)}
+                >
+                  {t("list.open")}
+                </Button>
+              </Card.Content>
+            </Card>
+          );
+        }}
         ListEmptyComponent={
           gate.isError ? (
             <EmptyState
@@ -127,6 +138,8 @@ const styles = StyleSheet.create({
   cardTitleWrap: { flex: 1, gap: 2 },
   cardTitle: { color: "#172033", fontWeight: "700" },
   code: { color: "#667085" },
+  scheduleRow: { gap: 3 },
   deadline: { color: "#8A4B08", fontWeight: "600" },
+  estimatedArrival: { color: "#667085", fontWeight: "600" },
   openButtonContent: { minHeight: 44 },
 });

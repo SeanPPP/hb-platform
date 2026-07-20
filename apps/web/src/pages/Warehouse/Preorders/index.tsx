@@ -33,6 +33,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
+import { getPreorderDateDisplay } from '../../ShopPreorder/preorderDate'
 import {
   activatePreorderTemplate,
   createPreorderTemplate,
@@ -76,6 +77,7 @@ interface TemplateFormValues {
 
 interface ActivationFormValues {
   range: [Dayjs, Dayjs]
+  estimatedArrivalDate?: Dayjs | null
   storeGuids: string[]
 }
 
@@ -324,6 +326,7 @@ export default function PreordersPage() {
       setActivationTemplate(detail)
       activationForm.setFieldsValue({
         range: [dayjs().add(5, 'minute'), dayjs().add(7, 'day')],
+        estimatedArrivalDate: null,
         storeGuids: detail.stores.map((store) => store.storeGuid),
       })
     } catch {
@@ -363,6 +366,8 @@ export default function PreordersPage() {
         expectedRevision: activationTemplate.revision,
         startAtUtc: values.range[0].toISOString(),
         endAtUtc: values.range[1].toISOString(),
+        // DateOnly 必须直接发送日历日期，禁止经 UTC 转换造成前后偏移。
+        estimatedArrivalDate: values.estimatedArrivalDate?.format('YYYY-MM-DD') ?? null,
         storeGuids: values.storeGuids,
       })
       if (activationRequestGuardRef.current.version !== requestVersion) return
@@ -506,16 +511,18 @@ export default function PreordersPage() {
           <Alert type="info" showIcon message={t('warehouse.preorders.snapshotNotice')} style={{ marginBottom: 16 }} />
           <Form form={activationForm} layout="vertical">
             <Form.Item name="range" label={t('warehouse.preorders.effectiveTime')} rules={[{ required: true }]}><RangePicker showTime style={{ width: '100%' }} disabledDate={(date) => date.endOf('day').isBefore(dayjs())} /></Form.Item>
+            <Form.Item name="estimatedArrivalDate" label={t('warehouse.preorders.estimatedArrivalDate')}><DatePicker allowClear format="YYYY-MM-DD" style={{ width: '100%' }} /></Form.Item>
             <Form.Item name="storeGuids" label={t('warehouse.preorders.targetStores')} rules={[{ required: true, message: t('warehouse.preorders.selectOneStore') }]}><Select mode="multiple" showSearch optionFilterProp="label" options={storeOptions} maxTagCount="responsive" /></Form.Item>
           </Form>
         </Spin>
       </Modal>
 
       <Modal title={t('warehouse.preorders.historyTitle', { name: historyTemplate?.name || '' })} open={historyOpen} footer={null} width={920} onCancel={closeHistory}>
-        <Table loading={historyLoading} rowKey="activationGuid" dataSource={activations} pagination={false} scroll={{ x: 760 }} columns={[
+        <Table loading={historyLoading} rowKey="activationGuid" dataSource={activations} pagination={false} scroll={{ x: 900 }} columns={[
           { title: t('warehouse.preorders.periodNumber'), dataIndex: 'sequenceNumber', width: 80, render: (value) => t('warehouse.preorders.period', { sequence: value }) },
           { title: t('warehouse.preorders.activationNumber'), dataIndex: 'activationNumber', width: 150 },
           { title: t('warehouse.preorders.status'), dataIndex: 'status', width: 100, render: (status) => activationStatusTag(status, t(`warehouse.preorders.activationStatus.${status}`)) },
+          { title: t('warehouse.preorders.estimatedArrivalDate'), dataIndex: 'estimatedArrivalDate', width: 140, render: (value) => getPreorderDateDisplay(value) ?? '--' },
           { title: t('warehouse.preorders.effectiveTime'), width: 260, render: (_, row) => `${dateTimeFormatter.format(new Date(row.startAtUtc))} — ${dateTimeFormatter.format(new Date(row.endAtUtc))}` },
           { title: t('warehouse.preorders.progress'), width: 150, render: (_, row) => <Text><CheckCircleOutlined /> {row.targetStoreCount - row.pendingCount}/{row.targetStoreCount}</Text> },
           { title: '', width: 80, render: (_, row) => <Button type="link" onClick={() => navigate(`/warehouse/preorders/activations/${row.activationGuid}`)}>{t('warehouse.preorders.view')}</Button> },

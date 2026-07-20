@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace BlazorApp.Shared.DTOs;
 
 public sealed class PreorderTemplateQueryDto
@@ -96,6 +98,7 @@ public sealed class ActivatePreorderTemplateDto
 {
     public DateTime StartAtUtc { get; set; }
     public DateTime EndAtUtc { get; set; }
+    public DateOnly? EstimatedArrivalDate { get; set; }
     public int? ExpectedRevision { get; set; }
     public List<string>? StoreGuids { get; set; }
 }
@@ -111,6 +114,12 @@ public sealed class UpdatePreorderActivationStoresDto
     public List<string> StoreGuids { get; set; } = new();
 }
 
+public sealed class UpdatePreorderActivationEstimatedArrivalDateDto
+{
+    public DateOnly? ExpectedEstimatedArrivalDate { get; set; }
+    public DateOnly? EstimatedArrivalDate { get; set; }
+}
+
 public class PreorderActivationSummaryDto
 {
     public string ActivationGuid { get; set; } = string.Empty;
@@ -121,6 +130,10 @@ public class PreorderActivationSummaryDto
     public int SourceTemplateRevision { get; set; }
     public DateTime StartAtUtc { get; set; }
     public DateTime EndAtUtc { get; set; }
+
+    // 关键合同：历史批次也必须显式返回 null，不能被全局 WhenWritingNull 省略。
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public DateOnly? EstimatedArrivalDate { get; set; }
     public string Status { get; set; } = string.Empty;
     public int TargetStoreCount { get; set; }
     public int RespondedStoreCount { get; set; }

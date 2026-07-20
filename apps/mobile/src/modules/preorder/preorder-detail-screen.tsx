@@ -37,6 +37,7 @@ import {
   savePreorderDraft,
   submitPreorder,
 } from "./api";
+import { formatBrisbaneBusinessDate } from "./business-date";
 import {
   buildDraftItems,
   createPackCounts,
@@ -417,6 +418,7 @@ export function PreorderDetailScreen() {
   const returnedForRevision = detail?.orderStatus === "ReturnedForRevision";
   const activationReadOnlyReason = getPreorderActivationReadOnlyReason(detail, activationClock);
   const isEditable = Boolean(detail && !isSubmitted && !activationReadOnlyReason);
+  const estimatedArrivalDate = formatBrisbaneBusinessDate(detail?.estimatedArrivalDate);
 
   useEffect(() => {
     if (!isEditable || autosaveSuspendedRef.current) return;
@@ -894,9 +896,16 @@ export function PreorderDetailScreen() {
 
         {detail ? (
           <View style={styles.metaBar}>
-            <Text variant="bodySmall" style={styles.deadline}>
-              {t("detail.deadline", { value: formatDateTime(detail.endAtUtc, language) })}
-            </Text>
+            <View style={styles.scheduleInfo}>
+              <Text variant="bodySmall" style={styles.deadline}>
+                {t("detail.deadline", { value: formatDateTime(detail.endAtUtc, language) })}
+              </Text>
+              {estimatedArrivalDate ? (
+                <Text variant="labelSmall" style={styles.estimatedArrival}>
+                  {t("detail.estimatedArrival", { value: estimatedArrivalDate })}
+                </Text>
+              ) : null}
+            </View>
             <Text variant="labelSmall" style={saveStatus === "error" ? styles.saveError : styles.saveState}>
               {isSubmitted
                 ? t("save.submitted")
@@ -1018,7 +1027,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#F5B041",
   },
-  deadline: { flex: 1, color: "#7A3E00", fontWeight: "600" },
+  scheduleInfo: { flex: 1, gap: 2 },
+  deadline: { color: "#7A3E00", fontWeight: "600" },
+  estimatedArrival: { color: "#667085", fontWeight: "600" },
   saveState: { color: "#247A3C" },
   saveError: { color: "#C62828" },
   readOnlyBanner: {

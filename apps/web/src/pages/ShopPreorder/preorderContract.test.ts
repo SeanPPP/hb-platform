@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { getActivationProductStores } from '../Warehouse/Preorders/activationProductStores'
 import { getActivationStoreChanges, mergeActivationStoreOptions } from '../Warehouse/Preorders/activationStoreSelection'
+import { getPreorderDateDisplay } from './preorderDate'
 import type { PreorderStoreProductQuantity } from '../../types/preorder'
 
 const read = (path: string) => readFileSync(path, 'utf8')
@@ -25,6 +26,14 @@ const activationDetail = read('src/pages/Warehouse/Preorders/ActivationDetail.ts
 const adminPage = read('src/pages/Warehouse/Preorders/index.tsx')
 const zhLocale = readJson('src/i18n/locales/zh.json')
 const enLocale = readJson('src/i18n/locales/en.json')
+
+assert.equal(getPreorderDateDisplay('2026-08-09'), '2026-08-09')
+assert.equal(getPreorderDateDisplay('2026-08-09T23:30:00-10:00'), '2026-08-09', '纯日期展示不得经过时区换算')
+assert.equal(getPreorderDateDisplay('2024-02-29'), '2024-02-29')
+assert.equal(getPreorderDateDisplay('2026-02-29'), null, '非法闰日不得展示或进入编辑载荷')
+assert.equal(getPreorderDateDisplay('2026-99-99'), null, '非法年月日不得展示或进入编辑载荷')
+assert.equal(getPreorderDateDisplay(null), null)
+assert.equal(getPreorderDateDisplay('not-a-date'), null)
 
 const quantity = (
   overrides: Partial<PreorderStoreProductQuantity>,
@@ -101,6 +110,9 @@ assert(service.includes('export function isPreorderDraftConflictError'))
 assert(service.includes('export function isPreorderActivationStoresChangedError'))
 assert(service.includes('PREORDER_ACTIVATION_STORES_CHANGED'))
 assert(service.includes('`${ADMIN_BASE}/activations/${activationGuid}/stores`'))
+assert(service.includes('export function isPreorderActivationArrivalDateChangedError'))
+assert(service.includes('PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED'))
+assert(service.includes('`${ADMIN_BASE}/activations/${activationGuid}/estimated-arrival-date`'))
 assert(service.includes("'X-Preorder-Submission-Id': submissionId"), 'submissionId 必须通过统一可选 header 发送')
 assert(service.includes('activePreorderSingleFlight.run(storeCode'), '所有 active gate 触发源必须按门店复用同一请求')
 assert(service.includes('export function advanceActivePreorderFreshEpoch(storeCode: string)'))
@@ -387,6 +399,19 @@ assert(activationDetail.includes('onCancel: releaseConfirmation'))
 assert(activationDetail.includes('confirmation.update({'))
 assert(activationDetail.includes('keyboard: false'))
 assert(activationDetail.includes('keyboard={!storeSaving}'))
+assert(adminPage.includes("estimatedArrivalDate: values.estimatedArrivalDate?.format('YYYY-MM-DD') ?? null"))
+assert(!adminPage.includes('values.estimatedArrivalDate?.toISOString()'), '预计到货日不得转换为 UTC 时间')
+assert(adminPage.includes('getPreorderDateDisplay(value) ??'))
+assert(activationDetail.includes('const estimatedArrivalDate = getPreorderDateDisplay(detail.estimatedArrivalDate)'))
+assert(activationDetail.includes('expectedEstimatedArrivalDate: getPreorderDateDisplay(currentDetail.estimatedArrivalDate)'))
+assert(activationDetail.includes('isPreorderActivationArrivalDateChangedError(error)'))
+assert(activationDetail.includes('invalidateModalRequest(arrivalEditorRequestGuardRef.current)'))
+assert(activationDetail.includes('arrivalSavingRef.current'))
+assert(activationDetail.includes('keyboard={!arrivalSaving}'))
+assert(layout.includes('getPreorderDateDisplay(item.estimatedArrivalDate)'))
+assert(layout.includes('estimatedArrivalDate ?'))
+assert(page.includes('getPreorderDateDisplay(detail.estimatedArrivalDate)'))
+assert(page.includes('estimatedArrivalDate ?'))
 
 for (const key of [
   'warehouse.preorders.activationDetail.changeStores',
@@ -394,6 +419,9 @@ for (const key of [
   'warehouse.preorders.activationDetail.storeRemovalWarning',
   'warehouse.preorders.activationDetail.storeOptionsLoadFailed',
   'warehouse.preorders.activationDetail.storesConflictRefreshed',
+  'warehouse.preorders.activationDetail.changeArrivalDate',
+  'warehouse.preorders.activationDetail.arrivalDateUpdated',
+  'warehouse.preorders.activationDetail.arrivalDateConflictRefreshed',
 ]) {
   assert.equal(typeof getLocaleValue(zhLocale, key), 'string', `缺少中文文案 ${key}`)
   assert.equal(typeof getLocaleValue(enLocale, key), 'string', `缺少英文文案 ${key}`)
@@ -402,6 +430,7 @@ for (const key of [
 const requiredShopPreorderKeys = [
   'shop.preorder.pendingTitle',
   'shop.preorder.deadline',
+  'shop.preorder.estimatedArrivalDate',
   'shop.preorder.enterPreorder',
   'shop.preorder.submitRequiredWarning',
   'shop.preorder.detailLoadFailed',
@@ -428,6 +457,7 @@ const requiredShopPreorderKeys = [
 const requiredWarehousePreorderKeys = [
   'warehouse.preorders.title',
   'warehouse.preorders.createTemplate',
+  'warehouse.preorders.estimatedArrivalDate',
   'warehouse.preorders.activationDetail.title',
   'warehouse.preorders.activationStatus.Active',
   'warehouse.preorders.orderStatus.Submitted',

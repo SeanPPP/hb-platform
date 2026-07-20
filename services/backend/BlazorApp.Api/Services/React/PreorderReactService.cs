@@ -452,6 +452,7 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
                 SourceTemplateRevision = template.Revision,
                 StartAtUtc = start,
                 EndAtUtc = end,
+                EstimatedArrivalDate = ToDatabaseDate(request.EstimatedArrivalDate),
                 Status = start <= now ? PreorderActivationStatuses.Active : PreorderActivationStatuses.Scheduled,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -659,6 +660,78 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
         if (!transaction.IsSuccess)
         {
             RethrowTransaction(transaction.ErrorException, "更新 Preorder 激活批次分店失败");
+        }
+
+        return await MapActivationDetailAsync(activation!, null);
+    }
+
+    public async Task<PreorderActivationDetailDto> UpdateActivationEstimatedArrivalDateAsync(
+        string activationGuid,
+        UpdatePreorderActivationEstimatedArrivalDateDto request
+    )
+    {
+        var normalizedActivationGuid = NormalizeRequired(activationGuid, "激活批次编号不能为空");
+        var activationResource = $"PreorderActivation:{normalizedActivationGuid}";
+        await using var activationLock = await PreorderMutationLock.AcquireProcessAsync(
+            activationResource
+        );
+
+        PreorderActivation? activation = null;
+        var transaction = await _db.Ado.UseTranAsync(async () =>
+        {
+            await PreorderMutationLock.AcquireDatabaseAsync(_db, activationResource);
+            // 关键逻辑：批次锁内重读并比较日期 CAS，避免两个管理员互相覆盖或清空新值。
+            activation = await RequireActivationAsync(normalizedActivationGuid);
+            if (ToDateOnly(activation.EstimatedArrivalDate)
+                != request.ExpectedEstimatedArrivalDate)
+            {
+                throw Conflict(
+                    "预计到货日期已被其他用户修改，请刷新后重试",
+                    "PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED"
+                );
+            }
+
+            var now = UtcNow();
+            if (activation.Status is not (PreorderActivationStatuses.Scheduled
+                    or PreorderActivationStatuses.Active)
+                || activation.EndAtUtc <= now)
+            {
+                throw Conflict("Preorder 本期未激活或已结束", "PREORDER_NOT_ACTIVE");
+            }
+
+            var expectedDatabaseDate = ToDatabaseDate(request.ExpectedEstimatedArrivalDate);
+            var estimatedArrivalDate = ToDatabaseDate(request.EstimatedArrivalDate);
+            var actor = _currentUser.GetCurrentUsername();
+            var update = _db.Updateable<PreorderActivation>()
+                .SetColumns(item => item.EstimatedArrivalDate == estimatedArrivalDate)
+                .SetColumns(item => item.UpdatedAt == now)
+                .SetColumns(item => item.UpdatedBy == actor)
+                .Where(item =>
+                    !item.IsDeleted && item.ActivationGuid == normalizedActivationGuid
+                )
+                .WhereIF(
+                    expectedDatabaseDate.HasValue,
+                    item => item.EstimatedArrivalDate == expectedDatabaseDate
+                )
+                .WhereIF(
+                    !expectedDatabaseDate.HasValue,
+                    item => item.EstimatedArrivalDate == null
+                );
+            if (await update.ExecuteCommandAsync() != 1)
+            {
+                throw Conflict(
+                    "预计到货日期已被其他用户修改，请刷新后重试",
+                    "PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED"
+                );
+            }
+
+            activation.EstimatedArrivalDate = estimatedArrivalDate;
+            activation.UpdatedAt = now;
+            activation.UpdatedBy = actor;
+        });
+        if (!transaction.IsSuccess)
+        {
+            RethrowTransaction(transaction.ErrorException, "更新 Preorder 预计到货日期失败");
         }
 
         return await MapActivationDetailAsync(activation!, null);
@@ -2119,6 +2192,7 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
         SourceTemplateRevision = activation.SourceTemplateRevision,
         StartAtUtc = NormalizeUtc(activation.StartAtUtc),
         EndAtUtc = NormalizeUtc(activation.EndAtUtc),
+        EstimatedArrivalDate = ToDateOnly(activation.EstimatedArrivalDate),
         Status = GetEffectiveActivationStatus(activation),
         TargetStoreCount = targets,
         RespondedStoreCount = responded,
@@ -2170,6 +2244,7 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
             SourceTemplateRevision = summary.SourceTemplateRevision,
             StartAtUtc = summary.StartAtUtc,
             EndAtUtc = summary.EndAtUtc,
+            EstimatedArrivalDate = summary.EstimatedArrivalDate,
             Status = summary.Status,
             TargetStoreCount = summary.TargetStoreCount,
             RespondedStoreCount = summary.RespondedStoreCount,
@@ -2491,6 +2566,12 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
 
     private static DateTime? NormalizeUtc(DateTime? value) =>
         value.HasValue ? NormalizeUtc(value.Value) : null;
+
+    private static DateTime? ToDatabaseDate(DateOnly? value) =>
+        value?.ToDateTime(TimeOnly.MinValue);
+
+    private static DateOnly? ToDateOnly(DateTime? value) =>
+        value.HasValue ? DateOnly.FromDateTime(value.Value) : null;
 
     private static string NormalizeRequired(string? value, string message)
     {

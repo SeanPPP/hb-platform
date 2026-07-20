@@ -29,6 +29,7 @@ import {
   resolvePreorderPromptPresentation,
   resolveShopPreorderNavigation,
 } from '../pages/ShopPreorder/preorderNavigation'
+import { getPreorderDateDisplay } from '../pages/ShopPreorder/preorderDate'
 import { changeStoreAfterDurableLeave, runAfterDurableLeave, usePreorderLeave } from '../pages/ShopPreorder/preorderLeaveContext'
 
 const { Search } = Input
@@ -664,13 +665,17 @@ export default function ShopLayout() {
       >
         {preorderPrompt.mode === 'pending' ? (
           <Space direction="vertical" size={8}>
-            {preorderActivations.map((item) => (
-              <div key={item.activationGuid}>
-                <strong>{item.templateName} · {t('shop.preorder.period', { sequence: item.sequenceNumber })}</strong>
-                <br />
-                <span>{t('shop.preorder.deadline', { date: preorderDateTimeFormatter.format(new Date(item.endAtUtc)) })}</span>
-              </div>
-            ))}
+            {preorderActivations.map((item) => {
+              const estimatedArrivalDate = getPreorderDateDisplay(item.estimatedArrivalDate)
+              return (
+                <div key={item.activationGuid}>
+                  <strong>{item.templateName} · {t('shop.preorder.period', { sequence: item.sequenceNumber })}</strong>
+                  <br />
+                  <span>{t('shop.preorder.deadline', { date: preorderDateTimeFormatter.format(new Date(item.endAtUtc)) })}</span>
+                  {estimatedArrivalDate ? <><br /><span>{t('shop.preorder.estimatedArrivalDate', { date: estimatedArrivalDate })}</span></> : null}
+                </div>
+              )
+            })}
           </Space>
         ) : (
           <span>{preorderPrompt.mode === 'error'

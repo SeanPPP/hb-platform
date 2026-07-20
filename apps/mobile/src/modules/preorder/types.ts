@@ -9,6 +9,7 @@ export interface PreorderActivationSummary {
   activationCode: string;
   startAtUtc: string;
   endAtUtc: string;
+  estimatedArrivalDate?: string | null;
   status: PreorderActivationStatus;
 }
 

@@ -63,6 +63,15 @@ public sealed class PreorderAdminController : ControllerBase
         "激活批次分店已更新"
     );
 
+    [HttpPut("activations/{activationGuid}/estimated-arrival-date")]
+    public Task<IActionResult> UpdateActivationEstimatedArrivalDate(
+        string activationGuid,
+        [FromBody] UpdatePreorderActivationEstimatedArrivalDateDto request
+    ) => ExecuteAsync(
+        () => _service.UpdateActivationEstimatedArrivalDateAsync(activationGuid, request),
+        "预计到货日期已更新"
+    );
+
     [HttpPost("activations/{activationGuid}/close")]
     public Task<IActionResult> CloseActivation(
         string activationGuid,

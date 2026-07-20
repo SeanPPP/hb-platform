@@ -137,6 +137,7 @@ const activation = (activationGuid: string): PreorderActivationSummary => ({
   activationNumber: activationGuid,
   startAtUtc: '2026-07-01T00:00:00Z',
   endAtUtc: '2026-08-01T00:00:00Z',
+  estimatedArrivalDate: null,
   status: 'Active',
   targetStoreCount: 1,
   submittedCount: 0,

@@ -23,6 +23,13 @@ function asOptionalString(value: unknown) {
   return normalized || undefined;
 }
 
+function asOptionalNullableString(value: unknown) {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || null;
+}
+
 function asNumber(value: unknown, fallback = 0) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -51,6 +58,7 @@ export function normalizeActivationSummary(value: unknown): PreorderActivationSu
     activationCode: asString(raw.activationCode),
     startAtUtc: asString(raw.startAtUtc),
     endAtUtc: asString(raw.endAtUtc),
+    estimatedArrivalDate: asOptionalNullableString(raw.estimatedArrivalDate),
     status: asString(raw.status, "Active"),
   };
 }

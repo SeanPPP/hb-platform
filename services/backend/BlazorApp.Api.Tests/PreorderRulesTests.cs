@@ -39,6 +39,15 @@ public class PreorderRulesTests
         Assert.Contains("CK_PreorderWarehouseOrder_Status", source);
         Assert.Contains("ReturnedForRevision", source);
         Assert.Contains("definition NOT LIKE '%ReturnedForRevision%'", source);
+        Assert.Contains("[EstimatedArrivalDate] date NULL", source);
+        Assert.Contains(
+            "COL_LENGTH(N'dbo.PreorderActivation', N'EstimatedArrivalDate') IS NULL",
+            source
+        );
+        Assert.Contains(
+            "ALTER TABLE [dbo].[PreorderActivation] ADD [EstimatedArrivalDate] date NULL",
+            source
+        );
         Assert.Contains("await EnsurePreorderSchemaAsync(db, logger);", source);
     }
 

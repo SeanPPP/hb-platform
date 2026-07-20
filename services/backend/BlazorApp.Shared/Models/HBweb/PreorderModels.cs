@@ -87,6 +87,9 @@ public class PreorderActivation : BaseEntity
     public DateTime StartAtUtc { get; set; }
     public DateTime EndAtUtc { get; set; }
 
+    [SugarColumn(ColumnDataType = "date", IsNullable = true)]
+    public DateTime? EstimatedArrivalDate { get; set; }
+
     [SugarColumn(Length = 30)]
     public string Status { get; set; } = PreorderActivationStatuses.Scheduled;
 

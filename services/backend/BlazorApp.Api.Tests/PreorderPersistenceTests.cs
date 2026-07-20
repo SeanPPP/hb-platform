@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -140,6 +141,18 @@ public sealed class PreorderPersistenceTests : IDisposable
             "PRAGMA index_info('IX_PreorderWarehouseOrderItem_OrderGuid')"
         );
         Assert.Equal("OrderGuid", Assert.Single(columns).name);
+    }
+
+    [Fact]
+    public async Task SQLite_预计到货日期使用可空date列()
+    {
+        var columns = await _db.Ado.SqlQueryAsync<SqliteTableColumnInfo>(
+            "PRAGMA table_info('PreorderActivation')"
+        );
+        var column = Assert.Single(columns, item => item.name == "EstimatedArrivalDate");
+
+        Assert.Equal("DATE", column.type, ignoreCase: true);
+        Assert.Equal(0, column.notnull);
     }
 
     [Fact]
@@ -3806,6 +3819,205 @@ public sealed class PreorderPersistenceTests : IDisposable
         Assert.Equal(0, PreorderMutationLock.ProcessLockCount);
     }
 
+    [Fact]
+    public async Task 激活请求保存预计到货日期并以DateOnly返回()
+    {
+        await SeedProductAndStoreAsync();
+        var service = CreateService("admin-user", manageOrders: true);
+        var template = await service.CreateTemplateAsync(new SavePreorderTemplateDto
+        {
+            Name = "预计到货日期模板",
+            Items = new() { new() { ProductCode = "P1", MinimumOrderQuantity = 1 } },
+            StoreGuids = new() { "store-1" },
+        });
+        var expectedDate = new DateOnly(2026, 8, 5);
+
+        var summary = await service.ActivateAsync(
+            template.TemplateGuid,
+            new ActivatePreorderTemplateDto
+            {
+                ExpectedRevision = template.Revision,
+                StartAtUtc = Now.AddMinutes(-1),
+                EndAtUtc = Now.AddHours(1),
+                EstimatedArrivalDate = expectedDate,
+            }
+        );
+        var detail = await service.GetActivationAsync(summary.ActivationGuid);
+        var active = await service.GetActiveAsync("S01");
+        var persisted = await _db.Queryable<PreorderActivation>()
+            .SingleAsync(item => item.ActivationGuid == summary.ActivationGuid);
+
+        Assert.Equal(expectedDate, summary.EstimatedArrivalDate);
+        Assert.Equal(expectedDate, detail.EstimatedArrivalDate);
+        Assert.Equal(
+            expectedDate,
+            Assert.Single(active.Activations).EstimatedArrivalDate
+        );
+        Assert.Equal(expectedDate.ToDateTime(TimeOnly.MinValue), persisted.EstimatedArrivalDate);
+        var productionJsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        };
+        Assert.Contains(
+            "\"estimatedArrivalDate\":\"2026-08-05\"",
+            JsonSerializer.Serialize(summary, productionJsonOptions),
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "\"estimatedArrivalDate\":null",
+            JsonSerializer.Serialize(
+                new PreorderActivationSummaryDto(),
+                productionJsonOptions
+            ),
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task 预计到货日期支持CAS更新和显式清空()
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync("arrival-date-update");
+        var service = CreateService("admin-user", manageOrders: true);
+        var expectedDate = new DateOnly(2026, 8, 6);
+
+        var updated = await service.UpdateActivationEstimatedArrivalDateAsync(
+            "arrival-date-update",
+            new UpdatePreorderActivationEstimatedArrivalDateDto
+            {
+                ExpectedEstimatedArrivalDate = null,
+                EstimatedArrivalDate = expectedDate,
+            }
+        );
+        var cleared = await service.UpdateActivationEstimatedArrivalDateAsync(
+            "arrival-date-update",
+            new UpdatePreorderActivationEstimatedArrivalDateDto
+            {
+                ExpectedEstimatedArrivalDate = expectedDate,
+                EstimatedArrivalDate = null,
+            }
+        );
+
+        Assert.Equal(expectedDate, updated.EstimatedArrivalDate);
+        Assert.Null(cleared.EstimatedArrivalDate);
+        Assert.Null((await _db.Queryable<PreorderActivation>()
+            .SingleAsync(item => item.ActivationGuid == "arrival-date-update"))
+            .EstimatedArrivalDate);
+    }
+
+    [Fact]
+    public async Task 预计到货日期CAS冲突返回稳定错误且不覆盖新值()
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync("arrival-date-conflict");
+        var persistedDate = new DateOnly(2026, 8, 7);
+        await _db.Updateable<PreorderActivation>()
+            .SetColumns(item => item.EstimatedArrivalDate == persistedDate.ToDateTime(TimeOnly.MinValue))
+            .Where(item => item.ActivationGuid == "arrival-date-conflict")
+            .ExecuteCommandAsync();
+
+        var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
+            CreateService("admin-user", manageOrders: true)
+                .UpdateActivationEstimatedArrivalDateAsync(
+                    "arrival-date-conflict",
+                    new UpdatePreorderActivationEstimatedArrivalDateDto
+                    {
+                        ExpectedEstimatedArrivalDate = null,
+                        EstimatedArrivalDate = new DateOnly(2026, 8, 8),
+                    }
+                )
+        );
+
+        Assert.Equal(409, error.StatusCode);
+        Assert.Equal("PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED", error.ErrorCode);
+        Assert.Equal(persistedDate.ToDateTime(TimeOnly.MinValue),
+            (await _db.Queryable<PreorderActivation>()
+                .SingleAsync(item => item.ActivationGuid == "arrival-date-conflict"))
+            .EstimatedArrivalDate);
+    }
+
+    [Theory]
+    [InlineData(PreorderActivationStatuses.Closed, 1)]
+    [InlineData(PreorderActivationStatuses.Cancelled, 1)]
+    [InlineData(PreorderActivationStatuses.Active, -1)]
+    [InlineData(PreorderActivationStatuses.Scheduled, -1)]
+    public async Task 非可编辑状态或自然过期批次拒绝更新预计到货日期(
+        string status,
+        int endOffsetHours
+    )
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync(
+            "arrival-date-inactive",
+            status,
+            Now.AddHours(endOffsetHours)
+        );
+
+        var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
+            CreateService("admin-user", manageOrders: true)
+                .UpdateActivationEstimatedArrivalDateAsync(
+                    "arrival-date-inactive",
+                    new UpdatePreorderActivationEstimatedArrivalDateDto
+                    {
+                        ExpectedEstimatedArrivalDate = null,
+                        EstimatedArrivalDate = new DateOnly(2026, 8, 9),
+                    }
+                )
+        );
+
+        Assert.Equal(409, error.StatusCode);
+        Assert.Equal("PREORDER_NOT_ACTIVE", error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task 预计到货日期等待批次锁并在事务内重读CAS()
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync("arrival-date-reread");
+        var competingDate = new DateOnly(2026, 8, 10);
+        var heldActivationLock = await PreorderMutationLock.AcquireProcessAsync(
+            "PreorderActivation:arrival-date-reread"
+        );
+        try
+        {
+            var updateTask = Task.Run(() => CreateService("admin-user", manageOrders: true)
+                .UpdateActivationEstimatedArrivalDateAsync(
+                    "arrival-date-reread",
+                    new UpdatePreorderActivationEstimatedArrivalDateDto
+                    {
+                        ExpectedEstimatedArrivalDate = null,
+                        EstimatedArrivalDate = new DateOnly(2026, 8, 11),
+                    }
+                ));
+            Assert.NotSame(updateTask, await Task.WhenAny(
+                updateTask,
+                Task.Delay(TimeSpan.FromMilliseconds(300))
+            ));
+            await _db.Updateable<PreorderActivation>()
+                .SetColumns(item => item.EstimatedArrivalDate
+                    == competingDate.ToDateTime(TimeOnly.MinValue))
+                .Where(item => item.ActivationGuid == "arrival-date-reread")
+                .ExecuteCommandAsync();
+            await heldActivationLock.DisposeAsync();
+
+            var error = await Assert.ThrowsAsync<PreorderBusinessException>(async () =>
+                await updateTask
+            );
+            Assert.Equal("PREORDER_ACTIVATION_ARRIVAL_DATE_CHANGED", error.ErrorCode);
+        }
+        finally
+        {
+            await heldActivationLock.DisposeAsync();
+        }
+
+        Assert.Equal(competingDate.ToDateTime(TimeOnly.MinValue),
+            (await _db.Queryable<PreorderActivation>()
+                .SingleAsync(item => item.ActivationGuid == "arrival-date-reread"))
+            .EstimatedArrivalDate);
+        Assert.Equal(0, PreorderMutationLock.ProcessLockCount);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -4148,5 +4360,12 @@ public sealed class PreorderPersistenceTests : IDisposable
     private sealed class SqliteIndexColumnInfo
     {
         public string name { get; set; } = string.Empty;
+    }
+
+    private sealed class SqliteTableColumnInfo
+    {
+        public string name { get; set; } = string.Empty;
+        public string type { get; set; } = string.Empty;
+        public int notnull { get; set; }
     }
 }

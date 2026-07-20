@@ -70,6 +70,7 @@ export interface PreorderActivationSummary {
   activationNumber: string
   startAtUtc: string
   endAtUtc: string
+  estimatedArrivalDate: string | null
   status: PreorderActivationStatus
   targetStoreCount: number
   submittedCount: number
@@ -184,7 +185,13 @@ export interface PreorderActivationPayload {
   expectedRevision: number
   startAtUtc: string
   endAtUtc: string
+  estimatedArrivalDate: string | null
   storeGuids: string[]
+}
+
+export interface PreorderActivationEstimatedArrivalDatePayload {
+  expectedEstimatedArrivalDate: string | null
+  estimatedArrivalDate: string | null
 }
 
 export interface PreorderActivationStoresPayload {

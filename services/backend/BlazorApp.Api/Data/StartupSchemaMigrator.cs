@@ -1705,6 +1705,7 @@ BEGIN
         [SourceTemplateRevision] int NOT NULL,
         [StartAtUtc] datetime2 NOT NULL,
         [EndAtUtc] datetime2 NOT NULL,
+        [EstimatedArrivalDate] date NULL,
         [Status] nvarchar(30) NOT NULL,
         [ClosedAtUtc] datetime2 NULL,
         [CreatedAt] datetime2 NOT NULL,
@@ -1716,6 +1717,11 @@ BEGIN
         CONSTRAINT [PK_PreorderActivation] PRIMARY KEY ([ActivationGuid])
     );
 END;
+
+-- 预计到货日是纯业务日期；已有 PreorderActivation 表必须用可重复执行的追加式迁移补齐。
+IF OBJECT_ID(N'[dbo].[PreorderActivation]', N'U') IS NOT NULL
+    AND COL_LENGTH(N'dbo.PreorderActivation', N'EstimatedArrivalDate') IS NULL
+    ALTER TABLE [dbo].[PreorderActivation] ADD [EstimatedArrivalDate] date NULL;
 
 IF OBJECT_ID(N'[dbo].[PreorderActivationItem]', N'U') IS NULL
 BEGIN

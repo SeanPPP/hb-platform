@@ -22,6 +22,10 @@ const preorderDetail = readFileSync(
   resolve(root, "src/modules/preorder/preorder-detail-screen.tsx"),
   "utf8"
 );
+const preorderList = readFileSync(
+  resolve(root, "src/modules/preorder/preorder-list-screen.tsx"),
+  "utf8"
+);
 const preorderApi = readFileSync(resolve(root, "src/modules/preorder/api.ts"), "utf8");
 const performSubmitSource = preorderDetail.slice(
   preorderDetail.indexOf("const performSubmit"),
@@ -211,6 +215,36 @@ assertIncludes(
   preorderDetail,
   't(`detail.readOnlyReason.${activationReadOnlyReason}`)',
   "inactive activation presents a clear read-only reason"
+);
+assertIncludes(
+  preorderList,
+  "formatBrisbaneBusinessDate(item.estimatedArrivalDate)",
+  "preorder cards format the optional Brisbane business date without timezone conversion"
+);
+assertIncludes(
+  preorderList,
+  't("list.estimatedArrival", { value: estimatedArrivalDate })',
+  "preorder cards display estimated arrival only when the formatted date exists"
+);
+assertIncludes(
+  preorderList,
+  "{estimatedArrivalDate ? (",
+  "preorder cards hide the estimated arrival row when the date is empty"
+);
+assertIncludes(
+  preorderDetail,
+  "formatBrisbaneBusinessDate(detail?.estimatedArrivalDate)",
+  "preorder detail formats the optional Brisbane business date"
+);
+assertIncludes(
+  preorderDetail,
+  't("detail.estimatedArrival", { value: estimatedArrivalDate })',
+  "preorder detail header displays estimated arrival when present"
+);
+assertIncludes(
+  preorderDetail,
+  "{estimatedArrivalDate ? (",
+  "preorder detail hides estimated arrival when the date is empty"
 );
 
 console.log("preorder route contract tests passed");

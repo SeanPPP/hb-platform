@@ -4,6 +4,7 @@ import {
   normalizeActivePreorders,
   normalizeSubmitResult,
 } from "./normalization";
+import { formatBrisbaneBusinessDate } from "./business-date";
 import {
   buildDraftItems,
   createPackCounts,
@@ -62,10 +63,12 @@ const active = normalizeActivePreorders({
     activationCode: "PRE-0002",
     startAtUtc: "2026-07-01T00:00:00Z",
     endAtUtc: "2026-07-31T00:00:00Z",
+    estimatedArrivalDate: "2026-08-15",
     status: "Active",
   }],
 });
 assertEqual(active.activations[0]?.periodNumber, 2, "active response preserves period number");
+assertEqual(active.activations[0]?.estimatedArrivalDate, "2026-08-15", "active response preserves estimated arrival date");
 assertEqual(active.normalOrderBlocked, true, "active response preserves gate flag");
 assertEqual(
   normalizeActivePreorders({}).normalOrderBlocked,
@@ -105,6 +108,19 @@ const detail = normalizeActivationDetail({
 });
 assertEqual(detail.draftRevision, 7, "detail response preserves server draft revision");
 assertEqual(detail.items[0]?.orderedQuantity, 18, "detail response preserves ordered quantity");
+assertEqual(detail.estimatedArrivalDate, "2026-08-15", "detail inherits estimated arrival date from activation summary");
+assertEqual(
+  normalizeActivePreorders({ activations: [{ activationGuid: "a-2", estimatedArrivalDate: null }] })
+    .activations[0]?.estimatedArrivalDate,
+  null,
+  "estimated arrival date preserves an explicit null"
+);
+assertEqual(
+  formatBrisbaneBusinessDate("2026-08-15T23:30:00-10:00"),
+  "2026-08-15",
+  "business date formatting never applies a timezone offset"
+);
+assertEqual(formatBrisbaneBusinessDate("2026-02-29"), "", "invalid business date stays hidden");
 
 const submitContextA = createPreorderSubmissionContext(
   "a-1:S01",
