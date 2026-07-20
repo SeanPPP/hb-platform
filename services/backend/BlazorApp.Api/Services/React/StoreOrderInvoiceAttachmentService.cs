@@ -1,3 +1,4 @@
+using System.Text;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using ClosedXML.Excel;
@@ -292,7 +293,9 @@ namespace BlazorApp.Api.Services.React
             );
             if (!string.IsNullOrWhiteSpace(order.Remarks))
             {
-                document.Add(new Paragraph($"REMARKS: {order.Remarks.Trim()}", bodyFont));
+                document.Add(
+                    new Paragraph(SanitizePdfText($"REMARKS: {order.Remarks.Trim()}"), bodyFont)
+                );
             }
 
             document.Close();
@@ -418,7 +421,12 @@ namespace BlazorApp.Api.Services.React
             var summaryTable = new PdfPTable(2) { WidthPercentage = 100, SpacingAfter = 8 };
             summaryTable.SetWidths(new float[] { 1f, 1f });
             summaryTable.AddCell(
-                new PdfPCell(new Phrase($"INVOICE NO. {order.OrderNo ?? order.OrderGUID}", font))
+                new PdfPCell(
+                    new Phrase(
+                        SanitizePdfText($"INVOICE NO. {order.OrderNo ?? order.OrderGUID}"),
+                        font
+                    )
+                )
                 {
                     Border = Rectangle.BOTTOM_BORDER,
                     BorderColorBottom = new BaseColor(130, 130, 130),
@@ -572,11 +580,38 @@ namespace BlazorApp.Api.Services.React
 
         private static void AddValueCell(PdfPTable table, string text, iTextSharp.text.Font font)
         {
-            table.AddCell(new PdfPCell(new Phrase(text ?? string.Empty, font))
+            table.AddCell(new PdfPCell(new Phrase(SanitizePdfText(text), font))
             {
                 Padding = 4,
                 BorderColor = new BaseColor(220, 220, 220),
             });
+        }
+
+        private static string SanitizePdfText(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            var result = new StringBuilder(value.Length);
+            for (var index = 0; index < value.Length; index += 1)
+            {
+                var character = value[index];
+                if (char.IsHighSurrogate(character)
+                    && index + 1 < value.Length
+                    && char.IsLowSurrogate(value[index + 1]))
+                {
+                    // 当前 CJK 字体不支持非 BMP 字符，用可打印占位符避免 iTextSharp 越界。
+                    result.Append('?');
+                    index += 1;
+                    continue;
+                }
+
+                result.Append(char.IsSurrogate(character) ? '?' : character);
+            }
+
+            return result.ToString();
         }
 
         private static PdfPCell CreateNoBorderCell()

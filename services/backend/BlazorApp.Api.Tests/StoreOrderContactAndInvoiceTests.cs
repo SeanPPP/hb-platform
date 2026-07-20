@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -822,6 +823,44 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.EndsWith("_2026-06-04.xlsx", excel.FileName);
         using var workbook = new XLWorkbook(new MemoryStream(excel.Bytes));
         Assert.Equal("INVOICE DATE: 2026/6/4", workbook.Worksheet("Invoice").Cell(2, 5).GetString());
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceAttachmentService_WhenProductNameContainsEmoji_GeneratesAttachments()
+    {
+        const string productName = "Middle Card Small Beetle 🐞 45 Pieces";
+        var order = CreateInvoiceOrder();
+        order.Items.Single().ProductName = productName;
+        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        orderService
+            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(order));
+        Exception? loggedException = null;
+        var logger = new Mock<ILogger<StoreOrderInvoiceAttachmentService>>();
+        logger
+            .Setup(item => item.Log(
+                It.IsAny<LogLevel>(),
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((_, _) => true),
+                It.IsAny<Exception?>(),
+                It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+            ))
+            .Callback(new InvocationAction(invocation =>
+                loggedException = invocation.Arguments[3] as Exception
+            ));
+        var service = new StoreOrderInvoiceAttachmentService(orderService.Object, logger.Object);
+
+        var result = await service.GenerateAttachmentsAsync("order-1");
+
+        Assert.True(result.Success, loggedException?.ToString() ?? result.Message);
+        Assert.NotNull(result.Data);
+        var pdf = result.Data!.Attachments.Single(item => item.ContentType == "application/pdf");
+        Assert.NotEmpty(pdf.Bytes);
+        var excel = result.Data.Attachments.Single(
+            item => item.ContentType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        using var workbook = new XLWorkbook(new MemoryStream(excel.Bytes));
+        Assert.Equal(productName, workbook.Worksheet("Invoice").Cell(8, 3).GetString());
     }
 
     [Fact]
