@@ -54,6 +54,15 @@ public sealed class PreorderAdminController : ControllerBase
     public Task<IActionResult> GetActivation(string activationGuid) =>
         ExecuteAsync(() => _service.GetActivationAsync(activationGuid));
 
+    [HttpPut("activations/{activationGuid}/stores")]
+    public Task<IActionResult> UpdateActivationStores(
+        string activationGuid,
+        [FromBody] UpdatePreorderActivationStoresDto request
+    ) => ExecuteAsync(
+        () => _service.UpdateActivationStoresAsync(activationGuid, request),
+        "激活批次分店已更新"
+    );
+
     [HttpPost("activations/{activationGuid}/close")]
     public Task<IActionResult> CloseActivation(
         string activationGuid,

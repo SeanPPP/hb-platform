@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { getActivationProductStores } from '../Warehouse/Preorders/activationProductStores'
+import { getActivationStoreChanges, mergeActivationStoreOptions } from '../Warehouse/Preorders/activationStoreSelection'
 import type { PreorderStoreProductQuantity } from '../../types/preorder'
 
 const read = (path: string) => readFileSync(path, 'utf8')
@@ -56,6 +57,36 @@ const sortedProductStores = getActivationProductStores([
 assert.deepEqual(sortedProductStores.map((item) => item.storeGuid), ['guid-a', 'guid-b', 'guid-c', 'guid-z'])
 assert.deepEqual(getActivationProductStores([], 'item-a'), [])
 
+const mergedStoreOptions = mergeActivationStoreOptions([
+  { storeGuid: 'active-b', storeCode: 'Store 2', storeName: 'Beta' },
+  { storeGuid: 'current-active', storeCode: 'Store 1', storeName: 'Alpha' },
+], [
+  { storeGuid: 'current-inactive', storeCode: 'Store 3', storeName: 'Gamma' },
+  { storeGuid: 'current-active', storeCode: 'Store 1', storeName: 'Old Alpha' },
+])
+assert.deepEqual(mergedStoreOptions.map((store) => [store.storeGuid, store.isActive]), [
+  ['current-active', true],
+  ['active-b', true],
+  ['current-inactive', false],
+])
+assert.deepEqual(
+  getActivationStoreChanges(['current-active', 'current-inactive'], ['current-active', 'active-b']),
+  { addedCount: 1, removedCount: 1 },
+)
+const caseInsensitiveStoreOptions = mergeActivationStoreOptions([
+  { storeGuid: ' GUID-A ', storeCode: 'Store 1', storeName: 'Current Active Name' },
+  { storeGuid: 'guid-b', storeCode: 'Store 2', storeName: 'Beta' },
+  { storeGuid: 'GUID-B', storeCode: 'Store 2', storeName: 'Duplicate Beta' },
+], [
+  { storeGuid: 'guid-a', storeCode: 'Store 1', storeName: 'Current Stored Name' },
+])
+assert.deepEqual(caseInsensitiveStoreOptions.map((store) => store.storeGuid), ['guid-a', 'guid-b'])
+assert.equal(caseInsensitiveStoreOptions.find((store) => store.storeGuid === 'guid-a')?.isActive, true)
+assert.deepEqual(
+  getActivationStoreChanges([' GUID-A ', 'guid-b'], ['guid-a', ' GUID-B ', 'guid-b']),
+  { addedCount: 0, removedCount: 0 },
+)
+
 function getLocaleValue(locale: Record<string, unknown>, key: string) {
   return key.split('.').reduce<unknown>((value, segment) => {
     if (!value || typeof value !== 'object') return undefined
@@ -67,6 +98,9 @@ assert(service.includes("const ADMIN_BASE = '/api/react/v1/preorders/admin'"))
 assert(service.includes("const SHOP_BASE = '/api/react/v1/preorders'"))
 assert(service.includes('return normalizePreorderActiveResult(result)'))
 assert(service.includes('export function isPreorderDraftConflictError'))
+assert(service.includes('export function isPreorderActivationStoresChangedError'))
+assert(service.includes('PREORDER_ACTIVATION_STORES_CHANGED'))
+assert(service.includes('`${ADMIN_BASE}/activations/${activationGuid}/stores`'))
 assert(service.includes("'X-Preorder-Submission-Id': submissionId"), 'submissionId 必须通过统一可选 header 发送')
 assert(service.includes('activePreorderSingleFlight.run(storeCode'), '所有 active gate 触发源必须按门店复用同一请求')
 assert(service.includes('export function advanceActivePreorderFreshEpoch(storeCode: string)'))
@@ -338,6 +372,32 @@ assert(emptyActivationGuardBody.includes('invalidateActivationDetailRequest(requ
 assert(emptyActivationGuardBody.includes('setDetail(null)') && emptyActivationGuardBody.includes('setStatistics(null)'))
 assert(emptyActivationGuardBody.includes('setExtendOpen(false)') && emptyActivationGuardBody.includes('setNextEndAt(null)'))
 assert(emptyActivationGuardBody.includes('setLoading(false)') && emptyActivationGuardBody.includes('return'), '空批次参数不得继续发起请求')
+assert(activationDetail.includes("currentDetail.status !== 'Scheduled' && currentDetail.status !== 'Active'"))
+assert(activationDetail.includes('getStores({ page, pageSize: 100, isActive: true'))
+assert(activationDetail.includes('mergeActivationStoreOptions(activeStores, currentDetail.stores)'))
+assert(activationDetail.includes('expectedStoreGuids, storeGuids: nextStoreGuids'))
+assert(activationDetail.includes('isPreorderActivationStoresChangedError(error)'))
+assert(activationDetail.includes('storeOptionsLoadFailed || storeOptionsLoading'))
+assert(activationDetail.includes('invalidateModalRequest(storeEditorRequestGuardRef.current)'))
+assert(activationDetail.includes('storeConfirmDestroyRef.current?.()'))
+assert(activationDetail.includes('if (storeConfirmSessionRef.current !== null) return'))
+assert(activationDetail.includes('storeConfirmSessionRef.current !== confirmSession'))
+assert(activationDetail.includes('currentActivationGuidRef.current !== targetActivationGuid'))
+assert(activationDetail.includes('onCancel: releaseConfirmation'))
+assert(activationDetail.includes('confirmation.update({'))
+assert(activationDetail.includes('keyboard: false'))
+assert(activationDetail.includes('keyboard={!storeSaving}'))
+
+for (const key of [
+  'warehouse.preorders.activationDetail.changeStores',
+  'warehouse.preorders.activationDetail.storeChangeSummary',
+  'warehouse.preorders.activationDetail.storeRemovalWarning',
+  'warehouse.preorders.activationDetail.storeOptionsLoadFailed',
+  'warehouse.preorders.activationDetail.storesConflictRefreshed',
+]) {
+  assert.equal(typeof getLocaleValue(zhLocale, key), 'string', `缺少中文文案 ${key}`)
+  assert.equal(typeof getLocaleValue(enLocale, key), 'string', `缺少英文文案 ${key}`)
+}
 
 const requiredShopPreorderKeys = [
   'shop.preorder.pendingTitle',

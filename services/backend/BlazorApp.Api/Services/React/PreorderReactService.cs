@@ -511,6 +511,159 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
         return await MapActivationDetailAsync(activation, null);
     }
 
+    public async Task<PreorderActivationDetailDto> UpdateActivationStoresAsync(
+        string activationGuid,
+        UpdatePreorderActivationStoresDto request
+    )
+    {
+        var normalizedActivationGuid = NormalizeRequired(activationGuid, "激活批次编号不能为空");
+        var expectedStoreGuids = NormalizeStoreGuidSet(request.ExpectedStoreGuids);
+        var requestedStoreGuids = NormalizeStoreGuidSet(request.StoreGuids);
+        if (expectedStoreGuids.Count == 0 || requestedStoreGuids.Count == 0)
+        {
+            throw BadRequest("激活批次必须至少选择一个分店", "PREORDER_INVALID_REQUEST");
+        }
+
+        var activationResource = $"PreorderActivation:{normalizedActivationGuid}";
+        // 关键锁顺序：先锁批次，再按规范化资源顺序锁住旧、新分店，和提交/关闭流程保持一致。
+        await using var activationLock = await PreorderMutationLock.AcquireProcessAsync(
+            activationResource
+        );
+        await RequireActivationAsync(normalizedActivationGuid);
+        var initialTargets = await LoadActivationStoreTargetsFailClosedAsync(
+            normalizedActivationGuid
+        );
+        var requestedStoreIdentities = await _db.Queryable<Store>()
+            .Where(item => requestedStoreGuids.Contains(item.StoreGUID))
+            .ToListAsync();
+        var resolvedIdentityGuids = requestedStoreIdentities
+            .Select(item => item.StoreGUID)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var canonicalStoreGuids = BuildCanonicalStoreGuidByResource(
+            initialTargets.Select(item => item.StoreGuid)
+                .Concat(requestedStoreIdentities.Select(item => item.StoreGUID))
+                .Concat(requestedStoreGuids.Where(item => !resolvedIdentityGuids.Contains(item)))
+        );
+        var storeTargets = canonicalStoreGuids
+            .OrderBy(item => item.Key, StringComparer.Ordinal)
+            .Select(item => new PreorderStoreLockTarget(item.Key, item.Value))
+            .ToList();
+        await using var storeLocks = await PreorderMutationLock.AcquireProcessesAsync(
+            storeTargets.Select(item => item.Resource)
+        );
+
+        PreorderActivation? activation = null;
+        var transaction = await _db.Ado.UseTranAsync(async () =>
+        {
+            await PreorderMutationLock.AcquireDatabaseAsync(_db, activationResource);
+            foreach (var storeTarget in storeTargets)
+            {
+                // 旧目标分店可能已被停用或删除，StoreGate 仍需取得，但不存在的身份行允许零命中。
+                await PreorderMutationLock.AcquireDatabaseAsync(
+                    _db,
+                    storeTarget.Resource,
+                    storeTarget.CanonicalStoreGuid,
+                    requireStoreIdentity: false
+                );
+            }
+
+            // 进程锁候选只用于确定锁集合；数据库锁内必须重读批次、目标快照和当前分店。
+            activation = await RequireActivationAsync(normalizedActivationGuid);
+            var currentTargets = await LoadActivationStoreTargetsFailClosedAsync(
+                normalizedActivationGuid
+            );
+            var currentStoreGuids = currentTargets
+                .Select(item => item.StoreGuid)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!currentStoreGuids.SetEquals(expectedStoreGuids))
+            {
+                throw Conflict(
+                    "激活批次分店已被其他用户修改，请刷新后重试",
+                    "PREORDER_ACTIVATION_STORES_CHANGED"
+                );
+            }
+
+            var now = UtcNow();
+            if (activation.Status is not (PreorderActivationStatuses.Scheduled
+                    or PreorderActivationStatuses.Active)
+                || activation.EndAtUtc <= now)
+            {
+                throw Conflict("Preorder 本期未激活或已结束", "PREORDER_NOT_ACTIVE");
+            }
+
+            var addedStoreGuids = requestedStoreGuids
+                .Where(item => !currentStoreGuids.Contains(item))
+                .ToList();
+            var addedStores = await LoadStoresAsync(addedStoreGuids);
+            var freshAddedStoreGuids = addedStores
+                .Select(item => item.StoreGUID)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (addedStores.Count != addedStoreGuids.Count
+                || !freshAddedStoreGuids.SetEquals(addedStoreGuids))
+            {
+                throw BadRequest("激活批次必须选择有效分店", "PREORDER_INVALID_REQUEST");
+            }
+
+            var removedStoreGuids = currentStoreGuids
+                .Where(item => !requestedStoreGuids.Contains(item, StringComparer.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (removedStoreGuids.Count > 0)
+            {
+                var orderedStoreGuids = await _db.Queryable<PreorderWarehouseOrder>()
+                    .Where(item => !item.IsDeleted && item.ActivationGuid == normalizedActivationGuid)
+                    .Select(item => item.StoreGuid)
+                    .ToListAsync();
+                if (orderedStoreGuids.Any(removedStoreGuids.Contains))
+                {
+                    throw Conflict(
+                        "已有 Preorder 订单的分店不能从激活批次移除",
+                        "PREORDER_ACTIVATION_STORE_HAS_ORDER"
+                    );
+                }
+            }
+
+            var actor = _currentUser.GetCurrentUsername();
+            var removedTargetGuids = currentTargets
+                .Where(item => removedStoreGuids.Contains(item.StoreGuid))
+                .Select(item => item.ActivationStoreGuid)
+                .ToList();
+            if (removedTargetGuids.Count > 0)
+            {
+                await _db.Updateable<PreorderActivationStore>()
+                    .SetColumns(item => item.IsDeleted == true)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == actor)
+                    .Where(item => removedTargetGuids.Contains(item.ActivationStoreGuid))
+                    .ExecuteCommandAsync();
+            }
+
+            var addedTargets = addedStores
+                .Select(store => new PreorderActivationStore
+                {
+                    ActivationGuid = normalizedActivationGuid,
+                    StoreGuid = store.StoreGUID,
+                    StoreCode = store.StoreCode,
+                    StoreName = store.StoreName,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    CreatedBy = actor,
+                    UpdatedBy = actor,
+                })
+                .ToList();
+            if (addedTargets.Count > 0)
+            {
+                await _db.Insertable(addedTargets).ExecuteCommandAsync();
+            }
+        });
+        if (!transaction.IsSuccess)
+        {
+            RethrowTransaction(transaction.ErrorException, "更新 Preorder 激活批次分店失败");
+        }
+
+        return await MapActivationDetailAsync(activation!, null);
+    }
+
     public async Task<PreorderActivationSummaryDto> CloseActivationAsync(
         string activationGuid,
         ClosePreorderActivationDto request
@@ -665,6 +818,27 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
             .OrderBy(item => item.Key, StringComparer.Ordinal)
             .Select(item => new PreorderStoreLockTarget(item.Key, item.Value))
             .ToList();
+    }
+
+    private async Task<List<PreorderActivationStore>> LoadActivationStoreTargetsFailClosedAsync(
+        string activationGuid
+    )
+    {
+        var targets = await _db.Queryable<PreorderActivationStore>()
+            .Where(item => !item.IsDeleted && item.ActivationGuid == activationGuid)
+            .ToListAsync();
+        if (targets.Count == 0
+            || targets.Any(item => string.IsNullOrWhiteSpace(item.StoreGuid))
+            || targets.GroupBy(item => item.StoreGuid, StringComparer.OrdinalIgnoreCase)
+                .Any(group => group.Count() > 1))
+        {
+            throw new PreorderBusinessException(
+                "Preorder 目标分店无法确认，请稍后重试",
+                "PREORDER_GATE_UNAVAILABLE",
+                StatusCodes.Status503ServiceUnavailable
+            );
+        }
+        return targets;
     }
 
     private static IReadOnlyDictionary<string, string> BuildCanonicalStoreGuidByResource(
@@ -2329,6 +2503,14 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static List<string> NormalizeStoreGuidSet(IEnumerable<string>? values) =>
+        values?
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()
+        ?? new List<string>();
 
     private static PreorderBusinessException BadRequest(string message, string code) => new(message, code, 400);
     private static PreorderBusinessException Conflict(string message, string code) => new(message, code, 409);

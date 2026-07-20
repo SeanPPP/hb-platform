@@ -186,3 +186,8 @@ export interface PreorderActivationPayload {
   endAtUtc: string
   storeGuids: string[]
 }
+
+export interface PreorderActivationStoresPayload {
+  expectedStoreGuids: string[]
+  storeGuids: string[]
+}

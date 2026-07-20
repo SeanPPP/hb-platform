@@ -105,6 +105,12 @@ public sealed class ClosePreorderActivationDto
     public DateTime? EndAtUtc { get; set; }
 }
 
+public sealed class UpdatePreorderActivationStoresDto
+{
+    public List<string> ExpectedStoreGuids { get; set; } = new();
+    public List<string> StoreGuids { get; set; } = new();
+}
+
 public class PreorderActivationSummaryDto
 {
     public string ActivationGuid { get; set; } = string.Empty;

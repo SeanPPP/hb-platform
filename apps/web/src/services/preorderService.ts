@@ -4,6 +4,7 @@ import { P } from '../types/permissions'
 import type {
   PreorderActivationDetail,
   PreorderActivationPayload,
+  PreorderActivationStoresPayload,
   PreorderActivationStatistics,
   PreorderActivationSummary,
   PreorderActiveResult,
@@ -66,6 +67,15 @@ export function isPreorderStatusTransitionConflictError(error: unknown) {
     error instanceof RequestError &&
     error.status === 409 &&
     error.message.includes('PREORDER_INVALID_STATUS_TRANSITION')
+  )
+}
+
+export function isPreorderActivationStoresChangedError(error: unknown) {
+  const code = getPreorderErrorCode(error)
+  return code === 'PREORDER_ACTIVATION_STORES_CHANGED' || (
+    error instanceof RequestError &&
+    error.status === 409 &&
+    error.message.includes('PREORDER_ACTIVATION_STORES_CHANGED')
   )
 }
 
@@ -176,6 +186,18 @@ export async function activatePreorderTemplate(templateGuid: string, payload: Pr
 
 export async function getAdminPreorderActivation(activationGuid: string, signal?: AbortSignal): Promise<PreorderActivationDetail> {
   return normalizeActivationDetail(unwrapApiData(await request.get(`${ADMIN_BASE}/activations/${activationGuid}`, { signal })))
+}
+
+export async function updatePreorderActivationStores(
+  activationGuid: string,
+  payload: PreorderActivationStoresPayload,
+  signal?: AbortSignal,
+): Promise<PreorderActivationDetail> {
+  return normalizeActivationDetail(unwrapApiData(await request.put(
+    `${ADMIN_BASE}/activations/${activationGuid}/stores`,
+    payload,
+    { signal },
+  )))
 }
 
 export async function closePreorderActivation(activationGuid: string, endAtUtc?: string): Promise<void> {

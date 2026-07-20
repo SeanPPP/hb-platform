@@ -12,6 +12,10 @@ public interface IPreorderReactService
     Task<IReadOnlyList<PreorderActivationSummaryDto>> GetTemplateActivationsAsync(string templateGuid);
     Task<PreorderActivationSummaryDto> ActivateAsync(string templateGuid, ActivatePreorderTemplateDto request);
     Task<PreorderActivationDetailDto> GetActivationAsync(string activationGuid, string? storeCode = null);
+    Task<PreorderActivationDetailDto> UpdateActivationStoresAsync(
+        string activationGuid,
+        UpdatePreorderActivationStoresDto request
+    );
     Task<PreorderActivationSummaryDto> CloseActivationAsync(string activationGuid, ClosePreorderActivationDto request);
     Task<PreorderActivationSummaryDto> CancelActivationAsync(string activationGuid);
     Task<IReadOnlyList<PreorderOrderSummaryDto>> GetActivationOrdersAsync(string activationGuid);

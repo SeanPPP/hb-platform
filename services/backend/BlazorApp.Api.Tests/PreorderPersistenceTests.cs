@@ -3598,6 +3598,214 @@ public sealed class PreorderPersistenceTests : IDisposable
         Assert.Equal(Now, persisted.ClosedAtUtc);
     }
 
+    [Fact]
+    public async Task 更新激活分店使用忽略大小写CAS并保存当前分店快照()
+    {
+        await SeedProductAndStoreAsync();
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-2",
+            StoreCode = "S02",
+            StoreName = "二店新名称",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "update-stores-success",
+            TemplateGuid = "template-1",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-UPDATE-STORES",
+            TemplateNameSnapshot = "变更分店",
+            SourceTemplateRevision = 1,
+            StartAtUtc = Now.AddHours(-1),
+            EndAtUtc = Now.AddHours(1),
+            Status = PreorderActivationStatuses.Active,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationStore
+        {
+            ActivationStoreGuid = "update-stores-old-target",
+            ActivationGuid = "update-stores-success",
+            StoreGuid = "store-1",
+            StoreCode = "S01",
+            StoreName = "旧一店快照",
+        }).ExecuteCommandAsync();
+
+        var detail = await CreateService("admin-user", manageOrders: true)
+            .UpdateActivationStoresAsync(
+                "update-stores-success",
+                new UpdatePreorderActivationStoresDto
+                {
+                    ExpectedStoreGuids = new() { "STORE-1" },
+                    StoreGuids = new() { "store-2" },
+                }
+            );
+
+        var store = Assert.Single(detail.Stores);
+        Assert.Equal("store-2", store.StoreGuid);
+        Assert.Equal("S02", store.StoreCode);
+        Assert.Equal("二店新名称", store.StoreName);
+        var allTargets = await _db.Queryable<PreorderActivationStore>()
+            .Where(item => item.ActivationGuid == "update-stores-success")
+            .ToListAsync();
+        Assert.Equal(2, allTargets.Count);
+        Assert.True(allTargets.Single(item => item.StoreGuid == "store-1").IsDeleted);
+        Assert.False(allTargets.Single(item => item.StoreGuid == "store-2").IsDeleted);
+    }
+
+    [Fact]
+    public async Task 更新激活分店CAS不匹配返回稳定冲突且不写入()
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync("update-stores-cas");
+
+        var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
+            CreateService("admin-user", manageOrders: true).UpdateActivationStoresAsync(
+                "update-stores-cas",
+                new UpdatePreorderActivationStoresDto
+                {
+                    ExpectedStoreGuids = new() { "other-store" },
+                    StoreGuids = new() { "store-1" },
+                }
+            )
+        );
+
+        Assert.Equal(409, error.StatusCode);
+        Assert.Equal("PREORDER_ACTIVATION_STORES_CHANGED", error.ErrorCode);
+        Assert.False((await _db.Queryable<PreorderActivationStore>()
+            .SingleAsync(item => item.ActivationGuid == "update-stores-cas")).IsDeleted);
+    }
+
+    [Theory]
+    [InlineData(PreorderWarehouseOrderStatuses.Draft)]
+    [InlineData(PreorderWarehouseOrderStatuses.ReturnedForRevision)]
+    [InlineData(PreorderWarehouseOrderStatuses.Submitted)]
+    [InlineData(PreorderWarehouseOrderStatuses.NoDemand)]
+    [InlineData(PreorderWarehouseOrderStatuses.Processing)]
+    [InlineData(PreorderWarehouseOrderStatuses.Completed)]
+    [InlineData(PreorderWarehouseOrderStatuses.Cancelled)]
+    public async Task 任意状态订单都阻止移除分店并保持事务原子(string orderStatus)
+    {
+        await SeedProductAndStoreAsync();
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-2",
+            StoreCode = "S02",
+            StoreName = "二店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        var activationGuid = $"update-stores-order-{orderStatus}";
+        await SeedActivationTargetForStoreUpdateAsync(activationGuid);
+        await _db.Insertable(new PreorderWarehouseOrder
+        {
+            OrderGuid = $"order-{orderStatus}",
+            ActivationGuid = activationGuid,
+            StoreGuid = "store-1",
+            StoreCode = "S01",
+            StoreName = "一店",
+            OrderNo = $"PRE-{orderStatus}",
+            Status = orderStatus,
+        }).ExecuteCommandAsync();
+
+        var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
+            CreateService("admin-user", manageOrders: true).UpdateActivationStoresAsync(
+                activationGuid,
+                new UpdatePreorderActivationStoresDto
+                {
+                    ExpectedStoreGuids = new() { "store-1" },
+                    StoreGuids = new() { "store-2" },
+                }
+            )
+        );
+
+        Assert.Equal(409, error.StatusCode);
+        Assert.Equal("PREORDER_ACTIVATION_STORE_HAS_ORDER", error.ErrorCode);
+        var activeTargets = await _db.Queryable<PreorderActivationStore>()
+            .Where(item => !item.IsDeleted && item.ActivationGuid == activationGuid)
+            .ToListAsync();
+        Assert.Equal("store-1", Assert.Single(activeTargets).StoreGuid);
+    }
+
+    [Theory]
+    [InlineData(PreorderActivationStatuses.Closed, 1)]
+    [InlineData(PreorderActivationStatuses.Cancelled, 1)]
+    [InlineData(PreorderActivationStatuses.Active, -1)]
+    [InlineData(PreorderActivationStatuses.Scheduled, -1)]
+    public async Task 非可编辑状态或自然过期批次拒绝变更分店(string status, int endOffsetHours)
+    {
+        await SeedProductAndStoreAsync();
+        await SeedActivationTargetForStoreUpdateAsync(
+            "update-stores-inactive",
+            status,
+            Now.AddHours(endOffsetHours)
+        );
+
+        var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
+            CreateService("admin-user", manageOrders: true).UpdateActivationStoresAsync(
+                "update-stores-inactive",
+                new UpdatePreorderActivationStoresDto
+                {
+                    ExpectedStoreGuids = new() { "store-1" },
+                    StoreGuids = new() { "store-1" },
+                }
+            )
+        );
+
+        Assert.Equal(409, error.StatusCode);
+        Assert.Equal("PREORDER_NOT_ACTIVE", error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task 更新激活分店等待排序StoreGate并在锁内重读新增分店状态()
+    {
+        await SeedProductAndStoreAsync();
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-2",
+            StoreCode = "S02",
+            StoreName = "二店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await SeedActivationTargetForStoreUpdateAsync("update-stores-reread");
+        var heldStoreGate = await PreorderMutationLock.AcquireProcessAsync(
+            "PreorderStoreGate:store-1"
+        );
+        try
+        {
+            var updateTask = Task.Run(() => CreateService("admin-user", manageOrders: true)
+                .UpdateActivationStoresAsync(
+                    "update-stores-reread",
+                    new UpdatePreorderActivationStoresDto
+                    {
+                        ExpectedStoreGuids = new() { "store-1" },
+                        StoreGuids = new() { "store-2" },
+                    }
+                ));
+            Assert.NotSame(updateTask, await Task.WhenAny(
+                updateTask,
+                Task.Delay(TimeSpan.FromMilliseconds(300))
+            ));
+            await _db.Updateable<Store>()
+                .SetColumns(item => item.IsActive == false)
+                .Where(item => item.StoreGUID == "store-2")
+                .ExecuteCommandAsync();
+            await heldStoreGate.DisposeAsync();
+
+            var error = await Assert.ThrowsAsync<PreorderBusinessException>(async () =>
+                await updateTask
+            );
+            Assert.Equal("PREORDER_INVALID_REQUEST", error.ErrorCode);
+        }
+        finally
+        {
+            await heldStoreGate.DisposeAsync();
+        }
+
+        Assert.Equal("store-1", (await _db.Queryable<PreorderActivationStore>()
+            .SingleAsync(item => !item.IsDeleted
+                && item.ActivationGuid == "update-stores-reread")).StoreGuid);
+        Assert.Equal(0, PreorderMutationLock.ProcessLockCount);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -3685,6 +3893,34 @@ public sealed class PreorderPersistenceTests : IDisposable
         {
             ActivationStoreGuid = "gate-store",
             ActivationGuid = "gate-activation",
+            StoreGuid = "store-1",
+            StoreCode = "S01",
+            StoreName = "一店",
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedActivationTargetForStoreUpdateAsync(
+        string activationGuid,
+        string status = PreorderActivationStatuses.Active,
+        DateTime? endAtUtc = null
+    )
+    {
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = activationGuid,
+            TemplateGuid = "template-1",
+            PeriodNumber = 1,
+            ActivationCode = $"PRE-{activationGuid}",
+            TemplateNameSnapshot = "变更分店测试",
+            SourceTemplateRevision = 1,
+            StartAtUtc = Now.AddHours(-2),
+            EndAtUtc = endAtUtc ?? Now.AddHours(2),
+            Status = status,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationStore
+        {
+            ActivationStoreGuid = $"{activationGuid}-store",
+            ActivationGuid = activationGuid,
             StoreGuid = "store-1",
             StoreCode = "S01",
             StoreName = "一店",

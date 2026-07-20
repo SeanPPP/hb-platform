@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined, DownloadOutlined, StopOutlined } from '@ant-design/icons'
-import { App, Button, Card, Col, ConfigProvider, DatePicker, Descriptions, Empty, Image, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, ConfigProvider, DatePicker, Descriptions, Empty, Image, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import enUS from 'antd/locale/en_US'
 import zhCN from 'antd/locale/zh_CN'
@@ -15,9 +15,12 @@ import {
   downloadPreorderActivationExport,
   getAdminPreorderActivation,
   getPreorderActivationStatistics,
+  isPreorderActivationStoresChangedError,
   isPreorderStatusTransitionConflictError,
+  updatePreorderActivationStores,
   updatePreorderOrderStatus,
 } from '../../../services/preorderService'
+import { getStores } from '../../../services/storeService'
 import type { PreorderActivationDetail, PreorderActivationStatistics, PreorderMatrixCell, PreorderMatrixRow, PreorderOrderStatus, PreorderProductStatistic, PreorderWarehouseOrderSummary } from '../../../types/preorder'
 import {
   beginActivationDetailRequest,
@@ -28,6 +31,8 @@ import {
   isPreorderReturnContextCurrent,
 } from './activationDetailRequestGuard'
 import { getActivationProductStores } from './activationProductStores'
+import { getActivationStoreChanges, mergeActivationStoreOptions } from './activationStoreSelection'
+import { beginModalRequest, createModalRequestGuard, invalidateModalRequest, isCurrentModalRequest } from './modalRequestGuard'
 import './styles.css'
 
 const { Text } = Typography
@@ -55,8 +60,18 @@ export default function PreorderActivationDetailPage() {
   const [extendOpen, setExtendOpen] = useState(false)
   const [nextEndAt, setNextEndAt] = useState<Dayjs | null>(null)
   const [selectedProduct, setSelectedProduct] = useState<PreorderProductStatistic | null>(null)
+  const [storeEditorOpen, setStoreEditorOpen] = useState(false)
+  const [storeOptions, setStoreOptions] = useState<ReturnType<typeof mergeActivationStoreOptions>>([])
+  const [selectedStoreGuids, setSelectedStoreGuids] = useState<string[]>([])
+  const [storeOptionsLoading, setStoreOptionsLoading] = useState(false)
+  const [storeOptionsLoadFailed, setStoreOptionsLoadFailed] = useState(false)
+  const [storeSaving, setStoreSaving] = useState(false)
   const requestGuardRef = useRef(createActivationDetailRequestGuard())
+  const storeEditorRequestGuardRef = useRef(createModalRequestGuard())
   const returnConfirmDestroyRef = useRef<(() => void) | null>(null)
+  const storeConfirmDestroyRef = useRef<(() => void) | null>(null)
+  const storeConfirmSessionRef = useRef<number | null>(null)
+  const nextStoreConfirmSessionRef = useRef(0)
   const currentActivationGuidRef = useRef(activationGuid)
   currentActivationGuidRef.current = activationGuid
   const dateTimeFormatter = useMemo(
@@ -65,9 +80,24 @@ export default function PreorderActivationDetailPage() {
   )
   const antdLocale = i18n.resolvedLanguage === 'en' ? enUS : zhCN
 
+  const closeStoreEditor = useCallback(() => {
+    // 关闭或切换批次时使门店列表/保存请求失效，慢响应不得回写其他批次。
+    storeConfirmDestroyRef.current?.()
+    storeConfirmDestroyRef.current = null
+    storeConfirmSessionRef.current = null
+    invalidateModalRequest(storeEditorRequestGuardRef.current)
+    setStoreEditorOpen(false)
+    setStoreOptions([])
+    setSelectedStoreGuids([])
+    setStoreOptionsLoading(false)
+    setStoreOptionsLoadFailed(false)
+    setStoreSaving(false)
+  }, [])
+
   const load = useCallback(async () => {
     returnConfirmDestroyRef.current?.()
     returnConfirmDestroyRef.current = null
+    closeStoreEditor()
     if (!activationGuid) {
       // 路由参数缺失时立即失效旧请求并清空页面，禁止请求空批次地址。
       invalidateActivationDetailRequest(requestGuardRef.current)
@@ -104,7 +134,7 @@ export default function PreorderActivationDetailPage() {
         setLoading(false)
       }
     }
-  }, [activationGuid, message, t])
+  }, [activationGuid, closeStoreEditor, message, t])
 
   useEffect(() => {
     void load()
@@ -112,8 +142,9 @@ export default function PreorderActivationDetailPage() {
       returnConfirmDestroyRef.current?.()
       returnConfirmDestroyRef.current = null
       invalidateActivationDetailRequest(requestGuardRef.current)
+      closeStoreEditor()
     }
-  }, [load])
+  }, [closeStoreEditor, load])
 
   const changeStatus = async (row: PreorderWarehouseOrderSummary, status: PreorderOrderStatus) => {
     const targetActivationGuid = activationGuid
@@ -323,11 +354,142 @@ export default function PreorderActivationDetailPage() {
       }
     }
   }
+
+  const storeChanges = useMemo(
+    () => getActivationStoreChanges((detail?.stores ?? []).map((store) => store.storeGuid), selectedStoreGuids),
+    [detail?.stores, selectedStoreGuids],
+  )
+
+  const openStoreEditor = async () => {
+    const targetActivationGuid = activationGuid
+    const currentDetail = detail
+    if (
+      currentDetail?.activationGuid !== targetActivationGuid
+      || (currentDetail.status !== 'Scheduled' && currentDetail.status !== 'Active')
+    ) return
+
+    const requestToken = beginModalRequest(storeEditorRequestGuardRef.current)
+    setStoreEditorOpen(true)
+    setStoreOptions([])
+    setSelectedStoreGuids(currentDetail.stores.map((store) => store.storeGuid))
+    setStoreOptionsLoadFailed(false)
+    setStoreOptionsLoading(true)
+    try {
+      const activeStores: PreorderActivationDetail['stores'] = []
+      let page = 1
+      let total = 0
+      do {
+        const result = await getStores({ page, pageSize: 100, isActive: true, sortField: 'storeName', sortOrder: 'asc' })
+        if (!isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+          || currentActivationGuidRef.current !== targetActivationGuid) return
+        activeStores.push(...result.items.map((store) => ({
+          storeGuid: store.storeGUID,
+          storeCode: store.storeCode,
+          storeName: store.storeName,
+        })))
+        total = result.total
+        if (!result.items.length) break
+        page += 1
+      } while (activeStores.length < total)
+      if (!isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+        || currentActivationGuidRef.current !== targetActivationGuid) return
+      setStoreOptions(mergeActivationStoreOptions(activeStores, currentDetail.stores))
+    } catch {
+      if (isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+        && currentActivationGuidRef.current === targetActivationGuid) {
+        setStoreOptionsLoadFailed(true)
+        message.error(t('warehouse.preorders.activationDetail.storeOptionsLoadFailed'))
+      }
+    } finally {
+      if (isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+        && currentActivationGuidRef.current === targetActivationGuid) {
+        setStoreOptionsLoading(false)
+      }
+    }
+  }
+
+  const saveActivationStores = () => {
+    // 同一编辑会话只能存在一个确认框，避免快速重复点击遗留旧批次确认。
+    if (storeConfirmSessionRef.current !== null) return
+    const targetActivationGuid = activationGuid
+    const currentDetail = detail
+    const nextStoreGuids = [...selectedStoreGuids]
+    if (currentDetail?.activationGuid !== targetActivationGuid || storeOptionsLoadFailed || storeOptionsLoading) return
+    if (!nextStoreGuids.length) {
+      message.warning(t('warehouse.preorders.activationDetail.storeRequired'))
+      return
+    }
+    const expectedStoreGuids = currentDetail.stores.map((store) => store.storeGuid)
+    const changes = getActivationStoreChanges(expectedStoreGuids, nextStoreGuids)
+    const confirmSession = nextStoreConfirmSessionRef.current + 1
+    nextStoreConfirmSessionRef.current = confirmSession
+    storeConfirmSessionRef.current = confirmSession
+    const releaseConfirmation = () => {
+      // 旧确认框的延迟回调不得释放后来批次创建的新确认锁。
+      if (storeConfirmSessionRef.current !== confirmSession) return
+      storeConfirmSessionRef.current = null
+      storeConfirmDestroyRef.current = null
+    }
+    let confirmation: ReturnType<typeof modal.confirm>
+    confirmation = modal.confirm({
+      title: t('warehouse.preorders.activationDetail.storeChangeConfirmTitle'),
+      content: t('warehouse.preorders.activationDetail.storeChangeConfirmContent', changes),
+      okText: t('warehouse.preorders.activationDetail.confirmStoreChange'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: changes.removedCount > 0 },
+      onOk: async () => {
+        if (storeConfirmSessionRef.current !== confirmSession
+          || currentActivationGuidRef.current !== targetActivationGuid) {
+          confirmation.destroy()
+          releaseConfirmation()
+          return
+        }
+        // 保存期间锁住二次确认，避免用户关闭后误以为服务端没有提交。
+        confirmation.update({
+          cancelButtonProps: { disabled: true },
+          closable: false,
+          keyboard: false,
+          maskClosable: false,
+        })
+        const requestToken = beginModalRequest(storeEditorRequestGuardRef.current)
+        setStoreSaving(true)
+        try {
+          await updatePreorderActivationStores(targetActivationGuid, { expectedStoreGuids, storeGuids: nextStoreGuids }, requestToken.signal)
+          if (!isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+            || currentActivationGuidRef.current !== targetActivationGuid) return
+          message.success(t('warehouse.preorders.activationDetail.storesUpdated'))
+          closeStoreEditor()
+          await load()
+        } catch (error) {
+          if (!isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)
+            || currentActivationGuidRef.current !== targetActivationGuid) return
+          if (isPreorderActivationStoresChangedError(error)) {
+            message.warning(t('warehouse.preorders.activationDetail.storesConflictRefreshed'))
+            closeStoreEditor()
+            await load()
+            return
+          }
+          message.error(t('warehouse.preorders.activationDetail.storeUpdateFailed'))
+          confirmation.update({
+            cancelButtonProps: { disabled: false },
+            closable: true,
+            keyboard: true,
+            maskClosable: true,
+          })
+        } finally {
+          if (isCurrentModalRequest(storeEditorRequestGuardRef.current, requestToken)) setStoreSaving(false)
+          releaseConfirmation()
+        }
+      },
+      onCancel: releaseConfirmation,
+    })
+    storeConfirmDestroyRef.current = confirmation.destroy
+  }
   return (
     <ConfigProvider locale={antdLocale}>
       <PageContainer
       title={detail ? t('warehouse.preorders.activationDetail.periodTitle', { name: detail.templateName, sequence: detail.sequenceNumber }) : t('warehouse.preorders.activationDetail.title')}
-      extra={<Space wrap><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/preorders')}>{t('warehouse.preorders.activationDetail.back')}</Button><Button icon={<DownloadOutlined />} disabled={!hasCurrentDetail} onClick={() => void downloadPreorderActivationExport(activationGuid).catch(() => message.error(t('warehouse.preorders.activationDetail.exportFailed')))}>{t('warehouse.preorders.activationDetail.exportExcel')}</Button>{canAdjust && detail ? <Button onClick={() => { setNextEndAt(dayjs(detail.endAtUtc).add(1, 'day')); setExtendOpen(true) }}>{t('warehouse.preorders.activationDetail.extend')}</Button> : null}{canClose ? <Popconfirm title={t('warehouse.preorders.activationDetail.closeConfirm')} onConfirm={() => void closeNow()}><Button>{t('warehouse.preorders.activationDetail.close')}</Button></Popconfirm> : null}{canAdjust ? <Popconfirm title={t('warehouse.preorders.activationDetail.cancelConfirm')} onConfirm={() => void cancelActivation()}><Button danger icon={<StopOutlined />}>{t('warehouse.preorders.activationDetail.cancel')}</Button></Popconfirm> : null}</Space>}
+      extra={<Space wrap><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/preorders')}>{t('warehouse.preorders.activationDetail.back')}</Button><Button icon={<DownloadOutlined />} disabled={!hasCurrentDetail} onClick={() => void downloadPreorderActivationExport(activationGuid).catch(() => message.error(t('warehouse.preorders.activationDetail.exportFailed')))}>{t('warehouse.preorders.activationDetail.exportExcel')}</Button>{canAdjust ? <Button onClick={() => void openStoreEditor()}>{t('warehouse.preorders.activationDetail.changeStores')}</Button> : null}{canAdjust && detail ? <Button onClick={() => { setNextEndAt(dayjs(detail.endAtUtc).add(1, 'day')); setExtendOpen(true) }}>{t('warehouse.preorders.activationDetail.extend')}</Button> : null}{canClose ? <Popconfirm title={t('warehouse.preorders.activationDetail.closeConfirm')} onConfirm={() => void closeNow()}><Button>{t('warehouse.preorders.activationDetail.close')}</Button></Popconfirm> : null}{canAdjust ? <Popconfirm title={t('warehouse.preorders.activationDetail.cancelConfirm')} onConfirm={() => void cancelActivation()}><Button danger icon={<StopOutlined />}>{t('warehouse.preorders.activationDetail.cancel')}</Button></Popconfirm> : null}</Space>}
     >
       <Card loading={loading} className="preorder-admin-card">
         {detail ? <Descriptions size="small" column={{ xs: 1, md: 3 }} items={[
@@ -392,6 +554,45 @@ export default function PreorderActivationDetailPage() {
       </Modal>
       <Modal title={t('warehouse.preorders.activationDetail.extendTitle')} open={extendOpen} onCancel={() => setExtendOpen(false)} onOk={() => void extendActivation()} okText={t('warehouse.preorders.activationDetail.confirmExtend')}>
         <DatePicker showTime value={nextEndAt} onChange={setNextEndAt} style={{ width: '100%' }} disabledDate={(date) => Boolean(detail && date.endOf('day').isBefore(dayjs(detail.endAtUtc)))} />
+      </Modal>
+      <Modal
+        title={t('warehouse.preorders.activationDetail.changeStoresTitle')}
+        open={storeEditorOpen}
+        onCancel={() => { if (!storeSaving) closeStoreEditor() }}
+        onOk={saveActivationStores}
+        okText={t('warehouse.preorders.activationDetail.saveStores')}
+        okButtonProps={{ disabled: storeOptionsLoading || storeOptionsLoadFailed || !selectedStoreGuids.length || storeSaving }}
+        cancelButtonProps={{ disabled: storeSaving }}
+        closable={!storeSaving}
+        keyboard={!storeSaving}
+        maskClosable={!storeSaving}
+        confirmLoading={storeSaving}
+        width={680}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Select
+            mode="multiple"
+            showSearch
+            allowClear
+            loading={storeOptionsLoading}
+            disabled={storeOptionsLoadFailed || storeSaving}
+            value={selectedStoreGuids}
+            onChange={setSelectedStoreGuids}
+            placeholder={t('warehouse.preorders.activationDetail.selectStores')}
+            optionFilterProp="label"
+            maxTagCount="responsive"
+            style={{ width: '100%' }}
+            options={storeOptions.map((store) => ({
+              value: store.storeGuid,
+              label: `${store.storeName || store.storeCode} (${store.storeCode})${store.isActive ? '' : ` · ${t('warehouse.preorders.activationDetail.inactiveStore')}`}`,
+            }))}
+          />
+          <Text type="secondary">
+            {t('warehouse.preorders.activationDetail.storeChangeSummary', storeChanges)}
+          </Text>
+          {storeChanges.removedCount > 0 ? <Alert type="warning" showIcon message={t('warehouse.preorders.activationDetail.storeRemovalWarning')} /> : null}
+          {storeOptionsLoadFailed ? <Alert type="error" showIcon message={t('warehouse.preorders.activationDetail.storeOptionsLoadFailed')} /> : null}
+        </Space>
       </Modal>
       </PageContainer>
     </ConfigProvider>
