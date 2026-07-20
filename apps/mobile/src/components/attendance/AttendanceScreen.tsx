@@ -58,6 +58,7 @@ import {
   buildAttendanceQrPunchPayload,
   getAttendancePunchErrorCode,
   getAttendancePunchErrorKey,
+  normalizeAttendanceQrTokenInput,
   prepareAttendanceQrPunch,
   resolveAttendanceQrStore,
   shouldEnableAttendanceQrScanning,
@@ -877,8 +878,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     }
     setAttendanceScannerError("");
     setAttendanceScannerSubmitting(true);
+    const normalizedQrToken = normalizeAttendanceQrTokenInput(qrToken);
     try {
-      validateAttendanceQrToken(qrToken);
+      validateAttendanceQrToken(normalizedQrToken);
     } catch (error) {
       const code = error instanceof Error ? error.message : undefined;
       failAttendanceQrScan(
@@ -898,7 +900,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     let resolvedQr;
     try {
       // 关键逻辑：客户端不解码身份，只信任后端解密并校验后的门店和设备。
-      resolvedQr = await resolveAttendanceQr(qrToken);
+      resolvedQr = await resolveAttendanceQr(normalizedQrToken);
     } catch (error) {
       if (!attendanceScannerSessionGate.isActive(session)) return;
       const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
@@ -973,7 +975,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     let result: AttendancePunch;
     try {
       result = await punchMutation.mutateAsync(
-        buildAttendanceQrPunchPayload(qrToken, preparation.verification.payload),
+        buildAttendanceQrPunchPayload(normalizedQrToken, preparation.verification.payload),
       );
     } catch (error) {
       if (attendanceScannerSessionGate.isActive(session)) {
@@ -1022,6 +1024,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       isPaused: attendanceScannerPaused,
     }),
     ignoreWhileProcessing: true,
+    singleScanUntilReset: true,
     resetKey: `${attendanceScannerVisible}:${attendanceScannerResetNonce}`,
     onBarcode: handleAttendanceQrScan,
   });

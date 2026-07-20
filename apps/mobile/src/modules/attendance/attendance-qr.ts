@@ -10,6 +10,8 @@ const TOKEN_PREFIX = "HBATE1";
 const MAX_TOKEN_LENGTH = 600;
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const BASE64_URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g;
+const TOKEN_CANDIDATE_PATTERN = /HBATE1\.[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
 const MAX_CIPHERTEXT_BYTES = 327;
 
 function getBase64UrlDecodedLength(value: string) {
@@ -41,6 +43,13 @@ export function validateAttendanceQrToken(token: string) {
   }
   // 客户端只确认传输格式，门店、设备和有效期全部交给后端解密验证。
   return token;
+}
+
+export function normalizeAttendanceQrTokenInput(rawToken: string) {
+  const cleaned = rawToken.trim().replace(CONTROL_CHARACTER_PATTERN, "");
+  const candidate = cleaned.match(TOKEN_CANDIDATE_PATTERN)?.[0] ?? cleaned;
+  // 关键逻辑：只清理扫描输入噪声，令牌结构和身份有效性仍由严格校验与后端解密负责。
+  return candidate.trim();
 }
 
 function readResolveString(

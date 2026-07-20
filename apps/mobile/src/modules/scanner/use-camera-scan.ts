@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import type { BarcodeScanningResult, CameraType } from "expo-camera";
 import { useCameraPermissions } from "expo-camera";
 import {
-  shouldForwardCameraScan,
-  type CameraScanGateState,
+  createCameraScanGateController,
+  type CameraScanGateController,
 } from "@/modules/scanner/camera-scan-gate";
 
 interface UseCameraScanOptions {
@@ -11,6 +11,7 @@ interface UseCameraScanOptions {
   disabled?: boolean;
   ignoreWhileProcessing?: boolean;
   resetKey?: string | number | boolean | null;
+  singleScanUntilReset?: boolean;
   suppressRepeatsUntilChange?: boolean;
   onBarcode: (barcode: string) => void | Promise<void>;
 }
@@ -21,11 +22,13 @@ function normalizeBarcode(rawValue: string) {
   return rawValue.trim();
 }
 
-function createInitialScanGateState(): CameraScanGateState {
+function summarizeBarcodeForLog(value: string) {
+  const parts = value.split(".");
   return {
-    value: "",
-    timestamp: 0,
-    processing: false,
+    length: value.length,
+    prefix: value.slice(0, 12),
+    partsCount: parts.length,
+    firstPart: parts[0]?.slice(0, 24) ?? "",
   };
 }
 
@@ -34,16 +37,18 @@ export function useCameraScan({
   disabled = false,
   ignoreWhileProcessing = false,
   resetKey = null,
+  singleScanUntilReset = false,
   suppressRepeatsUntilChange = false,
   onBarcode,
 }: UseCameraScanOptions) {
   const [permission, requestPermission] = useCameraPermissions();
-  const scanGateRef = useRef<CameraScanGateState>(createInitialScanGateState());
-
-  useEffect(() => {
-    // 业务上下文切换时丢弃上一目标的条码记忆，避免跨弹窗/跨模式误拦截。
-    scanGateRef.current = createInitialScanGateState();
-  }, [resetKey]);
+  const scanGateControllerRef = useRef<CameraScanGateController | null>(null);
+  if (scanGateControllerRef.current === null) {
+    scanGateControllerRef.current = createCameraScanGateController(resetKey);
+  }
+  const scanGateController = scanGateControllerRef.current;
+  // 每次 render 同步登记当前会话，使已经排队的旧 callback 立即失效。
+  scanGateController.setCurrentResetKey(resetKey);
 
   const handleBarcodeScanned = useCallback(
     async ({ data }: BarcodeScanningResult) => {
@@ -53,40 +58,41 @@ export function useCameraScan({
 
       const barcode = normalizeBarcode(data);
       console.log("[camera-scan] raw barcode event", {
-        rawData: data,
-        normalized: barcode,
+        raw: summarizeBarcodeForLog(data),
+        normalized: summarizeBarcodeForLog(barcode),
       });
       if (!barcode) {
         return;
       }
 
       const now = Date.now();
-      if (!shouldForwardCameraScan(scanGateRef.current, barcode, now, {
+      const lease = scanGateController.tryStart(resetKey, barcode, now, {
         cooldownMs,
         ignoreWhileProcessing,
+        singleScanUntilReset,
         suppressRepeatsUntilChange,
-      })) {
+      });
+      if (!lease) {
         return;
       }
 
-      const activeGateState: CameraScanGateState = {
-        value: barcode,
-        timestamp: now,
-        processing: true,
-      };
-      scanGateRef.current = activeGateState;
-
-      console.log("[camera-scan] forwarding barcode", { barcode });
+      console.log("[camera-scan] forwarding barcode", summarizeBarcodeForLog(barcode));
       try {
         await onBarcode(barcode);
       } finally {
-        // resetKey 可能已切换到新业务上下文；只释放本次扫码占用的门禁。
-        if (scanGateRef.current === activeGateState) {
-          scanGateRef.current.processing = false;
-        }
+        scanGateController.finish(lease);
       }
     },
-    [cooldownMs, disabled, ignoreWhileProcessing, onBarcode, suppressRepeatsUntilChange]
+    [
+      cooldownMs,
+      disabled,
+      ignoreWhileProcessing,
+      onBarcode,
+      resetKey,
+      scanGateController,
+      singleScanUntilReset,
+      suppressRepeatsUntilChange,
+    ]
   );
 
   return {

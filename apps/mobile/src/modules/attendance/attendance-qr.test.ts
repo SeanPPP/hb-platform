@@ -10,6 +10,7 @@ import {
   getAttendancePunchErrorKey,
   getAttendancePunchErrorCode,
   getAttendanceTrackingAction,
+  normalizeAttendanceQrTokenInput,
   normalizeAttendanceQrResolveResult,
   normalizeAttendancePunchMutationResult,
   prepareAttendanceQrPunch,
@@ -25,6 +26,16 @@ const tag = Buffer.alloc(16, 3).toString("base64url");
 const token = `HBATE1.kid_1.${nonce}.${cipher}.${tag}`;
 
 assert.equal(validateAttendanceQrToken(token), token, "opaque 五段 token 应通过格式预检");
+assert.equal(
+  normalizeAttendanceQrTokenInput(` \uFEFF${token}\u200B\n`),
+  token,
+  "扫描输入前后空白、BOM 和零宽字符必须被清理",
+);
+assert.equal(
+  normalizeAttendanceQrTokenInput(`pos-attendance:${token};expires=15s`),
+  token,
+  "包装字符串里可识别的 HBATE1 五段 token 必须被提取",
+);
 for (const invalid of [
   "HBATE1.bad",
   `HBATQ1.kid_1.${nonce}.${cipher}.${tag}`,
@@ -35,7 +46,7 @@ for (const invalid of [
   `HBATE1.kid_1.${nonce}.${"a".repeat(500)}.${tag}`,
 ]) {
   assert.throws(
-    () => validateAttendanceQrToken(invalid),
+    () => validateAttendanceQrToken(normalizeAttendanceQrTokenInput(invalid)),
     /ATTENDANCE_QR_FORMAT_INVALID/,
     `非法 token 必须在 resolve 前拒绝：${invalid.slice(0, 40)}`,
   );

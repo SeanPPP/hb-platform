@@ -28,10 +28,12 @@ assert.match(todayCardSource, /canOpenAttendanceQrScanner/,
   "扫码入口必须使用与当前门店打卡完成状态无关的启用规则");
 assert.doesNotMatch(todayCardSource, /\bcanPunch\b/,
   "扫码入口不得被当前门店 canPunch 或 DAY_COMPLETE 禁用");
+assert.doesNotMatch(todayCardSource, /today\.info\.location|openLocationInSystemMap|actions\.viewLocation/,
+  "前台 Today 卡不得显示定位详情或地图入口，定位只用于后台采集和打卡提交");
 
-const validateIndex = source.indexOf("validateAttendanceQrToken(qrToken)");
+const validateIndex = source.indexOf("validateAttendanceQrToken(normalizedQrToken)");
 const networkIndex = source.indexOf("verifyAttendanceNetworkReachability()");
-const resolveIndex = source.indexOf("resolveAttendanceQr(qrToken)");
+const resolveIndex = source.indexOf("resolveAttendanceQr(normalizedQrToken)");
 const preparationIndex = source.indexOf("prepareAttendanceQrPunch(qrToday.nextPunchType");
 // 普通打卡与二维码打卡共存时，只验证二维码准备完成后的 punch 调用顺序。
 const punchIndex = source.indexOf("punchMutation.mutateAsync(", preparationIndex);
@@ -52,5 +54,7 @@ assert.doesNotMatch(source, /parseAttendanceQrMetadata/,
   "AttendanceScreen 不得从二维码 payload 推断门店或设备");
 assert.match(source, /const resetAttendanceScannerUi = \(\) => \{[\s\S]{0,300}setAttendanceScannerSubmitting\(false\)/,
   "关闭或显式重试必须清理 resolve/punch 提交态");
+assert.match(source, /const attendanceCameraScan = useCameraScan\(\{[\s\S]{0,300}singleScanUntilReset:\s*true/,
+  "考勤相机每个 resetKey 会话只允许转发一次二维码");
 
 console.log("attendance-qr-ui-contract.test.ts: ok");

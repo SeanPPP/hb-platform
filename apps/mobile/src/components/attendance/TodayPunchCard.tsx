@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
-import { Button, Card, Chip, Text } from "react-native-paper";
+import { Pressable, StyleSheet, View } from "react-native";
+import { Card, Chip, Text } from "react-native-paper";
 import type {
   AttendancePunchVerificationState,
   AttendancePunch,
   AttendancePunchType,
   AttendanceToday,
 } from "@/modules/attendance/types";
-import { openLocationInSystemMap } from "@/modules/attendance/required-location";
 import { canOpenAttendanceQrScanner } from "@/modules/attendance/attendance-qr";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
@@ -109,28 +108,6 @@ export function TodayPunchCard({
     return t("today.status.readyToClockIn");
   }, [allowPunch, clockOutPunch, nextPunchType, t, today?.holidayName]);
 
-  const locationValue = useMemo(() => {
-    if (verification.location.latitude !== undefined) {
-      return `${verification.location.latitude.toFixed(6)}, ${verification.location.longitude?.toFixed(6) ?? "--"}`;
-    }
-
-    if (verification.location.reason === "dependencyMissing") {
-      return t("today.info.locationDependencyMissing");
-    }
-
-    if (verification.location.status === "permissionDenied") {
-      return t("today.info.locationPermissionDenied");
-    }
-
-    return t("today.info.locationUnavailable");
-  }, [
-    t,
-    verification.location.latitude,
-    verification.location.longitude,
-    verification.location.reason,
-    verification.location.status,
-  ]);
-
   const networkValue = useMemo(() => {
     if (verification.network.status === "available") {
       return today?.storeTimeZone
@@ -147,9 +124,6 @@ export function TodayPunchCard({
     return t("today.info.networkUnknown");
   }, [t, today?.storeTimeZone, verification.network.reason, verification.network.status]);
 
-  const locationChipLabel = t(
-    `today.verification.statuses.${verification.location.status}`,
-  );
   const networkChipLabel = t(
     `today.verification.statuses.${verification.network.status}`,
   );
@@ -312,105 +286,58 @@ export function TodayPunchCard({
           ) : null}
         </View>
 
-        <View style={styles.metaRow}>
-          <View style={styles.metaCard}>
-            <View style={styles.metaHeader}>
-              <Text variant="labelMedium" style={styles.muted}>
-                {t("today.info.location")}
-              </Text>
-              <Chip compact style={styles.metaChip} textStyle={styles.metaChipText}>
-                {locationChipLabel}
-              </Chip>
-            </View>
-            <Text variant="bodyMedium">{locationValue}</Text>
+        <View style={styles.metaCard}>
+          <View style={styles.metaHeader}>
+            <Text variant="labelMedium" style={styles.muted}>
+              {t("today.info.network")}
+            </Text>
+            <Chip compact style={styles.metaChip} textStyle={styles.metaChipText}>
+              {isVerificationRefreshing
+                ? t("today.verification.refreshing")
+                : networkChipLabel}
+            </Chip>
           </View>
-          <View style={styles.metaCard}>
-            <View style={styles.metaHeader}>
-              <Text variant="labelMedium" style={styles.muted}>
-                {t("today.info.network")}
-              </Text>
-              <Chip compact style={styles.metaChip} textStyle={styles.metaChipText}>
-                {isVerificationRefreshing
-                  ? t("today.verification.refreshing")
-                  : networkChipLabel}
-              </Chip>
-            </View>
-            <Text variant="bodyMedium">{networkValue}</Text>
-          </View>
+          <Text variant="bodyMedium">{networkValue}</Text>
         </View>
 
         <View style={styles.recordsCard}>
           <Text variant="titleMedium">{t("today.dailyRecords.title")}</Text>
           <View style={styles.recordList}>
-            {records.map((record) => {
-              const punchLocation = record.punch &&
-                record.punch.locationLatitude !== undefined &&
-                record.punch.locationLongitude !== undefined
-                ? {
-                    latitude: record.punch.locationLatitude,
-                    longitude: record.punch.locationLongitude,
-                  }
-                : null;
-
-              return (
+            {records.map((record) => (
+              <View
+                key={record.key}
+                style={[styles.recordItem, { borderLeftColor: record.accent }]}
+              >
                 <View
-                  key={record.key}
-                  style={[styles.recordItem, { borderLeftColor: record.accent }]}
+                  style={[
+                    styles.recordIcon,
+                    { backgroundColor: record.iconBg },
+                  ]}
                 >
-                  <View
-                    style={[
-                      styles.recordIcon,
-                      { backgroundColor: record.iconBg },
-                    ]}
-                  >
-                    <Text variant="labelSmall">
-                      {t(
-                        record.key === "clockIn"
-                          ? "today.dailyRecords.clockInBadge"
-                          : "today.dailyRecords.clockOutBadge",
-                      )}
-                    </Text>
-                  </View>
-                  <View style={styles.recordBody}>
-                    <View style={styles.recordHeader}>
-                      <Text variant="titleSmall">{record.title}</Text>
-                      <Text variant="labelMedium" style={styles.muted}>
-                        {record.time}
-                      </Text>
-                    </View>
-                    <Text
-                      variant="bodySmall"
-                      style={record.muted ? styles.muted : undefined}
-                    >
-                      {record.body}
-                    </Text>
-                    {punchLocation ? (
-                      <Button
-                        compact
-                        icon="map-marker"
-                        mode="text"
-                        onPress={async () => {
-                          const opened = await openLocationInSystemMap(
-                            punchLocation.latitude,
-                            punchLocation.longitude,
-                            record.title,
-                          );
-                          if (!opened) {
-                            Alert.alert(
-                              t("messages.openMapFailedTitle"),
-                              t("messages.openMapFailed"),
-                            );
-                          }
-                        }}
-                        style={styles.locationButton}
-                      >
-                        {t("actions.viewLocation")}
-                      </Button>
-                    ) : null}
-                  </View>
+                  <Text variant="labelSmall">
+                    {t(
+                      record.key === "clockIn"
+                        ? "today.dailyRecords.clockInBadge"
+                        : "today.dailyRecords.clockOutBadge",
+                    )}
+                  </Text>
                 </View>
-              );
-            })}
+                <View style={styles.recordBody}>
+                  <View style={styles.recordHeader}>
+                    <Text variant="titleSmall">{record.title}</Text>
+                    <Text variant="labelMedium" style={styles.muted}>
+                      {record.time}
+                    </Text>
+                  </View>
+                  <Text
+                    variant="bodySmall"
+                    style={record.muted ? styles.muted : undefined}
+                  >
+                    {record.body}
+                  </Text>
+                </View>
+              </View>
+            ))}
             <View style={styles.alertItem}>
               <View style={styles.alertIcon}>
                 <Text variant="labelSmall" style={styles.alertIconText}>
@@ -510,17 +437,10 @@ const styles = StyleSheet.create({
   metaChipText: {
     color: "#4B5563",
   },
-  locationButton: {
-    alignSelf: "flex-start",
-    marginLeft: -8,
-  },
   metaHeader: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-  },
-  metaRow: {
-    gap: 10,
   },
   muted: {
     color: "#6B7280",
