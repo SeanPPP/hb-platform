@@ -1008,6 +1008,7 @@ namespace BlazorApp.Api.Services
                     _context.Db,
                     storeResource,
                     resolvedStore.StoreGUID,
+                    resolvedStore.StoreCode,
                     _logger
                 );
 

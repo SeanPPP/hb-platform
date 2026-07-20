@@ -34,6 +34,34 @@ internal static class PreorderGateEvaluator
         return $"PreorderStoreGate:{storeGuid.Trim()}";
     }
 
+    internal static string GetCanonicalStoreGuidFromLockResource(string lockResource)
+    {
+        const string prefix = "PreorderStoreGate:";
+        var resource = lockResource?.Trim();
+        if (string.IsNullOrWhiteSpace(resource)
+            || !resource.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PreorderBusinessException(
+                GateUnavailableMessage,
+                "PREORDER_GATE_UNAVAILABLE",
+                StatusCodes.Status503ServiceUnavailable
+            );
+        }
+
+        var storeGuid = resource[prefix.Length..].Trim();
+        if (string.IsNullOrWhiteSpace(storeGuid) || storeGuid.Contains(':'))
+        {
+            throw new PreorderBusinessException(
+                GateUnavailableMessage,
+                "PREORDER_GATE_UNAVAILABLE",
+                StatusCodes.Status503ServiceUnavailable
+            );
+        }
+
+        // 关键逻辑：资源由数据库中的 StoreGUID 构造，提取时必须保留原始大小写供 SQL Server 行锁使用。
+        return storeGuid;
+    }
+
     internal static Task<Store> ResolveActiveStoreByGuidFailClosedAsync(
         ISqlSugarClient db,
         string storeGuid,
@@ -178,7 +206,14 @@ internal static class PreorderGateEvaluator
         ILogger logger
     )
     {
-        await AcquireDatabaseLockFailClosedAsync(db, lockResource, storeCode, logger);
+        var canonicalStoreGuid = GetCanonicalStoreGuidFromLockResource(lockResource);
+        await AcquireDatabaseLockFailClosedAsync(
+            db,
+            lockResource,
+            canonicalStoreGuid,
+            storeCode,
+            logger
+        );
         return await EvaluateWithHeldStoreGateFailClosedAsync(
             db,
             lockResource,
@@ -215,13 +250,19 @@ internal static class PreorderGateEvaluator
     internal static async Task AcquireDatabaseLockFailClosedAsync(
         ISqlSugarClient db,
         string lockResource,
+        string canonicalStoreGuid,
         string storeCode,
         ILogger logger
     )
     {
         try
         {
-            await PreorderMutationLock.AcquireDatabaseAsync(db, lockResource);
+            // SQL Server 行锁必须显式接收数据库读取出的 canonical StoreGUID，禁止从规范化锁键反推。
+            await PreorderMutationLock.AcquireDatabaseAsync(
+                db,
+                lockResource,
+                canonicalStoreGuid
+            );
         }
         catch (PreorderBusinessException)
         {

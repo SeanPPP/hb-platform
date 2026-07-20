@@ -691,3 +691,16 @@ export function syncCartMutationCache(
     (currentData) => mergeCartQuantityIntoDynamicData(currentData, cart)
   );
 }
+
+export function reconcileSubmittedCartCache(queryClient: QueryClient, storeCode: string) {
+  // 取消动作会同步中止在途请求；随后立即清零本地缓存，后台校准不阻塞提交成功后的导航。
+  void Promise.all([
+    queryClient.cancelQueries({ queryKey: ["cartSummary", storeCode] }),
+    queryClient.cancelQueries({ queryKey: ["shopDynamicData", storeCode] }),
+  ]);
+  syncCartMutationCache(queryClient, storeCode, null);
+  void Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["cartSummary", storeCode] }),
+    queryClient.invalidateQueries({ queryKey: ["shopDynamicData", storeCode] }),
+  ]);
+}

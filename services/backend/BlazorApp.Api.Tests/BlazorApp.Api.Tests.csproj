@@ -137,6 +137,7 @@
     <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
     <Compile Include="PreorderRulesTests.cs" />
     <Compile Include="PreorderPersistenceTests.cs" />
+    <Compile Include="PreorderSqlServerIntegrationTests.cs" />
     <Compile Include="LegacyCartPreorderGateTests.cs" />
     <Compile Include="PdaPreorderGateTests.cs" />
     <Compile Include="PdaCartToOrderStoreIsolationTests.cs" />

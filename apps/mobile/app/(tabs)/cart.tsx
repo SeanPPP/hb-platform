@@ -34,6 +34,7 @@ import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { submitStoreOrder } from "@/modules/orders/store-order-api";
+import { reconcileSubmittedCartCache } from "@/modules/shop/cart-cache";
 import { useClearCart } from "@/modules/shop/use-clear-cart";
 import { useCartPage } from "@/modules/shop/use-cart-page";
 import { useRemoveCartLine } from "@/modules/shop/use-remove-cart-line";
@@ -537,7 +538,7 @@ export default function Cart() {
     setSubmitPending(true);
     try {
       await submitStoreOrder(selectedStoreCode, trimmedRemarks || undefined);
-      await queryClient.invalidateQueries({ queryKey: ["cartSummary", selectedStoreCode] });
+      reconcileSubmittedCartCache(queryClient, selectedStoreCode);
       setPriorityProductCode(null);
       setOpenSwipeDetailGUID(null);
       setSubmitDialogVisible(false);

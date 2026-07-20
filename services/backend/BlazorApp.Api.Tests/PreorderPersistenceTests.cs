@@ -1031,6 +1031,7 @@ public sealed class PreorderPersistenceTests : IDisposable
             PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
                 _db,
                 "Unsupported:resource",
+                "store-1",
                 "S01",
                 NullLogger.Instance
             )
@@ -2469,6 +2470,42 @@ public sealed class PreorderPersistenceTests : IDisposable
         );
 
         Assert.Equal("MiXeD-Store", key);
+    }
+
+    [Fact]
+    public void 普通订单StoreGate从原始资源保留数据库StoreGuid大小写()
+    {
+        const string canonicalStoreGuid = "MiXeD-Store";
+        var resource = PreorderGateEvaluator.GetStoreLockResourceByStoreGuid(
+            canonicalStoreGuid
+        );
+
+        var extractedStoreGuid = PreorderGateEvaluator
+            .GetCanonicalStoreGuidFromLockResource(resource);
+        var sqlServerKey = PreorderMutationLock.ResolveStoreIdentityRowLockKey(
+            DbType.SqlServer,
+            "mixed-store",
+            extractedStoreGuid
+        );
+
+        Assert.Equal(canonicalStoreGuid, extractedStoreGuid);
+        Assert.Equal(canonicalStoreGuid, sqlServerKey);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("PreorderActivation:store-1")]
+    [InlineData("PreorderStoreGate:")]
+    [InlineData("PreorderStoreGate:store-1:extra")]
+    public void 普通订单StoreGate无效资源稳定FailClosed(string resource)
+    {
+        var error = Assert.Throws<PreorderBusinessException>(() =>
+            PreorderGateEvaluator.GetCanonicalStoreGuidFromLockResource(resource)
+        );
+
+        Assert.Equal(503, error.StatusCode);
+        Assert.Equal("PREORDER_GATE_UNAVAILABLE", error.ErrorCode);
+        Assert.Equal("Preorder 状态暂时无法确认，请稍后重试", error.Message);
     }
 
     [Fact]

@@ -427,9 +427,12 @@ namespace BlazorApp.Api.Services
 
                 try
                 {
+                    var canonicalStoreGuid = PreorderGateEvaluator
+                        .GetCanonicalStoreGuidFromLockResource(storeResource);
                     await PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
                         db,
                         storeResource,
+                        canonicalStoreGuid,
                         storeCode,
                         _logger
                     );
