@@ -19,6 +19,14 @@ const ADMIN_ROLE_NAMES = new Set([
 
 const STORE_MANAGER_ROLE_NAMES = new Set(["storemanager", "店长", "经理"]);
 
+const STORE_STAFF_ROLE_NAMES = new Set([
+  "storestaff",
+  "employee",
+  "店铺员工",
+  "店员",
+  "员工",
+]);
+
 const PRIVILEGED_ROLE_NAMES = new Set([
   ...ADMIN_ROLE_NAMES,
   ...STORE_MANAGER_ROLE_NAMES,
@@ -53,6 +61,10 @@ export function isAccessAdminRoleName(roleName: string) {
 
 export function isStoreManagerRoleName(roleName: string) {
   return STORE_MANAGER_ROLE_NAMES.has(normalizeIdentityValue(roleName));
+}
+
+export function isStoreStaffRoleName(roleName: string) {
+  return STORE_STAFF_ROLE_NAMES.has(normalizeIdentityValue(roleName));
 }
 
 export function hasPrivilegedAccessRole(roleNames: string[]) {
@@ -216,6 +228,15 @@ export function filterUserAccessRoles(
   );
 }
 
+export function limitUserAccessRolesForActor(
+  roles: UserAccessRole[],
+  isAdmin: boolean,
+) {
+  if (isAdmin) return roles;
+  // 店长只能增删员工角色；其他既有角色由后端保留且不在可编辑目录中暴露。
+  return roles.filter((role) => isStoreStaffRoleName(role.roleName));
+}
+
 function deniedEligibility(
   reason: NonNullable<UserAccessEligibility["reason"]>,
 ): UserAccessEligibility {
@@ -230,6 +251,37 @@ function deniedEligibility(
   };
 }
 
+export function applyUserAccessSectionRestrictions(
+  eligibility: UserAccessEligibility,
+  restrictions: {
+    rolesForbidden: boolean;
+    permissionsForbidden: boolean;
+  },
+): UserAccessEligibility {
+  // 全局授权失败只关闭受影响分段，不能连带阻断仍在范围内的分店关系维护。
+  const rolesMode = restrictions.rolesForbidden
+    ? "hidden"
+    : eligibility.rolesMode;
+  const permissionsMode =
+    restrictions.rolesForbidden || restrictions.permissionsForbidden
+      ? "hidden"
+      : eligibility.permissionsMode;
+  // 按店 POS 覆盖有独立 storeGUID 安全校验，不受账号级角色分段拒绝影响。
+  const canManagePos = eligibility.canManagePos;
+
+  return {
+    ...eligibility,
+    rolesMode,
+    permissionsMode,
+    canManagePos,
+    canOpen:
+      eligibility.storesMode !== "hidden" ||
+      rolesMode !== "hidden" ||
+      permissionsMode !== "hidden" ||
+      canManagePos,
+  };
+}
+
 export function getUserAccessEligibility(
   context: UserAccessEligibilityContext,
 ): UserAccessEligibility {
@@ -237,7 +289,11 @@ export function getUserAccessEligibility(
 
   const currentUserGuid = context.currentUserGuid?.trim().toLowerCase();
   const targetUserGuid = context.targetUserGuid.trim().toLowerCase();
-  if (currentUserGuid && currentUserGuid === targetUserGuid) {
+  if (
+    !context.isAdmin &&
+    currentUserGuid &&
+    currentUserGuid === targetUserGuid
+  ) {
     return deniedEligibility("self");
   }
   if (!context.isAdmin && hasPrivilegedAccessRole(context.targetRoleNames)) {
@@ -250,18 +306,26 @@ export function getUserAccessEligibility(
   }
 
   const canUseStoreScope = context.isAdmin || context.hasManageableStores;
+  const targetIsEmployee = context.targetRoleNames.some((roleName) =>
+    isStoreStaffRoleName(roleName),
+  );
   const storesMode = context.isAdmin
     ? "editable"
     : canUseStoreScope
-      ? "readOnly"
+      ? "editable"
       : "hidden";
-  const rolesMode = context.isAdmin ? "editable" : "hidden";
+  const rolesMode = canUseStoreScope ? "editable" : "hidden";
   const permissionsMode =
-    context.isAdmin || (context.isStoreManager && canUseStoreScope)
+    context.isAdmin ||
+    (context.isStoreManager &&
+      canUseStoreScope &&
+      targetIsEmployee &&
+      context.targetStatus === 1)
       ? "editable"
       : "hidden";
   const canManagePos = Boolean(
-    (context.isAdmin || (context.isStoreManager && context.canManagePos)) &&
+    (context.isAdmin ||
+      (context.isStoreManager && context.canManagePos && targetIsEmployee)) &&
     canUseStoreScope &&
     context.targetStatus === 1,
   );

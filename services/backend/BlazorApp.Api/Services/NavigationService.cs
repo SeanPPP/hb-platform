@@ -92,6 +92,7 @@ namespace BlazorApp.Api.Services
                 Children = new List<NavigationMenuDto>
                 {
                     new() { Path = "/warehouse/store-orders", TitleKey = "menu.storeOrders", Icon = "ReconciliationOutlined", Permission = Permissions.Warehouse.ManageOrders },
+                    new() { Path = "/warehouse/preorders", TitleKey = "menu.preorders", Icon = "ScheduleOutlined", Permission = Permissions.Warehouse.ManageOrders },
                     new() { Path = "/warehouse/store-order-import-price-variance", TitleKey = "menu.storeOrderImportPriceVariance", Icon = "BarChartOutlined", Permission = Permissions.Warehouse.ManageOrders },
                     new() { Path = "/warehouse/containers",   TitleKey = "menu.containers", Icon = "InboxOutlined",          Permission = Permissions.Container.View },
                     new() { Path = "/warehouse/products",     TitleKey = "menu.warehouseProducts", Icon = "AppstoreOutlined",   Permission = Permissions.Warehouse.ManageProducts },
@@ -124,6 +125,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/overview",       TitleKey = "menu.salesData",   Icon = "DashboardOutlined", Permission = Permissions.Reports.View },
                     new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.Reports.View },
                     new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.Reports.ProductMovementView },
+                    new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.LocalPurchase.View },
                 },
             },
             new()
@@ -498,8 +500,11 @@ namespace BlazorApp.Api.Services
             return HasAnyPermission(
                 context,
                 Permissions.Dashboard.View,
+                Permissions.Warehouse.ManageOrders,
+                Permissions.Warehouse.Manage,
                 Permissions.Container.View,
                 Permissions.Reports.ProductMovementView,
+                Permissions.LocalPurchase.View,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,

@@ -45,6 +45,7 @@ import {
   useUserAccessStores,
 } from "./access-management-hooks";
 import {
+  applyUserAccessSectionRestrictions,
   areAccessCodeSetsEqual,
   buildDirectPermissionDraft,
   buildUserAccessStoreAssignments,
@@ -56,6 +57,7 @@ import {
   getUserAccessStoreState,
   hasPrivilegedAccessRole,
   isStoreManagerRoleName,
+  limitUserAccessRolesForActor,
   setUserAccessStoreState,
   toggleDirectPermission,
 } from "./access-management";
@@ -193,6 +195,9 @@ export default function AccessManagementScreen() {
   const [allowRemove, setAllowRemove] = useState(false);
   const [authRedirectRequested, setAuthRedirectRequested] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [roleMutationForbidden, setRoleMutationForbidden] = useState(false);
+  const [permissionMutationForbidden, setPermissionMutationForbidden] =
+    useState(false);
   const pendingActionRef = useRef<NavigationAction | null>(null);
   const operationInFlightRef = useRef(false);
 
@@ -236,16 +241,73 @@ export default function AccessManagementScreen() {
   // 受限操作者直接使用登录态中的可管理分店，避免 POS-only 账号被全分店目录接口拒绝。
   const storeCatalogEnabled = storesEnabled && access.isAdmin;
   const rolesEnabled = queryEnabled && routeEligibility.rolesMode !== "hidden";
-  const permissionsEnabled =
-    queryEnabled && routeEligibility.permissionsMode !== "hidden";
 
   const storesQuery = useUserAccessStores(userGuid, storesEnabled);
   const storeCatalogQuery = useAccessStoreCatalog(storeCatalogEnabled);
   const rolesQuery = useUserAccessRoles(userGuid, rolesEnabled);
   const roleCatalogQuery = useAccessRoleCatalog(rolesEnabled);
+  const targetRoleNames = useMemo(
+    () => rolesQuery.data?.map((role) => role.roleName) ?? routeRoleNames,
+    [rolesQuery.data, routeRoleNames],
+  );
+  const baseEligibility = useMemo(
+    () =>
+      getUserAccessEligibility({
+        isDeviceMode,
+        isAdmin: access.isAdmin,
+        isStoreManager: access.isStoreManager,
+        canManageStores,
+        canManageRoles,
+        canManagePos,
+        currentUserGuid: currentUser?.userGUID,
+        targetUserGuid: userGuid,
+        targetStatus,
+        targetRoleNames,
+        hasManageableStores,
+      }),
+    [
+      access.isAdmin,
+      access.isStoreManager,
+      canManagePos,
+      canManageRoles,
+      canManageStores,
+      currentUser?.userGUID,
+      hasManageableStores,
+      isDeviceMode,
+      targetRoleNames,
+      targetStatus,
+      userGuid,
+    ],
+  );
+  const roleAccessForbidden = Boolean(
+    !access.isAdmin &&
+      (roleMutationForbidden ||
+        [rolesQuery.error, roleCatalogQuery.error].some(
+          (error) => error && classifyUserAccessError(error) === "forbidden",
+        )),
+  );
+  const permissionsEnabled = Boolean(
+    queryEnabled &&
+      !roleAccessForbidden &&
+      baseEligibility.permissionsMode !== "hidden",
+  );
   const permissionAccessQuery = useUserAccessPermissionAccess(
     userGuid,
     permissionsEnabled,
+  );
+  const permissionAccessForbidden = Boolean(
+    !access.isAdmin &&
+      (permissionMutationForbidden ||
+        (permissionAccessQuery.error &&
+          classifyUserAccessError(permissionAccessQuery.error) === "forbidden")),
+  );
+  const eligibility = useMemo(
+    () =>
+      applyUserAccessSectionRestrictions(baseEligibility, {
+        rolesForbidden: roleAccessForbidden,
+        permissionsForbidden: permissionAccessForbidden,
+      }),
+    [baseEligibility, permissionAccessForbidden, roleAccessForbidden],
   );
   const assignStoresMutation = useAssignUserAccessStores();
   const assignRolesMutation = useAssignUserAccessRoles();
@@ -285,41 +347,6 @@ export default function AccessManagementScreen() {
   );
   const dirty = storesDirty || rolesDirty || permissionsDirty;
 
-  const targetRoleNames = useMemo(
-    () => rolesQuery.data?.map((role) => role.roleName) ?? routeRoleNames,
-    [rolesQuery.data, routeRoleNames],
-  );
-
-  const eligibility = useMemo(
-    () =>
-      getUserAccessEligibility({
-        isDeviceMode,
-        isAdmin: access.isAdmin,
-        isStoreManager: access.isStoreManager,
-        canManageStores,
-        canManageRoles,
-        canManagePos,
-        currentUserGuid: currentUser?.userGUID,
-        targetUserGuid: userGuid,
-        targetStatus,
-        targetRoleNames,
-        hasManageableStores,
-      }),
-    [
-      access.isAdmin,
-      access.isStoreManager,
-      canManagePos,
-      canManageRoles,
-      canManageStores,
-      currentUser?.userGUID,
-      hasManageableStores,
-      isDeviceMode,
-      targetRoleNames,
-      targetStatus,
-      userGuid,
-    ],
-  );
-
   useEffect(() => {
     const activeMode =
       activeSection === "stores"
@@ -352,6 +379,8 @@ export default function AccessManagementScreen() {
     setBaselineRoleGuids([]);
     setPermissionDraft(null);
     setTerminalErrorKind(null);
+    setRoleMutationForbidden(false);
+    setPermissionMutationForbidden(false);
     setAllowRemove(false);
   }, [userGuid]);
 
@@ -410,9 +439,11 @@ export default function AccessManagementScreen() {
   const queryErrors = [
     storesEnabled ? storesQuery.error : null,
     storeCatalogEnabled ? storeCatalogQuery.error : null,
-    rolesEnabled ? rolesQuery.error : null,
-    rolesEnabled ? roleCatalogQuery.error : null,
-    permissionsEnabled ? permissionAccessQuery.error : null,
+    rolesEnabled && !roleAccessForbidden ? rolesQuery.error : null,
+    rolesEnabled && !roleAccessForbidden ? roleCatalogQuery.error : null,
+    permissionsEnabled && !permissionAccessForbidden
+      ? permissionAccessQuery.error
+      : null,
   ].filter(Boolean);
   const firstTerminalQueryError = queryErrors.find(
     (error) => classifyUserAccessError(error) !== "network",
@@ -495,9 +526,34 @@ export default function AccessManagementScreen() {
   }, [router]);
 
   const handleOperationError = useCallback(
-    (error: unknown, fallbackKey: string) => {
+    (
+      error: unknown,
+      fallbackKey: string,
+      section?: Extract<AccessSection, "roles" | "permissions">,
+    ) => {
       const errorKind = classifyUserAccessError(error);
       if (errorKind === "network") {
+        setSnackbarMessage(t(fallbackKey));
+        return;
+      }
+      if (errorKind === "forbidden" && !access.isAdmin && section) {
+        // 局部授权失效只关闭对应分段，清除已不可提交的草稿并保留分店维护能力。
+        if (section === "roles") {
+          setRoleMutationForbidden(true);
+          setSelectedRoleGuids([...baselineRoleGuids]);
+          setPermissionDraft((current) =>
+            current
+              ? { ...current, selectedCodes: [...current.baselineCodes] }
+              : current,
+          );
+        } else {
+          setPermissionMutationForbidden(true);
+          setPermissionDraft((current) =>
+            current
+              ? { ...current, selectedCodes: [...current.baselineCodes] }
+              : current,
+          );
+        }
         setSnackbarMessage(t(fallbackKey));
         return;
       }
@@ -507,7 +563,7 @@ export default function AccessManagementScreen() {
         setAllowRemove(true);
       }
     },
-    [t],
+    [access.isAdmin, baselineRoleGuids, t],
   );
 
   const actorManagedStoreOptions = useMemo<AccessStoreOption[]>(
@@ -545,8 +601,12 @@ export default function AccessManagementScreen() {
     storesQuery.data,
   ]);
   const roleOptions = useMemo(
-    () => mergeRoles(roleCatalogQuery.data, rolesQuery.data),
-    [roleCatalogQuery.data, rolesQuery.data],
+    () =>
+      limitUserAccessRolesForActor(
+        mergeRoles(roleCatalogQuery.data, rolesQuery.data),
+        access.isAdmin,
+      ),
+    [access.isAdmin, roleCatalogQuery.data, rolesQuery.data],
   );
   const filteredRoleOptions = useMemo(
     () => filterUserAccessRoles(roleOptions, roleSearch),
@@ -611,7 +671,11 @@ export default function AccessManagementScreen() {
       setBaselineRoleGuids([...selectedRoleGuids]);
       setSnackbarMessage(t("accessManagement.messages.rolesSaved"));
     } catch (error) {
-      handleOperationError(error, "accessManagement.messages.rolesSaveFailed");
+      handleOperationError(
+        error,
+        "accessManagement.messages.rolesSaveFailed",
+        "roles",
+      );
     } finally {
       operationInFlightRef.current = false;
     }
@@ -650,6 +714,7 @@ export default function AccessManagementScreen() {
       handleOperationError(
         error,
         "accessManagement.messages.permissionsSaveFailed",
+        "permissions",
       );
     } finally {
       operationInFlightRef.current = false;
@@ -688,16 +753,18 @@ export default function AccessManagementScreen() {
     const retries: Promise<unknown>[] = [];
     if (storesEnabled) retries.push(storesQuery.refetch());
     if (storeCatalogEnabled) retries.push(storeCatalogQuery.refetch());
-    if (rolesEnabled)
+    if (rolesEnabled && !roleAccessForbidden)
       retries.push(rolesQuery.refetch(), roleCatalogQuery.refetch());
-    if (permissionsEnabled) {
+    if (permissionsEnabled && !permissionAccessForbidden) {
       retries.push(permissionAccessQuery.refetch());
     }
     void Promise.allSettled(retries);
   }, [
     permissionAccessQuery,
+    permissionAccessForbidden,
     permissionsEnabled,
     roleCatalogQuery,
+    roleAccessForbidden,
     rolesEnabled,
     rolesQuery,
     storeCatalogQuery,
@@ -709,8 +776,12 @@ export default function AccessManagementScreen() {
   const requiredQueries = [
     ...(storesEnabled ? [storesQuery] : []),
     ...(storeCatalogEnabled ? [storeCatalogQuery] : []),
-    ...(rolesEnabled ? [rolesQuery, roleCatalogQuery] : []),
-    ...(permissionsEnabled ? [permissionAccessQuery] : []),
+    ...(rolesEnabled && !roleAccessForbidden
+      ? [rolesQuery, roleCatalogQuery]
+      : []),
+    ...(permissionsEnabled && !permissionAccessForbidden
+      ? [permissionAccessQuery]
+      : []),
   ];
   const initialLoading = requiredQueries.some(
     (query) =>
@@ -901,6 +972,11 @@ export default function AccessManagementScreen() {
     }
     return (
       <View style={styles.sectionContent}>
+        {!access.isAdmin ? (
+          <Text variant="bodySmall" style={styles.helperText}>
+            {t("accessManagement.roles.managerLimit")}
+          </Text>
+        ) : null}
         <Searchbar
           value={roleSearch}
           onChangeText={setRoleSearch}
@@ -1023,6 +1099,11 @@ export default function AccessManagementScreen() {
         ]).size;
     return (
       <View style={styles.sectionContent}>
+        {!access.isAdmin ? (
+          <Text variant="bodySmall" style={styles.helperText}>
+            {t("accessManagement.permissions.managerLimit")}
+          </Text>
+        ) : null}
         <Text variant="bodySmall" style={styles.helperText}>
           {t("accessManagement.permissions.summary", {
             effective: effectiveCount,

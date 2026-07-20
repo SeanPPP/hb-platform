@@ -258,6 +258,18 @@ assertEqual(
 )
 
 assertEqual(
+  isForbiddenRoleForScopedManager('Warehouse'),
+  true,
+  'Warehouse alias should be forbidden for scoped store managers',
+)
+
+assertEqual(
+  isForbiddenRoleForScopedManager('WarehouseAdmin'),
+  true,
+  'WarehouseAdmin alias should be forbidden for scoped store managers',
+)
+
+assertEqual(
   isForbiddenRoleForScopedManager('超级管理员'),
   true,
   'Chinese super administrator role should be forbidden for scoped store managers',
@@ -287,6 +299,9 @@ assertArrayEqual(
 
 const roleOptions = [
   createRoleOption({ roleGUID: 'role-user-guid', roleName: 'User' }),
+  createRoleOption({ roleGUID: 'role-staff-guid', roleName: 'StoreStaff' }),
+  createRoleOption({ roleGUID: 'role-employee-guid', roleName: 'Employee' }),
+  createRoleOption({ roleGUID: 'role-staff-cn-guid', roleName: '员工' }),
   createRoleOption({ roleGUID: 'role-admin-guid', roleName: 'Admin' }),
   createRoleOption({ roleGUID: 'role-store-manager-guid', roleName: '店长' }),
   createRoleOption({ roleGUID: 'role-warehouse-guid', roleName: '仓库管理员' }),
@@ -294,20 +309,20 @@ const roleOptions = [
 
 assertArrayEqual(
   filterRoleOptionsForScopedManager(roleOptions).map((role) => role.roleGUID),
-  ['role-user-guid'],
-  'Scoped store manager role options should exclude forbidden roles',
+  ['role-staff-guid', 'role-employee-guid', 'role-staff-cn-guid'],
+  'Scoped store manager role options should include only employee aliases',
+)
+
+assertEqual(
+  areRoleGuidsAllowedForScopedManager(['role-staff-guid'], roleOptions),
+  true,
+  'Scoped store manager should be able to assign employee roles',
 )
 
 assertEqual(
   areRoleGuidsAllowedForScopedManager(['role-user-guid'], roleOptions),
-  true,
-  'Scoped store manager should be able to assign allowed roles',
-)
-
-assertEqual(
-  areRoleGuidsAllowedForScopedManager(['role-user-guid', 'role-admin-guid'], roleOptions),
   false,
-  'Scoped store manager should not be able to assign forbidden roles',
+  'Scoped store manager should not be able to assign arbitrary ordinary roles',
 )
 
 assertArrayEqual(

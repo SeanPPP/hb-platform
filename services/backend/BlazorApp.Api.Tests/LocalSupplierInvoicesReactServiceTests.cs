@@ -56,6 +56,126 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateAsync_ChangingStoreAndSupplier_CascadesTrimmedCodesToInvoiceAndDetails()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-update-header", "INV-UPDATE", new DateTime(2026, 7, 19));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-update-header",
+                InvoiceGUID = "invoice-update-header",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-guid-2",
+                StoreCode = "S02",
+                StoreName = "Brisbane Store",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new HBLocalSupplier
+            {
+                Guid = "supplier-guid-2",
+                LocalSupplierCode = "SUP02",
+                Name = "Second Supplier",
+                Status = 1,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateAsync(
+                "invoice-update-header",
+                new UpdateInvoiceRequest { StoreCode = " S02 ", SupplierCode = " SUP02 " }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == "invoice-update-header");
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(x => x.DetailGUID == "detail-update-header");
+            Assert.Equal("S02", invoice.StoreCode);
+            Assert.Equal("SUP02", invoice.SupplierCode);
+            Assert.Equal("S02", detail.StoreCode);
+            Assert.Equal("SUP02", detail.SupplierCode);
+        }
+
+        [Theory]
+        [InlineData("missing-store", "INVALID_STORE")]
+        [InlineData("inactive-store", "INVALID_STORE")]
+        [InlineData("missing-supplier", "INVALID_SUPPLIER")]
+        [InlineData("inactive-supplier", "INVALID_SUPPLIER")]
+        public async Task UpdateAsync_InvalidOrInactiveTarget_IsRejectedWithoutChangingData(
+            string scenario,
+            string expectedErrorCode
+        )
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-invalid-header", "INV-INVALID", new DateTime(2026, 7, 19));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-invalid-header",
+                InvoiceGUID = "invoice-invalid-header",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            if (scenario == "inactive-store")
+            {
+                await _db.Insertable(new Store
+                {
+                    StoreGUID = "store-guid-inactive",
+                    StoreCode = "S-INACTIVE",
+                    StoreName = "Inactive Store",
+                    IsActive = false,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+            if (scenario == "inactive-supplier")
+            {
+                await _db.Insertable(new HBLocalSupplier
+                {
+                    Guid = "supplier-guid-inactive",
+                    LocalSupplierCode = "SUP-INACTIVE",
+                    Name = "Inactive Supplier",
+                    Status = 0,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+
+            var targetStoreCode = scenario.EndsWith("store", StringComparison.Ordinal)
+                ? scenario == "inactive-store" ? "S-INACTIVE" : "S-MISSING"
+                : "S01";
+            var targetSupplierCode = scenario.EndsWith("supplier", StringComparison.Ordinal)
+                ? scenario == "inactive-supplier" ? "SUP-INACTIVE" : "SUP-MISSING"
+                : "SUP01";
+
+            var result = await CreateService().UpdateAsync(
+                "invoice-invalid-header",
+                new UpdateInvoiceRequest
+                {
+                    StoreCode = targetStoreCode,
+                    SupplierCode = targetSupplierCode,
+                    Remarks = "不应保存",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal(expectedErrorCode, result.ErrorCode);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == "invoice-invalid-header");
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(x => x.DetailGUID == "detail-invalid-header");
+            Assert.Equal("S01", invoice.StoreCode);
+            Assert.Equal("SUP01", invoice.SupplierCode);
+            Assert.Null(invoice.Remarks);
+            Assert.Equal("S01", detail.StoreCode);
+            Assert.Equal("SUP01", detail.SupplierCode);
+        }
+
+        [Fact]
         public async Task GetGridDataAsync_DefaultsToOrderDateDescendingAndClampsPageSizeTo20()
         {
             await SeedStoreAndSupplierAsync();
@@ -2844,6 +2964,7 @@ namespace BlazorApp.Api.Tests
                 StoreGUID = "store-guid-1",
                 StoreCode = "S01",
                 StoreName = "Sydney Store",
+                IsActive = true,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
 
@@ -2852,6 +2973,7 @@ namespace BlazorApp.Api.Tests
                 Guid = "supplier-guid-1",
                 LocalSupplierCode = "SUP01",
                 Name = "Local Supplier",
+                Status = 1,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }

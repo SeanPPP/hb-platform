@@ -187,6 +187,8 @@ async function main() {
     const barcodeContentRule = readCssRule(compactCssSource, ".warehouse-locations-compact-table .warehouse-locations-barcode-content");
     const copyButtonRule = readCssRule(compactCssSource, ".warehouse-locations-compact-table .warehouse-locations-copy-button");
     const barcodePreviewRule = readCssRule(compactCssSource, ".warehouse-locations-compact-table .warehouse-locations-product-barcode-preview canvas");
+    const selectionColumnRule = readCssRule(compactCssSource, ".warehouse-locations-compact-table .ant-table-selection-column");
+    const selectionCheckboxRule = readCssRule(compactCssSource, ".warehouse-locations-compact-table .ant-table-selection-column .ant-checkbox-wrapper");
     assert(/-webkit-line-clamp:\s*2/.test(headerRule), "\u5217\u5934\u5E94\u6700\u591A\u663E\u793A\u4E24\u884C");
     assert(/white-space:\s*nowrap/.test(nowrapRule), "\u5173\u952E\u5B57\u6BB5\u5E94\u4FDD\u6301\u5355\u884C");
     assert(!/overflow:\s*hidden/.test(nowrapRule), "\u5173\u952E\u5B57\u6BB5\u4E0D\u5E94\u88AB\u9690\u85CF\u622A\u65AD");
@@ -200,6 +202,12 @@ async function main() {
     assert(/width:\s*20px/.test(copyButtonRule), "\u590D\u5236\u56FE\u6807\u6309\u94AE\u5E94\u6536\u7A84");
     assert(/max-width:\s*74px/.test(barcodePreviewRule), "\u5546\u54C1\u6761\u7801\u56FE\u5E94\u63A7\u5236\u6700\u5927\u5BBD\u5EA6");
     assert(/height:\s*18px/.test(barcodePreviewRule), "\u5546\u54C1\u6761\u7801\u56FE\u9AD8\u5EA6\u5E94\u63A7\u5236\u5230 18px");
+    assert(/width:\s*56px/.test(selectionColumnRule), "\u9009\u62E9\u5217\u5E94\u663E\u5F0F\u5360\u7528 56px");
+    assert(/min-width:\s*56px/.test(selectionColumnRule), "\u9009\u62E9\u5217\u5E94\u4FDD\u7559 56px \u6700\u5C0F\u5BBD\u5EA6\uFF0C\u907F\u514D\u7D27\u51D1 padding \u6324\u538B");
+    assert(/max-width:\s*56px/.test(selectionColumnRule), "\u9009\u62E9\u5217\u5E94\u9501\u5B9A 56px \u6700\u5927\u5BBD\u5EA6");
+    assert(/text-align:\s*center/.test(selectionColumnRule), "\u9009\u62E9\u5217\u590D\u9009\u6846\u5E94\u5C45\u4E2D");
+    assert(/display:\s*inline-flex/.test(selectionCheckboxRule), "\u9009\u62E9\u5217\u590D\u9009\u6846 wrapper \u5E94\u4F7F\u7528 inline-flex");
+    assert(/justify-content:\s*center/.test(selectionCheckboxRule), "\u9009\u62E9\u5217\u590D\u9009\u6846 wrapper \u5E94\u6C34\u5E73\u5C45\u4E2D");
     assert(!/^\.warehouse-locations-nowrap/m.test(compactCssSource), "nowrap \u6837\u5F0F\u5FC5\u987B\u9650\u5B9A\u5230\u4ED3\u5E93\u6807\u7B7E\u8868\u683C\u4E0B");
     assert(!/^\.warehouse-locations-two-line-text/m.test(compactCssSource), "\u4E24\u884C\u6837\u5F0F\u5FC5\u987B\u9650\u5B9A\u5230\u4ED3\u5E93\u6807\u7B7E\u8868\u683C\u4E0B");
   });
@@ -211,16 +219,56 @@ async function main() {
     const productNameColumn = readColumnBlock(locationsPageSource, "key: 'productNames'");
     const imageColumn = readColumnBlock(locationsPageSource, "key: 'productImages'");
     const actionColumn = readColumnBlock(locationsPageSource, "key: 'action'");
-    const scrollX = readNumericValue(locationsPageSource, /scroll=\{\{\s*x:\s*(\d+)/);
+    const selectionColumnWidth = readNumericValue(locationsPageSource, /WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH\s*=\s*(\d+)/);
     assert(readNumericValue(indexColumn, /width:\s*(\d+)/) <= 56, "\u5E8F\u53F7\u5217\u5E94\u538B\u5230 56 \u4EE5\u5185");
     assert(readNumericValue(itemNumberColumn, /width:\s*(\d+)/) <= 118, "\u8D27\u53F7\u5217\u5E94\u538B\u5230 118 \u4EE5\u5185");
     assert(readNumericValue(productBarcodeColumn, /width:\s*(\d+)/) <= 150, "\u5546\u54C1\u6761\u7801\u5217\u5E94\u538B\u5230 150 \u4EE5\u5185");
     assert(readNumericValue(productNameColumn, /width:\s*(\d+)/) >= 190, "\u5546\u54C1\u540D\u79F0\u5217\u5E94\u4FDD\u7559\u81F3\u5C11 190 \u5BBD\u5EA6");
     assert(readNumericValue(imageColumn, /width:\s*(\d+)/) <= 112, "\u56FE\u7247\u5217\u5E94\u538B\u5230 112 \u4EE5\u5185");
     assert(readNumericValue(actionColumn, /width:\s*(\d+)/) <= 132, "\u64CD\u4F5C\u5217\u5E94\u538B\u5230 132 \u4EE5\u5185");
-    assert(scrollX >= 1460 && scrollX <= 1500, "scroll.x \u5E94\u8BBE\u7F6E\u5230 1460-1500");
+    assert(selectionColumnWidth === 56, "\u9009\u62E9\u5217 TypeScript \u4E0E CSS \u5E94\u7EDF\u4E00\u4E3A 56px");
+    assert(indexColumn.includes("fixed: 'left'"), "\u5E8F\u53F7\u5217\u5E94\u56FA\u5B9A\u5728\u9009\u62E9\u5217\u53F3\u4FA7\uFF0C\u907F\u514D\u6A2A\u5411\u6EDA\u52A8\u65F6\u91CD\u53E0");
+    assert(locationsPageSource.includes("columnWidth: WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH"), "rowSelection \u5E94\u590D\u7528\u7EDF\u4E00\u9009\u62E9\u5217\u5BBD\u5EA6");
+    assert(
+      locationsPageSource.includes("const selectionColumnWidth = access.canManageWarehouseLocations\n    ? WAREHOUSE_LOCATION_SELECTION_COLUMN_WIDTH\n    : 0"),
+      "scroll.x \u9009\u62E9\u5217\u9884\u7B97\u5E94\u6309\u8D27\u4F4D\u7BA1\u7406\u6743\u9650\u4E3A 56 \u6216 0"
+    );
+    assert(locationsPageSource.includes("selectionColumnWidth + columns.reduce"), "scroll.x \u5E94\u5305\u542B\u5F53\u524D\u53EF\u89C1\u9009\u62E9\u5217\u548C\u5168\u90E8\u4E1A\u52A1\u5217\u5BBD\u5EA6\u9884\u7B97");
+    assert(locationsPageSource.includes("scroll={{ x: tableScrollX, y: 600 }}"), "Table \u5E94\u4F7F\u7528\u5305\u542B\u9009\u62E9\u5217\u9884\u7B97\u7684\u52A8\u6001 scroll.x");
   });
   if (layoutFailure) failures.push(layoutFailure);
+  const batchUnbindFailure = await runTest("\u4ED3\u5E93\u6807\u7B7E\u9875\u5E94\u6309\u6240\u9009\u8D27\u4F4D\u6279\u91CF\u89E3\u7ED1\u6709\u6548\u5546\u54C1\u5173\u8054", () => {
+    assert(locationsPageSource.includes("batchUnbindLocationProducts"), "\u9875\u9762\u5E94\u590D\u7528\u6279\u91CF\u89E3\u7ED1\u670D\u52A1");
+    assert(locationsPageSource.includes("const [selectedRowKeys, setSelectedRowKeys] = useState"), "\u9875\u9762\u7F3A\u5C11\u53D7\u63A7\u884C\u9009\u62E9\u72B6\u6001");
+    assert(locationsPageSource.includes("const [batchUnbinding, setBatchUnbinding] = useState(false)"), "\u9875\u9762\u7F3A\u5C11\u6279\u91CF\u89E3\u7ED1 loading \u72B6\u6001");
+    assert(locationsPageSource.includes("selectedBindings"), "\u9875\u9762\u5E94\u4ECE\u6240\u9009\u8D27\u4F4D\u5C55\u5F00\u5546\u54C1\u5173\u8054");
+    assert(locationsPageSource.includes("buildSelectedLocationProductBindings"), "\u9875\u9762\u5E94\u590D\u7528\u7EAF\u51FD\u6570\u5C55\u5F00\u5E76\u53BB\u91CD\u5546\u54C1\u5173\u8054");
+    assert(locationsPageSource.includes("hasUnbindableProducts"), "\u9875\u9762\u5E94\u590D\u7528\u7EAF\u51FD\u6570\u5224\u65AD\u8D27\u4F4D\u80FD\u5426\u89E3\u7ED1");
+    assert(locationsPageSource.includes("coordinateBatchUnbindLocationProducts"), "\u9875\u9762\u5E94\u590D\u7528\u5F02\u6B65\u534F\u8C03\u51FD\u6570\u7BA1\u7406\u89E3\u7ED1\u548C\u5237\u65B0\u72B6\u6001\u6D41");
+    assert(locationsPageSource.includes("const rowSelection"), "\u9875\u9762\u5E94\u914D\u7F6E Table rowSelection");
+    assert(locationsPageSource.includes("selectedRowKeys,"), "rowSelection \u5E94\u53D7\u63A7");
+    assert(locationsPageSource.includes("getCheckboxProps:"), "rowSelection \u5E94\u914D\u7F6E\u7A7A\u8D27\u4F4D\u7981\u9009");
+    assert(locationsPageSource.includes("disabled: !hasUnbindableProducts(record)"), "\u6CA1\u6709\u6709\u6548 productCode \u7684\u8D27\u4F4D\u5E94\u7981\u9009");
+    assert(locationsPageSource.includes("rowSelection={access.canManageWarehouseLocations ? rowSelection : undefined}"), "\u4EC5\u8D27\u4F4D\u7BA1\u7406\u6743\u9650\u7528\u6237\u53EF\u9009\u62E9\u6279\u91CF\u89E3\u7ED1\u8D27\u4F4D");
+    assert(locationsPageSource.includes("setSelectedRowKeys((currentKeys)"), "\u5217\u8868\u5237\u65B0\u540E\u5E94\u6E05\u7406\u5F53\u524D\u9875\u4E0D\u5B58\u5728\u7684\u9009\u62E9");
+    assert(locationsPageSource.includes("danger"), "\u6279\u91CF\u89E3\u7ED1\u6309\u94AE\u5E94\u4F7F\u7528\u5371\u9669\u64CD\u4F5C\u6837\u5F0F");
+    assert(locationsPageSource.includes("t('warehouseLocations.batchUnbind')"), "\u6279\u91CF\u6309\u94AE\u5E94\u4F7F\u7528\u56FD\u9645\u5316\u6587\u6848");
+    assert(locationsPageSource.includes("t('warehouseLocations.selectedLocations'"), "\u64CD\u4F5C\u6761\u5E94\u5C55\u793A\u8D27\u4F4D\u6570\u548C\u5546\u54C1\u5173\u8054\u6570");
+    assert(locationsPageSource.includes("disabled={!selectedBindings.length || loading || batchUnbinding}"), "\u6309\u94AE\u5E94\u5728\u65E0\u9009\u62E9\u3001\u52A0\u8F7D\u6216\u6267\u884C\u4E2D\u7981\u7528");
+    assert(locationsPageSource.includes("loading={batchUnbinding}"), "\u6309\u94AE\u5E94\u7ED1\u5B9A\u6279\u91CF\u89E3\u7ED1 loading");
+    assert(locationsPageSource.includes("const handleBatchUnbind = () => {"), "\u9875\u9762\u7F3A\u5C11\u6279\u91CF\u89E3\u7ED1\u5904\u7406\u51FD\u6570");
+    assert(locationsPageSource.includes("Modal.confirm({"), "\u6279\u91CF\u89E3\u7ED1\u5E94\u4E8C\u6B21\u786E\u8BA4");
+    assert(locationsPageSource.includes("t('warehouseLocations.batchUnbindContent'"), "\u786E\u8BA4\u6B63\u6587\u5E94\u8BF4\u660E\u6570\u91CF\u548C\u4E0D\u53EF\u6062\u590D");
+    assert(locationsPageSource.includes("setBatchUnbinding(true)"), "\u786E\u8BA4\u540E\u5E94\u8FDB\u5165\u6267\u884C\u72B6\u6001");
+    assert(locationsPageSource.includes("unbind: batchUnbindLocationProducts"), "\u5F02\u6B65\u534F\u8C03\u51FD\u6570\u5E94\u8C03\u7528\u6279\u91CF\u89E3\u7ED1\u670D\u52A1");
+    assert(locationsPageSource.includes("message.success(t('warehouseLocations.batchUnbindSuccess'"), "\u5168\u6210\u529F\u5E94\u5C55\u793A success");
+    assert(locationsPageSource.includes("message.warning(t('warehouseLocations.batchUnbindPartialFailed'"), "\u90E8\u5206\u5931\u8D25\u5E94\u5C55\u793A warning");
+    assert(locationsPageSource.includes("message.error(t('warehouseLocations.batchUnbindFailed'"), "\u5168\u5931\u8D25\u5E94\u5C55\u793A error");
+    assert(locationsPageSource.includes("refresh: () => loadDataWithColumnFilters(page, pageSize)"), "\u5F02\u6B65\u534F\u8C03\u51FD\u6570\u5E94\u6CE8\u5165\u5F53\u524D\u5217\u8868\u5237\u65B0");
+    assert(locationsPageSource.includes("shouldApplyPatchedData"), "\u9875\u9762\u5E94\u6309\u534F\u8C03\u7ED3\u679C\u5224\u65AD\u662F\u5426\u5199\u56DE\u672C\u5730\u8865\u4E01");
+    assert(locationsPageSource.includes("setData(patchedData)"), "\u5237\u65B0\u5931\u8D25\u65F6\u5E94\u5199\u5165\u5254\u9664\u6210\u529F\u5173\u8054\u540E\u7684\u672C\u5730\u6570\u636E");
+  });
+  if (batchUnbindFailure) failures.push(batchUnbindFailure);
   const localeAndScriptFailure = await runTest("\u5546\u54C1\u6761\u7801\u6587\u6848\u548C\u6D4B\u8BD5\u811A\u672C\u5E94\u63A5\u5165\u9879\u76EE", () => {
     assert(zhLocaleSource.includes('"productBarcode": "\u5546\u54C1\u6761\u7801"'), "\u4E2D\u6587\u5217\u540D\u7F3A\u5C11\u5546\u54C1\u6761\u7801");
     assert(enLocaleSource.includes('"productBarcode": "Product Barcode"'), "\u82F1\u6587\u5217\u540D\u7F3A\u5C11 Product Barcode");
@@ -231,6 +279,34 @@ async function main() {
     assert(packageSource.includes('"test:warehouse-locations"'), "package.json \u7F3A\u5C11 test:warehouse-locations \u811A\u672C");
     assert(packageSource.includes("warehouseLocationsCompactUi.logic.test.ts"), "\u6D4B\u8BD5\u811A\u672C\u672A\u8FD0\u884C\u4ED3\u5E93\u6807\u7B7E\u7D27\u51D1 UI \u7EA6\u675F");
     assert(packageSource.includes("locationService.hqSync.test.ts"), "\u6D4B\u8BD5\u811A\u672C\u672A\u8FD0\u884C\u4ED3\u5E93\u6807\u7B7E HQ \u540C\u6B65\u670D\u52A1\u884C\u4E3A\u6D4B\u8BD5");
+    const expectedZhCopy = [
+      '"batchUnbind": "\u6279\u91CF\u89E3\u7ED1"',
+      '"selectedLocations": "\u5DF2\u9009 {{locations}} \u4E2A\u8D27\u4F4D\uFF0C\u5171 {{products}} \u4E2A\u5546\u54C1\u5173\u8054"',
+      '"batchUnbindTitle": "\u6279\u91CF\u89E3\u7ED1\u5546\u54C1\u5173\u8054"',
+      '"batchUnbindContent": "\u5C06\u89E3\u7ED1\u6240\u9009 {{locations}} \u4E2A\u8D27\u4F4D\u4E2D\u7684 {{products}} \u4E2A\u5546\u54C1\u5173\u8054\uFF0C\u6B64\u64CD\u4F5C\u4E0D\u53EF\u6062\u590D\u3002"',
+      '"batchUnbindConfirm": "\u786E\u8BA4\u89E3\u7ED1"',
+      '"batchUnbindSuccess": "\u5DF2\u6210\u529F\u89E3\u7ED1 {{succeeded}} \u4E2A\u5546\u54C1\u5173\u8054"',
+      '"batchUnbindPartialFailed": "\u6210\u529F\u89E3\u7ED1 {{succeeded}} \u4E2A\u5546\u54C1\u5173\u8054\uFF0C{{failed}} \u4E2A\u5931\u8D25"',
+      '"batchUnbindFailed": "\u6279\u91CF\u89E3\u7ED1\u5931\u8D25\uFF0C\u5171 {{failed}} \u4E2A\u5546\u54C1\u5173\u8054\u672A\u89E3\u7ED1"'
+    ];
+    const expectedEnCopy = [
+      '"batchUnbind": "Batch Unbind"',
+      '"selectedLocations": "Selected locations: {{locations}}; product links: {{products}}"',
+      '"batchUnbindTitle": "Batch Unbind Product Links"',
+      '"batchUnbindContent": "Selected locations: {{locations}}. Product links to unbind: {{products}}. This action cannot be undone."',
+      '"batchUnbindConfirm": "Unbind"',
+      '"batchUnbindSuccess": "Product links unbound: {{succeeded}}"',
+      '"batchUnbindPartialFailed": "Product links unbound: {{succeeded}}. Failed: {{failed}}"',
+      '"batchUnbindFailed": "No product links were unbound. Failed: {{failed}}"'
+    ];
+    for (const copy of expectedZhCopy) {
+      assert(zhLocaleSource.includes(copy), `\u4E2D\u6587\u6279\u91CF\u89E3\u7ED1\u6587\u6848\u7F3A\u5931: ${copy}`);
+    }
+    for (const copy of expectedEnCopy) {
+      assert(enLocaleSource.includes(copy), `\u82F1\u6587\u6279\u91CF\u89E3\u7ED1\u6587\u6848\u7F3A\u5931: ${copy}`);
+    }
+    assert(!expectedZhCopy.some((copy) => copy.includes("\u2014") || copy.includes("\u2013")), "\u4E2D\u6587\u6279\u91CF\u89E3\u7ED1\u6587\u6848\u4E0D\u80FD\u4F7F\u7528\u7834\u6298\u53F7");
+    assert(!expectedEnCopy.some((copy) => copy.includes("\u2014") || copy.includes("\u2013")), "\u82F1\u6587\u6279\u91CF\u89E3\u7ED1\u6587\u6848\u4E0D\u80FD\u4F7F\u7528\u7834\u6298\u53F7");
   });
   if (localeAndScriptFailure) failures.push(localeAndScriptFailure);
   if (failures.length > 0) {

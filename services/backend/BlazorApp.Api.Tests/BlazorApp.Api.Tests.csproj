@@ -75,6 +75,8 @@
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
+    <Compile Include="LocalPurchaseDashboardTests.cs" />
+    <Compile Include="LocalPurchaseDashboardSqlServerIntegrationTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
@@ -133,6 +135,11 @@
     <Compile Include="WpfAppReleaseServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />
     <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
+    <Compile Include="PreorderRulesTests.cs" />
+    <Compile Include="PreorderPersistenceTests.cs" />
+    <Compile Include="LegacyCartPreorderGateTests.cs" />
+    <Compile Include="PdaPreorderGateTests.cs" />
+    <Compile Include="PdaCartToOrderStoreIsolationTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />

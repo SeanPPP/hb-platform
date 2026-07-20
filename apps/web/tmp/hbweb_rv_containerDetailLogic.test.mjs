@@ -2520,6 +2520,7 @@ var pageStyleSource = readFileSync("src/pages/Warehouse/ContainerDetail/index.cs
 var mobileLayoutSource = readFileSync("src/layout/MobileLayout.tsx", "utf8");
 var containerDetailLogicSource = readFileSync("src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts", "utf8");
 var warehouseProductServiceSource = readFileSync("src/services/warehouseProductService.ts", "utf8");
+var posProductTypeSource = readFileSync("src/types/posProduct.ts", "utf8");
 var zhLocale = JSON.parse(readFileSync("src/i18n/locales/zh.json", "utf8"));
 var enLocale = JSON.parse(readFileSync("src/i18n/locales/en.json", "utf8"));
 assertEqual(
@@ -3585,9 +3586,9 @@ assertEqual(
   "\u5B57\u6BB5\u9009\u62E9\u5F39\u7A97\u5E94\u63D0\u4F9B\u5168\u9009\u590D\u9009\u6846\uFF0C\u5E76\u7528\u53D7\u63A7\u52FE\u9009\u72B6\u6001\u540C\u6B65\u5B57\u6BB5\u5217\u8868"
 );
 assertEqual(
-  pageSource.includes("type MissingPushToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushToHqUpdateFieldOptionValue>") && pageSource.includes("const assertAllPushToHqUpdateFieldsCovered: Record<MissingPushToHqUpdateFieldOption, never> = {}"),
+  posProductTypeSource.includes("type MissingPushProductsToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushProductsToHqUpdateFieldOptionValue>") && posProductTypeSource.includes("const assertAllPushProductsToHqUpdateFieldsCovered: Record<MissingPushProductsToHqUpdateFieldOption, never> = {}") && pageSource.includes("pushProductsToHqUpdateFieldOptions") && pageSource.includes("defaultPushProductsToHqUpdateFields"),
   true,
-  "\u53D1\u9001 HQ \u5B57\u6BB5\u6E05\u5355\u5E94\u6709\u7F16\u8BD1\u671F\u8986\u76D6\u68C0\u67E5\uFF0C\u907F\u514D\u7C7B\u578B\u65B0\u589E\u5B57\u6BB5\u4F46\u5F39\u7A97\u6F0F\u5217"
+  "\u53D1\u9001 HQ \u5B57\u6BB5\u6E05\u5355\u5E94\u590D\u7528\u5171\u4EAB\u5B9A\u4E49\u5E76\u6709\u7F16\u8BD1\u671F\u8986\u76D6\u68C0\u67E5\uFF0C\u907F\u514D\u7C7B\u578B\u65B0\u589E\u5B57\u6BB5\u4F46\u5F39\u7A97\u6F0F\u5217"
 );
 assertEqual(
   pageSource.includes("updateProduct(code, { purchasePrice: row.\u8FDB\u53E3\u4EF7\u683C ?? 0 })"),

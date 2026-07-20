@@ -1153,6 +1153,34 @@ body {
   padding: 24px 0;
 }
 
+.shop-preorder-gate-alert {
+  max-width: 1320px;
+  margin: 12px auto 0;
+}
+
+.shop-product-quantity-lock {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.shop-cart-preorder-lock {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.shop-cart-preorder-lock .ant-btn {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .shop-preorder-gate-alert {
+    margin: 8px 12px 0;
+  }
+}
+
 .shop-footer {
   margin-top: auto;
   padding: 24px 0;

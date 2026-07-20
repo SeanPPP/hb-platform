@@ -11,6 +11,7 @@ var P = {
     Delete: "Users.Delete",
     ManageRoles: "Users.ManageRoles",
     ManageStores: "Users.ManageStores",
+    ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
     ResetPassword: "Users.ResetPassword"
   },
   Roles: {
@@ -125,6 +126,9 @@ var P = {
     View: "PosProducts.View",
     Manage: "PosProducts.Manage"
   },
+  PosTerminal: {
+    AuditView: "Permissions.PosTerminal.Audit.View"
+  },
   Dashboard: {
     View: "Dashboard"
   },
@@ -153,6 +157,87 @@ var P = {
 var ALL_PERMISSIONS = Object.values(P).flatMap(
   (group) => Object.values(group)
 );
+
+// src/utils/webPortalAccess.ts
+var ADMIN_ENTRY_RULES = [
+  {
+    defaultPath: "/dashboard",
+    targetPrefixes: ["/dashboard"],
+    canAccess: (access) => access.canAccessDashboard
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    targetPrefixes: [
+      "/warehouse/store-orders",
+      "/warehouse/preorders",
+      "/warehouse/store-order"
+    ],
+    canAccess: (access) => access.canManageWarehouseOrders
+  },
+  {
+    defaultPath: "/warehouse/store-order-import-price-variance",
+    targetPrefixes: ["/warehouse/store-order-import-price-variance"],
+    canAccess: (access) => access.canManageStoreOrderImportPriceVariance
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    // 旧 Warehouse.Manage 只覆盖其实际派生的仓库业务页，不能绕过价差或货柜叶子权限。
+    targetPrefixes: [
+      "/warehouse/products",
+      "/warehouse/categories",
+      "/warehouse/locations",
+      "/warehouse/product-grade-management"
+    ],
+    canAccess: (access) => access.canManageWarehouse
+  },
+  {
+    defaultPath: "/warehouse/containers",
+    targetPrefixes: [
+      "/warehouse/containers",
+      "/warehouse/container/detail",
+      "/warehouse/container/allocation-sales"
+    ],
+    canAccess: (access) => access.canViewContainers
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/product-movement-report",
+    targetPrefixes: ["/executive-sales-intelligence/product-movement-report"],
+    // Reports.View 兼容叶子页面访问，但后台导航入口与后端一致，仅认专用权限。
+    canAccess: (access) => access.hasPermission(P.Reports.ProductMovementView)
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/purchase-amount-dashboard",
+    targetPrefixes: [
+      "/executive-sales-intelligence/purchase-amount-dashboard",
+      "/pos-admin/local-supplier-invoices",
+      "/pos-admin/local-supplier-purchase-sales-analysis",
+      "/pos-admin/invoice-detail"
+    ],
+    canAccess: (access) => access.canManageLocalPurchase
+  },
+  {
+    defaultPath: "/system/invoice-email-settings",
+    targetPrefixes: [
+      "/system/invoice-email-settings",
+      "/system/payment-terminal-settings",
+      "/system/emergency-login-keys"
+    ],
+    canAccess: (access) => access.canManageSystemSettings
+  },
+  {
+    defaultPath: "/system/app-downloads",
+    targetPrefixes: ["/system/app-downloads", "/system/wpf-versions"],
+    canAccess: (access) => access.canViewAppDownloads
+  },
+  {
+    defaultPath: "/pos-admin/operation-logs",
+    targetPrefixes: ["/pos-admin/operation-logs"],
+    canAccess: (access) => access.canViewOperationAudits
+  }
+];
+function hasBackendNavigationAccess(access) {
+  return access.isAdmin || ADMIN_ENTRY_RULES.some((rule) => rule.canAccess(access));
+}
 
 // src/utils/access.ts
 var PERMISSION_ALIAS_GROUPS = [
@@ -184,6 +269,7 @@ function createEmptyAccess() {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
@@ -249,6 +335,7 @@ function createEmptyAccess() {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canViewOperationAudits: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
@@ -257,6 +344,7 @@ function createEmptyAccess() {
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
+    canAccessAdminShell: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -273,7 +361,7 @@ function buildAccess(currentUser) {
     return createEmptyAccess();
   }
   const hasRole = (role) => currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false;
-  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458");
+  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
   const hasPermission = (permission) => {
@@ -333,7 +421,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
-  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport;
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete);
@@ -373,6 +461,7 @@ function buildAccess(currentUser) {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit);
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View);
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs);
+  const canViewOperationAudits = isAdmin || hasPermission(P.PosTerminal.AuditView);
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks);
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings);
   const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads);
@@ -382,12 +471,28 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View);
+  const canAccessAdminShell = hasBackendNavigationAccess({
+    isAdmin,
+    canAccessDashboard,
+    canManageWarehouse,
+    canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
+    canViewContainers,
+    canViewProductMovementReport,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManageSystemSettings,
+    canViewAppDownloads,
+    canViewOperationAudits,
+    hasPermission
+  });
+  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View) || isWarehouseStaffOnly && hasPermission(P.Orders.Create);
   return {
     isAdmin,
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
@@ -453,6 +558,7 @@ function buildAccess(currentUser) {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canViewOperationAudits,
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,
@@ -461,6 +567,7 @@ function buildAccess(currentUser) {
     canManageDeviceRegistration,
     canViewPosProducts,
     canManagePosProducts,
+    canAccessAdminShell,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,
@@ -1413,8 +1520,11 @@ async function main() {
   });
   if (storeRecordColumnSorterFailure) failures.push(storeRecordColumnSorterFailure);
   const pushToHqFailure = await runTest("\u9009\u4E2D\u5546\u54C1\u53D1\u9001\u5230 HQ \u5E94\u590D\u7528\u9009\u62E9\u3001\u6743\u9650\u548C\u9632\u91CD\u590D\u63D0\u4EA4\u4FDD\u62A4", () => {
+    const pushToHqHandlerStart = pageSource.indexOf("const handlePushToHq = async () => {");
+    const pushToHqHandlerEnd = pageSource.indexOf("const handleSyncSelectedFromHq", pushToHqHandlerStart);
+    const pushToHqHandlerSource = pageSource.slice(pushToHqHandlerStart, pushToHqHandlerEnd);
     assert(
-      typeSource.includes("PushProductsToHqRequest") && typeSource.includes("productCodes: string[]") && typeSource.includes("PushProductsToHqResult"),
+      typeSource.includes("PushProductsToHqRequest") && typeSource.includes("productCodes: string[]") && typeSource.includes("updateFields?: PushProductsToHqUpdateField[]") && typeSource.includes("PushProductsToHqResult"),
       "\u7C7B\u578B\u5C42\u5E94\u58F0\u660E\u53D1\u9001\u5230 HQ \u7684\u8BF7\u6C42\u548C\u7ED3\u679C\u5951\u7EA6"
     );
     assert(
@@ -1422,8 +1532,12 @@ async function main() {
       "\u670D\u52A1\u5C42\u5E94\u63D0\u4F9B\u56FA\u5B9A\u63A5\u53E3\u8C03\u7528\uFF0C\u5E76\u5F52\u4E00\u540E\u7AEF\u7EDF\u8BA1\u5B57\u6BB5"
     );
     assert(
-      pageSource.includes("handlePushToHq") && pageSource.includes("selectedRowKeys.map(String)") && pageSource.includes("pushProductsToHq({") && pageSource.includes("showPushToHqResult(result)"),
-      "\u9875\u9762\u5E94\u628A\u5F53\u524D\u9009\u4E2D\u5546\u54C1\u7F16\u7801\u53D1\u9001\u5230 HQ\uFF0C\u5E76\u5C55\u793A\u6210\u529F\u548C\u9519\u8BEF\u660E\u7EC6"
+      pageSource.includes("handlePushToHq") && pageSource.includes("const productCodes = selectedRowKeys.map(String)") && pageSource.includes("const updateFields = await confirmPushToHqUpdateFields(productCodes.length)") && pageSource.includes("updateFields,") && pageSource.includes("pushProductsToHq({") && pageSource.includes("showPushToHqResult(result)"),
+      "\u9875\u9762\u5E94\u628A\u5F53\u524D\u9009\u4E2D\u5546\u54C1\u7F16\u7801\u548C\u52FE\u9009\u5B57\u6BB5\u53D1\u9001\u5230 HQ\uFF0C\u5E76\u5C55\u793A\u6210\u529F\u548C\u9519\u8BEF\u660E\u7EC6"
+    );
+    assert(
+      typeSource.includes("export const pushProductsToHqUpdateFieldOptions = [") && typeSource.includes("type MissingPushProductsToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushProductsToHqUpdateFieldOptionValue>") && typeSource.includes("const assertAllPushProductsToHqUpdateFieldsCovered: Record<MissingPushProductsToHqUpdateFieldOption, never> = {}") && typeSource.includes("export const defaultPushProductsToHqUpdateFields") && pageSource.includes("pushProductsToHqUpdateFieldOptions.map") && pageSource.includes("defaultPushProductsToHqUpdateFields") && pageSource.includes("<Checkbox.Group") && pageSource.includes("message.warning(t('containers.updateFields.selectAtLeastOne', '\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u66F4\u65B0\u5B57\u6BB5'))") && pageSource.includes("'containers.updateFields.hqCreateHint'"),
+      "\u53D1\u9001\u5230 HQ \u524D\u7AEF\u5E94\u63D0\u4F9B\u548C\u5B57\u6BB5\u7C7B\u578B\u5339\u914D\u7684\u52FE\u9009\u66F4\u65B0\u5B57\u6BB5\u5F39\u7A97"
     );
     assert(
       pageSource.includes("extractPushToHqErrorResult(error)") && pageSource.includes("payload.details") && pageSource.includes("Modal.error({") && pageSource.includes("errorResult.errors.join"),
@@ -1444,6 +1558,12 @@ async function main() {
     assert(
       pageSource.includes("const pushToHqLoadingRef = useRef(false)") && pageSource.includes("if (pushToHqLoadingRef.current) return") && pageSource.includes("pushToHqLoadingRef.current = true") && pageSource.includes("pushToHqLoadingRef.current = false") && pageSource.includes("disabled={!selectedRowKeys.length || pushToHqLoading}"),
       "\u53D1\u9001\u5230 HQ \u5E94\u4F7F\u7528 ref \u9501\u548C loading \u72B6\u6001\u9632\u6B62\u8FDE\u7EED\u70B9\u51FB\u91CD\u590D\u63D0\u4EA4"
+    );
+    assertSourceOrder(
+      pushToHqHandlerSource,
+      "pushToHqLoadingRef.current = true",
+      "const updateFields = await confirmPushToHqUpdateFields(productCodes.length)",
+      "\u53D1\u9001\u5230 HQ \u5E94\u5728\u5B57\u6BB5\u786E\u8BA4\u5F39\u7A97\u524D\u5360\u7528\u9501\uFF0C\u907F\u514D\u8FDE\u7EED\u70B9\u51FB\u6253\u5F00\u591A\u4E2A\u786E\u8BA4\u6846"
     );
   });
   if (pushToHqFailure) failures.push(pushToHqFailure);

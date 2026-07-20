@@ -46,6 +46,7 @@ import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
 import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
+import PurchaseAmountDashboardPage from '../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -85,6 +86,8 @@ import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
 import StoreOrderImportPriceVariancePage from '../pages/Warehouse/StoreOrderImportPriceVariance'
+import PreordersPage from '../pages/Warehouse/Preorders'
+import PreorderActivationDetailPage from '../pages/Warehouse/Preorders/ActivationDetail'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
@@ -364,6 +367,26 @@ export const appRoutes: AppRouteItem[] = [
         element: <StoreOrdersPage />,
       },
       {
+        path: '/warehouse/preorders',
+        meta: {
+          title: 'menu.preorders',
+          icon: 'GiftOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouseOrders',
+        },
+        element: <PreordersPage />,
+      },
+      {
+        path: '/warehouse/preorders/activations/:activationGuid',
+        meta: {
+          title: 'menu.preorderActivationDetail',
+          hidden: true,
+          accessKey: 'canManageWarehouseOrders',
+          activeMenu: '/warehouse/preorders',
+        },
+        element: <PreorderActivationDetailPage />,
+      },
+      {
         path: '/warehouse/store-order-import-price-variance',
         meta: {
           title: 'menu.storeOrderImportPriceVariance',
@@ -522,6 +545,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewProductMovementReport',
         },
         element: <ProductMovementReportPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/purchase-amount-dashboard',
+        meta: {
+          title: 'menu.purchaseAmountDashboard',
+          icon: 'DollarOutlined',
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+        },
+        element: <PurchaseAmountDashboardPage />,
       },
     ],
   },

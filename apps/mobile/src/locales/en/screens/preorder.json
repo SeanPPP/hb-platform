@@ -1,0 +1,115 @@
+{
+  "gate": {
+    "title": "Complete preorder first",
+    "checking": "Checking the current preorder periods. Normal order checkout is temporarily locked.",
+    "unavailable": "The preorder status cannot be confirmed. You may keep adding items, but retry before checkout.",
+    "pending": "This store has {{count}} preorder period(s) to complete. You may add items and edit quantities, but cannot submit a normal order yet.",
+    "action": "Open preorder",
+    "dialogTitle": "Preorder requires attention",
+    "dialogMessage": "This store has {{count}} preorder period(s) to submit. You may browse, add items, and edit quantities, but cannot submit a normal order yet.",
+    "dialogLater": "Browse later",
+    "dialogOpen": "Open preorder"
+  },
+  "list": {
+    "title": "Preorder",
+    "subtitle": "Complete every active period to resume normal ordering",
+    "period": "Period {{period}}",
+    "deadline": "Due: {{value}}",
+    "open": "Fill this period",
+    "loadFailedTitle": "Unable to check preorder",
+    "loadFailedDescription": "The network or service is unavailable. Normal ordering remains locked to prevent missed orders.",
+    "completedTitle": "All current preorders are complete",
+    "completedDescription": "This store has no pending periods and may continue normal ordering.",
+    "selectStoreTitle": "Select a store first",
+    "selectStoreDescription": "Return to Products, select a store, then open preorder again.",
+    "backToShop": "Back to products"
+  },
+  "detail": {
+    "title": "Preorder details",
+    "period": "Period {{period}}",
+    "deadline": "Due: {{value}}",
+    "searchPlaceholder": "Search item number or name",
+    "noImage": "No image",
+    "sku": "Item: {{value}}",
+    "importPrice": "Import {{value}}",
+    "retailPrice": "Retail {{value}}",
+    "moq": "{{value}} units per pack",
+    "packCount": "Packs",
+    "packCountFor": "Preorder packs for {{name}}",
+    "decreasePack": "Decrease {{name}} by one pack",
+    "increasePack": "Increase {{name}} by one pack",
+    "totalQuantity": "Units",
+    "noItemsTitle": "No items in this period",
+    "noItemsDescription": "Contact the warehouse administrator to check this activation.",
+    "missingContextTitle": "Store or activation is missing",
+    "missingContextDescription": "Open the preorder again from the current store's list.",
+    "backToList": "Back to preorder",
+    "loadFailedTitle": "Unable to load preorder",
+    "loadFailedDescription": "The current items cannot be loaded. Normal ordering remains locked; please retry.",
+    "readOnlyTitle": "This period is read-only",
+    "returnedTitle": "Returned by warehouse for changes",
+    "returnedDescription": "Review the order, make the requested changes, and submit it again.",
+    "readOnlyReason": {
+      "scheduled": "This period has not started yet.",
+      "ended": "The effective period has ended.",
+      "closed": "The warehouse has closed this period.",
+      "cancelled": "The warehouse has cancelled this period.",
+      "unavailable": "This period is not active and cannot be edited."
+    }
+  },
+  "save": {
+    "auto": "Changes save automatically",
+    "saving": "Saving…",
+    "saved": "Draft saved",
+    "failed": "Save failed",
+    "submitted": "Period submitted",
+    "readOnly": "Read-only",
+    "retry": "Retry save"
+  },
+  "leave": {
+    "notActiveTitle": "This preorder period has ended",
+    "notActiveMessage": "This period has ended or closed, so unsaved changes can no longer be saved. Stay to review them, or discard the changes and leave.",
+    "unsavedTitle": "Changes are not saved",
+    "unsavedMessage": "The draft cannot be saved right now. Stay and retry, or explicitly discard the unsaved changes and leave.",
+    "stay": "Stay here",
+    "discard": "Discard changes and leave"
+  },
+  "conflict": {
+    "title": "Draft changed on another device",
+    "message": "Use the latest server draft, or keep this device's entries and retry with the latest revision.",
+    "submitMessage": "This submission was cancelled because the draft changed on another device. Use the latest server draft, or keep this device's entries and save with the latest revision, then submit again.",
+    "useServer": "Use server draft",
+    "keepLocal": "Keep local and retry",
+    "alreadySubmitted": "This period was completed on another device and has been refreshed."
+  },
+  "summary": {
+    "line": "{{sku}} SKUs · {{packs}} packs · {{quantity}} units",
+    "importAmount": "Import total {{value}}"
+  },
+  "submit": {
+    "action": "Submit period",
+    "submitted": "Submitted",
+    "pendingTitle": "Submitting this preorder",
+    "pendingMessage": "Wait for submission to finish before leaving this page so the order status remains clear.",
+    "confirmTitle": "Submit this preorder",
+    "confirmMessage": "Submit {{sku}} SKUs and {{quantity}} units. The store cannot edit after submission.",
+    "noDemandTitle": "Confirm no demand",
+    "noDemandMessage": "Every pack count is zero. Confirm that this store needs nothing this period?",
+    "noDemandAction": "Confirm no demand",
+    "successTitle": "Period submitted",
+    "nextMessage": "“{{name}}” is still pending. Continue to the next period.",
+    "completedMessage": "All active preorders are complete. Normal ordering is available again.",
+    "refreshFailedMessage": "This period was submitted, but the remaining periods could not be refreshed. Normal ordering stays locked; return to the list and retry.",
+    "nextAction": "Continue",
+    "doneAction": "Done",
+    "backToListAction": "Back to preorder list"
+  },
+  "errors": {
+    "saveFailed": "Draft save failed. Please retry.",
+    "submitFailed": "Submission failed. Please retry.",
+    "draftConflict": "Another device changed this draft. Choose which version to keep.",
+    "conflictRefreshFailed": "The draft conflicted, but the latest server version could not be loaded. Check the network and retry.",
+    "notActive": "This period has ended or not started. Refresh the list.",
+    "required": "A preorder still needs to be completed."
+  }
+}

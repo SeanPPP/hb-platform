@@ -4,6 +4,7 @@ import { buildAccess } from './access'
 import { buildExpoRoleMenuPreview, filterExpoRoutesByVisibility } from './expoRoleMenuPreview'
 import { applyRolePermissionMutation, buildRolePreviewAccess } from './roleMenuPreview'
 import { buildWebRoleMenuPreview, filterWebMenuNodesByVisibility, getAccessKeyPermissionCodes, type WebMenuPreviewNode } from './webMenuPreview'
+import { getDefaultWebPath, resolveAuthorizedWebTarget, WEB_NO_ACCESS_PATH } from './webPortalAccess'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -69,6 +70,33 @@ assertEqual(
   'Warehouse.ManageOrders should not be confused with the legacy whole-warehouse permission',
 )
 
+assertEqual(
+  warehouseOrderManagerAccess.canAccessAdminShell,
+  true,
+  'Warehouse.ManageOrders should unlock the admin shell without granting Dashboard.View',
+)
+
+assertEqual(
+  getDefaultWebPath(warehouseOrderManagerAccess),
+  '/warehouse/store-orders',
+  'Warehouse.ManageOrders should default to the store order page',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/store-orders', warehouseOrderManagerAccess),
+  '/warehouse/store-orders',
+  'Warehouse.ManageOrders should preserve an authorized warehouse redirect target',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/executive-sales-intelligence/purchase-amount-dashboard',
+    warehouseOrderManagerAccess,
+  ),
+  undefined,
+  'Warehouse.ManageOrders should not authorize a local purchase dashboard redirect target',
+)
+
 const storeManagerAccess = buildAccess(
   createCurrentUser({
     roleNames: ['StoreManager'],
@@ -121,6 +149,172 @@ const productMovementReportOnlyAccess = buildAccess(
     permissions: [P.Reports.ProductMovementView],
   }),
 )
+
+const localPurchaseDashboardOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.View],
+  }),
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canManageLocalPurchase,
+  true,
+  'LocalPurchase.View should unlock local purchase pages',
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewSalesIntelligence,
+  true,
+  'LocalPurchase.View should keep the sales dashboard parent visible',
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canAccessAdminShell,
+  true,
+  'LocalPurchase.View should unlock the admin shell',
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canAccessDashboard,
+  false,
+  'LocalPurchase.View should not grant Dashboard.View',
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewReports,
+  false,
+  'LocalPurchase.View should not grant other sales report permissions',
+)
+
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewProductMovementReport,
+  false,
+  'LocalPurchase.View should not grant product movement report access',
+)
+
+assertEqual(
+  getDefaultWebPath(localPurchaseDashboardOnlyAccess),
+  '/executive-sales-intelligence/purchase-amount-dashboard',
+  'LocalPurchase.View should default to the only authorized admin page',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/executive-sales-intelligence/purchase-amount-dashboard',
+    localPurchaseDashboardOnlyAccess,
+  ),
+  '/executive-sales-intelligence/purchase-amount-dashboard',
+  'LocalPurchase.View should preserve the authorized dashboard redirect target',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/dashboard', localPurchaseDashboardOnlyAccess),
+  undefined,
+  'LocalPurchase.View should not authorize a Dashboard.View redirect target',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/pos-admin/local-supplier-invoices/invoice-guid-1',
+    localPurchaseDashboardOnlyAccess,
+  ),
+  undefined,
+  'LocalPurchase.View should not preserve an invoice edit redirect without LocalPurchase.Edit',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/pos-admin/local-supplier-invoices/invoice-guid-1/',
+    localPurchaseDashboardOnlyAccess,
+  ),
+  undefined,
+  'A trailing slash must not bypass the LocalPurchase.Edit redirect check',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/pos-admin/local-supplier-invoices/invoice-guid-1/sales-analysis',
+    localPurchaseDashboardOnlyAccess,
+  ),
+  '/pos-admin/local-supplier-invoices/invoice-guid-1/sales-analysis',
+  'LocalPurchase.View should preserve an invoice sales analysis redirect',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/pos-admin/invoice-detail/invoice-guid-1', localPurchaseDashboardOnlyAccess),
+  '/pos-admin/invoice-detail/invoice-guid-1',
+  'LocalPurchase.View should preserve a read-only invoice detail redirect',
+)
+
+const localPurchaseEditorAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.View, P.LocalPurchase.Edit],
+  }),
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/pos-admin/local-supplier-invoices/invoice-guid-1',
+    localPurchaseEditorAccess,
+  ),
+  '/pos-admin/local-supplier-invoices/invoice-guid-1',
+  'LocalPurchase.Edit should preserve an invoice edit redirect',
+)
+
+const dashboardOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Dashboard.View],
+  }),
+)
+
+assertEqual(
+  dashboardOnlyAccess.canAccessAdminShell,
+  true,
+  'Dashboard.View should continue to unlock the admin shell',
+)
+
+assertEqual(
+  getDefaultWebPath(dashboardOnlyAccess),
+  '/dashboard',
+  'Dashboard.View should keep the existing default page',
+)
+
+const noWebPortalAccess = buildAccess(createCurrentUser())
+
+assertEqual(
+  noWebPortalAccess.canAccessAdminShell,
+  false,
+  'Users without an admin feature permission should not enter the admin shell',
+)
+
+assertEqual(
+  getDefaultWebPath(noWebPortalAccess),
+  WEB_NO_ACCESS_PATH,
+  'Users without Web portal permissions should keep the access denied landing page',
+)
+
+const backendNavigationEntryCases: Array<[string, string]> = [
+  [P.Dashboard.View, '/dashboard'],
+  [P.Warehouse.ManageOrders, '/warehouse/store-orders'],
+  [P.Warehouse.Manage, '/warehouse/store-orders'],
+  [P.Container.View, '/warehouse/containers'],
+  [P.Reports.ProductMovementView, '/executive-sales-intelligence/product-movement-report'],
+  [P.LocalPurchase.View, '/executive-sales-intelligence/purchase-amount-dashboard'],
+  [P.System.ManageSettings, '/system/invoice-email-settings'],
+  [P.System.ViewAppDownloads, '/system/app-downloads'],
+  [P.System.ManageAppDownloads, '/system/app-downloads'],
+  [P.PosTerminal.AuditView, '/pos-admin/operation-logs'],
+]
+
+for (const [permission, expectedPath] of backendNavigationEntryCases) {
+  const access = buildAccess(createCurrentUser({ permissions: [permission] }))
+  assertEqual(access.canAccessAdminShell, true, `${permission} should unlock the admin shell`)
+  assertEqual(
+    getDefaultWebPath(access),
+    expectedPath,
+    `${permission} should default to its first authorized backend page`,
+  )
+}
 
 assertEqual(
   productMovementReportOnlyAccess.canViewReports,
@@ -288,6 +482,115 @@ assertEqual(
   containerAccess.canViewContainers,
   true,
   'Container.View should unlock container list/detail visibility',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/container/detail/container-guid-1', containerAccess),
+  '/warehouse/container/detail/container-guid-1',
+  'Container.View should preserve a container detail redirect',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/container/allocation-sales/container-guid-1', containerAccess),
+  '/warehouse/container/allocation-sales/container-guid-1',
+  'Container.View should preserve a container allocation sales redirect',
+)
+
+const warehouseStaffOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['WarehouseStaff'],
+    permissions: [P.Warehouse.ManageOrders],
+  }),
+)
+
+const warehouseStaffOrderFrontAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['WarehouseStaff'],
+    permissions: [P.Orders.Create],
+  }),
+)
+assertEqual(
+  warehouseStaffOrderFrontAccess.canAccessOrderFront,
+  true,
+  'WarehouseStaff + Orders.Create 必须可以进入正式订货前台',
+)
+assertEqual(getDefaultWebPath(warehouseStaffOrderFrontAccess), '/shop', '该精确组合登录后默认进入订货前台')
+assertEqual(
+  resolveAuthorizedWebTarget('/shop', warehouseStaffOrderFrontAccess),
+  '/shop',
+  '该精确组合的 /shop 重定向必须保留',
+)
+const warehouseStaffWithoutCreateAccess = buildAccess(
+  createCurrentUser({ roleNames: ['WarehouseStaff'], permissions: [] }),
+)
+assertEqual(
+  warehouseStaffWithoutCreateAccess.canAccessOrderFront,
+  false,
+  'WarehouseStaff 没有 Orders.Create 时不能扩大订货前台权限',
+)
+
+assertEqual(
+  warehouseStaffOrderAccess.canManageWarehouseOrders,
+  true,
+  'Warehouse.ManageOrders should keep warehouse order pages available to warehouse staff',
+)
+
+assertEqual(
+  warehouseStaffOrderAccess.canManageStoreOrderImportPriceVariance,
+  false,
+  'WarehouseStaff should not gain the import price variance page from Warehouse.ManageOrders alone',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/warehouse/store-order-import-price-variance',
+    warehouseStaffOrderAccess,
+  ),
+  undefined,
+  'Warehouse order access should not preserve the price variance redirect without its leaf permission flag',
+)
+
+const warehouseStaffLegacyManageAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['WarehouseStaff'],
+    permissions: [P.Warehouse.Manage],
+  }),
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/warehouse/store-order-import-price-variance',
+    warehouseStaffLegacyManageAccess,
+  ),
+  undefined,
+  'Warehouse.Manage must not bypass the price variance leaf permission for warehouse staff',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/containers', warehouseStaffLegacyManageAccess),
+  undefined,
+  'Warehouse.Manage must not bypass Container.View during login redirect',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/products', warehouseStaffLegacyManageAccess),
+  '/warehouse/products',
+  'Warehouse.Manage should continue to preserve its authorized warehouse product redirect',
+)
+
+assertEqual(
+  warehouseOrderManagerAccess.canManageStoreOrderImportPriceVariance,
+  true,
+  'A non-warehouse-staff order manager should retain the import price variance page',
+)
+
+assertEqual(
+  resolveAuthorizedWebTarget(
+    '/warehouse/store-order-import-price-variance',
+    warehouseOrderManagerAccess,
+  ),
+  '/warehouse/store-order-import-price-variance',
+  'The dedicated price variance flag should preserve its redirect target',
 )
 
 const noPermissionPreviewAccess = buildRolePreviewAccess({
@@ -524,6 +827,18 @@ const hiddenSalesDetailForProductMovementOnly = findWebMenuNode(
   productMovementReportOnlyWebPreview,
   '/executive-sales-intelligence/sales-detail-v2',
 )
+const localPurchaseOnlyWebPreview = buildWebRoleMenuPreview(localPurchaseDashboardOnlyAccess, translate, {
+  includeHidden: true,
+})
+const localPurchaseSalesParentMenu = findWebMenuNode(localPurchaseOnlyWebPreview, '/executive-sales-intelligence')
+const purchaseAmountDashboardMenu = findWebMenuNode(
+  localPurchaseOnlyWebPreview,
+  '/executive-sales-intelligence/purchase-amount-dashboard',
+)
+const hiddenSalesOverviewForLocalPurchaseOnly = findWebMenuNode(
+  localPurchaseOnlyWebPreview,
+  '/executive-sales-intelligence/overview',
+)
 const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'role-reader-role',
@@ -638,6 +953,30 @@ assertEqual(
   hiddenSalesDetailForProductMovementOnly?.visible,
   false,
   '只有商品经营分析权限时不应打开销售明细菜单',
+)
+
+assertEqual(
+  localPurchaseSalesParentMenu?.visible,
+  true,
+  '只有 LocalPurchase.View 时销售看板父菜单应可见',
+)
+
+assertEqual(
+  purchaseAmountDashboardMenu?.visible,
+  true,
+  'LocalPurchase.View 应显示进货金额看板',
+)
+
+assertEqual(
+  purchaseAmountDashboardMenu?.permissionCodes.join(','),
+  `${P.LocalPurchase.View},LocalInvocie.View`,
+  '进货金额看板应沿用本地进货查看权限及旧权限别名',
+)
+
+assertEqual(
+  hiddenSalesOverviewForLocalPurchaseOnly?.visible,
+  false,
+  '只有 LocalPurchase.View 时不应打开销售数据页面',
 )
 
 assertEqual(

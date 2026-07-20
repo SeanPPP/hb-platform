@@ -120,12 +120,14 @@
     "roles": {
       "derived": "由可管理分店派生",
       "adminOnly": "仅管理员",
+      "managerLimit": "店长只能为管理范围内的员工增删店员角色。",
       "searchPlaceholder": "搜索角色",
       "noSearchResults": "没有匹配的角色。",
       "emptyTitle": "没有可用角色",
       "emptyDescription": "当前没有可分配给此账号的角色。"
     },
     "permissions": {
+      "managerLimit": "店长只能授权自己拥有的 POS 收银权限。",
       "summary": "有效 {{effective}} 项 · 继承 {{inherited}} 项 · 直接 {{direct}} 项",
       "inherited": "继承",
       "direct": "直接授权",

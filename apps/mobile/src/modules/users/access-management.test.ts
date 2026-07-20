@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  applyUserAccessSectionRestrictions,
   areAccessCodeSetsEqual,
   buildAssignableRoleGuids,
   buildDirectPermissionDraft,
@@ -12,7 +13,9 @@ import {
   getUserAccessStoreState,
   hasPrivilegedAccessRole,
   isAccessAdminRoleName,
+  isStoreStaffRoleName,
   isStoreManagerRoleName,
+  limitUserAccessRolesForActor,
   setUserAccessStoreState,
   toggleDirectPermission,
 } from "./access-management";
@@ -51,6 +54,11 @@ assert.equal(isStoreManagerRoleName("StoreManager"), true);
 assert.equal(isStoreManagerRoleName("店长"), true);
 assert.equal(isStoreManagerRoleName("经理"), true);
 assert.equal(isStoreManagerRoleName("WarehouseManager"), false);
+assert.equal(isStoreStaffRoleName("StoreStaff"), true);
+assert.equal(isStoreStaffRoleName("Employee"), true);
+assert.equal(isStoreStaffRoleName("店铺员工"), true);
+assert.equal(isStoreStaffRoleName("员工"), true);
+assert.equal(isStoreStaffRoleName("User"), false);
 
 const assignedStores: UserAccessStore[] = [
   {
@@ -177,6 +185,26 @@ const ordinaryRole: UserAccessRole = {
   roleName: "StoreStaff",
 };
 assert.deepEqual(
+  limitUserAccessRolesForActor(
+    [
+      ordinaryRole,
+      { roleGUID: "role-order", roleName: "Order" },
+      storeManagerRole,
+    ],
+    false,
+  ),
+  [ordinaryRole],
+  "店长的角色目录只能展示员工角色",
+);
+assert.equal(
+  limitUserAccessRolesForActor(
+    [ordinaryRole, { roleGUID: "role-order", roleName: "Order" }],
+    true,
+  ).length,
+  2,
+  "Admin 仍可查看并分配全部角色",
+);
+assert.deepEqual(
   filterUserAccessRoles(
     [
       storeManagerRole,
@@ -234,6 +262,23 @@ assert.deepEqual(
   },
   "Admin 可以管理高权限目标并拥有全部分段能力",
 );
+assert.equal(
+  getUserAccessEligibility({
+    isDeviceMode: false,
+    isAdmin: true,
+    isStoreManager: false,
+    canManageStores: true,
+    canManageRoles: true,
+    canManagePos: true,
+    currentUserGuid: "admin-1",
+    targetUserGuid: "admin-1",
+    targetStatus: 1,
+    targetRoleNames: ["Admin"],
+    hasManageableStores: true,
+  }).canOpen,
+  true,
+  "Admin 全权语义允许维护本人权限，只有受限操作者禁止编辑本人",
+);
 assert.deepEqual(
   getUserAccessEligibility({
     isDeviceMode: false,
@@ -250,8 +295,8 @@ assert.deepEqual(
   }),
   {
     canOpen: true,
-    storesMode: "readOnly",
-    rolesMode: "hidden",
+    storesMode: "editable",
+    rolesMode: "editable",
     permissionsMode: "editable",
     canManagePos: true,
     canGrantStoreManagement: false,
@@ -321,6 +366,11 @@ const disabledTargetEligibility = getUserAccessEligibility({
 });
 assert.equal(disabledTargetEligibility.canOpen, true);
 assert.equal(disabledTargetEligibility.canManagePos, false);
+assert.equal(
+  disabledTargetEligibility.permissionsMode,
+  "hidden",
+  "店长不能给停用员工编辑账号级 POS 收银权限",
+);
 
 assert.equal(
   getUserAccessEligibility({
@@ -370,14 +420,57 @@ assert.deepEqual(
   storeManagerAccess,
   {
     canOpen: true,
-    storesMode: "readOnly",
-    rolesMode: "hidden",
+    storesMode: "editable",
+    rolesMode: "editable",
     permissionsMode: "editable",
     canManagePos: true,
     canGrantStoreManagement: false,
     reason: null,
   },
-  "店长只能查看分店并维护 POS 与自己范围内的员工权限，不能分配分店或角色",
+  "店长可维护范围内查看分店、员工角色和自己拥有的 POS 收银权限",
+);
+assert.deepEqual(
+  applyUserAccessSectionRestrictions(storeManagerAccess, {
+    rolesForbidden: true,
+    permissionsForbidden: false,
+  }),
+  {
+    ...storeManagerAccess,
+    canOpen: true,
+    rolesMode: "hidden",
+    permissionsMode: "hidden",
+    canManagePos: true,
+  },
+  "跨范围员工的全局授权被拒绝时，仍须保留分店关系和按店 POS 权限",
+);
+
+const nonEmployeeTargetAccess = getUserAccessEligibility({
+  isDeviceMode: false,
+  isAdmin: false,
+  isStoreManager: true,
+  canManageStores: true,
+  canManageRoles: true,
+  canManagePos: true,
+  currentUserGuid: "manager-1",
+  targetUserGuid: "ordinary-user-1",
+  targetStatus: 1,
+  targetRoleNames: ["User"],
+  hasManageableStores: true,
+});
+assert.equal(
+  nonEmployeeTargetAccess.permissionsMode,
+  "hidden",
+  "店长不能给非员工目标编辑账号级 POS 收银权限",
+);
+assert.equal(
+  nonEmployeeTargetAccess.canManagePos,
+  false,
+  "店长不能从非员工目标进入按店 POS 权限页面",
+);
+assert.equal(
+  nonEmployeeTargetAccess.canOpen,
+  true,
+  "非员工目标仍可进入分店和员工角色分段，以便先授予员工角色",
 );
 
 const delegatedStaffAccess = getUserAccessEligibility({

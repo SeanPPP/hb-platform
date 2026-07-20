@@ -402,7 +402,7 @@ namespace BlazorApp.Api.Controllers
         /// 为用户分配角色
         /// </summary>
         [HttpPost("guid/{guid}/roles")]
-        [Authorize(Policy = Permissions.Users.ManageRoles)]
+        [Authorize]
         public async Task<IActionResult> AssignRolesToUser(
             string guid,
             [FromBody] UserRoleAssignmentDto dto
@@ -529,7 +529,7 @@ namespace BlazorApp.Api.Controllers
         /// 为用户分配分店
         /// </summary>
         [HttpPost("guid/{guid}/stores")]
-        [Authorize(Policy = Permissions.Users.ManageStores)]
+        [Authorize]
         public async Task<IActionResult> AssignStoresToUser(
             string guid,
             [FromBody] List<UserStoreAssignmentDto> storeAssignments
@@ -569,7 +569,8 @@ namespace BlazorApp.Api.Controllers
                 var access = await AuthorizeTargetReadAsync(
                     ResolveCurrentUserGuid(User),
                     guid,
-                    Permissions.Users.ManageRoles
+                    Permissions.Users.ManageRoles,
+                    Permissions.Users.ManagePosTerminalPermissions
                 );
                 if (access.Failure != null)
                 {
@@ -723,6 +724,10 @@ namespace BlazorApp.Api.Controllers
                 or "STORE_SCOPE_DENIED"
                 or "PERMISSION_ESCALATION_DENIED"
                 or "ROLE_ESCALATION_DENIED"
+                or "ROLE_DELEGATION_DENIED"
+                or "POS_PERMISSION_DELEGATION_DENIED"
+                or "EMPLOYEE_TARGET_REQUIRED"
+                or "EMPLOYEE_ROLE_HAS_POS_PERMISSIONS"
                 or "MANAGEABLE_STORE_GRANT_DENIED"
                 or "ACCESS_DELEGATOR_DENIED"
                 or "ADMIN_REQUIRED"

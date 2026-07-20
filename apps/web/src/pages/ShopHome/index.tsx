@@ -525,7 +525,6 @@ export default function ShopHomePage() {
         })
         return false
       }
-
       const quantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
 
       try {
@@ -549,7 +548,7 @@ export default function ShopHomePage() {
         })
         refreshDynamicDataForProducts([product.productCode]).catch(() => {})
         return true
-      } catch (error) {
+      } catch {
         updateScanFeedback('error', t('shop.scan.addItemFailed'), {
           barcode,
           productName: product.productName || product.productCode,
@@ -580,7 +579,6 @@ export default function ShopHomePage() {
         setScanBusy(false)
         return
       }
-
       try {
         const result = await lookupStoreOrderProductsByBarcode(barcode)
 
@@ -669,7 +667,6 @@ export default function ShopHomePage() {
         message.warning(t('shop.selectStoreFirst'))
         return
       }
-
       const addQuantity = Math.max(1, Math.floor(Number.isFinite(quantity) ? quantity : 0))
       setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: addQuantity }))
       setQuantityLoadingMap((prev) => ({ ...prev, [product.productCode]: true }))
@@ -686,7 +683,7 @@ export default function ShopHomePage() {
           delete next[product.productCode]
           return next
         })
-      } catch (error) {
+      } catch {
         setOptimisticCartQuantityMap((prev) => {
           const next = { ...prev }
           delete next[product.productCode]
@@ -701,7 +698,7 @@ export default function ShopHomePage() {
         })
       }
     },
-    [dynamicDataMap, refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t],
+    [refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t],
   )
 
   const handleProductQuantityChange = useCallback(
@@ -710,7 +707,6 @@ export default function ShopHomePage() {
         message.warning(t('shop.selectStoreFirst'))
         return
       }
-
       const productCode = product.productCode
       const normalizedQuantity = Math.max(0, Math.floor(Number.isFinite(quantity) ? quantity : 0))
       const currentCartQuantity = cart?.isSummaryOnly

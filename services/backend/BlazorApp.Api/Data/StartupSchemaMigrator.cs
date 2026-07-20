@@ -10,6 +10,8 @@ namespace BlazorApp.Api.Data
 
         public static async Task EnsureAsync(ISqlSugarClient db, ILogger logger)
         {
+            // 即使通用迁移仅在 SQL Server 执行，也必须先验证 Preorder 的 Provider 契约，禁止 early return 静默放行未知数据库。
+            PreorderSchemaBootstrap.EnsureSupportedProvider(db.CurrentConnectionConfig.DbType);
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
             {
                 return;
@@ -28,6 +30,7 @@ namespace BlazorApp.Api.Data
             await EnsureEmployeeProfileImageSchemaAsync(db, logger);
             await EnsureEmployeeProfileSensitiveChangeSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
+            await EnsurePreorderSchemaAsync(db, logger);
         }
 
         private static async Task EnsureEmployeeProfileSensitiveChangeSchemaAsync(
@@ -214,9 +217,10 @@ IF NOT EXISTS (
       AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunch]')
 )
 BEGIN
-    CREATE UNIQUE INDEX [UX_AttendancePunch_User_QrTokenId]
+    -- 关键逻辑：QrTokenId 可能在本事务前段刚新增，动态 SQL 会在列存在后才编译索引语句。
+    EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunch_User_QrTokenId]
     ON [dbo].[AttendancePunch]([UserGuid], [QrTokenId])
-    WHERE [QrTokenId] IS NOT NULL;
+    WHERE [QrTokenId] IS NOT NULL;');
 END;
 
     COMMIT TRANSACTION;
@@ -1633,6 +1637,230 @@ END;";
             // 关键位置：WPF 发布链路已经依赖校验、下载、安装器和强更字段，旧表也要在启动时补齐这些列。
             await db.Ado.ExecuteCommandAsync(sql);
             logger.LogInformation("WPF 客户端发布与更新策略表检查完成");
+        }
+
+        private static async Task EnsurePreorderSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[PreorderTemplate]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderTemplate](
+        [TemplateGuid] nvarchar(50) NOT NULL,
+        [Name] nvarchar(150) NOT NULL,
+        [IsEnabled] bit NOT NULL,
+        [Revision] int NOT NULL,
+        [Notes] nvarchar(1000) NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderTemplate_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderTemplate] PRIMARY KEY ([TemplateGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderTemplateItem]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderTemplateItem](
+        [TemplateItemGuid] nvarchar(50) NOT NULL,
+        [TemplateGuid] nvarchar(50) NOT NULL,
+        [ProductCode] nvarchar(50) NOT NULL,
+        [MinimumOrderQuantity] int NOT NULL,
+        [SortOrder] int NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderTemplateItem_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderTemplateItem] PRIMARY KEY ([TemplateItemGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderTemplateStore]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderTemplateStore](
+        [TemplateStoreGuid] nvarchar(50) NOT NULL,
+        [TemplateGuid] nvarchar(50) NOT NULL,
+        [StoreGuid] nvarchar(50) NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderTemplateStore_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderTemplateStore] PRIMARY KEY ([TemplateStoreGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderActivation]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderActivation](
+        [ActivationGuid] nvarchar(50) NOT NULL,
+        [TemplateGuid] nvarchar(50) NOT NULL,
+        [TemplateNameSnapshot] nvarchar(150) NOT NULL,
+        [PeriodNumber] int NOT NULL,
+        [ActivationCode] nvarchar(80) NOT NULL,
+        [SourceTemplateRevision] int NOT NULL,
+        [StartAtUtc] datetime2 NOT NULL,
+        [EndAtUtc] datetime2 NOT NULL,
+        [Status] nvarchar(30) NOT NULL,
+        [ClosedAtUtc] datetime2 NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderActivation_IsDeleted] DEFAULT(0),
+        CONSTRAINT [CK_PreorderActivation_Status] CHECK ([Status] IN ('Scheduled', 'Active', 'Closed', 'Cancelled')),
+        CONSTRAINT [PK_PreorderActivation] PRIMARY KEY ([ActivationGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderActivationItem]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderActivationItem](
+        [ActivationItemGuid] nvarchar(50) NOT NULL,
+        [ActivationGuid] nvarchar(50) NOT NULL,
+        [ProductCode] nvarchar(50) NOT NULL,
+        [ItemNumber] nvarchar(50) NOT NULL,
+        [ProductName] nvarchar(200) NOT NULL,
+        [ProductImage] nvarchar(500) NULL,
+        [ImportPrice] decimal(18,4) NOT NULL,
+        [RetailPrice] decimal(18,4) NOT NULL,
+        [MinimumOrderQuantity] int NOT NULL,
+        [SortOrder] int NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderActivationItem_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderActivationItem] PRIMARY KEY ([ActivationItemGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderActivationStore]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderActivationStore](
+        [ActivationStoreGuid] nvarchar(50) NOT NULL,
+        [ActivationGuid] nvarchar(50) NOT NULL,
+        [StoreGuid] nvarchar(50) NOT NULL,
+        [StoreCode] nvarchar(50) NOT NULL,
+        [StoreName] nvarchar(100) NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderActivationStore_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderActivationStore] PRIMARY KEY ([ActivationStoreGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderWarehouseOrder]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderWarehouseOrder](
+        [OrderGuid] nvarchar(50) NOT NULL,
+        [ActivationGuid] nvarchar(50) NOT NULL,
+        [StoreGuid] nvarchar(50) NOT NULL,
+        [StoreCode] nvarchar(50) NOT NULL,
+        [StoreName] nvarchar(100) NOT NULL,
+        [OrderNo] nvarchar(80) NOT NULL,
+        [Status] nvarchar(30) NOT NULL,
+        [DraftRevision] int NOT NULL,
+        [SubmittedByUserGuid] nvarchar(50) NULL,
+        [SubmittedByName] nvarchar(150) NULL,
+        [SubmittedAtUtc] datetime2 NULL,
+        [WarehouseNotes] nvarchar(1000) NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderWarehouseOrder_IsDeleted] DEFAULT(0),
+        CONSTRAINT [CK_PreorderWarehouseOrder_Status] CHECK ([Status] IN ('Draft', 'ReturnedForRevision', 'Submitted', 'NoDemand', 'Processing', 'Completed', 'Cancelled')),
+        CONSTRAINT [PK_PreorderWarehouseOrder] PRIMARY KEY ([OrderGuid])
+    );
+END;
+
+IF OBJECT_ID(N'[dbo].[PreorderWarehouseOrderItem]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[PreorderWarehouseOrderItem](
+        [OrderItemGuid] nvarchar(50) NOT NULL,
+        [OrderGuid] nvarchar(50) NOT NULL,
+        [ActivationItemGuid] nvarchar(50) NOT NULL,
+        [ProductCode] nvarchar(50) NOT NULL,
+        [ItemNumber] nvarchar(50) NOT NULL,
+        [ProductName] nvarchar(200) NOT NULL,
+        [ProductImage] nvarchar(500) NULL,
+        [PackCount] int NOT NULL,
+        [MinimumOrderQuantity] int NOT NULL,
+        [OrderedQuantity] int NOT NULL,
+        [ImportPrice] decimal(18,4) NOT NULL,
+        [RetailPrice] decimal(18,4) NOT NULL,
+        [ImportAmount] decimal(18,4) NOT NULL,
+        [RetailAmount] decimal(18,4) NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(200) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(200) NULL,
+        [IsDeleted] bit NOT NULL CONSTRAINT [DF_PreorderWarehouseOrderItem_IsDeleted] DEFAULT(0),
+        CONSTRAINT [PK_PreorderWarehouseOrderItem] PRIMARY KEY ([OrderItemGuid])
+    );
+END;
+
+-- 已有表也必须补状态约束；若存在非法历史值则让启动迁移失败，避免门禁 fail-open。
+IF OBJECT_ID(N'[dbo].[PreorderActivation]', N'U') IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_PreorderActivation_Status' AND parent_object_id = OBJECT_ID(N'[dbo].[PreorderActivation]'))
+    ALTER TABLE [dbo].[PreorderActivation] WITH CHECK
+        ADD CONSTRAINT [CK_PreorderActivation_Status] CHECK ([Status] IN ('Scheduled', 'Active', 'Closed', 'Cancelled'));
+
+IF OBJECT_ID(N'[dbo].[PreorderWarehouseOrder]', N'U') IS NOT NULL
+BEGIN
+    -- 已有旧约束不包含退回状态，必须原地升级，不能只影响新建数据库。
+    IF EXISTS (
+        SELECT 1 FROM sys.check_constraints
+        WHERE name = 'CK_PreorderWarehouseOrder_Status'
+          AND parent_object_id = OBJECT_ID(N'[dbo].[PreorderWarehouseOrder]')
+          AND definition NOT LIKE '%ReturnedForRevision%'
+    )
+        ALTER TABLE [dbo].[PreorderWarehouseOrder] DROP CONSTRAINT [CK_PreorderWarehouseOrder_Status];
+
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_PreorderWarehouseOrder_Status' AND parent_object_id = OBJECT_ID(N'[dbo].[PreorderWarehouseOrder]'))
+        ALTER TABLE [dbo].[PreorderWarehouseOrder] WITH CHECK
+            ADD CONSTRAINT [CK_PreorderWarehouseOrder_Status] CHECK ([Status] IN ('Draft', 'ReturnedForRevision', 'Submitted', 'NoDemand', 'Processing', 'Completed', 'Cancelled'));
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderTemplateItem_Template_Product' AND object_id = OBJECT_ID('PreorderTemplateItem'))
+    CREATE UNIQUE INDEX [UX_PreorderTemplateItem_Template_Product] ON [PreorderTemplateItem]([TemplateGuid], [ProductCode]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderTemplateStore_Template_Store' AND object_id = OBJECT_ID('PreorderTemplateStore'))
+    CREATE UNIQUE INDEX [UX_PreorderTemplateStore_Template_Store] ON [PreorderTemplateStore]([TemplateGuid], [StoreGuid]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PreorderActivation_Template_Time' AND object_id = OBJECT_ID('PreorderActivation'))
+    CREATE INDEX [IX_PreorderActivation_Template_Time] ON [PreorderActivation]([TemplateGuid], [StartAtUtc], [EndAtUtc], [Status]);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderActivation_Template_Period' AND object_id = OBJECT_ID('PreorderActivation'))
+    CREATE UNIQUE INDEX [UX_PreorderActivation_Template_Period] ON [PreorderActivation]([TemplateGuid], [PeriodNumber]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderActivation_Code' AND object_id = OBJECT_ID('PreorderActivation'))
+    CREATE UNIQUE INDEX [UX_PreorderActivation_Code] ON [PreorderActivation]([ActivationCode]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderActivationItem_Activation_Product' AND object_id = OBJECT_ID('PreorderActivationItem'))
+    CREATE UNIQUE INDEX [UX_PreorderActivationItem_Activation_Product] ON [PreorderActivationItem]([ActivationGuid], [ProductCode]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderActivationStore_Activation_Store' AND object_id = OBJECT_ID('PreorderActivationStore'))
+    CREATE UNIQUE INDEX [UX_PreorderActivationStore_Activation_Store] ON [PreorderActivationStore]([ActivationGuid], [StoreGuid]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PreorderActivationStore_StoreCode' AND object_id = OBJECT_ID('PreorderActivationStore'))
+    CREATE INDEX [IX_PreorderActivationStore_StoreCode] ON [PreorderActivationStore]([StoreCode], [ActivationGuid]);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PreorderActivationStore_StoreGuid' AND object_id = OBJECT_ID('PreorderActivationStore'))
+    CREATE INDEX [IX_PreorderActivationStore_StoreGuid] ON [PreorderActivationStore]([StoreGuid], [ActivationGuid]);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderWarehouseOrder_Activation_Store' AND object_id = OBJECT_ID('PreorderWarehouseOrder'))
+    CREATE UNIQUE INDEX [UX_PreorderWarehouseOrder_Activation_Store] ON [PreorderWarehouseOrder]([ActivationGuid], [StoreGuid]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderWarehouseOrder_OrderNo' AND object_id = OBJECT_ID('PreorderWarehouseOrder'))
+    CREATE UNIQUE INDEX [UX_PreorderWarehouseOrder_OrderNo] ON [PreorderWarehouseOrder]([OrderNo]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PreorderWarehouseOrderItem_Order_Item' AND object_id = OBJECT_ID('PreorderWarehouseOrderItem'))
+    CREATE UNIQUE INDEX [UX_PreorderWarehouseOrderItem_Order_Item] ON [PreorderWarehouseOrderItem]([OrderGuid], [ActivationItemGuid]) WHERE [IsDeleted] = 0;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PreorderWarehouseOrderItem_OrderGuid' AND object_id = OBJECT_ID('PreorderWarehouseOrderItem'))
+    CREATE INDEX [IX_PreorderWarehouseOrderItem_OrderGuid] ON [PreorderWarehouseOrderItem]([OrderGuid]);
+""";
+
+            // 关键位置：Preorder 是独立订单域，启动时必须同时具备模板、批次、订单和唯一约束。
+            await db.Ado.ExecuteCommandAsync(sql);
+            await PreorderSchemaBootstrap.EnsureIndexesAsync(db);
+            logger.LogInformation("Preorder 独立订单表与索引检查完成");
         }
     }
 }

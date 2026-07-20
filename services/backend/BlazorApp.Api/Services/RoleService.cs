@@ -1,3 +1,4 @@
+using System.Data;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
@@ -637,7 +638,7 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
 
                 var roles = await db.Queryable<Role>()
-                    .Where(r => r.IsActive)
+                    .Where(r => r.IsActive && !r.IsDeleted)
                     .OrderBy(r => r.RoleName)
                     .Select(r => new RoleDto
                     {
@@ -2157,6 +2158,20 @@ namespace BlazorApp.Api.Services
                     );
                 }
 
+                if (
+                    !actor.IsSuperAdmin
+                    && !await UserAccessMutationSecurity.IsEmployeeTargetAsync(
+                        db,
+                        targetUserGuid
+                    )
+                )
+                {
+                    return ApiResponse<UserAccessPermissionDto>.Error(
+                        "店长只能维护员工的 POS 收银权限",
+                        "EMPLOYEE_TARGET_REQUIRED"
+                    );
+                }
+
                 var stateResult = await GetUserPermissionStateCoreAsync(targetUserGuid);
                 if (!stateResult.Success || stateResult.Data == null)
                 {
@@ -2191,28 +2206,31 @@ namespace BlazorApp.Api.Services
                     db,
                     actor.UserGuid
                 );
+                var delegatedPermissionCodes = PermissionSeedData.PosTerminalBusinessPermissionCodes
+                    .Where(actorPermissionCodes.Contains)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                // 店长只能看到自己拥有的权限；目标已有但越界的权限不会泄露，也不会在保存时被删除。
+                // 店长只看到本人拥有的 POS 收银业务权限；目标越界权限不泄露且保存时保留。
                 var scopedState = new UserPermissionStateDto
                 {
                     UserGuid = stateResult.Data.UserGuid,
                     IsSuperAdmin = stateResult.Data.IsSuperAdmin,
                     ImplicitAllPermissions = stateResult.Data.ImplicitAllPermissions,
                     InheritedPermissionCodes = stateResult.Data.InheritedPermissionCodes
-                        .Where(actorPermissionCodes.Contains)
+                        .Where(delegatedPermissionCodes.Contains)
                         .ToList(),
                     DirectPermissionCodes = stateResult.Data.DirectPermissionCodes
-                        .Where(actorPermissionCodes.Contains)
+                        .Where(delegatedPermissionCodes.Contains)
                         .ToList(),
                     EffectivePermissionCodes = stateResult.Data.EffectivePermissionCodes
-                        .Where(actorPermissionCodes.Contains)
+                        .Where(delegatedPermissionCodes.Contains)
                         .ToList(),
                     InheritedSources = stateResult.Data.InheritedSources
                         .Select(source => new UserPermissionInheritedSourceDto
                         {
                             RoleName = source.RoleName,
                             PermissionCodes = source.PermissionCodes
-                                .Where(actorPermissionCodes.Contains)
+                                .Where(delegatedPermissionCodes.Contains)
                                 .ToList(),
                         })
                         .Where(source => source.PermissionCodes.Count > 0)
@@ -2225,7 +2243,7 @@ namespace BlazorApp.Api.Services
                         DisplayName = category.DisplayName,
                         Description = category.Description,
                         Permissions = category.Permissions
-                            .Where(permission => actorPermissionCodes.Contains(permission.Name))
+                            .Where(permission => delegatedPermissionCodes.Contains(permission.Name))
                             .ToList(),
                     })
                     .Where(category => category.Permissions.Count > 0)
@@ -2292,54 +2310,156 @@ namespace BlazorApp.Api.Services
                 var requestedCodes = Permissions.ExpandPermissionCodes(dto.Permissions)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                var existingCodes = requestedCodes.Count == 0
-                    ? new List<string>()
-                    : await db.Queryable<SysPermission>()
-                        .Where(item => requestedCodes.Contains(item.Code) && !item.IsDeleted)
-                        .Select(item => item.Code)
-                        .ToListAsync();
-                var permissionCodesToWrite = existingCodes.ToList();
+                var isRestrictedActor = actor.IsEnforced && !actor.IsSuperAdmin;
+                var delegatedPermissionCodes = new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
 
-                if (actor.IsEnforced && !actor.IsSuperAdmin)
+                if (isRestrictedActor)
                 {
+                    if (
+                        !await UserAccessMutationSecurity.IsEmployeeTargetAsync(db, userGuid)
+                    )
+                    {
+                        return ApiResponse<bool>.Error(
+                            "店长只能维护员工的 POS 收银权限",
+                            "EMPLOYEE_TARGET_REQUIRED"
+                        );
+                    }
+
                     var actorPermissionCodes = await UserAccessMutationSecurity.GetEffectivePermissionCodesAsync(
                         db,
                         actor.UserGuid
                     );
-                    var targetDirectCodes = await db.Queryable<SysUserPermission>()
-                        .Where(item => item.UserGuid == userGuid && !item.IsDeleted)
-                        .Select(item => item.PermissionCode)
-                        .ToListAsync();
-                    if (requestedCodes.Any(code => !actorPermissionCodes.Contains(code)))
+                    var posBusinessCodes = PermissionSeedData.PosTerminalBusinessPermissionCodes
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    delegatedPermissionCodes = posBusinessCodes
+                        .Where(actorPermissionCodes.Contains)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    if (requestedCodes.Any(code => !posBusinessCodes.Contains(code)))
+                    {
+                        return ApiResponse<bool>.Error(
+                            "店长只能分配 POS 收银业务权限",
+                            "POS_PERMISSION_DELEGATION_DENIED"
+                        );
+                    }
+
+                    if (requestedCodes.Any(code => !delegatedPermissionCodes.Contains(code)))
                     {
                         return ApiResponse<bool>.Error(
                             "不能授予当前账号自身不具备的权限",
                             "PERMISSION_ESCALATION_DENIED"
                         );
                     }
-
-                    var protectedDirectCodes = targetDirectCodes.Where(code =>
-                        !Permissions.ExpandPermissionCodes(new[] { code })
-                            .Any(actorPermissionCodes.Contains)
-                    );
-
-                    // 受限操作者只替换自己能够授予的直接权限，范围外既有权限原样保留。
-                    permissionCodesToWrite = permissionCodesToWrite
-                        .Concat(protectedDirectCodes)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList();
                 }
 
-                await db.Ado.BeginTranAsync();
+                // 授权写入使用串行化事务，避免目标或操作者权限在复验与写入之间漂移。
+                await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
                 try
                 {
-                    await db.Deleteable<SysUserPermission>()
-                        .Where(item => item.UserGuid == userGuid)
-                        .ExecuteCommandAsync();
-
-                    if (permissionCodesToWrite.Any())
+                    var transactionActor = await UserAccessMutationSecurity.ResolveActorAsync(
+                        db,
+                        _manageableStoreScopeService
+                    );
+                    var revalidatedTarget = await UserAccessMutationSecurity.ValidateGlobalTargetAsync(
+                        db,
+                        transactionActor,
+                        userGuid
+                    );
+                    if (!revalidatedTarget.IsAllowed)
                     {
-                        var newPermissions = permissionCodesToWrite
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error(
+                            revalidatedTarget.Message,
+                            revalidatedTarget.ErrorCode
+                        );
+                    }
+
+                    var transactionExistingCodes = requestedCodes.Count == 0
+                        ? new List<string>()
+                        : await db.Queryable<SysPermission>()
+                            .Where(item =>
+                                requestedCodes.Contains(item.Code) && !item.IsDeleted
+                            )
+                            .Select(item => item.Code)
+                            .ToListAsync();
+                    var transactionPermissionCodesToWrite = transactionExistingCodes.ToList();
+                    var transactionRestrictedActor = !transactionActor.IsSuperAdmin;
+                    var transactionDelegatedPermissionCodes = new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                    if (transactionRestrictedActor)
+                    {
+                        if (
+                            !await UserAccessMutationSecurity.IsEmployeeTargetAsync(
+                                db,
+                                userGuid
+                            )
+                        )
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error(
+                                "店长只能维护员工的 POS 收银权限",
+                                "EMPLOYEE_TARGET_REQUIRED"
+                            );
+                        }
+
+                        var transactionPosBusinessCodes = PermissionSeedData
+                            .PosTerminalBusinessPermissionCodes
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        if (requestedCodes.Any(code => !transactionPosBusinessCodes.Contains(code)))
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error(
+                                "店长只能分配 POS 收银业务权限",
+                                "POS_PERMISSION_DELEGATION_DENIED"
+                            );
+                        }
+
+                        var transactionActorPermissionCodes =
+                            await UserAccessMutationSecurity.GetEffectivePermissionCodesAsync(
+                            db,
+                            transactionActor.UserGuid
+                        );
+                        transactionDelegatedPermissionCodes = transactionPosBusinessCodes
+                            .Where(transactionActorPermissionCodes.Contains)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        if (
+                            requestedCodes.Any(code =>
+                                !transactionDelegatedPermissionCodes.Contains(code)
+                            )
+                        )
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error(
+                                "不能授予当前账号自身不具备的权限",
+                                "PERMISSION_ESCALATION_DENIED"
+                            );
+                        }
+
+                        var delegatedCodeList = transactionDelegatedPermissionCodes.ToList();
+                        if (delegatedCodeList.Count > 0)
+                        {
+                            // 受限集合替换只删除可委派子集，保留其他权限行的主键和审计字段。
+                            await db.Deleteable<SysUserPermission>()
+                                .Where(item =>
+                                    item.UserGuid == userGuid
+                                    && delegatedCodeList.Contains(item.PermissionCode)
+                                )
+                                .ExecuteCommandAsync();
+                        }
+                    }
+                    else
+                    {
+                        await db.Deleteable<SysUserPermission>()
+                            .Where(item => item.UserGuid == userGuid)
+                            .ExecuteCommandAsync();
+                    }
+
+                    if (transactionPermissionCodesToWrite.Any())
+                    {
+                        var newPermissions = transactionPermissionCodesToWrite
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .Select(code => new SysUserPermission
                             {

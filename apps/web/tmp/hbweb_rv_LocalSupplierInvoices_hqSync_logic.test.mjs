@@ -1034,6 +1034,32 @@ function buildBatchExecuteConfirmText({
   };
 }
 
+// src/pages/PosAdmin/LocalSupplierInvoices/invoiceTableScroll.ts
+function getNextInvoiceTableScrollTop(active, savedScrollTop, eventScrollTop) {
+  return active ? eventScrollTop : savedScrollTop;
+}
+function shouldRestoreInvoiceTableScroll(wasActive, active) {
+  return !wasActive && active;
+}
+function scheduleInvoiceTableScrollRestore({
+  requestFrame,
+  cancelFrame,
+  restore
+}) {
+  let pendingFrameId = requestFrame(() => {
+    pendingFrameId = requestFrame(() => {
+      pendingFrameId = null;
+      restore();
+    });
+  });
+  return () => {
+    if (pendingFrameId !== null) {
+      cancelFrame(pendingFrameId);
+      pendingFrameId = null;
+    }
+  };
+}
+
 // src/pages/PosAdmin/LocalSupplierInvoices/LocalSupplierInvoices.hqSync.logic.test.ts
 function assert(condition, message) {
   if (!condition) {
@@ -1074,6 +1100,32 @@ async function assertRequestErrorPayload(execute, expectedMessage, message) {
   }
   throw new Error(`${message}\u3002Expected promise to reject`);
 }
+function createFakeAnimationFrames() {
+  let nextFrameId = 1;
+  const callbacks = /* @__PURE__ */ new Map();
+  return {
+    requestFrame(callback) {
+      const frameId = nextFrameId;
+      nextFrameId += 1;
+      callbacks.set(frameId, callback);
+      return frameId;
+    },
+    cancelFrame(frameId) {
+      callbacks.delete(frameId);
+    },
+    flushNext() {
+      const entry = callbacks.entries().next().value;
+      if (!entry) return false;
+      const [frameId, callback] = entry;
+      callbacks.delete(frameId);
+      callback();
+      return true;
+    },
+    pendingCount() {
+      return callbacks.size;
+    }
+  };
+}
 async function runTest(name, execute) {
   try {
     await execute();
@@ -1088,15 +1140,19 @@ async function runTest(name, execute) {
 }
 var pageFile = path.resolve(process.cwd(), "src/pages/PosAdmin/LocalSupplierInvoices/index.tsx");
 var editPageFile = path.resolve(process.cwd(), "src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx");
+var invoiceHeaderFormFile = path.resolve(process.cwd(), "src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/invoiceHeaderForm.ts");
 var editCellsFile = path.resolve(process.cwd(), "src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/EditableCells.tsx");
 var detailPageFile = path.resolve(process.cwd(), "src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx");
+var barcodePreviewFile = path.resolve(process.cwd(), "src/components/BarcodePreview.tsx");
 var serviceFile = path.resolve(process.cwd(), "src/services/localSupplierInvoiceService.ts");
 var typeFile = path.resolve(process.cwd(), "src/types/localSupplierInvoice.ts");
 var globalStyleFile = path.resolve(process.cwd(), "src/styles/global.css");
 var pageSource = readFileSync(pageFile, "utf8");
 var editPageSource = readFileSync(editPageFile, "utf8");
+var invoiceHeaderFormSource = readFileSync(invoiceHeaderFormFile, "utf8");
 var editCellsSource = readFileSync(editCellsFile, "utf8");
 var detailPageSource = readFileSync(detailPageFile, "utf8");
+var barcodePreviewSource = readFileSync(barcodePreviewFile, "utf8");
 var serviceSource = readFileSync(serviceFile, "utf8");
 var typeSource = readFileSync(typeFile, "utf8");
 var globalStyleSource = readFileSync(globalStyleFile, "utf8");
@@ -1190,6 +1246,84 @@ async function main() {
     );
   });
   if (invoiceDetailKeepAliveFailure) failures.push(invoiceDetailKeepAliveFailure);
+  const invoiceListScrollStateFailure = await runTest("\u5206\u5E97\u8FDB\u8D27\u5355\u5217\u8868\u53EA\u5728\u6D3B\u52A8 Tab \u8BB0\u5F55\u6EDA\u52A8\u5E76\u4EC5\u5728\u91CD\u65B0\u6FC0\u6D3B\u65F6\u6062\u590D", () => {
+    assertEqual(getNextInvoiceTableScrollTop(true, 120, 360), 360, "\u6D3B\u52A8 Tab \u5E94\u8BB0\u5F55\u6700\u65B0\u8868\u4F53\u6EDA\u52A8\u4F4D\u7F6E");
+    assertEqual(getNextInvoiceTableScrollTop(false, 360, 0), 360, "\u9690\u85CF Tab \u7684\u5F52\u96F6\u6EDA\u52A8\u4E8B\u4EF6\u4E0D\u5E94\u8986\u76D6\u5DF2\u4FDD\u5B58\u4F4D\u7F6E");
+    assert(shouldRestoreInvoiceTableScroll(false, true), "\u9690\u85CF Tab \u91CD\u65B0\u6FC0\u6D3B\u65F6\u5E94\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E");
+    assert(!shouldRestoreInvoiceTableScroll(true, true), "\u6301\u7EED\u6D3B\u52A8\u65F6\u4E0D\u5E94\u91CD\u590D\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E");
+    assert(!shouldRestoreInvoiceTableScroll(true, false), "\u5207\u5230\u9690\u85CF\u72B6\u6001\u65F6\u4E0D\u5E94\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E");
+    assert(!shouldRestoreInvoiceTableScroll(false, false), "\u6301\u7EED\u9690\u85CF\u65F6\u4E0D\u5E94\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E");
+  });
+  if (invoiceListScrollStateFailure) failures.push(invoiceListScrollStateFailure);
+  const invoiceListScrollScheduleFailure = await runTest("\u5206\u5E97\u8FDB\u8D27\u5355\u5217\u8868\u5E94\u7B49\u5F85\u4E24\u5E27\u4E14\u53EA\u6062\u590D\u4E00\u6B21\u6EDA\u52A8\u4F4D\u7F6E", () => {
+    const frames = createFakeAnimationFrames();
+    let restoreCount = 0;
+    const cleanup = scheduleInvoiceTableScrollRestore({
+      requestFrame: frames.requestFrame,
+      cancelFrame: frames.cancelFrame,
+      restore: () => {
+        restoreCount += 1;
+      }
+    });
+    assertEqual(frames.pendingCount(), 1, "\u8C03\u5EA6\u540E\u5E94\u53EA\u7B49\u5F85\u7B2C\u4E00\u5E27");
+    assert(frames.flushNext(), "\u7B2C\u4E00\u5E27\u5E94\u5B58\u5728");
+    assertEqual(restoreCount, 0, "\u7B2C\u4E00\u5E27\u53EA\u7B49\u5F85\u5E03\u5C40\uFF0C\u4E0D\u5E94\u7ACB\u5373\u6062\u590D");
+    assertEqual(frames.pendingCount(), 1, "\u7B2C\u4E00\u5E27\u7ED3\u675F\u540E\u5E94\u7B49\u5F85\u7B2C\u4E8C\u5E27");
+    assert(frames.flushNext(), "\u7B2C\u4E8C\u5E27\u5E94\u5B58\u5728");
+    assertEqual(restoreCount, 1, "\u7B2C\u4E8C\u5E27\u5E94\u4E14\u53EA\u5E94\u6062\u590D\u4E00\u6B21");
+    assertEqual(frames.pendingCount(), 0, "\u6062\u590D\u540E\u4E0D\u5E94\u9057\u7559\u5F85\u6267\u884C\u5E27");
+    cleanup();
+  });
+  if (invoiceListScrollScheduleFailure) failures.push(invoiceListScrollScheduleFailure);
+  const invoiceListScrollCancelFailure = await runTest("\u5206\u5E97\u8FDB\u8D27\u5355\u5217\u8868\u5FEB\u901F\u5207\u6362\u65F6\u5E94\u53D6\u6D88\u65E7\u7684\u6EDA\u52A8\u6062\u590D", () => {
+    const beforeFirstFrame = createFakeAnimationFrames();
+    let cancelledBeforeFirstFrameCount = 0;
+    const cancelBeforeFirstFrame = scheduleInvoiceTableScrollRestore({
+      requestFrame: beforeFirstFrame.requestFrame,
+      cancelFrame: beforeFirstFrame.cancelFrame,
+      restore: () => {
+        cancelledBeforeFirstFrameCount += 1;
+      }
+    });
+    cancelBeforeFirstFrame();
+    assertEqual(beforeFirstFrame.pendingCount(), 0, "\u7B2C\u4E00\u5E27\u524D\u6E05\u7406\u5E94\u53D6\u6D88\u5F53\u524D\u5F85\u6267\u884C\u5E27");
+    assertEqual(cancelledBeforeFirstFrameCount, 0, "\u7B2C\u4E00\u5E27\u524D\u6E05\u7406\u4E0D\u5E94\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E");
+    const rapidSwitchFrames = createFakeAnimationFrames();
+    let rapidSwitchRestoreCount = 0;
+    const cancelOldRestore = scheduleInvoiceTableScrollRestore({
+      requestFrame: rapidSwitchFrames.requestFrame,
+      cancelFrame: rapidSwitchFrames.cancelFrame,
+      restore: () => {
+        rapidSwitchRestoreCount += 1;
+      }
+    });
+    assert(rapidSwitchFrames.flushNext(), "\u65E7\u6062\u590D\u7684\u7B2C\u4E00\u5E27\u5E94\u5B58\u5728");
+    cancelOldRestore();
+    assertEqual(rapidSwitchFrames.pendingCount(), 0, "\u7B2C\u4E00\u5E27\u540E\u6E05\u7406\u5E94\u53D6\u6D88\u65E7\u6062\u590D\u7684\u7B2C\u4E8C\u5E27");
+    const cleanupLatestRestore = scheduleInvoiceTableScrollRestore({
+      requestFrame: rapidSwitchFrames.requestFrame,
+      cancelFrame: rapidSwitchFrames.cancelFrame,
+      restore: () => {
+        rapidSwitchRestoreCount += 1;
+      }
+    });
+    assert(rapidSwitchFrames.flushNext(), "\u6700\u65B0\u6062\u590D\u7684\u7B2C\u4E00\u5E27\u5E94\u5B58\u5728");
+    assert(rapidSwitchFrames.flushNext(), "\u6700\u65B0\u6062\u590D\u7684\u7B2C\u4E8C\u5E27\u5E94\u5B58\u5728");
+    assertEqual(rapidSwitchRestoreCount, 1, "\u5FEB\u901F\u5207\u6362\u540E\u53EA\u80FD\u6267\u884C\u6700\u65B0\u4E00\u6B21\u6062\u590D");
+    cleanupLatestRestore();
+  });
+  if (invoiceListScrollCancelFailure) failures.push(invoiceListScrollCancelFailure);
+  const invoiceListScrollRestoreFailure = await runTest("\u5206\u5E97\u8FDB\u8D27\u5355\u5217\u8868\u9875\u5E94\u63A5\u5165\u53EF\u6D4B\u8BD5\u7684\u6EDA\u52A8\u6062\u590D\u7B56\u7565", () => {
+    assert(
+      pageSource.includes("import { useKeepAliveContext } from 'keepalive-for-react'") && pageSource.includes("const { active } = useKeepAliveContext()") && pageSource.includes("const invoiceTableRef = useRef<TableRef | null>(null)") && pageSource.includes("ref={invoiceTableRef}") && pageSource.includes("onScroll={handleInvoiceTableScroll}"),
+      "\u5217\u8868\u9875\u5E94\u63A5\u5165 KeepAlive active \u72B6\u6001\u3001AntD TableRef \u548C\u8868\u4F53\u6EDA\u52A8\u4E8B\u4EF6"
+    );
+    assert(
+      pageSource.includes("from './invoiceTableScroll'") && pageSource.includes("getNextInvoiceTableScrollTop(") && pageSource.includes("shouldRestoreInvoiceTableScroll(wasActive, active)") && pageSource.includes("return scheduleInvoiceTableScrollRestore({"),
+      "\u5217\u8868\u9875\u5E94\u8C03\u7528\u5DF2\u901A\u8FC7\u884C\u4E3A\u6D4B\u8BD5\u7684\u6EDA\u52A8\u4FDD\u5B58\u3001\u6FC0\u6D3B\u5224\u65AD\u548C\u53CC\u5E27\u6062\u590D\u7B56\u7565"
+    );
+  });
+  if (invoiceListScrollRestoreFailure) failures.push(invoiceListScrollRestoreFailure);
   const jobTypeFailure = await runTest("\u66F4\u65B0\u5230\u5206\u5E97\u548C\u66F4\u65B0HQ\u5546\u54C1\u5E94\u58F0\u660E\u540E\u53F0 Job \u5951\u7EA6\u5B57\u6BB5", () => {
     assert(typeSource.includes("export interface LocalSupplierInvoiceJobBase"), "\u5E94\u58F0\u660E\u672C\u5730\u8FDB\u8D27\u5355\u540E\u53F0 Job \u57FA\u7840\u7C7B\u578B");
     assert(typeSource.includes("jobId: string"), "\u540E\u53F0 Job \u5E94\u58F0\u660E jobId");
@@ -1287,6 +1421,37 @@ async function main() {
     );
   });
   if (editPageDynamicTabTitleFailure) failures.push(editPageDynamicTabTitleFailure);
+  const editableInvoiceHeaderFailure = await runTest("\u7F16\u8F91\u9875\u8BA2\u5355\u5934\u5E94\u652F\u6301\u5728\u6743\u9650\u8303\u56F4\u5185\u4FEE\u6539\u5206\u5E97\u548C\u4F9B\u5E94\u5546", () => {
+    assert(editPageSource.includes("import { getActiveLocalSuppliers } from '../../../../services/localSupplierService'"), "\u7F16\u8F91\u9875\u5E94\u52A0\u8F7D\u6709\u6548\u672C\u5730\u4F9B\u5E94\u5546");
+    assert(editPageSource.includes('name="storeCode"') && editPageSource.includes('name="supplierCode"'), "\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u8868\u5355\u503C\u5E94\u4F7F\u7528\u7F16\u7801");
+    assert(editPageSource.includes("options={headerStoreOptions}") && editPageSource.includes("options={headerSupplierOptions}"), "\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u5E94\u4F7F\u7528\u5E26\u5F53\u524D\u503C\u56DE\u663E\u7684\u4E0B\u62C9\u9009\u9879");
+    assert(editPageSource.includes("showSearch") && editPageSource.includes('optionFilterProp="label"'), "\u8BA2\u5355\u5934\u4E0B\u62C9\u5E94\u652F\u6301\u6309\u7F16\u7801\u548C\u540D\u79F0\u641C\u7D22");
+    assert(editPageSource.includes("rules={[{ required: true"), "\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u5E94\u6267\u884C\u5FC5\u586B\u6821\u9A8C");
+    assert(editPageSource.includes("isStoreCodeInManagedScope(payload.storeCode, managedStoreCodes)"), "\u4FDD\u5B58\u524D\u5FC5\u987B\u590D\u9A8C\u5206\u5E97\u7BA1\u7406\u8303\u56F4");
+    assert(editPageSource.includes("await updateInvoice(invoiceGuid, payload)"), "\u4FDD\u5B58\u5E94\u63D0\u4EA4\u5305\u542B\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u7684\u7EDF\u4E00 payload");
+    assert(editPageSource.includes("const refreshed = await loadInvoiceAndDetails(false)"), "\u4FDD\u5B58\u8BA2\u5355\u5934\u540E\u5E94\u8BFB\u53D6\u4E3B\u8868\u548C\u660E\u7EC6\u5237\u65B0\u7ED3\u679C");
+    assert(editPageSource.includes("if (!refreshed)"), "\u4FDD\u5B58\u540E\u7684\u5237\u65B0\u5931\u8D25\u5FC5\u987B\u8FDB\u5165\u5B89\u5168\u964D\u7EA7\u5206\u652F");
+    const headerSaveStart = editPageSource.indexOf("const handleSave = async () => {");
+    const inlineSaveStart = editPageSource.indexOf("const handleInlineDetailSave", headerSaveStart);
+    const headerSaveSource = editPageSource.slice(headerSaveStart, inlineSaveStart);
+    const refreshFailureStart = headerSaveSource.indexOf("if (!refreshed)");
+    const saveSuccessStart = headerSaveSource.indexOf("message.success(t('posAdmin.invoiceDetail.saveSuccess'");
+    const refreshFailureSource = headerSaveSource.slice(refreshFailureStart, saveSuccessStart);
+    assert(refreshFailureSource.includes("invoiceSnapshotRef.current = null") && refreshFailureSource.includes("detailsSnapshotRef.current = []"), "\u5237\u65B0\u5931\u8D25\u5FC5\u987B\u6E05\u7A7A\u8BA2\u5355\u5934\u548C\u660E\u7EC6\u5FEB\u7167");
+    assert(refreshFailureSource.includes("loadedInvoiceGuidRef.current = null") && refreshFailureSource.includes("visibleInvoiceGuidRef.current = null") && refreshFailureSource.includes("lastLoadedManagedStoreCodeKeyRef.current = null"), "\u5237\u65B0\u5931\u8D25\u5FC5\u987B\u5931\u6548\u8BA2\u5355\u548C\u6743\u9650\u8303\u56F4\u52A0\u8F7D\u6807\u8BB0");
+    assert(refreshFailureSource.includes("setInvoice(null)") && refreshFailureSource.includes("setDetails([])") && refreshFailureSource.includes("setSelectedRowKeys([])") && refreshFailureSource.includes("setRowActions({})"), "\u5237\u65B0\u5931\u8D25\u5FC5\u987B\u6E05\u7A7A\u8BA2\u5355\u3001\u660E\u7EC6\u3001\u9009\u62E9\u548C\u884C\u64CD\u4F5C\u72B6\u6001");
+    assert(refreshFailureSource.includes("form.resetFields()") && refreshFailureSource.includes("setCanAccessInvoice(false)"), "\u5237\u65B0\u5931\u8D25\u5FC5\u987B\u6E05\u7A7A\u8868\u5355\u5E76\u7981\u6B62\u540E\u7EED\u5199\u64CD\u4F5C");
+    assert(refreshFailureStart < saveSuccessStart, "\u666E\u901A\u4FDD\u5B58\u6210\u529F\u63D0\u793A\u53EA\u80FD\u5728\u5237\u65B0\u6210\u529F\u540E\u663E\u793A");
+    assert(refreshFailureSource.includes("'\u8BA2\u5355\u5DF2\u4FDD\u5B58\u4F46\u6700\u65B0\u6570\u636E\u5237\u65B0\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D'"), "\u5237\u65B0\u5931\u8D25\u5206\u652F\u5FC5\u987B\u4FDD\u7559\u5DF2\u4FDD\u5B58\u4F46\u9700\u91CD\u65B0\u52A0\u8F7D\u7684 warning");
+    assert(refreshFailureSource.includes("return"), "\u5237\u65B0\u5931\u8D25\u5206\u652F\u5FC5\u987B\u5728\u666E\u901A\u6210\u529F\u63D0\u793A\u524D\u8FD4\u56DE");
+    assert(editPageSource.includes("return true") && editPageSource.includes("return false"), "\u8BA2\u5355\u5934\u548C\u660E\u7EC6\u52A0\u8F7D\u51FD\u6570\u5E94\u8FD4\u56DE\u660E\u786E\u5237\u65B0\u7ED3\u679C");
+    assert(editPageSource.includes("currentUser?.stores?.filter((store) => store.isActive !== false)"), "\u53D7\u9650\u7528\u6237\u7684\u5206\u5E97\u5019\u9009\u5FC5\u987B\u6392\u9664\u505C\u7528\u5206\u5E97");
+    assert(editPageSource.includes("!storeOptions.some((option) => option.value === invoice?.storeCode)"), "\u5F53\u524D\u5206\u5E97\u4E0D\u5728\u6709\u6548\u5019\u9009\u65F6\u53EA\u80FD\u901A\u8FC7\u7981\u7528\u515C\u5E95\u9879\u56DE\u663E");
+    assert(invoiceHeaderFormSource.includes("storeCode: data.storeCode") && invoiceHeaderFormSource.includes("supplierCode: data.supplierCode"), "\u8BA2\u5355\u5934\u6620\u5C04\u5E94\u4FDD\u7559\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u7F16\u7801");
+    assert(invoiceHeaderFormSource.includes("storeCode: values.storeCode?.trim()") && invoiceHeaderFormSource.includes("supplierCode: values.supplierCode?.trim()"), "\u4FDD\u5B58 payload \u5E94\u53D1\u9001\u6E05\u7406\u540E\u7684\u5206\u5E97\u548C\u4F9B\u5E94\u5546\u7F16\u7801");
+    assert(invoiceHeaderFormSource.includes("includeCurrentInvoiceHeaderOption"), "\u9009\u9879\u7F3A\u5931\u6216\u52A0\u8F7D\u5931\u8D25\u65F6\u5E94\u4FDD\u7559\u5F53\u524D\u503C\u56DE\u663E");
+  });
+  if (editableInvoiceHeaderFailure) failures.push(editableInvoiceHeaderFailure);
   const batchEditPersistFailure = await runTest("\u7F16\u8F91\u9875\u6279\u91CF\u7F16\u8F91\u5E94\u901A\u8FC7\u6279\u91CF\u66F4\u65B0\u63A5\u53E3\u6301\u4E45\u5316 editFields", () => {
     assert(editPageSource.includes("batchUpdateDetails,"), "\u7F16\u8F91\u9875\u5E94\u9759\u6001\u5BFC\u5165\u6279\u91CF\u66F4\u65B0\u660E\u7EC6\u63A5\u53E3");
     assert(
@@ -1806,7 +1971,16 @@ async function main() {
     assert(editPageSource.includes("width: 48,\n      fixed: 'left'"), "\u56FE\u7247\u5217\u5E94\u56FA\u5B9A\u5728\u5DE6\u4FA7\u5E76\u538B\u7F29\u5BBD\u5EA6");
     assert(editPageSource.includes("width: 108,\n      fixed: 'left'"), "\u8D27\u53F7\u5217\u5E94\u56FA\u5B9A\u5728\u5DE6\u4FA7\u5E76\u538B\u7F29\u5BBD\u5EA6");
     assert(editPageSource.includes("width={36} height={36}"), "\u56FE\u7247\u7F29\u7565\u56FE\u5E94\u538B\u7F29\u5230 36px");
-    assert(editPageSource.includes("<BarcodePreview value={v} compactCopy />"), "\u6761\u7801\u6587\u672C\u4E0D\u5E94\u8BBE\u7F6E textMaxWidth \u7701\u7565\u9690\u85CF");
+    const barcodeColumnSource = editPageSource.slice(
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.barcode'"),
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.productName'")
+    );
+    assert(barcodeColumnSource.includes('field="barcode"'), "\u6761\u7801\u5217\u5E94\u63A5\u5165\u884C\u5185\u7F16\u8F91\u5B57\u6BB5");
+    assert(barcodeColumnSource.includes("onSave={handleInlineDetailSave}"), "\u6761\u7801\u884C\u5185\u7F16\u8F91\u5E94\u56DE\u5230\u7EDF\u4E00\u4FDD\u5B58 handler");
+    assert(barcodeColumnSource.includes("<BarcodePreview value={v} compactCopy />"), "\u6761\u7801\u6587\u672C\u4E0D\u5E94\u8BBE\u7F6E textMaxWidth \u7701\u7565\u9690\u85CF");
+    assert(barcodePreviewSource.includes("onClick={handleCopyClick}"), "\u6761\u7801\u9884\u89C8\u590D\u5236\u6309\u94AE\u5E94\u4FDD\u7559\u590D\u5236\u5165\u53E3");
+    assert(barcodePreviewSource.includes("onDoubleClick={stopCopyDoubleClick}"), "\u6761\u7801\u9884\u89C8\u590D\u5236\u6309\u94AE\u53CC\u51FB\u4E0D\u5E94\u5192\u6CE1\u89E6\u53D1\u884C\u5185\u7F16\u8F91");
+    assert(barcodePreviewSource.includes("event.stopPropagation()"), "\u6761\u7801\u9884\u89C8\u590D\u5236\u4E8B\u4EF6\u5E94\u963B\u6B62\u5192\u6CE1\uFF0C\u907F\u514D\u7834\u574F\u53CC\u51FB\u7F16\u8F91\u8FB9\u754C");
     assert(editPageSource.includes("additionalBarcodeCount"), "\u6761\u7801\u5217\u5E94\u663E\u793A\u526F\u7801\u6570\u91CF\u6807\u7B7E");
     assert(editPageSource.includes("record.additionalBarcodes?.join"), "\u526F\u7801\u6570\u91CF\u6807\u7B7E\u5E94\u60AC\u6D6E\u663E\u793A\u5B8C\u6574\u526F\u7801\u5217\u8868");
     assert(editPageSource.includes("formatPricingFloatRate"), "\u5B9A\u4EF7\u6D6E\u7387\u5E94\u4F7F\u7528\u4E13\u7528\u4E24\u4F4D\u5C0F\u6570\u683C\u5F0F\u5316");

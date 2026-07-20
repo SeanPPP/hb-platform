@@ -2,6 +2,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
@@ -417,10 +418,21 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeResource = await PreorderGateEvaluator
+                    .ResolveStoreLockResourceFailClosedAsync(db, storeCode, _logger);
+                await using var storeLock = await PreorderMutationLock.AcquireProcessAsync(
+                    storeResource
+                );
                 await db.Ado.BeginTranAsync();
 
                 try
                 {
+                    await PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
+                        db,
+                        storeResource,
+                        storeCode,
+                        _logger
+                    );
                     var order = await db.Queryable<WareHouseOrder>()
                         .Where(o => o.OrderGUID == request.OrderGUID)
                         .FirstAsync();
@@ -435,13 +447,38 @@ namespace BlazorApp.Api.Services
                         };
                     }
 
-                    if (!string.IsNullOrEmpty(storeCode) && order.StoreCode != storeCode)
+                    if (!string.Equals(
+                        order.StoreCode?.Trim(),
+                        storeCode.Trim(),
+                        StringComparison.OrdinalIgnoreCase
+                    ))
                     {
                         await db.Ado.RollbackTranAsync();
                         return new PDAWarehouseOrderResponseDto
                         {
                             Success = false,
-                            Message = "无权提交该订单",
+                            ErrorCode = "PDA_ORDER_STORE_MISMATCH",
+                            Message = "订单不属于当前设备绑定分店",
+                        };
+                    }
+
+                    // 先验证订单归属，再检查同店 Preorder；两步均处于同一 StoreGate/事务内。
+                    var gate = await PreorderGateEvaluator
+                        .EvaluateWithHeldStoreGateFailClosedAsync(
+                        db,
+                        storeResource,
+                        storeCode,
+                        TimeProvider.System,
+                        _logger
+                    );
+                    if (gate.IsBlocked)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return new PDAWarehouseOrderResponseDto
+                        {
+                            Success = false,
+                            ErrorCode = "PREORDER_REQUIRED",
+                            Message = "请先完成当前有效的 Preorder，再提交普通订货",
                         };
                     }
 
@@ -495,13 +532,23 @@ namespace BlazorApp.Api.Services
                     throw;
                 }
             }
+            catch (PreorderBusinessException ex)
+            {
+                _logger.LogWarning(ex, "PDA 提交订单时无法确认 Preorder 门禁");
+                return new PDAWarehouseOrderResponseDto
+                {
+                    Success = false,
+                    ErrorCode = ex.ErrorCode,
+                    Message = ex.Message,
+                };
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "提交PDA仓库订单失败");
                 return new PDAWarehouseOrderResponseDto
                 {
                     Success = false,
-                    Message = "订单提交失败: " + ex.Message,
+                    Message = "订单提交失败，请稍后重试",
                 };
             }
         }

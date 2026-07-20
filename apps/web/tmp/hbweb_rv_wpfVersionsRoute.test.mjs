@@ -25,6 +25,7 @@ var init_permissions = __esm({
         Delete: "Users.Delete",
         ManageRoles: "Users.ManageRoles",
         ManageStores: "Users.ManageStores",
+        ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
         ResetPassword: "Users.ResetPassword"
       },
       Roles: {
@@ -139,6 +140,9 @@ var init_permissions = __esm({
         View: "PosProducts.View",
         Manage: "PosProducts.Manage"
       },
+      PosTerminal: {
+        AuditView: "Permissions.PosTerminal.Audit.View"
+      },
       Dashboard: {
         View: "Dashboard"
       },
@@ -170,6 +174,93 @@ var init_permissions = __esm({
   }
 });
 
+// src/utils/webPortalAccess.ts
+function hasBackendNavigationAccess(access) {
+  return access.isAdmin || ADMIN_ENTRY_RULES.some((rule) => rule.canAccess(access));
+}
+var ADMIN_ENTRY_RULES;
+var init_webPortalAccess = __esm({
+  "src/utils/webPortalAccess.ts"() {
+    init_permissions();
+    ADMIN_ENTRY_RULES = [
+      {
+        defaultPath: "/dashboard",
+        targetPrefixes: ["/dashboard"],
+        canAccess: (access) => access.canAccessDashboard
+      },
+      {
+        defaultPath: "/warehouse/store-orders",
+        targetPrefixes: [
+          "/warehouse/store-orders",
+          "/warehouse/preorders",
+          "/warehouse/store-order"
+        ],
+        canAccess: (access) => access.canManageWarehouseOrders
+      },
+      {
+        defaultPath: "/warehouse/store-order-import-price-variance",
+        targetPrefixes: ["/warehouse/store-order-import-price-variance"],
+        canAccess: (access) => access.canManageStoreOrderImportPriceVariance
+      },
+      {
+        defaultPath: "/warehouse/store-orders",
+        // 旧 Warehouse.Manage 只覆盖其实际派生的仓库业务页，不能绕过价差或货柜叶子权限。
+        targetPrefixes: [
+          "/warehouse/products",
+          "/warehouse/categories",
+          "/warehouse/locations",
+          "/warehouse/product-grade-management"
+        ],
+        canAccess: (access) => access.canManageWarehouse
+      },
+      {
+        defaultPath: "/warehouse/containers",
+        targetPrefixes: [
+          "/warehouse/containers",
+          "/warehouse/container/detail",
+          "/warehouse/container/allocation-sales"
+        ],
+        canAccess: (access) => access.canViewContainers
+      },
+      {
+        defaultPath: "/executive-sales-intelligence/product-movement-report",
+        targetPrefixes: ["/executive-sales-intelligence/product-movement-report"],
+        // Reports.View 兼容叶子页面访问，但后台导航入口与后端一致，仅认专用权限。
+        canAccess: (access) => access.hasPermission(P.Reports.ProductMovementView)
+      },
+      {
+        defaultPath: "/executive-sales-intelligence/purchase-amount-dashboard",
+        targetPrefixes: [
+          "/executive-sales-intelligence/purchase-amount-dashboard",
+          "/pos-admin/local-supplier-invoices",
+          "/pos-admin/local-supplier-purchase-sales-analysis",
+          "/pos-admin/invoice-detail"
+        ],
+        canAccess: (access) => access.canManageLocalPurchase
+      },
+      {
+        defaultPath: "/system/invoice-email-settings",
+        targetPrefixes: [
+          "/system/invoice-email-settings",
+          "/system/payment-terminal-settings",
+          "/system/emergency-login-keys"
+        ],
+        canAccess: (access) => access.canManageSystemSettings
+      },
+      {
+        defaultPath: "/system/app-downloads",
+        targetPrefixes: ["/system/app-downloads", "/system/wpf-versions"],
+        canAccess: (access) => access.canViewAppDownloads
+      },
+      {
+        defaultPath: "/pos-admin/operation-logs",
+        targetPrefixes: ["/pos-admin/operation-logs"],
+        canAccess: (access) => access.canViewOperationAudits
+      }
+    ];
+  }
+});
+
 // src/utils/access.ts
 function getEquivalentPermissionCodes(permission) {
   const normalizedPermission = permission.toLowerCase();
@@ -182,6 +273,7 @@ function createEmptyAccess() {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
@@ -247,6 +339,7 @@ function createEmptyAccess() {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canViewOperationAudits: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
@@ -255,6 +348,7 @@ function createEmptyAccess() {
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
+    canAccessAdminShell: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -271,7 +365,7 @@ function buildAccess(currentUser) {
     return createEmptyAccess();
   }
   const hasRole = (role) => currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false;
-  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458");
+  const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
   const hasPermission = (permission) => {
@@ -331,7 +425,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
-  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport;
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete);
@@ -371,6 +465,7 @@ function buildAccess(currentUser) {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit);
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View);
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs);
+  const canViewOperationAudits = isAdmin || hasPermission(P.PosTerminal.AuditView);
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks);
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings);
   const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads);
@@ -380,12 +475,28 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View);
+  const canAccessAdminShell = hasBackendNavigationAccess({
+    isAdmin,
+    canAccessDashboard,
+    canManageWarehouse,
+    canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
+    canViewContainers,
+    canViewProductMovementReport,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManageSystemSettings,
+    canViewAppDownloads,
+    canViewOperationAudits,
+    hasPermission
+  });
+  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View) || isWarehouseStaffOnly && hasPermission(P.Orders.Create);
   return {
     isAdmin,
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
@@ -451,6 +562,7 @@ function buildAccess(currentUser) {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canViewOperationAudits,
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,
@@ -459,6 +571,7 @@ function buildAccess(currentUser) {
     canManageDeviceRegistration,
     canViewPosProducts,
     canManagePosProducts,
+    canAccessAdminShell,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,
@@ -474,6 +587,7 @@ var PERMISSION_ALIAS_GROUPS, permissionAliasMap;
 var init_access = __esm({
   "src/utils/access.ts"() {
     init_permissions();
+    init_webPortalAccess();
     PERMISSION_ALIAS_GROUPS = [
       {
         canonicalCode: P.LocalPurchase.View,
@@ -674,7 +788,7 @@ var init_webMenuPreview = __esm({
       canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
       canManageWarehouseLocations: [P.Warehouse.ManageLocations, P.Warehouse.Manage],
       canViewReports: [P.Reports.View],
-      canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView],
+      canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView, P.LocalPurchase.View],
       canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
       canViewAustralianSuppliers: [P.AustralianSuppliers.View],
       canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
@@ -684,6 +798,7 @@ var init_webMenuPreview = __esm({
       canManageAdvertisements: [P.Advertisements.View],
       canViewAttendanceSchedule: [P.Attendance.AdminView, P.Attendance.ScheduleViewStore],
       canManageStoreOps: [P.Store.ManageOperations],
+      canViewOperationAudits: [P.PosTerminal.AuditView],
       canReadOrder: [P.Orders.View],
       canManageLocalPurchase: [P.LocalPurchase.View, "LocalInvocie.View"],
       canEditLocalPurchase: [P.LocalPurchase.Edit, "LocalInvocie.Edit"]
@@ -700,6 +815,7 @@ var init_webMenuPreview = __esm({
           { path: "/system/scheduled-statistics", title: "menu.scheduledStatistics", accessKey: "canManageScheduledTasks" },
           { path: "/system/invoice-email-settings", title: "menu.invoiceEmailSettings", accessKey: "canManageSystemSettings" },
           { path: "/system/payment-terminal-settings", title: "menu.paymentTerminalSettings", accessKey: "canManageSystemSettings" },
+          { path: "/system/emergency-login-keys", title: "menu.emergencyLoginKeys", accessKey: "canManageSystemSettings" },
           { path: "/system/users", title: "menu.systemUsers", accessKey: "canReadUser" },
           { path: "/system/roles", title: "menu.systemRoles", accessKey: "canReadRole" },
           { path: "/system/permissions", title: "menu.systemPermissions", accessKey: "canReadRole" },
@@ -739,7 +855,8 @@ var init_webMenuPreview = __esm({
         children: [
           { path: "/executive-sales-intelligence/overview", title: "menu.salesData", accessKey: "canViewReports" },
           { path: "/executive-sales-intelligence/sales-detail-v2", title: "menu.salesDetail", accessKey: "canViewReports" },
-          { path: "/executive-sales-intelligence/product-movement-report", title: "menu.productMovementReport", accessKey: "canViewProductMovementReport" }
+          { path: "/executive-sales-intelligence/product-movement-report", title: "menu.productMovementReport", accessKey: "canViewProductMovementReport" },
+          { path: "/executive-sales-intelligence/purchase-amount-dashboard", title: "menu.purchaseAmountDashboard", accessKey: "canManageLocalPurchase" }
         ]
       },
       {
@@ -754,6 +871,7 @@ var init_webMenuPreview = __esm({
           { path: "/pos-admin/advertisements", title: "menu.advertisements", accessKey: "canManageAdvertisements" },
           { path: "/pos-admin/schedule-attendance", title: "menu.scheduleAttendance", accessKey: "canViewAttendanceSchedule" },
           { path: "/pos-admin/cash-register-users", title: "menu.cashRegisterUsers", accessKey: "canManageStoreOps" },
+          { path: "/pos-admin/operation-logs", title: "menu.operationLogs", accessKey: "canViewOperationAudits" },
           { path: "/pos-admin/sales-orders", title: "menu.salesOrders", accessKey: "canReadOrder" },
           { path: "/pos-admin/local-supplier-invoices", title: "menu.localSupplierInvoices", accessKey: "canManageLocalPurchase" }
         ]

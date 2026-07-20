@@ -73,6 +73,18 @@ namespace BlazorApp.Api.Controllers
             return Request.Headers["X-Device-Id"].FirstOrDefault();
         }
 
+        private async Task<string?> GetBoundStoreCodeAsync()
+        {
+            var hardwareId = GetDeviceHardwareId();
+            if (string.IsNullOrWhiteSpace(hardwareId))
+            {
+                return null;
+            }
+
+            var device = await _deviceService.GetDeviceByHardwareIdAsync(hardwareId);
+            return string.IsNullOrWhiteSpace(device?.分店代码) ? null : device.分店代码;
+        }
+
         /// <summary>
         /// 将购物车转换为仓库订单
         /// 如果分店存在待提交订单（FlowStatus=0），则添加到现有订单
@@ -104,12 +116,33 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "购物车GUID不能为空" });
                 }
 
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return StatusCode(403, new { success = false, message = "设备未绑定分店" });
+                }
+
+                // 购物车转普通草稿不受 Preorder 门禁限制，但必须由 service 校验设备绑定分店归属。
                 var result = await _cartToOrderService.ConvertCartToOrderAsync(
                     request,
-                    hardwareId ?? ""
+                    hardwareId ?? "",
+                    storeCode
                 );
 
-                return Ok(new { success = result.Success, data = result });
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result });
+                }
+                if (result.ErrorCode == "PDA_CART_STORE_MISMATCH")
+                {
+                    return StatusCode(
+                        StatusCodes.Status403Forbidden,
+                        ApiResponse<object>.Error(result.Message ?? "无权转换该购物车", result.ErrorCode)
+                    );
+                }
+                return BadRequest(
+                    ApiResponse<object>.Error(result.Message ?? "转换购物车失败", result.ErrorCode)
+                );
             }
             catch (Exception ex)
             {

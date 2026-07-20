@@ -1044,6 +1044,14 @@ export function registerIosReviewAppRoutes(
   register(transport, ["POST"], "/auth/logout", () => ({
     data: { success: true },
   }));
+  register(transport, ["GET"], "/react/v1/preorders/active", ({ query }) => ({
+    // iOS 审核离线数据不创建 Preorder，必须显式返回已解锁，避免 fail-closed 门禁锁死演示流程。
+    data: {
+      storeCode: query.get("storeCode") ?? "",
+      normalOrderBlocked: false,
+      activations: [],
+    },
+  }));
   register(
     transport,
     ["GET", "POST"],

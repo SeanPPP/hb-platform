@@ -53,6 +53,18 @@ async function run() {
     "演示门店必须携带稳定 storeGUID",
   );
 
+  const preorderGate = await request(
+    "GET",
+    "/react/v1/preorders/active",
+    undefined,
+    { storeCode: "REV001" },
+  );
+  assert.deepEqual(preorderGate, {
+    storeCode: "REV001",
+    normalOrderBlocked: false,
+    activations: [],
+  });
+
   const accessRoles = await request(
     "GET",
     "/Users/guid/review-staff-001/roles",

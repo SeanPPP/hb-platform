@@ -154,6 +154,87 @@ var ALL_PERMISSIONS = Object.values(P).flatMap(
   (group) => Object.values(group)
 );
 
+// src/utils/webPortalAccess.ts
+var ADMIN_ENTRY_RULES = [
+  {
+    defaultPath: "/dashboard",
+    targetPrefixes: ["/dashboard"],
+    canAccess: (access) => access.canAccessDashboard
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    targetPrefixes: [
+      "/warehouse/store-orders",
+      "/warehouse/preorders",
+      "/warehouse/store-order"
+    ],
+    canAccess: (access) => access.canManageWarehouseOrders
+  },
+  {
+    defaultPath: "/warehouse/store-order-import-price-variance",
+    targetPrefixes: ["/warehouse/store-order-import-price-variance"],
+    canAccess: (access) => access.canManageStoreOrderImportPriceVariance
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    // 旧 Warehouse.Manage 只覆盖其实际派生的仓库业务页，不能绕过价差或货柜叶子权限。
+    targetPrefixes: [
+      "/warehouse/products",
+      "/warehouse/categories",
+      "/warehouse/locations",
+      "/warehouse/product-grade-management"
+    ],
+    canAccess: (access) => access.canManageWarehouse
+  },
+  {
+    defaultPath: "/warehouse/containers",
+    targetPrefixes: [
+      "/warehouse/containers",
+      "/warehouse/container/detail",
+      "/warehouse/container/allocation-sales"
+    ],
+    canAccess: (access) => access.canViewContainers
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/product-movement-report",
+    targetPrefixes: ["/executive-sales-intelligence/product-movement-report"],
+    // Reports.View 兼容叶子页面访问，但后台导航入口与后端一致，仅认专用权限。
+    canAccess: (access) => access.hasPermission(P.Reports.ProductMovementView)
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/purchase-amount-dashboard",
+    targetPrefixes: [
+      "/executive-sales-intelligence/purchase-amount-dashboard",
+      "/pos-admin/local-supplier-invoices",
+      "/pos-admin/local-supplier-purchase-sales-analysis",
+      "/pos-admin/invoice-detail"
+    ],
+    canAccess: (access) => access.canManageLocalPurchase
+  },
+  {
+    defaultPath: "/system/invoice-email-settings",
+    targetPrefixes: [
+      "/system/invoice-email-settings",
+      "/system/payment-terminal-settings",
+      "/system/emergency-login-keys"
+    ],
+    canAccess: (access) => access.canManageSystemSettings
+  },
+  {
+    defaultPath: "/system/app-downloads",
+    targetPrefixes: ["/system/app-downloads", "/system/wpf-versions"],
+    canAccess: (access) => access.canViewAppDownloads
+  },
+  {
+    defaultPath: "/pos-admin/operation-logs",
+    targetPrefixes: ["/pos-admin/operation-logs"],
+    canAccess: (access) => access.canViewOperationAudits
+  }
+];
+function hasBackendNavigationAccess(access) {
+  return access.isAdmin || ADMIN_ENTRY_RULES.some((rule) => rule.canAccess(access));
+}
+
 // src/utils/access.ts
 var PERMISSION_ALIAS_GROUPS = [
   {
@@ -184,6 +265,7 @@ function createEmptyAccess() {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
@@ -258,6 +340,7 @@ function createEmptyAccess() {
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
+    canAccessAdminShell: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -334,7 +417,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
-  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport;
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete);
@@ -384,12 +467,28 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View);
+  const canAccessAdminShell = hasBackendNavigationAccess({
+    isAdmin,
+    canAccessDashboard,
+    canManageWarehouse,
+    canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
+    canViewContainers,
+    canViewProductMovementReport,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManageSystemSettings,
+    canViewAppDownloads,
+    canViewOperationAudits,
+    hasPermission
+  });
+  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View) || isWarehouseStaffOnly && hasPermission(P.Orders.Create);
   return {
     isAdmin,
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
@@ -464,6 +563,7 @@ function buildAccess(currentUser) {
     canManageDeviceRegistration,
     canViewPosProducts,
     canManagePosProducts,
+    canAccessAdminShell,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,

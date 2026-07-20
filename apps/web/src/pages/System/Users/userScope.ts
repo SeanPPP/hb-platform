@@ -15,8 +15,18 @@ const SCOPED_MANAGER_FORBIDDEN_ROLE_NAMES = new Set([
   '店长',
   '经理',
   'warehousemanager',
+  'warehouse',
+  'warehouseadmin',
   '仓库经理',
   '仓库管理员',
+])
+
+const SCOPED_MANAGER_EMPLOYEE_ROLE_NAMES = new Set([
+  'storestaff',
+  'employee',
+  '店铺员工',
+  '店员',
+  '员工',
 ])
 
 function normalizeRoleName(roleName: string | undefined) {
@@ -36,7 +46,8 @@ export function filterUsersVisibleToScopedManager<T extends UserRoleIdentity>(us
 }
 
 export function filterRoleOptionsForScopedManager<T extends RoleIdentity>(roles: T[]) {
-  return roles.filter((role) => !isForbiddenRoleForScopedManager(role.roleName))
+  // 店长只能授予员工身份，避免 Web 缓存目录绕过后端有限授权契约。
+  return roles.filter((role) => SCOPED_MANAGER_EMPLOYEE_ROLE_NAMES.has(normalizeRoleName(role.roleName)))
 }
 
 export function areRoleGuidsAllowedForScopedManager(

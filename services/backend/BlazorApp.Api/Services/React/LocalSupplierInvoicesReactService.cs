@@ -554,15 +554,60 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var db = _context.Db;
-                var exists = await db.Queryable<StoreLocalSupplierInvoice>()
-                    .AnyAsync(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false);
-                if (!exists)
-                    return ApiResponse<bool>.Error("数据不存在", "NOT_FOUND");
-
-                var now = DateTime.UtcNow;
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    var currentInvoice = await db.Queryable<StoreLocalSupplierInvoice>()
+                        .FirstAsync(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false);
+                    if (currentInvoice == null)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error("数据不存在", "NOT_FOUND");
+                    }
+
+                    var targetStoreCode = string.IsNullOrWhiteSpace(dto.StoreCode)
+                        ? null
+                        : dto.StoreCode.Trim();
+                    var targetSupplierCode = string.IsNullOrWhiteSpace(dto.SupplierCode)
+                        ? null
+                        : dto.SupplierCode.Trim();
+                    var storeChanged = targetStoreCode != null
+                        && !string.Equals(currentInvoice.StoreCode, targetStoreCode, StringComparison.Ordinal);
+                    var supplierChanged = targetSupplierCode != null
+                        && !string.Equals(currentInvoice.SupplierCode, targetSupplierCode, StringComparison.Ordinal);
+
+                    // 编码实际变化时才校验目标，避免历史订单原编码已停用后无法修改其他字段。
+                    if (storeChanged)
+                    {
+                        var validStore = await db.Queryable<Store>()
+                            .AnyAsync(x =>
+                                x.StoreCode == targetStoreCode
+                                && x.IsDeleted == false
+                                && x.IsActive
+                            );
+                        if (!validStore)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error("目标分店不存在或已停用", "INVALID_STORE");
+                        }
+                    }
+
+                    if (supplierChanged)
+                    {
+                        var validSupplier = await db.Queryable<HBLocalSupplier>()
+                            .AnyAsync(x =>
+                                x.LocalSupplierCode == targetSupplierCode
+                                && x.IsDeleted == false
+                                && x.Status == 1
+                            );
+                        if (!validSupplier)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error("目标供应商不存在或已停用", "INVALID_SUPPLIER");
+                        }
+                    }
+
+                    var now = DateTime.UtcNow;
                     var updater = db.Updateable<StoreLocalSupplierInvoice>()
                         .SetColumnsIF(dto.InvoiceNo != null, x => x.InvoiceNo == dto.InvoiceNo)
                         .SetColumnsIF(dto.OrderDate != null, x => x.OrderDate == dto.OrderDate)
@@ -575,30 +620,32 @@ namespace BlazorApp.Api.Services.React
                             x => x.InboundStatus == dto.InboundStatus
                         )
                         .SetColumnsIF(
-                            !string.IsNullOrWhiteSpace(dto.StoreCode),
-                            x => x.StoreCode == dto.StoreCode
+                            storeChanged,
+                            x => x.StoreCode == targetStoreCode
                         )
                         .SetColumnsIF(
-                            !string.IsNullOrWhiteSpace(dto.SupplierCode),
-                            x => x.SupplierCode == dto.SupplierCode
+                            supplierChanged,
+                            x => x.SupplierCode == targetSupplierCode
                         )
                         .SetColumns(x => x.UpdatedAt == now)
                         .Where(x => x.InvoiceGUID == invoiceGuid);
 
                     var affected = await updater.ExecuteCommandAsync();
 
-                    if (affected > 0 && (!string.IsNullOrWhiteSpace(dto.StoreCode) || !string.IsNullOrWhiteSpace(dto.SupplierCode)))
+                    if (affected > 0 && (storeChanged || supplierChanged))
                     {
                         var detailUpdater = db.Updateable<StoreLocalSupplierInvoiceDetails>()
-                            .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.StoreCode), x => x.StoreCode == dto.StoreCode)
-                            .SetColumnsIF(!string.IsNullOrWhiteSpace(dto.SupplierCode), x => x.SupplierCode == dto.SupplierCode)
+                            .SetColumnsIF(storeChanged, x => x.StoreCode == targetStoreCode)
+                            .SetColumnsIF(supplierChanged, x => x.SupplierCode == targetSupplierCode)
                             .Where(x => x.InvoiceGUID == invoiceGuid);
 
                         await detailUpdater.ExecuteCommandAsync();
 
                         _logger.LogInformation(
                             "[InvoiceUpdate] 级联更新明细: InvoiceGUID={InvoiceGUID}, StoreCode={StoreCode}, SupplierCode={SupplierCode}",
-                            invoiceGuid, dto.StoreCode ?? "(不变)", dto.SupplierCode ?? "(不变)"
+                            invoiceGuid,
+                            storeChanged ? targetStoreCode : "(不变)",
+                            supplierChanged ? targetSupplierCode : "(不变)"
                         );
                     }
 

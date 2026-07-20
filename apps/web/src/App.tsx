@@ -1,7 +1,7 @@
 import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { createBrowserRouter, Navigate, Route, RouterProvider, Routes, useLocation } from 'react-router-dom'
 import GlobalErrorBoundary from './components/GlobalErrorBoundary'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
@@ -11,6 +11,8 @@ import ShopComingSoonPage from './pages/ShopComingSoon'
 import ShopHomePage from './pages/ShopHome'
 import ShopOrderDetailPage from './pages/ShopOrderDetail'
 import ShopOrdersPage from './pages/ShopOrders'
+import ShopPreorderPage from './pages/ShopPreorder'
+import { ShopPreorderLeaveProvider } from './pages/ShopPreorder/preorderLeaveContext'
 import ForbiddenPage from './pages/Forbidden'
 import WebAccessDeniedPage from './pages/WebAccessDenied'
 import { useAuthStore } from './store/auth'
@@ -66,7 +68,7 @@ function AppBootstrap() {
         path="/shop"
         element={
           currentUser
-            ? (access.canAccessOrderFront ? <ShopLayout /> : portalDeniedPage)
+            ? (access.canAccessOrderFront ? <ShopPreorderLeaveProvider><ShopLayout /></ShopPreorderLeaveProvider> : portalDeniedPage)
             : <Navigate to="/login" replace />
         }
       >
@@ -75,12 +77,13 @@ function AppBootstrap() {
         <Route path="coming-soon" element={<ShopComingSoonPage />} />
         <Route path="orders" element={<ShopOrdersPage />} />
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
+        <Route path="preorders/:activationGuid" element={<ShopPreorderPage />} />
       </Route>
       <Route
         path="/*"
         element={
           currentUser
-            ? (access.canAccessDashboard ? <AdminLayout /> : portalDeniedPage)
+            ? (access.canAccessAdminShell ? <AdminLayout /> : portalDeniedPage)
             : <Navigate to="/login" replace />
         }
       />
@@ -91,6 +94,9 @@ function AppBootstrap() {
     </Routes>
   )
 }
+
+// 使用 Data Router 承载现有 Routes，页面才能使用官方 useBlocker 在站内离页前保护未保存数据。
+const router = createBrowserRouter([{ path: '*', element: <AppBootstrap /> }])
 
 export default function App() {
   return (
@@ -105,9 +111,7 @@ export default function App() {
     >
       <AntdApp>
         <GlobalErrorBoundary>
-          <BrowserRouter>
-            <AppBootstrap />
-          </BrowserRouter>
+          <RouterProvider router={router} />
         </GlobalErrorBoundary>
       </AntdApp>
     </ConfigProvider>

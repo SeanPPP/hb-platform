@@ -1,5 +1,6 @@
 import type { AccessControl, CurrentUser } from '../types/auth'
 import { P } from '../types/permissions'
+import { hasBackendNavigationAccess } from './webPortalAccess'
 
 const PERMISSION_ALIAS_GROUPS = [
   {
@@ -36,6 +37,7 @@ function createEmptyAccess(): AccessControl {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
@@ -110,6 +112,7 @@ function createEmptyAccess(): AccessControl {
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
+    canAccessAdminShell: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -219,7 +222,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
   const canViewProductMovementReport =
     isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
-  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport
+  // 销售看板是多个独立报表的父级；仅有本地进货权限时也必须能进入父菜单。
+  const canViewSalesIntelligence =
+    canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View)
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -322,13 +327,32 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage)
 
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View)
-  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View)
+  const canAccessAdminShell = hasBackendNavigationAccess({
+    isAdmin,
+    canAccessDashboard,
+    canManageWarehouse,
+    canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
+    canViewContainers,
+    canViewProductMovementReport,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManageSystemSettings,
+    canViewAppDownloads,
+    canViewOperationAudits,
+    hasPermission,
+  })
+  const canAccessOrderFront =
+    isAdmin ||
+    hasPermission(P.OrderFront.View) ||
+    (isWarehouseStaffOnly && hasPermission(P.Orders.Create))
 
   return {
     isAdmin,
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
@@ -403,6 +427,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageDeviceRegistration,
     canViewPosProducts,
     canManagePosProducts,
+    canAccessAdminShell,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,

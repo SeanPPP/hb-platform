@@ -26,7 +26,7 @@ import {
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
-import { useRouter } from "expo-router";
+import { type Href, useRouter } from "expo-router";
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
@@ -46,6 +46,11 @@ import {
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
 import type { StoreOrderCartItem } from "@/modules/shop/types";
+import { isPreorderRequiredError } from "@/modules/preorder/api";
+import { canBypassPreorderGate } from "@/modules/preorder/gate";
+import { PreorderGateBanner } from "@/modules/preorder/preorder-gate-banner";
+import { usePreorderGate } from "@/modules/preorder/use-preorder-gate";
+import { useAuthStore } from "@/store/auth-store";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const SWIPE_ACTION_WIDTH = 92;
@@ -290,6 +295,11 @@ export default function Cart() {
   const { t, language } = useAppTranslation(["cart", "common"]);
   const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
+  const access = useAuthStore((state) => state.access);
+  const preorderGate = usePreorderGate(
+    selectedStoreCode,
+    canBypassPreorderGate(access)
+  );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [keyword, setKeyword] = useState("");
@@ -313,6 +323,18 @@ export default function Cart() {
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
   const removeCartLine = useRemoveCartLine(selectedStoreCode);
   const clearCart = useClearCart(selectedStoreCode);
+
+  const openPreorder = useCallback(() => {
+    const firstActivation = preorderGate.activations[0];
+    if (firstActivation && selectedStoreCode) {
+      router.push({
+        pathname: "/preorders/[activationGuid]",
+        params: { activationGuid: firstActivation.activationGuid, storeCode: selectedStoreCode },
+      } as unknown as Href);
+      return;
+    }
+    router.push("/preorders" as Href);
+  }, [preorderGate.activations, router, selectedStoreCode]);
 
   const cartQuery = useCartPage({
     page,
@@ -426,7 +448,12 @@ export default function Cart() {
         product: item,
       });
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      if (isPreorderRequiredError(error)) {
+        void preorderGate.refresh();
+        openPreorder();
+      } else {
+        setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      }
     } finally {
       setActiveCartItemCode(null);
     }
@@ -488,6 +515,12 @@ export default function Cart() {
       return;
     }
 
+    if (preorderGate.normalOrderBlocked) {
+      setSubmitDialogVisible(false);
+      openPreorder();
+      return;
+    }
+
     if (!selectedStoreCode) {
       setSnackbarMessage(t("messages.needStore"));
       return;
@@ -513,7 +546,13 @@ export default function Cart() {
       setSnackbarMessage(t("messages.submitSuccess"));
       router.push("/(tabs)/orders");
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.submitFailed"));
+      if (isPreorderRequiredError(error)) {
+        setSubmitDialogVisible(false);
+        void preorderGate.refresh();
+        openPreorder();
+      } else {
+        setSnackbarMessage(getErrorMessage(error, "messages.submitFailed"));
+      }
     } finally {
       setSubmitPending(false);
     }
@@ -522,6 +561,11 @@ export default function Cart() {
   function confirmSubmitCart() {
     if (cartMutationPendingRef.current) {
       setSnackbarMessage(t("common:loading"));
+      return;
+    }
+
+    if (preorderGate.normalOrderBlocked) {
+      openPreorder();
       return;
     }
 
@@ -575,6 +619,8 @@ export default function Cart() {
           </View>
         </View>
       </View>
+
+      <PreorderGateBanner gate={preorderGate} onOpen={openPreorder} />
 
       <FlatList
         data={filteredItems}

@@ -28,6 +28,7 @@ import {
   updateStoreOrderCartItem,
 } from '../services/storeOrderService'
 import type { StoreOrderCart } from '../types/storeOrder'
+import { isPreorderRequiredError } from '../services/preorderService'
 
 const { Text, Title } = Typography
 
@@ -37,6 +38,9 @@ interface ShopCartDrawerProps {
   cart: StoreOrderCart | null
   loading?: boolean
   onCartChanged: () => Promise<void>
+  preorderBlocked?: boolean
+  onOpenPreorder?: () => void
+  onPreorderRequired?: () => Promise<void>
 }
 
 export default function ShopCartDrawer({
@@ -45,6 +49,9 @@ export default function ShopCartDrawer({
   cart,
   loading = false,
   onCartChanged,
+  preorderBlocked = false,
+  onOpenPreorder,
+  onPreorderRequired,
 }: ShopCartDrawerProps) {
   const { t } = useTranslation()
   const cartItems = cart?.items ?? []
@@ -117,7 +124,7 @@ export default function ShopCartDrawer({
         quantity: quantity || minOrderQuantity || 1,
       })
       await onCartChanged()
-    } catch (error) {
+    } catch {
       message.error(t('shop.cartUpdateFailed', 'Failed to update quantity'))
     } finally {
       setLoadingMap((prev) => ({ ...prev, [detailGUID]: false }))
@@ -125,7 +132,7 @@ export default function ShopCartDrawer({
   }
 
   const handleSubmitOrder = async () => {
-    if (!cart?.storeCode) {
+    if (!cart?.storeCode || preorderBlocked) {
       return
     }
 
@@ -140,7 +147,11 @@ export default function ShopCartDrawer({
       await onCartChanged()
       onClose()
     } catch (error) {
-      message.error(t('shop.orderSubmitFailed', 'Failed to submit order'))
+      if (isPreorderRequiredError(error)) {
+        // 先给用户可见反馈，再刷新门禁；即使刷新响应畸形也不会静默循环。
+        message.warning(t('shop.preorder.submitRequiredWarning'))
+        await onPreorderRequired?.()
+      } else message.error(t('shop.orderSubmitFailed', 'Failed to submit order'))
     } finally {
       setSubmitting(false)
     }
@@ -148,6 +159,10 @@ export default function ShopCartDrawer({
 
   const handleSubmitWithConfirm = () => {
     if (!cart?.storeCode) {
+      return
+    }
+    if (preorderBlocked) {
+      message.warning(t('shop.preorder.submitRequiredWarning'))
       return
     }
 
@@ -256,13 +271,18 @@ export default function ShopCartDrawer({
               showCount
               disabled={!canSubmitCart || submitting}
             />
+            {preorderBlocked ? (
+              <Button block type="primary" ghost onClick={onOpenPreorder} disabled={!onOpenPreorder}>
+                {t('shop.preorder.completeBeforeSubmit')}
+              </Button>
+            ) : null}
             <Button
               type="primary"
               size="large"
               block
               onClick={handleSubmitWithConfirm}
               loading={submitting || isCartDetailLoading}
-              disabled={!canSubmitCart}
+              disabled={!canSubmitCart || preorderBlocked}
             >
               {t('shop.submitOrder', 'Submit Order')}
             </Button>

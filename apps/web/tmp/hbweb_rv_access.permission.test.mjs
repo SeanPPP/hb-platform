@@ -154,6 +154,125 @@ var ALL_PERMISSIONS = Object.values(P).flatMap(
   (group) => Object.values(group)
 );
 
+// src/utils/webPortalAccess.ts
+var WEB_NO_ACCESS_PATH = "/web-access-denied";
+var ADMIN_ENTRY_RULES = [
+  {
+    defaultPath: "/dashboard",
+    targetPrefixes: ["/dashboard"],
+    canAccess: (access) => access.canAccessDashboard
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    targetPrefixes: [
+      "/warehouse/store-orders",
+      "/warehouse/preorders",
+      "/warehouse/store-order"
+    ],
+    canAccess: (access) => access.canManageWarehouseOrders
+  },
+  {
+    defaultPath: "/warehouse/store-order-import-price-variance",
+    targetPrefixes: ["/warehouse/store-order-import-price-variance"],
+    canAccess: (access) => access.canManageStoreOrderImportPriceVariance
+  },
+  {
+    defaultPath: "/warehouse/store-orders",
+    // 旧 Warehouse.Manage 只覆盖其实际派生的仓库业务页，不能绕过价差或货柜叶子权限。
+    targetPrefixes: [
+      "/warehouse/products",
+      "/warehouse/categories",
+      "/warehouse/locations",
+      "/warehouse/product-grade-management"
+    ],
+    canAccess: (access) => access.canManageWarehouse
+  },
+  {
+    defaultPath: "/warehouse/containers",
+    targetPrefixes: [
+      "/warehouse/containers",
+      "/warehouse/container/detail",
+      "/warehouse/container/allocation-sales"
+    ],
+    canAccess: (access) => access.canViewContainers
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/product-movement-report",
+    targetPrefixes: ["/executive-sales-intelligence/product-movement-report"],
+    // Reports.View 兼容叶子页面访问，但后台导航入口与后端一致，仅认专用权限。
+    canAccess: (access) => access.hasPermission(P.Reports.ProductMovementView)
+  },
+  {
+    defaultPath: "/executive-sales-intelligence/purchase-amount-dashboard",
+    targetPrefixes: [
+      "/executive-sales-intelligence/purchase-amount-dashboard",
+      "/pos-admin/local-supplier-invoices",
+      "/pos-admin/local-supplier-purchase-sales-analysis",
+      "/pos-admin/invoice-detail"
+    ],
+    canAccess: (access) => access.canManageLocalPurchase
+  },
+  {
+    defaultPath: "/system/invoice-email-settings",
+    targetPrefixes: [
+      "/system/invoice-email-settings",
+      "/system/payment-terminal-settings",
+      "/system/emergency-login-keys"
+    ],
+    canAccess: (access) => access.canManageSystemSettings
+  },
+  {
+    defaultPath: "/system/app-downloads",
+    targetPrefixes: ["/system/app-downloads", "/system/wpf-versions"],
+    canAccess: (access) => access.canViewAppDownloads
+  },
+  {
+    defaultPath: "/pos-admin/operation-logs",
+    targetPrefixes: ["/pos-admin/operation-logs"],
+    canAccess: (access) => access.canViewOperationAudits
+  }
+];
+function matchesRoutePrefix(target, prefix) {
+  return target === prefix || target.startsWith(`${prefix}/`) || target.startsWith(`${prefix}?`) || target.startsWith(`${prefix}#`);
+}
+function hasBackendNavigationAccess(access) {
+  return access.isAdmin || ADMIN_ENTRY_RULES.some((rule) => rule.canAccess(access));
+}
+function getDefaultWebPath(access) {
+  const adminEntry = ADMIN_ENTRY_RULES.find((rule) => rule.canAccess(access));
+  if (adminEntry) {
+    return adminEntry.defaultPath;
+  }
+  if (access.canAccessOrderFront) {
+    return "/shop";
+  }
+  return WEB_NO_ACCESS_PATH;
+}
+function resolveAuthorizedWebTarget(target, access) {
+  if (!target || !target.startsWith("/") || target.startsWith("//") || target === "/login") {
+    return void 0;
+  }
+  if (target === "/") {
+    return target;
+  }
+  if (target === WEB_NO_ACCESS_PATH) {
+    return !hasBackendNavigationAccess(access) && !access.canAccessOrderFront ? target : void 0;
+  }
+  if (/^\/shop(?:\/|[?#]|$)/.test(target)) {
+    return access.canAccessOrderFront ? target : void 0;
+  }
+  if (/^\/pos-admin\/local-supplier-invoices\/[^/?#]+\/?(?:[?#]|$)/.test(target)) {
+    return access.canEditLocalPurchase ? target : void 0;
+  }
+  const authorizedRule = ADMIN_ENTRY_RULES.find(
+    (rule) => rule.canAccess(access) && rule.targetPrefixes.some((prefix) => matchesRoutePrefix(target, prefix))
+  );
+  if (authorizedRule) {
+    return target;
+  }
+  return access.isAdmin ? target : void 0;
+}
+
 // src/utils/access.ts
 var PERMISSION_ALIAS_GROUPS = [
   {
@@ -184,6 +303,7 @@ function createEmptyAccess() {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
@@ -258,6 +378,7 @@ function createEmptyAccess() {
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
+    canAccessAdminShell: false,
     canAccessDashboard: false,
     canAccessOrderFront: false,
     hasPermission: alwaysFalse,
@@ -334,7 +455,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
-  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport;
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete);
@@ -384,12 +505,28 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View);
+  const canAccessAdminShell = hasBackendNavigationAccess({
+    isAdmin,
+    canAccessDashboard,
+    canManageWarehouse,
+    canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
+    canViewContainers,
+    canViewProductMovementReport,
+    canManageLocalPurchase,
+    canEditLocalPurchase,
+    canManageSystemSettings,
+    canViewAppDownloads,
+    canViewOperationAudits,
+    hasPermission
+  });
+  const canAccessOrderFront = isAdmin || hasPermission(P.OrderFront.View) || isWarehouseStaffOnly && hasPermission(P.Orders.Create);
   return {
     isAdmin,
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
@@ -464,6 +601,7 @@ function buildAccess(currentUser) {
     canManageDeviceRegistration,
     canViewPosProducts,
     canManagePosProducts,
+    canAccessAdminShell,
     canAccessDashboard,
     canAccessOrderFront,
     hasPermission,
@@ -797,7 +935,7 @@ var accessKeyPermissionMap = {
   canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
   canManageWarehouseLocations: [P.Warehouse.ManageLocations, P.Warehouse.Manage],
   canViewReports: [P.Reports.View],
-  canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView],
+  canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView, P.LocalPurchase.View],
   canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
   canViewAustralianSuppliers: [P.AustralianSuppliers.View],
   canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
@@ -864,7 +1002,8 @@ var webMenuPreviewRoutes = [
     children: [
       { path: "/executive-sales-intelligence/overview", title: "menu.salesData", accessKey: "canViewReports" },
       { path: "/executive-sales-intelligence/sales-detail-v2", title: "menu.salesDetail", accessKey: "canViewReports" },
-      { path: "/executive-sales-intelligence/product-movement-report", title: "menu.productMovementReport", accessKey: "canViewProductMovementReport" }
+      { path: "/executive-sales-intelligence/product-movement-report", title: "menu.productMovementReport", accessKey: "canViewProductMovementReport" },
+      { path: "/executive-sales-intelligence/purchase-amount-dashboard", title: "menu.purchaseAmountDashboard", accessKey: "canManageLocalPurchase" }
     ]
   },
   {
@@ -1045,6 +1184,29 @@ assertEqual(
   false,
   "Warehouse.ManageOrders should not be confused with the legacy whole-warehouse permission"
 );
+assertEqual(
+  warehouseOrderManagerAccess.canAccessAdminShell,
+  true,
+  "Warehouse.ManageOrders should unlock the admin shell without granting Dashboard.View"
+);
+assertEqual(
+  getDefaultWebPath(warehouseOrderManagerAccess),
+  "/warehouse/store-orders",
+  "Warehouse.ManageOrders should default to the store order page"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/store-orders", warehouseOrderManagerAccess),
+  "/warehouse/store-orders",
+  "Warehouse.ManageOrders should preserve an authorized warehouse redirect target"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/executive-sales-intelligence/purchase-amount-dashboard",
+    warehouseOrderManagerAccess
+  ),
+  void 0,
+  "Warehouse.ManageOrders should not authorize a local purchase dashboard redirect target"
+);
 var storeManagerAccess = buildAccess(
   createCurrentUser({
     roleNames: ["StoreManager"],
@@ -1092,6 +1254,148 @@ var productMovementReportOnlyAccess = buildAccess(
     permissions: [P.Reports.ProductMovementView]
   })
 );
+var localPurchaseDashboardOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.View]
+  })
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canManageLocalPurchase,
+  true,
+  "LocalPurchase.View should unlock local purchase pages"
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewSalesIntelligence,
+  true,
+  "LocalPurchase.View should keep the sales dashboard parent visible"
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canAccessAdminShell,
+  true,
+  "LocalPurchase.View should unlock the admin shell"
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canAccessDashboard,
+  false,
+  "LocalPurchase.View should not grant Dashboard.View"
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewReports,
+  false,
+  "LocalPurchase.View should not grant other sales report permissions"
+);
+assertEqual(
+  localPurchaseDashboardOnlyAccess.canViewProductMovementReport,
+  false,
+  "LocalPurchase.View should not grant product movement report access"
+);
+assertEqual(
+  getDefaultWebPath(localPurchaseDashboardOnlyAccess),
+  "/executive-sales-intelligence/purchase-amount-dashboard",
+  "LocalPurchase.View should default to the only authorized admin page"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/executive-sales-intelligence/purchase-amount-dashboard",
+    localPurchaseDashboardOnlyAccess
+  ),
+  "/executive-sales-intelligence/purchase-amount-dashboard",
+  "LocalPurchase.View should preserve the authorized dashboard redirect target"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/dashboard", localPurchaseDashboardOnlyAccess),
+  void 0,
+  "LocalPurchase.View should not authorize a Dashboard.View redirect target"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/pos-admin/local-supplier-invoices/invoice-guid-1",
+    localPurchaseDashboardOnlyAccess
+  ),
+  void 0,
+  "LocalPurchase.View should not preserve an invoice edit redirect without LocalPurchase.Edit"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/pos-admin/local-supplier-invoices/invoice-guid-1/",
+    localPurchaseDashboardOnlyAccess
+  ),
+  void 0,
+  "A trailing slash must not bypass the LocalPurchase.Edit redirect check"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/pos-admin/local-supplier-invoices/invoice-guid-1/sales-analysis",
+    localPurchaseDashboardOnlyAccess
+  ),
+  "/pos-admin/local-supplier-invoices/invoice-guid-1/sales-analysis",
+  "LocalPurchase.View should preserve an invoice sales analysis redirect"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/pos-admin/invoice-detail/invoice-guid-1", localPurchaseDashboardOnlyAccess),
+  "/pos-admin/invoice-detail/invoice-guid-1",
+  "LocalPurchase.View should preserve a read-only invoice detail redirect"
+);
+var localPurchaseEditorAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.LocalPurchase.View, P.LocalPurchase.Edit]
+  })
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/pos-admin/local-supplier-invoices/invoice-guid-1",
+    localPurchaseEditorAccess
+  ),
+  "/pos-admin/local-supplier-invoices/invoice-guid-1",
+  "LocalPurchase.Edit should preserve an invoice edit redirect"
+);
+var dashboardOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Dashboard.View]
+  })
+);
+assertEqual(
+  dashboardOnlyAccess.canAccessAdminShell,
+  true,
+  "Dashboard.View should continue to unlock the admin shell"
+);
+assertEqual(
+  getDefaultWebPath(dashboardOnlyAccess),
+  "/dashboard",
+  "Dashboard.View should keep the existing default page"
+);
+var noWebPortalAccess = buildAccess(createCurrentUser());
+assertEqual(
+  noWebPortalAccess.canAccessAdminShell,
+  false,
+  "Users without an admin feature permission should not enter the admin shell"
+);
+assertEqual(
+  getDefaultWebPath(noWebPortalAccess),
+  WEB_NO_ACCESS_PATH,
+  "Users without Web portal permissions should keep the access denied landing page"
+);
+var backendNavigationEntryCases = [
+  [P.Dashboard.View, "/dashboard"],
+  [P.Warehouse.ManageOrders, "/warehouse/store-orders"],
+  [P.Warehouse.Manage, "/warehouse/store-orders"],
+  [P.Container.View, "/warehouse/containers"],
+  [P.Reports.ProductMovementView, "/executive-sales-intelligence/product-movement-report"],
+  [P.LocalPurchase.View, "/executive-sales-intelligence/purchase-amount-dashboard"],
+  [P.System.ManageSettings, "/system/invoice-email-settings"],
+  [P.System.ViewAppDownloads, "/system/app-downloads"],
+  [P.System.ManageAppDownloads, "/system/app-downloads"],
+  [P.PosTerminal.AuditView, "/pos-admin/operation-logs"]
+];
+for (const [permission, expectedPath] of backendNavigationEntryCases) {
+  const access = buildAccess(createCurrentUser({ permissions: [permission] }));
+  assertEqual(access.canAccessAdminShell, true, `${permission} should unlock the admin shell`);
+  assertEqual(
+    getDefaultWebPath(access),
+    expectedPath,
+    `${permission} should default to its first authorized backend page`
+  );
+}
 assertEqual(
   productMovementReportOnlyAccess.canViewReports,
   false,
@@ -1232,6 +1536,102 @@ assertEqual(
   containerAccess.canViewContainers,
   true,
   "Container.View should unlock container list/detail visibility"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/container/detail/container-guid-1", containerAccess),
+  "/warehouse/container/detail/container-guid-1",
+  "Container.View should preserve a container detail redirect"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/container/allocation-sales/container-guid-1", containerAccess),
+  "/warehouse/container/allocation-sales/container-guid-1",
+  "Container.View should preserve a container allocation sales redirect"
+);
+var warehouseStaffOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["WarehouseStaff"],
+    permissions: [P.Warehouse.ManageOrders]
+  })
+);
+var warehouseStaffOrderFrontAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["WarehouseStaff"],
+    permissions: [P.Orders.Create]
+  })
+);
+assertEqual(
+  warehouseStaffOrderFrontAccess.canAccessOrderFront,
+  true,
+  "WarehouseStaff + Orders.Create \u5FC5\u987B\u53EF\u4EE5\u8FDB\u5165\u6B63\u5F0F\u8BA2\u8D27\u524D\u53F0"
+);
+assertEqual(getDefaultWebPath(warehouseStaffOrderFrontAccess), "/shop", "\u8BE5\u7CBE\u786E\u7EC4\u5408\u767B\u5F55\u540E\u9ED8\u8BA4\u8FDB\u5165\u8BA2\u8D27\u524D\u53F0");
+assertEqual(
+  resolveAuthorizedWebTarget("/shop", warehouseStaffOrderFrontAccess),
+  "/shop",
+  "\u8BE5\u7CBE\u786E\u7EC4\u5408\u7684 /shop \u91CD\u5B9A\u5411\u5FC5\u987B\u4FDD\u7559"
+);
+var warehouseStaffWithoutCreateAccess = buildAccess(
+  createCurrentUser({ roleNames: ["WarehouseStaff"], permissions: [] })
+);
+assertEqual(
+  warehouseStaffWithoutCreateAccess.canAccessOrderFront,
+  false,
+  "WarehouseStaff \u6CA1\u6709 Orders.Create \u65F6\u4E0D\u80FD\u6269\u5927\u8BA2\u8D27\u524D\u53F0\u6743\u9650"
+);
+assertEqual(
+  warehouseStaffOrderAccess.canManageWarehouseOrders,
+  true,
+  "Warehouse.ManageOrders should keep warehouse order pages available to warehouse staff"
+);
+assertEqual(
+  warehouseStaffOrderAccess.canManageStoreOrderImportPriceVariance,
+  false,
+  "WarehouseStaff should not gain the import price variance page from Warehouse.ManageOrders alone"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/warehouse/store-order-import-price-variance",
+    warehouseStaffOrderAccess
+  ),
+  void 0,
+  "Warehouse order access should not preserve the price variance redirect without its leaf permission flag"
+);
+var warehouseStaffLegacyManageAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["WarehouseStaff"],
+    permissions: [P.Warehouse.Manage]
+  })
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/warehouse/store-order-import-price-variance",
+    warehouseStaffLegacyManageAccess
+  ),
+  void 0,
+  "Warehouse.Manage must not bypass the price variance leaf permission for warehouse staff"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/containers", warehouseStaffLegacyManageAccess),
+  void 0,
+  "Warehouse.Manage must not bypass Container.View during login redirect"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/products", warehouseStaffLegacyManageAccess),
+  "/warehouse/products",
+  "Warehouse.Manage should continue to preserve its authorized warehouse product redirect"
+);
+assertEqual(
+  warehouseOrderManagerAccess.canManageStoreOrderImportPriceVariance,
+  true,
+  "A non-warehouse-staff order manager should retain the import price variance page"
+);
+assertEqual(
+  resolveAuthorizedWebTarget(
+    "/warehouse/store-order-import-price-variance",
+    warehouseOrderManagerAccess
+  ),
+  "/warehouse/store-order-import-price-variance",
+  "The dedicated price variance flag should preserve its redirect target"
 );
 var noPermissionPreviewAccess = buildRolePreviewAccess({
   roleGuid: "role-without-permissions",
@@ -1441,6 +1841,18 @@ var hiddenSalesDetailForProductMovementOnly = findWebMenuNode(
   productMovementReportOnlyWebPreview,
   "/executive-sales-intelligence/sales-detail-v2"
 );
+var localPurchaseOnlyWebPreview = buildWebRoleMenuPreview(localPurchaseDashboardOnlyAccess, translate, {
+  includeHidden: true
+});
+var localPurchaseSalesParentMenu = findWebMenuNode(localPurchaseOnlyWebPreview, "/executive-sales-intelligence");
+var purchaseAmountDashboardMenu = findWebMenuNode(
+  localPurchaseOnlyWebPreview,
+  "/executive-sales-intelligence/purchase-amount-dashboard"
+);
+var hiddenSalesOverviewForLocalPurchaseOnly = findWebMenuNode(
+  localPurchaseOnlyWebPreview,
+  "/executive-sales-intelligence/overview"
+);
 var roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: "role-reader-role",
@@ -1539,6 +1951,26 @@ assertEqual(
   hiddenSalesDetailForProductMovementOnly?.visible,
   false,
   "\u53EA\u6709\u5546\u54C1\u7ECF\u8425\u5206\u6790\u6743\u9650\u65F6\u4E0D\u5E94\u6253\u5F00\u9500\u552E\u660E\u7EC6\u83DC\u5355"
+);
+assertEqual(
+  localPurchaseSalesParentMenu?.visible,
+  true,
+  "\u53EA\u6709 LocalPurchase.View \u65F6\u9500\u552E\u770B\u677F\u7236\u83DC\u5355\u5E94\u53EF\u89C1"
+);
+assertEqual(
+  purchaseAmountDashboardMenu?.visible,
+  true,
+  "LocalPurchase.View \u5E94\u663E\u793A\u8FDB\u8D27\u91D1\u989D\u770B\u677F"
+);
+assertEqual(
+  purchaseAmountDashboardMenu?.permissionCodes.join(","),
+  `${P.LocalPurchase.View},LocalInvocie.View`,
+  "\u8FDB\u8D27\u91D1\u989D\u770B\u677F\u5E94\u6CBF\u7528\u672C\u5730\u8FDB\u8D27\u67E5\u770B\u6743\u9650\u53CA\u65E7\u6743\u9650\u522B\u540D"
+);
+assertEqual(
+  hiddenSalesOverviewForLocalPurchaseOnly?.visible,
+  false,
+  "\u53EA\u6709 LocalPurchase.View \u65F6\u4E0D\u5E94\u6253\u5F00\u9500\u552E\u6570\u636E\u9875\u9762"
 );
 assertEqual(
   filterWebMenuNodesByVisibility(roleReaderCompleteWebPreview, "all").length,

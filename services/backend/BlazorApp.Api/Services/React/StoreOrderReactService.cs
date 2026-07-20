@@ -3779,9 +3779,39 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
+                var storeResource = bypassPreorderGate
+                    ? string.Empty
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                        _db,
+                        request.StoreCode,
+                        _logger
+                    );
+                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                    ? null
+                    : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
+                if (!bypassPreorderGate)
+                {
+                    var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                        _db,
+                        storeResource,
+                        request.StoreCode,
+                        TimeProvider.System,
+                        _logger
+                    );
+                    if (preorderGate.IsBlocked)
+                    {
+                        return new ApiResponse<bool>
+                        {
+                            Success = false,
+                            ErrorCode = "PREORDER_REQUIRED",
+                            Message = "请先完成当前有效的 Preorder，再提交普通订货",
+                        };
+                    }
+                }
                 var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
@@ -3823,10 +3853,20 @@ namespace BlazorApp.Api.Services.React
                 return new ApiResponse<bool> { Success = true, Data = true };
                 });
             }
+            catch (PreorderBusinessException ex)
+            {
+                _logger.LogWarning(ex, "SubmitOrder Preorder gate unavailable");
+                return new ApiResponse<bool>
+                {
+                    Success = false,
+                    ErrorCode = ex.ErrorCode,
+                    Message = ex.Message,
+                };
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "SubmitOrder failed");
-                return new ApiResponse<bool> { Success = false, Message = ex.Message };
+                return new ApiResponse<bool> { Success = false, Message = "订单提交失败，请稍后重试" };
             }
         }
 
@@ -7134,34 +7174,83 @@ FinalRows AS (
         {
             try
             {
-                var now = DateTime.Now;
-                var currentUser =
-                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-
-                var order = new WareHouseOrder
+                var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
+                var storeResource = bypassPreorderGate
+                    ? string.Empty
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                        _db,
+                        request.StoreCode,
+                        _logger
+                    );
+                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                    ? null
+                    : await PreorderMutationLock.AcquireProcessAsync(storeResource);
+                ApiResponse<string>? response = null;
+                var transaction = await _db.Ado.UseTranAsync(async () =>
                 {
-                    OrderGUID = UuidHelper.GenerateUuid7(),
-                    StoreCode = request.StoreCode,
-                    OrderDate = now,
-                    FlowStatus = 1, // Submitted
-                    IsDeleted = false,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                    UpdatedBy = currentUser,
-                    OEMTotalAmount = 0,
-                    ImportTotalAmount = 0,
-                    ShippingFee = 0,
-                    OrderNo = await _orderNumberGenerator.GetNextOrderNoAsync(),
-                    Remarks = request.Remarks,
-                };
+                    if (!bypassPreorderGate)
+                    {
+                        var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                            _db,
+                            storeResource,
+                            request.StoreCode,
+                            TimeProvider.System,
+                            _logger
+                        );
+                        if (preorderGate.IsBlocked)
+                        {
+                            response = new ApiResponse<string>
+                            {
+                                Success = false,
+                                ErrorCode = "PREORDER_REQUIRED",
+                                Message = "请先完成当前有效的 Preorder，再创建普通订单",
+                            };
+                            return;
+                        }
+                    }
 
-                await _db.Insertable(order).ExecuteCommandAsync();
-                return new ApiResponse<string> { Success = true, Data = order.OrderGUID };
+                    var now = DateTime.Now;
+                    var currentUser =
+                        _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                    var order = new WareHouseOrder
+                    {
+                        OrderGUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = request.StoreCode,
+                        OrderDate = now,
+                        FlowStatus = 1,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        UpdatedBy = currentUser,
+                        OEMTotalAmount = 0,
+                        ImportTotalAmount = 0,
+                        ShippingFee = 0,
+                        OrderNo = await _orderNumberGenerator.GetNextOrderNoAsync(),
+                        Remarks = request.Remarks,
+                    };
+                    await _db.Insertable(order).ExecuteCommandAsync();
+                    response = new ApiResponse<string> { Success = true, Data = order.OrderGUID };
+                });
+                if (!transaction.IsSuccess)
+                {
+                    throw transaction.ErrorException ?? new InvalidOperationException("创建订单事务失败");
+                }
+                return response ?? new ApiResponse<string> { Success = false, Message = "创建订单失败" };
+            }
+            catch (PreorderBusinessException ex)
+            {
+                _logger.LogWarning(ex, "CreateOrder Preorder gate unavailable");
+                return new ApiResponse<string>
+                {
+                    Success = false,
+                    ErrorCode = ex.ErrorCode,
+                    Message = ex.Message,
+                };
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "CreateOrderAsync failed");
-                return new ApiResponse<string> { Success = false, Message = ex.Message };
+                return new ApiResponse<string> { Success = false, Message = "订单创建失败，请稍后重试" };
             }
         }
 
@@ -7907,6 +7996,17 @@ FinalRows AS (
         {
             try
             {
+                var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
+                var storeResource = bypassPreorderGate
+                    ? string.Empty
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                        _db,
+                        request.TargetStoreCode,
+                        _logger
+                    );
+                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                    ? null
+                    : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 var sourceOrder = await _db.Queryable<WareHouseOrder>()
                     .Where(o => o.OrderGUID == request.SourceOrderGUID && !o.IsDeleted)
                     .FirstAsync();
@@ -7992,6 +8092,27 @@ FinalRows AS (
                 {
                     _db.Ado.BeginTran();
 
+                    if (!bypassPreorderGate)
+                    {
+                        var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                            _db,
+                            storeResource,
+                            request.TargetStoreCode,
+                            TimeProvider.System,
+                            _logger
+                        );
+                        if (preorderGate.IsBlocked)
+                        {
+                            _db.Ado.RollbackTran();
+                            return new ApiResponse<CopyOrderResultDto>
+                            {
+                                Success = false,
+                                ErrorCode = "PREORDER_REQUIRED",
+                                Message = "请先完成当前有效的 Preorder，再复制普通订单",
+                            };
+                        }
+                    }
+
                     await _db.Insertable(newOrder).ExecuteCommandAsync();
                     await _db.Insertable(newDetails).ExecuteCommandAsync();
 
@@ -8013,13 +8134,23 @@ FinalRows AS (
                     },
                 };
             }
+            catch (PreorderBusinessException ex)
+            {
+                _logger.LogWarning(ex, "CopyOrder Preorder gate unavailable");
+                return new ApiResponse<CopyOrderResultDto>
+                {
+                    Success = false,
+                    ErrorCode = ex.ErrorCode,
+                    Message = ex.Message,
+                };
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "CopyOrderAsync failed");
                 return new ApiResponse<CopyOrderResultDto>
                 {
                     Success = false,
-                    Message = ex.Message,
+                    Message = "订单复制失败，请稍后重试",
                 };
             }
         }
@@ -9482,19 +9613,26 @@ FinalRows AS (
                     };
                 }
 
-                order.FlowStatus = 2;
-                order.UpdatedAt = DateTime.Now;
-                order.UpdatedBy =
+                var updatedAt = DateTime.Now;
+                var updatedBy =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-
-                await _db.Updateable(order)
-                    .UpdateColumns(o => new
+                var affected = await _db.Updateable<WareHouseOrder>()
+                    .SetColumns(o => new WareHouseOrder
                     {
-                        o.FlowStatus,
-                        o.UpdatedAt,
-                        o.UpdatedBy,
+                        FlowStatus = 2,
+                        UpdatedAt = updatedAt,
+                        UpdatedBy = updatedBy,
                     })
+                    .Where(o =>
+                        o.OrderGUID == orderGuid
+                        && !o.IsDeleted
+                        && o.FlowStatus == 1
+                    )
                     .ExecuteCommandAsync();
+                if (affected != 1)
+                {
+                    return CreateOrderStatusConflictResponse<bool>();
+                }
 
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
@@ -9532,19 +9670,26 @@ FinalRows AS (
                     };
                 }
 
-                order.FlowStatus = 3;
-                order.UpdatedAt = DateTime.Now;
-                order.UpdatedBy =
+                var updatedAt = DateTime.Now;
+                var updatedBy =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-
-                await _db.Updateable(order)
-                    .UpdateColumns(o => new
+                var affected = await _db.Updateable<WareHouseOrder>()
+                    .SetColumns(o => new WareHouseOrder
                     {
-                        o.FlowStatus,
-                        o.UpdatedAt,
-                        o.UpdatedBy,
+                        FlowStatus = 3,
+                        UpdatedAt = updatedAt,
+                        UpdatedBy = updatedBy,
                     })
+                    .Where(o =>
+                        o.OrderGUID == orderGuid
+                        && !o.IsDeleted
+                        && o.FlowStatus == 1
+                    )
                     .ExecuteCommandAsync();
+                if (affected != 1)
+                {
+                    return CreateOrderStatusConflictResponse<bool>();
+                }
 
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
@@ -9555,7 +9700,11 @@ FinalRows AS (
             }
         }
 
-        public async Task<ApiResponse<bool>> UpdateOrderStatusAsync(string orderGuid, int newStatus)
+        public async Task<ApiResponse<bool>> UpdateOrderStatusAsync(
+            string orderGuid,
+            int newStatus,
+            bool bypassPreorderGate = false
+        )
         {
             try
             {
@@ -9578,12 +9727,27 @@ FinalRows AS (
                     return new ApiResponse<bool> { Success = false, Message = "Order not found" };
                 }
 
+                var canBypassPreorderGate = bypassPreorderGate || IsWarehouseStaffOnly();
                 if (order.FlowStatus == newStatus)
                 {
                     return new ApiResponse<bool>
                     {
                         Success = false,
                         Message = "Status is already the target status",
+                    };
+                }
+                var transitionError = ValidateOrderStatusTransition(
+                    order.FlowStatus,
+                    newStatus,
+                    canBypassPreorderGate
+                );
+                if (transitionError.HasValue)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        ErrorCode = transitionError.Value.ErrorCode,
+                        Message = transitionError.Value.Message,
                     };
                 }
 
@@ -9596,18 +9760,24 @@ FinalRows AS (
                     newStatus
                 );
 
-                order.FlowStatus = newStatus;
-                order.UpdatedAt = DateTime.Now;
-                order.UpdatedBy = userId;
-
-                await _db.Updateable(order)
-                    .UpdateColumns(o => new
+                var updatedAt = DateTime.Now;
+                var affected = await _db.Updateable<WareHouseOrder>()
+                    .SetColumns(o => new WareHouseOrder
                     {
-                        o.FlowStatus,
-                        o.UpdatedAt,
-                        o.UpdatedBy,
+                        FlowStatus = newStatus,
+                        UpdatedAt = updatedAt,
+                        UpdatedBy = userId,
                     })
+                    .Where(o =>
+                        o.OrderGUID == orderGuid
+                        && !o.IsDeleted
+                        && o.FlowStatus == order.FlowStatus
+                    )
                     .ExecuteCommandAsync();
+                if (affected != 1)
+                {
+                    return CreateOrderStatusConflictResponse<bool>();
+                }
 
                 var statusText = newStatus == 1 ? "Submitted" : "Completed";
                 return new ApiResponse<bool>
@@ -9630,7 +9800,8 @@ FinalRows AS (
 
         public async Task<ApiResponse<int>> BatchUpdateOrderStatusAsync(
             List<string> orderGuids,
-            int newStatus
+            int newStatus,
+            bool bypassPreorderGate = false
         )
         {
             try
@@ -9654,36 +9825,166 @@ FinalRows AS (
                     };
                 }
 
-                var userId = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var canBypassPreorderGate = bypassPreorderGate || IsWarehouseStaffOnly();
+                var distinctOrderGuids = orderGuids
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                if (distinctOrderGuids.Count == 0)
+                {
+                    return new ApiResponse<int>
+                    {
+                        Success = false,
+                        Message = "No orders specified",
+                    };
+                }
 
                 _logger.LogInformation(
                     "Batch updating {Count} orders to status {NewStatus}",
-                    orderGuids.Count,
+                    distinctOrderGuids.Count,
                     newStatus
                 );
-
-                var updatedCount = await _db.Updateable<WareHouseOrder>()
-                    .SetColumns(o => new WareHouseOrder
-                    {
-                        FlowStatus = newStatus,
-                        UpdatedAt = DateTime.Now,
-                        UpdatedBy = userId,
-                    })
-                    .Where(o => orderGuids.Contains(o.OrderGUID) && !o.IsDeleted)
-                    .ExecuteCommandAsync();
-
-                return new ApiResponse<int>
+                ApiResponse<int>? response = null;
+                var transaction = await _db.Ado.UseTranAsync(async () =>
                 {
-                    Success = true,
-                    Data = updatedCount,
-                    Message = $"Updated {updatedCount} orders",
-                };
+                    var orders = await _db.Queryable<WareHouseOrder>()
+                        .Where(o => distinctOrderGuids.Contains(o.OrderGUID) && !o.IsDeleted)
+                        .ToListAsync();
+                    if (orders.Count != distinctOrderGuids.Count)
+                    {
+                        response = new ApiResponse<int>
+                        {
+                            Success = false,
+                            ErrorCode = "ORDER_NOT_FOUND",
+                            Message = "部分订单不存在或已删除",
+                        };
+                        return;
+                    }
+
+                    foreach (var order in orders)
+                    {
+                        if (order.FlowStatus == newStatus)
+                        {
+                            // 批量接口保持原有幂等兼容：同目标状态仍计入本次处理数量。
+                            continue;
+                        }
+                        var transitionError = ValidateOrderStatusTransition(
+                            order.FlowStatus,
+                            newStatus,
+                            canBypassPreorderGate
+                        );
+                        if (transitionError.HasValue)
+                        {
+                            response = new ApiResponse<int>
+                            {
+                                Success = false,
+                                ErrorCode = transitionError.Value.ErrorCode,
+                                Message = transitionError.Value.Message,
+                            };
+                            return;
+                        }
+                    }
+
+                    var userId =
+                        _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                    var updatedAt = DateTime.Now;
+                    var updatedCount = 0;
+                    // 按读取到的源状态分组 CAS；任一组数量不符都会抛错并回滚之前已更新的组。
+                    foreach (var group in orders.GroupBy(item => item.FlowStatus))
+                    {
+                        var sourceStatus = group.Key;
+                        var groupOrderGuids = group.Select(item => item.OrderGUID).ToList();
+                        var affected = await _db.Updateable<WareHouseOrder>()
+                            .SetColumns(o => new WareHouseOrder
+                            {
+                                FlowStatus = newStatus,
+                                UpdatedAt = updatedAt,
+                                UpdatedBy = userId,
+                            })
+                            .Where(o =>
+                                groupOrderGuids.Contains(o.OrderGUID)
+                                && !o.IsDeleted
+                                && o.FlowStatus == sourceStatus
+                            )
+                            .ExecuteCommandAsync();
+                        if (affected != groupOrderGuids.Count)
+                        {
+                            throw new OrderStatusConcurrencyException();
+                        }
+                        updatedCount += affected;
+                    }
+
+                    response = new ApiResponse<int>
+                    {
+                        Success = true,
+                        Data = updatedCount,
+                        Message = $"Updated {updatedCount} orders",
+                    };
+                });
+                if (!transaction.IsSuccess)
+                {
+                    if (transaction.ErrorException is OrderStatusConcurrencyException)
+                    {
+                        return CreateOrderStatusConflictResponse<int>();
+                    }
+                    throw transaction.ErrorException
+                        ?? new InvalidOperationException("批量更新订单状态事务失败");
+                }
+                return response
+                    ?? new ApiResponse<int> { Success = false, Message = "批量更新订单状态失败" };
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BatchUpdateOrderStatusAsync failed");
                 return new ApiResponse<int> { Success = false, Message = ex.Message };
             }
+        }
+
+        private static (string ErrorCode, string Message)? ValidateOrderStatusTransition(
+            int? currentStatus,
+            int targetStatus,
+            bool canBypassPreorderGate
+        )
+        {
+            if (targetStatus == 1)
+            {
+                if (currentStatus == 2 || (currentStatus == 0 && canBypassPreorderGate))
+                {
+                    return null;
+                }
+                if (currentStatus == 0)
+                {
+                    return (
+                        "PREORDER_SUBMIT_ENDPOINT_REQUIRED",
+                        "草稿订单必须通过正式提交接口提交，以完成 Preorder 门禁检查"
+                    );
+                }
+            }
+            else if (targetStatus == 2 && currentStatus == 1)
+            {
+                return null;
+            }
+
+            return (
+                "INVALID_ORDER_STATUS_TRANSITION",
+                currentStatus == 0 && targetStatus == 2
+                    ? "草稿订单不能直接标记为已完成"
+                    : "当前订单状态不允许切换到目标状态"
+            );
+        }
+
+        private static ApiResponse<T> CreateOrderStatusConflictResponse<T>() => new()
+        {
+            Success = false,
+            ErrorCode = "ORDER_STATUS_CONFLICT",
+            Message = "订单状态已被其他操作更新，请刷新后重试",
+        };
+
+        private sealed class OrderStatusConcurrencyException : Exception
+        {
+            public OrderStatusConcurrencyException()
+                : base("订单状态已被其他操作更新") { }
         }
     }
 }

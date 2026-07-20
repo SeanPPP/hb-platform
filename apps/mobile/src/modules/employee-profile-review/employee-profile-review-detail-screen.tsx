@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, Image, ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AppState, Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ActivityIndicator,
   Button,
@@ -58,6 +60,7 @@ function formatValue(value: string) {
 
 export function EmployeeProfileReviewDetailScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
   const theme = useTheme();
   const { t } = useAppTranslation("employeeProfileReview");
@@ -163,6 +166,53 @@ export function EmployeeProfileReviewDetailScreen() {
       router.replace(target);
     }
   }, [clearDetailCache, clearSensitiveUiState, router]);
+
+  useLayoutEffect(() => {
+    // 返回入口由导航栏承载，确保加载、错误和隐私遮罩状态下仍可安全退出。
+    navigation.setOptions({
+      header: () => (
+        <SafeAreaView
+          edges={["top"]}
+          style={[styles.headerSafeArea, { backgroundColor: theme.colors.background }]}
+        >
+          <View
+            style={[styles.headerRow, { borderBottomColor: theme.colors.outlineVariant }]}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("actions.back")}
+              accessibilityState={{ disabled: isLeavingSensitiveDetail }}
+              disabled={isLeavingSensitiveDetail}
+              hitSlop={4}
+              style={({ pressed }) => [
+                styles.headerBackButton,
+                pressed && styles.headerBackButtonPressed,
+                isLeavingSensitiveDetail && styles.headerBackButtonDisabled,
+              ]}
+              onPress={() => void leaveDetail("/(tabs)/employee-profile-review")}
+            >
+              <MaterialCommunityIcons
+                name="chevron-left"
+                size={28}
+                color={theme.colors.primary}
+              />
+            </Pressable>
+            <Text variant="titleLarge" style={styles.headerTitle} numberOfLines={1}>
+              {t("detail.title")}
+            </Text>
+          </View>
+        </SafeAreaView>
+      ),
+    });
+  }, [
+    isLeavingSensitiveDetail,
+    leaveDetail,
+    navigation,
+    t,
+    theme.colors.background,
+    theme.colors.outlineVariant,
+    theme.colors.primary,
+  ]);
 
   const resumeDetailAfterForeground = useCallback(async () => {
     const generation = ++resumeGenerationRef.current;
@@ -675,6 +725,25 @@ function PhotoPreview({
 }
 
 const styles = StyleSheet.create({
+  headerSafeArea: { width: "100%" },
+  headerRow: {
+    height: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerBackButton: {
+    position: "absolute",
+    left: 4,
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: { flexShrink: 1, textAlign: "center", marginHorizontal: 52 },
+  headerBackButtonPressed: { opacity: 0.6 },
+  headerBackButtonDisabled: { opacity: 0.4 },
   flex: { flex: 1 },
   centered: { flex: 1, padding: 24, alignItems: "center", justifyContent: "center", gap: 16 },
   privacyShield: { flex: 1, padding: 32, alignItems: "center", justifyContent: "center", gap: 16 },

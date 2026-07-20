@@ -118,6 +118,40 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StartupSchemaMigrator_考勤QrToken唯一索引在补列后动态编译()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"));
+        var attendanceSchemaStart = migrator.IndexOf(
+            "private static async Task EnsureAttendanceQrSchemaAsync",
+            StringComparison.Ordinal);
+        var attendanceSchemaEnd = migrator.IndexOf(
+            "private static async Task EnsureUserStorePosPermissionSchemaAsync",
+            attendanceSchemaStart,
+            StringComparison.Ordinal);
+
+        Assert.True(
+            attendanceSchemaStart >= 0 && attendanceSchemaEnd > attendanceSchemaStart,
+            "必须能定位考勤二维码启动迁移方法。");
+
+        var attendanceSchema = migrator[attendanceSchemaStart..attendanceSchemaEnd];
+        var addQrTokenColumnIndex = attendanceSchema.IndexOf(
+            "ALTER TABLE [dbo].[AttendancePunch] ADD [QrTokenId] nvarchar(50) NULL;",
+            StringComparison.Ordinal);
+        var createQrTokenIndexIndex = attendanceSchema.IndexOf(
+            "EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunch_User_QrTokenId]",
+            StringComparison.Ordinal);
+
+        // 关键位置：SQL Server 会先编译静态 batch；新增列后的索引必须延迟到 EXEC 时再编译。
+        Assert.True(addQrTokenColumnIndex >= 0, "考勤迁移必须幂等补齐 QrTokenId 列。");
+        Assert.True(
+            createQrTokenIndexIndex > addQrTokenColumnIndex,
+            "QrTokenId 唯一索引必须在补列后通过动态 SQL 建立独立编译边界。"
+        );
+        Assert.Contains("WHERE [QrTokenId] IS NOT NULL;');", attendanceSchema);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建用户分店Pos权限表和唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(

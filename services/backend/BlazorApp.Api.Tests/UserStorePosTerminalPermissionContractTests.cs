@@ -1,8 +1,11 @@
 using System.Reflection;
 using BlazorApp.Api.Controllers;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Moq;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -94,5 +97,23 @@ public sealed class UserStorePosTerminalPermissionContractTests
         Assert.NotNull(type.GetMethod("Get")!.GetCustomAttribute<HttpGetAttribute>());
         Assert.NotNull(type.GetMethod("Put")!.GetCustomAttribute<HttpPutAttribute>());
         Assert.NotNull(type.GetMethod("Delete")!.GetCustomAttribute<HttpDeleteAttribute>());
+    }
+
+    [Fact]
+    public async Task Controller_非员工目标错误映射为403()
+    {
+        var service = new Mock<IUserStorePosTerminalPermissionService>();
+        service.Setup(item => item.GetAsync("target", "store-a"))
+            .ReturnsAsync(
+                ApiResponse<UserStorePosTerminalPermissionsResponse>.Error(
+                    "店长只能维护员工的 POS 权限",
+                    "EMPLOYEE_TARGET_REQUIRED"
+                )
+            );
+        var controller = new UserStorePosTerminalPermissionsController(service.Object);
+
+        var result = await controller.Get("target", "store-a");
+
+        Assert.IsType<ForbidResult>(result);
     }
 }

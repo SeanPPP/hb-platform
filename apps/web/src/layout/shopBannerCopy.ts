@@ -13,6 +13,15 @@ const orderHistoryBannerCopy: ShopBannerCopy = {
 }
 
 export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
+  if (pathname.startsWith('/shop/preorders/')) {
+    return {
+      titleKey: 'shop.preorderTitle',
+      titleFallback: 'Preorder 预订货',
+      subtitleKey: 'shop.preorderBannerSubtitle',
+      subtitleFallback: '按最小订货量填写本期份数，提交后继续处理下一期。',
+    }
+  }
+
   if (pathname.startsWith('/shop/best-sellers')) {
     return {
       titleKey: 'shop.bestSellers',

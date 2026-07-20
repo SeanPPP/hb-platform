@@ -663,6 +663,13 @@ builder.Services.AddScoped<
 >();
 builder.Services.AddScoped<IStoreOrderHqSyncService, StoreOrderHqSyncService>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
+builder.Services.AddScoped<PreorderReactService>();
+builder.Services.AddScoped<IPreorderReactService>(provider =>
+    provider.GetRequiredService<PreorderReactService>()
+);
+builder.Services.AddScoped<IPreorderGateService>(provider =>
+    provider.GetRequiredService<PreorderReactService>()
+);
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
@@ -683,6 +690,7 @@ builder.Services.AddScoped<
     ILocalSupplierInvoiceSalesAnalysisService,
     LocalSupplierInvoiceSalesAnalysisService
 >();
+builder.Services.AddScoped<ILocalPurchaseDashboardService, LocalPurchaseDashboardService>();
 builder.Services.AddScoped<IHolidayProductReactService, HolidayProductReactService>();
 builder.Services.AddScoped<IStoreManagerProductReactService, StoreManagerProductReactService>();
 builder.Services.AddScoped<ILocationReactService, LocationReactService>();

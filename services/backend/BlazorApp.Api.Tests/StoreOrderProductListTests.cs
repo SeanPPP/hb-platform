@@ -20,6 +20,7 @@ using Xunit;
 
 namespace BlazorApp.Api.Tests;
 
+[Collection("PreorderMutationLock")]
 public sealed class StoreOrderProductListTests : IDisposable
 {
     private readonly string _dbPath;
@@ -56,7 +57,10 @@ public sealed class StoreOrderProductListTests : IDisposable
             typeof(CPT_DIC_外购客户信息表),
             typeof(ProductLocation),
             typeof(Location),
-            typeof(StoreOrderInvoiceEmailSendRecord)
+            typeof(StoreOrderInvoiceEmailSendRecord),
+            typeof(PreorderActivation),
+            typeof(PreorderActivationStore),
+            typeof(PreorderWarehouseOrder)
         );
         _db.Ado.ExecuteCommand("DROP TABLE ProductGrade");
         _db.Ado.ExecuteCommand(
@@ -72,6 +76,482 @@ public sealed class StoreOrderProductListTests : IDisposable
                 IsDeleted INTEGER NULL
             )
             """
+        );
+    }
+
+    [Theory]
+    [InlineData(1, "PREORDER_SUBMIT_ENDPOINT_REQUIRED")]
+    [InlineData(2, "INVALID_ORDER_STATUS_TRANSITION")]
+    public async Task Status单笔接口不允许普通分店从草稿绕过状态机(
+        int newStatus,
+        string expectedErrorCode
+    )
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "status-draft-single",
+            StoreCode = "S01",
+            OrderNo = "DRAFT-STATUS-SINGLE",
+            FlowStatus = 0,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().UpdateOrderStatusAsync(
+            "status-draft-single",
+            newStatus
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        var persisted = await _db.Queryable<WareHouseOrder>()
+            .FirstAsync(item => item.OrderGUID == "status-draft-single");
+        Assert.Equal(0, persisted.FlowStatus);
+    }
+
+    [Theory]
+    [InlineData(1, "PREORDER_SUBMIT_ENDPOINT_REQUIRED")]
+    [InlineData(2, "INVALID_ORDER_STATUS_TRANSITION")]
+    public async Task Status批量接口遇到草稿时整批拒绝且不部分提交(
+        int newStatus,
+        string expectedErrorCode
+    )
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-draft-batch",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-STATUS-BATCH",
+                FlowStatus = 0,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-completed-batch",
+                StoreCode = "S01",
+                OrderNo = "COMPLETED-STATUS-BATCH",
+                FlowStatus = 2,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateOrderStatusAsync(
+            new() { "status-draft-batch", "status-completed-batch" },
+            newStatus
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        var orders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID.StartsWith("status-") && item.OrderGUID.EndsWith("-batch"))
+            .ToListAsync();
+        Assert.Equal(0, orders.Single(item => item.OrderGUID == "status-draft-batch").FlowStatus);
+        Assert.Equal(2, orders.Single(item => item.OrderGUID == "status-completed-batch").FlowStatus);
+    }
+
+    [Fact]
+    public async Task Status单笔接口允许WarehouseStaff和已授权仓库管理流程提交草稿()
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-warehouse-staff",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-WAREHOUSE-STAFF",
+                FlowStatus = 0,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-manage-orders",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-MANAGE-ORDERS",
+                FlowStatus = 0,
+            },
+        }).ExecuteCommandAsync();
+
+        var warehouseStaffResult = await CreateService(
+            "warehouse-user",
+            "WarehouseStaff"
+        ).UpdateOrderStatusAsync("status-warehouse-staff", 1);
+        var manageOrdersResult = await CreateService().UpdateOrderStatusAsync(
+            "status-manage-orders",
+            1,
+            bypassPreorderGate: true
+        );
+
+        Assert.True(warehouseStaffResult.Success);
+        Assert.True(manageOrdersResult.Success);
+        Assert.Equal(
+            2,
+            await _db.Queryable<WareHouseOrder>()
+                .CountAsync(item =>
+                    item.OrderGUID.StartsWith("status-")
+                    && item.FlowStatus == 1
+                )
+        );
+    }
+
+    [Fact]
+    public async Task Status批量接口允许已授权仓库管理流程提交草稿()
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-manage-batch-a",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-MANAGE-BATCH-A",
+                FlowStatus = 0,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-manage-batch-b",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-MANAGE-BATCH-B",
+                FlowStatus = 0,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateOrderStatusAsync(
+            new() { "status-manage-batch-a", "status-manage-batch-b" },
+            1,
+            bypassPreorderGate: true
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data);
+        Assert.Equal(
+            2,
+            await _db.Queryable<WareHouseOrder>()
+                .CountAsync(item =>
+                    item.OrderGUID.StartsWith("status-manage-batch-")
+                    && item.FlowStatus == 1
+                )
+        );
+    }
+
+    [Fact]
+    public async Task Status单笔和批量接口均不允许仓库绕过流程把草稿直接完成()
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-bypass-complete-single",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-BYPASS-COMPLETE-SINGLE",
+                FlowStatus = 0,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-bypass-complete-batch",
+                StoreCode = "S01",
+                OrderNo = "DRAFT-BYPASS-COMPLETE-BATCH",
+                FlowStatus = 0,
+            },
+        }).ExecuteCommandAsync();
+
+        var single = await CreateService("warehouse-user", "WarehouseStaff")
+            .UpdateOrderStatusAsync("status-bypass-complete-single", 2);
+        var batch = await CreateService().BatchUpdateOrderStatusAsync(
+            new() { "status-bypass-complete-batch" },
+            2,
+            bypassPreorderGate: true
+        );
+
+        Assert.False(single.Success);
+        Assert.Equal("INVALID_ORDER_STATUS_TRANSITION", single.ErrorCode);
+        Assert.False(batch.Success);
+        Assert.Equal("INVALID_ORDER_STATUS_TRANSITION", batch.ErrorCode);
+        Assert.Equal(
+            2,
+            await _db.Queryable<WareHouseOrder>()
+                .CountAsync(item =>
+                    item.OrderGUID.StartsWith("status-bypass-complete-")
+                    && item.FlowStatus == 0
+                )
+        );
+    }
+
+    [Theory]
+    [InlineData(3, 1)]
+    [InlineData(3, 2)]
+    [InlineData(4, 1)]
+    [InlineData(4, 2)]
+    public async Task Status单笔接口拒绝Picking和其他状态进入提交或完成(
+        int currentStatus,
+        int newStatus
+    )
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "status-invalid-source",
+            StoreCode = "S01",
+            OrderNo = "INVALID-SOURCE",
+            FlowStatus = currentStatus,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().UpdateOrderStatusAsync(
+            "status-invalid-source",
+            newStatus
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_ORDER_STATUS_TRANSITION", result.ErrorCode);
+        Assert.Equal(
+            currentStatus,
+            (await _db.Queryable<WareHouseOrder>()
+                .FirstAsync(item => item.OrderGUID == "status-invalid-source")).FlowStatus
+        );
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task Status单笔CAS不覆盖读取后发生的完成或配货状态(int competingStatus)
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "status-single-cas",
+            StoreCode = "S01",
+            OrderNo = "STATUS-SINGLE-CAS",
+            FlowStatus = 1,
+        }).ExecuteCommandAsync();
+        var injected = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (injected
+                || !sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("WareHouseOrder", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            injected = true;
+            _db.Updateable<WareHouseOrder>()
+                .SetColumns(item => item.FlowStatus == competingStatus)
+                .Where(item => item.OrderGUID == "status-single-cas")
+                .ExecuteCommand();
+        };
+        ApiResponse<bool> result;
+        try
+        {
+            result = await CreateService().UpdateOrderStatusAsync("status-single-cas", 2);
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = (sql, parameters) =>
+                _sqlLogs.Add(FormatSqlLog(parameters, sql));
+        }
+
+        Assert.True(injected);
+        Assert.False(result.Success);
+        Assert.Equal("ORDER_STATUS_CONFLICT", result.ErrorCode);
+        Assert.Equal(
+            competingStatus,
+            (await _db.Queryable<WareHouseOrder>()
+                .FirstAsync(item => item.OrderGUID == "status-single-cas")).FlowStatus
+        );
+    }
+
+    [Fact]
+    public async Task Status批量接口遇到Picking来源时整体拒绝()
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-batch-valid",
+                StoreCode = "S01",
+                OrderNo = "STATUS-BATCH-VALID",
+                FlowStatus = 1,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-batch-picking",
+                StoreCode = "S01",
+                OrderNo = "STATUS-BATCH-PICKING",
+                FlowStatus = 3,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateOrderStatusAsync(
+            new() { "status-batch-valid", "status-batch-picking" },
+            2
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_ORDER_STATUS_TRANSITION", result.ErrorCode);
+        var orders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID.StartsWith("status-batch-"))
+            .ToListAsync();
+        Assert.Equal(1, orders.Single(item => item.OrderGUID == "status-batch-valid").FlowStatus);
+        Assert.Equal(3, orders.Single(item => item.OrderGUID == "status-batch-picking").FlowStatus);
+    }
+
+    [Fact]
+    public async Task Status批量CAS发现读取后状态变化时回滚整批更新()
+    {
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder
+            {
+                OrderGUID = "status-batch-cas-a",
+                StoreCode = "S01",
+                OrderNo = "STATUS-BATCH-CAS-A",
+                FlowStatus = 1,
+            },
+            new WareHouseOrder
+            {
+                OrderGUID = "status-batch-cas-b",
+                StoreCode = "S01",
+                OrderNo = "STATUS-BATCH-CAS-B",
+                FlowStatus = 1,
+            },
+        }).ExecuteCommandAsync();
+        var injected = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (injected
+                || !sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("WareHouseOrder", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            injected = true;
+            _db.Updateable<WareHouseOrder>()
+                .SetColumns(item => item.FlowStatus == 3)
+                .Where(item => item.OrderGUID == "status-batch-cas-b")
+                .ExecuteCommand();
+        };
+        ApiResponse<int> result;
+        try
+        {
+            result = await CreateService().BatchUpdateOrderStatusAsync(
+                new() { "status-batch-cas-a", "status-batch-cas-b", "status-batch-cas-a" },
+                2
+            );
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = (sql, parameters) =>
+                _sqlLogs.Add(FormatSqlLog(parameters, sql));
+        }
+
+        Assert.True(injected);
+        Assert.False(result.Success);
+        Assert.Equal("ORDER_STATUS_CONFLICT", result.ErrorCode);
+        var orders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID.StartsWith("status-batch-cas-"))
+            .ToListAsync();
+        Assert.All(orders, item => Assert.Equal(1, item.FlowStatus));
+    }
+
+    [Fact]
+    public async Task Status批量同目标状态保持兼容并按去重订单数返回()
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "status-batch-idempotent",
+            StoreCode = "S01",
+            OrderNo = "STATUS-BATCH-IDEMPOTENT",
+            FlowStatus = 1,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateOrderStatusAsync(
+            new() { "status-batch-idempotent", "status-batch-idempotent" },
+            1
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.Data);
+    }
+
+    [Fact]
+    public async Task StartPickingCAS不覆盖读取后完成状态()
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "start-picking-cas",
+            StoreCode = "S01",
+            OrderNo = "START-PICKING-CAS",
+            FlowStatus = 1,
+        }).ExecuteCommandAsync();
+        var injected = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (injected
+                || !sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("WareHouseOrder", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            injected = true;
+            _db.Updateable<WareHouseOrder>()
+                .SetColumns(item => item.FlowStatus == 2)
+                .Where(item => item.OrderGUID == "start-picking-cas")
+                .ExecuteCommand();
+        };
+        ApiResponse<bool> result;
+        try
+        {
+            result = await CreateService().StartPickingAsync("start-picking-cas");
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = (sql, parameters) =>
+                _sqlLogs.Add(FormatSqlLog(parameters, sql));
+        }
+
+        Assert.False(result.Success);
+        Assert.Equal("ORDER_STATUS_CONFLICT", result.ErrorCode);
+        Assert.Equal(
+            2,
+            (await _db.Queryable<WareHouseOrder>()
+                .FirstAsync(item => item.OrderGUID == "start-picking-cas")).FlowStatus
+        );
+    }
+
+    [Fact]
+    public async Task CompleteOrderCAS不覆盖读取后配货状态()
+    {
+        await _db.Insertable(new WareHouseOrder
+        {
+            OrderGUID = "complete-order-cas",
+            StoreCode = "S01",
+            OrderNo = "COMPLETE-ORDER-CAS",
+            FlowStatus = 1,
+        }).ExecuteCommandAsync();
+        var injected = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (injected
+                || !sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("WareHouseOrder", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            injected = true;
+            _db.Updateable<WareHouseOrder>()
+                .SetColumns(item => item.FlowStatus == 3)
+                .Where(item => item.OrderGUID == "complete-order-cas")
+                .ExecuteCommand();
+        };
+        ApiResponse<bool> result;
+        try
+        {
+            result = await CreateService().CompleteOrderAsync("complete-order-cas");
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = (sql, parameters) =>
+                _sqlLogs.Add(FormatSqlLog(parameters, sql));
+        }
+
+        Assert.False(result.Success);
+        Assert.Equal("ORDER_STATUS_CONFLICT", result.ErrorCode);
+        Assert.Equal(
+            3,
+            (await _db.Queryable<WareHouseOrder>()
+                .FirstAsync(item => item.OrderGUID == "complete-order-cas")).FlowStatus
         );
     }
 
@@ -1856,6 +2336,139 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("warehouse-a submit", staffAOrder.Remarks);
         Assert.Equal("ORD-warehouse-a", staffAOrder.OrderNo);
         Assert.Equal(0, staffBCart.FlowStatus);
+    }
+
+    [Theory]
+    [InlineData("Submit")]
+    [InlineData("Create")]
+    [InlineData("Copy")]
+    public async Task 正式写入口等待StoreGate并在批次激活后重新拦截(string operation)
+    {
+        const string targetStoreCode = "S-GATE";
+        const string targetStoreGuid = "store-gate";
+        await _db.Insertable(new Store
+        {
+            StoreGUID = targetStoreGuid,
+            StoreCode = targetStoreCode,
+            StoreName = "门禁测试店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+
+        if (operation == "Submit")
+        {
+            await _db.Insertable(new WareHouseOrder
+            {
+                OrderGUID = "gate-cart",
+                StoreCode = targetStoreCode,
+                OrderNo = "DRAFT-GATE",
+                FlowStatus = 0,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WareHouseOrderDetails
+            {
+                DetailGUID = "gate-cart-detail",
+                OrderGUID = "gate-cart",
+                StoreCode = targetStoreCode,
+                ProductCode = "P-GATE",
+                Quantity = 1,
+            }).ExecuteCommandAsync();
+        }
+        else if (operation == "Copy")
+        {
+            await _db.Insertable(new WareHouseOrder
+            {
+                OrderGUID = "gate-source",
+                StoreCode = "SOURCE",
+                OrderNo = "SOURCE-GATE",
+                FlowStatus = 1,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WareHouseOrderDetails
+            {
+                DetailGUID = "gate-source-detail",
+                OrderGUID = "gate-source",
+                StoreCode = "SOURCE",
+                ProductCode = "P-GATE",
+                Quantity = 1,
+            }).ExecuteCommandAsync();
+        }
+
+        var service = CreateService();
+        IAsyncDisposable? heldLock = await PreorderMutationLock.AcquireProcessAsync(
+            $"PreorderStoreGate:{targetStoreGuid}"
+        );
+        try
+        {
+            var writeTask = Task.Run(async () => operation switch
+            {
+                "Submit" => ToGateResult(await service.SubmitOrderAsync(
+                    new SubmitStoreOrderRequestDto { StoreCode = targetStoreCode }
+                )),
+                "Create" => ToGateResult(await service.CreateOrderAsync(
+                    new CreateStoreOrderDto { StoreCode = targetStoreCode }
+                )),
+                "Copy" => ToGateResult(await service.CopyOrderAsync(
+                    new CopyOrderDto
+                    {
+                        SourceOrderGUID = "gate-source",
+                        TargetStoreCode = targetStoreCode,
+                    }
+                )),
+                _ => throw new InvalidOperationException($"未知写入口: {operation}"),
+            });
+            var firstCompleted = await Task.WhenAny(
+                writeTask,
+                Task.Delay(TimeSpan.FromSeconds(2))
+            );
+            Assert.NotSame(writeTask, firstCompleted);
+
+            await _db.Insertable(new PreorderActivation
+            {
+                ActivationGuid = $"gate-activation-{operation}",
+                TemplateGuid = "gate-template",
+                PeriodNumber = 1,
+                ActivationCode = $"PRE-GATE-{operation}",
+                TemplateNameSnapshot = "原子门禁",
+                SourceTemplateRevision = 1,
+                StartAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                EndAtUtc = DateTime.UtcNow.AddHours(1),
+                Status = PreorderActivationStatuses.Active,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new PreorderActivationStore
+            {
+                ActivationStoreGuid = $"gate-store-{operation}",
+                ActivationGuid = $"gate-activation-{operation}",
+                StoreGuid = targetStoreGuid,
+                StoreCode = targetStoreCode,
+                StoreName = "门禁测试店",
+            }).ExecuteCommandAsync();
+            await heldLock.DisposeAsync();
+            heldLock = null;
+
+            var result = await writeTask;
+            Assert.False(result.Success);
+            Assert.Equal("PREORDER_REQUIRED", result.ErrorCode);
+        }
+        finally
+        {
+            if (heldLock != null)
+            {
+                await heldLock.DisposeAsync();
+            }
+        }
+
+        var targetOrders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.StoreCode == targetStoreCode && !item.IsDeleted)
+            .ToListAsync();
+        if (operation == "Submit")
+        {
+            Assert.Equal(0, Assert.Single(targetOrders).FlowStatus);
+        }
+        else
+        {
+            Assert.Empty(targetOrders);
+        }
+
+        static (bool Success, string? ErrorCode) ToGateResult<T>(ApiResponse<T> response) =>
+            (response.Success, response.ErrorCode);
     }
 
     [Fact]

@@ -2,9 +2,12 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services
@@ -14,18 +17,31 @@ namespace BlazorApp.Api.Services
     /// </summary>
     public class CartService : ICartService
     {
+        private static readonly string[] CartWritePermissions =
+        {
+            Permissions.OrderFront.View,
+            Permissions.Orders.Create,
+            Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
+        };
         private readonly SqlSugarContext _context;
         private readonly IMapper _mapper;
         private readonly ILogger<CartService> _logger;
         private readonly IWarehouseProductService _productService;
         private readonly IOrderNumberGenerator _orderNumberGenerator;
+        private readonly IAuthorizationService _authorizationService;
+        private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly TimeProvider _timeProvider;
 
         public CartService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<CartService> logger,
             IWarehouseProductService productService,
-            IOrderNumberGenerator orderNumberGenerator
+            IOrderNumberGenerator orderNumberGenerator,
+            IAuthorizationService authorizationService,
+            IHttpContextAccessor httpContextAccessor,
+            TimeProvider? timeProvider = null
         )
         {
             _context = context;
@@ -33,6 +49,9 @@ namespace BlazorApp.Api.Services
             _logger = logger;
             _productService = productService;
             _orderNumberGenerator = orderNumberGenerator;
+            _authorizationService = authorizationService;
+            _httpContextAccessor = httpContextAccessor;
+            _timeProvider = timeProvider ?? TimeProvider.System;
         }
 
         public async Task<CartDto?> GetUserCartAsync(string userGuid)
@@ -952,18 +971,115 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<string?> SubmitCartAsync(string userGuid, SubmitCartRequest request)
         {
+            var normalizedUserGuid = userGuid?.Trim();
+            var normalizedStoreGuid = request.StoreGUID?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedUserGuid)
+                || string.IsNullOrWhiteSpace(normalizedStoreGuid))
+            {
+                throw new PreorderBusinessException(
+                    "用户或分店信息无效",
+                    "PREORDER_INVALID_REQUEST",
+                    StatusCodes.Status400BadRequest
+                );
+            }
+
+            var authorization = await ResolveSubmitAuthorizationAsync(normalizedUserGuid);
+            // 先按大小写无关规则解析数据库中的 canonical StoreGUID，再使用该值构造所有实例一致的 StoreGate。
+            var resolvedStore = await PreorderGateEvaluator.ResolveActiveStoreByGuidFailClosedAsync(
+                _context.Db,
+                normalizedStoreGuid,
+                _logger
+            );
+            var storeResource = PreorderGateEvaluator.GetStoreLockResourceByStoreGuid(
+                resolvedStore.StoreGUID
+            );
+            await using var storeLock = await PreorderMutationLock.AcquireProcessAsync(
+                storeResource
+            );
+
+            var transactionStarted = false;
             try
             {
-                // 获取用户的活跃购物车
+                await _context.Db.Ado.BeginTranAsync();
+                transactionStarted = true;
+
+                // 关键逻辑：门禁判断、分店授权和购物车状态更新共用同一个 StoreGate 与数据库事务。
+                await PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
+                    _context.Db,
+                    storeResource,
+                    resolvedStore.StoreGUID,
+                    _logger
+                );
+
+                var store = await _context.Db.Queryable<Store>()
+                    .FirstAsync(item =>
+                        item.StoreGUID == resolvedStore.StoreGUID
+                        && item.IsActive
+                        && !item.IsDeleted
+                    );
+                if (store == null)
+                {
+                    throw new PreorderBusinessException(
+                        "分店不存在或已停用，无法提交购物车",
+                        "PREORDER_GATE_UNAVAILABLE",
+                        StatusCodes.Status503ServiceUnavailable
+                    );
+                }
+
+                if (!authorization.IsWarehouseStaffOnly
+                    && !authorization.HasGlobalStoreScope)
+                {
+                    var canAccessStore = await _context.Db.Queryable<UserStore>()
+                        .AnyAsync(item =>
+                            item.UserGUID == normalizedUserGuid
+                            && item.StoreGUID == resolvedStore.StoreGUID
+                            && !item.IsDeleted
+                        );
+                    if (!canAccessStore)
+                    {
+                        throw new PreorderBusinessException(
+                            "无权提交该分店的购物车",
+                            "STORE_ACCESS_DENIED",
+                            StatusCodes.Status403Forbidden
+                        );
+                    }
+                }
+
+                if (!authorization.CanBypassGate)
+                {
+                    var preorderGate = await PreorderGateEvaluator
+                        .EvaluateWithHeldStoreGateFailClosedAsync(
+                            _context.Db,
+                            storeResource,
+                            store.StoreCode,
+                            _timeProvider,
+                            _logger
+                        );
+                    if (preorderGate.IsBlocked)
+                    {
+                        throw new PreorderBusinessException(
+                            "请先完成当前有效的 Preorder，再提交普通订货",
+                            "PREORDER_REQUIRED",
+                            StatusCodes.Status409Conflict
+                        );
+                    }
+                }
+
+                // 获取用户的活跃购物车；普通加购、保存和删除链路不受此提交门禁影响。
                 var cart = await _context
                     .Db.Queryable<Cart>()
                     .Includes(x => x.CartItems)
-                    .Where(x => x.UserGUID == userGuid && x.CartStatus == "Active")
+                    .Where(x =>
+                        x.UserGUID == normalizedUserGuid
+                        && x.CartStatus == CartStatusConstants.Active
+                    )
                     .FirstAsync();
 
                 if (cart == null)
                 {
                     _logger.LogWarning("Active cart not found for user: {UserGuid}", userGuid);
+                    await _context.Db.Ado.RollbackTranAsync();
+                    transactionStarted = false;
                     return null;
                 }
 
@@ -973,6 +1089,8 @@ namespace BlazorApp.Api.Services
                         "Cannot submit empty cart: CartGuid={CartGuid}",
                         cart.CartGUID
                     );
+                    await _context.Db.Ado.RollbackTranAsync();
+                    transactionStarted = false;
                     return null;
                 }
 
@@ -983,18 +1101,31 @@ namespace BlazorApp.Api.Services
                 }
 
                 // 更新购物车状态（不创建订单记录）
-                await _context
+                var affected = await _context
                     .Db.Updateable<Cart>()
                     .SetColumns(x => new Cart
                     {
                         CartStatus = BlazorApp.Shared.Constants.CartStatusConstants.Submitted,
-                        StoreGUID = request.StoreGUID,
+                        StoreGUID = resolvedStore.StoreGUID,
                         OrderNumber = cart.OrderNumber,
                         LastModified = DateTime.Now,
                         UpdatedAt = DateTime.Now,
                     })
-                    .Where(x => x.CartGUID == cart.CartGUID)
+                    // 条件更新避免同一购物车跨分店并发提交时两个请求都成功。
+                    .Where(x =>
+                        x.CartGUID == cart.CartGUID
+                        && x.CartStatus == CartStatusConstants.Active
+                    )
                     .ExecuteCommandAsync();
+                if (affected != 1)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    transactionStarted = false;
+                    return null;
+                }
+
+                await _context.Db.Ado.CommitTranAsync();
+                transactionStarted = false;
                 _logger.LogInformation(
                     "Cart submitted successfully (status only): CartGuid={CartGuid}, OrderNumber={OrderNumber}",
                     cart.CartGUID,
@@ -1003,12 +1134,143 @@ namespace BlazorApp.Api.Services
 
                 return cart.OrderNumber;
             }
+            catch (PreorderBusinessException)
+            {
+                if (transactionStarted)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                }
+                throw;
+            }
             catch (Exception ex)
             {
+                if (transactionStarted)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                }
                 _logger.LogError(ex, "Failed to submit cart: UserGuid={UserGuid}", userGuid);
-                return null;
+                // 未知数据库或锁错误同样不得让调用方误以为门禁已安全通过。
+                throw new PreorderBusinessException(
+                    "Preorder 状态暂时无法确认，请稍后重试",
+                    "PREORDER_GATE_UNAVAILABLE",
+                    StatusCodes.Status503ServiceUnavailable
+                );
             }
         }
+
+        private async Task<CartSubmitAuthorization> ResolveSubmitAuthorizationAsync(
+            string userGuid
+        )
+        {
+            var principal = _httpContextAccessor.HttpContext?.User;
+            var authenticatedUserGuid = principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? principal?.FindFirst("UserGUID")?.Value
+                ?? principal?.FindFirst("userId")?.Value;
+            if (principal?.Identity?.IsAuthenticated != true
+                || !string.Equals(
+                    authenticatedUserGuid,
+                    userGuid,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+            {
+                // 服务层不信任调用方单独传入的 UserGUID，身份上下文不一致时必须 fail-closed。
+                throw new PreorderBusinessException(
+                    "无法确认当前用户身份",
+                    "CART_AUTHORIZATION_UNAVAILABLE",
+                    StatusCodes.Status503ServiceUnavailable
+                );
+            }
+
+            try
+            {
+                var isAdmin = HasAnyRole(principal, "Admin", "管理员");
+                var isWarehouseManager = HasAnyRole(
+                    principal,
+                    "WarehouseManager",
+                    "仓库经理"
+                );
+                var isWarehouseStaffOnly = HasAnyRole(
+                        principal,
+                        "WarehouseStaff",
+                        "仓库员工"
+                    )
+                    && !isAdmin
+                    && !isWarehouseManager;
+
+                var canSubmit = isWarehouseStaffOnly
+                    ? await HasPermissionAsync(principal, Permissions.Orders.Create)
+                    : await HasAnyPermissionAsync(principal, CartWritePermissions);
+                if (!canSubmit)
+                {
+                    throw new PreorderBusinessException(
+                        "无权提交普通购物车",
+                        "CART_SUBMIT_FORBIDDEN",
+                        StatusCodes.Status403Forbidden
+                    );
+                }
+
+                // 与正式 React 路径一致：真实 Admin 或显式仓库管理权限才拥有全分店 scope；WarehouseManager 角色名本身不扩权。
+                var hasGlobalStoreScope = isAdmin
+                    || await HasAnyPermissionAsync(
+                        principal,
+                        new[]
+                        {
+                            Permissions.Warehouse.ManageOrders,
+                            Permissions.Warehouse.Manage,
+                        }
+                    );
+                return new CartSubmitAuthorization(
+                    isWarehouseStaffOnly,
+                    hasGlobalStoreScope,
+                    isWarehouseStaffOnly || hasGlobalStoreScope
+                );
+            }
+            catch (PreorderBusinessException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "购物车提交权限检查失败: UserGuid={UserGuid}", userGuid);
+                throw new PreorderBusinessException(
+                    "提交权限暂时无法确认，请稍后重试",
+                    "CART_AUTHORIZATION_UNAVAILABLE",
+                    StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+
+        private async Task<bool> HasAnyPermissionAsync(
+            ClaimsPrincipal principal,
+            IEnumerable<string> permissions
+        )
+        {
+            foreach (var permission in permissions)
+            {
+                if (await HasPermissionAsync(principal, permission))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private async Task<bool> HasPermissionAsync(
+            ClaimsPrincipal principal,
+            string permission
+        ) => (await _authorizationService.AuthorizeAsync(principal, permission)).Succeeded;
+
+        private static bool HasAnyRole(ClaimsPrincipal principal, params string[] roles) =>
+            principal.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && roles.Contains(claim.Value, StringComparer.OrdinalIgnoreCase)
+            );
+
+        private sealed record CartSubmitAuthorization(
+            bool IsWarehouseStaffOnly,
+            bool HasGlobalStoreScope,
+            bool CanBypassGate
+        );
 
         /// <summary>
         /// 获取用户购物车列表（支持状态过滤和分页）

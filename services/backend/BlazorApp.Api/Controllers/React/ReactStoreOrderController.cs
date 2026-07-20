@@ -32,6 +32,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IStoreOrderInvoiceEmailJobService _invoiceEmailJobService;
         private readonly IStoreOrderPasteReplaceJobService _pasteReplaceJobService;
         private readonly IStoreOrderInvoiceEmailTextTranslationService _invoiceEmailTextTranslationService;
+        private readonly IPreorderGateService _preorderGateService;
 
         private const string ScanTraceHeaderName = "X-Scan-Trace-Id";
         private const string CartFlowCheckType = "cart-flow";
@@ -137,7 +138,8 @@ namespace BlazorApp.Api.Controllers.React
             IStoreOrderSyncJobService storeOrderSyncJobService,
             IStoreOrderInvoiceEmailJobService invoiceEmailJobService,
             IStoreOrderPasteReplaceJobService pasteReplaceJobService,
-            IStoreOrderInvoiceEmailTextTranslationService invoiceEmailTextTranslationService
+            IStoreOrderInvoiceEmailTextTranslationService invoiceEmailTextTranslationService,
+            IPreorderGateService preorderGateService
         )
         {
             _service = service;
@@ -151,6 +153,7 @@ namespace BlazorApp.Api.Controllers.React
             _invoiceEmailJobService = invoiceEmailJobService;
             _pasteReplaceJobService = pasteReplaceJobService;
             _invoiceEmailTextTranslationService = invoiceEmailTextTranslationService;
+            _preorderGateService = preorderGateService;
         }
 
         private async Task<bool> HasAnyPermissionAsync(params string[] permissions)
@@ -313,6 +316,86 @@ namespace BlazorApp.Api.Controllers.React
 
             return await RequireOrderManagementActionPermissionAsync(OrderCreatePermissions)
                 ?? await RequireStoreScopeAsync(storeCode);
+        }
+
+        private async Task<bool> CanBypassPreorderCompletionAsync()
+        {
+            return IsWarehouseStaffOnly() || await HasGlobalWarehouseOrderScopeAsync();
+        }
+
+        private async Task<IActionResult?> RequirePreorderCompletionAsync(
+            string? storeCode,
+            bool canBypass
+        )
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return BadRequest(
+                    ApiResponse<object>.Error("分店代码不能为空", "PREORDER_INVALID_REQUEST")
+                );
+            }
+
+            // 仓库员工在专用后台且已通过当前动作的显式 Orders.Create/Edit 权限后，属于代建/处理流程。
+            if (canBypass)
+            {
+                return null;
+            }
+
+            try
+            {
+                var gate = await _preorderGateService.CheckAsync(storeCode);
+                if (!gate.IsBlocked)
+                {
+                    return null;
+                }
+
+                return Conflict(
+                    new ApiResponse<PreorderGateResult>
+                    {
+                        Success = false,
+                        Message = "请先完成当前有效的 Preorder，再进行普通订货",
+                        ErrorCode = "PREORDER_REQUIRED",
+                        Data = gate,
+                        Details = gate,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                // 门禁查询异常时禁止普通写操作，避免故障窗口绕过 Preorder。
+                _logger.LogError(ex, "Preorder gate check failed for store {StoreCode}", storeCode);
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    ApiResponse<object>.Error(
+                        "Preorder 状态暂时无法确认，请稍后重试",
+                        "PREORDER_GATE_UNAVAILABLE"
+                    )
+                );
+            }
+        }
+
+        private IActionResult? MapPreorderGateServiceError(string? errorCode, string? message)
+        {
+            if (errorCode == "PREORDER_REQUIRED")
+            {
+                return Conflict(
+                    ApiResponse<object>.Error(
+                        message ?? "请先完成当前有效的 Preorder，再提交普通订货",
+                        errorCode
+                    )
+                );
+            }
+            if (errorCode == "PREORDER_GATE_UNAVAILABLE")
+            {
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    ApiResponse<object>.Error(
+                        message ?? "Preorder 状态暂时无法确认，请稍后重试",
+                        errorCode
+                    )
+                );
+            }
+            return null;
         }
 
         private async Task<IActionResult?> RequireOrderLineMutationPermissionAsync(string orderGuid)
@@ -1413,10 +1496,27 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
+                var canBypassPreorder = await CanBypassPreorderCompletionAsync();
+                var preorderBlocked = await RequirePreorderCompletionAsync(
+                    request.StoreCode,
+                    canBypassPreorder
+                );
+                if (preorderBlocked != null)
+                {
+                    return preorderBlocked;
+                }
+
+                // 只有控制器完成显式仓库权限校验后才写入此非序列化标记。
+                request.BypassPreorderGate = canBypassPreorder;
                 var result = await _service.SubmitOrderAsync(request);
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
+                }
+                var atomicGateError = MapPreorderGateServiceError(result.ErrorCode, result.Message);
+                if (atomicGateError != null)
+                {
+                    return atomicGateError;
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -1945,10 +2045,27 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
+                var canBypassPreorder = await CanBypassPreorderCompletionAsync();
+                var preorderBlocked = await RequirePreorderCompletionAsync(
+                    request.StoreCode,
+                    canBypassPreorder
+                );
+                if (preorderBlocked != null)
+                {
+                    return preorderBlocked;
+                }
+
+                // 只有控制器完成显式仓库权限校验后才写入此非序列化标记。
+                request.BypassPreorderGate = canBypassPreorder;
                 var result = await _service.CreateOrderAsync(request);
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
+                }
+                var atomicGateError = MapPreorderGateServiceError(result.ErrorCode, result.Message);
+                if (atomicGateError != null)
+                {
+                    return atomicGateError;
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -2528,10 +2645,27 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
+                var canBypassPreorder = await CanBypassPreorderCompletionAsync();
+                var preorderBlocked = await RequirePreorderCompletionAsync(
+                    request.TargetStoreCode,
+                    canBypassPreorder
+                );
+                if (preorderBlocked != null)
+                {
+                    return preorderBlocked;
+                }
+
+                // 只有控制器完成显式仓库权限校验后才写入此非序列化标记。
+                request.BypassPreorderGate = canBypassPreorder;
                 var result = await _service.CopyOrderAsync(request);
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data });
+                }
+                var atomicGateError = MapPreorderGateServiceError(result.ErrorCode, result.Message);
+                if (atomicGateError != null)
+                {
+                    return atomicGateError;
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -2844,7 +2978,15 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, data = result.Data });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                if (result.ErrorCode == "ORDER_STATUS_CONFLICT")
+                {
+                    return Conflict(
+                        new { success = false, errorCode = result.ErrorCode, message = result.Message }
+                    );
+                }
+                return BadRequest(
+                    new { success = false, errorCode = result.ErrorCode, message = result.Message }
+                );
             }
             catch (Exception ex)
             {
@@ -2874,7 +3016,15 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, data = result.Data });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                if (result.ErrorCode == "ORDER_STATUS_CONFLICT")
+                {
+                    return Conflict(
+                        new { success = false, errorCode = result.ErrorCode, message = result.Message }
+                    );
+                }
+                return BadRequest(
+                    new { success = false, errorCode = result.ErrorCode, message = result.Message }
+                );
             }
             catch (Exception ex)
             {
@@ -2899,12 +3049,35 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
-                var result = await _service.UpdateOrderStatusAsync(request.OrderGUID, request.NewStatus);
+                var canBypassPreorder = await CanBypassPreorderCompletionAsync();
+                var result = await _service.UpdateOrderStatusAsync(
+                    request.OrderGUID,
+                    request.NewStatus,
+                    canBypassPreorder
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                if (result.ErrorCode is "PREORDER_SUBMIT_ENDPOINT_REQUIRED" or "ORDER_STATUS_CONFLICT")
+                {
+                    return Conflict(
+                        new
+                        {
+                            success = false,
+                            errorCode = result.ErrorCode,
+                            message = result.Message,
+                        }
+                    );
+                }
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        errorCode = result.ErrorCode,
+                        message = result.Message,
+                    }
+                );
             }
             catch (Exception ex)
             {
@@ -2929,12 +3102,35 @@ namespace BlazorApp.Api.Controllers.React
                     return forbidden;
                 }
 
-                var result = await _service.BatchUpdateOrderStatusAsync(request.OrderGUIDs, request.NewStatus);
+                var canBypassPreorder = await CanBypassPreorderCompletionAsync();
+                var result = await _service.BatchUpdateOrderStatusAsync(
+                    request.OrderGUIDs,
+                    request.NewStatus,
+                    canBypassPreorder
+                );
                 if (result.Success)
                 {
                     return Ok(new { success = true, data = result.Data, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                if (result.ErrorCode is "PREORDER_SUBMIT_ENDPOINT_REQUIRED" or "ORDER_STATUS_CONFLICT")
+                {
+                    return Conflict(
+                        new
+                        {
+                            success = false,
+                            errorCode = result.ErrorCode,
+                            message = result.Message,
+                        }
+                    );
+                }
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        errorCode = result.ErrorCode,
+                        message = result.Message,
+                    }
+                );
             }
             catch (Exception ex)
             {

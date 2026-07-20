@@ -1,0 +1,331 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2020" viewBox="0 0 1600 2020" role="img" aria-labelledby="title desc">
+  <title id="title">18×43 米零售店货架布局设计稿</title>
+  <desc id="desc">18×43 米店铺平面方案：中央六列 1100 毫米背靠背中岛形成七条约 1457 毫米等宽过道；后墙壁架与后组货架保持 1500 毫米净距；前后两组均为每列 11 bay，两组侧板外沿净距 2000 毫米；缩短货架后合并形成 4800 毫米深的其他区域预留。</desc>
+
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#e8edf2" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b"/>
+    </marker>
+    <marker id="dim-arrow" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 5 2.5 L 0 5 z" fill="#475569"/>
+    </marker>
+
+    <!-- 前后两组背靠背中岛统一为 11 bay：总宽 1100 mm，总长 13.2 m。 -->
+    <g id="gondola-132">
+      <rect width="44" height="528" rx="4" fill="#fde68a" stroke="#b45309" stroke-width="2"/>
+      <path d="M22 0V528 M0 48H44 M0 96H44 M0 144H44 M0 192H44 M0 240H44 M0 288H44 M0 336H44 M0 384H44 M0 432H44 M0 480H44" stroke="#b45309" stroke-width="1" opacity="0.7"/>
+    </g>
+
+    <!-- 左右侧墙架与前后中岛组同步统一为 11 bay。 -->
+    <g id="wall-600-132">
+      <rect width="24" height="528" rx="3" fill="#7dd3fc" stroke="#0369a1" stroke-width="2"/>
+      <path d="M0 48H24 M0 96H24 M0 144H24 M0 192H24 M0 240H24 M0 288H24 M0 336H24 M0 384H24 M0 432H24 M0 480H24" stroke="#0369a1" stroke-width="1" opacity="0.7"/>
+    </g>
+
+    <!-- 中岛端部 600 mm 侧板：宽度与 1100 mm 中岛一致。 -->
+    <g id="endcap-600">
+      <rect width="44" height="24" rx="3" fill="#fbbf24" stroke="#b45309" stroke-width="2"/>
+      <path d="M0 12H44" stroke="#b45309" stroke-width="1" opacity="0.7"/>
+    </g>
+
+    <!-- 所有移动货架统一为 1200×1100×高 1500 mm，纵向绘制。 -->
+    <g id="mobile-1100-1200-v">
+      <rect width="44" height="48" rx="4" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+      <path d="M22 0V48" stroke="#7c3aed" stroke-width="1" opacity="0.75"/>
+      <circle cx="42" cy="5" r="2.5" fill="#475569"/><circle cx="42" cy="43" r="2.5" fill="#475569"/>
+    </g>
+    <g id="mobile-1200-1100-h">
+      <rect width="48" height="44" rx="4" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+      <path d="M0 22H48" stroke="#7c3aed" stroke-width="1" opacity="0.75"/>
+      <circle cx="5" cy="42" r="2.5" fill="#475569"/><circle cx="43" cy="42" r="2.5" fill="#475569"/>
+    </g>
+  </defs>
+
+  <rect width="1600" height="2020" fill="#f4f7fa"/>
+
+  <!-- 顶部标题栏 -->
+  <rect width="1600" height="112" fill="#102a43"/>
+  <text x="72" y="48" fill="#ffffff" font-family="Arial, 'PingFang SC', sans-serif" font-size="30" font-weight="700">18 × 43 m 店铺 · 货架布局方案 A</text>
+  <text x="72" y="82" fill="#b8c7d9" font-family="Arial, 'PingFang SC', sans-serif" font-size="17">774 m²｜侧墙架深 600 mm｜6 列背靠背中岛｜7 条过道 × 1457.1 mm</text>
+  <rect x="1370" y="34" width="160" height="44" rx="22" fill="#1f9d8a"/>
+  <text x="1450" y="62" text-anchor="middle" fill="#ffffff" font-family="Arial, 'PingFang SC', sans-serif" font-size="16" font-weight="700">TOP VIEW</text>
+
+  <!-- 左侧：按 1 m = 40 px 绘制的店铺平面 -->
+  <g filter="url(#shadow)">
+    <rect x="74" y="144" width="792" height="1808" rx="18" fill="#ffffff"/>
+  </g>
+  <text x="110" y="173" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">比例：1 m = 40 px</text>
+
+  <!-- 尺寸线 -->
+  <line x1="110" y1="156" x2="830" y2="156" stroke="#64748b" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="470" y="149" text-anchor="middle" fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">18,000 mm</text>
+  <line x1="92" y1="190" x2="92" y2="1910" stroke="#64748b" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="82" y="1050" transform="rotate(-90 82 1050)" text-anchor="middle" fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">43,000 mm</text>
+
+  <!-- 店铺轮廓与 1 m 网格 -->
+  <rect x="110" y="190" width="720" height="1720" fill="#fbfdff" stroke="#22354a" stroke-width="6"/>
+  <rect x="110" y="190" width="720" height="1720" fill="url(#grid)"/>
+
+  <!-- 后墙净距增加至 1.5 m 后，前组前侧板之后仍保留约 5.9 m 前场。 -->
+  <rect x="113" y="1674" width="714" height="233" fill="#fff7ed" opacity="0.92"/>
+  <text x="132" y="1688" fill="#9a3412" font-family="Arial, 'PingFang SC', sans-serif" font-size="12" font-weight="700">前场服务区</text>
+
+  <!-- 后墙 13 节 1200×450 mm 壁架，总长 15.6 m。 -->
+  <g transform="translate(158 196)">
+    <rect width="624" height="18" rx="3" fill="#7dd3fc" stroke="#0369a1" stroke-width="2"/>
+    <path d="M48 0V18 M96 0V18 M144 0V18 M192 0V18 M240 0V18 M288 0V18 M336 0V18 M384 0V18 M432 0V18 M480 0V18 M528 0V18 M576 0V18" stroke="#0369a1"/>
+  </g>
+  <text x="470" y="224" text-anchor="middle" fill="#075985" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">后墙壁架 · 15,600×450 mm（13 bay）</text>
+
+  <!-- 两侧 600 mm 墙架 + 六列 1100 mm 中岛，形成七条 1457.1 mm 等宽过道。 -->
+  <use href="#wall-600-132" x="110" y="274"/>
+  <use href="#wall-600-132" x="110" y="930"/>
+  <use href="#wall-600-132" x="806" y="274"/>
+  <use href="#wall-600-132" x="806" y="930"/>
+  <text x="122" y="538" transform="rotate(-90 122 538)" text-anchor="middle" fill="#075985" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">侧墙架深 600 mm · 11 bay</text>
+  <text x="818" y="538" transform="rotate(90 818 538)" text-anchor="middle" fill="#075985" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">侧墙架深 600 mm · 11 bay</text>
+  <text x="122" y="1194" transform="rotate(-90 122 1194)" text-anchor="middle" fill="#075985" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">侧墙架深 600 mm · 11 bay</text>
+  <text x="818" y="1194" transform="rotate(90 818 1194)" text-anchor="middle" fill="#075985" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">侧墙架深 600 mm · 11 bay</text>
+  <text x="476" y="264" text-anchor="middle" fill="#92400e" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">后组 · 6 中岛 × 每列 11 bay（13.2 m）</text>
+  <g aria-label="后组六列中岛货架，每列 11 bay，前端带 600 mm 侧板">
+    <use href="#gondola-132" x="192.2857" y="274"/><use href="#endcap-600" x="192.2857" y="802"/>
+    <use href="#gondola-132" x="294.5714" y="274"/><use href="#endcap-600" x="294.5714" y="802"/>
+    <use href="#gondola-132" x="396.8571" y="274"/><use href="#endcap-600" x="396.8571" y="802"/>
+    <use href="#gondola-132" x="499.1429" y="274"/><use href="#endcap-600" x="499.1429" y="802"/>
+    <use href="#gondola-132" x="601.4286" y="274"/><use href="#endcap-600" x="601.4286" y="802"/>
+    <use href="#gondola-132" x="703.7143" y="274"/><use href="#endcap-600" x="703.7143" y="802"/>
+  </g>
+  <text x="500" y="892" text-anchor="middle" fill="#92400e" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">前组 · 6 中岛 × 每列 11 bay（前后各加 600 mm 侧板）</text>
+  <g aria-label="前组六列中岛货架，每列 11 bay，前后端均带 600 mm 侧板">
+    <use href="#endcap-600" x="192.2857" y="906"/><use href="#gondola-132" x="192.2857" y="930"/><use href="#endcap-600" x="192.2857" y="1458"/>
+    <use href="#endcap-600" x="294.5714" y="906"/><use href="#gondola-132" x="294.5714" y="930"/><use href="#endcap-600" x="294.5714" y="1458"/>
+    <use href="#endcap-600" x="396.8571" y="906"/><use href="#gondola-132" x="396.8571" y="930"/><use href="#endcap-600" x="396.8571" y="1458"/>
+    <use href="#endcap-600" x="499.1429" y="906"/><use href="#gondola-132" x="499.1429" y="930"/><use href="#endcap-600" x="499.1429" y="1458"/>
+    <use href="#endcap-600" x="601.4286" y="906"/><use href="#gondola-132" x="601.4286" y="930"/><use href="#endcap-600" x="601.4286" y="1458"/>
+    <use href="#endcap-600" x="703.7143" y="906"/><use href="#gondola-132" x="703.7143" y="930"/><use href="#endcap-600" x="703.7143" y="1458"/>
+  </g>
+
+  <!-- 前后组统一为 11 bay 后，释放空间与原预留带合并为 4800 mm 深的弹性区域。 -->
+  <rect x="134" y="1482" width="672" height="192" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="470" y="1574" text-anchor="middle" fill="#92400e" font-family="Arial, 'PingFang SC', sans-serif" font-size="13" font-weight="700">其他区域预留 · 约 16,800×4,800 mm</text>
+  <text x="470" y="1596" text-anchor="middle" fill="#a16207" font-family="Arial, 'PingFang SC', sans-serif" font-size="10">后组减少 2 bay＋前组减少 1 bay＋原预留 1 bay</text>
+
+  <!-- 关键通道尺寸标注：后墙净距 1500 mm、中岛纵向过道 1457.1 mm、两组侧板外沿净距 2000 mm。 -->
+  <line x1="236.2857" y1="846" x2="294.5714" y2="846" stroke="#ea580c" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect x="224" y="822" width="83" height="22" rx="11" fill="#ffedd5"/>
+  <text x="265.5" y="838" text-anchor="middle" fill="#c2410c" font-family="Arial, 'PingFang SC', sans-serif" font-size="9" font-weight="700">1457.1 mm</text>
+  <line x1="192.2857" y1="866" x2="747.7143" y2="866" stroke="#1f9d8a" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="470" y="856" text-anchor="middle" fill="#0f766e" font-family="Arial, 'PingFang SC', sans-serif" font-size="12" font-weight="700">2000 mm 两组净距（侧板外沿至外沿）</text>
+
+  <!-- 为 7 m 排队区让位，玻璃橱窗缩至约 8.5 m，入口同步左移。 -->
+  <rect x="116" y="1690" width="334" height="214" rx="8" fill="#e0f2fe" fill-opacity="0.72" stroke="#0284c7" stroke-width="2"/>
+  <!-- 500×500 mm 展示桌按实际比例绘制为 20×20 px，4×3 共 12 张。 -->
+  <g fill="#ffffff" stroke="#0284c7" stroke-width="2">
+    <rect x="160" y="1718" width="20" height="20" rx="2"/><rect x="235" y="1718" width="20" height="20" rx="2"/>
+    <rect x="310" y="1718" width="20" height="20" rx="2"/><rect x="385" y="1718" width="20" height="20" rx="2"/>
+    <rect x="160" y="1780" width="20" height="20" rx="2"/><rect x="235" y="1780" width="20" height="20" rx="2"/>
+    <rect x="310" y="1780" width="20" height="20" rx="2"/><rect x="385" y="1780" width="20" height="20" rx="2"/>
+    <rect x="160" y="1842" width="20" height="20" rx="2"/><rect x="235" y="1842" width="20" height="20" rx="2"/>
+    <rect x="310" y="1842" width="20" height="20" rx="2"/><rect x="385" y="1842" width="20" height="20" rx="2"/>
+  </g>
+  <g fill="#f9a8d4" stroke="#be185d" stroke-width="1">
+    <circle cx="170" cy="1728" r="5"/><circle cx="245" cy="1728" r="5"/><circle cx="320" cy="1728" r="5"/><circle cx="395" cy="1728" r="5"/>
+    <circle cx="170" cy="1790" r="5"/><circle cx="245" cy="1790" r="5"/><circle cx="320" cy="1790" r="5"/><circle cx="395" cy="1790" r="5"/>
+    <circle cx="170" cy="1852" r="5"/><circle cx="245" cy="1852" r="5"/><circle cx="320" cy="1852" r="5"/><circle cx="395" cy="1852" r="5"/>
+  </g>
+  <text x="283" y="1705" text-anchor="middle" fill="#0369a1" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">玻璃橱窗 · 约 8500×5350 mm</text>
+  <text x="283" y="1890" text-anchor="middle" fill="#0369a1" font-family="Arial, 'PingFang SC', sans-serif" font-size="11" font-weight="700">12 张 500×500 mm 展示桌 · 4×3 排列</text>
+
+  <!-- 排队总区从入口侧到收银台外侧为 7 m，从临街出口向内为 5 m；其中包含 1.2 m 收银外过道。 -->
+  <rect x="454" y="1710" width="280" height="200" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2" stroke-dasharray="8 6"/>
+  <g aria-label="按参考图摆放的九个 1200×1100×高1500 mm 移动货架">
+    <!-- 参考图结构：上方 L 形、临街面下横档、中央竖岛，三者形成连续回转。 -->
+    <use href="#mobile-1200-1100-h" x="542" y="1710"/><use href="#mobile-1200-1100-h" x="590" y="1710"/>
+    <use href="#mobile-1200-1100-h" x="638" y="1710"/><use href="#mobile-1200-1100-h" x="686" y="1710"/>
+    <use href="#mobile-1100-1200-v" x="542" y="1754"/>
+    <use href="#mobile-1200-1100-h" x="530" y="1866"/><use href="#mobile-1200-1100-h" x="578" y="1866"/>
+    <use href="#mobile-1200-1100-h" x="626" y="1866"/>
+    <use href="#mobile-1100-1200-v" x="622" y="1818"/>
+  </g>
+  <path d="M490 1902V1834H598V1786H710V1882" fill="none" stroke="#8b5cf6" stroke-width="4" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+  <rect x="458" y="1868" width="48" height="28" rx="6" fill="#7c3aed"/>
+  <text x="482" y="1886" text-anchor="middle" fill="#ffffff" font-family="Arial, 'PingFang SC', sans-serif" font-size="9" font-weight="700">排队入口</text>
+  <rect x="686" y="1868" width="48" height="28" rx="6" fill="#1f9d8a"/>
+  <text x="710" y="1886" text-anchor="middle" fill="#ffffff" font-family="Arial, 'PingFang SC', sans-serif" font-size="9" font-weight="700">排队出口</text>
+  <text x="594" y="1810" text-anchor="middle" fill="#6d28d9" font-family="Arial, 'PingFang SC', sans-serif" font-size="8.5" font-weight="700">参考图：上 L 形＋下横档＋中央竖岛</text>
+
+  <!-- 排队出口与收银区域之间保留 1200 mm 独立顾客过道。 -->
+  <rect x="686" y="1710" width="48" height="200" fill="#ecfdf5" fill-opacity="0.88" stroke="#0f9d78" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="710" y="1810" transform="rotate(90 710 1810)" text-anchor="middle" fill="#0f766e" font-family="Arial, 'PingFang SC', sans-serif" font-size="9" font-weight="700">收银外过道 · 净宽 1200 mm</text>
+  <line x1="686" y1="1868" x2="686" y2="1896" stroke="#ef4444" stroke-width="4" stroke-dasharray="5 4"/>
+  <text x="700" y="1862" text-anchor="middle" fill="#b91c1c" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">单向闸门</text>
+
+  <!-- 统一收银主体缩短为 5 m，上方移动货架作为独立围挡，内部仍含三台收银机与气球充气。 -->
+  <rect x="734" y="1710" width="96" height="200" rx="8" fill="#ccfbf1" fill-opacity="0.72" stroke="#0f766e" stroke-width="3"/>
+  <text x="782" y="1690" text-anchor="middle" fill="#0f766e" font-family="Arial, 'PingFang SC', sans-serif" font-size="9" font-weight="700">统一收银区 · 2400×5000 mm</text>
+
+  <!-- 收银区上方与右侧继续使用统一规格移动货架围合。 -->
+  <g aria-label="收银区六个 1200×1100×高1500 mm 移动货架">
+    <use href="#mobile-1200-1100-h" x="734" y="1666"/><use href="#mobile-1200-1100-h" x="782" y="1666"/>
+    <use href="#mobile-1100-1200-v" x="786" y="1710"/><use href="#mobile-1100-1200-v" x="786" y="1758"/>
+    <use href="#mobile-1100-1200-v" x="786" y="1806"/><use href="#mobile-1100-1200-v" x="786" y="1854"/>
+  </g>
+  <text x="782" y="1660" text-anchor="middle" fill="#6d28d9" font-family="Arial, 'PingFang SC', sans-serif" font-size="8" font-weight="700">上方移动货架围挡</text>
+
+  <!-- 气球服务位于统一收银区内侧上端，并与顾客过道分隔。 -->
+  <rect x="742" y="1710" width="36" height="48" rx="6" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+  <circle cx="760" cy="1724" r="7" fill="#f9a8d4" stroke="#be185d"/>
+  <path d="M760 1731V1750" stroke="#be185d" stroke-width="2"/>
+  <text x="760" y="1754" text-anchor="middle" fill="#9d174d" font-family="Arial, 'PingFang SC', sans-serif" font-size="7" font-weight="700">充气区</text>
+
+  <!-- 三台收银机合并在同一收银区域，面向左侧 1200 mm 顾客过道。 -->
+  <g fill="#1f9d8a" stroke="#0f766e" stroke-width="2">
+    <rect x="742" y="1758" width="36" height="48" rx="5"/>
+    <rect x="742" y="1806" width="36" height="48" rx="5"/>
+    <rect x="742" y="1854" width="36" height="48" rx="5"/>
+  </g>
+  <g fill="#ffffff" font-family="Arial, 'PingFang SC', sans-serif" font-size="10" font-weight="700" text-anchor="middle">
+    <text x="760" y="1787">收银 01</text><text x="760" y="1835">收银 02</text><text x="760" y="1883">收银 03</text>
+  </g>
+
+  <!-- 排队出口接第三收银位；结账后沿柜台下端进入只出出口。 -->
+  <path d="M710 1882H738" fill="none" stroke="#0f9d78" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrow)"/>
+  <path d="M778 1882V1902H790V1908" fill="none" stroke="#0f9d78" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrow)"/>
+  <line x1="734" y1="1902" x2="746" y2="1902" stroke="#ef4444" stroke-width="4" stroke-dasharray="5 4"/>
+  <text x="740" y="1910" text-anchor="middle" fill="#b91c1c" font-family="Arial, 'PingFang SC', sans-serif" font-size="7.5" font-weight="700">只出</text>
+
+  <!-- 临街面：缩小玻璃橱窗并将 2 m 入口左移；出口位置不变。 -->
+  <line x1="116" y1="1907" x2="450" y2="1907" stroke="#38bdf8" stroke-width="7"/>
+  <rect x="450" y="1904" width="80" height="12" fill="#fff7ed"/>
+  <rect x="750" y="1904" width="80" height="12" fill="#fff7ed"/>
+  <path d="M490 1910V1872" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M790 1872V1910" fill="none" stroke="#0f9d78" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="283" y="1935" text-anchor="middle" fill="#0284c7" font-family="Arial, 'PingFang SC', sans-serif" font-size="13" font-weight="700">玻璃橱窗约 8.5 m</text>
+  <text x="490" y="1935" text-anchor="middle" fill="#1d4ed8" font-family="Arial, 'PingFang SC', sans-serif" font-size="13" font-weight="700">入口 2 m · 只进</text>
+  <text x="790" y="1935" text-anchor="middle" fill="#0f766e" font-family="Arial, 'PingFang SC', sans-serif" font-size="13" font-weight="700">出口 2 m · 只出</text>
+
+  <!-- 关键位置尺寸标注层：所有尺寸均按 1 m = 40 px 计算。 -->
+  <g fill="none" stroke="#475569" stroke-width="1.2">
+    <!-- 后墙净距、前后货架主体长度，以及两组侧板外沿之间的 2 m 净距。 -->
+    <line x1="790" y1="214" x2="790" y2="274" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="146" y1="274" x2="146" y2="802" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="146" y1="930" x2="146" y2="1458" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="760" y1="826" x2="760" y2="906" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <!-- 一个 1100 mm 背靠背货架宽度。 -->
+    <line x1="192.2857" y1="894" x2="236.2857" y2="894" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <!-- 前场服务区深度。 -->
+    <line x1="846" y1="1674" x2="846" y2="1910" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <!-- 橱窗展示区深度。 -->
+    <line x1="442" y1="1690" x2="442" y2="1904" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <!-- S 型排队区、收银外过道和统一收银区域尺寸。 -->
+    <line x1="454" y1="1700" x2="734" y2="1700" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="444" y1="1710" x2="444" y2="1910" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="686" y1="1688" x2="734" y2="1688" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="734" y1="1680" x2="830" y2="1680" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <line x1="840" y1="1710" x2="840" y2="1910" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+    <!-- 参考图围合内的转弯通道净空不小于 1200 mm。 -->
+    <line x1="598" y1="1760" x2="646" y2="1760" marker-start="url(#dim-arrow)" marker-end="url(#dim-arrow)"/>
+  </g>
+  <g fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="8.5" font-weight="700">
+    <text x="796" y="244" transform="rotate(90 796 244)" text-anchor="middle">后墙净距 1,500</text>
+    <text x="140" y="538" transform="rotate(-90 140 538)" text-anchor="middle">后组主体 13,200 mm · 11 bay</text>
+    <text x="140" y="1194" transform="rotate(-90 140 1194)" text-anchor="middle">前组主体 13,200 mm · 11 bay</text>
+    <text x="766" y="866" transform="rotate(90 766 866)" text-anchor="middle">净距 2,000</text>
+    <text x="214.2857" y="888" text-anchor="middle">货架宽 1,100</text>
+    <text x="470" y="820" text-anchor="middle" fill="#92400e">后组前侧板 600 mm</text>
+    <text x="470" y="922" text-anchor="middle" fill="#92400e">前组后侧板 600 mm</text>
+    <text x="470" y="1476" text-anchor="middle" fill="#92400e">前组前侧板 600 mm</text>
+    <text x="852" y="1792" transform="rotate(90 852 1792)" text-anchor="middle">前场深 5,900 mm</text>
+    <text x="436" y="1797" transform="rotate(-90 436 1797)" text-anchor="middle">橱窗深 5,350 mm</text>
+    <text x="594" y="1694" text-anchor="middle">排队总宽 7,000 mm</text>
+    <text x="438" y="1810" transform="rotate(-90 438 1810)" text-anchor="middle">从出口向内 5,000 mm</text>
+    <text x="710" y="1682" text-anchor="middle">净宽 1,200</text>
+    <text x="782" y="1674" text-anchor="middle">收银区宽 2,400 mm</text>
+    <text x="846" y="1810" transform="rotate(90 846 1810)" text-anchor="middle">统一收银区长 5,000 mm</text>
+    <text x="622" y="1758" text-anchor="middle">≥1,200</text>
+    <text x="566" y="1858" text-anchor="middle" fill="#6d28d9">移动货架 1200×1100×高1500 mm</text>
+  </g>
+
+  <!-- 右侧信息面板 -->
+  <g filter="url(#shadow)">
+    <rect x="900" y="144" width="630" height="1808" rx="18" fill="#ffffff"/>
+  </g>
+  <text x="952" y="205" fill="#102a43" font-family="Arial, 'PingFang SC', sans-serif" font-size="26" font-weight="700">布局参数</text>
+  <text x="952" y="236" fill="#64748b" font-family="Arial, 'PingFang SC', sans-serif" font-size="15">兼顾货架容量、购物动线和前场视线</text>
+
+  <!-- 指标卡 -->
+  <g font-family="Arial, 'PingFang SC', sans-serif">
+    <rect x="952" y="274" width="250" height="116" rx="12" fill="#f0f9ff"/>
+    <text x="976" y="310" fill="#0369a1" font-size="14" font-weight="700">店铺面积</text>
+    <text x="976" y="358" fill="#102a43" font-size="34" font-weight="700">774 m²</text>
+    <rect x="1228" y="274" width="250" height="116" rx="12" fill="#ecfdf5"/>
+    <text x="1252" y="310" fill="#0f766e" font-size="14" font-weight="700">等宽纵向过道</text>
+    <text x="1252" y="358" fill="#102a43" font-size="34" font-weight="700">1.457 m</text>
+    <rect x="952" y="410" width="250" height="116" rx="12" fill="#fffbeb"/>
+    <text x="976" y="446" fill="#b45309" font-size="14" font-weight="700">等宽纵向过道</text>
+    <text x="976" y="494" fill="#102a43" font-size="34" font-weight="700">7 条</text>
+    <rect x="1228" y="410" width="250" height="116" rx="12" fill="#f5f3ff"/>
+    <text x="1252" y="446" fill="#6d28d9" font-size="14" font-weight="700">前后分组</text>
+    <text x="1252" y="494" fill="#102a43" font-size="34" font-weight="700">2 组</text>
+  </g>
+
+  <line x1="952" y1="574" x2="1478" y2="574" stroke="#e2e8f0"/>
+  <text x="952" y="625" fill="#102a43" font-family="Arial, 'PingFang SC', sans-serif" font-size="22" font-weight="700">货架配置</text>
+  <g font-family="Arial, 'PingFang SC', sans-serif" font-size="16">
+    <circle cx="969" cy="671" r="8" fill="#7dd3fc" stroke="#0369a1"/>
+    <text x="992" y="677" fill="#334155">墙架：后墙 1200×450 / 两侧 1200×600 mm</text>
+    <circle cx="969" cy="715" r="8" fill="#fde68a" stroke="#b45309"/>
+    <text x="992" y="721" fill="#334155">背靠背中岛：6 列；前后两组均为 11 bay</text>
+    <circle cx="969" cy="759" r="8" fill="#ddd6fe" stroke="#7c3aed"/>
+    <text x="992" y="765" fill="#334155">移动货架：1200×1100×高1500 mm，共 15 节</text>
+  </g>
+  <rect x="952" y="800" width="526" height="108" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="976" y="835" fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">估算容量</text>
+  <text x="976" y="873" fill="#102a43" font-family="Arial, 'PingFang SC', sans-serif" font-size="24" font-weight="700">约 189 个 1200 mm 货架节位</text>
+  <text x="976" y="896" fill="#64748b" font-family="Arial, 'PingFang SC', sans-serif" font-size="13">中岛 132 bay + 侧墙 44 bay + 后墙 13 bay，约 321 个陈列面</text>
+
+  <line x1="952" y1="956" x2="1478" y2="956" stroke="#e2e8f0"/>
+  <text x="952" y="1007" fill="#102a43" font-family="Arial, 'PingFang SC', sans-serif" font-size="22" font-weight="700">动线策略</text>
+  <g font-family="Arial, 'PingFang SC', sans-serif">
+    <rect x="952" y="1040" width="526" height="88" rx="12" fill="#ecfdf5"/>
+    <circle cx="986" cy="1084" r="18" fill="#1f9d8a"/>
+    <text x="986" y="1090" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">1</text>
+    <text x="1022" y="1076" fill="#102a43" font-size="15" font-weight="700">入口与出口分离</text>
+    <text x="1022" y="1102" fill="#475569" font-size="14">入口只进、出口只出；结账后经单向闸门离店。</text>
+
+    <rect x="952" y="1144" width="526" height="88" rx="12" fill="#f0f9ff"/>
+    <circle cx="986" cy="1188" r="18" fill="#0284c7"/>
+    <text x="986" y="1194" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">2</text>
+    <text x="1022" y="1180" fill="#102a43" font-size="15" font-weight="700">七条纵向过道等宽</text>
+    <text x="1022" y="1206" fill="#475569" font-size="14">6 列 1100 mm 中岛形成 7 条过道，每条 1457.1 mm。</text>
+
+    <rect x="952" y="1248" width="526" height="88" rx="12" fill="#fffbeb"/>
+    <circle cx="986" cy="1292" r="18" fill="#d97706"/>
+    <text x="986" y="1298" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">3</text>
+    <text x="1022" y="1284" fill="#102a43" font-size="15" font-weight="700">S 型排队接统一收银区</text>
+    <text x="1022" y="1310" fill="#475569" font-size="14">参考图上 L、下横档和中央竖岛形成回转排队。</text>
+  </g>
+
+  <line x1="952" y1="1384" x2="1478" y2="1384" stroke="#e2e8f0"/>
+  <text x="952" y="1435" fill="#102a43" font-family="Arial, 'PingFang SC', sans-serif" font-size="22" font-weight="700">落地前确认</text>
+  <g fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="15">
+    <text x="952" y="1482">• 橱窗缩至约 8.5 m；500×500 mm 展示桌仍为 12 张。</text>
+    <text x="952" y="1520">• 前后组均为 11 bay，合并形成 4800 mm 深度预留区。</text>
+    <text x="952" y="1558">• 后墙至后组净距 1500；组间净距 2000；侧板按前后组配置。</text>
+    <text x="952" y="1596">• 15 节移动货架统一 1200×1100×高1500 mm，脚轮带锁。</text>
+    <text x="952" y="1634">• 充气区隔离；2 m 出入口及消防疏散仍需现场复核。</text>
+  </g>
+  <rect x="952" y="1680" width="526" height="144" rx="12" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="976" y="1716" fill="#9a3412" font-family="Arial, 'PingFang SC', sans-serif" font-size="14" font-weight="700">尺寸说明</text>
+  <text x="976" y="1748" fill="#7c2d12" font-family="Arial, 'PingFang SC', sans-serif" font-size="14">后墙净距 1500；组间净距 2000；主过道 1457.1 mm。</text>
+  <text x="976" y="1774" fill="#7c2d12" font-family="Arial, 'PingFang SC', sans-serif" font-size="14">店铺 18000×43000；中岛 6 列，前后组均为 11 bay。</text>
+  <text x="976" y="1800" fill="#7c2d12" font-family="Arial, 'PingFang SC', sans-serif" font-size="14">排队 7000×5000；收银 2400×5000；收银外道 1200。</text>
+
+  <text x="1215" y="1925" text-anchor="middle" fill="#94a3b8" font-family="Arial, 'PingFang SC', sans-serif" font-size="12">CONCEPT PLAN · NOT FOR CONSTRUCTION</text>
+</svg>

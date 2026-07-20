@@ -49,6 +49,7 @@ namespace BlazorApp.Api.Tests
 
             _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
             _db.CodeFirst.InitTables<SysPermission, SysRolePermission, SysUserPermission>();
+            _db.CodeFirst.InitTables<SysUserStorePosPermission>();
             _db.CodeFirst.InitTables<RefreshToken>();
 
             _hqDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
@@ -257,8 +258,75 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("MANAGEABLE_STORE_GRANT_DENIED", result.ErrorCode);
             Assert.False((await FindUserStoreAsync("scoped-user", "store-1")).IsPrimary);
+        }
+
+        [Fact]
+        public async Task AssignStoresToUserAsync_StoreManagerReplacesOnlyInScopeViewRelationships()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-3",
+                StoreCode = "S003",
+                StoreName = "Store 3",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+            var protectedPrimary = CreateUserStore("scoped-user", "store-3", true);
+            protectedPrimary.UserStoreGUID = "protected-primary-store";
+            protectedPrimary.CreatedAt = new DateTime(2024, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+            await _db.Insertable(new[]
+            {
+                CreateUserStore("manager-1", "store-3", true),
+                CreateUserStore("scoped-user", "store-2", false),
+                protectedPrimary,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1", "store-3" },
+                })
+            );
+
+            var addResult = await service.AssignStoresToUserAsync(
+                "scoped-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-1", IsPrimary = false },
+                    new() { StoreGUID = "store-3", IsPrimary = false },
+                }
+            );
+
+            Assert.True(addResult.Success);
+            var preservedPrimaryAfterAdd = await FindUserStoreAsync("scoped-user", "store-3");
+            Assert.True(preservedPrimaryAfterAdd.IsPrimary);
+            Assert.Equal("protected-primary-store", preservedPrimaryAfterAdd.UserStoreGUID);
+            Assert.Equal(protectedPrimary.CreatedAt, preservedPrimaryAfterAdd.CreatedAt);
+            Assert.False((await FindUserStoreAsync("scoped-user", "store-2")).IsPrimary);
+
+            var removeResult = await service.AssignStoresToUserAsync(
+                "scoped-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-3", IsPrimary = false },
+                }
+            );
+
+            Assert.True(removeResult.Success);
+            Assert.False(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "scoped-user" && item.StoreGUID == "store-1"
+            ));
+            Assert.True(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "scoped-user" && item.StoreGUID == "store-2"
+            ));
+            var preservedPrimaryAfterRemove = await FindUserStoreAsync("scoped-user", "store-3");
+            Assert.True(preservedPrimaryAfterRemove.IsPrimary);
+            Assert.Equal("protected-primary-store", preservedPrimaryAfterRemove.UserStoreGUID);
+            Assert.Equal(protectedPrimary.CreatedAt, preservedPrimaryAfterRemove.CreatedAt);
         }
 
         [Fact]
@@ -279,6 +347,19 @@ namespace BlazorApp.Api.Tests
             Assert.False(await _db.Queryable<UserRole>().AnyAsync(item =>
                 item.UserGUID == "user-1" && item.RoleGUID == "role-store-manager"
             ));
+        }
+
+        [Theory]
+        [InlineData(nameof(UsersController.AssignRolesToUser))]
+        [InlineData(nameof(UsersController.AssignStoresToUser))]
+        public void LimitedAccessWriteEndpoints_UseAuthenticatedServiceAuthorization(string methodName)
+        {
+            var method = typeof(UsersController).GetMethod(methodName);
+
+            var authorize = method?.GetCustomAttribute<AuthorizeAttribute>();
+
+            Assert.NotNull(authorize);
+            Assert.Null(authorize!.Policy);
         }
 
         [Fact]
@@ -307,7 +388,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("ROLE_DELEGATION_DENIED", result.ErrorCode);
             Assert.False(await _db.Queryable<UserRole>().AnyAsync(item =>
                 item.UserGUID == "scoped-user" && item.RoleGUID == "role-admin"
             ));
@@ -319,7 +400,7 @@ namespace BlazorApp.Api.Tests
             await SeedUsersRolesAndStoresForScopeTestsAsync();
             await _db.Insertable(new[]
             {
-                new Role { RoleGUID = "role-allowed", RoleName = "Allowed", IsActive = true },
+                new Role { RoleGUID = "role-allowed", RoleName = "StoreStaff", IsActive = true },
                 new Role { RoleGUID = "role-protected", RoleName = "Protected", IsActive = true },
             }).ExecuteCommandAsync();
             await _db.Insertable(new SysRolePermission
@@ -328,8 +409,10 @@ namespace BlazorApp.Api.Tests
                 RoleGuid = "role-protected",
                 PermissionCode = Permissions.Reports.View,
             }).ExecuteCommandAsync();
-            await _db.Insertable(CreateUserRole("scoped-user", "role-protected"))
-                .ExecuteCommandAsync();
+            var protectedRole = CreateUserRole("scoped-user", "role-protected");
+            protectedRole.UserRoleGUID = "protected-user-role";
+            protectedRole.CreatedAt = new DateTime(2024, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+            await _db.Insertable(protectedRole).ExecuteCommandAsync();
             var service = CreateUserService(
                 new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
                 {
@@ -348,14 +431,19 @@ namespace BlazorApp.Api.Tests
                 }
             );
 
-            Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.True(result.Success);
             var roleGuids = await _db.Queryable<UserRole>()
                 .Where(item => item.UserGUID == "scoped-user")
                 .Select(item => item.RoleGUID)
                 .ToListAsync();
-            Assert.DoesNotContain("role-allowed", roleGuids);
+            Assert.Contains("role-allowed", roleGuids);
             Assert.Contains("role-protected", roleGuids);
+            var preservedRole = await _db.Queryable<UserRole>()
+                .SingleAsync(item =>
+                    item.UserGUID == "scoped-user" && item.RoleGUID == "role-protected"
+                );
+            Assert.Equal("protected-user-role", preservedRole.UserRoleGUID);
+            Assert.Equal(protectedRole.CreatedAt, preservedRole.CreatedAt);
         }
 
         [Fact]
@@ -364,7 +452,7 @@ namespace BlazorApp.Api.Tests
             await SeedUsersRolesAndStoresForScopeTestsAsync();
             await _db.Insertable(new[]
             {
-                new Role { RoleGUID = "role-allowed", RoleName = "Allowed", IsActive = true },
+                new Role { RoleGUID = "role-allowed", RoleName = "店铺员工", IsActive = true },
                 new Role { RoleGUID = "role-protected", RoleName = "Protected", IsActive = true },
             }).ExecuteCommandAsync();
             await _db.Insertable(new SysRolePermission
@@ -393,14 +481,129 @@ namespace BlazorApp.Api.Tests
                 }
             );
 
-            Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.True(result.Success);
             var roleGuids = await _db.Queryable<UserRole>()
                 .Where(item => item.UserGUID == "scoped-user")
                 .Select(item => item.RoleGUID)
                 .ToListAsync();
-            Assert.DoesNotContain("role-allowed", roleGuids);
+            Assert.Contains("role-allowed", roleGuids);
             Assert.Contains("role-protected", roleGuids);
+        }
+
+        [Fact]
+        public async Task AssignRolesToUserAsync_StoreManagerRemovesOnlyEmployeeRole()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new[]
+            {
+                new Role { RoleGUID = "role-employee", RoleName = "员工", IsActive = true },
+                new Role { RoleGUID = "role-protected", RoleName = "Protected", IsActive = true },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserRole("scoped-user", "role-employee"),
+                CreateUserRole("scoped-user", "role-protected"),
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.AssignRolesToUserAsync(
+                "scoped-user",
+                new UserRoleAssignmentDto()
+            );
+
+            Assert.True(result.Success);
+            var roleGuids = await _db.Queryable<UserRole>()
+                .Where(item => item.UserGUID == "scoped-user")
+                .Select(item => item.RoleGUID)
+                .ToListAsync();
+            Assert.DoesNotContain("role-employee", roleGuids);
+            Assert.Contains("role-protected", roleGuids);
+        }
+
+        [Fact]
+        public async Task AssignRolesToUserAsync_StoreManagerCannotRemoveLastEmployeeRoleWithDirectPosPermissions()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(
+                new Role { RoleGUID = "role-employee", RoleName = "StoreStaff", IsActive = true }
+            ).ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("scoped-user", "role-employee"))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new SysUserPermission
+            {
+                Id = "staff-pos-permission",
+                UserGuid = "scoped-user",
+                PermissionCode = Permissions.PosTerminal.Sales.AddItem,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.AssignRolesToUserAsync(
+                "scoped-user",
+                new UserRoleAssignmentDto()
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("EMPLOYEE_ROLE_HAS_POS_PERMISSIONS", result.ErrorCode);
+            Assert.True(await _db.Queryable<UserRole>().AnyAsync(item =>
+                item.UserGUID == "scoped-user" && item.RoleGUID == "role-employee"
+            ));
+        }
+
+        [Fact]
+        public async Task AssignRolesToUserAsync_StoreManagerCannotRemoveLastEmployeeRoleWithStorePosOverrides()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(
+                new Role { RoleGUID = "role-employee", RoleName = "StoreStaff", IsActive = true }
+            ).ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("scoped-user", "role-employee"))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new SysUserStorePosPermission
+            {
+                Id = "staff-store-pos-override",
+                UserGuid = "scoped-user",
+                StoreGuid = "store-1",
+                PermissionCode = Permissions.PosTerminal.Sales.AddItem,
+                IsGranted = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.AssignRolesToUserAsync(
+                "scoped-user",
+                new UserRoleAssignmentDto()
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("EMPLOYEE_ROLE_HAS_POS_PERMISSIONS", result.ErrorCode);
+            Assert.True(await _db.Queryable<UserRole>().AnyAsync(item =>
+                item.UserGUID == "scoped-user" && item.RoleGUID == "role-employee"
+            ));
         }
 
         [Fact]
@@ -429,7 +632,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("ACCESS_DELEGATOR_DENIED", result.ErrorCode);
         }
 
         [Fact]
@@ -439,7 +642,7 @@ namespace BlazorApp.Api.Tests
             await _db.Insertable(new Role
             {
                 RoleGUID = "role-allowed",
-                RoleName = "Allowed",
+                RoleName = "StoreStaff",
                 IsActive = true,
             }).ExecuteCommandAsync();
             var service = CreateUserService(
@@ -461,7 +664,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("USER_SCOPE_DENIED", result.ErrorCode);
         }
 
         [Fact]
@@ -487,7 +690,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("SELF_ACCESS_MANAGEMENT_DENIED", result.ErrorCode);
             Assert.True((await FindUserStoreAsync("manager-1", "store-1")).IsPrimary);
         }
 
@@ -1781,6 +1984,236 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetUserRolesAsync_WhenTargetAlsoBelongsToOutsideStore_ReturnsScopeDenied()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.GetUserRolesAsync("dual-user");
+
+            Assert.False(result.Success);
+            Assert.Equal("USER_SCOPE_DENIED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task GetUserRolesAsync_WhenReadingSelf_PreservesActiveRoleContract()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "role-inactive-self",
+                RoleName = "InactiveSelfRole",
+                IsActive = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("viewer-1", "role-inactive-self"))
+                .ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = false,
+                    IsAuthenticated = true,
+                    UserGuid = "viewer-1",
+                })
+            );
+
+            var result = await service.GetUserRolesAsync("viewer-1");
+
+            Assert.True(result.Success);
+            var role = Assert.Single(result.Data!);
+            Assert.Equal("Viewer", role.RoleName);
+        }
+
+        [Fact]
+        public async Task GetUserRolesAsync_WhenStoreManagerReadsSelf_ReturnsStoreManagerRole()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.GetUserRolesAsync("manager-1");
+
+            Assert.True(result.Success);
+            var role = Assert.Single(result.Data!);
+            Assert.Equal("StoreManager", role.RoleName);
+        }
+
+        [Fact]
+        public async Task GetUserRolesAsync_WhenStoreManagerReadsTarget_ReturnsOnlyActiveEmployeeRoles()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new[]
+            {
+                new Role
+                {
+                    RoleGUID = "role-employee-visible",
+                    RoleName = "StoreStaff",
+                    Description = "员工角色",
+                    IsActive = true,
+                },
+                new Role
+                {
+                    RoleGUID = "role-custom-hidden",
+                    RoleName = "CustomOrdinaryRole",
+                    Description = "不应向店长泄露",
+                    IsActive = true,
+                },
+                new Role
+                {
+                    RoleGUID = "role-employee-inactive",
+                    RoleName = "Employee",
+                    Description = "已停用员工角色",
+                    IsActive = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserRole("scoped-user", "role-employee-visible"),
+                CreateUserRole("scoped-user", "role-custom-hidden"),
+                CreateUserRole("scoped-user", "role-employee-inactive"),
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(
+                new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                {
+                    IsAllowed = true,
+                    IsAuthenticated = true,
+                    UserGuid = "manager-1",
+                    StoreGuids = new[] { "store-1" },
+                })
+            );
+
+            var result = await service.GetUserRolesAsync("scoped-user");
+
+            Assert.True(result.Success);
+            var role = Assert.Single(result.Data!);
+            Assert.Equal("StoreStaff", role.RoleName);
+            Assert.Equal("员工角色", role.Description);
+        }
+
+        [Fact]
+        public async Task GetUserRolesAsync_WhenAdminReadsTarget_ReturnsAllActiveRoles()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var adminScope = await SeedAdminScopeAsync();
+            await _db.Insertable(new[]
+            {
+                new Role
+                {
+                    RoleGUID = "role-admin-read-employee",
+                    RoleName = "Employee",
+                    IsActive = true,
+                },
+                new Role
+                {
+                    RoleGUID = "role-admin-read-custom",
+                    RoleName = "CustomOrdinaryRole",
+                    IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserRole("scoped-user", "role-admin-read-employee"),
+                CreateUserRole("scoped-user", "role-admin-read-custom"),
+            }).ExecuteCommandAsync();
+
+            var result = await CreateUserService(adminScope).GetUserRolesAsync("scoped-user");
+
+            Assert.True(result.Success);
+            Assert.Equal(
+                new[] { "CustomOrdinaryRole", "Employee" },
+                result.Data!.Select(item => item.RoleName).OrderBy(item => item).ToArray()
+            );
+        }
+
+        [Fact]
+        public void GetUserRolesAsync_查询契约_受限角色过滤必须与基础条件分离()
+        {
+            var sourcePath = Path.GetFullPath(Path.Combine(
+                AppContext.BaseDirectory,
+                "../../../../BlazorApp.Api/Services/UserService.cs"
+            ));
+            var source = File.ReadAllText(sourcePath);
+            var methodStart = source.IndexOf(
+                "public async Task<ApiResponse<List<RoleDto>>> GetUserRolesAsync",
+                StringComparison.Ordinal
+            );
+            var methodEnd = source.IndexOf(
+                "public async Task<ApiResponse<List<UserStoreDto>>> GetUserStoresAsync",
+                methodStart,
+                StringComparison.Ordinal
+            );
+            var methodSource = source[methodStart..methodEnd];
+
+            Assert.Contains("var roleQuery =", methodSource, StringComparison.Ordinal);
+            Assert.Contains("if (restrictedEmployeeRead)", methodSource, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "!restrictedEmployeeRead ||",
+                methodSource,
+                StringComparison.Ordinal
+            );
+        }
+
+        [Fact]
+        public async Task GetUserRoles_WhenStoreManagerTargetsManagedStoreStaff_ReturnsRoles()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var roleService = new Mock<IRoleService>();
+            roleService
+                .Setup(service => service.UserHasPermissionAsync(
+                    "manager-1",
+                    Permissions.Users.ManageRoles
+                ))
+                .ReturnsAsync(ApiResponse<bool>.OK(false));
+            roleService
+                .Setup(service => service.UserHasPermissionAsync(
+                    "manager-1",
+                    Permissions.Users.ManagePosTerminalPermissions
+                ))
+                .ReturnsAsync(ApiResponse<bool>.OK(true));
+            var controller = new UsersController(
+                CreateUserService(
+                    new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+                    {
+                        IsAllowed = true,
+                        IsAuthenticated = true,
+                        UserGuid = "manager-1",
+                        StoreGuids = new[] { "store-1" },
+                    })
+                ),
+                roleService.Object,
+                NullLogger<UsersController>.Instance,
+                CreateSqlSugarContext(_db)
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("manager-1", "StoreManager"),
+                    },
+                },
+            };
+
+            var result = await controller.GetUserRoles("scoped-user");
+
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Fact]
         public async Task GetUserPermissionState_WhenTargetMissing_ReturnsNotFound()
         {
             await SeedUsersRolesAndStoresForScopeTestsAsync();
@@ -1853,8 +2286,13 @@ namespace BlazorApp.Api.Tests
             ), Times.Never);
         }
 
-        [Fact]
-        public async Task AssignRolesToUser_WhenServiceRejectsScope_ReturnsHttpForbid()
+        [Theory]
+        [InlineData("USER_SCOPE_DENIED")]
+        [InlineData("ROLE_DELEGATION_DENIED")]
+        [InlineData("EMPLOYEE_ROLE_HAS_POS_PERMISSIONS")]
+        public async Task AssignRolesToUser_WhenServiceRejectsLimitedAccess_ReturnsHttpForbid(
+            string errorCode
+        )
         {
             var userService = new Mock<IUserService>();
             userService
@@ -1862,7 +2300,7 @@ namespace BlazorApp.Api.Tests
                     "target-1",
                     It.IsAny<UserRoleAssignmentDto>()
                 ))
-                .ReturnsAsync(ApiResponse<bool>.Error("无权修改该用户", "USER_SCOPE_DENIED"));
+                .ReturnsAsync(ApiResponse<bool>.Error("无权修改该用户", errorCode));
             var controller = new UsersController(
                 userService.Object,
                 Mock.Of<IRoleService>(),
@@ -1935,8 +2373,13 @@ namespace BlazorApp.Api.Tests
             Assert.IsType<NotFoundObjectResult>(result);
         }
 
-        [Fact]
-        public async Task AssignPermissionsToUser_WhenServiceRejectsEscalation_ReturnsHttpForbid()
+        [Theory]
+        [InlineData("PERMISSION_ESCALATION_DENIED")]
+        [InlineData("POS_PERMISSION_DELEGATION_DENIED")]
+        [InlineData("EMPLOYEE_TARGET_REQUIRED")]
+        public async Task AssignPermissionsToUser_WhenServiceRejectsLimitedAccess_ReturnsHttpForbid(
+            string errorCode
+        )
         {
             var roleService = new Mock<IRoleService>();
             roleService
@@ -1946,7 +2389,7 @@ namespace BlazorApp.Api.Tests
                 ))
                 .ReturnsAsync(ApiResponse<bool>.Error(
                     "不能授予当前账号自身不具备的权限",
-                    "PERMISSION_ESCALATION_DENIED"
+                    errorCode
                 ));
             var controller = new UsersController(
                 Mock.Of<IUserService>(),
@@ -2271,7 +2714,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("STORE_SCOPE_DENIED", result.ErrorCode);
             Assert.False(await _db.Queryable<UserStore>().AnyAsync(item =>
                 item.UserGUID == "scoped-user" && item.StoreGUID == "store-2"
             ));
@@ -2387,7 +2830,7 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.Equal("STORE_SCOPE_DENIED", result.ErrorCode);
         }
 
         [Fact]
@@ -2416,8 +2859,7 @@ namespace BlazorApp.Api.Tests
                 }
             );
 
-            Assert.False(result.Success);
-            Assert.Equal("ADMIN_REQUIRED", result.ErrorCode);
+            Assert.True(result.Success);
             Assert.False((await FindUserStoreAsync("dual-user", "store-1")).IsPrimary);
             Assert.False((await FindUserStoreAsync("dual-user", "store-2")).IsPrimary);
         }

@@ -39,7 +39,7 @@ public sealed class UserStorePosTerminalPermissionsController(
 
         return response.ErrorCode switch
         {
-            "POS_PERMISSION_FORBIDDEN" => Forbid(),
+            "POS_PERMISSION_FORBIDDEN" or "EMPLOYEE_TARGET_REQUIRED" => Forbid(),
             "POS_PERMISSION_NOT_FOUND" => NotFound(response),
             _ => BadRequest(response),
         };

@@ -1,3 +1,4 @@
+using System.Data;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
@@ -37,7 +38,7 @@ public sealed class UserStorePosTerminalPermissionService(
         }
 
         return ApiResponse<UserStorePosTerminalPermissionsResponse>.OK(
-            await BuildResponseAsync(userGuid, storeGuid, access.IsAdminActor),
+            await BuildResponseAsync(userGuid, storeGuid, access),
             "获取分店 POS 权限成功"
         );
     }
@@ -57,7 +58,7 @@ public sealed class UserStorePosTerminalPermissionService(
             );
         }
 
-        var assignableCodes = GetAssignablePermissionSeeds(access.IsAdminActor)
+        var assignableCodes = GetAssignablePermissionSeeds(access)
             .Select(item => item.Code)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var grantedCodes = (request.GrantedPermissionCodes ?? new List<string>())
@@ -76,10 +77,38 @@ public sealed class UserStorePosTerminalPermissionService(
         }
 
         var db = context.Db;
-        var assignableCodeList = assignableCodes.ToList();
-        await db.Ado.BeginTranAsync();
+        var committedAccess = access;
+        // 按店覆盖同样在事务内复验员工身份、分店范围和操作者当前有效权限。
+        await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
         try
         {
+            var transactionAccess = await ResolveAccessAsync(userGuid, storeGuid);
+            if (!transactionAccess.Success)
+            {
+                await db.Ado.RollbackTranAsync();
+                return ApiResponse<UserStorePosTerminalPermissionsResponse>.Error(
+                    transactionAccess.Message,
+                    transactionAccess.ErrorCode
+                );
+            }
+
+            var transactionAssignableCodes = GetAssignablePermissionSeeds(transactionAccess)
+                .Select(item => item.Code)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var transactionInvalidCodes = grantedCodes
+                .Where(code => !transactionAssignableCodes.Contains(code))
+                .ToList();
+            if (transactionInvalidCodes.Count > 0)
+            {
+                await db.Ado.RollbackTranAsync();
+                return ApiResponse<UserStorePosTerminalPermissionsResponse>.Error(
+                    "请求包含不可分配的 POS 权限",
+                    "POS_PERMISSION_INVALID_CODES",
+                    transactionInvalidCodes
+                );
+            }
+
+            var assignableCodeList = transactionAssignableCodes.ToList();
             var existingRows = await db.Queryable<SysUserStorePosPermission>()
                 .Where(item =>
                     item.UserGuid == userGuid
@@ -149,6 +178,7 @@ public sealed class UserStorePosTerminalPermissionService(
             }
 
             await db.Ado.CommitTranAsync();
+            committedAccess = transactionAccess;
         }
         catch
         {
@@ -157,7 +187,7 @@ public sealed class UserStorePosTerminalPermissionService(
         }
 
         return ApiResponse<UserStorePosTerminalPermissionsResponse>.OK(
-            await BuildResponseAsync(userGuid, storeGuid, access.IsAdminActor),
+            await BuildResponseAsync(userGuid, storeGuid, committedAccess),
             "更新分店 POS 权限成功"
         );
     }
@@ -176,25 +206,52 @@ public sealed class UserStorePosTerminalPermissionService(
             );
         }
 
-        var assignableCodes = GetAssignablePermissionSeeds(access.IsAdminActor)
-            .Select(item => item.Code)
-            .ToList();
-        var now = DateTime.UtcNow;
-        var actor = currentUserService.GetCurrentUsername();
-        await context.Db.Updateable<SysUserStorePosPermission>()
-            .SetColumns(item => item.IsDeleted == true)
-            .SetColumns(item => item.UpdatedAt == now)
-            .SetColumns(item => item.UpdatedBy == actor)
-            .Where(item =>
-                item.UserGuid == userGuid
-                && item.StoreGuid == storeGuid
-                && assignableCodes.Contains(item.PermissionCode)
-                && !item.IsDeleted
-            )
-            .ExecuteCommandAsync();
+        var db = context.Db;
+        var committedAccess = access;
+        await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+        try
+        {
+            var transactionAccess = await ResolveAccessAsync(userGuid, storeGuid);
+            if (!transactionAccess.Success)
+            {
+                await db.Ado.RollbackTranAsync();
+                return ApiResponse<UserStorePosTerminalPermissionsResponse>.Error(
+                    transactionAccess.Message,
+                    transactionAccess.ErrorCode
+                );
+            }
+
+            var assignableCodes = GetAssignablePermissionSeeds(transactionAccess)
+                .Select(item => item.Code)
+                .ToList();
+            var now = DateTime.UtcNow;
+            var actor = currentUserService.GetCurrentUsername();
+            if (assignableCodes.Count > 0)
+            {
+                await db.Updateable<SysUserStorePosPermission>()
+                    .SetColumns(item => item.IsDeleted == true)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == actor)
+                    .Where(item =>
+                        item.UserGuid == userGuid
+                        && item.StoreGuid == storeGuid
+                        && assignableCodes.Contains(item.PermissionCode)
+                        && !item.IsDeleted
+                    )
+                    .ExecuteCommandAsync();
+            }
+
+            await db.Ado.CommitTranAsync();
+            committedAccess = transactionAccess;
+        }
+        catch
+        {
+            await db.Ado.RollbackTranAsync();
+            throw;
+        }
 
         return ApiResponse<UserStorePosTerminalPermissionsResponse>.OK(
-            await BuildResponseAsync(userGuid, storeGuid, access.IsAdminActor),
+            await BuildResponseAsync(userGuid, storeGuid, committedAccess),
             "已恢复继承分店 POS 权限"
         );
     }
@@ -232,7 +289,7 @@ public sealed class UserStorePosTerminalPermissionService(
         var isAdminActor = actorRoles.Any(Permissions.IsSuperAdminRole);
         if (isAdminActor)
         {
-            return AccessResult.Allowed(true);
+            return AccessResult.Allowed(true, null);
         }
 
         var isStoreManager = actorRoles.Any(role =>
@@ -253,13 +310,27 @@ public sealed class UserStorePosTerminalPermissionService(
             return AccessResult.Denied("店长不能修改高权限账号", "POS_PERMISSION_FORBIDDEN");
         }
 
-        return AccessResult.Allowed(false);
+        if (!targetRoles.Any(Permissions.IsEmployeeRole))
+        {
+            return AccessResult.Denied(
+                "店长只能维护员工的 POS 收银权限",
+                "EMPLOYEE_TARGET_REQUIRED"
+            );
+        }
+
+        var actorEffectivePermissionCodes = await UserAccessMutationSecurity
+            .GetEffectivePermissionCodesAsync(db, scope.UserGuid);
+        var assignablePermissionCodes = PermissionSeedData.PosTerminalBusinessPermissionCodes
+            .Where(actorEffectivePermissionCodes.Contains)
+            .ToArray();
+
+        return AccessResult.Allowed(false, assignablePermissionCodes);
     }
 
     private async Task<UserStorePosTerminalPermissionsResponse> BuildResponseAsync(
         string userGuid,
         string storeGuid,
-        bool isAdminActor
+        AccessResult access
     )
     {
         var db = context.Db;
@@ -318,13 +389,20 @@ public sealed class UserStorePosTerminalPermissionService(
                 group => group.OrderByDescending(item => item.UpdatedAt).First().IsGranted,
                 StringComparer.OrdinalIgnoreCase
             );
-        var assignablePermissions = GetAssignablePermissionSeeds(isAdminActor);
+        var assignablePermissions = GetAssignablePermissionSeeds(access);
         var assignableCodes = assignablePermissions
             .Select(item => item.Code)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var visibleOverrides = overrideMap
             .Where(item => assignableCodes.Contains(item.Key))
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase);
+        if (!access.IsAdminActor)
+        {
+            inheritedCodes = inheritedCodes
+                .Where(assignableCodes.Contains)
+                .ToList();
+        }
+        var effectiveOverrides = access.IsAdminActor ? overrideMap : visibleOverrides;
 
         return new UserStorePosTerminalPermissionsResponse
         {
@@ -338,7 +416,7 @@ public sealed class UserStorePosTerminalPermissionService(
                 .OrderBy(code => code)
                 .ToList(),
             EffectivePermissionCodes = UserStorePosTerminalPermissionResolver
-                .ResolveEffectivePermissionCodes(inheritedCodes, overrideMap, isAdminTarget)
+                .ResolveEffectivePermissionCodes(inheritedCodes, effectiveOverrides, isAdminTarget)
                 .OrderBy(code => code)
                 .ToList(),
         };
@@ -364,12 +442,12 @@ public sealed class UserStorePosTerminalPermissionService(
     }
 
     private static List<PosTerminalAssignablePermissionDto> GetAssignablePermissionSeeds(
-        bool isAdminActor
+        AccessResult access
     )
     {
-        var allowedCodes = isAdminActor
+        var allowedCodes = access.IsAdminActor
             ? null
-            : PermissionSeedData.PosTerminalBusinessPermissionCodes.ToHashSet(
+            : (access.AssignablePermissionCodes ?? Array.Empty<string>()).ToHashSet(
                 StringComparer.OrdinalIgnoreCase
             );
 
@@ -390,14 +468,17 @@ public sealed class UserStorePosTerminalPermissionService(
     private sealed record AccessResult(
         bool Success,
         bool IsAdminActor,
+        IReadOnlyCollection<string>? AssignablePermissionCodes,
         string Message,
         string? ErrorCode
     )
     {
-        public static AccessResult Allowed(bool isAdminActor) =>
-            new(true, isAdminActor, string.Empty, null);
+        public static AccessResult Allowed(
+            bool isAdminActor,
+            IReadOnlyCollection<string>? assignablePermissionCodes
+        ) => new(true, isAdminActor, assignablePermissionCodes, string.Empty, null);
 
         public static AccessResult Denied(string message, string errorCode) =>
-            new(false, false, message, errorCode);
+            new(false, false, Array.Empty<string>(), message, errorCode);
     }
 }

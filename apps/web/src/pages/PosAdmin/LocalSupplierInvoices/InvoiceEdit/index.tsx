@@ -39,7 +39,6 @@ import {
   notification,
 } from 'antd'
 import type { ColumnType, ColumnsType, TableProps } from 'antd/es/table'
-import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -77,6 +76,7 @@ import {
   HqProductSyncPollingTimeoutError,
 } from '../../../../services/productHqSyncPolling'
 import { getActiveStores } from '../../../../services/storeService'
+import { getActiveLocalSuppliers } from '../../../../services/localSupplierService'
 import { useAuthStore } from '../../../../store/auth'
 import type {
   BatchEditFields,
@@ -177,6 +177,12 @@ import {
   buildMatchedProductMasterUpdatePayload,
   getMatchedProductMasterUpdateTarget,
 } from './matchedProductMasterUpdate'
+import {
+  buildInvoiceHeaderFormValues,
+  buildInvoiceHeaderSavePayload,
+  includeCurrentInvoiceHeaderOption,
+  type InvoiceHeaderSelectOption,
+} from './invoiceHeaderForm'
 import type {
   BarcodeStatusFilter,
   ActionTypeFilterValue,
@@ -198,20 +204,6 @@ function formatAmount(value?: number) {
 function formatPricingFloatRate(value?: number) {
   if (value === undefined || value === null) return '--'
   return value.toFixed(2)
-}
-
-function buildInvoiceHeaderFormValues(data: LocalSupplierInvoiceDetailDto) {
-  return {
-    invoiceNo: data.invoiceNo,
-    storeName: data.storeName ? `${data.storeCode} - ${data.storeName}` : data.storeCode,
-    supplierName: data.supplierName
-      ? `${data.supplierCode} - ${data.supplierName}`
-      : data.supplierCode,
-    orderDate: data.orderDate ? dayjs(data.orderDate) : undefined,
-    inboundDate: data.inboundDate ? dayjs(data.inboundDate) : undefined,
-    totalAmount: formatAmount(data.totalAmount),
-    remarks: data.remarks,
-  }
 }
 
 // 编辑页 Tab 使用“分店 + 供应商前 4 位 + 单号”快速识别订单，名称缺失时才回退编码。
@@ -566,8 +558,30 @@ export default function InvoiceEditPage() {
   const [form] = Form.useForm()
 
   /* ---- 分店选项 ---- */
-  const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
+  const [storeOptions, setStoreOptions] = useState<InvoiceHeaderSelectOption[]>([])
+  const [storeOptionsLoading, setStoreOptionsLoading] = useState(false)
+  const [supplierOptions, setSupplierOptions] = useState<InvoiceHeaderSelectOption[]>([])
+  const [supplierOptionsLoading, setSupplierOptionsLoading] = useState(false)
   const allStoreCodes = useMemo(() => storeOptions.map((item) => item.value), [storeOptions])
+  const headerStoreOptions = useMemo(
+    () => includeCurrentInvoiceHeaderOption(
+      storeOptions,
+      invoice?.storeCode,
+      invoice?.storeName,
+      !storeOptions.some((option) => option.value === invoice?.storeCode)
+        || !isStoreCodeInManagedScope(invoice?.storeCode, managedStoreCodes),
+    ),
+    [invoice?.storeCode, invoice?.storeName, managedStoreCodes, storeOptions],
+  )
+  const headerSupplierOptions = useMemo(
+    () => includeCurrentInvoiceHeaderOption(
+      supplierOptions,
+      invoice?.supplierCode,
+      invoice?.supplierName,
+      true,
+    ),
+    [invoice?.supplierCode, invoice?.supplierName, supplierOptions],
+  )
 
   /* ---- 粘贴数据 Modal ---- */
   const [pasteVisible, setPasteVisible] = useState(false)
@@ -678,7 +692,7 @@ export default function InvoiceEditPage() {
   }, [invoiceGuid, form, managedStoreCodeKey, t])
 
   const loadDetails = useCallback(async (showLoading = true) => {
-    if (!invoiceGuid) return
+    if (!invoiceGuid) return false
     if (showLoading) {
       setDetailLoading(true)
     }
@@ -689,8 +703,10 @@ export default function InvoiceEditPage() {
         setDetails(data)
         setRowActions(buildInvoiceRowActions(data))
       }
+      return true
     } catch {
       message.error(t('posAdmin.invoiceDetail.loadDetailsFailed', '加载明细失败'))
+      return false
     } finally {
       if (showLoading) {
         setDetailLoading(false)
@@ -699,9 +715,8 @@ export default function InvoiceEditPage() {
   }, [invoiceGuid, t])
 
   const loadInvoiceAndDetails = useCallback(async (showLoading = true) => {
-    if (await loadInvoice(showLoading)) {
-      await loadDetails(showLoading)
-    }
+    if (!(await loadInvoice(showLoading))) return false
+    return await loadDetails(showLoading)
   }, [loadInvoice, loadDetails])
 
   useEffect(() => {
@@ -723,16 +738,66 @@ export default function InvoiceEditPage() {
       })
       void loadInvoiceAndDetails(shouldShowInitialLoading)
     }
+  }, [active, currentUser?.stores, invoiceGuid, loadInvoiceAndDetails, managedStoreCodeKey])
+
+  useEffect(() => {
+    if (!active) return
+
+    let cancelled = false
+    const formatStoreOptions = (options: InvoiceHeaderSelectOption[]) => options.map((option) => ({
+      ...option,
+      label: option.label === option.value ? option.value : `${option.value} - ${option.label}`,
+    }))
+
     if (managedStoreCodes === null) {
+      setStoreOptionsLoading(true)
       getActiveStores()
         .then((stores) => {
-          setStoreOptions(filterStoreOptionsByManagedCodes(stores, managedStoreCodes))
+          if (!cancelled) {
+            setStoreOptions(formatStoreOptions(filterStoreOptionsByManagedCodes(stores, managedStoreCodes)))
+          }
         })
-        .catch(() => setStoreOptions([]))
+        .catch(() => {
+          if (!cancelled) {
+            setStoreOptions([])
+            message.warning(t('posAdmin.invoiceDetail.loadStoreOptionsFailed', '分店选项加载失败，当前订单仍可继续编辑'))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setStoreOptionsLoading(false)
+        })
     } else {
-      setStoreOptions(buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }))
+      const activeManagedStores = currentUser?.stores?.filter((store) => store.isActive !== false)
+      setStoreOptions(formatStoreOptions(buildStoreOptionsFromUserStores(activeManagedStores, { manageableOnly: true })))
+      setStoreOptionsLoading(false)
     }
-  }, [active, currentUser?.stores, invoiceGuid, loadInvoiceAndDetails, managedStoreCodeKey])
+
+    setSupplierOptionsLoading(true)
+    getActiveLocalSuppliers()
+      .then((suppliers) => {
+        if (!cancelled) {
+          setSupplierOptions(suppliers.map((supplier) => ({
+            value: supplier.localSupplierCode,
+            label: supplier.name
+              ? `${supplier.localSupplierCode} - ${supplier.name}`
+              : supplier.localSupplierCode,
+          })))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSupplierOptions([])
+          message.warning(t('posAdmin.invoiceDetail.loadSupplierOptionsFailed', '供应商选项加载失败，当前订单仍可继续编辑'))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSupplierOptionsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [active, currentUser?.stores, managedStoreCodeKey, t])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1034,15 +1099,36 @@ export default function InvoiceEditPage() {
   const handleSave = async () => {
     if (!invoiceGuid || !ensureCanAccessInvoice()) return
     const values = await form.validateFields()
+    const payload = buildInvoiceHeaderSavePayload(values)
+    if (!isStoreCodeInManagedScope(payload.storeCode, managedStoreCodes)) {
+      message.error(t('message.noPermission', '无权操作该数据'))
+      return
+    }
     setSaving(true)
     try {
-      await updateInvoice(invoiceGuid, {
-        orderDate: values.orderDate?.format?.('YYYY-MM-DD') || undefined,
-        inboundDate: values.inboundDate?.format?.('YYYY-MM-DD') || undefined,
-        remarks: values.remarks?.trim() || undefined,
-      })
+      await updateInvoice(invoiceGuid, payload)
+      // 分店或供应商变更会由后端级联到明细，保存后同步刷新两份快照避免继续编辑旧范围数据。
+      const refreshed = await loadInvoiceAndDetails(false)
+      if (!refreshed) {
+        // 保存已落库但刷新失败时失效整页状态，阻断按旧分店或供应商继续执行任何写操作。
+        invoiceSnapshotRef.current = null
+        detailsSnapshotRef.current = []
+        loadedInvoiceGuidRef.current = null
+        visibleInvoiceGuidRef.current = null
+        lastLoadedManagedStoreCodeKeyRef.current = null
+        setInvoice(null)
+        setDetails([])
+        setSelectedRowKeys([])
+        setRowActions({})
+        form.resetFields()
+        setCanAccessInvoice(false)
+        message.warning(t(
+          'posAdmin.invoiceDetail.savedButRefreshFailed',
+          '订单已保存但最新数据刷新失败，请重新加载',
+        ))
+        return
+      }
       message.success(t('posAdmin.invoiceDetail.saveSuccess', '保存成功'))
-      loadInvoice()
     } catch {
       message.error(t('posAdmin.invoiceDetail.saveFailed', '保存失败'))
     } finally {
@@ -2820,13 +2906,33 @@ export default function InvoiceEditPage() {
               </Form.Item>
             </Col>
             <Col flex="150px">
-              <Form.Item name="storeName" label={t('posAdmin.invoiceDetail.storeLabel', '分店')}>
-                <Input disabled />
+              <Form.Item
+                name="storeCode"
+                label={t('posAdmin.invoiceDetail.storeLabel', '分店')}
+                rules={[{ required: true, message: t('posAdmin.invoiceDetail.storeRequired', '请选择分店') }]}
+              >
+                <Select
+                  showSearch
+                  loading={storeOptionsLoading}
+                  options={headerStoreOptions}
+                  optionFilterProp="label"
+                  placeholder={t('posAdmin.invoiceDetail.storePlaceholder', '请选择分店')}
+                />
               </Form.Item>
             </Col>
             <Col flex="170px">
-              <Form.Item name="supplierName" label={t('posAdmin.invoiceDetail.supplierLabel', '供应商')}>
-                <Input disabled />
+              <Form.Item
+                name="supplierCode"
+                label={t('posAdmin.invoiceDetail.supplierLabel', '供应商')}
+                rules={[{ required: true, message: t('posAdmin.invoiceDetail.supplierRequired', '请选择供应商') }]}
+              >
+                <Select
+                  showSearch
+                  loading={supplierOptionsLoading}
+                  options={headerSupplierOptions}
+                  optionFilterProp="label"
+                  placeholder={t('posAdmin.invoiceDetail.supplierPlaceholder', '请选择供应商')}
+                />
               </Form.Item>
             </Col>
             <Col flex="130px">

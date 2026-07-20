@@ -279,6 +279,16 @@ namespace BlazorApp.Api.Data
         public SimpleClient<WareHouseOrderDetails> WareHouseOrderDetailsDb =>
             new SimpleClient<WareHouseOrderDetails>(_db);
 
+        // Preorder 使用独立订单表，避免进入普通仓库订单的拣货与同步链路。
+        public SimpleClient<PreorderTemplate> PreorderTemplateDb => new(_db);
+        public SimpleClient<PreorderTemplateItem> PreorderTemplateItemDb => new(_db);
+        public SimpleClient<PreorderTemplateStore> PreorderTemplateStoreDb => new(_db);
+        public SimpleClient<PreorderActivation> PreorderActivationDb => new(_db);
+        public SimpleClient<PreorderActivationItem> PreorderActivationItemDb => new(_db);
+        public SimpleClient<PreorderActivationStore> PreorderActivationStoreDb => new(_db);
+        public SimpleClient<PreorderWarehouseOrder> PreorderWarehouseOrderDb => new(_db);
+        public SimpleClient<PreorderWarehouseOrderItem> PreorderWarehouseOrderItemDb => new(_db);
+
         // 自动定价策略相关实体
         public SimpleClient<PricingStrategy> PricingStrategyDb =>
             new SimpleClient<PricingStrategy>(_db);
@@ -378,6 +388,7 @@ namespace BlazorApp.Api.Data
 
                 // 智能初始化：只在需要时创建或更新表
                 InitializeTablesIfNeeded();
+                PreorderSchemaBootstrap.EnsureIndexesAsync(_db).GetAwaiter().GetResult();
                 EnsureEmployeeProfilePhoneColumn();
                 EnsureUserLastLoginIpColumn();
                 EnsureLocalSupplierImageBaseUrlColumn();
@@ -462,6 +473,14 @@ namespace BlazorApp.Api.Data
                 typeof(StoreLocalSupplierInvoiceDetails),
                 typeof(WareHouseOrder),
                 typeof(WareHouseOrderDetails),
+                typeof(PreorderTemplate),
+                typeof(PreorderTemplateItem),
+                typeof(PreorderTemplateStore),
+                typeof(PreorderActivation),
+                typeof(PreorderActivationItem),
+                typeof(PreorderActivationStore),
+                typeof(PreorderWarehouseOrder),
+                typeof(PreorderWarehouseOrderItem),
                 typeof(PricingStrategy),
                 typeof(PricingStrategyDetail),
                 typeof(PricingStrategyTarget),

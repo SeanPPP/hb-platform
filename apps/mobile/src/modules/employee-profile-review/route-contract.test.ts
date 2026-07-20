@@ -61,6 +61,43 @@ assert.doesNotMatch(
 assert.match(detailScreen, /getReviewFailureKind\(detailQuery\.error\)/);
 assert.match(detailScreen, /setRevealedFields\(new Set\(\)\)/);
 assert.match(detailScreen, /leaveDetail\("\/\(tabs\)\/settings"\)/);
+const headerBackSource = detailScreen.slice(
+  detailScreen.indexOf("useLayoutEffect(() =>"),
+  detailScreen.indexOf("const resumeDetailAfterForeground")
+);
+assert.ok(headerBackSource, "必须能定位详情页导航栏返回入口");
+assert.match(headerBackSource, /navigation\.setOptions\(/);
+assert.match(headerBackSource, /header: \(\) =>/);
+assert.match(headerBackSource, /<SafeAreaView/);
+assert.match(headerBackSource, /edges=\{\["top"\]\}/);
+assert.match(headerBackSource, /<Pressable/);
+assert.match(headerBackSource, /<MaterialCommunityIcons/);
+assert.match(headerBackSource, /name="chevron-left"/);
+assert.match(headerBackSource, /size=\{28\}/);
+assert.match(headerBackSource, /color=\{theme\.colors\.primary\}/);
+assert.match(headerBackSource, /<Text variant="titleLarge" style=\{styles\.headerTitle\} numberOfLines=\{1\}>/);
+assert.match(headerBackSource, /\{t\("detail\.title"\)\}/);
+assert.match(headerBackSource, /accessibilityRole="button"/);
+assert.match(headerBackSource, /accessibilityLabel=\{t\("actions\.back"\)\}/);
+assert.match(headerBackSource, /accessibilityState=\{\{ disabled: isLeavingSensitiveDetail \}\}/);
+assert.match(headerBackSource, /disabled=\{isLeavingSensitiveDetail\}/);
+assert.match(headerBackSource, /hitSlop=\{4\}/);
+assert.match(
+  headerBackSource,
+  /onPress=\{\(\) => void leaveDetail\("\/\(tabs\)\/employee-profile-review"\)\}/,
+  "导航栏返回按钮必须复用清理敏感缓存的安全退出流程"
+);
+assert.match(
+  detailScreen,
+  /headerBackButton:\s*\{[\s\S]*?width: 44,[\s\S]*?height: 44,[\s\S]*?alignItems: "center",[\s\S]*?justifyContent: "center"[\s\S]*?\}/
+);
+assert.match(detailScreen, /headerRow:\s*\{[\s\S]*?height: 44,[\s\S]*?borderBottomWidth: StyleSheet\.hairlineWidth/);
+assert.doesNotMatch(headerBackSource, /headerLeft|unstable_headerLeftItems|IconButton/);
+const headerBackButtonStyleSource = detailScreen.slice(
+  detailScreen.indexOf("headerBackButton:"),
+  detailScreen.indexOf("headerBackButtonPressed:")
+);
+assert.doesNotMatch(headerBackButtonStyleSource, /backgroundColor|borderRadius/);
 assert.match(detailScreen, /getIdentityPhotoRefreshDelay/);
 assert.match(detailScreen, /createIdentityPhotoErrorRefetchGuard/);
 assert.match(detailScreen, /onError=/);

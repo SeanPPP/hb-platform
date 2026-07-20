@@ -258,6 +258,8 @@ namespace BlazorApp.Shared.DTOs
     {
         public bool Success { get; set; }
 
+        public string? ErrorCode { get; set; }
+
         public string? OrderGUID { get; set; }
 
         public string? OrderNo { get; set; }

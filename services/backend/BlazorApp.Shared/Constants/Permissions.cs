@@ -15,6 +15,10 @@ namespace BlazorApp.Shared.Constants
         public static readonly string[] WarehouseManagerRoleNames =
             ["WarehouseManager", "仓库经理", "Warehouse", "仓库管理员", "WarehouseAdmin"];
 
+        // 员工角色存在中英文历史别名；普通 User 不是可由店长委派的员工角色。
+        public static readonly string[] EmployeeRoleNames =
+            ["StoreStaff", "Employee", "店铺员工", "店员", "员工"];
+
         public static readonly string[] HighPrivilegeRoleNames = SuperAdminRoleNames
             .Concat(StoreManagerRoleNames)
             .Concat(WarehouseManagerRoleNames)
@@ -417,6 +421,12 @@ namespace BlazorApp.Shared.Constants
         {
             return !string.IsNullOrWhiteSpace(roleName)
                 && HighPrivilegeRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public static bool IsEmployeeRole(string? roleName)
+        {
+            return !string.IsNullOrWhiteSpace(roleName)
+                && EmployeeRoleNames.Contains(roleName, StringComparer.OrdinalIgnoreCase);
         }
 
         public static IReadOnlyDictionary<string, string[]> GetPermissionAliases()

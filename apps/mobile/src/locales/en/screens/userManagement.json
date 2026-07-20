@@ -120,12 +120,14 @@
     "roles": {
       "derived": "Derived from managed stores",
       "adminOnly": "Admin only",
+      "managerLimit": "Store managers can only add or remove the staff role for employees in their managed stores.",
       "searchPlaceholder": "Search roles",
       "noSearchResults": "No roles match this search.",
       "emptyTitle": "No roles available",
       "emptyDescription": "There are no assignable roles for this account."
     },
     "permissions": {
+      "managerLimit": "Store managers can only grant POS cashier permissions they already hold.",
       "summary": "{{effective}} effective · {{inherited}} inherited · {{direct}} direct",
       "inherited": "Inherited",
       "direct": "Direct",

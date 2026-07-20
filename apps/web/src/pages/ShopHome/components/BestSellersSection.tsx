@@ -221,7 +221,6 @@ export default function BestSellersSection() {
         message.warning(t('shop.selectStoreFirst', 'Please select a store first'))
         return
       }
-
       const quantity = getAddQuantity(product)
 
       try {

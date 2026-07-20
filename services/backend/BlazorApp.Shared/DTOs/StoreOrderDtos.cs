@@ -670,6 +670,12 @@ namespace BlazorApp.Shared.DTOs
     public string StoreCode { get; set; } = string.Empty;
 
     public string? Remarks { get; set; }
+
+    /// <summary>
+    /// 仅由已完成权限校验的仓库后台写入，禁止客户端通过 JSON 绕过 Preorder 门禁。
+    /// </summary>
+    [JsonIgnore]
+    public bool BypassPreorderGate { get; set; }
   }
 
   /// <summary>
@@ -835,6 +841,12 @@ namespace BlazorApp.Shared.DTOs
     public string StoreCode { get; set; } = string.Empty;
 
     public string? Remarks { get; set; }
+
+    /// <summary>
+    /// 仅由已完成权限校验的仓库后台写入，禁止客户端通过 JSON 绕过 Preorder 门禁。
+    /// </summary>
+    [JsonIgnore]
+    public bool BypassPreorderGate { get; set; }
   }
 
   /// <summary>
@@ -1099,6 +1111,12 @@ public class CopyOrderDto
   public bool CopyOrderQuantity { get; set; } = false;
 
   public bool CopyAllocQuantity { get; set; } = false;
+
+  /// <summary>
+  /// 仅由已完成权限校验的仓库后台写入，禁止客户端通过 JSON 绕过 Preorder 门禁。
+  /// </summary>
+  [JsonIgnore]
+  public bool BypassPreorderGate { get; set; }
 }
 
 /// <summary>

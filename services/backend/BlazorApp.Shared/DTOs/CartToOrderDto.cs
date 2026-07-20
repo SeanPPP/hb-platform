@@ -34,6 +34,9 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public bool Success { get; set; }
 
+        /// <summary>供控制器稳定映射业务错误 HTTP 状态。</summary>
+        public string? ErrorCode { get; set; }
+
         /// <summary>
         /// 订单GUID
         /// </summary>

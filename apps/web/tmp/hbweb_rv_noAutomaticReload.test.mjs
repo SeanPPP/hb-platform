@@ -74,7 +74,7 @@ assert(
   "\u5546\u57CE\u8D2D\u7269\u8F66\u5237\u65B0\u54CD\u5E94\u56DE\u6765\u524D\u5E94\u786E\u8BA4\u4ECD\u662F\u5F53\u524D\u95E8\u5E97\uFF0C\u907F\u514D\u65E7\u95E8\u5E97\u8BF7\u6C42\u8986\u76D6\u65B0\u95E8\u5E97\u8D2D\u7269\u8F66"
 );
 assert(
-  shopCartDrawerSource.includes("const canSubmitCart = !isCartDetailLoading && cartItems.length > 0") && shopCartDrawerSource.includes("disabled={!canSubmitCart || submitting}") && shopCartDrawerSource.includes("disabled={!canSubmitCart}"),
+  shopCartDrawerSource.includes("const canSubmitCart = !isCartDetailLoading && cartItems.length > 0") && shopCartDrawerSource.includes("disabled={!canSubmitCart || submitting}") && shopCartDrawerSource.includes("disabled={!canSubmitCart || preorderBlocked}"),
   "\u8D2D\u7269\u8F66\u62BD\u5C49\u5728 summary-only \u6216\u660E\u7EC6\u52A0\u8F7D\u4E2D\u65F6\u4E0D\u80FD\u5141\u8BB8\u63D0\u4EA4\u672A\u5C55\u793A\u660E\u7EC6\u7684\u8BA2\u5355"
 );
 assert(

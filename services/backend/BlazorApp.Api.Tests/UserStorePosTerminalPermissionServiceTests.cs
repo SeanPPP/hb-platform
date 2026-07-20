@@ -60,10 +60,7 @@ public sealed class UserStorePosTerminalPermissionServiceTests : IDisposable
         );
         Assert.True(updated.Success);
         Assert.Equal("Override", updated.Data!.Mode);
-        Assert.Equal(
-            PermissionSeedData.PosTerminalBusinessPermissionCodes.Count,
-            updated.Data.OverriddenPermissionCodes.Count
-        );
+        Assert.Equal(2, updated.Data.OverriddenPermissionCodes.Count);
         Assert.DoesNotContain(Permissions.PosTerminal.Sales.LineManualDiscount, updated.Data.EffectivePermissionCodes);
         Assert.Contains(Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent, updated.Data.EffectivePermissionCodes);
 
@@ -180,7 +177,74 @@ public sealed class UserStorePosTerminalPermissionServiceTests : IDisposable
         Assert.True(result.Success);
         Assert.True(await _db.Queryable<SysUserStorePosPermission>().AnyAsync(item =>
             item.Id == "admin-system-override" && item.IsGranted));
-        Assert.Contains(Permissions.PosTerminal.Settings.AppUpdate, result.Data!.EffectivePermissionCodes);
+        Assert.DoesNotContain(
+            Permissions.PosTerminal.Settings.AppUpdate,
+            result.Data!.EffectivePermissionCodes
+        );
+    }
+
+    [Fact]
+    public async Task StoreManager_只能覆盖本人有效的Pos收银权限()
+    {
+        await SeedActorAndTargetAsync();
+        var service = CreateService("store-a");
+
+        var state = await service.GetAsync("target", "store-a");
+        var denied = await service.UpdateAsync(
+            "target",
+            "store-a",
+            new UpdateUserStorePosTerminalPermissionsRequest
+            {
+                GrantedPermissionCodes = [Permissions.PosTerminal.Sales.AddOpenItem],
+            }
+        );
+
+        Assert.True(state.Success);
+        Assert.Equal(
+            new[]
+            {
+                Permissions.PosTerminal.Sales.LineManualDiscount,
+                Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+            }.OrderBy(item => item),
+            state.Data!.AssignablePermissions.Select(item => item.Code).OrderBy(item => item)
+        );
+        Assert.False(denied.Success);
+        Assert.Equal("POS_PERMISSION_INVALID_CODES", denied.ErrorCode);
+    }
+
+    [Fact]
+    public async Task StoreManager_非员工目标的查询和更新均拒绝()
+    {
+        await SeedActorAndTargetAsync();
+        await _db.Deleteable<UserRole>()
+            .Where(item => item.UserGUID == "target" && item.RoleGUID == "role-staff")
+            .ExecuteCommandAsync();
+        var service = CreateService("store-a");
+
+        var getResult = await service.GetAsync("target", "store-a");
+        var updateResult = await service.UpdateAsync(
+            "target",
+            "store-a",
+            new UpdateUserStorePosTerminalPermissionsRequest()
+        );
+
+        Assert.False(getResult.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", getResult.ErrorCode);
+        Assert.False(updateResult.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", updateResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task StoreManager_可维护自己分店内的跨店员工Pos覆盖()
+    {
+        await SeedActorAndTargetAsync();
+        await SeedStoreAsync("store-b");
+        await SeedUserStoreAsync("target", "store-b");
+
+        var result = await CreateService("store-a").GetAsync("target", "store-a");
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
     }
 
     private async Task SeedActorAndTargetAsync()
@@ -200,6 +264,21 @@ public sealed class UserStorePosTerminalPermissionServiceTests : IDisposable
         {
             new UserRole { UserRoleGUID = "actor-role", UserGUID = "actor", RoleGUID = "role-manager" },
             new UserRole { UserRoleGUID = "target-role", UserGUID = "target", RoleGUID = "role-staff" },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new SysRolePermission
+            {
+                Id = "actor-line-discount",
+                RoleGuid = "role-manager",
+                PermissionCode = Permissions.PosTerminal.Sales.LineManualDiscount,
+            },
+            new SysRolePermission
+            {
+                Id = "actor-order-discount",
+                RoleGuid = "role-manager",
+                PermissionCode = Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent,
+            },
         }).ExecuteCommandAsync();
         await SeedUserStoreAsync("actor", "store-a", true);
         await SeedUserStoreAsync("target", "store-a");

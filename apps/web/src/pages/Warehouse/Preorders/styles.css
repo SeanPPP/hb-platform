@@ -1,0 +1,8 @@
+.preorder-admin-card { margin-bottom: 16px; }
+.preorder-template-grid { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 16px; }
+.preorder-paste-grid { display: grid; grid-template-columns: minmax(280px, .7fr) minmax(520px, 1.3fr); gap: 16px; align-items: start; }
+.preorder-stat-row { margin: 0 0 16px; }
+.preorder-stat-row .ant-card-body { padding: 16px; }
+@media (max-width: 900px) {
+  .preorder-template-grid, .preorder-paste-grid { grid-template-columns: 1fr; }
+}

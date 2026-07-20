@@ -15,6 +15,7 @@ import ordersEn from "@/locales/en/screens/orders.json";
 import advertisementsEn from "@/locales/en/screens/advertisements.json";
 import promotionsEn from "@/locales/en/screens/promotions.json";
 import productQueryEn from "@/locales/en/screens/productQuery.json";
+import preorderEn from "@/locales/en/screens/preorder.json";
 import seasonalCardsEn from "@/locales/en/screens/seasonalCards.json";
 import settingsEn from "@/locales/en/screens/settings.json";
 import storeVouchersEn from "@/locales/en/screens/storeVouchers.json";
@@ -35,6 +36,7 @@ import ordersZh from "@/locales/zh/screens/orders.json";
 import advertisementsZh from "@/locales/zh/screens/advertisements.json";
 import promotionsZh from "@/locales/zh/screens/promotions.json";
 import productQueryZh from "@/locales/zh/screens/productQuery.json";
+import preorderZh from "@/locales/zh/screens/preorder.json";
 import seasonalCardsZh from "@/locales/zh/screens/seasonalCards.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
 import storeVouchersZh from "@/locales/zh/screens/storeVouchers.json";
@@ -67,6 +69,7 @@ const resources = {
     seasonalCards: seasonalCardsZh,
     storeVouchers: storeVouchersZh,
     productQuery: productQueryZh,
+    preorder: preorderZh,
     userManagement: userManagementZh,
     warehouse: warehouseZh,
   },
@@ -89,6 +92,7 @@ const resources = {
     seasonalCards: seasonalCardsEn,
     storeVouchers: storeVouchersEn,
     productQuery: productQueryEn,
+    preorder: preorderEn,
     userManagement: userManagementEn,
     warehouse: warehouseEn,
   },
@@ -116,7 +120,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
     interpolation: {
       escapeValue: false,
     },

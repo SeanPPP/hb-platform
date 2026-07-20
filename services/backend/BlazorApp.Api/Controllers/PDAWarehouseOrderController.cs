@@ -253,6 +253,7 @@ namespace BlazorApp.Api.Controllers
                     return DeviceStoreNotBound();
                 }
 
+                // 订单归属与 Preorder 门禁必须由 service 在同一 StoreGate/事务内按顺序判定。
                 var hardwareId = GetDeviceHardwareId() ?? string.Empty;
                 var result = await _warehouseOrderService.SubmitOrderAsync(
                     request,
@@ -262,6 +263,32 @@ namespace BlazorApp.Api.Controllers
 
                 if (!result.Success)
                 {
+                    if (result.ErrorCode == "PDA_ORDER_STORE_MISMATCH")
+                    {
+                        return StatusCode(
+                            StatusCodes.Status403Forbidden,
+                            ApiResponse<object>.Error(
+                                result.Message ?? "无权提交该订单",
+                                result.ErrorCode
+                            )
+                        );
+                    }
+                    if (result.ErrorCode == "PREORDER_REQUIRED")
+                    {
+                        return Conflict(
+                            ApiResponse<object>.Error(result.Message ?? "请先完成 Preorder", result.ErrorCode)
+                        );
+                    }
+                    if (result.ErrorCode == "PREORDER_GATE_UNAVAILABLE")
+                    {
+                        return StatusCode(
+                            StatusCodes.Status503ServiceUnavailable,
+                            ApiResponse<object>.Error(
+                                result.Message ?? "Preorder 状态暂时无法确认，请稍后重试",
+                                result.ErrorCode
+                            )
+                        );
+                    }
                     return BadRequest(new { success = false, message = result.Message });
                 }
 

@@ -1,0 +1,33 @@
+.shop-preorder-page { max-width: 1320px; margin: 0 auto; padding: 20px 24px 100px; }
+.shop-preorder-hero, .shop-preorder-products { margin-bottom: 16px; }
+.shop-preorder-hero .ant-typography { margin: 0; }
+.shop-preorder-toolbar { display: flex; gap: 12px; justify-content: space-between; margin-bottom: 12px; }
+.shop-preorder-toolbar .ant-input-search { max-width: 420px; }
+.shop-preorder-stepper { display: inline-flex; gap: 6px; align-items: center; }
+.shop-preorder-stepper .ant-btn { min-width: 44px; min-height: 44px; }
+.shop-preorder-stepper .ant-input-number { width: 72px; }
+.shop-preorder-stepper input { text-align: center; }
+.shop-preorder-cards { display: none; }
+.shop-preorder-summary { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; display: flex; justify-content: flex-end; align-items: center; gap: 28px; min-height: 76px; padding: 10px max(24px, calc((100vw - 1320px) / 2)); background: #fff; border-top: 1px solid #e8e8e8; box-shadow: 0 -4px 16px rgb(0 0 0 / 8%); }
+.shop-preorder-summary > div { display: grid; min-width: 100px; }
+.shop-preorder-summary strong { font-size: 20px; }
+.shop-preorder-summary > .shop-preorder-actions { display: flex; min-width: 0; gap: 10px; align-items: center; }
+.shop-preorder-loading { display: grid; place-items: center; min-height: 50vh; }
+@media (max-width: 900px) {
+  .shop-preorder-page { padding: 12px 12px 190px; }
+  .shop-preorder-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .shop-preorder-summary > div { min-width: 0; }
+  .shop-preorder-summary strong { font-size: 16px; }
+  .shop-preorder-summary > .shop-preorder-actions { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .shop-preorder-actions .ant-btn { width: 100%; min-width: 0; height: auto; min-height: 40px; padding-inline: 8px; white-space: normal; }
+}
+@media (max-width: 720px) {
+  .shop-preorder-table { display: none; }
+  .shop-preorder-cards { display: grid; gap: 10px; }
+  .shop-preorder-cards .selected { border-color: #1677ff; }
+  .shop-preorder-card-main { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; }
+  .shop-preorder-card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 10px; border-top: 1px solid #f0f0f0; }
+  .shop-preorder-toolbar { flex-direction: column; }
+  .shop-preorder-toolbar .ant-input-search { max-width: none; }
+}
+@media (prefers-reduced-motion: reduce) { .shop-preorder-page * { scroll-behavior: auto !important; transition: none !important; } }

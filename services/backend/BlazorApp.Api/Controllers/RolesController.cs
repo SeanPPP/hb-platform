@@ -122,6 +122,24 @@ namespace BlazorApp.Api.Controllers
                     return Forbid();
                 }
 
+                var isAdmin = await CurrentActorIsAdminAsync();
+                var isStoreManager = false;
+                if (!isAdmin)
+                {
+                    foreach (var roleName in Permissions.StoreManagerRoleNames)
+                    {
+                        var roleResult = await _roleService.UserHasRoleAsync(
+                            currentUserGuid,
+                            roleName
+                        );
+                        if (roleResult?.Data == true)
+                        {
+                            isStoreManager = true;
+                            break;
+                        }
+                    }
+                }
+
                 var canViewRoles = await _roleService.UserHasPermissionAsync(
                     currentUserGuid,
                     Permissions.Roles.View
@@ -132,12 +150,24 @@ namespace BlazorApp.Api.Controllers
                         currentUserGuid,
                         Permissions.Users.ManageRoles
                     );
-                if (canViewRoles?.Data != true && canManageUserRoles?.Data != true)
+                var hasFullCatalogAccess = isAdmin
+                    || (!isStoreManager
+                        && (canViewRoles?.Data == true || canManageUserRoles?.Data == true));
+
+                if (!hasFullCatalogAccess && !isStoreManager)
                 {
                     return Forbid();
                 }
 
                 var result = await _roleService.GetActiveRolesAsync();
+                if (isStoreManager && result.Success && result.Data != null)
+                {
+                    // 店长目录只暴露员工角色；最终写入仍由 UserService 再次校验范围和角色。
+                    result = ApiResponse<List<RoleDto>>.OK(
+                        result.Data.Where(role => Permissions.IsEmployeeRole(role.RoleName)).ToList(),
+                        result.Message
+                    );
+                }
                 return Ok(result);
             }
             catch (Exception ex)
@@ -173,7 +203,7 @@ namespace BlazorApp.Api.Controllers
                     currentUserGuid,
                     adminRoleName
                 );
-                if (result.Data == true)
+                if (result?.Data == true)
                 {
                     return true;
                 }

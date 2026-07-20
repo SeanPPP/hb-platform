@@ -300,6 +300,22 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsPreorderManagementWithWarehouseOrderPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Warehouse.ManageOrders));
+
+        var menu = _service.BuildMenu(user);
+
+        var warehouse = Assert.Single(menu, item => item.Path == "/warehouse");
+        var preorder = Assert.Single(
+            warehouse.Children!,
+            item => item.Path == "/warehouse/preorders"
+        );
+        Assert.Equal("menu.preorders", preorder.TitleKey);
+        Assert.Equal(Permissions.Warehouse.ManageOrders, preorder.Permission);
+    }
+
+    [Fact]
     public void BuildMenu_DoesNotUnlockNavigationForWarehouseManagerRoleWithoutPermissionClaims()
     {
         var user = CreateUser(new Claim(ClaimTypes.Role, "WarehouseManager"));

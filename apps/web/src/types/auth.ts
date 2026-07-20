@@ -28,6 +28,7 @@ export interface AccessControl {
   isManager: boolean
   isUser: boolean
   isWarehouseStaff: boolean
+  isWarehouseStaffOnly: boolean
   isWarehouseManager: boolean
   isStoreStaff: boolean
   isStoreManager: boolean
@@ -103,6 +104,7 @@ export interface AccessControl {
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean
   canManagePosProducts: boolean
+  canAccessAdminShell: boolean
   canAccessDashboard: boolean
   canAccessOrderFront: boolean
   hasPermission: (permission: string) => boolean

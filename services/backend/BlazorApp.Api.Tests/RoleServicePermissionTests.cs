@@ -158,6 +158,18 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.ManageDevices");
     }
 
+    [Theory]
+    [InlineData("StoreStaff")]
+    [InlineData("Employee")]
+    [InlineData("店铺员工")]
+    [InlineData("店员")]
+    [InlineData("员工")]
+    public void EmployeeRoleAliases_AreRecognized(string roleName)
+    {
+        Assert.True(Permissions.IsEmployeeRole(roleName));
+        Assert.False(Permissions.IsEmployeeRole("User"));
+    }
+
     [Fact]
     public void PermissionSeedData_StoreManagerAliasesIncludeOperationAuditView()
     {
@@ -445,6 +457,51 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task RolesController_GetActiveRoles_StoreManagerReceivesOnlyEmployeeRolesEvenWithGlobalPermission()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service => service.UserHasPermissionAsync(
+                "manager-1",
+                It.IsAny<string>()
+            ))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        roleService
+            .Setup(service => service.UserHasRoleAsync("manager-1", "StoreManager"))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        roleService
+            .Setup(service => service.GetActiveRolesAsync())
+            .ReturnsAsync(ApiResponse<List<RoleDto>>.OK(new List<RoleDto>
+            {
+                new() { RoleGUID = "role-staff", RoleName = "StoreStaff", IsActive = true },
+                new() { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true },
+            }));
+        var controller = new RolesController(
+            roleService.Object,
+            NullLogger<RolesController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[] { new Claim(ClaimTypes.NameIdentifier, "manager-1") },
+                        "TestAuth"
+                    )),
+                },
+            },
+        };
+
+        var action = await controller.GetActiveRoles();
+
+        var ok = Assert.IsType<OkObjectResult>(action);
+        var response = Assert.IsType<ApiResponse<List<RoleDto>>>(ok.Value);
+        var role = Assert.Single(Assert.IsType<List<RoleDto>>(response.Data));
+        Assert.Equal("StoreStaff", role.RoleName);
+    }
+
+    [Fact]
     public void UsersController_ExposesScopedAccessPermissionsEndpoint()
     {
         var method = typeof(UsersController).GetMethod("GetUserAccessPermissions");
@@ -632,7 +689,58 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
-    public async Task GetUserAccessPermissionsAsync_StoreManagerReceivesOnlyOwnedPermissionIntersection()
+    public async Task GetUserAccessPermissionsAsync_StoreManagerReceivesOnlyOwnedPosPermissionIntersection()
+    {
+        await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-1",
+            StoreCode = "S001",
+            StoreName = "Store 1",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateUserStore("manager-1", "store-1", true),
+            CreateUserStore("staff-1", "store-1", false),
+        }).ExecuteCommandAsync();
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.AddItem);
+        await InsertPermissionAsync(Permissions.Reports.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.PosTerminal.Sales.AddItem);
+        await InsertRolePermissionAsync("role-staff", Permissions.Reports.View);
+        await InsertUserPermissionAsync("staff-1", Permissions.PosTerminal.Sales.AddItem);
+
+        var result = await CreateService(
+            "manager-1",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            })
+        ).GetUserAccessPermissionsAsync("manager-1", "staff-1");
+
+        Assert.True(result.Success);
+        var data = Assert.IsType<UserAccessPermissionDto>(result.Data);
+        Assert.Equal(
+            new[] { Permissions.PosTerminal.Sales.AddItem },
+            data.State.DirectPermissionCodes
+        );
+        Assert.Equal(
+            new[] { Permissions.PosTerminal.Sales.AddItem },
+            data.State.EffectivePermissionCodes
+        );
+        Assert.Empty(data.State.InheritedPermissionCodes);
+        var permission = Assert.Single(Assert.Single(data.Categories).Permissions);
+        Assert.Equal(Permissions.PosTerminal.Sales.AddItem, permission.Name);
+    }
+
+    [Fact]
+    public async Task GetUserAccessPermissionsAsync_StoreManagerCannotTargetPlainUser()
     {
         await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
         await SeedUserWithRoleAsync("staff-1", "role-staff", "User");
@@ -648,11 +756,6 @@ public sealed class RoleServicePermissionTests : IDisposable
             CreateUserStore("manager-1", "store-1", true),
             CreateUserStore("staff-1", "store-1", false),
         }).ExecuteCommandAsync();
-        await InsertPermissionAsync(Permissions.Users.View);
-        await InsertPermissionAsync(Permissions.Reports.View);
-        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
-        await InsertRolePermissionAsync("role-staff", Permissions.Reports.View);
-        await InsertUserPermissionAsync("staff-1", Permissions.Users.View);
 
         var result = await CreateService(
             "manager-1",
@@ -665,13 +768,57 @@ public sealed class RoleServicePermissionTests : IDisposable
             })
         ).GetUserAccessPermissionsAsync("manager-1", "staff-1");
 
-        Assert.True(result.Success);
-        var data = Assert.IsType<UserAccessPermissionDto>(result.Data);
-        Assert.Equal(new[] { Permissions.Users.View }, data.State.DirectPermissionCodes);
-        Assert.Equal(new[] { Permissions.Users.View }, data.State.EffectivePermissionCodes);
-        Assert.Empty(data.State.InheritedPermissionCodes);
-        var permission = Assert.Single(Assert.Single(data.Categories).Permissions);
-        Assert.Equal(Permissions.Users.View, permission.Name);
+        Assert.False(result.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task StoreManagerCannotReadOrAssignDirectPermissionsToDisabledEmployee()
+    {
+        await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
+        await _db.Updateable<User>()
+            .SetColumns(user => user.IsActive == false)
+            .Where(user => user.UserGUID == "staff-1")
+            .ExecuteCommandAsync();
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-1",
+            StoreCode = "S001",
+            StoreName = "Store 1",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateUserStore("manager-1", "store-1", true),
+            CreateUserStore("staff-1", "store-1", false),
+        }).ExecuteCommandAsync();
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.AddItem);
+        await InsertRolePermissionAsync("role-manager", Permissions.PosTerminal.Sales.AddItem);
+        var service = CreateService(
+            "manager-1",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            })
+        );
+
+        var readResult = await service.GetUserAccessPermissionsAsync("manager-1", "staff-1");
+        var writeResult = await service.AssignPermissionsToUserAsync(
+            "staff-1",
+            new UserPermissionAssignmentDto
+            {
+                Permissions = new List<string> { Permissions.PosTerminal.Sales.AddItem },
+            }
+        );
+
+        Assert.False(readResult.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", readResult.ErrorCode);
+        Assert.False(writeResult.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", writeResult.ErrorCode);
     }
 
     [Fact]
@@ -961,17 +1108,10 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
-    public async Task AssignPermissionsToUserAsync_NonAdminCannotGrantPermissionItDoesNotOwn()
+    public async Task AssignPermissionsToUserAsync_StoreManagerCannotGrantOwnedNonPosPermission()
     {
         await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
-        await _db.Insertable(new User
-        {
-            UserGUID = "staff-1",
-            Username = "staff-1",
-            Email = "staff-1@example.test",
-            PasswordHash = "hash",
-            IsActive = true,
-        }).ExecuteCommandAsync();
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
         await _db.Insertable(new Store
         {
             StoreGUID = "store-1",
@@ -985,6 +1125,7 @@ public sealed class RoleServicePermissionTests : IDisposable
             CreateUserStore("staff-1", "store-1", false),
         }).ExecuteCommandAsync();
         await InsertPermissionAsync(Permissions.Users.ManageRoles);
+        await InsertRolePermissionAsync("role-manager", Permissions.Users.ManageRoles);
 
         var result = await CreateService(
             "manager-1",
@@ -1004,24 +1145,17 @@ public sealed class RoleServicePermissionTests : IDisposable
         );
 
         Assert.False(result.Success);
-        Assert.Equal("PERMISSION_ESCALATION_DENIED", result.ErrorCode);
+        Assert.Equal("POS_PERMISSION_DELEGATION_DENIED", result.ErrorCode);
         Assert.False(await _db.Queryable<SysUserPermission>().AnyAsync(item =>
             item.UserGuid == "staff-1"
         ));
     }
 
     [Fact]
-    public async Task AssignPermissionsToUserAsync_NonAdminPreservesExistingPermissionItDoesNotOwn()
+    public async Task AssignPermissionsToUserAsync_StoreManagerCannotTargetPlainUser()
     {
         await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
-        await _db.Insertable(new User
-        {
-            UserGUID = "staff-1",
-            Username = "staff-1",
-            Email = "staff-1@example.test",
-            PasswordHash = "hash",
-            IsActive = true,
-        }).ExecuteCommandAsync();
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "User");
         await _db.Insertable(new Store
         {
             StoreGUID = "store-1",
@@ -1034,10 +1168,8 @@ public sealed class RoleServicePermissionTests : IDisposable
             CreateUserStore("manager-1", "store-1", true),
             CreateUserStore("staff-1", "store-1", false),
         }).ExecuteCommandAsync();
-        await InsertPermissionAsync(Permissions.Users.View);
-        await InsertPermissionAsync(Permissions.Reports.View);
-        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
-        await InsertUserPermissionAsync("staff-1", Permissions.Reports.View);
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.AddItem);
+        await InsertRolePermissionAsync("role-manager", Permissions.PosTerminal.Sales.AddItem);
 
         var result = await CreateService(
             "manager-1",
@@ -1052,31 +1184,59 @@ public sealed class RoleServicePermissionTests : IDisposable
             "staff-1",
             new UserPermissionAssignmentDto
             {
-                Permissions = new List<string> { Permissions.Users.View },
+                Permissions = new List<string> { Permissions.PosTerminal.Sales.AddItem },
             }
         );
 
-        Assert.True(result.Success);
-        var permissionCodes = await _db.Queryable<SysUserPermission>()
-            .Where(item => item.UserGuid == "staff-1")
-            .Select(item => item.PermissionCode)
-            .ToListAsync();
-        Assert.Contains(Permissions.Users.View, permissionCodes);
-        Assert.Contains(Permissions.Reports.View, permissionCodes);
+        Assert.False(result.Success);
+        Assert.Equal("EMPLOYEE_TARGET_REQUIRED", result.ErrorCode);
     }
 
     [Fact]
-    public async Task AssignPermissionsToUserAsync_NonAdminCannotEchoExistingPermissionItDoesNotOwn()
+    public async Task AssignPermissionsToUserAsync_StoreManagerCannotGrantUnownedPosPermission()
     {
         await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
-        await _db.Insertable(new User
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
+        await _db.Insertable(new Store
         {
-            UserGUID = "staff-1",
-            Username = "staff-1",
-            Email = "staff-1@example.test",
-            PasswordHash = "hash",
+            StoreGUID = "store-1",
+            StoreCode = "S001",
+            StoreName = "Store 1",
             IsActive = true,
         }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateUserStore("manager-1", "store-1", true),
+            CreateUserStore("staff-1", "store-1", false),
+        }).ExecuteCommandAsync();
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.ChangePrice);
+
+        var result = await CreateService(
+            "manager-1",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            })
+        ).AssignPermissionsToUserAsync(
+            "staff-1",
+            new UserPermissionAssignmentDto
+            {
+                Permissions = new List<string> { Permissions.PosTerminal.Sales.ChangePrice },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("PERMISSION_ESCALATION_DENIED", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task AssignPermissionsToUserAsync_NonAdminPreservesExistingPermissionItDoesNotOwn()
+    {
+        await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
         await _db.Insertable(new Store
         {
             StoreGUID = "store-1",
@@ -1090,8 +1250,75 @@ public sealed class RoleServicePermissionTests : IDisposable
             CreateUserStore("staff-1", "store-1", false),
         }).ExecuteCommandAsync();
         await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.AddItem);
         await InsertPermissionAsync(Permissions.Reports.View);
-        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.PosTerminal.Sales.AddItem);
+        var protectedCreatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        await _db.Insertable(new SysUserPermission
+        {
+            Id = "protected-direct-permission",
+            UserGuid = "staff-1",
+            PermissionCode = Permissions.Reports.View,
+            CreatedAt = protectedCreatedAt,
+            CreatedBy = "original-admin",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService(
+            "manager-1",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            })
+        ).AssignPermissionsToUserAsync(
+            "staff-1",
+            new UserPermissionAssignmentDto
+            {
+                Permissions = new List<string> { Permissions.PosTerminal.Sales.AddItem },
+            }
+        );
+
+        Assert.True(result.Success);
+        var permissionCodes = await _db.Queryable<SysUserPermission>()
+            .Where(item => item.UserGuid == "staff-1")
+            .Select(item => item.PermissionCode)
+            .ToListAsync();
+        Assert.Contains(Permissions.PosTerminal.Sales.AddItem, permissionCodes);
+        Assert.Contains(Permissions.Reports.View, permissionCodes);
+        var protectedRow = await _db.Queryable<SysUserPermission>()
+            .SingleAsync(item =>
+                item.UserGuid == "staff-1"
+                && item.PermissionCode == Permissions.Reports.View
+            );
+        Assert.Equal("protected-direct-permission", protectedRow.Id);
+        Assert.Equal(protectedCreatedAt, protectedRow.CreatedAt);
+        Assert.Equal("original-admin", protectedRow.CreatedBy);
+    }
+
+    [Fact]
+    public async Task AssignPermissionsToUserAsync_NonAdminCannotEchoExistingPermissionItDoesNotOwn()
+    {
+        await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-1",
+            StoreCode = "S001",
+            StoreName = "Store 1",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateUserStore("manager-1", "store-1", true),
+            CreateUserStore("staff-1", "store-1", false),
+        }).ExecuteCommandAsync();
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.PosTerminal.Sales.AddItem);
+        await InsertPermissionAsync(Permissions.Reports.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.PosTerminal.Sales.AddItem);
         await InsertUserPermissionAsync("staff-1", Permissions.Reports.View);
 
         var result = await CreateService(
@@ -1109,19 +1336,19 @@ public sealed class RoleServicePermissionTests : IDisposable
             {
                 Permissions = new List<string>
                 {
-                    Permissions.Users.View,
+                    Permissions.PosTerminal.Sales.AddItem,
                     Permissions.Reports.View,
                 },
             }
         );
 
         Assert.False(result.Success);
-        Assert.Equal("PERMISSION_ESCALATION_DENIED", result.ErrorCode);
+        Assert.Equal("POS_PERMISSION_DELEGATION_DENIED", result.ErrorCode);
         var permissionCodes = await _db.Queryable<SysUserPermission>()
             .Where(item => item.UserGuid == "staff-1")
             .Select(item => item.PermissionCode)
             .ToListAsync();
-        Assert.DoesNotContain(Permissions.Users.View, permissionCodes);
+        Assert.DoesNotContain(Permissions.PosTerminal.Sales.AddItem, permissionCodes);
         Assert.Contains(Permissions.Reports.View, permissionCodes);
     }
 
@@ -1129,7 +1356,7 @@ public sealed class RoleServicePermissionTests : IDisposable
     public async Task AssignPermissionsToUserAsync_NonAdminCannotUseAliasEchoToAddCanonicalPermission()
     {
         await SeedUserWithRoleAsync("manager-1", "role-manager", "StoreManager");
-        await SeedUserWithRoleAsync("staff-1", "role-staff", "User");
+        await SeedUserWithRoleAsync("staff-1", "role-staff", "StoreStaff");
         await _db.Insertable(new Store
         {
             StoreGUID = "store-1",
@@ -1163,7 +1390,7 @@ public sealed class RoleServicePermissionTests : IDisposable
             }
         );
 
-        Assert.Equal("PERMISSION_ESCALATION_DENIED", result.ErrorCode);
+        Assert.Equal("POS_PERMISSION_DELEGATION_DENIED", result.ErrorCode);
         var storedCodes = await _db.Queryable<SysUserPermission>()
             .Where(item => item.UserGuid == "staff-1")
             .Select(item => item.PermissionCode)

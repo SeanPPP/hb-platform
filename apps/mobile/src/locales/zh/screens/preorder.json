@@ -1,0 +1,115 @@
+{
+  "gate": {
+    "title": "请先完成 Preorder",
+    "checking": "正在检查本期 Preorder，普通订单提交暂时锁定。",
+    "unavailable": "暂时无法确认 Preorder 状态；可以继续加购，提交前请重试。",
+    "pending": "当前分店有 {{count}} 期 Preorder 待处理；可以继续加购和修改数量，完成前不能提交普通订单。",
+    "action": "立即处理",
+    "dialogTitle": "有待完成的 Preorder",
+    "dialogMessage": "当前分店有 {{count}} 期 Preorder 待提交。可以继续浏览、加购和修改数量，但完成前不能提交普通订单。",
+    "dialogLater": "稍后浏览",
+    "dialogOpen": "进入 Preorder"
+  },
+  "list": {
+    "title": "Preorder 订货",
+    "subtitle": "完成全部有效批次后恢复普通订货",
+    "period": "第 {{period}} 期",
+    "deadline": "截止：{{value}}",
+    "open": "填写本期订单",
+    "loadFailedTitle": "无法检查 Preorder",
+    "loadFailedDescription": "网络或服务暂时不可用。为避免漏单，普通订货仍保持锁定。",
+    "completedTitle": "本期 Preorder 已全部完成",
+    "completedDescription": "当前分店没有待处理批次，可以继续普通订货。",
+    "selectStoreTitle": "请先选择分店",
+    "selectStoreDescription": "返回商品页选择分店后再查看 Preorder。",
+    "backToShop": "返回商品页"
+  },
+  "detail": {
+    "title": "Preorder 详情",
+    "period": "第 {{period}} 期",
+    "deadline": "截止：{{value}}",
+    "searchPlaceholder": "搜索货号或名称",
+    "noImage": "暂无图片",
+    "sku": "货号：{{value}}",
+    "importPrice": "进口 {{value}}",
+    "retailPrice": "零售 {{value}}",
+    "moq": "每份 {{value}} 件",
+    "packCount": "份数",
+    "packCountFor": "{{name}} 的订货份数",
+    "decreasePack": "减少 {{name}} 一份",
+    "increasePack": "增加 {{name}} 一份",
+    "totalQuantity": "总件数",
+    "noItemsTitle": "本期没有商品",
+    "noItemsDescription": "请联系仓库管理员检查激活批次。",
+    "missingContextTitle": "缺少分店或批次信息",
+    "missingContextDescription": "请从当前分店的 Preorder 列表重新进入。",
+    "backToList": "返回 Preorder",
+    "loadFailedTitle": "加载 Preorder 失败",
+    "loadFailedDescription": "当前无法读取本期商品。普通订货会继续保持锁定，请重试。",
+    "readOnlyTitle": "本期当前为只读",
+    "returnedTitle": "仓库已退回修改",
+    "returnedDescription": "请核对订单、完成所需修改后重新提交。",
+    "readOnlyReason": {
+      "scheduled": "本期尚未开始，暂时不能填写。",
+      "ended": "本期有效时间已经结束。",
+      "closed": "仓库已经提前关闭本期。",
+      "cancelled": "仓库已经取消本期。",
+      "unavailable": "本期未处于激活状态，不能继续修改。"
+    }
+  },
+  "save": {
+    "auto": "修改后自动保存",
+    "saving": "保存中…",
+    "saved": "草稿已保存",
+    "failed": "保存失败",
+    "submitted": "本期已提交",
+    "readOnly": "只读",
+    "retry": "重试保存"
+  },
+  "leave": {
+    "notActiveTitle": "本期 Preorder 已结束",
+    "notActiveMessage": "本期已结束或关闭，未保存的更改无法再保存。你可以留在此页查看，或放弃更改并离开。",
+    "unsavedTitle": "更改尚未保存",
+    "unsavedMessage": "当前无法保存草稿。你可以继续留在此页重试，或明确放弃未保存的更改并离开。",
+    "stay": "留在此页",
+    "discard": "放弃更改并离开"
+  },
+  "conflict": {
+    "title": "草稿已在其他设备更新",
+    "message": "请选择采用服务器上的最新草稿，或保留本机填写内容并使用最新版本重试保存。",
+    "submitMessage": "本次提交已取消，因为草稿已在其他设备更新。请选择采用服务器最新草稿，或保留本机内容并用最新版本保存；确认后请重新提交。",
+    "useServer": "采用服务器草稿",
+    "keepLocal": "保留本机并重试",
+    "alreadySubmitted": "本期已在其他设备完成，已刷新为最新状态。"
+  },
+  "summary": {
+    "line": "{{sku}} 种 · {{packs}} 份 · {{quantity}} 件",
+    "importAmount": "进口合计 {{value}}"
+  },
+  "submit": {
+    "action": "提交本期",
+    "submitted": "已提交",
+    "pendingTitle": "正在提交本期 Preorder",
+    "pendingMessage": "请等待提交完成后再离开此页，避免订单状态不明确。",
+    "confirmTitle": "提交本期 Preorder",
+    "confirmMessage": "将提交 {{sku}} 种商品，共 {{quantity}} 件。提交后不能由分店修改。",
+    "noDemandTitle": "确认本期无需求",
+    "noDemandMessage": "所有商品份数均为 0。确认本期不需要订货吗？",
+    "noDemandAction": "确认无需求",
+    "successTitle": "本期已提交",
+    "nextMessage": "还有待处理批次“{{name}}”，继续填写下一期。",
+    "completedMessage": "全部有效 Preorder 已完成，普通订货已经恢复。",
+    "refreshFailedMessage": "本期已成功提交，但暂时无法刷新其他批次。普通订货会保持锁定，请返回列表重试。",
+    "nextAction": "继续下一期",
+    "doneAction": "完成",
+    "backToListAction": "返回 Preorder 列表"
+  },
+  "errors": {
+    "saveFailed": "草稿保存失败，请重试",
+    "submitFailed": "本期提交失败，请重试",
+    "draftConflict": "草稿已被其他设备修改，请选择要保留的版本",
+    "conflictRefreshFailed": "草稿版本冲突，但暂时无法读取服务器最新版本，请检查网络后重试",
+    "notActive": "本期已结束或尚未开始，请刷新列表",
+    "required": "还有 Preorder 待完成"
+  }
+}

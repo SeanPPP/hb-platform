@@ -63,7 +63,6 @@ export default function ProductCard({
     if (removing) {
       return
     }
-
     const normalizedQuantity = normalizeQuantity(nextQuantity)
     setQuantity(normalizedQuantity)
 
@@ -81,7 +80,6 @@ export default function ProductCard({
     if (removing) {
       return
     }
-
     const addQuantity = quantity > 0 ? quantity : stepQuantity
     setQuantity(addQuantity)
     void onAddToCart(product, addQuantity)

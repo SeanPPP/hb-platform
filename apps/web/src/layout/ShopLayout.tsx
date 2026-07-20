@@ -1,11 +1,12 @@
 import {
   AppstoreOutlined,
   DownOutlined,
+  GiftOutlined,
   MenuOutlined,
   ShoppingCartOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Drawer, Dropdown, Input, Menu, Select, Spin, message } from 'antd'
+import { Alert, Badge, Button, Drawer, Dropdown, Input, Menu, Modal, Select, Space, Spin, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,11 +17,22 @@ import ShopCartSummary from '../components/ShopCartSummary'
 import { getUserStores } from '../services/userService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../services/warehouseCategoryService'
 import { getActiveStoreOrderCart, getActiveStoreOrderCartSummary } from '../services/storeOrderService'
+import {
+  canBypassPreorderGate,
+  getActivePreorders,
+  resolveEffectivePreorderGateBlocked,
+} from '../services/preorderService'
 import { useAuthStore } from '../store/auth'
 import { useShopStore } from '../store/shop'
 import { resolveShopBannerCopy } from './shopBannerCopy'
+import {
+  resolvePreorderPromptPresentation,
+  resolveShopPreorderNavigation,
+} from '../pages/ShopPreorder/preorderNavigation'
+import { changeStoreAfterDurableLeave, runAfterDurableLeave, usePreorderLeave } from '../pages/ShopPreorder/preorderLeaveContext'
 
 const { Search } = Input
+const PREORDER_GATE_TIMEOUT_MS = 8_000
 
 function supportsHover() {
   if (typeof window !== 'undefined' && window.matchMedia) {
@@ -34,12 +46,18 @@ export default function ShopLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { currentUser, access, logout } = useAuthStore()
-  const { t } = useTranslation()
+  const { requestPreorderDurableLeave } = usePreorderLeave()
+  const { t, i18n } = useTranslation()
   const isShopHomePage = location.pathname === '/shop'
+  const isPreorderPage = location.pathname.startsWith('/shop/preorders/')
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
+  const preorderDateTimeFormatter = useMemo(
+    () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
+    [i18n.language, i18n.resolvedLanguage],
+  )
 
   const userStores = useShopStore((state) => state.userStores)
   const selectedStore = useShopStore((state) => state.selectedStore)
@@ -47,7 +65,27 @@ export default function ShopLayout() {
   const setUserStores = useShopStore((state) => state.setUserStores)
   const setSelectedStore = useShopStore((state) => state.setSelectedStore)
   const setCart = useShopStore((state) => state.setCart)
+  const preorderActivations = useShopStore((state) => state.preorderActivations)
+  const preorderBlocked = useShopStore((state) => state.preorderBlocked)
+  const preorderGateLoading = useShopStore((state) => state.preorderGateLoading)
+  const preorderGateError = useShopStore((state) => state.preorderGateError)
+  const setPreorderGate = useShopStore((state) => state.setPreorderGate)
+  const beginPreorderGateRequest = useShopStore((state) => state.beginPreorderGateRequest)
+  const isPreorderGateRequestCurrent = useShopStore((state) => state.isPreorderGateRequestCurrent)
   const resetShop = useShopStore((state) => state.reset)
+  const preorderGateBypassed = canBypassPreorderGate(access)
+  const effectivePreorderBlocked = resolveEffectivePreorderGateBlocked(
+    preorderBlocked || preorderGateLoading || preorderGateError,
+    preorderGateBypassed,
+  )
+  const preorderPrompt = resolvePreorderPromptPresentation({
+    storeCode: selectedStore?.storeCode,
+    activationGuids: preorderActivations.map((item) => item.activationGuid),
+    loading: preorderGateLoading,
+    error: preorderGateError,
+    bypassed: preorderGateBypassed,
+    onPreorderPage: isPreorderPage,
+  })
 
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
   const [loadingCategories, setLoadingCategories] = useState(false)
@@ -55,6 +93,9 @@ export default function ShopLayout() {
   const [cartDrawerLoading, setCartDrawerLoading] = useState(false)
   const [mobileCategoryVisible, setMobileCategoryVisible] = useState(false)
   const [isHoverSupported, setIsHoverSupported] = useState(true)
+  const [dismissedPreorderPromptKey, setDismissedPreorderPromptKey] = useState<string | null>(null)
+  const preorderPromptOpen = preorderPrompt.mode === 'pending'
+    && dismissedPreorderPromptKey !== preorderPrompt.key
   const selectedStoreCodeRef = useRef<string | null>(null)
   const cartDrawerOpenRef = useRef(false)
   const fullCartRequestVersionRef = useRef(0)
@@ -158,6 +199,65 @@ export default function ShopLayout() {
     }
   }, [selectedStore?.storeCode, setCart])
 
+  const refreshPreorderGate = useCallback(async () => {
+    const storeCode = selectedStore?.storeCode ?? null
+    const requestToken = beginPreorderGateRequest()
+    if (!storeCode) {
+      if (isPreorderGateRequestCurrent(requestToken) && selectedStoreCodeRef.current === null) {
+        setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: false, preorderGateError: false })
+      }
+      return
+    }
+
+    // 门禁刷新期间先保持关闭，避免切店时短暂沿用上一家分店的可订货状态。
+    if (!isPreorderGateRequestCurrent(requestToken) || selectedStoreCodeRef.current !== storeCode) return
+    setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: true, preorderGateError: false })
+    const controller = new AbortController()
+    // 远端数据库异常时及时结束全页等待，转为页面内错误提示和手动重试。
+    const timeoutId = window.setTimeout(() => controller.abort(), PREORDER_GATE_TIMEOUT_MS)
+    try {
+      const result = await getActivePreorders(storeCode, controller.signal)
+      if (isPreorderGateRequestCurrent(requestToken) && selectedStoreCodeRef.current === storeCode) {
+        setPreorderGate({
+          preorderActivations: result.activations,
+          preorderBlocked: result.normalOrderBlocked,
+          preorderGateLoading: false,
+          preorderGateError: false,
+        })
+      }
+    } catch {
+      if (isPreorderGateRequestCurrent(requestToken) && selectedStoreCodeRef.current === storeCode) {
+        setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: false, preorderGateError: true })
+      }
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+  }, [beginPreorderGateRequest, isPreorderGateRequestCurrent, selectedStore?.storeCode, setPreorderGate])
+
+  const handleOpenPreorder = useCallback(() => {
+    const resolution = resolveShopPreorderNavigation({
+      storeCode: selectedStore?.storeCode,
+      activationGuid: preorderActivations[0]?.activationGuid,
+      loading: preorderGateLoading,
+      error: preorderGateError,
+    })
+
+    if (resolution.action === 'open') {
+      navigate(`/shop/preorders/${resolution.activationGuid}`)
+      return
+    }
+    if (resolution.action === 'select-store') {
+      message.warning(t('shop.preorder.selectStoreFirst'))
+      return
+    }
+    if (resolution.action === 'refresh') {
+      message.info(t('shop.preorder.gateChecking'))
+      void refreshPreorderGate()
+      return
+    }
+    message.info(t('shop.preorder.noActive'))
+  }, [navigate, preorderActivations, preorderGateError, preorderGateLoading, refreshPreorderGate, selectedStore?.storeCode, t])
+
   const refreshFullCart = useCallback(async () => {
     const storeCode = selectedStore?.storeCode ?? null
     if (!storeCode) {
@@ -189,7 +289,8 @@ export default function ShopLayout() {
     // 切换分店先清掉旧购物车；抽屉已打开时直接补新门店明细，否则只拉摘要。
     setCart(null)
     void (cartDrawerOpenRef.current ? refreshFullCart() : refreshCartSummary())
-  }, [refreshCartSummary, refreshFullCart, setCart])
+    void refreshPreorderGate()
+  }, [refreshCartSummary, refreshFullCart, refreshPreorderGate, setCart])
 
   useEffect(() => {
     if (!selectedStore?.storeCode) {
@@ -203,10 +304,12 @@ export default function ShopLayout() {
 
       // 抽屉已打开时保留明细视图；否则只刷新顶部摘要，避免前台切回拖慢首屏。
       void (cartDrawerOpen ? refreshFullCart() : refreshCartSummary())
+      void refreshPreorderGate()
     }
 
     const refreshFocusedCart = () => {
       void (cartDrawerOpen ? refreshFullCart() : refreshCartSummary())
+      void refreshPreorderGate()
     }
 
     window.addEventListener('focus', refreshFocusedCart)
@@ -216,7 +319,7 @@ export default function ShopLayout() {
       window.removeEventListener('focus', refreshFocusedCart)
       document.removeEventListener('visibilitychange', refreshVisibleCart)
     }
-  }, [cartDrawerOpen, refreshCartSummary, refreshFullCart, selectedStore?.storeCode])
+  }, [cartDrawerOpen, refreshCartSummary, refreshFullCart, refreshPreorderGate, selectedStore?.storeCode])
 
   const openCartDrawer = () => {
     setCartDrawerOpen(true)
@@ -245,9 +348,11 @@ export default function ShopLayout() {
   }
 
   const handleLogout = async () => {
-    await logout()
-    resetShop()
-    navigate('/login', { replace: true })
+    await runAfterDurableLeave(requestPreorderDurableLeave, async () => {
+      await logout()
+      resetShop()
+      navigate('/login', { replace: true })
+    })
   }
 
   const handleSearch = (value: string) => {
@@ -257,6 +362,13 @@ export default function ShopLayout() {
       return
     }
     navigate(`/shop?keyword=${encodeURIComponent(keyword)}`)
+  }
+
+  const handleStoreChange = async (value?: string) => {
+    await changeStoreAfterDurableLeave(value, requestPreorderDurableLeave, (storeCode) => {
+      const nextStore = userStores.find((item) => item.storeCode === storeCode) ?? null
+      setSelectedStore(nextStore)
+    })
   }
 
   return (
@@ -315,10 +427,7 @@ export default function ShopLayout() {
                 placeholder={t('shop.selectStore', 'Select Store')}
                 className="shop-selector"
                 value={selectedStore?.storeCode}
-                onChange={(value) => {
-                  const nextStore = userStores.find((item) => item.storeCode === value) ?? null
-                  setSelectedStore(nextStore)
-                }}
+                onChange={(value) => void handleStoreChange(value)}
                 allowClear
                 options={userStores.map((item) => ({
                   value: item.storeCode,
@@ -359,6 +468,10 @@ export default function ShopLayout() {
             <MenuOutlined className="icon" />
             <span>{t('shop.products', 'Products')}</span>
           </div>
+          <div className="shop-mobile-grid-item" onClick={handleOpenPreorder}>
+            <GiftOutlined className="icon" />
+            <span>{t('shop.preorder.navigation', 'Preorder')}</span>
+          </div>
           <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/best-sellers')}>
             <AppstoreOutlined className="icon" />
             <span>{t('shop.bestSellers', 'Best Sellers')}</span>
@@ -372,10 +485,7 @@ export default function ShopLayout() {
               placeholder={t('common.store', 'Store')}
               className="shop-mobile-store-select"
               value={selectedStore?.storeCode}
-              onChange={(value) => {
-                const nextStore = userStores.find((item) => item.storeCode === value) ?? null
-                setSelectedStore(nextStore)
-              }}
+              onChange={(value) => void handleStoreChange(value)}
               allowClear
               options={userStores.map((item) => ({
                 value: item.storeCode,
@@ -413,6 +523,12 @@ export default function ShopLayout() {
             onClick={() => navigate('/shop')}
           >
             {t('shop.shopHome', 'Shop Home')}
+          </div>
+          <div
+            className={`shop-menu-item${isPreorderPage ? ' active' : ''}`}
+            onClick={handleOpenPreorder}
+          >
+            {t('shop.preorder.navigation', 'Preorder')}
           </div>
           <div
             className={`shop-menu-item${isBestSellersPage ? ' active' : ''}`}
@@ -490,16 +606,87 @@ export default function ShopLayout() {
       </div>
 
       <div className="shop-content">
+        {selectedStore && effectivePreorderBlocked ? (
+          <Alert
+            className="shop-preorder-gate-alert"
+            type={preorderGateError ? 'error' : 'warning'}
+            showIcon
+            message={preorderGateError ? t('shop.preorder.gateUnavailable') : preorderGateLoading ? t('shop.preorder.gateChecking') : t('shop.preorder.gateBlocked', { count: preorderActivations.length })}
+            description={preorderGateError ? t('shop.preorder.gateErrorDescription') : t('shop.preorder.gateBlockedDescription')}
+            action={<Space>{preorderGateError ? <Button size="small" onClick={() => void refreshPreorderGate()}>{t('shop.preorder.retry')}</Button> : null}{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
+          />
+        ) : null}
         <Outlet />
       </div>
 
       <div className="shop-footer">{t('shop.footer', '© 2026 Hotbargain International. All rights reserved.')}</div>
+
+      <Modal
+        open={preorderPromptOpen}
+        title={(
+          <Space>
+            {preorderPrompt.mode === 'checking' ? <Spin size="small" /> : <GiftOutlined />}
+            <span>{preorderPrompt.mode === 'pending'
+              ? t('shop.preorder.pendingTitle', { count: preorderActivations.length })
+              : preorderPrompt.mode === 'error'
+                ? t('shop.preorder.gateUnavailable')
+                : t('shop.preorder.gateChecking')}</span>
+          </Space>
+        )}
+        onCancel={() => setDismissedPreorderPromptKey(preorderPrompt.key)}
+        footer={[
+          <Button key="later" onClick={() => setDismissedPreorderPromptKey(preorderPrompt.key)}>
+            {t('shop.preorder.later')}
+          </Button>,
+          preorderPrompt.mode === 'checking' ? (
+            <Button key="checking" type="primary" loading disabled>
+              {t('shop.preorder.gateChecking')}
+            </Button>
+          ) : (
+            <Button
+              key="action"
+              type="primary"
+              onClick={() => {
+                if (preorderPrompt.mode === 'error') {
+                  setDismissedPreorderPromptKey(null)
+                  void refreshPreorderGate()
+                  return
+                }
+                handleOpenPreorder()
+              }}
+            >
+              {preorderPrompt.mode === 'error'
+                ? t('shop.preorder.retry')
+                : t('shop.preorder.enterPreorder')}
+            </Button>
+          ),
+        ]}
+      >
+        {preorderPrompt.mode === 'pending' ? (
+          <Space direction="vertical" size={8}>
+            {preorderActivations.map((item) => (
+              <div key={item.activationGuid}>
+                <strong>{item.templateName} · {t('shop.preorder.period', { sequence: item.sequenceNumber })}</strong>
+                <br />
+                <span>{t('shop.preorder.deadline', { date: preorderDateTimeFormatter.format(new Date(item.endAtUtc)) })}</span>
+              </div>
+            ))}
+          </Space>
+        ) : (
+          <span>{preorderPrompt.mode === 'error'
+            ? t('shop.preorder.gateErrorDescription')
+            : t('shop.preorder.checkingDescription')}</span>
+        )}
+      </Modal>
 
       <ShopCartDrawer
         open={cartDrawerOpen}
         onClose={() => setCartDrawerOpen(false)}
         cart={cart}
         loading={cartDrawerLoading}
+        preorderBlocked={effectivePreorderBlocked}
+        onOpenPreorder={preorderActivations[0] ? () => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`) : undefined}
+        onPreorderRequired={refreshPreorderGate}
         onCartChanged={refreshFullCart}
       />
 

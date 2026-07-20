@@ -2,7 +2,7 @@
 import { FlatList, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { CameraView } from "expo-camera";
-import { useRouter } from "expo-router";
+import { type Href, useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   Badge,
@@ -47,6 +47,11 @@ import { useScanResult } from "@/modules/scanner/use-scan-result";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
 import type { StoreOrderCategoryNode, StoreOrderProductItem } from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
+import { isPreorderRequiredError } from "@/modules/preorder/api";
+import { canBypassPreorderGate } from "@/modules/preorder/gate";
+import { PreorderGateBanner } from "@/modules/preorder/preorder-gate-banner";
+import { usePreorderGate } from "@/modules/preorder/use-preorder-gate";
+import { useAuthStore } from "@/store/auth-store";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
@@ -79,6 +84,7 @@ export default function Home() {
     refetch: refetchStores,
   } = useStores();
   const cartSummary = useCartStore((state) => state.cartSummary);
+  const access = useAuthStore((state) => state.access);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
   const [storePickerVisible, setStorePickerVisible] = useState(false);
@@ -99,6 +105,8 @@ export default function Home() {
   const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<string | null>(null);
   const [quantityDraft, setQuantityDraft] = useState("");
   const [quantityEditorError, setQuantityEditorError] = useState("");
+  const [preorderPromptVisible, setPreorderPromptVisible] = useState(false);
+  const promptedPreorderKeyRef = useRef("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -111,6 +119,42 @@ export default function Home() {
   const quantityEditorBusy = Boolean(quantityEditorProduct && updateCartQuantity.isPending);
   const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preorderGate = usePreorderGate(
+    selectedStoreCode,
+    canBypassPreorderGate(access)
+  );
+
+  const openPreorder = useCallback(() => {
+    setPreorderPromptVisible(false);
+    const firstActivation = preorderGate.activations[0];
+    if (firstActivation && selectedStoreCode) {
+      router.push({
+        pathname: "/preorders/[activationGuid]",
+        params: { activationGuid: firstActivation.activationGuid, storeCode: selectedStoreCode },
+      } as unknown as Href);
+      return;
+    }
+    router.push("/preorders" as Href);
+  }, [preorderGate.activations, router, selectedStoreCode]);
+
+  const handleNormalOrderError = useCallback((error: unknown, fallbackKey: string) => {
+    if (isPreorderRequiredError(error)) {
+      void preorderGate.refresh();
+      openPreorder();
+      return;
+    }
+    setNoticeMessage(getErrorMessage(error, fallbackKey));
+  }, [getErrorMessage, openPreorder, preorderGate]);
+
+  useEffect(() => {
+    if (!selectedStoreCode || !preorderGate.normalOrderBlocked || !preorderGate.activations.length) {
+      return;
+    }
+    const promptKey = `${selectedStoreCode}:${preorderGate.activations.map((item) => item.activationGuid).join(",")}`;
+    if (promptedPreorderKeyRef.current === promptKey) return;
+    promptedPreorderKeyRef.current = promptKey;
+    setPreorderPromptVisible(true);
+  }, [preorderGate.activations, preorderGate.normalOrderBlocked, selectedStoreCode]);
 
   selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
@@ -158,14 +202,14 @@ export default function Home() {
           return;
         }
 
-        setNoticeMessage(getErrorMessage(error, "messages.scanAddFailed"));
+        handleNormalOrderError(error, "messages.scanAddFailed");
       } finally {
         if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, expectedStoreCode)) {
           setActiveCartMutationProductCode(null);
         }
       }
     },
-    [addToCart, autoAddWhenSingle, getErrorMessage, t]
+    [addToCart, autoAddWhenSingle, handleNormalOrderError, t]
   );
   const handleScanAddedProduct = useCallback(
     (product: StoreOrderProductItem, _barcode?: string, _source?: unknown, scanTraceId?: string) => {
@@ -473,7 +517,7 @@ export default function Home() {
         t("messages.addedToCart", { name: product.productName || product.productCode })
       );
     } catch (error) {
-      setNoticeMessage(getErrorMessage(error, "messages.addFailed"));
+      handleNormalOrderError(error, "messages.addFailed");
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -555,9 +599,15 @@ export default function Home() {
       });
       resetQuantityEditor();
     } catch (error) {
-      const message = getErrorMessage(error, "messages.updateQtyFailed");
-      setQuantityEditorError(message);
-      setNoticeMessage(message);
+      if (isPreorderRequiredError(error)) {
+        resetQuantityEditor();
+        void preorderGate.refresh();
+        openPreorder();
+      } else {
+        const message = getErrorMessage(error, "messages.updateQtyFailed");
+        setQuantityEditorError(message);
+        setNoticeMessage(message);
+      }
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -578,7 +628,7 @@ export default function Home() {
         scanTraceId: scannedProductTraceIds[product.productCode],
       });
     } catch (error) {
-      setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      handleNormalOrderError(error, "messages.updateQtyFailed");
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -599,7 +649,7 @@ export default function Home() {
         scanTraceId: scannedProductTraceIds[product.productCode],
       });
     } catch (error) {
-      setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      handleNormalOrderError(error, "messages.updateQtyFailed");
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -785,6 +835,7 @@ export default function Home() {
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       {fixedHeaderContent}
+      <PreorderGateBanner gate={preorderGate} onOpen={openPreorder} />
       <FlatList
         style={styles.content}
         data={displayProducts}
@@ -846,6 +897,37 @@ export default function Home() {
       />
 
       {productsQuery.isFetching || storesLoading ? <LoadingOverlay /> : null}
+
+      <Portal>
+        <Modal
+          visible={preorderPromptVisible}
+          onDismiss={() => setPreorderPromptVisible(false)}
+          contentContainerStyle={styles.preorderPromptModal}
+        >
+          <Text variant="titleMedium" style={styles.preorderPromptTitle}>
+            {t("preorder:gate.dialogTitle")}
+          </Text>
+          <Text variant="bodyMedium" style={styles.secondaryText}>
+            {t("preorder:gate.dialogMessage", { count: preorderGate.activations.length })}
+          </Text>
+          <View style={styles.preorderPromptActions}>
+            <Button
+              mode="outlined"
+              contentStyle={styles.preorderPromptButtonContent}
+              onPress={() => setPreorderPromptVisible(false)}
+            >
+              {t("preorder:gate.dialogLater")}
+            </Button>
+            <Button
+              mode="contained"
+              contentStyle={styles.preorderPromptButtonContent}
+              onPress={openPreorder}
+            >
+              {t("preorder:gate.dialogOpen")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
 
       <Portal>
         <Modal
@@ -1217,6 +1299,26 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     margin: 0,
+  },
+  preorderPromptModal: {
+    marginHorizontal: 24,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    padding: 20,
+    gap: 12,
+  },
+  preorderPromptTitle: {
+    color: "#7A3E00",
+    fontWeight: "700",
+  },
+  preorderPromptActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  preorderPromptButtonContent: {
+    minHeight: 44,
   },
   filterToggleButton: {
     margin: 0,

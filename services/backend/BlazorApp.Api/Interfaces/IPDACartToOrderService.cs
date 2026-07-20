@@ -12,7 +12,12 @@ namespace BlazorApp.Api.Interfaces
         /// </summary>
         /// <param name="request">转换请求</param>
         /// <param name="deviceHardwareId">设备硬件ID</param>
+        /// <param name="expectedStoreCode">已认证设备绑定分店代码</param>
         /// <returns>转换结果</returns>
-        Task<CartToOrderResponseDto> ConvertCartToOrderAsync(CartToOrderRequestDto request, string deviceHardwareId);
+        Task<CartToOrderResponseDto> ConvertCartToOrderAsync(
+            CartToOrderRequestDto request,
+            string deviceHardwareId,
+            string expectedStoreCode
+        );
     }
 }

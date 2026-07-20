@@ -307,6 +307,35 @@ namespace BlazorApp.Api.Services
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
+        internal static async Task<bool> IsEmployeeTargetAsync(
+            ISqlSugarClient db,
+            string targetUserGuid
+        )
+        {
+            var isActiveUser = await db.Queryable<User>()
+                .AnyAsync(user =>
+                    user.UserGUID == targetUserGuid
+                    && user.IsActive
+                    && !user.IsDeleted
+                );
+            if (!isActiveUser)
+            {
+                return false;
+            }
+
+            var employeeRoleNames = Permissions.EmployeeRoleNames.ToArray();
+            return await db.Queryable<UserRole>()
+                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                .Where((userRole, role) =>
+                    userRole.UserGUID == targetUserGuid
+                    && !userRole.IsDeleted
+                    && role.IsActive
+                    && !role.IsDeleted
+                    && employeeRoleNames.Contains(role.RoleName)
+                )
+                .AnyAsync();
+        }
+
         internal static async Task<UserAccessMutationDecision> ValidateStoreTargetMutationAsync(
             ISqlSugarClient db,
             ICurrentUserManageableStoreScopeService? manageableStoreScopeService,

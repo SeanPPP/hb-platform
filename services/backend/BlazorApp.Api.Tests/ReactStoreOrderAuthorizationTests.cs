@@ -616,6 +616,51 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task AddToCart_WhenPreorderPending_AllowsSavingNormalOrderDraft()
+    {
+        var request = new AddToCartRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+            Quantity = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.AddToCartAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderCartDto?>.OK(
+                    new StoreOrderCartDto { OrderGUID = "draft-cart", StoreCode = "1024" }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "1024" } }
+                )
+            );
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            userService: userService,
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.AddToCart(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.AddToCartAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task ScanLookupProducts_ThenAddToCart_AllowsWarehouseManageOrdersWithoutStoreScope()
     {
         var storeCode = "1024";
@@ -1026,6 +1071,110 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Assert.IsType<OkObjectResult>(result);
         service.Verify(item => item.SubmitOrderAsync(request), Times.Once);
         scopeService.Verify(item => item.CanAccessStoreCodeAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SubmitOrder_WhenPreorderPending_ReturnsConflictWithoutSubmittingNormalOrder()
+    {
+        var request = new SubmitStoreOrderRequestDto { StoreCode = "1024" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        preorderGateService
+            .Setup(item => item.CheckAsync("1024"))
+            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.SubmitOrder(request);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
+        Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
+        Assert.Equal(1, response.Data?.PendingCount);
+        service.VerifyNoOtherCalls();
+        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateOrder_WhenPreorderPending_ReturnsConflictWithoutCreatingNormalOrder()
+    {
+        var request = new CreateStoreOrderDto { StoreCode = "1024" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        preorderGateService
+            .Setup(item => item.CheckAsync("1024"))
+            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.CreateOrder(request);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
+        Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
+        service.VerifyNoOtherCalls();
+        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+    }
+
+    [Fact]
+    public async Task CopyOrder_WhenPreorderPending_ReturnsConflictWithoutCopyingNormalOrder()
+    {
+        var request = new CopyOrderDto
+        {
+            SourceOrderGUID = "source-order",
+            TargetStoreCode = "1024",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("source-order")).ReturnsAsync(true);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        preorderGateService
+            .Setup(item => item.CheckAsync("1024"))
+            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.CopyOrder(request);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
+        Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
+        service.VerifyNoOtherCalls();
+        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+    }
+
+    [Fact]
+    public void PreorderBypassFlag_CannotBeInjectedFromClientJson()
+    {
+        const string json = """{"storeCode":"1024","targetStoreCode":"1024","sourceOrderGUID":"source","bypassPreorderGate":true}""";
+
+        var submit = JsonSerializer.Deserialize<SubmitStoreOrderRequestDto>(json);
+        var create = JsonSerializer.Deserialize<CreateStoreOrderDto>(json);
+        var copy = JsonSerializer.Deserialize<CopyOrderDto>(json);
+
+        Assert.False(Assert.IsType<SubmitStoreOrderRequestDto>(submit).BypassPreorderGate);
+        Assert.False(Assert.IsType<CreateStoreOrderDto>(create).BypassPreorderGate);
+        Assert.False(Assert.IsType<CopyOrderDto>(copy).BypassPreorderGate);
     }
 
     [Fact]
@@ -1707,6 +1856,71 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task AddOrderLine_WhenPreorderPending_AllowsEditingNormalOrderDraft()
+    {
+        const string orderGuid = "order-preorder-blocked";
+        var request = new AddOrderLineDto
+        {
+            OrderGUID = orderGuid,
+            ProductCode = "P001",
+            Quantity = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.AddOrderLineAsync(request)).ReturnsAsync(ApiResponse<bool>.OK(true));
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync(orderGuid)).ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.AddOrderLine(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.AddOrderLineAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLines_WhenPreorderPending_AllowsEditingNormalOrderDraft()
+    {
+        var request = new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "order-preorder-draft",
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P001", Quantity = 2 },
+            },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.PasteReplaceOrderLinesAsync(request))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        var scopeService = CreateScopeService();
+        scopeService
+            .Setup(item => item.CanAccessOrderAsync("order-preorder-draft"))
+            .ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        var result = await controller.PasteReplaceOrderLines(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.PasteReplaceOrderLinesAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task WarehouseStaffLegacyManage_ForbidsStoreOrderWriteActions()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
@@ -1892,7 +2106,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         service
-            .Setup(item => item.UpdateOrderStatusAsync("order-outside", 2))
+            .Setup(item => item.UpdateOrderStatusAsync("order-outside", 2, true))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
 
         var scopeService = CreateScopeService();
@@ -1908,8 +2122,78 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         var result = await controller.UpdateOrderStatus(request);
 
         Assert.IsType<OkObjectResult>(result);
-        service.Verify(item => item.UpdateOrderStatusAsync("order-outside", 2), Times.Once);
+        service.Verify(item => item.UpdateOrderStatusAsync("order-outside", 2, true), Times.Once);
         scopeService.Verify(item => item.CanAccessOrderAsync("order-outside"), Times.Never);
+    }
+
+    [Fact]
+    public async Task UpdateOrderStatus_普通分店不携带仓库绕过标记并返回正式提交冲突()
+    {
+        var request = new UpdateOrderStatusDto
+        {
+            OrderGUID = "order-scoped-draft",
+            NewStatus = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateOrderStatusAsync("order-scoped-draft", 1, false))
+            .ReturnsAsync(new ApiResponse<bool>
+            {
+                Success = false,
+                ErrorCode = "PREORDER_SUBMIT_ENDPOINT_REQUIRED",
+                Message = "草稿订单必须通过正式提交接口提交",
+            });
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-scoped-draft")).ReturnsAsync(true);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Edit),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.UpdateOrderStatus(request);
+
+        Assert.IsType<ConflictObjectResult>(result);
+        service.Verify(
+            item => item.UpdateOrderStatusAsync("order-scoped-draft", 1, false),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderStatus_仓库管理权限携带绕过标记()
+    {
+        var request = new BatchUpdateOrderStatusDto
+        {
+            OrderGUIDs = new List<string> { "order-batch-a", "order-batch-b" },
+            NewStatus = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, true))
+            .ReturnsAsync(ApiResponse<int>.OK(2));
+
+        var scopeService = CreateScopeService();
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.BatchUpdateOrderStatus(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(
+            item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, true),
+            Times.Once
+        );
+        scopeService.Verify(
+            item => item.CanAccessOrderAsync(It.IsAny<string>()),
+            Times.Never
+        );
     }
 
     [Fact]
@@ -2907,9 +3191,19 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Mock<IStoreOrderInvoiceEmailTextTranslationService>? invoiceEmailTextTranslationService = null,
         Mock<IUserService>? userService = null,
         SqlSugarContext? dbContext = null,
-        IMemoryCache? cache = null
+        IMemoryCache? cache = null,
+        Mock<IPreorderGateService>? preorderGateService = null
     )
     {
+        var effectivePreorderGateService =
+            preorderGateService ?? new Mock<IPreorderGateService>(MockBehavior.Strict);
+        if (preorderGateService == null)
+        {
+            effectivePreorderGateService
+                .Setup(item => item.CheckAsync(It.IsAny<string>()))
+                .ReturnsAsync(new PreorderGateResult());
+        }
+
         var controller = new ReactStoreOrderController(
             service.Object,
             Mock.Of<ILogger<ReactStoreOrderController>>(),
@@ -2931,7 +3225,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             (
                 invoiceEmailTextTranslationService
                 ?? new Mock<IStoreOrderInvoiceEmailTextTranslationService>(MockBehavior.Strict)
-            ).Object
+            ).Object,
+            effectivePreorderGateService.Object
         );
 
         controller.ControllerContext = new ControllerContext

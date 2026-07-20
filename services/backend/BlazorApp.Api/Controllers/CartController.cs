@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using System.Security.Claims;
@@ -487,6 +488,18 @@ namespace BlazorApp.Api.Controllers
                     return Ok(new { success = true, message = "Cart submitted successfully (status updated only)", data = new { OrderNumber = cartNumber } });
                 else
                     return BadRequest(new { success = false, message = "Failed to submit cart" });
+            }
+            catch (PreorderBusinessException ex)
+            {
+                _logger.LogWarning(
+                    "Cart submit rejected: ErrorCode={ErrorCode}, UserGuid={UserGuid}",
+                    ex.ErrorCode,
+                    GetCurrentUserGuid()
+                );
+                return StatusCode(
+                    ex.StatusCode,
+                    new { success = false, errorCode = ex.ErrorCode, message = ex.Message }
+                );
             }
             catch (Exception ex)
             {

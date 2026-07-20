@@ -35,7 +35,8 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<CartToOrderResponseDto> ConvertCartToOrderAsync(
             CartToOrderRequestDto request,
-            string deviceHardwareId
+            string deviceHardwareId,
+            string expectedStoreCode
         )
         {
             var response = new CartToOrderResponseDto();
@@ -64,16 +65,6 @@ namespace BlazorApp.Api.Services
                     };
                 }
 
-                var cartItems = await _db.Queryable<CartItem>()
-                    .Where(ci => ci.CartGUID == request.CartGUID && !ci.IsDeleted)
-                    .ToListAsync();
-
-                if (cartItems == null || cartItems.Count == 0)
-                {
-                    await _db.Ado.RollbackTranAsync();
-                    return new CartToOrderResponseDto { Success = false, Message = "购物车为空" };
-                }
-
                 if (string.IsNullOrEmpty(cart.StoreGUID))
                 {
                     await _db.Ado.RollbackTranAsync();
@@ -96,6 +87,29 @@ namespace BlazorApp.Api.Services
                 }
 
                 var storeCode = storeResult.Data.StoreCode;
+                if (!string.Equals(
+                    storeCode,
+                    expectedStoreCode,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return new CartToOrderResponseDto
+                    {
+                        Success = false,
+                        ErrorCode = "PDA_CART_STORE_MISMATCH",
+                        Message = "购物车不属于设备绑定分店",
+                    };
+                }
+
+                var cartItems = await _db.Queryable<CartItem>()
+                    .Where(ci => ci.CartGUID == request.CartGUID && !ci.IsDeleted)
+                    .ToListAsync();
+                if (cartItems == null || cartItems.Count == 0)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return new CartToOrderResponseDto { Success = false, Message = "购物车为空" };
+                }
                 _logger.LogInformation(
                     "分店信息: {StoreCode} - {StoreName}",
                     storeCode,
@@ -280,7 +294,7 @@ namespace BlazorApp.Api.Services
                 response = new CartToOrderResponseDto
                 {
                     Success = false,
-                    Message = $"转换失败: {ex.Message}",
+                    Message = "购物车转换失败，请稍后重试",
                 };
             }
 

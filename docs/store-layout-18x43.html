@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="18×43 米店铺货架、排队与收银区域平面设计稿">
+  <title>18×43 m 店铺货架布局设计稿</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #102a43;
+      --muted: #52667a;
+      --line: #ccd7e2;
+      --paper: #ffffff;
+      --surface: #edf2f6;
+      --accent: #0f766e;
+      --accent-hover: #115e59;
+      --amber: #b45309;
+      --focus: #0284c7;
+      --scale: 0.8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--surface);
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--surface);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    button,
+    a {
+      font: inherit;
+    }
+
+    .topbar {
+      position: sticky;
+      z-index: 10;
+      top: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      min-height: 86px;
+      padding: 16px clamp(18px, 4vw, 56px);
+      color: #fff;
+      background: #102a43;
+      border-bottom: 1px solid #1f405d;
+    }
+
+    .title-block h1 {
+      margin: 0;
+      font-size: clamp(20px, 2.3vw, 30px);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+
+    .title-block p {
+      margin: 7px 0 0;
+      color: #c4d2df;
+      font-size: 14px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .control {
+      min-height: 40px;
+      padding: 8px 13px;
+      color: #eaf2f8;
+      background: #173b59;
+      border: 1px solid #3b5b73;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+
+    .control:hover {
+      background: #214b6b;
+    }
+
+    .control.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .control.primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .control:focus-visible,
+    .file-link:focus-visible {
+      outline: 3px solid #7dd3fc;
+      outline-offset: 2px;
+    }
+
+    .page {
+      width: min(100%, 1680px);
+      margin: 0 auto;
+      padding: 22px clamp(12px, 3vw, 36px) 48px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .summary-item {
+      min-height: 76px;
+      padding: 16px 18px;
+      border-right: 1px solid var(--line);
+    }
+
+    .summary-item:last-child {
+      border-right: 0;
+    }
+
+    .summary-item span {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .summary-item strong {
+      display: block;
+      font-size: clamp(16px, 1.7vw, 22px);
+      line-height: 1.2;
+    }
+
+    .summary-item.reserved strong {
+      color: var(--amber);
+    }
+
+    .plan-shell {
+      margin-top: 16px;
+      overflow: hidden;
+      background: #dfe7ed;
+      border: 1px solid var(--line);
+    }
+
+    .plan-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 54px;
+      padding: 10px 16px;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .plan-heading h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .plan-heading p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .file-links {
+      display: flex;
+      gap: 14px;
+      white-space: nowrap;
+    }
+
+    .file-link {
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .file-link:hover {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .viewport {
+      width: 100%;
+      min-height: 420px;
+      overflow: auto;
+      padding: 18px;
+      text-align: center;
+      overscroll-behavior: contain;
+    }
+
+    #plan {
+      display: block;
+      width: calc(1600px * var(--scale));
+      height: auto;
+      margin: 0 auto;
+      background: #fff;
+      box-shadow: 0 12px 36px rgb(15 23 42 / 12%);
+    }
+
+    .legend-note {
+      margin: 14px 2px 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 840px) {
+      .topbar {
+        position: static;
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .summary-item:nth-child(2) {
+        border-right: 0;
+      }
+
+      .summary-item:nth-child(-n + 2) {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .plan-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .viewport {
+        padding: 8px;
+      }
+    }
+
+    @media (max-width: 460px) {
+      .control {
+        flex: 1 1 auto;
+      }
+
+      .summary {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-item,
+      .summary-item:nth-child(2) {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .summary-item:last-child {
+        border-bottom: 0;
+      }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .control,
+      .file-link {
+        transition: background-color 140ms ease, color 140ms ease;
+      }
+    }
+
+    @media print {
+      @page {
+        size: A3 portrait;
+        margin: 8mm;
+      }
+
+      body,
+      .page,
+      .plan-shell,
+      .viewport {
+        background: #fff;
+      }
+
+      .topbar,
+      .summary,
+      .plan-heading,
+      .legend-note {
+        display: none;
+      }
+
+      .page,
+      .viewport {
+        margin: 0;
+        padding: 0;
+      }
+
+      .plan-shell {
+        margin: 0;
+        overflow: visible;
+        border: 0;
+      }
+
+      #plan {
+        width: 100%;
+        max-height: 100vh;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title-block">
+      <h1>18 × 43 m 店铺货架布局</h1>
+      <p>施工沟通版 · 前后两组均为 11 bay · 2026-07-19</p>
+    </div>
+    <nav class="toolbar" aria-label="图纸控制">
+      <button class="control" id="zoom-out" type="button" aria-label="缩小图纸">− 缩小</button>
+      <button class="control" id="zoom-in" type="button" aria-label="放大图纸">＋ 放大</button>
+      <button class="control primary" id="fit" type="button">适合窗口</button>
+      <button class="control" id="print" type="button">打印</button>
+    </nav>
+  </header>
+
+  <main class="page">
+    <section class="summary" aria-label="关键布局参数">
+      <div class="summary-item">
+        <span>中岛配置</span>
+        <strong>6 列 × 前后 11 bay</strong>
+      </div>
+      <div class="summary-item">
+        <span>主过道</span>
+        <strong>7 条 × 1457.1 mm</strong>
+      </div>
+      <div class="summary-item">
+        <span>关键净距</span>
+        <strong>后墙 1500 / 组间 2000 mm</strong>
+      </div>
+      <div class="summary-item reserved">
+        <span>其他区域预留</span>
+        <strong>约 16.8 × 4.8 m</strong>
+      </div>
+    </section>
+
+    <section class="plan-shell" aria-labelledby="plan-title">
+      <div class="plan-heading">
+        <div>
+          <h2 id="plan-title">店铺平面与尺寸标注</h2>
+          <p id="zoom-status" aria-live="polite">正在适配窗口宽度</p>
+        </div>
+        <div class="file-links">
+          <a class="file-link" href="./store-layout-18x43.svg" target="_blank" rel="noopener">打开 SVG</a>
+          <a class="file-link" href="./store-layout-18x43.png" target="_blank" rel="noopener">打开 PNG</a>
+        </div>
+      </div>
+      <div class="viewport" id="viewport" tabindex="0" aria-label="可滚动的店铺设计图">
+        <img id="plan" src="./store-layout-18x43.svg" width="1600" height="2020" alt="18×43 米店铺货架、橱窗、排队区和收银区平面设计图">
+      </div>
+    </section>
+
+    <p class="legend-note">
+      图纸按 1 m = 40 px 绘制。前后中岛及两侧对应墙架均调整为 11 bay；后墙壁架仍为 13 bay。
+      本图为概念方案，消防疏散、设备接电和现场柱位需在施工前复核。
+    </p>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const viewport = document.querySelector('#viewport');
+      const status = document.querySelector('#zoom-status');
+      const MIN_SCALE = 0.18;
+      const MAX_SCALE = 1.4;
+      const STEP = 0.1;
+      let scale = 0.8;
+      let fitMode = true;
+
+      // 图纸原始宽度固定为 1600 px，缩放仅改变展示尺寸，不修改设计比例。
+      const applyScale = (nextScale, announce = true) => {
+        scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
+        root.style.setProperty('--scale', scale.toFixed(3));
+        if (announce) {
+          status.textContent = `当前缩放 ${Math.round(scale * 100)}%`;
+        }
+      };
+
+      const fitToViewport = () => {
+        const availableWidth = Math.max(320, viewport.clientWidth - 36);
+        fitMode = true;
+        applyScale(Math.min(1, availableWidth / 1600));
+      };
+
+      const changeScale = (delta) => {
+        fitMode = false;
+        applyScale(scale + delta);
+      };
+
+      document.querySelector('#zoom-out').addEventListener('click', () => changeScale(-STEP));
+      document.querySelector('#zoom-in').addEventListener('click', () => changeScale(STEP));
+      document.querySelector('#fit').addEventListener('click', fitToViewport);
+      document.querySelector('#print').addEventListener('click', () => window.print());
+
+      window.addEventListener('keydown', (event) => {
+        if (event.key === '+' || event.key === '=') changeScale(STEP);
+        if (event.key === '-') changeScale(-STEP);
+        if (event.key === '0') fitToViewport();
+      });
+
+      window.addEventListener('resize', () => {
+        if (fitMode) fitToViewport();
+      });
+
+      fitToViewport();
+    })();
+  </script>
+</body>
+</html>
