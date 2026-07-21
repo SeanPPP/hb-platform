@@ -2471,6 +2471,111 @@ public sealed class StoreOrderProductListTests : IDisposable
             (response.Success, response.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("Submit")]
+    [InlineData("Create")]
+    [InlineData("Copy")]
+    public async Task 正式写入口在Preorder门禁不可用时放行普通订单(string operation)
+    {
+        const string targetStoreCode = "S-FAIL-OPEN";
+        const string targetStoreGuid = "store-fail-open";
+        await _db.Insertable(new Store
+        {
+            StoreGUID = targetStoreGuid,
+            StoreCode = targetStoreCode,
+            StoreName = "门禁降级店",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "invalid-gate-activation",
+            TemplateGuid = "invalid-gate-template",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-INVALID",
+            TemplateNameSnapshot = "异常门禁",
+            SourceTemplateRevision = 1,
+            StartAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            EndAtUtc = DateTime.UtcNow.AddHours(1),
+            Status = "UnexpectedStatus",
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationStore
+        {
+            ActivationStoreGuid = "invalid-gate-store",
+            ActivationGuid = "invalid-gate-activation",
+            StoreGuid = targetStoreGuid,
+            StoreCode = targetStoreCode,
+            StoreName = "门禁降级店",
+        }).ExecuteCommandAsync();
+
+        if (operation == "Submit")
+        {
+            await _db.Insertable(new WareHouseOrder
+            {
+                OrderGUID = "fail-open-cart",
+                StoreCode = targetStoreCode,
+                OrderNo = "DRAFT-FAIL-OPEN",
+                FlowStatus = 0,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WareHouseOrderDetails
+            {
+                DetailGUID = "fail-open-cart-detail",
+                OrderGUID = "fail-open-cart",
+                StoreCode = targetStoreCode,
+                ProductCode = "P-FAIL-OPEN",
+                Quantity = 1,
+            }).ExecuteCommandAsync();
+        }
+        else if (operation == "Copy")
+        {
+            await _db.Insertable(new WareHouseOrder
+            {
+                OrderGUID = "fail-open-source",
+                StoreCode = "SOURCE",
+                OrderNo = "SOURCE-FAIL-OPEN",
+                FlowStatus = 1,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WareHouseOrderDetails
+            {
+                DetailGUID = "fail-open-source-detail",
+                OrderGUID = "fail-open-source",
+                StoreCode = "SOURCE",
+                ProductCode = "P-FAIL-OPEN",
+                Quantity = 1,
+            }).ExecuteCommandAsync();
+        }
+
+        var service = CreateService();
+        var result = operation switch
+        {
+            "Submit" => ToGateResult(await service.SubmitOrderAsync(
+                new SubmitStoreOrderRequestDto { StoreCode = targetStoreCode }
+            )),
+            "Create" => ToGateResult(await service.CreateOrderAsync(
+                new CreateStoreOrderDto { StoreCode = targetStoreCode }
+            )),
+            "Copy" => ToGateResult(await service.CopyOrderAsync(
+                new CopyOrderDto
+                {
+                    SourceOrderGUID = "fail-open-source",
+                    TargetStoreCode = targetStoreCode,
+                }
+            )),
+            _ => throw new InvalidOperationException($"未知写入口: {operation}"),
+        };
+
+        Assert.True(result.Success);
+        Assert.Null(result.ErrorCode);
+        Assert.Contains(
+            await _db.Queryable<WareHouseOrder>()
+                .Where(item => item.StoreCode == targetStoreCode && !item.IsDeleted)
+                .ToListAsync(),
+            item => item.FlowStatus == 1
+        );
+
+        static (bool Success, string? ErrorCode) ToGateResult<T>(ApiResponse<T> response) =>
+            (response.Success, response.ErrorCode);
+    }
+
     [Fact]
     public async Task RemoveFromCartAsync_不会用请求门店删除其他分店购物车明细()
     {

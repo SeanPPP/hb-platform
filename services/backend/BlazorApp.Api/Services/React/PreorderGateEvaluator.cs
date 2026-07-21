@@ -237,11 +237,11 @@ internal static class PreorderGateEvaluator
         var currentResource = GetStoreLockResourceByStoreGuid(evaluation.Store.StoreGUID);
         if (!string.Equals(lockResource, currentResource, StringComparison.OrdinalIgnoreCase))
         {
-            // code 解析后可能被改绑；已持有 A 锁时绝不能按 B 分店门禁放行。
+            // 关键逻辑：StoreCode 改绑属于分店身份漂移，不是门禁可用性故障，任何 fail-open 包装都不得吞掉。
             throw new PreorderBusinessException(
-                GateUnavailableMessage,
-                "PREORDER_GATE_UNAVAILABLE",
-                StatusCodes.Status503ServiceUnavailable
+                "分店标识已变化，请刷新后重试",
+                "PREORDER_STORE_IDENTITY_CHANGED",
+                StatusCodes.Status409Conflict
             );
         }
         return evaluation;
@@ -294,6 +294,126 @@ internal static class PreorderGateEvaluator
         );
     }
 
+    internal static Task<string?> ResolveStoreLockResourceForOrdinaryOrderWriteAsync(
+        ISqlSugarClient db,
+        string storeCode,
+        string entryPoint,
+        ILogger logger
+    ) => ExecuteOrdinaryOrderWriteFailOpenAsync(
+        () => ResolveStoreLockResourceFailClosedAsync(db, storeCode, logger),
+        entryPoint,
+        storeCode,
+        logger
+    );
+
+    internal static Task<Store?> ResolveActiveStoreByGuidForOrdinaryOrderWriteAsync(
+        ISqlSugarClient db,
+        string storeGuid,
+        string entryPoint,
+        ILogger logger
+    ) => ExecuteOrdinaryOrderWriteFailOpenAsync(
+        () => ResolveActiveStoreByGuidFailClosedAsync(db, storeGuid, logger),
+        entryPoint,
+        storeGuid,
+        logger
+    );
+
+    internal static Task<PreorderGateEvaluation?> EvaluateLockedForOrdinaryOrderWriteAsync(
+        ISqlSugarClient db,
+        string lockResource,
+        string storeCode,
+        TimeProvider timeProvider,
+        string entryPoint,
+        ILogger logger
+    ) => ExecuteOrdinaryOrderWriteFailOpenAsync(
+        () => EvaluateLockedFailClosedAsync(
+            db,
+            lockResource,
+            storeCode,
+            timeProvider,
+            logger
+        ),
+        entryPoint,
+        storeCode,
+        logger
+    );
+
+    internal static Task<PreorderGateEvaluation?> EvaluateWithHeldStoreGateForOrdinaryOrderWriteAsync(
+        ISqlSugarClient db,
+        string lockResource,
+        string storeCode,
+        TimeProvider timeProvider,
+        string entryPoint,
+        ILogger logger
+    ) => ExecuteOrdinaryOrderWriteFailOpenAsync(
+        () => EvaluateWithHeldStoreGateFailClosedAsync(
+            db,
+            lockResource,
+            storeCode,
+            timeProvider,
+            logger
+        ),
+        entryPoint,
+        storeCode,
+        logger
+    );
+
+    internal static async Task<bool> AcquireDatabaseLockForOrdinaryOrderWriteAsync(
+        ISqlSugarClient db,
+        string lockResource,
+        string canonicalStoreGuid,
+        string storeCode,
+        string entryPoint,
+        ILogger logger
+    )
+    {
+        var result = await ExecuteOrdinaryOrderWriteFailOpenAsync(
+            async () =>
+            {
+                await AcquireDatabaseLockFailClosedAsync(
+                    db,
+                    lockResource,
+                    canonicalStoreGuid,
+                    storeCode,
+                    logger
+                );
+                return OrdinaryOrderGateLockAcquired.Instance;
+            },
+            entryPoint,
+            storeCode,
+            logger
+        );
+        return result != null;
+    }
+
+    private static async Task<T?> ExecuteOrdinaryOrderWriteFailOpenAsync<T>(
+        Func<Task<T>> action,
+        string entryPoint,
+        string storeCode,
+        ILogger logger
+    ) where T : class
+    {
+        try
+        {
+            return await action();
+        }
+        catch (PreorderBusinessException ex) when (string.Equals(
+            ex.ErrorCode,
+            "PREORDER_GATE_UNAVAILABLE",
+            StringComparison.Ordinal
+        ))
+        {
+            // 关键逻辑：普通订单仅在门禁不可用时 fail-open；真实待完成批次及其他业务错误继续原样返回。
+            logger.LogWarning(
+                "Preorder 门禁不可用，普通订单写入已放行: EntryPoint={EntryPoint}, StoreCode={StoreCode}, ErrorCode={ErrorCode}",
+                entryPoint,
+                storeCode,
+                ex.ErrorCode
+            );
+            return null;
+        }
+    }
+
     internal static async Task<T> ExecuteFailClosedAsync<T>(
         Func<Task<T>> action,
         string storeCode,
@@ -319,6 +439,13 @@ internal static class PreorderGateEvaluator
             );
         }
     }
+}
+
+internal sealed class OrdinaryOrderGateLockAcquired
+{
+    internal static readonly OrdinaryOrderGateLockAcquired Instance = new();
+
+    private OrdinaryOrderGateLockAcquired() { }
 }
 
 internal sealed record PreorderGateEvaluation(

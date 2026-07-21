@@ -985,14 +985,17 @@ namespace BlazorApp.Api.Services
 
             var authorization = await ResolveSubmitAuthorizationAsync(normalizedUserGuid);
             // 先按大小写无关规则解析数据库中的 canonical StoreGUID，再使用该值构造所有实例一致的 StoreGate。
-            var resolvedStore = await PreorderGateEvaluator.ResolveActiveStoreByGuidFailClosedAsync(
-                _context.Db,
-                normalizedStoreGuid,
-                _logger
-            );
+            var resolvedStore = await PreorderGateEvaluator
+                .ResolveActiveStoreByGuidForOrdinaryOrderWriteAsync(
+                    _context.Db,
+                    normalizedStoreGuid,
+                    "LegacyCart.SubmitCart",
+                    _logger
+                );
             var storeResource = PreorderGateEvaluator.GetStoreLockResourceByStoreGuid(
-                resolvedStore.StoreGUID
+                resolvedStore?.StoreGUID ?? normalizedStoreGuid
             );
+            var canonicalStoreGuid = resolvedStore?.StoreGUID ?? normalizedStoreGuid;
             await using var storeLock = await PreorderMutationLock.AcquireProcessAsync(
                 storeResource
             );
@@ -1004,17 +1007,19 @@ namespace BlazorApp.Api.Services
                 transactionStarted = true;
 
                 // 关键逻辑：门禁判断、分店授权和购物车状态更新共用同一个 StoreGate 与数据库事务。
-                await PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
-                    _context.Db,
-                    storeResource,
-                    resolvedStore.StoreGUID,
-                    resolvedStore.StoreCode,
-                    _logger
-                );
+                var databaseGateLockHeld = resolvedStore != null
+                    && await PreorderGateEvaluator.AcquireDatabaseLockForOrdinaryOrderWriteAsync(
+                        _context.Db,
+                        storeResource,
+                        resolvedStore.StoreGUID,
+                        resolvedStore.StoreCode,
+                        "LegacyCart.SubmitCart",
+                        _logger
+                    );
 
                 var store = await _context.Db.Queryable<Store>()
                     .FirstAsync(item =>
-                        item.StoreGUID == resolvedStore.StoreGUID
+                        item.StoreGUID == canonicalStoreGuid
                         && item.IsActive
                         && !item.IsDeleted
                     );
@@ -1033,7 +1038,7 @@ namespace BlazorApp.Api.Services
                     var canAccessStore = await _context.Db.Queryable<UserStore>()
                         .AnyAsync(item =>
                             item.UserGUID == normalizedUserGuid
-                            && item.StoreGUID == resolvedStore.StoreGUID
+                            && item.StoreGUID == store.StoreGUID
                             && !item.IsDeleted
                         );
                     if (!canAccessStore)
@@ -1046,17 +1051,18 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
-                if (!authorization.CanBypassGate)
+                if (!authorization.CanBypassGate && databaseGateLockHeld)
                 {
                     var preorderGate = await PreorderGateEvaluator
-                        .EvaluateWithHeldStoreGateFailClosedAsync(
+                        .EvaluateWithHeldStoreGateForOrdinaryOrderWriteAsync(
                             _context.Db,
                             storeResource,
                             store.StoreCode,
                             _timeProvider,
+                            "LegacyCart.SubmitCart",
                             _logger
                         );
-                    if (preorderGate.IsBlocked)
+                    if (preorderGate?.IsBlocked == true)
                     {
                         throw new PreorderBusinessException(
                             "请先完成当前有效的 Preorder，再提交普通订货",
@@ -1107,7 +1113,7 @@ namespace BlazorApp.Api.Services
                     .SetColumns(x => new Cart
                     {
                         CartStatus = BlazorApp.Shared.Constants.CartStatusConstants.Submitted,
-                        StoreGUID = resolvedStore.StoreGUID,
+                        StoreGUID = store.StoreGUID,
                         OrderNumber = cart.OrderNumber,
                         LastModified = DateTime.Now,
                         UpdatedAt = DateTime.Now,

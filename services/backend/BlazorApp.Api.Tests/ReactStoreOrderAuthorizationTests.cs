@@ -1163,6 +1163,74 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
     }
 
+    [Theory]
+    [InlineData("Submit")]
+    [InlineData("Create")]
+    [InlineData("Copy")]
+    public async Task 普通订单入口在前置Preorder门禁不可用时继续调用原子写入服务(
+        string operation
+    )
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
+        var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
+        preorderGateService
+            .Setup(item => item.CheckAsync("1024"))
+            .ThrowsAsync(new PreorderBusinessException(
+                "Preorder 状态暂时无法确认，请稍后重试",
+                "PREORDER_GATE_UNAVAILABLE",
+                StatusCodes.Status503ServiceUnavailable
+            ));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "Order" },
+            preorderGateService: preorderGateService
+        );
+
+        IActionResult result;
+        if (operation == "Submit")
+        {
+            var request = new SubmitStoreOrderRequestDto { StoreCode = "1024" };
+            service
+                .Setup(item => item.SubmitOrderAsync(request))
+                .ReturnsAsync(ApiResponse<bool>.OK(true));
+            result = await controller.SubmitOrder(request);
+            service.Verify(item => item.SubmitOrderAsync(request), Times.Once);
+        }
+        else if (operation == "Create")
+        {
+            var request = new CreateStoreOrderDto { StoreCode = "1024" };
+            service
+                .Setup(item => item.CreateOrderAsync(request))
+                .ReturnsAsync(ApiResponse<string>.OK("order-1"));
+            result = await controller.CreateOrder(request);
+            service.Verify(item => item.CreateOrderAsync(request), Times.Once);
+        }
+        else
+        {
+            var request = new CopyOrderDto
+            {
+                SourceOrderGUID = "source-order",
+                TargetStoreCode = "1024",
+            };
+            scopeService.Setup(item => item.CanAccessOrderAsync("source-order")).ReturnsAsync(true);
+            service
+                .Setup(item => item.CopyOrderAsync(request))
+                .ReturnsAsync(ApiResponse<CopyOrderResultDto>.OK(new CopyOrderResultDto
+                {
+                    OrderGUID = "copy-1",
+                }));
+            result = await controller.CopyOrder(request);
+            service.Verify(item => item.CopyOrderAsync(request), Times.Once);
+        }
+
+        Assert.IsType<OkObjectResult>(result);
+        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+    }
+
     [Fact]
     public void PreorderBypassFlag_CannotBeInjectedFromClientJson()
     {

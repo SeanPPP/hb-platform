@@ -360,9 +360,23 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (PreorderBusinessException ex) when (string.Equals(
+                ex.ErrorCode,
+                "PREORDER_GATE_UNAVAILABLE",
+                StringComparison.Ordinal
+            ))
+            {
+                // 关键逻辑：前置查询仅作体验优化；门禁不可用时继续进入原子写入服务，由服务端当次检查决定。
+                _logger.LogWarning(
+                    "Preorder 前置门禁不可用，普通订单请求继续: EntryPoint={EntryPoint}, StoreCode={StoreCode}, ErrorCode={ErrorCode}",
+                    "ReactStoreOrderController.RequirePreorderCompletion",
+                    storeCode,
+                    ex.ErrorCode
+                );
+                return null;
+            }
             catch (Exception ex)
             {
-                // 门禁查询异常时禁止普通写操作，避免故障窗口绕过 Preorder。
                 _logger.LogError(ex, "Preorder gate check failed for store {StoreCode}", storeCode);
                 return StatusCode(
                     StatusCodes.Status503ServiceUnavailable,
@@ -391,6 +405,15 @@ namespace BlazorApp.Api.Controllers.React
                     StatusCodes.Status503ServiceUnavailable,
                     ApiResponse<object>.Error(
                         message ?? "Preorder 状态暂时无法确认，请稍后重试",
+                        errorCode
+                    )
+                );
+            }
+            if (errorCode == "PREORDER_STORE_IDENTITY_CHANGED")
+            {
+                return Conflict(
+                    ApiResponse<object>.Error(
+                        message ?? "分店标识已变化，请刷新后重试",
                         errorCode
                     )
                 );

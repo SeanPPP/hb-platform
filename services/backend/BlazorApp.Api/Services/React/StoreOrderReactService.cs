@@ -3781,28 +3781,31 @@ namespace BlazorApp.Api.Services.React
             {
                 var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
                 var storeResource = bypassPreorderGate
-                    ? string.Empty
-                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                    ? null
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceForOrdinaryOrderWriteAsync(
                         _db,
                         request.StoreCode,
+                        "React.SubmitOrder",
                         _logger
                     );
-                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                await using IAsyncDisposable? storeLock = bypassPreorderGate || storeResource == null
                     ? null
                     : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
-                if (!bypassPreorderGate)
+                if (!bypassPreorderGate && storeResource != null)
                 {
-                    var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                    var preorderGate = await PreorderGateEvaluator
+                        .EvaluateLockedForOrdinaryOrderWriteAsync(
                         _db,
                         storeResource,
                         request.StoreCode,
                         TimeProvider.System,
+                        "React.SubmitOrder",
                         _logger
                     );
-                    if (preorderGate.IsBlocked)
+                    if (preorderGate?.IsBlocked == true)
                     {
                         return new ApiResponse<bool>
                         {
@@ -7176,28 +7179,31 @@ FinalRows AS (
             {
                 var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
                 var storeResource = bypassPreorderGate
-                    ? string.Empty
-                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                    ? null
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceForOrdinaryOrderWriteAsync(
                         _db,
                         request.StoreCode,
+                        "React.CreateOrder",
                         _logger
                     );
-                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                await using IAsyncDisposable? storeLock = bypassPreorderGate || storeResource == null
                     ? null
                     : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 ApiResponse<string>? response = null;
                 var transaction = await _db.Ado.UseTranAsync(async () =>
                 {
-                    if (!bypassPreorderGate)
+                    if (!bypassPreorderGate && storeResource != null)
                     {
-                        var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                        var preorderGate = await PreorderGateEvaluator
+                            .EvaluateLockedForOrdinaryOrderWriteAsync(
                             _db,
                             storeResource,
                             request.StoreCode,
                             TimeProvider.System,
+                            "React.CreateOrder",
                             _logger
                         );
-                        if (preorderGate.IsBlocked)
+                        if (preorderGate?.IsBlocked == true)
                         {
                             response = new ApiResponse<string>
                             {
@@ -7998,13 +8004,14 @@ FinalRows AS (
             {
                 var bypassPreorderGate = request.BypassPreorderGate || IsWarehouseStaffOnly();
                 var storeResource = bypassPreorderGate
-                    ? string.Empty
-                    : await PreorderGateEvaluator.ResolveStoreLockResourceFailClosedAsync(
+                    ? null
+                    : await PreorderGateEvaluator.ResolveStoreLockResourceForOrdinaryOrderWriteAsync(
                         _db,
                         request.TargetStoreCode,
+                        "React.CopyOrder",
                         _logger
                     );
-                await using IAsyncDisposable? storeLock = bypassPreorderGate
+                await using IAsyncDisposable? storeLock = bypassPreorderGate || storeResource == null
                     ? null
                     : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 var sourceOrder = await _db.Queryable<WareHouseOrder>()
@@ -8092,16 +8099,18 @@ FinalRows AS (
                 {
                     _db.Ado.BeginTran();
 
-                    if (!bypassPreorderGate)
+                    if (!bypassPreorderGate && storeResource != null)
                     {
-                        var preorderGate = await PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                        var preorderGate = await PreorderGateEvaluator
+                            .EvaluateLockedForOrdinaryOrderWriteAsync(
                             _db,
                             storeResource,
                             request.TargetStoreCode,
                             TimeProvider.System,
+                            "React.CopyOrder",
                             _logger
                         );
-                        if (preorderGate.IsBlocked)
+                        if (preorderGate?.IsBlocked == true)
                         {
                             _db.Ado.RollbackTran();
                             return new ApiResponse<CopyOrderResultDto>

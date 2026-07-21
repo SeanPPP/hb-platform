@@ -4,6 +4,7 @@ import {
   ShoppingCartOutlined,
 } from '@ant-design/icons'
 import {
+  Alert,
   Avatar,
   Button,
   Drawer,
@@ -39,8 +40,11 @@ interface ShopCartDrawerProps {
   loading?: boolean
   onCartChanged: () => Promise<void>
   preorderBlocked?: boolean
+  preorderGateLoading?: boolean
+  preorderGateError?: boolean
   onOpenPreorder?: () => void
   onPreorderRequired?: () => Promise<void>
+  onRetryPreorderGate?: () => Promise<void>
 }
 
 export default function ShopCartDrawer({
@@ -50,8 +54,11 @@ export default function ShopCartDrawer({
   loading = false,
   onCartChanged,
   preorderBlocked = false,
+  preorderGateLoading = false,
+  preorderGateError = false,
   onOpenPreorder,
   onPreorderRequired,
+  onRetryPreorderGate,
 }: ShopCartDrawerProps) {
   const { t } = useTranslation()
   const cartItems = cart?.items ?? []
@@ -271,6 +278,19 @@ export default function ShopCartDrawer({
               showCount
               disabled={!canSubmitCart || submitting}
             />
+            {preorderGateError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message={t('shop.preorder.gateUnavailable')}
+                description={t('shop.preorder.gateErrorDescription')}
+                action={onRetryPreorderGate ? (
+                  <Button size="small" loading={preorderGateLoading} onClick={() => void onRetryPreorderGate()}>
+                    {t('shop.preorder.retry')}
+                  </Button>
+                ) : undefined}
+              />
+            ) : null}
             {preorderBlocked ? (
               <Button block type="primary" ghost onClick={onOpenPreorder} disabled={!onOpenPreorder}>
                 {t('shop.preorder.completeBeforeSubmit')}

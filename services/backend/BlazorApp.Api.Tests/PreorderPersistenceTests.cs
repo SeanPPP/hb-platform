@@ -751,7 +751,7 @@ public sealed class PreorderPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task 普通订单加锁后StoreCode改绑其他StoreGuid时failClosed()
+    public async Task 普通订单加锁后StoreCode改绑其他StoreGuid时身份漂移不可FailOpen()
     {
         await SeedProductAndStoreAsync();
         await _db.Updateable<Store>()
@@ -765,20 +765,41 @@ public sealed class PreorderPersistenceTests : IDisposable
             StoreName = "重用编码分店",
             IsActive = true,
         }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "rebind-target-activation",
+            TemplateGuid = "rebind-target-template",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-REBIND-TARGET",
+            TemplateNameSnapshot = "改绑目标店批次",
+            SourceTemplateRevision = 1,
+            StartAtUtc = Now.AddHours(-1),
+            EndAtUtc = Now.AddHours(1),
+            Status = PreorderActivationStatuses.Active,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationStore
+        {
+            ActivationStoreGuid = "rebind-target-store",
+            ActivationGuid = "rebind-target-activation",
+            StoreGuid = "store-2",
+            StoreCode = "S01",
+            StoreName = "重用编码分店",
+        }).ExecuteCommandAsync();
         await _db.Ado.BeginTranAsync();
         try
         {
             var error = await Assert.ThrowsAsync<PreorderBusinessException>(() =>
-                PreorderGateEvaluator.EvaluateLockedFailClosedAsync(
+                PreorderGateEvaluator.EvaluateLockedForOrdinaryOrderWriteAsync(
                     _db,
                     "PreorderStoreGate:store-1",
                     "S01",
                     new FixedTimeProvider(Now),
+                    "Test.React.SubmitOrder",
                     NullLogger.Instance
                 )
             );
-            Assert.Equal(503, error.StatusCode);
-            Assert.Equal("PREORDER_GATE_UNAVAILABLE", error.ErrorCode);
+            Assert.Equal(StatusCodes.Status409Conflict, error.StatusCode);
+            Assert.Equal("PREORDER_STORE_IDENTITY_CHANGED", error.ErrorCode);
         }
         finally
         {
@@ -1399,7 +1420,7 @@ public sealed class PreorderPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task Pda持有StoreGuid锁后StoreCode改绑时共享评估路径failClosed()
+    public async Task Pda持有StoreGuid锁后StoreCode改绑且目标店有Preorder时拒绝写入()
     {
         await SeedProductAndStoreAsync();
         await _db.Insertable(new WareHouseOrder
@@ -1464,11 +1485,31 @@ public sealed class PreorderPersistenceTests : IDisposable
                 StoreName = "重用编码分店",
                 IsActive = true,
             }).ExecuteCommandAsync();
+            await _db.Insertable(new PreorderActivation
+            {
+                ActivationGuid = "pda-rebind-target-activation",
+                TemplateGuid = "pda-rebind-target-template",
+                PeriodNumber = 1,
+                ActivationCode = "PRE-PDA-REBIND",
+                TemplateNameSnapshot = "改绑目标店批次",
+                SourceTemplateRevision = 1,
+                StartAtUtc = DateTime.UtcNow.AddHours(-1),
+                EndAtUtc = DateTime.UtcNow.AddHours(1),
+                Status = PreorderActivationStatuses.Active,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new PreorderActivationStore
+            {
+                ActivationStoreGuid = "pda-rebind-target-store",
+                ActivationGuid = "pda-rebind-target-activation",
+                StoreGuid = "store-2",
+                StoreCode = "S01",
+                StoreName = "重用编码分店",
+            }).ExecuteCommandAsync();
             await heldLock.DisposeAsync();
 
             var response = await submitTask.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.False(response.Success);
-            Assert.Equal("PREORDER_GATE_UNAVAILABLE", response.ErrorCode);
+            Assert.Equal("PREORDER_STORE_IDENTITY_CHANGED", response.ErrorCode);
         }
         finally
         {

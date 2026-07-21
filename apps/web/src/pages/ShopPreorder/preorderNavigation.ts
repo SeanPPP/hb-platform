@@ -13,7 +13,7 @@ interface ShopPreorderNavigationState {
 
 export type PreorderPromptPresentation =
   | { mode: 'hidden'; key: '' }
-  | { mode: 'checking' | 'error' | 'pending'; key: string }
+  | { mode: 'error' | 'pending'; key: string }
 
 interface PreorderPromptState {
   storeCode?: string | null
@@ -41,7 +41,8 @@ export function resolvePreorderPromptPresentation(
   if (!state.storeCode || state.bypassed || state.onPreorderPage) {
     return { mode: 'hidden', key: '' }
   }
-  if (state.loading) return { mode: 'checking', key: `checking:${state.storeCode}` }
+  // 后台检查期间保持静默；只有确认存在有效 Preorder 后才主动提示门店用户。
+  if (state.loading) return { mode: 'hidden', key: '' }
   if (state.error) return { mode: 'error', key: `error:${state.storeCode}` }
   if (state.activationGuids.length) {
     return {

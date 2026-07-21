@@ -124,6 +124,44 @@ public sealed class LegacyCartPreorderGateTests : IDisposable
     }
 
     [Fact]
+    public async Task Preorder门禁不可用时允许普通用户提交旧购物车()
+    {
+        await SeedStoreAndCartAsync("user-1", assignStore: true);
+        var now = DateTime.UtcNow;
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "invalid-activation",
+            TemplateGuid = "invalid-template",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-INVALID",
+            TemplateNameSnapshot = "异常门禁",
+            SourceTemplateRevision = 1,
+            StartAtUtc = now.AddMinutes(-5),
+            EndAtUtc = now.AddHours(1),
+            Status = "UnexpectedStatus",
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationStore
+        {
+            ActivationStoreGuid = "invalid-activation-store",
+            ActivationGuid = "invalid-activation",
+            StoreGuid = "store-1",
+            StoreCode = "S01",
+            StoreName = "一店",
+        }).ExecuteCommandAsync();
+
+        var orderNumber = await CreateService(
+            "user-1",
+            permissions: Permissions.Orders.Create
+        ).SubmitCartAsync(
+            "user-1",
+            new SubmitCartRequest { StoreGUID = "store-1" }
+        );
+
+        Assert.Equal("2026-1000", orderNumber);
+        Assert.Equal("Submitted", (await _db.Queryable<Cart>().FirstAsync()).CartStatus);
+    }
+
+    [Fact]
     public async Task 等待StoreGate期间新批次生效后旧提交会重新检查并拒绝()
     {
         await SeedStoreAndCartAsync("user-1", assignStore: true);

@@ -419,23 +419,34 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
                 var storeResource = await PreorderGateEvaluator
-                    .ResolveStoreLockResourceFailClosedAsync(db, storeCode, _logger);
-                await using var storeLock = await PreorderMutationLock.AcquireProcessAsync(
-                    storeResource
-                );
+                    .ResolveStoreLockResourceForOrdinaryOrderWriteAsync(
+                        db,
+                        storeCode,
+                        "PDA.SubmitOrder",
+                        _logger
+                    );
+                await using IAsyncDisposable? storeLock = storeResource == null
+                    ? null
+                    : await PreorderMutationLock.AcquireProcessAsync(storeResource);
                 await db.Ado.BeginTranAsync();
 
                 try
                 {
-                    var canonicalStoreGuid = PreorderGateEvaluator
-                        .GetCanonicalStoreGuidFromLockResource(storeResource);
-                    await PreorderGateEvaluator.AcquireDatabaseLockFailClosedAsync(
-                        db,
-                        storeResource,
-                        canonicalStoreGuid,
-                        storeCode,
-                        _logger
-                    );
+                    var databaseGateLockHeld = false;
+                    if (storeResource != null)
+                    {
+                        var canonicalStoreGuid = PreorderGateEvaluator
+                            .GetCanonicalStoreGuidFromLockResource(storeResource);
+                        databaseGateLockHeld = await PreorderGateEvaluator
+                            .AcquireDatabaseLockForOrdinaryOrderWriteAsync(
+                                db,
+                                storeResource,
+                                canonicalStoreGuid,
+                                storeCode,
+                                "PDA.SubmitOrder",
+                                _logger
+                            );
+                    }
                     var order = await db.Queryable<WareHouseOrder>()
                         .Where(o => o.OrderGUID == request.OrderGUID)
                         .FirstAsync();
@@ -465,16 +476,19 @@ namespace BlazorApp.Api.Services
                         };
                     }
 
-                    // 先验证订单归属，再检查同店 Preorder；两步均处于同一 StoreGate/事务内。
-                    var gate = await PreorderGateEvaluator
-                        .EvaluateWithHeldStoreGateFailClosedAsync(
-                        db,
-                        storeResource,
-                        storeCode,
-                        TimeProvider.System,
-                        _logger
-                    );
-                    if (gate.IsBlocked)
+                    // 关键逻辑：先验证订单归属；仅门禁本身不可用时放行，其他订单校验仍照常执行。
+                    var gate = databaseGateLockHeld
+                        ? await PreorderGateEvaluator
+                            .EvaluateWithHeldStoreGateForOrdinaryOrderWriteAsync(
+                                db,
+                                storeResource!,
+                                storeCode,
+                                TimeProvider.System,
+                                "PDA.SubmitOrder",
+                                _logger
+                            )
+                        : null;
+                    if (gate?.IsBlocked == true)
                     {
                         await db.Ado.RollbackTranAsync();
                         return new PDAWarehouseOrderResponseDto

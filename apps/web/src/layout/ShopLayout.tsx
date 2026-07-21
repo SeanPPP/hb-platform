@@ -76,9 +76,10 @@ export default function ShopLayout() {
   const resetShop = useShopStore((state) => state.reset)
   const preorderGateBypassed = canBypassPreorderGate(access)
   const effectivePreorderBlocked = resolveEffectivePreorderGateBlocked(
-    preorderBlocked || preorderGateLoading || preorderGateError,
+    preorderBlocked,
     preorderGateBypassed,
   )
+  const effectivePreorderGateError = preorderGateError && !preorderGateBypassed
   const preorderPrompt = resolvePreorderPromptPresentation({
     storeCode: selectedStore?.storeCode,
     activationGuids: preorderActivations.map((item) => item.activationGuid),
@@ -87,6 +88,13 @@ export default function ShopLayout() {
     bypassed: preorderGateBypassed,
     onPreorderPage: isPreorderPage,
   })
+  const showPreorderGateAlert = Boolean(
+    selectedStore &&
+    effectivePreorderBlocked &&
+    !preorderGateLoading &&
+    !preorderGateError &&
+    preorderActivations.length > 0,
+  )
 
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
   const [loadingCategories, setLoadingCategories] = useState(false)
@@ -205,16 +213,16 @@ export default function ShopLayout() {
     const requestToken = beginPreorderGateRequest()
     if (!storeCode) {
       if (isPreorderGateRequestCurrent(requestToken) && selectedStoreCodeRef.current === null) {
-        setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: false, preorderGateError: false })
+        setPreorderGate({ preorderActivations: [], preorderBlocked: false, preorderGateLoading: false, preorderGateError: false })
       }
       return
     }
 
-    // 门禁刷新期间先保持关闭，避免切店时短暂沿用上一家分店的可订货状态。
+    // 请求开始即清除旧分店的阻塞结果；检查中允许提交，最终以后端写入门禁为准。
     if (!isPreorderGateRequestCurrent(requestToken) || selectedStoreCodeRef.current !== storeCode) return
-    setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: true, preorderGateError: false })
+    setPreorderGate({ preorderActivations: [], preorderBlocked: false, preorderGateLoading: true, preorderGateError: false })
     const controller = new AbortController()
-    // 远端数据库异常时及时结束全页等待，转为页面内错误提示和手动重试。
+    // 远端异常时及时结束检查；错误仅作非阻塞提示，不沿用旧门禁。
     const timeoutId = window.setTimeout(() => controller.abort(), PREORDER_GATE_TIMEOUT_MS)
     try {
       const result = await getActivePreorders(storeCode, controller.signal)
@@ -228,7 +236,7 @@ export default function ShopLayout() {
       }
     } catch {
       if (isPreorderGateRequestCurrent(requestToken) && selectedStoreCodeRef.current === storeCode) {
-        setPreorderGate({ preorderActivations: [], preorderBlocked: true, preorderGateLoading: false, preorderGateError: true })
+        setPreorderGate({ preorderActivations: [], preorderBlocked: false, preorderGateLoading: false, preorderGateError: true })
       }
     } finally {
       window.clearTimeout(timeoutId)
@@ -252,7 +260,7 @@ export default function ShopLayout() {
       return
     }
     if (resolution.action === 'refresh') {
-      message.info(t('shop.preorder.gateChecking'))
+      // 手动点击 Preorder 时只触发后台刷新，不再弹出检查中的干扰提示。
       void refreshPreorderGate()
       return
     }
@@ -607,14 +615,24 @@ export default function ShopLayout() {
       </div>
 
       <div className="shop-content">
-        {selectedStore && effectivePreorderBlocked ? (
+        {selectedStore && effectivePreorderGateError ? (
           <Alert
             className="shop-preorder-gate-alert"
-            type={preorderGateError ? 'error' : 'warning'}
+            type="warning"
             showIcon
-            message={preorderGateError ? t('shop.preorder.gateUnavailable') : preorderGateLoading ? t('shop.preorder.gateChecking') : t('shop.preorder.gateBlocked', { count: preorderActivations.length })}
-            description={preorderGateError ? t('shop.preorder.gateErrorDescription') : t('shop.preorder.gateBlockedDescription')}
-            action={<Space>{preorderGateError ? <Button size="small" onClick={() => void refreshPreorderGate()}>{t('shop.preorder.retry')}</Button> : null}{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
+            message={t('shop.preorder.gateUnavailable')}
+            description={t('shop.preorder.gateErrorDescription')}
+            action={<Button size="small" onClick={() => void refreshPreorderGate()}>{t('shop.preorder.retry')}</Button>}
+          />
+        ) : null}
+        {showPreorderGateAlert ? (
+          <Alert
+            className="shop-preorder-gate-alert"
+            type="warning"
+            showIcon
+            message={t('shop.preorder.gateBlocked', { count: preorderActivations.length })}
+            description={t('shop.preorder.gateBlockedDescription')}
+            action={<Space>{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
           />
         ) : null}
         <Outlet />
@@ -626,12 +644,8 @@ export default function ShopLayout() {
         open={preorderPromptOpen}
         title={(
           <Space>
-            {preorderPrompt.mode === 'checking' ? <Spin size="small" /> : <GiftOutlined />}
-            <span>{preorderPrompt.mode === 'pending'
-              ? t('shop.preorder.pendingTitle', { count: preorderActivations.length })
-              : preorderPrompt.mode === 'error'
-                ? t('shop.preorder.gateUnavailable')
-                : t('shop.preorder.gateChecking')}</span>
+            <GiftOutlined />
+            <span>{t('shop.preorder.pendingTitle', { count: preorderActivations.length })}</span>
           </Space>
         )}
         onCancel={() => setDismissedPreorderPromptKey(preorderPrompt.key)}
@@ -639,49 +653,28 @@ export default function ShopLayout() {
           <Button key="later" onClick={() => setDismissedPreorderPromptKey(preorderPrompt.key)}>
             {t('shop.preorder.later')}
           </Button>,
-          preorderPrompt.mode === 'checking' ? (
-            <Button key="checking" type="primary" loading disabled>
-              {t('shop.preorder.gateChecking')}
-            </Button>
-          ) : (
-            <Button
-              key="action"
-              type="primary"
-              onClick={() => {
-                if (preorderPrompt.mode === 'error') {
-                  setDismissedPreorderPromptKey(null)
-                  void refreshPreorderGate()
-                  return
-                }
-                handleOpenPreorder()
-              }}
-            >
-              {preorderPrompt.mode === 'error'
-                ? t('shop.preorder.retry')
-                : t('shop.preorder.enterPreorder')}
-            </Button>
-          ),
+          <Button
+            key="action"
+            type="primary"
+            onClick={handleOpenPreorder}
+          >
+            {t('shop.preorder.enterPreorder')}
+          </Button>,
         ]}
       >
-        {preorderPrompt.mode === 'pending' ? (
-          <Space direction="vertical" size={8}>
-            {preorderActivations.map((item) => {
-              const estimatedArrivalDate = getPreorderDateDisplay(item.estimatedArrivalDate)
-              return (
-                <div key={item.activationGuid}>
-                  <strong>{item.templateName} · {t('shop.preorder.period', { sequence: item.sequenceNumber })}</strong>
-                  <br />
-                  <span>{t('shop.preorder.deadline', { date: preorderDateTimeFormatter.format(new Date(item.endAtUtc)) })}</span>
-                  {estimatedArrivalDate ? <><br /><span>{t('shop.preorder.estimatedArrivalDate', { date: estimatedArrivalDate })}</span></> : null}
-                </div>
-              )
-            })}
-          </Space>
-        ) : (
-          <span>{preorderPrompt.mode === 'error'
-            ? t('shop.preorder.gateErrorDescription')
-            : t('shop.preorder.checkingDescription')}</span>
-        )}
+        <Space direction="vertical" size={8}>
+          {preorderActivations.map((item) => {
+            const estimatedArrivalDate = getPreorderDateDisplay(item.estimatedArrivalDate)
+            return (
+              <div key={item.activationGuid}>
+                <strong>{item.templateName} · {t('shop.preorder.period', { sequence: item.sequenceNumber })}</strong>
+                <br />
+                <span>{t('shop.preorder.deadline', { date: preorderDateTimeFormatter.format(new Date(item.endAtUtc)) })}</span>
+                {estimatedArrivalDate ? <><br /><span>{t('shop.preorder.estimatedArrivalDate', { date: estimatedArrivalDate })}</span></> : null}
+              </div>
+            )
+          })}
+        </Space>
       </Modal>
 
       <ShopCartDrawer
@@ -690,8 +683,11 @@ export default function ShopLayout() {
         cart={cart}
         loading={cartDrawerLoading}
         preorderBlocked={effectivePreorderBlocked}
+        preorderGateLoading={preorderGateLoading}
+        preorderGateError={effectivePreorderGateError}
         onOpenPreorder={preorderActivations[0] ? () => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`) : undefined}
         onPreorderRequired={refreshPreorderGate}
+        onRetryPreorderGate={refreshPreorderGate}
         onCartChanged={refreshFullCart}
       />
 

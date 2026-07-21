@@ -13,16 +13,83 @@ import { RequestError } from '../utils/request'
 import { runPreorderSubmit } from '../pages/ShopPreorder/preorderSubmitFlow'
 import type { PreorderActivationDetail, PreorderActiveResult } from '../types/preorder'
 
-const blockedCases: unknown[] = [true, undefined, null, 0, 1, 'false', 'true', {}]
+const createValidActiveRow = (overrides: Record<string, unknown> = {}) => ({
+  activationGuid: '11111111-1111-7111-8111-111111111111',
+  templateGuid: '22222222-2222-4222-8222-222222222222',
+  templateName: 'Preorder A',
+  periodNumber: 1,
+  activationCode: 'PRE-001',
+  startAtUtc: '2026-07-01T00:00:00Z',
+  endAtUtc: '2026-08-01T00:00:00Z',
+  estimatedArrivalDate: null,
+  status: 'Active',
+  respondedStoreCount: 0,
+  targetStoreCount: 1,
+  ...overrides,
+})
 
-for (const normalOrderBlocked of blockedCases) {
+const unavailableCases: unknown[] = [undefined, null, 0, 1, 'false', 'true', {}]
+
+for (const normalOrderBlocked of unavailableCases) {
   const result = normalizePreorderActiveResult({ normalOrderBlocked, activations: [] })
-  assert.equal(result.normalOrderBlocked, true, `非显式 false 必须 fail-closed：${String(normalOrderBlocked)}`)
+  assert.equal(result.normalOrderBlocked, false, `门禁值异常时必须 fail-open：${String(normalOrderBlocked)}`)
 }
 
 const unlocked = normalizePreorderActiveResult({ normalOrderBlocked: false, activations: [] })
-assert.equal(unlocked.normalOrderBlocked, false, '只有显式 false 可以解除普通订单提交门禁')
+assert.equal(unlocked.normalOrderBlocked, false, '明确无待处理批次时必须允许提交普通订单')
 assert.deepEqual(unlocked.activations, [])
+
+const contradictoryUnlocked = normalizePreorderActiveResult({
+  normalOrderBlocked: false,
+  activations: [createValidActiveRow() as never],
+})
+assert.equal(contradictoryUnlocked.normalOrderBlocked, false, '明确未阻塞但携带批次列表时必须 fail-open')
+assert.deepEqual(contradictoryUnlocked.activations, [], 'flag 与列表矛盾时不得残留批次弹窗数据')
+
+const malformedBlocked = normalizePreorderActiveResult({
+  normalOrderBlocked: true,
+  activations: [{} as never],
+})
+assert.equal(malformedBlocked.normalOrderBlocked, false, '缺少可导航 activationGuid 的畸形批次不得阻塞普通订单')
+assert.deepEqual(malformedBlocked.activations, [])
+
+const confirmedBlocked = normalizePreorderActiveResult({
+  normalOrderBlocked: true,
+  activations: [createValidActiveRow() as never],
+})
+assert.equal(confirmedBlocked.normalOrderBlocked, true, '只有明确阻塞且存在有效待处理批次时才拦截普通订单')
+assert.equal(confirmedBlocked.activations[0]?.activationGuid, '11111111-1111-7111-8111-111111111111', 'UUIDv7 批次必须正常参与门禁')
+
+const malformedActivationCases: Array<[string, Record<string, unknown>]> = [
+  ['不安全导航标识', { activationGuid: '../orders' }],
+  ['无法解析的开始时间', { startAtUtc: 'not-a-date' }],
+  ['结束时间不晚于开始时间', { endAtUtc: '2026-06-01T00:00:00Z' }],
+  ['已关闭状态', { status: 'Closed' }],
+  ['未知状态', { status: 'Unexpected' }],
+  ['非正整数期号', { periodNumber: 0 }],
+  ['负数门店计数', { respondedStoreCount: -1 }],
+  ['非整数门店计数', { targetStoreCount: 1.5 }],
+  ['已响应数大于目标数', { respondedStoreCount: 2, targetStoreCount: 1 }],
+]
+
+for (const [label, overrides] of malformedActivationCases) {
+  const result = normalizePreorderActiveResult({
+    normalOrderBlocked: true,
+    activations: [createValidActiveRow(overrides) as never],
+  })
+  assert.equal(result.normalOrderBlocked, false, `${label}时 active 结果不可确认，必须 fail-open`)
+  assert.deepEqual(result.activations, [])
+}
+
+const mixedMalformed = normalizePreorderActiveResult({
+  normalOrderBlocked: true,
+  activations: [
+    createValidActiveRow() as never,
+    createValidActiveRow({ activationGuid: 'unsafe/path' }) as never,
+  ],
+})
+assert.equal(mixedMalformed.normalOrderBlocked, false, 'valid 与 invalid 行混合时必须整体 fail-open')
+assert.deepEqual(mixedMalformed.activations, [], '畸形响应不得保留部分 activation 供页面渲染')
 
 const warehouseStaffCanBypass = canBypassPreorderGate({
   isWarehouseStaffOnly: true,
@@ -154,7 +221,10 @@ try {
   const focusedPostCommitActive = getActivePreorders('STORE-MUTATION')
   assert.equal(mutationScenarioActiveCount, 2, 'POST 完成后必须启动第二次 active GET，且同一 fresh epoch 的 focus 不得增发请求')
   assert.notEqual(preCommitActive, postCommitActive, '旧 Promise 不能作为 post-commit 成功事实')
-  resolvePreCommitActive(new Response(JSON.stringify({ data: { normalOrderBlocked: true, activations: [] } }), {
+  resolvePreCommitActive(new Response(JSON.stringify({ data: {
+    normalOrderBlocked: true,
+    activations: [createValidActiveRow({ activationGuid: '33333333-3333-4333-8333-333333333333' })],
+  } }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   }))
@@ -181,7 +251,10 @@ try {
   })
   assert.equal(reconciliationOutcome, 'terminal')
   assert.equal(reconciliationScenarioActiveCount, 2, 'terminal reconciliation 必须越过 pre-POST GET，且同 epoch 只增发一次')
-  resolvePreReconciliationActive(new Response(JSON.stringify({ data: { normalOrderBlocked: true, activations: [] } }), {
+  resolvePreReconciliationActive(new Response(JSON.stringify({ data: {
+    normalOrderBlocked: true,
+    activations: [createValidActiveRow({ activationGuid: '44444444-4444-4444-8444-444444444444' })],
+  } }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   }))

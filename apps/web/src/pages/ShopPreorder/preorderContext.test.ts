@@ -67,8 +67,8 @@ assert.deepEqual(
     bypassed: false,
     onPreorderPage: false,
   }),
-  { mode: 'checking', key: 'checking:STORE-A' },
-  '选定分店后应立即显示检查弹窗，不等待商品页完成加载',
+  { mode: 'hidden', key: '' },
+  '选定分店后应静默后台检查，不显示检查中弹窗',
 )
 assert.deepEqual(
   resolvePreorderPromptPresentation({

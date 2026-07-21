@@ -26,7 +26,7 @@ export const useShopStore = create<ShopState>((set, get) => ({
   selectedStore: null,
   cart: null,
   preorderActivations: [],
-  preorderBlocked: true,
+  preorderBlocked: false,
   preorderGateLoading: true,
   preorderGateError: false,
   preorderGateRequestVersion: 0,
@@ -36,20 +36,33 @@ export const useShopStore = create<ShopState>((set, get) => ({
       const nextSelectedStore = selectedStore
         ? stores.find((item) => item.storeCode === selectedStore.storeCode) ?? null
         : state.selectedStore
+      const selectedStoreChanged = nextSelectedStore?.storeCode !== selectedStore?.storeCode
 
       return {
         userStores: stores,
         selectedStore: nextSelectedStore,
         // 门店列表刷新若改变当前门店，必须立即废弃所有旧门禁请求。
-        preorderGateRequestVersion: nextSelectedStore?.storeCode === selectedStore?.storeCode
-          ? state.preorderGateRequestVersion
-          : state.preorderGateRequestVersion + 1,
+        preorderGateRequestVersion: selectedStoreChanged
+          ? state.preorderGateRequestVersion + 1
+          : state.preorderGateRequestVersion,
+        // 门店失效时同步清除旧门店门禁，不能等 effect 发起下一次请求。
+        ...(selectedStoreChanged ? {
+          preorderActivations: [],
+          preorderBlocked: false,
+          preorderGateLoading: false,
+          preorderGateError: false,
+        } : {}),
       }
     }),
   setSelectedStore: (selectedStore) => set((state) => ({
     selectedStore,
     // 即使发生 A→B→A，单调递增 token 也能阻止最早的 A 请求回写。
     preorderGateRequestVersion: state.preorderGateRequestVersion + 1,
+    // 切店立即清除上一家分店的阻塞和错误，检查完成前保持 fail-open。
+    preorderActivations: [],
+    preorderBlocked: false,
+    preorderGateLoading: true,
+    preorderGateError: false,
   })),
   setCart: (cart) => set({ cart }),
   setPreorderGate: (state) => set(state),
@@ -68,8 +81,8 @@ export const useShopStore = create<ShopState>((set, get) => ({
       selectedStore: null,
       cart: null,
       preorderActivations: [],
-      preorderBlocked: true,
-      preorderGateLoading: true,
+      preorderBlocked: false,
+      preorderGateLoading: false,
       preorderGateError: false,
       // reset 也只递增不归零，避免旧 token 与后续新请求发生碰撞。
       preorderGateRequestVersion: state.preorderGateRequestVersion + 1,

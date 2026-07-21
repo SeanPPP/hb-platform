@@ -109,6 +109,41 @@ interface ApiPreorderActiveResult {
   activations?: ApiActivationSummary[] | null
 }
 
+// 后端使用 UUIDv7；这里只校验 canonical GUID 形状，不能把版本限制在旧的 1-5。
+const PREORDER_ACTIVATION_GUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+
+function isApiActivationSummary(value: unknown): value is ApiActivationSummary {
+  if (!value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  const requiredStrings = [
+    'activationGuid',
+    'templateGuid',
+    'templateName',
+    'activationCode',
+    'startAtUtc',
+    'endAtUtc',
+    'status',
+  ]
+  const startAt = typeof row.startAtUtc === 'string' ? Date.parse(row.startAtUtc) : Number.NaN
+  const endAt = typeof row.endAtUtc === 'string' ? Date.parse(row.endAtUtc) : Number.NaN
+  const periodNumber = row.periodNumber
+  const respondedStoreCount = row.respondedStoreCount
+  const targetStoreCount = row.targetStoreCount
+
+  // 只有可安全导航、时间有效且确属待处理状态的完整批次，才能作为阻塞依据。
+  return requiredStrings.every((key) => typeof row[key] === 'string' && (row[key] as string).trim().length > 0)
+    && PREORDER_ACTIVATION_GUID_PATTERN.test(row.activationGuid as string)
+    && Number.isFinite(startAt)
+    && Number.isFinite(endAt)
+    && startAt < endAt
+    && (row.status === 'Scheduled' || row.status === 'Active')
+    && Number.isInteger(periodNumber) && (periodNumber as number) > 0
+    && Number.isInteger(respondedStoreCount) && (respondedStoreCount as number) >= 0
+    && Number.isInteger(targetStoreCount) && (targetStoreCount as number) >= 0
+    && (respondedStoreCount as number) <= (targetStoreCount as number)
+    && (row.estimatedArrivalDate === null || typeof row.estimatedArrivalDate === 'string')
+}
+
 function normalizeActivation(row: ApiActivationSummary): PreorderActivationSummary {
   return {
     ...row,
@@ -132,10 +167,19 @@ function normalizeActivationDetail(row: ApiActivationSummary & Omit<PreorderActi
 }
 
 export function normalizePreorderActiveResult(result: ApiPreorderActiveResult): PreorderActiveResult {
+  const activationRows = Array.isArray(result.activations) ? result.activations : []
+  // flag 与列表必须共同证明存在待处理批次；矛盾或畸形响应不得残留弹窗数据。
+  const confirmedBlocked = result.normalOrderBlocked === true
+    && activationRows.length > 0
+    && activationRows.every(isApiActivationSummary)
+  const activations = confirmedBlocked
+    ? activationRows.map(normalizeActivation)
+    : []
+
   return {
-    // 门禁响应异常时必须 fail-closed；只有后端显式返回 false 才解锁普通订单提交。
-    normalOrderBlocked: result.normalOrderBlocked === false ? false : true,
-    activations: Array.isArray(result.activations) ? result.activations.map(normalizeActivation) : [],
+    // 只有后端明确返回阻塞，且同时给出可进入的有效批次时才锁住普通订单。
+    normalOrderBlocked: confirmedBlocked,
+    activations,
   }
 }
 
@@ -149,10 +193,10 @@ export function canBypassPreorderGate(
 }
 
 export function resolveEffectivePreorderGateBlocked(
-  preorderGateUnavailableOrBlocked: boolean,
+  preorderBlocked: boolean,
   canBypass: boolean,
 ) {
-  return !canBypass && preorderGateUnavailableOrBlocked
+  return !canBypass && preorderBlocked
 }
 
 export async function getPreorderTemplates(): Promise<PreorderTemplateSummary[]> {
