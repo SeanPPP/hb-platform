@@ -811,6 +811,35 @@ namespace BlazorApp.Api.Tests
             var item = Assert.Single(result.Items);
             Assert.Equal("P-PACK-VISIBLE-001", item.ProductCode);
             Assert.Equal(24, item.PackingQuantity);
+            Assert.False(item.IsPackingQuantityFallback);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_PackingQuantityFallsBackToWarehouseValue()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-PACK-FALLBACK-001",
+                "ITEM-PACK-FALLBACK-001",
+                "装箱数仓库回退商品",
+                null,
+                warehousePackingQuantity: 36
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["packingQty"] = new[] { "gte:36", "lte:36" },
+                },
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal(36, item.PackingQuantity);
+            Assert.True(item.IsPackingQuantityFallback);
         }
 
         [Fact]
@@ -1733,6 +1762,390 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(6.66m, product.PurchasePrice);
             Assert.Equal(4.28m, storePrice.PurchasePrice);
             Assert.Equal(11.99m, storePrice.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenAllSevenFieldsProvided_UpdatesWarehouseDomesticAndImportLinkedPrices()
+        {
+            const string productCode = "P-BATCH-ALL-FIELDS";
+            await SeedPriceSyncProductAsync(
+                productCode,
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await SeedStoreRetailPriceAsync(
+                "S01",
+                productCode,
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m
+            );
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                ProductName = "七字段批量更新商品",
+                PackingQuantity = 12,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        DomesticPrice = 8.88m,
+                        OEMPrice = 15.55m,
+                        ImportPrice = 6.66m,
+                        Volume = 0.125m,
+                        PackingQuantity = 24,
+                        MinOrderQuantity = 3,
+                        IsActive = false,
+                    },
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var storeRetailPrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(8.88m, warehouseProduct.DomesticPrice);
+            Assert.Equal(15.55m, warehouseProduct.OEMPrice);
+            Assert.Equal(6.66m, warehouseProduct.ImportPrice);
+            Assert.Equal(0.125m, warehouseProduct.Volume);
+            Assert.Equal(24, warehouseProduct.PackingQuantity);
+            Assert.Equal(3, warehouseProduct.MinOrderQuantity);
+            Assert.False(warehouseProduct.IsActive);
+            Assert.Equal(24, domesticProduct.PackingQuantity);
+            Assert.Equal(6.66m, product.PurchasePrice);
+            Assert.Equal(6.66m, storeRetailPrice.PurchasePrice);
+            Assert.Equal(11.99m, storeRetailPrice.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_UpdatesPackingAndMinOrderQuantityAndKeepsZeroOnNullPatch()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-BATCH-QUANTITY-EXISTING",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "P-BATCH-QUANTITY-EXISTING",
+                ProductName = "批量数量更新商品",
+                PackingQuantity = 12,
+                IsActive = true,
+                IsDeleted = false,
+                UpdatedAt = new DateTime(2020, 1, 1),
+            }).ExecuteCommandAsync();
+            await _db.Updateable<WarehouseProduct>()
+                .SetColumns(x => new WarehouseProduct
+                {
+                    PackingQuantity = 12,
+                    MinOrderQuantity = 3,
+                })
+                .Where(x => x.ProductCode == "P-BATCH-QUANTITY-EXISTING")
+                .ExecuteCommandAsync();
+            var service = CreateService();
+
+            var zeroResult = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-QUANTITY-EXISTING",
+                        PackingQuantity = 0,
+                        MinOrderQuantity = 0,
+                    },
+                }
+            );
+            var nullResult = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-QUANTITY-EXISTING",
+                        DomesticPrice = 9.99m,
+                    },
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == "P-BATCH-QUANTITY-EXISTING");
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == "P-BATCH-QUANTITY-EXISTING");
+
+            Assert.True(zeroResult.Success);
+            Assert.True(nullResult.Success);
+            Assert.Equal(0, warehouseProduct.PackingQuantity);
+            Assert.Equal(0, warehouseProduct.MinOrderQuantity);
+            Assert.Equal(0, domesticProduct.PackingQuantity);
+            Assert.True(domesticProduct.UpdatedAt > new DateTime(2020, 1, 1));
+            Assert.Equal(9.99m, warehouseProduct.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenWarehouseProductMissing_CreatesQuantitiesWithoutUpdatingDeletedDomesticProduct()
+        {
+            const string productCode = "P-BATCH-QUANTITY-NEW";
+            await _db.Insertable(new Product
+            {
+                UUID = $"product-uuid-{productCode}",
+                ProductCode = productCode,
+                ProductName = "批量新建仓库商品",
+                ItemNumber = "ITEM-BATCH-QUANTITY-NEW",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                ProductName = "已删除国内商品",
+                PackingQuantity = 7,
+                IsActive = false,
+                IsDeleted = true,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ItemNumber = "ITEM-BATCH-QUANTITY-NEW",
+                        PackingQuantity = 18,
+                        MinOrderQuantity = 4,
+                    },
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var deletedDomesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(18, warehouseProduct.PackingQuantity);
+            Assert.Equal(4, warehouseProduct.MinOrderQuantity);
+            Assert.True(warehouseProduct.IsActive);
+            Assert.Equal(7, deletedDomesticProduct.PackingQuantity);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenExistingProductCodeRepeats_ProcessesFirstAndKeepsOtherItems()
+        {
+            const string firstCode = "P-BATCH-DUPLICATE-EXISTING";
+            const string otherCode = "P-BATCH-DUPLICATE-OTHER";
+            await SeedPriceSyncProductAsync(firstCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await SeedPriceSyncProductAsync(otherCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = firstCode, DomesticPrice = 8.88m },
+                    new()
+                    {
+                        ProductCode = firstCode.ToLowerInvariant(),
+                        OEMPrice = 99.99m,
+                    },
+                    new() { ProductCode = otherCode, DomesticPrice = 7.77m },
+                }
+            );
+
+            var first = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == firstCode);
+            var other = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == otherCode);
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains(result.Errors, error => error.Contains("批次内商品编码重复"));
+            Assert.Equal(8.88m, first.DomesticPrice);
+            Assert.Equal(11.99m, first.OEMPrice);
+            Assert.Equal(7.77m, other.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenMissingProductResolvesByItemAndCode_RejectsDuplicateCreateOnly()
+        {
+            const string firstCode = "P-BATCH-DUPLICATE-NEW";
+            const string otherCode = "P-BATCH-DUPLICATE-NEW-OTHER";
+            await _db.Insertable(new List<Product>
+            {
+                new()
+                {
+                    UUID = $"product-uuid-{firstCode}",
+                    ProductCode = firstCode,
+                    ProductName = "待新建重复商品",
+                    ItemNumber = "ITEM-BATCH-DUPLICATE-NEW",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    UUID = $"product-uuid-{otherCode}",
+                    ProductCode = otherCode,
+                    ProductName = "待新建其他商品",
+                    ItemNumber = "ITEM-BATCH-DUPLICATE-NEW-OTHER",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ItemNumber = "ITEM-BATCH-DUPLICATE-NEW",
+                        DomesticPrice = 8.88m,
+                    },
+                    new() { ProductCode = firstCode, OEMPrice = 99.99m },
+                    new() { ProductCode = otherCode, DomesticPrice = 7.77m },
+                }
+            );
+
+            var first = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == firstCode);
+            var other = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == otherCode);
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains(result.Errors, error => error.Contains("批次内商品编码重复"));
+            Assert.Equal(8.88m, first.DomesticPrice);
+            Assert.Null(first.OEMPrice);
+            Assert.Equal(7.77m, other.DomesticPrice);
+        }
+
+        [Theory]
+        [InlineData(-1, null)]
+        [InlineData(null, -1)]
+        public async Task BatchUpdateAsync_WhenQuantityIsNegative_RejectsWholeItem(
+            int? packingQuantity,
+            int? minOrderQuantity
+        )
+        {
+            const string productCode = "P-BATCH-NEGATIVE-QUANTITY";
+            await SeedPriceSyncProductAsync(
+                productCode,
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                ProductName = "负数校验商品",
+                PackingQuantity = 12,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Updateable<WarehouseProduct>()
+                .SetColumns(x => new WarehouseProduct
+                {
+                    DomesticPrice = 5.55m,
+                    PackingQuantity = 12,
+                    MinOrderQuantity = 3,
+                    IsActive = true,
+                })
+                .Where(x => x.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        DomesticPrice = 9.99m,
+                        PackingQuantity = packingQuantity,
+                        MinOrderQuantity = minOrderQuantity,
+                        IsActive = false,
+                    },
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal(0, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains(result.Errors, error => error.Contains("不能为负数"));
+            Assert.Equal(5.55m, warehouseProduct.DomesticPrice);
+            Assert.Equal(12, warehouseProduct.PackingQuantity);
+            Assert.Equal(3, warehouseProduct.MinOrderQuantity);
+            Assert.True(warehouseProduct.IsActive);
+            Assert.Equal(12, domesticProduct.PackingQuantity);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenWarehouseProductMissing_SyncsZeroPackingToActiveDomesticProduct()
+        {
+            const string productCode = "P-BATCH-QUANTITY-NEW-ACTIVE";
+            await _db.Insertable(new Product
+            {
+                UUID = $"product-uuid-{productCode}",
+                ProductCode = productCode,
+                ProductName = "新建仓库数量双写商品",
+                ItemNumber = "ITEM-BATCH-QUANTITY-NEW-ACTIVE",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                ProductName = "活跃国内商品",
+                PackingQuantity = 7,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ItemNumber = "ITEM-BATCH-QUANTITY-NEW-ACTIVE",
+                        PackingQuantity = 0,
+                        MinOrderQuantity = 0,
+                    },
+                }
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(0, warehouseProduct.PackingQuantity);
+            Assert.Equal(0, warehouseProduct.MinOrderQuantity);
+            Assert.Equal(0, domesticProduct.PackingQuantity);
         }
 
         [Fact]

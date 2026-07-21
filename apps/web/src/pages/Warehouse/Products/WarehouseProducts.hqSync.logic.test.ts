@@ -316,6 +316,15 @@ async function main() {
       !columnsSection.includes("dataIndex: 'middlePackQty'"),
       '主表中包数列不能绑定 middlePackQty，避免与 MiddlePackQuantity 来源混淆',
     )
+    const packingColumnSection = extractSection(
+      columnsSection,
+      "key: 'packingQty'",
+      "key: 'volume'",
+    )
+    assert(
+      packingColumnSection.includes("record.isPackingQtyFallback ? <Tag color=\"green\">{t('warehouse.warehouse')}</Tag> : <Tag color=\"gold\">{t('warehouse.domestic')}</Tag>"),
+      '装箱数使用仓库回退值时应显示仓库来源，否则显示国内来源',
+    )
   })
   if (minOrderQuantityColumnFailure) failures.push(minOrderQuantityColumnFailure)
 

@@ -44,8 +44,10 @@ try {
   await batchUpdateWarehouseProducts([
     {
       ProductCode: 'P001',
-      MinOrderQuantity: 6,
-      PackingQuantity: 24,
+      MinOrderQuantity: 0,
+      PackingQuantity: 0,
+      IsActive: false,
+      DomesticPrice: undefined,
     },
   ], { syncStorePurchasePrice: false })
 
@@ -58,13 +60,14 @@ try {
       Items: [
         {
           ProductCode: 'P001',
-          MinOrderQuantity: 6,
-          PackingQuantity: 24,
+          MinOrderQuantity: 0,
+          PackingQuantity: 0,
+          IsActive: false,
         },
       ],
       SyncStorePurchasePrice: false,
     },
-    '批量更新请求体应保留 MinOrderQuantity 和 PackingQuantity',
+    '批量更新请求体应保留数量零值和 false，并忽略 undefined 字段',
   )
 } finally {
   globalThis.fetch = originalFetch

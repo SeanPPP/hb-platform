@@ -1587,7 +1587,8 @@ export default function WarehouseProductsPage() {
             ...numberRangeFilterProps('packingQty'),
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
               <span>{value}</span>
-              {record.isPackingQtyFallback ? <Tag color="gold">{t('warehouse.domestic')}</Tag> : <Tag color="green">{t('warehouse.warehouse')}</Tag>}
+              {/* 装箱数优先显示国内商品值；仅在国内值缺失时回退到仓库值。 */}
+              {record.isPackingQtyFallback ? <Tag color="green">{t('warehouse.warehouse')}</Tag> : <Tag color="gold">{t('warehouse.domestic')}</Tag>}
             </Space>) : ('--'),
         },
         {

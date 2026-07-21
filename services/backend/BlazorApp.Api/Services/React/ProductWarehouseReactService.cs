@@ -745,9 +745,24 @@ namespace BlazorApp.Api.Services.React
                 var toCreateWp = new List<WarehouseProduct>();
                 var codesWithImportPrice = new List<string>();
                 var codesWithStorePurchasePrice = new List<string>();
+                var packingQuantityByCode = new Dictionary<string, int>();
+                var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in items)
                 {
+                    if (
+                        (item.PackingQuantity.HasValue && item.PackingQuantity.Value < 0)
+                        || (item.MinOrderQuantity.HasValue && item.MinOrderQuantity.Value < 0)
+                    )
+                    {
+                        // 服务层同时做防御性校验，确保绕过 DTO 校验的调用也不会部分写入其他字段。
+                        result.Errors.Add(
+                            $"装箱数和最小起订量不能为负数: ProductCode={item.ProductCode}, ItemNumber={item.ItemNumber}"
+                        );
+                        result.FailedCount++;
+                        continue;
+                    }
+
                     WarehouseProduct? wp = null;
                     string? targetCode = null;
                     if (
@@ -768,31 +783,40 @@ namespace BlazorApp.Api.Services.React
                         targetCode = mappedCode;
                     }
 
+                    if (wp == null && string.IsNullOrWhiteSpace(targetCode))
+                    {
+                        if (!string.IsNullOrWhiteSpace(item.ProductCode))
+                        {
+                            targetCode = item.ProductCode!;
+                        }
+                        else if (
+                            !string.IsNullOrWhiteSpace(item.ItemNumber)
+                            && itemToCode.TryGetValue(item.ItemNumber!, out var mapCode2)
+                        )
+                        {
+                            targetCode = mapCode2;
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(targetCode))
+                    {
+                        result.Errors.Add(
+                            $"无法解析商品编码: ProductCode={item.ProductCode}, ItemNumber={item.ItemNumber}"
+                        );
+                        result.FailedCount++;
+                        continue;
+                    }
+
+                    if (!processedProductCodes.Add(targetCode))
+                    {
+                        // 同一批次按最终商品编码只处理首项，避免重复新建主键或后项覆盖首项。
+                        result.Errors.Add($"批次内商品编码重复: {targetCode}");
+                        result.FailedCount++;
+                        continue;
+                    }
+
                     if (wp == null)
                     {
-                        if (string.IsNullOrWhiteSpace(targetCode))
-                        {
-                            if (!string.IsNullOrWhiteSpace(item.ProductCode))
-                            {
-                                targetCode = item.ProductCode!;
-                            }
-                            else if (
-                                !string.IsNullOrWhiteSpace(item.ItemNumber)
-                                && itemToCode.TryGetValue(item.ItemNumber!, out var mapCode2)
-                            )
-                            {
-                                targetCode = mapCode2;
-                            }
-                        }
-                        if (string.IsNullOrWhiteSpace(targetCode))
-                        {
-                            result.Errors.Add(
-                                $"无法解析商品编码: ProductCode={item.ProductCode}, ItemNumber={item.ItemNumber}"
-                            );
-                            result.FailedCount++;
-                            continue;
-                        }
-
                         var newWp = new WarehouseProduct
                         {
                             ProductCode = targetCode!,
@@ -800,6 +824,8 @@ namespace BlazorApp.Api.Services.React
                             OEMPrice = item.OEMPrice,
                             ImportPrice = item.ImportPrice,
                             Volume = item.Volume,
+                            PackingQuantity = item.PackingQuantity,
+                            MinOrderQuantity = item.MinOrderQuantity,
                             StockQuantity = 0,
                             IsActive = item.IsActive ?? true,
                             IsDeleted = false,
@@ -807,6 +833,11 @@ namespace BlazorApp.Api.Services.React
                             UpdatedAt = DateTime.Now,
                         };
                         toCreateWp.Add(newWp);
+                        if (item.PackingQuantity.HasValue)
+                        {
+                            // 装箱数以国内商品表为展示主来源，同时保留仓库表值供缺失时回退。
+                            packingQuantityByCode[targetCode!] = item.PackingQuantity.Value;
+                        }
                         if (item.ImportPrice.HasValue)
                         {
                             codesWithImportPrice.Add(targetCode!);
@@ -828,6 +859,14 @@ namespace BlazorApp.Api.Services.React
                         wp.ImportPrice = item.ImportPrice;
                     if (item.Volume.HasValue)
                         wp.Volume = item.Volume;
+                    if (item.PackingQuantity.HasValue)
+                    {
+                        wp.PackingQuantity = item.PackingQuantity.Value;
+                        // 只同步未删除的国内商品，避免恢复或污染历史软删除记录。
+                        packingQuantityByCode[wp.ProductCode] = item.PackingQuantity.Value;
+                    }
+                    if (item.MinOrderQuantity.HasValue)
+                        wp.MinOrderQuantity = item.MinOrderQuantity.Value;
                     if (item.IsActive.HasValue)
                     {
                         // 字段可选更新不传上下架状态时，保留已有仓库状态。
@@ -857,6 +896,8 @@ namespace BlazorApp.Api.Services.React
                             w.OEMPrice,
                             w.ImportPrice,
                             w.Volume,
+                            w.PackingQuantity,
+                            w.MinOrderQuantity,
                             w.IsActive,
                             w.UpdatedAt,
                         })
@@ -867,6 +908,30 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _context.Db.Insertable(toCreateWp).ExecuteCommandAsync();
                     result.SuccessCount += toCreateWp.Count;
+                }
+
+                if (packingQuantityByCode.Any())
+                {
+                    var packingProductCodes = packingQuantityByCode.Keys.ToList();
+                    var domesticProducts = await _context
+                        .Db.Queryable<DomesticProduct>()
+                        .Where(dp => packingProductCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
+                        .ToListAsync();
+                    foreach (var domesticProduct in domesticProducts)
+                    {
+                        domesticProduct.PackingQuantity = packingQuantityByCode[
+                            domesticProduct.ProductCode
+                        ];
+                        domesticProduct.UpdatedAt = DateTime.Now;
+                    }
+
+                    if (domesticProducts.Any())
+                    {
+                        await _context
+                            .Db.Updateable(domesticProducts)
+                            .UpdateColumns(dp => new { dp.PackingQuantity, dp.UpdatedAt })
+                            .ExecuteCommandAsync();
+                    }
                 }
 
                 if (codesWithImportPrice.Any())
@@ -1818,19 +1883,40 @@ namespace BlazorApp.Api.Services.React
                             query = ApplyWarehouseIntRangeFilter(
                                 query,
                                 values,
-                                // 表格当前展示的是国内商品装箱数，列头过滤必须与可见值保持一致。
+                                // 展示值优先取国内商品，缺失时回退仓库商品；过滤条件必须保持相同语义。
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        dp.PackingQuantity != null
-                                        && dp.PackingQuantity.Value >= value,
+                                        (
+                                            dp.PackingQuantity != null
+                                            && dp.PackingQuantity.Value >= value
+                                        )
+                                        || (
+                                            dp.PackingQuantity == null
+                                            && w.PackingQuantity.HasValue
+                                            && w.PackingQuantity.Value >= value
+                                        ),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        dp.PackingQuantity != null
-                                        && dp.PackingQuantity.Value <= value,
+                                        (
+                                            dp.PackingQuantity != null
+                                            && dp.PackingQuantity.Value <= value
+                                        )
+                                        || (
+                                            dp.PackingQuantity == null
+                                            && w.PackingQuantity.HasValue
+                                            && w.PackingQuantity.Value <= value
+                                        ),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        dp.PackingQuantity != null
-                                        && dp.PackingQuantity.Value == value
+                                        (
+                                            dp.PackingQuantity != null
+                                            && dp.PackingQuantity.Value == value
+                                        )
+                                        || (
+                                            dp.PackingQuantity == null
+                                            && w.PackingQuantity.HasValue
+                                            && w.PackingQuantity.Value == value
+                                        )
                             );
                             break;
                         case "volume":
@@ -2122,7 +2208,8 @@ namespace BlazorApp.Api.Services.React
                             ImportPrice = w.ImportPrice,
                             WarehouseVolume = w.Volume,
                             DomesticUnitVolume = dp.UnitVolume,
-                            PackingQuantity = dp.PackingQuantity,
+                            DomesticPackingQuantity = dp.PackingQuantity,
+                            WarehousePackingQuantity = w.PackingQuantity,
                             MinOrderQuantity = w.MinOrderQuantity,
                             IsActive = w.IsActive,
                             CreatedAt = w.CreatedAt,
@@ -2156,8 +2243,10 @@ namespace BlazorApp.Api.Services.React
                     Volume = row.WarehouseVolume ?? row.DomesticUnitVolume,
                     IsVolumeFallback =
                         !row.WarehouseVolume.HasValue && row.DomesticUnitVolume.HasValue,
-                    PackingQuantity = row.PackingQuantity,
-                    IsPackingQuantityFallback = false,
+                    PackingQuantity = row.DomesticPackingQuantity ?? row.WarehousePackingQuantity,
+                    IsPackingQuantityFallback =
+                        !row.DomesticPackingQuantity.HasValue
+                        && row.WarehousePackingQuantity.HasValue,
                     MinOrderQuantity = row.MinOrderQuantity,
                     IsActive = row.IsActive,
                     CreatedAt = row.CreatedAt,

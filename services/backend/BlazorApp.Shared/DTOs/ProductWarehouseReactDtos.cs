@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Shared.DTOs
@@ -57,6 +58,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
         public decimal? Volume { get; set; }
+        [Range(0, int.MaxValue, ErrorMessage = "装箱数不能小于 0")]
+        public int? PackingQuantity { get; set; }
+
+        [Range(0, int.MaxValue, ErrorMessage = "最小起订量不能小于 0")]
+        public int? MinOrderQuantity { get; set; }
 
         /// <summary>
         /// 仓库上下架状态；为空时不修改已有仓库记录，新增仓库记录仍默认上架。
