@@ -189,6 +189,99 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task AssignStoresToUserAsync_PreservesExistingInactiveStoreAndAllowsRemoval()
+        {
+            await SeedInactiveStoreUserAsync();
+            var service = CreateUserService(await SeedAdminScopeAsync());
+
+            var preserveResult = await service.AssignStoresToUserAsync(
+                "inactive-store-user",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "inactive-store", IsPrimary = false },
+                }
+            );
+
+            Assert.True(preserveResult.Success);
+            Assert.True(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "inactive-store-user"
+                && item.StoreGUID == "inactive-store"
+                && !item.IsDeleted
+            ));
+
+            var removeResult = await service.AssignStoresToUserAsync(
+                "inactive-store-user",
+                new List<UserStoreAssignmentDto>()
+            );
+
+            Assert.True(removeResult.Success);
+            Assert.False(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "inactive-store-user" && item.StoreGUID == "inactive-store"
+            ));
+        }
+
+        [Fact]
+        public async Task AssignStoresToUserAsync_AllowsNewInactiveStoreRelationship()
+        {
+            await SeedUsersAndStoresAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "inactive-new-store",
+                StoreCode = "INACTIVE-NEW",
+                StoreName = "Inactive New Store",
+                IsActive = false,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(await SeedAdminScopeAsync());
+
+            var result = await service.AssignStoresToUserAsync(
+                "user-1",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "inactive-new-store", IsPrimary = false },
+                }
+            );
+
+            Assert.True(result.Success);
+            Assert.True(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "user-1"
+                && item.StoreGUID == "inactive-new-store"
+                && !item.IsDeleted
+            ));
+        }
+
+        [Fact]
+        public async Task AssignStoresToUserAsync_RejectsMissingOrDeletedStoreWithoutPartialWrite()
+        {
+            await SeedUsersAndStoresAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "deleted-store",
+                StoreCode = "DELETED",
+                StoreName = "Deleted Store",
+                IsActive = false,
+                IsDeleted = true,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(await SeedAdminScopeAsync());
+
+            var result = await service.AssignStoresToUserAsync(
+                "user-1",
+                new List<UserStoreAssignmentDto>
+                {
+                    new() { StoreGUID = "store-2", IsPrimary = false },
+                    new() { StoreGUID = "deleted-store", IsPrimary = false },
+                    new() { StoreGUID = "missing-store", IsPrimary = false },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_NOT_FOUND", result.ErrorCode);
+            Assert.False(await _db.Queryable<UserStore>().AnyAsync(item =>
+                item.UserGUID == "user-1" && item.StoreGUID == "store-2"
+            ));
+        }
+
+        [Fact]
         public async Task AssignStoresToUserAsync_AdminManagementFlagSynchronizesStoreManagerRole()
         {
             await SeedUsersAndStoresAsync();

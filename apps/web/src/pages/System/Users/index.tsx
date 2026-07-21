@@ -732,7 +732,11 @@ export default function SystemUsersPage() {
       }
     } catch (error) {
       console.error(error)
-      message.error(t('system.users.storeAssignFailed', '分店分配失败'))
+      message.error(
+        error instanceof Error
+          ? error.message
+          : t('system.users.storeAssignFailed', '分店分配失败'),
+      )
     } finally {
       setStoreSaving(false)
     }

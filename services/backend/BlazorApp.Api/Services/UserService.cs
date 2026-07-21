@@ -1777,13 +1777,12 @@ namespace BlazorApp.Api.Services
                     : await db.Queryable<Store>()
                         .Where(store =>
                             requestedStoreGuids.Contains(store.StoreGUID)
-                            && store.IsActive
                             && !store.IsDeleted
                         )
                         .CountAsync();
                 if (validStoreCount != requestedStoreGuids.Count)
                 {
-                    return ApiResponse<bool>.Error("包含不存在或已停用的分店", "STORE_NOT_FOUND");
+                    return ApiResponse<bool>.Error("包含不存在或已删除的分店", "STORE_NOT_FOUND");
                 }
 
                 var existingUserStores = await db.Queryable<UserStore>()
@@ -1894,7 +1893,6 @@ namespace BlazorApp.Api.Services
                         : await db.Queryable<Store>()
                             .Where(store =>
                                 requestedStoreGuids.Contains(store.StoreGUID)
-                                && store.IsActive
                                 && !store.IsDeleted
                             )
                             .CountAsync();
@@ -1902,7 +1900,7 @@ namespace BlazorApp.Api.Services
                     {
                         await db.Ado.RollbackTranAsync();
                         return ApiResponse<bool>.Error(
-                            "包含不存在或已停用的分店",
+                            "包含不存在或已删除的分店",
                             "STORE_NOT_FOUND"
                         );
                     }
