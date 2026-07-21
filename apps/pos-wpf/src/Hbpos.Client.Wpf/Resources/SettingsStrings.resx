@@ -192,7 +192,7 @@
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>Starting change store registration...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>Operation canceled.</value></data>
   <data name="settings.serverAddress.title" xml:space="preserve"><value>API Server</value></data>
-  <data name="settings.serverAddress.description" xml:space="preserve"><value>Test and switch the HBPOS API server. Switching signs out the cashier and loads the selected server's isolated local data.</value></data>
+  <data name="settings.serverAddress.description" xml:space="preserve"><value>Switch between API endpoints that share the same data. Local uploads continue through the new endpoint after switching.</value></data>
   <data name="settings.serverAddress.address" xml:space="preserve"><value>Server Address</value></data>
   <data name="settings.serverAddress.test" xml:space="preserve"><value>Test Connection</value></data>
   <data name="settings.serverAddress.save" xml:space="preserve"><value>Save Address</value></data>
@@ -211,7 +211,7 @@
   <data name="settings.serverAddress.status.sameAddress" xml:space="preserve"><value>This server is already active. The current session was kept.</value></data>
   <data name="settings.serverAddress.status.blocked" xml:space="preserve"><value>The server cannot be switched while POS work is active.</value></data>
   <data name="settings.serverAddress.status.preCommitFailed" xml:space="preserve"><value>The target server could not be prepared. The current server is unchanged.</value></data>
-  <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>Shell reset failed. HBPOS rolled back to the previous server.</value></data>
+  <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>The endpoint switched, but the shell could not be reloaded. Restart HBPOS and sign in again.</value></data>
   <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>Clear the cart before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>Finish or cancel the current payment before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>Resolve all pending, failed, or syncing orders before switching servers.</value></data>

@@ -29,18 +29,13 @@ public static class ServiceRegistration
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
         services.AddSingleton<ApiServerSettingsViewModel>();
-        services.AddSingleton(sp =>
-        {
-            var rootDirectory = startupOptions.PreviewMode
-                ? Path.Combine(Path.GetTempPath(), $"hbpos-client-preview-{Environment.ProcessId}")
-                : Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Hbpos.Client");
-            return new ApiEndpointDatabasePartitionResolver(rootDirectory, initialApiAddress);
-        });
-        services.AddSingleton(sp => new LocalSqliteStore(
-            sp.GetRequiredService<ApiRuntimeEndpointState>(),
-            sp.GetRequiredService<ApiEndpointDatabasePartitionResolver>()));
+        var localDataDirectory = startupOptions.PreviewMode
+            ? Path.Combine(Path.GetTempPath(), $"hbpos-client-preview-{Environment.ProcessId}")
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Hbpos.Client");
+        // 正式与调试 API 共用同一业务数据库，本地数据也固定落在同一个文件中。
+        services.AddSingleton(new LocalSqliteStore(Path.Combine(localDataDirectory, "hbpos_client.db")));
         services.AddSingleton<ILocalSqliteCheckpointService>(sp => sp.GetRequiredService<LocalSqliteStore>());
         services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
@@ -473,6 +468,10 @@ public static class ServiceRegistration
                 operationAuthorizationService: sp.GetRequiredService<IOperationAuthorizationService>(),
                 runtimeEndpointState: sp.GetRequiredService<ApiRuntimeEndpointState>(),
                 attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>());
+            viewModel.ConfigureAuditSyncCenter(
+                sp.GetRequiredService<ClientLogOutboxStore>(),
+                sp.GetRequiredService<OperationAuditUploadService>(),
+                sp.GetRequiredService<DeviceAuthorizationState>());
             sp.GetRequiredService<ApiServerSwitchRuntime>().ConfigureShell(
                 () => new ApiServerPaymentSafetyState(
                     viewModel.CashPayment?.IsCardPaymentInProgress == true,

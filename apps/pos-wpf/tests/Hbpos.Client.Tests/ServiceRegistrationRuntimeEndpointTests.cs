@@ -7,6 +7,23 @@ namespace Hbpos.Client.Tests;
 public sealed class ServiceRegistrationRuntimeEndpointTests
 {
     [Fact]
+    public void Api_endpoint_switch_keeps_the_single_local_database_path()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+        using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<LocalSqliteStore>();
+        var endpoint = provider.GetRequiredService<ApiRuntimeEndpointState>();
+        var original = store.ActiveDatabasePath;
+
+        endpoint.Switch("http://127.0.0.1:5159/");
+
+        Assert.Equal(original, store.ActiveDatabasePath);
+        Assert.EndsWith("hbpos_client.db", original, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(provider.GetService<ApiEndpointDatabasePartitionResolver>());
+    }
+
+    [Fact]
     public async Task External_application_log_request_is_not_cancelled_by_api_server_switch()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

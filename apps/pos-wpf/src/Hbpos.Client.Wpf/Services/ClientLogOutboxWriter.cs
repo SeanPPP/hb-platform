@@ -123,6 +123,16 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         }
     }
 
+    public void PublishWithinOperationAuditBoundary(Action publish)
+    {
+        ArgumentNullException.ThrowIfNull(publish);
+        // Record 与端点发布共用此锁，保证每条审计完整落在旧端点或新端点一侧。
+        lock (_operationRevisionGate)
+        {
+            publish();
+        }
+    }
+
     public void Enqueue(ApplicationLogEntry entry)
     {
         try

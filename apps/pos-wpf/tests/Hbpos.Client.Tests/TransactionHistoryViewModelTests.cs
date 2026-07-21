@@ -11,6 +11,75 @@ namespace Hbpos.Client.Tests;
 
 public sealed class TransactionHistoryViewModelTests
 {
+    [Theory]
+    [InlineData("Synced", true)]
+    [InlineData("Pending", true)]
+    [InlineData("Failed", true)]
+    [InlineData("Syncing", false)]
+    public void Local_order_reupload_eligibility_matches_sync_status(string status, bool expected)
+    {
+        var item = new HistoryOrderListItem(
+            Guid.NewGuid(), TransactionHistorySource.LocalOrders, "S001", "POS-01", "Alice",
+            DateTimeOffset.UtcNow, 1m, 0m, 1m, 1, "Cash", status, SyncStatus: status);
+
+        Assert.Equal(expected, item.CanReupload);
+        Assert.False((item with { Source = TransactionHistorySource.RemoteOrders }).CanReupload);
+        Assert.False((item with { IsSuspendedOrder = true }).CanReupload);
+        Assert.False((item with { IsInstallmentOrder = true }).CanReupload);
+    }
+
+    [Fact]
+    public async Task Reupload_selected_executes_ids_and_refreshes_history_status()
+    {
+        var orderGuid = Guid.NewGuid();
+        var failed = new LocalOrderSummary(
+            orderGuid, "S001", "POS-01", "Alice", DateTimeOffset.UtcNow,
+            10m, 0m, 10m, "Failed", 1, "Cash");
+        var receiptQuery = new CapturingReceiptQueryService { Orders = [failed] };
+        var executor = new CallbackOrderExecutor(ids =>
+        {
+            receiptQuery.Orders = [failed with { SyncStatus = "Synced" }];
+            return new OrderUploadExecutionResult(ids.Count, ids.Count, 0);
+        });
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor);
+        await viewModel.LoadAsync();
+        viewModel.Orders[0].Selection.IsSelected = true;
+
+        await viewModel.ReuploadSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([orderGuid], executor.SelectedIds);
+        var refreshed = Assert.Single(viewModel.Orders);
+        Assert.Equal("Synced", refreshed.SyncStatus);
+        Assert.False(refreshed.Selection.IsSelected);
+    }
+
+    [Fact]
+    public async Task Reupload_selected_with_empty_selection_does_nothing()
+    {
+        var failed = new LocalOrderSummary(
+            Guid.NewGuid(), "S001", "POS-01", "Alice", DateTimeOffset.UtcNow,
+            10m, 0m, 10m, "Failed", 1, "Cash");
+        var executor = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0));
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService { Orders = [failed] },
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor);
+        await viewModel.LoadAsync();
+
+        await viewModel.ReuploadSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, executor.SelectedCallCount);
+        Assert.Equal(string.Empty, viewModel.StatusMessage);
+    }
+
     [Fact]
     public void Constructor_initializes_readonly_store_and_terminal_dropdown()
     {
@@ -737,6 +806,29 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, []));
+        }
+    }
+
+    private sealed class CallbackOrderExecutor(
+        Func<IReadOnlyCollection<Guid>, OrderUploadExecutionResult> execute) : IOrderUploadExecutionService
+    {
+        public IReadOnlyList<Guid> SelectedIds { get; private set; } = [];
+
+        public int SelectedCallCount { get; private set; }
+
+        public Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default) =>
+            Task.FromResult(execute([orderGuid]));
+
+        public Task<OrderUploadExecutionResult> ExecutePendingAsync(int batchSize = 20, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new OrderUploadExecutionResult(0, 0, 0));
+
+        public Task<OrderUploadExecutionResult> ExecuteSelectedAsync(
+            IReadOnlyCollection<Guid> orderGuids,
+            CancellationToken cancellationToken = default)
+        {
+            SelectedCallCount++;
+            SelectedIds = orderGuids.ToArray();
+            return Task.FromResult(execute(orderGuids));
         }
     }
 

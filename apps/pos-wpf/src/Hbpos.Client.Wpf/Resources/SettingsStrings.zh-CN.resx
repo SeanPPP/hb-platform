@@ -192,7 +192,7 @@
   <data name="settings.status.reregisterStarting" xml:space="preserve"><value>正在启动更换分店重新注册...</value></data>
   <data name="settings.status.operationCanceled" xml:space="preserve"><value>&#x64CD;&#x4F5C;&#x5DF2;&#x53D6;&#x6D88;&#x3002;</value></data>
   <data name="settings.serverAddress.title" xml:space="preserve"><value>API 服务器</value></data>
-  <data name="settings.serverAddress.description" xml:space="preserve"><value>测试并热切换 HBPOS API 服务器；切换后将退出收银员，并加载该服务器隔离的本地数据。</value></data>
+  <data name="settings.serverAddress.description" xml:space="preserve"><value>切换共用同一数据的 API 入口；本地未上传内容会在切换后通过新入口继续上传。</value></data>
   <data name="settings.serverAddress.address" xml:space="preserve"><value>服务器地址</value></data>
   <data name="settings.serverAddress.test" xml:space="preserve"><value>测试连接</value></data>
   <data name="settings.serverAddress.save" xml:space="preserve"><value>保存地址</value></data>
@@ -211,7 +211,7 @@
   <data name="settings.serverAddress.status.sameAddress" xml:space="preserve"><value>当前已使用该服务器，现有会话保持不变。</value></data>
   <data name="settings.serverAddress.status.blocked" xml:space="preserve"><value>当前仍有 POS 业务操作，无法切换服务器。</value></data>
   <data name="settings.serverAddress.status.preCommitFailed" xml:space="preserve"><value>目标服务器准备失败，当前服务器未变更。</value></data>
-  <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>主界面重置失败，HBPOS 已回滚到原服务器。</value></data>
+  <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>API 入口已切换，但主界面重载失败；请重启 HBPOS 后重新登录。</value></data>
   <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>请先清空购物车，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>请先完成或取消当前支付，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>请先处理所有待上传、失败或同步中的订单，再切换服务器。</value></data>

@@ -182,7 +182,7 @@ public sealed class ClientLogUploadServiceTests
         await store.InitializeAsync(CancellationToken.None);
         var createdAt = DateTimeOffset.Parse("2026-07-10T01:00:00Z");
         var dueAt = createdAt.AddHours(1);
-        var oldEventIds = Enumerable.Range(0, 101).Select(_ => Guid.NewGuid()).ToArray();
+        var oldEventIds = Enumerable.Range(0, 9).Select(_ => Guid.NewGuid()).ToArray();
         foreach (var pair in oldEventIds.Select((eventId, index) => (eventId, index)))
         {
             await store.EnqueueAsync(
@@ -252,18 +252,93 @@ public sealed class ClientLogUploadServiceTests
             await service.UploadOnceAsync(dueAt, CancellationToken.None);
 
             Assert.Equal([currentEventId], Assert.Single(acceptedBatches));
-            Assert.Equal(101L, await CountPendingOperationEventsAsync(store));
+            Assert.Equal(9L, await CountPendingOperationEventsAsync(store));
             Assert.Equal(0L, await CountPendingOperationEventsAsync(store, currentEventId));
 
             authorizationState.Set(new DeviceAuthorizationContext("D-OLD", "S-OLD", "HW-OLD", "old-secret"));
             await service.UploadOnceAsync(dueAt.AddHours(1), CancellationToken.None);
 
-            Assert.Equal(100, acceptedBatches[1].Length);
+            Assert.Equal(8, acceptedBatches[1].Length);
             Assert.All(acceptedBatches[1], eventId => Assert.Contains(eventId, oldEventIds));
             Assert.Equal(1L, await CountPendingOperationEventsAsync(store));
         }
         finally
         {
+            service.Dispose();
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Operation_uploader_immediately_drains_next_batch_after_full_batch_succeeds()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var now = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var eventIds = Enumerable.Range(0, 9).Select(_ => Guid.NewGuid()).ToArray();
+        foreach (var eventId in eventIds)
+        {
+            await store.EnqueueAsync(
+                ClientLogOutboxKind.OperationAudit,
+                eventId,
+                now,
+                JsonSerializer.Serialize(new { eventId, storeCode = "S-1", deviceCode = "D-1" }),
+                now,
+                CancellationToken.None);
+        }
+
+        var authorizationState = new DeviceAuthorizationState();
+        authorizationState.Set(new DeviceAuthorizationContext("D-1", "S-1", "HW-1", "secret"));
+        var batchSizes = new ConcurrentQueue<int>();
+        var secondRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        using var client = new HttpClient(new StubHttpMessageHandler(async request =>
+        {
+            using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var ids = document.RootElement.GetProperty("events")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("eventId").GetGuid())
+                .ToArray();
+            batchSizes.Enqueue(ids.Length);
+            if (Interlocked.Increment(ref requestCount) == 2)
+            {
+                secondRequest.TrySetResult();
+            }
+
+            return JsonResponse(HttpStatusCode.OK, JsonSerializer.Serialize(new
+            {
+                results = ids.Select(eventId => new { eventId, status = "accepted" })
+            }));
+        }))
+        {
+            BaseAddress = new Uri("https://pos-api.example.com/")
+        };
+        var service = new OperationAuditUploadService(
+            store,
+            client,
+            TimeProvider.System,
+            new OperationAuditUploadOptions(true),
+            authorizationState);
+        var started = false;
+
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            started = true;
+            await secondRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitForOperationPendingCountAsync(store, expectedCount: 0);
+
+            Assert.Equal([8, 1], batchSizes);
+        }
+        finally
+        {
+            if (started)
+            {
+                using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await service.StopAsync(shutdownBudget.Token);
+            }
+
             service.Dispose();
             DeleteDatabaseFiles(databasePath);
         }
@@ -448,6 +523,76 @@ public sealed class ClientLogUploadServiceTests
     }
 
     [Fact]
+    public async Task Endpoint_generation_cancellation_keeps_audit_event_immediately_retryable()
+    {
+        var databasePath = CreateDatabasePath();
+        const string oldAddress = "https://old.example.test/pos-api/";
+        const string newAddress = "https://new.example.test/pos-api/";
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var now = DateTimeOffset.UtcNow;
+        var eventId = Guid.NewGuid();
+        await store.EnqueueAsync(
+            ClientLogOutboxKind.OperationAudit,
+            eventId,
+            now,
+            JsonSerializer.Serialize(new { eventId, storeCode = "S001", deviceCode = "POS-01" }),
+            now,
+            CancellationToken.None);
+        var authorizationState = new DeviceAuthorizationState();
+        authorizationState.Set(new DeviceAuthorizationContext("POS-01", "S001", "HW-01", "secret"));
+        var endpointState = new ApiRuntimeEndpointState(oldAddress);
+        var terminal = new EndpointSwitchAuditHandler(eventId);
+        using var client = new HttpClient(new ApiRuntimeEndpointHandler(endpointState) { InnerHandler = terminal })
+        {
+            BaseAddress = new Uri(oldAddress)
+        };
+        using var service = new OperationAuditUploadService(
+            store,
+            client,
+            TimeProvider.System,
+            new OperationAuditUploadOptions(true),
+            authorizationState);
+
+        try
+        {
+            var upload = service.UploadOnceAsync(now, CancellationToken.None);
+            await terminal.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
+            await upload.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var pending = Assert.Single(await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                now,
+                10,
+                CancellationToken.None));
+            Assert.Equal(eventId, pending.EventId);
+            Assert.Equal(0, pending.AttemptCount);
+            Assert.Null(pending.LastErrorCode);
+
+            endpointState.Commit(transition);
+            await service.UploadOnceAsync(now, CancellationToken.None);
+
+            Assert.Equal(
+                [
+                    new Uri($"{oldAddress}api/v1/operation-audits/batch"),
+                    new Uri($"{newAddress}api/v1/operation-audits/batch")
+                ],
+                terminal.RequestUris);
+            Assert.Empty(await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                now,
+                10,
+                CancellationToken.None));
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Authorization_failure_writes_critical_diagnostic_without_reentering_runtime_sink()
     {
         var databasePath = CreateDatabasePath();
@@ -582,8 +727,8 @@ public sealed class ClientLogUploadServiceTests
     [Fact]
     public async Task Operation_upload_limits_request_to_four_mib_without_truncating_events()
     {
-        const int eventCount = 100;
-        const int payloadLength = 60_000;
+        const int eventCount = 9;
+        const int payloadLength = 600_000;
         const int maximumRequestBytes = 4 * 1024 * 1024;
         var databasePath = CreateDatabasePath();
         var store = new ClientLogOutboxStore(databasePath);
@@ -633,7 +778,7 @@ public sealed class ClientLogUploadServiceTests
             await service.UploadOnceAsync(now.AddMinutes(1), CancellationToken.None);
 
             Assert.InRange(requestBytes, 1, maximumRequestBytes);
-            Assert.InRange(sentCount, 1, eventCount - 1);
+            Assert.Equal(6, sentCount);
             Assert.True(allEventsComplete);
             var remaining = await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
@@ -873,6 +1018,137 @@ public sealed class ClientLogUploadServiceTests
         return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 
+    [Fact]
+    public async Task RequestUpload_wakes_operation_uploader_without_waiting_for_periodic_interval()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var expiredRejectedId = Guid.NewGuid();
+        var expiredAt = DateTimeOffset.UtcNow.AddDays(-31);
+        await store.EnqueueAsync(
+            ClientLogOutboxKind.OperationAudit,
+            expiredRejectedId,
+            expiredAt,
+            JsonSerializer.Serialize(new { eventId = expiredRejectedId, storeCode = "S001", deviceCode = "POS-01" }),
+            expiredAt,
+            CancellationToken.None);
+        await store.ApplyResultsAsync(
+            ClientLogOutboxKind.OperationAudit,
+            [],
+            [new ClientLogRejection(expiredRejectedId, "REJECTED", "expired")],
+            expiredAt,
+            CancellationToken.None);
+        var authorization = new DeviceAuthorizationState();
+        authorization.Set(new DeviceAuthorizationContext("POS-01", "S001", "HW-01", "secret"));
+        var timeProvider = new ObservableWaitTimeProvider();
+        var called = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new HttpClient(new StubHttpMessageHandler(async request =>
+        {
+            var body = await request.Content!.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(body);
+            var eventId = document.RootElement.GetProperty("events")[0].GetProperty("eventId").GetGuid();
+            called.TrySetResult();
+            return JsonResponse(HttpStatusCode.OK, $$"""{"results":[{"eventId":"{{eventId:D}}","status":"accepted"}]}""");
+        }))
+        {
+            BaseAddress = new Uri("https://api.example.test/")
+        };
+        var service = new OperationAuditUploadService(
+            store,
+            client,
+            timeProvider,
+            new OperationAuditUploadOptions(true),
+            authorization);
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            // 中文说明：同时观察清理副作用和 60 秒定时器，确保首次周期结束且上传器已进入等待。
+            await WaitForNoRejectedOperationEventsAsync(store);
+            await timeProvider.WaitUntilPeriodicDelayAsync();
+            var eventId = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            await store.EnqueueAsync(
+                ClientLogOutboxKind.OperationAudit,
+                eventId,
+                now,
+                JsonSerializer.Serialize(new { eventId, storeCode = "S001", deviceCode = "POS-01" }),
+                now,
+                CancellationToken.None);
+
+            service.RequestUpload();
+
+            await called.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await WaitForOperationPendingCountAsync(store, 0);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+            service.Dispose();
+            client.Dispose();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    private static async Task WaitForOperationPendingCountAsync(ClientLogOutboxStore store, long expectedCount)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await CountPendingOperationEventsAsync(store) == expectedCount)
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException($"操作审计 Pending 数未在预期时间内变为 {expectedCount}。");
+    }
+
+    private static async Task WaitForNoRejectedOperationEventsAsync(ClientLogOutboxStore store)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if ((await store.ReadRejectedAsync(
+                    ClientLogOutboxKind.OperationAudit,
+                    1,
+                    CancellationToken.None)).Count == 0)
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("操作审计首次清理周期未在预期时间内完成。");
+    }
+
+    private sealed class ObservableWaitTimeProvider : TimeProvider
+    {
+        private readonly TaskCompletionSource _periodicDelayStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            if (dueTime >= TimeSpan.FromSeconds(60))
+            {
+                _periodicDelayStarted.TrySetResult();
+            }
+
+            return TimeProvider.System.CreateTimer(callback, state, dueTime, period);
+        }
+
+        public Task WaitUntilPeriodicDelayAsync() =>
+            _periodicDelayStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     private static async Task WaitForOutboxSchemaAsync(ClientLogOutboxStore store)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
@@ -934,6 +1210,34 @@ public sealed class ClientLogUploadServiceTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => handler(request);
+    }
+
+    private sealed class EndpointSwitchAuditHandler(Guid eventId) : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource _firstRequestStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _requestCount;
+
+        public Task FirstRequestStarted => _firstRequestStarted.Task;
+
+        public List<Uri> RequestUris { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            if (Interlocked.Increment(ref _requestCount) == 1)
+            {
+                _firstRequestStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return JsonResponse(HttpStatusCode.OK, JsonSerializer.Serialize(new
+            {
+                results = new[] { new { eventId, status = "accepted" } }
+            }));
+        }
     }
 
     private sealed class FakeApplicationLogSink : IApplicationLogSink

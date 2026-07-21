@@ -230,6 +230,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string LastAuditSyncErrorText
+    {
+        get => _syncOrchestrator?.LastAuditSyncErrorText ?? string.Empty;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.LastAuditSyncErrorText = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public bool IsSyncCenterExpanded
     {
         get => _syncOrchestrator?.IsSyncCenterExpanded ?? false;
@@ -583,7 +596,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              // 中文说明：组合根只转交 DI 单例，确保注册页与设置页共享同一份重启状态。
              apiServerSettings: _apiServerSettings,
              // 中文说明：主壳与全部子页面共享同一个单次操作授权服务，授权不会变成新的登录会话。
-             operationAuthorizationService: _operationAuthorizationService);
+             operationAuthorizationService: _operationAuthorizationService,
+             orderUploadExecutionService: _orderUploadExecutionService);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -646,6 +660,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             getPendingSyncCount: () => Session.PendingSyncCount,
             refreshShell: () => RefreshLocalizedShell(),
             notifyPropertyChanged: name => OnPropertyChanged(name));
+
+    internal void ConfigureAuditSyncCenter(
+        ClientLogOutboxStore logOutboxStore,
+        OperationAuditUploadService operationAuditUploadService,
+        DeviceAuthorizationState deviceAuthorizationState)
+    {
+        _syncOrchestrator?.ConfigureAudit(logOutboxStore, operationAuditUploadService, deviceAuthorizationState);
+    }
 
     private ScreenNavigator CreateScreenNavigator() =>
         new(
@@ -771,8 +793,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string ActivePageTitleText => GetActivePageTitleText();
 
     private static readonly ObservableCollection<SyncQueueListItem> _emptySyncOrders = [];
+    private static readonly ObservableCollection<OperationAuditQueueListItem> _emptyAuditLogs = [];
 
     public ObservableCollection<SyncQueueListItem> SyncCenterOrders => _syncOrchestrator?.SyncCenterOrders ?? _emptySyncOrders;
+
+    public ObservableCollection<OperationAuditQueueListItem> SyncCenterAuditLogs => _syncOrchestrator?.SyncCenterAuditLogs ?? _emptyAuditLogs;
 
     public IRelayCommand ShowPosCommand { get; }
 
@@ -803,6 +828,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand<SyncQueueListItem?> RetrySyncOrderCommand { get; }
 
     public IAsyncRelayCommand RetryAllSyncOrdersCommand { get; }
+
+    public IAsyncRelayCommand RetrySelectedSyncOrdersCommand => _syncOrchestrator!.RetrySelectedSyncOrdersCommand;
+
+    public IRelayCommand SelectAllSyncOrdersCommand => _syncOrchestrator!.SelectAllSyncOrdersCommand;
+
+    public IAsyncRelayCommand RetrySelectedAuditLogsCommand => _syncOrchestrator!.RetrySelectedAuditLogsCommand;
+
+    public IRelayCommand SelectAllAuditLogsCommand => _syncOrchestrator!.SelectAllAuditLogsCommand;
 
     public IAsyncRelayCommand ToggleCustomerDisplayWindowCommand { get; }
 

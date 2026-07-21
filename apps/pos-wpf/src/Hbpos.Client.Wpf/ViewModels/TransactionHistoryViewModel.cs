@@ -41,8 +41,18 @@ public sealed record HistoryOrderListItem(
     bool IsInstallmentOrder = false,
     bool CanContinueInstallmentPayment = false,
     bool CanConfirmInstallmentPickup = false,
-    string CustomerPhone = "")
+    string CustomerPhone = "",
+    string SyncStatus = "")
 {
+    public RowSelectionState Selection { get; } = new();
+
+    public bool CanReupload => Source == TransactionHistorySource.LocalOrders &&
+        !IsSuspendedOrder &&
+        !IsInstallmentOrder &&
+        (SyncStatus.Equals("Synced", StringComparison.OrdinalIgnoreCase) ||
+         SyncStatus.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
+         SyncStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase));
+
     public string ShortOrderId => OrderGuid.ToString("N")[..8].ToUpperInvariant();
 
     public string DisplayOrderId => InstallmentOrder?.OrderNumber ?? ShortOrderId;
@@ -66,6 +76,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly IOrderUploadExecutionService _orderUploadExecutionService;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
 
@@ -118,17 +129,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -147,8 +158,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, initialize: true)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        IOrderUploadExecutionService? orderUploadExecutionService = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, initialize: true)
     {
     }
 
@@ -168,6 +180,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync,
         IOperationAuditLogger? operationAuditLogger,
         IOperationAuthorizationService? operationAuthorizationService,
+        IOrderUploadExecutionService? orderUploadExecutionService,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -184,6 +197,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -213,6 +227,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ConfirmInstallmentPickupCommand = new AsyncRelayCommand<HistoryOrderListItem>(ConfirmInstallmentPickupAsync, CanConfirmInstallmentPickup);
         ReprintCommand = new AsyncRelayCommand(ReprintSelectedAsync, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
+        SelectAllReuploadableCommand = new RelayCommand(SelectAllReuploadable);
+        ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync);
     }
 
     public event EventHandler? ReprintRequested;
@@ -244,6 +260,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public IRelayCommand ReprintCommand { get; }
 
     public IRelayCommand RefundCommand { get; }
+
+    public IRelayCommand SelectAllReuploadableCommand { get; }
+
+    public IAsyncRelayCommand ReuploadSelectedCommand { get; }
 
     public TransactionHistorySource SelectedSource => SelectedSourceOption?.Source ?? TransactionHistorySource.LocalOrders;
 
@@ -442,8 +462,37 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 order.ActualAmount,
                 order.LineCount,
                 order.PaymentSummary,
-                order.StatusLabel))
+                order.StatusLabel,
+                SyncStatus: order.SyncStatus))
             .ToList();
+    }
+
+    private void SelectAllReuploadable()
+    {
+        foreach (var order in Orders.Where(order => order.CanReupload))
+        {
+            order.Selection.IsSelected = true;
+        }
+    }
+
+    private async Task ReuploadSelectedAsync()
+    {
+        var selected = Orders
+            .Where(order => order.CanReupload && order.Selection.IsSelected)
+            .Select(order => order.OrderGuid)
+            .ToArray();
+        if (selected.Length == 0)
+        {
+            return;
+        }
+
+        var result = await _orderUploadExecutionService.ExecuteSelectedAsync(selected);
+        await LoadAsync();
+        StatusMessage = string.Format(
+            CultureInfo.CurrentCulture,
+            T("history.reuploadCompleted"),
+            result.UploadedCount,
+            result.FailedCount);
     }
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadSuspendedOrdersAsync(CancellationToken cancellationToken)
@@ -1015,6 +1064,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "TransactionHistory" => "Transaction History",
             "success.receiptPreview" => "Receipt Preview",
             "history.reprint" => "Reprint",
+            "history.reuploadCompleted" => "Reupload completed: {0} succeeded, {1} failed.",
             "history.refund" => "Refund",
             "history.search" => "Search order, cashier, or terminal...",
             "history.allTerminals" => "All Terminals",

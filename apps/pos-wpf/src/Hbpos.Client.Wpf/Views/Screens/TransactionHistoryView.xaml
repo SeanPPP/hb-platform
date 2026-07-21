@@ -352,6 +352,16 @@
                           HeadersVisibility="Column"
                           Style="{StaticResource PosCartDataGridStyle}">
                     <DataGrid.Columns>
+                        <DataGridTemplateColumn x:Name="ReuploadSelectionColumn" Header="" Width="42">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding Selection.IsSelected}"
+                                              IsEnabled="{Binding CanReupload}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="{loc:Loc OrderNumber}" Binding="{Binding DisplayOrderId}" Width="150" />
                         <DataGridTextColumn Header="{loc:Loc Time}" Binding="{Binding SoldAtDisplay}" Width="132" />
                         <DataGridTextColumn x:Name="StandardCashierColumn" Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="118" />
@@ -443,6 +453,24 @@
                             <TextBlock Text="{loc:Loc installment.center.action.confirmPickup}" Foreground="White" FontWeight="Bold" />
                         </StackPanel>
                     </Button>
+
+                    <Button DockPanel.Dock="Right"
+                            Command="{Binding ReuploadSelectedCommand}"
+                            Content="{loc:Loc history.reuploadSelected}"
+                            Visibility="{Binding IsLocalSourceSelected, Converter={StaticResource BoolToVis}}"
+                            Height="40"
+                            Padding="14,0"
+                            Margin="12,0,0,0"
+                            Style="{StaticResource PosPrimaryButtonStyle}" />
+
+                    <Button DockPanel.Dock="Right"
+                            Command="{Binding SelectAllReuploadableCommand}"
+                            Content="{loc:Loc shell.sync.selectAll}"
+                            Visibility="{Binding IsLocalSourceSelected, Converter={StaticResource BoolToVis}}"
+                            Height="40"
+                            Padding="14,0"
+                            Margin="12,0,0,0"
+                            Style="{StaticResource HistoryIconTextButtonStyle}" />
 
                     <TextBlock Text="{Binding StatusMessage}"
                                Foreground="{StaticResource PosDangerBrush}"

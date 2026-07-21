@@ -42,6 +42,7 @@ internal sealed class MainChildViewModelFactory
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly ApiServerSettingsViewModel? _apiServerSettings;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly IOrderUploadExecutionService _orderUploadExecutionService;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -75,7 +76,8 @@ internal sealed class MainChildViewModelFactory
         IAppUpdateChannelProvider? appUpdateChannelProvider = null,
         IOperationAuditLogger? operationAuditLogger = null,
         ApiServerSettingsViewModel? apiServerSettings = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        IOrderUploadExecutionService? orderUploadExecutionService = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -109,6 +111,7 @@ internal sealed class MainChildViewModelFactory
         _operationAuditLogger = operationAuditLogger;
         _apiServerSettings = apiServerSettings;
         _operationAuthorizationService = operationAuthorizationService;
+        _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -149,7 +152,8 @@ internal sealed class MainChildViewModelFactory
             _installmentOrderService,
             continueInstallmentPaymentAsync,
             _operationAuditLogger,
-            _operationAuthorizationService);
+            _operationAuthorizationService,
+            _orderUploadExecutionService);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }

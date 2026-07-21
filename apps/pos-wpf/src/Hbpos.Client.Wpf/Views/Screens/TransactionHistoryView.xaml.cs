@@ -58,6 +58,7 @@ public partial class TransactionHistoryView : UserControl
     private void UpdateHistoryColumnVisibility()
     {
         var installmentVisible = _viewModel?.IsInstallmentSourceSelected == true;
+        var localOrdersVisible = _viewModel?.IsLocalSourceSelected == true;
         var standardVisibility = installmentVisible ? Visibility.Collapsed : Visibility.Visible;
         var installmentVisibility = installmentVisible ? Visibility.Visible : Visibility.Collapsed;
 
@@ -71,5 +72,6 @@ public partial class TransactionHistoryView : UserControl
         InstallmentTotalColumn.Visibility = installmentVisibility;
         InstallmentOutstandingColumn.Visibility = installmentVisibility;
         InstallmentPaidColumn.Visibility = installmentVisibility;
+        ReuploadSelectionColumn.Visibility = localOrdersVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 }

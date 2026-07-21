@@ -21,6 +21,15 @@ internal sealed record ClientLogOutboxRecord(
 
 internal sealed record ClientLogRejection(Guid EventId, string ErrorCode, string? ErrorMessage);
 
+internal sealed record OperationAuditOutboxListItem(
+    Guid EventId,
+    DateTimeOffset OccurredAtUtc,
+    string State,
+    int AttemptCount,
+    DateTimeOffset NextAttemptAtUtc,
+    string? LastErrorCode,
+    string? LastErrorMessage);
+
 internal sealed class ClientLogOutboxStore
 {
     private readonly string _databasePath;
@@ -228,6 +237,84 @@ internal sealed class ClientLogOutboxStore
             """;
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 100));
         return await ReadRecordsAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OperationAuditOutboxListItem>> ReadOperationForScopeAsync(
+        string storeCode,
+        string deviceCode,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EventId, OccurredAtUtc, State, AttemptCount,
+                   NextAttemptAtUtc, LastErrorCode, LastErrorMessage
+            FROM OperationAuditOutbox
+            WHERE State IN ('Pending', 'Rejected')
+              AND CASE
+                    WHEN json_valid(PayloadJson) = 0 THEN 1
+                    WHEN json_extract(PayloadJson, '$.storeCode') = $storeCode
+                     AND json_extract(PayloadJson, '$.deviceCode') = $deviceCode THEN 1
+                    ELSE 0
+                  END = 1
+            ORDER BY OccurredAtUtc, CreatedAtUtc
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$storeCode", storeCode);
+        command.Parameters.AddWithValue("$deviceCode", deviceCode);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 500));
+        var records = new List<OperationAuditOutboxListItem>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            records.Add(new OperationAuditOutboxListItem(
+                Guid.Parse(reader.GetString(0)),
+                DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.GetString(2),
+                reader.GetInt32(3),
+                DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
+        }
+
+        return records;
+    }
+
+    public async Task<int> ResetOperationForRetryAsync(
+        IReadOnlyCollection<Guid> eventIds,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(eventIds);
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            var updated = 0;
+            foreach (var eventId in eventIds.Where(id => id != Guid.Empty).Distinct())
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = (SqliteTransaction)transaction;
+                command.CommandText = """
+                    UPDATE OperationAuditOutbox
+                    SET State = 'Pending', AttemptCount = 0, NextAttemptAtUtc = $nowUtc,
+                        LastErrorCode = NULL, LastErrorMessage = NULL
+                    WHERE EventId = $eventId AND State IN ('Pending', 'Rejected');
+                    """;
+                command.Parameters.AddWithValue("$eventId", eventId.ToString("D"));
+                command.Parameters.AddWithValue("$nowUtc", FormatUtc(nowUtc));
+                updated += await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return updated;
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task ApplyResultsAsync(

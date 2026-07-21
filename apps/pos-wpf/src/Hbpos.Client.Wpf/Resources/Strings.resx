@@ -381,11 +381,20 @@
   <data name="shell.sync.close" xml:space="preserve"><value>Close sync center</value></data>
   <data name="shell.sync.retry" xml:space="preserve"><value>Retry</value></data>
   <data name="shell.sync.retryAll" xml:space="preserve"><value>Retry All</value></data>
+  <data name="shell.sync.ordersTab" xml:space="preserve"><value>Orders</value></data>
+  <data name="shell.sync.auditTab" xml:space="preserve"><value>Audit Logs</value></data>
+  <data name="shell.sync.selectAll" xml:space="preserve"><value>Select Retryable</value></data>
+  <data name="shell.sync.retrySelected" xml:space="preserve"><value>Retry Selected</value></data>
+  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>Retrying selected order uploads...</value></data>
+  <data name="shell.sync.auditRetryQueued" xml:space="preserve"><value>{0} audit events queued for retry.</value></data>
+  <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>Audit log refresh failed: {0}</value></data>
+  <data name="history.reuploadSelected" xml:space="preserve"><value>Reupload Selected</value></data>
+  <data name="history.reuploadCompleted" xml:space="preserve"><value>Reupload completed: {0} succeeded, {1} failed.</value></data>
   <data name="shell.sync.retryingOne" xml:space="preserve"><value>Retrying order upload...</value></data>
   <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying order uploads...</value></data>
   <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Order upload retry completed: {0} succeeded, {1} failed.</value></data>
   <data name="shell.sync.retryFailed" xml:space="preserve"><value>Order upload retry failed: {0}</value></data>
-  <data name="shell.sync.caption" xml:space="preserve"><value>Shows failed, pending, and syncing order uploads.</value></data>
+  <data name="shell.sync.caption" xml:space="preserve"><value>Review and retry order uploads or operation audit logs.</value></data>
   <data name="shell.sync.created" xml:space="preserve"><value>Created:</value></data>
   <data name="shell.sync.lastAttempt" xml:space="preserve"><value>Last attempt:</value></data>
   <data name="shell.sync.pending" xml:space="preserve"><value>Pending</value></data>

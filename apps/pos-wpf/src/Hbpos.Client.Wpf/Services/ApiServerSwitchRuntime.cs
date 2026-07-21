@@ -1,5 +1,3 @@
-using Microsoft.Data.Sqlite;
-
 namespace Hbpos.Client.Wpf.Services;
 
 public sealed record ApiServerPaymentSafetyState(
@@ -12,10 +10,8 @@ public sealed record ApiServerPaymentSafetyState(
 
 internal sealed class ApiServerSwitchRuntime(
     PosCartService cart,
-    ISyncQueueRepository syncQueueRepository,
-    ClientLogOutboxStore logOutboxStore,
     ClientLogOutboxWriter logOutboxWriter,
-    LocalSqliteStore localStore,
+    OperationAuditUploadService operationAuditUploadService,
     ApiRuntimeEndpointState endpointState,
     IOperationAuthorizationService operationAuthorizationService,
     ICashierSessionContext cashierSessionContext) : IApiServerSwitchRuntime
@@ -34,21 +30,17 @@ internal sealed class ApiServerSwitchRuntime(
         _setSwitching = setSwitching ?? throw new ArgumentNullException(nameof(setSwitching));
     }
 
-    public async Task<ApiServerSwitchSafetySnapshot> GetSafetySnapshotAsync(CancellationToken cancellationToken)
+    public Task<ApiServerSwitchSafetySnapshot> GetSafetySnapshotAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var payment = _getPaymentState();
-        var sync = await syncQueueRepository.GetOverviewAsync(cancellationToken);
-        var pendingAudits = await GetPendingAuditCountAsync(cancellationToken);
-        return CreateSnapshot(payment, sync.PendingCount, sync.FailedCount, sync.SyncingCount, pendingAudits);
+        return Task.FromResult(CreateSnapshot(payment));
     }
 
-    public async Task<object> PrepareAsync(string targetAddress, CancellationToken cancellationToken)
+    public Task<object> PrepareAsync(string targetAddress, CancellationToken cancellationToken)
     {
-        var prepared = await localStore.PrepareSwitchAsync(targetAddress, cancellationToken);
-        // 先在目标分区完成建表和迁移，全部成功后才允许进入发布边界。
-        var targetStore = new LocalSqliteStore(prepared.TargetDatabasePath);
-        await new LocalSchemaService(targetStore).InitializeAsync(cancellationToken);
-        return prepared;
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<object>(targetAddress);
     }
 
     public async Task<object> BeginTransitionAsync(
@@ -56,17 +48,15 @@ internal sealed class ApiServerSwitchRuntime(
         object preparedSwitch,
         CancellationToken cancellationToken)
     {
-        var prepared = GetPreparedSwitch(preparedSwitch);
+        _ = preparedSwitch as string ?? throw new ArgumentException("服务器切换准备令牌无效。", nameof(preparedSwitch));
         _setSwitching(true);
         ApiEndpointTransition? endpointTransition = null;
         try
         {
             endpointTransition = await endpointState.BeginTransitionAsync(targetAddress, cancellationToken);
-            var auditRevision = logOutboxWriter.CaptureOperationAuditRevision();
-            // HTTP 和界面入口封闭后，先保证内存审计全部落入 outbox，再封闭本地数据库。
+            // HTTP 和界面入口封闭后，先保证内存审计全部落入固定 outbox。
             await logOutboxWriter.WaitForOperationAuditFlushAsync(cancellationToken);
-            var databaseTransition = await localStore.BeginTransitionAsync(prepared, cancellationToken);
-            return new ApiServerRuntimeTransition(endpointTransition, databaseTransition, auditRevision);
+            return new ApiServerRuntimeTransition(endpointTransition);
         }
         catch
         {
@@ -80,64 +70,43 @@ internal sealed class ApiServerSwitchRuntime(
         }
     }
 
-    public async Task<ApiServerSwitchSafetySnapshot> GetFinalSafetySnapshotAsync(
+    public Task<ApiServerSwitchSafetySnapshot> GetFinalSafetySnapshotAsync(
         object transition,
         CancellationToken cancellationToken)
     {
-        var runtimeTransition = GetTransition(transition);
+        _ = GetTransition(transition);
+        cancellationToken.ThrowIfCancellationRequested();
         var payment = _getPaymentState();
-        await using var connection = await localStore.OpenTransitionConnectionAsync(
-            runtimeTransition.DatabaseTransition,
-            cancellationToken);
-        var (pending, failed, syncing) = await ReadSyncCountsAsync(connection, cancellationToken);
-        var pendingAudits = await GetPendingAuditCountAsync(cancellationToken);
-        return CreateSnapshot(payment, pending, failed, syncing, pendingAudits);
+        return Task.FromResult(CreateSnapshot(payment));
     }
 
     public bool Commit(object transition)
     {
         var runtimeTransition = GetTransition(transition);
-        var published = logOutboxWriter.TryPublishForOperationAuditRevision(
-            runtimeTransition.AuditRevision,
-            () =>
-            {
-                // 两个目标值在审计 revision 锁内同步发布，Record 无法落在旧库与新端点之间。
-                localStore.Publish(runtimeTransition.DatabaseTransition);
-                endpointState.Publish(runtimeTransition.EndpointTransition);
-            });
-        if (!published)
-        {
-            return false;
-        }
-
+        // 只在审计写入边界锁内发布 HTTP 端点，不再因新审计事件拒绝切换。
+        logOutboxWriter.PublishWithinOperationAuditBoundary(
+            () => endpointState.Publish(runtimeTransition.EndpointTransition));
         endpointState.Complete(runtimeTransition.EndpointTransition);
-        localStore.Complete(runtimeTransition.DatabaseTransition);
         return true;
     }
 
     public void Abort(object transition)
     {
         var runtimeTransition = GetTransition(transition);
-        try
-        {
-            localStore.Abort(runtimeTransition.DatabaseTransition);
-        }
-        finally
-        {
-            endpointState.Abort(runtimeTransition.EndpointTransition);
-            _setSwitching(false);
-        }
+        endpointState.Abort(runtimeTransition.EndpointTransition);
+        _setSwitching(false);
     }
 
     public async Task PostCommitAsync(CancellationToken cancellationToken)
     {
         try
         {
-            // 提交后永久清除旧服务器身份和临时提权，失败时也不允许恢复旧会话。
+            // 端点发布后永久清除旧身份，再由新端点重新建立终端和收银员会话。
             operationAuthorizationService.Cancel();
             operationAuthorizationService.RevokeAll();
             cashierSessionContext.Clear();
             await _postCommitAsync(cancellationToken);
+            operationAuditUploadService.RequestUpload();
         }
         finally
         {
@@ -145,60 +114,17 @@ internal sealed class ApiServerSwitchRuntime(
         }
     }
 
-    private async Task<int> GetPendingAuditCountAsync(CancellationToken cancellationToken)
-    {
-        var persisted = await logOutboxStore.CountPendingAsync(
-            ClientLogOutboxKind.OperationAudit,
-            cancellationToken);
-        return checked(persisted + (int)logOutboxWriter.PendingOperationAuditPersistenceCount);
-    }
-
-    private ApiServerSwitchSafetySnapshot CreateSnapshot(
-        ApiServerPaymentSafetyState payment,
-        int pending,
-        int failed,
-        int syncing,
-        int pendingAudits)
+    private ApiServerSwitchSafetySnapshot CreateSnapshot(ApiServerPaymentSafetyState payment)
     {
         return new ApiServerSwitchSafetySnapshot(
             cart.Lines.Count,
             payment.IsCardPaymentInProgress,
             payment.IsPaymentInteractionLocked,
             payment.PaymentTenderCount,
-            pending,
-            failed,
-            syncing,
-            pendingAudits);
-    }
-
-    private static async Task<(int Pending, int Failed, int Syncing)> ReadSyncCountsAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT
-                SUM(CASE WHEN Status = 'Pending' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN Status = 'Failed' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN Status = 'Syncing' THEN 1 ELSE 0 END)
-            FROM SyncQueue;
-            """;
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return (0, 0, 0);
-        }
-
-        return (
-            reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
-            reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
-            reader.IsDBNull(2) ? 0 : reader.GetInt32(2));
-    }
-
-    private static LocalDatabaseSwitch GetPreparedSwitch(object preparedSwitch)
-    {
-        return preparedSwitch as LocalDatabaseSwitch ??
-            throw new ArgumentException("数据库切换准备令牌无效。", nameof(preparedSwitch));
+            PendingSyncCount: 0,
+            FailedSyncCount: 0,
+            SyncingCount: 0,
+            PendingOperationAuditCount: 0);
     }
 
     private static ApiServerRuntimeTransition GetTransition(object transition)
@@ -207,8 +133,5 @@ internal sealed class ApiServerSwitchRuntime(
             throw new ArgumentException("服务器切换令牌无效。", nameof(transition));
     }
 
-    private sealed record ApiServerRuntimeTransition(
-        ApiEndpointTransition EndpointTransition,
-        LocalDatabaseTransition DatabaseTransition,
-        long AuditRevision);
+    private sealed record ApiServerRuntimeTransition(ApiEndpointTransition EndpointTransition);
 }

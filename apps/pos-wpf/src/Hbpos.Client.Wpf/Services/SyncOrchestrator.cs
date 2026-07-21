@@ -15,6 +15,9 @@ internal sealed class SyncOrchestrator
     private readonly Func<int>? _getPendingSyncCount;
     private readonly Action? _refreshShell;
     private readonly Action<string>? _notifyPropertyChanged;
+    private ClientLogOutboxStore? _logOutboxStore;
+    private OperationAuditUploadService? _operationAuditUploadService;
+    private DeviceAuthorizationState? _deviceAuthorizationState;
 
     public SyncOrchestrator(
         IShellSyncCenterService shellSyncCenterService,
@@ -24,7 +27,10 @@ internal sealed class SyncOrchestrator
         Action<int>? onPendingSyncCountChanged = null,
         Func<int>? getPendingSyncCount = null,
         Action? refreshShell = null,
-        Action<string>? notifyPropertyChanged = null)
+        Action<string>? notifyPropertyChanged = null,
+        ClientLogOutboxStore? logOutboxStore = null,
+        OperationAuditUploadService? operationAuditUploadService = null,
+        DeviceAuthorizationState? deviceAuthorizationState = null)
     {
         _shellSyncCenterService = shellSyncCenterService;
         _orderUploadExecutionService = orderUploadExecutionService;
@@ -34,21 +40,32 @@ internal sealed class SyncOrchestrator
         _getPendingSyncCount = getPendingSyncCount;
         _refreshShell = refreshShell;
         _notifyPropertyChanged = notifyPropertyChanged;
+        _logOutboxStore = logOutboxStore;
+        _operationAuditUploadService = operationAuditUploadService;
+        _deviceAuthorizationState = deviceAuthorizationState;
 
         ToggleSyncCenterCommand = new AsyncRelayCommand(ToggleSyncCenterAsync);
         RetrySyncOrderCommand = new AsyncRelayCommand<SyncQueueListItem?>(RetrySyncOrderAsync, CanRetrySyncOrder);
         RetryAllSyncOrdersCommand = new AsyncRelayCommand(RetryAllSyncOrdersAsync, CanRetryAllSyncOrders);
+        RetrySelectedSyncOrdersCommand = new AsyncRelayCommand(RetrySelectedSyncOrdersAsync);
+        SelectAllSyncOrdersCommand = new RelayCommand(SelectAllSyncOrders);
+        RetrySelectedAuditLogsCommand = new AsyncRelayCommand(RetrySelectedAuditLogsAsync);
+        SelectAllAuditLogsCommand = new RelayCommand(SelectAllAuditLogs);
     }
 
     // ---- State properties ----
 
     public ObservableCollection<SyncQueueListItem> SyncCenterOrders { get; } = [];
 
+    public ObservableCollection<OperationAuditQueueListItem> SyncCenterAuditLogs { get; } = [];
+
     public bool IsSyncCenterExpanded { get; set; }
 
     public string SyncCenterDetailTitle { get; set; } = string.Empty;
 
     public string LastOrderSyncErrorText { get; set; } = string.Empty;
+
+    public string LastAuditSyncErrorText { get; set; } = string.Empty;
 
     public string PendingSyncText { get; set; } = string.Empty;
 
@@ -70,11 +87,30 @@ internal sealed class SyncOrchestrator
 
     public IAsyncRelayCommand RetryAllSyncOrdersCommand { get; }
 
+    public IAsyncRelayCommand RetrySelectedSyncOrdersCommand { get; }
+
+    public IRelayCommand SelectAllSyncOrdersCommand { get; }
+
+    public IAsyncRelayCommand RetrySelectedAuditLogsCommand { get; }
+
+    public IRelayCommand SelectAllAuditLogsCommand { get; }
+
     // ---- Public methods ----
 
     public async Task RefreshPendingSyncAsync()
     {
         ApplySyncCenterSnapshot(await _shellSyncCenterService.GetSnapshotAsync());
+        await RefreshAuditLogsSafelyAsync();
+    }
+
+    public void ConfigureAudit(
+        ClientLogOutboxStore logOutboxStore,
+        OperationAuditUploadService operationAuditUploadService,
+        DeviceAuthorizationState deviceAuthorizationState)
+    {
+        _logOutboxStore = logOutboxStore;
+        _operationAuditUploadService = operationAuditUploadService;
+        _deviceAuthorizationState = deviceAuthorizationState;
     }
 
     public void RefreshLocalizedText()
@@ -160,6 +196,120 @@ internal sealed class SyncOrchestrator
         await ExecuteOrderSyncRetryAsync(
             () => _orderUploadExecutionService.ExecutePendingAsync(),
             "shell.sync.retryingAll");
+    }
+
+    private async Task RetrySelectedSyncOrdersAsync()
+    {
+        var selected = SyncCenterOrders
+            .Where(item => item.CanRetry && item.Selection.IsSelected)
+            .Select(item => item.EntityId)
+            .ToArray();
+        if (selected.Length == 0)
+        {
+            return;
+        }
+
+        await ExecuteOrderSyncRetryAsync(
+            () => _orderUploadExecutionService.ExecuteSelectedAsync(selected),
+            "shell.sync.retryingSelected");
+    }
+
+    private void SelectAllSyncOrders()
+    {
+        foreach (var item in SyncCenterOrders.Where(item => item.CanRetry))
+        {
+            item.Selection.IsSelected = true;
+        }
+    }
+
+    private async Task RefreshAuditLogsAsync()
+    {
+        var scope = _deviceAuthorizationState?.Current;
+        if (_logOutboxStore is null || scope is null)
+        {
+            SyncCenterAuditLogs.Clear();
+            _notifyPropertyChanged?.Invoke(nameof(SyncCenterAuditLogs));
+            return;
+        }
+
+        var records = await _logOutboxStore.ReadOperationForScopeAsync(
+            scope.StoreCode,
+            scope.DeviceCode,
+            200,
+            CancellationToken.None);
+        SyncCenterAuditLogs.Clear();
+        foreach (var record in records)
+        {
+            SyncCenterAuditLogs.Add(new OperationAuditQueueListItem(
+                record.EventId,
+                record.State,
+                record.OccurredAtUtc,
+                record.AttemptCount,
+                record.NextAttemptAtUtc,
+                record.LastErrorCode,
+                record.LastErrorMessage));
+        }
+
+        _notifyPropertyChanged?.Invoke(nameof(SyncCenterAuditLogs));
+    }
+
+    private async Task RefreshAuditLogsSafelyAsync()
+    {
+        try
+        {
+            await RefreshAuditLogsAsync();
+            LastAuditSyncErrorText = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            // 审计 outbox 故障不能阻止订单页签刷新或覆盖订单重试结果。
+            LastAuditSyncErrorText = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("shell.sync.auditLoadFailed"),
+                ex.Message);
+        }
+
+        _notifyPropertyChanged?.Invoke(nameof(LastAuditSyncErrorText));
+    }
+
+    private void SelectAllAuditLogs()
+    {
+        foreach (var item in SyncCenterAuditLogs)
+        {
+            item.Selection.IsSelected = true;
+        }
+    }
+
+    private async Task RetrySelectedAuditLogsAsync()
+    {
+        if (_logOutboxStore is null)
+        {
+            return;
+        }
+
+        var selected = SyncCenterAuditLogs
+            .Where(item => item.Selection.IsSelected)
+            .Select(item => item.EventId)
+            .ToArray();
+        if (selected.Length == 0)
+        {
+            return;
+        }
+
+        var reset = await _logOutboxStore.ResetOperationForRetryAsync(
+            selected,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        if (reset > 0)
+        {
+            _operationAuditUploadService?.RequestUpload();
+        }
+
+        await RefreshAuditLogsSafelyAsync();
+        _setStatusMessage?.Invoke(string.Format(
+            _localization.CurrentCulture,
+            _localization.T("shell.sync.auditRetryQueued"),
+            reset));
     }
 
     private async Task ExecuteOrderSyncRetryAsync(
