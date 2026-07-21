@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { getActivationProductStores } from '../Warehouse/Preorders/activationProductStores'
 import { getActivationStoreChanges, mergeActivationStoreOptions } from '../Warehouse/Preorders/activationStoreSelection'
 import { getPreorderDateDisplay } from './preorderDate'
-import { resolvePreorderPromptPresentation } from './preorderNavigation'
+import { resolvePreorderPromptPresentation, resolveShopPreorderNavigation } from './preorderNavigation'
 import type { PreorderStoreProductQuantity } from '../../types/preorder'
 
 const read = (path: string) => readFileSync(path, 'utf8')
@@ -58,6 +58,16 @@ assert.deepEqual(
   }),
   { mode: 'pending', key: 'pending:STORE-A:activation-a' },
   '只有确认存在有效 Preorder 后才提示门店用户',
+)
+assert.deepEqual(
+  resolveShopPreorderNavigation({
+    storeCode: 'STORE-A',
+    activationGuid: null,
+    loading: false,
+    error: true,
+  }),
+  { action: 'refresh' },
+  '门禁检查失败后点击 Preorder 必须保留手动刷新路径',
 )
 
 const quantity = (
@@ -201,9 +211,14 @@ const cartSubmitBody = drawer.slice(drawer.indexOf('const handleSubmitOrder'), d
 assert(!cartUpdateBody.includes('preorderBlocked'))
 assert(cartSubmitBody.includes('preorderBlocked'))
 assert(drawer.includes('disabled={!canSubmitCart || preorderBlocked}'))
-assert(drawer.includes('preorderGateError ? ('), '购物车必须显示非阻塞门禁异常提示')
-assert(drawer.includes('onRetryPreorderGate'), '购物车门禁异常提示必须提供重试入口')
-assert(layout.includes('preorderGateError={effectivePreorderGateError}'))
+assert(!drawer.includes('preorderGateError'), '购物车不应显示门禁检查失败提醒')
+assert(!drawer.includes('onRetryPreorderGate'), '购物车不应保留门禁检查失败重试入口')
+assert(!layout.includes("t('shop.preorder.gateUnavailable')"), '页面顶部不应显示门禁检查失败提醒')
+assert(!layout.includes('preorderGateError={'), '购物车不应再接收门禁检查失败状态')
+for (const key of ['shop.preorder.gateUnavailable', 'shop.preorder.gateErrorDescription']) {
+  assert.equal(getLocaleValue(zhLocale, key), undefined, `中文不应保留已移除的提醒文案 ${key}`)
+  assert.equal(getLocaleValue(enLocale, key), undefined, `英文不应保留已移除的提醒文案 ${key}`)
+}
 assert(!shopHome.includes('preorderBlocked'))
 assert(!productCard.includes('orderLocked'))
 assert(!bestSellers.includes('preorderBlocked'))

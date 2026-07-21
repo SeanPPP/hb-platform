@@ -79,7 +79,6 @@ export default function ShopLayout() {
     preorderBlocked,
     preorderGateBypassed,
   )
-  const effectivePreorderGateError = preorderGateError && !preorderGateBypassed
   const preorderPrompt = resolvePreorderPromptPresentation({
     storeCode: selectedStore?.storeCode,
     activationGuids: preorderActivations.map((item) => item.activationGuid),
@@ -222,7 +221,7 @@ export default function ShopLayout() {
     if (!isPreorderGateRequestCurrent(requestToken) || selectedStoreCodeRef.current !== storeCode) return
     setPreorderGate({ preorderActivations: [], preorderBlocked: false, preorderGateLoading: true, preorderGateError: false })
     const controller = new AbortController()
-    // 远端异常时及时结束检查；错误仅作非阻塞提示，不沿用旧门禁。
+    // 远端异常时及时结束检查；失败时保持 fail-open，不沿用旧门禁。
     const timeoutId = window.setTimeout(() => controller.abort(), PREORDER_GATE_TIMEOUT_MS)
     try {
       const result = await getActivePreorders(storeCode, controller.signal)
@@ -615,16 +614,6 @@ export default function ShopLayout() {
       </div>
 
       <div className="shop-content">
-        {selectedStore && effectivePreorderGateError ? (
-          <Alert
-            className="shop-preorder-gate-alert"
-            type="warning"
-            showIcon
-            message={t('shop.preorder.gateUnavailable')}
-            description={t('shop.preorder.gateErrorDescription')}
-            action={<Button size="small" onClick={() => void refreshPreorderGate()}>{t('shop.preorder.retry')}</Button>}
-          />
-        ) : null}
         {showPreorderGateAlert ? (
           <Alert
             className="shop-preorder-gate-alert"
@@ -683,11 +672,8 @@ export default function ShopLayout() {
         cart={cart}
         loading={cartDrawerLoading}
         preorderBlocked={effectivePreorderBlocked}
-        preorderGateLoading={preorderGateLoading}
-        preorderGateError={effectivePreorderGateError}
         onOpenPreorder={preorderActivations[0] ? () => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`) : undefined}
         onPreorderRequired={refreshPreorderGate}
-        onRetryPreorderGate={refreshPreorderGate}
         onCartChanged={refreshFullCart}
       />
 
