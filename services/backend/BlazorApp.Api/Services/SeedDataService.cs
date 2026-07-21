@@ -734,6 +734,34 @@ namespace BlazorApp.Api.Services
                 .Where(role => OrderRoleNames.Contains(role.RoleName, StringComparer.OrdinalIgnoreCase))
                 .Select(role => role.RoleGUID)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var normalizedOrdersViewCode = Permissions.Orders.View.ToLowerInvariant();
+
+            // 收银记录权限必须按角色和权限码直接删除，不能依赖历史关联主键完整性。
+            var removedOrderViewLinks = await db.Deleteable<SysRolePermission>()
+                .Where(permission =>
+                    orderRoleGuids.Contains(permission.RoleGuid)
+                    && !permission.IsDeleted
+                    && permission.PermissionCode.ToLower() == normalizedOrdersViewCode
+                )
+                .ExecuteCommandAsync();
+            if (removedOrderViewLinks > 0)
+            {
+                existingRolePermissions = existingRolePermissions
+                    .Where(permission =>
+                        !orderRoleGuids.Contains(permission.RoleGuid)
+                        || !string.Equals(
+                            permission.PermissionCode,
+                            Permissions.Orders.View,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    .ToList();
+                _logger.LogInformation(
+                    "已清理 Order/订货员 角色的 {Count} 条历史收银记录权限关联",
+                    removedOrderViewLinks
+                );
+            }
+
             var staleOrderAttendancePermissionIds = existingRolePermissions
                 .Where(permission =>
                     orderRoleGuids.Contains(permission.RoleGuid)
@@ -746,7 +774,7 @@ namespace BlazorApp.Api.Services
 
             if (staleOrderAttendancePermissionIds.Any())
             {
-                // Order/订货员只用于前台订货，历史种子带入的考勤权限需要主动清掉。
+                // Order/订货员只用于前台订货，历史种子带入的考勤权限继续按关联主键清理。
                 var removedOrderAttendanceLinks = await db.Deleteable<SysRolePermission>()
                     .Where(permission => staleOrderAttendancePermissionIds.Contains(permission.Id))
                     .ExecuteCommandAsync();

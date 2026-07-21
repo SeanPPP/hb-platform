@@ -251,7 +251,7 @@ namespace BlazorApp.Api.Tests
                 );
 
                 Assert.Contains(Permissions.OrderFront.View, template.PermissionCodes);
-                Assert.Contains(Permissions.Orders.View, template.PermissionCodes);
+                Assert.DoesNotContain(Permissions.Orders.View, template.PermissionCodes);
                 Assert.Contains(Permissions.Orders.Create, template.PermissionCodes);
                 Assert.DoesNotContain(
                     template.PermissionCodes,
@@ -520,9 +520,27 @@ namespace BlazorApp.Api.Tests
                     },
                     new SysRolePermission
                     {
+                        Id = string.Empty,
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = Permissions.Orders.View.ToUpperInvariant(),
+                    },
+                    new SysRolePermission
+                    {
                         Id = "order-cn-existing-attendance",
                         RoleGuid = chineseOrderRole.RoleGUID,
                         PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-cn-existing-extra",
+                        RoleGuid = chineseOrderRole.RoleGUID,
+                        PermissionCode = Permissions.Products.View,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-cn-existing-sales-orders-view",
+                        RoleGuid = chineseOrderRole.RoleGUID,
+                        PermissionCode = Permissions.Orders.View,
                     },
                 }
             ).ExecuteCommandAsync();
@@ -530,6 +548,43 @@ namespace BlazorApp.Api.Tests
             var service = CreateService();
 
             await service.InitializePermissionSeedsAsync();
+
+            var firstPassRolePermissions = await _db.Queryable<SysRolePermission>().ToListAsync();
+            var firstPassActiveRolePermissions = firstPassRolePermissions
+                .Where(item => !item.IsDeleted)
+                .ToList();
+            var firstPassOrderRolePermissions = firstPassActiveRolePermissions
+                .Where(item =>
+                    item.RoleGuid == orderRole.RoleGUID || item.RoleGuid == chineseOrderRole.RoleGUID
+                )
+                .ToList();
+
+            Assert.DoesNotContain(
+                firstPassOrderRolePermissions,
+                item => string.Equals(
+                    item.PermissionCode,
+                    Permissions.Orders.View,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            );
+            Assert.Contains(
+                firstPassOrderRolePermissions,
+                item =>
+                    item.RoleGuid == orderRole.RoleGUID
+                    && item.PermissionCode == Permissions.Users.View
+            );
+            Assert.Contains(
+                firstPassOrderRolePermissions,
+                item =>
+                    item.RoleGuid == chineseOrderRole.RoleGUID
+                    && item.PermissionCode == Permissions.Products.View
+            );
+            var firstPassActivePermissionSnapshot = firstPassActiveRolePermissions
+                .Select(item => $"{item.RoleGuid}:{item.PermissionCode}".ToLowerInvariant())
+                .OrderBy(item => item)
+                .ToList();
+            var firstPassActivePermissionCount = firstPassActiveRolePermissions.Count;
+
             await service.InitializePermissionSeedsAsync();
 
             var allPermissionRows = await _db.Queryable<SysPermission>().ToListAsync();
@@ -538,12 +593,18 @@ namespace BlazorApp.Api.Tests
                 .ToList();
             var allRolePermissions = await _db.Queryable<SysRolePermission>().ToListAsync();
             var activeRolePermissions = allRolePermissions.Where(item => !item.IsDeleted).ToList();
+            var secondPassActivePermissionSnapshot = activeRolePermissions
+                .Select(item => $"{item.RoleGuid}:{item.PermissionCode}".ToLowerInvariant())
+                .OrderBy(item => item)
+                .ToList();
             var adminPermissionCodes = allRolePermissions
                 .Where(item => item.RoleGuid == adminRole.RoleGUID)
                 .Select(item => item.PermissionCode)
                 .ToList();
 
             Assert.Equal(PermissionSeedData.AllPermissions.Count(), allPermissionRows.Count);
+            Assert.Equal(firstPassActivePermissionCount, activeRolePermissions.Count);
+            Assert.Equal(firstPassActivePermissionSnapshot, secondPassActivePermissionSnapshot);
             Assert.Equal(allPermissionRows.Count, allPermissionRows.Select(item => item.Code).Distinct().Count());
             Assert.Equal(16, attendanceRows.Count);
             Assert.Empty(adminPermissionCodes);
@@ -592,16 +653,29 @@ namespace BlazorApp.Api.Tests
             ).OrderBy(code => code);
 
             Assert.Equal(expectedOrderPermissions, actualOrderPermissions);
-            AssertRolePermissionsMatchTemplate(
+            var expectedChineseOrderPermissions = PermissionSeedData
+                .RolePermissionTemplates.Single(template => template.RoleName == "订货员")
+                .PermissionCodes
+                .Append(Permissions.Products.View)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code);
+            var actualChineseOrderPermissions = GetRolePermissionCodes(
                 allRolePermissions,
-                chineseOrderRole.RoleGUID,
-                "订货员"
-            );
+                chineseOrderRole.RoleGUID
+            ).OrderBy(code => code);
+
+            Assert.Equal(expectedChineseOrderPermissions, actualChineseOrderPermissions);
             Assert.DoesNotContain(
                 activeRolePermissions,
                 item =>
                     (item.RoleGuid == orderRole.RoleGUID || item.RoleGuid == chineseOrderRole.RoleGUID)
-                    && item.PermissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
+                    && (
+                        item.PermissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
+                        || item.PermissionCode.Equals(
+                            Permissions.Orders.View,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
             );
 
             var expectedStoreManagerPermissions = PermissionSeedData

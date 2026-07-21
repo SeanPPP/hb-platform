@@ -155,7 +155,6 @@ namespace BlazorApp.Shared.Constants
             new[]
             {
                 Permissions.OrderFront.View,
-                Permissions.Orders.View,
                 Permissions.Orders.Create,
             };
 
