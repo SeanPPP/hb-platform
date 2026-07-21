@@ -357,20 +357,46 @@ async function main() {
   })
   if (productCardQuantityStepperFailure) failures.push(productCardQuantityStepperFailure)
 
-  const productCardAddVisibilityFailure = await runTest('商品卡应未入车显示 Add、已入车显示删除且不挤压步进器', () => {
+  const productCardAddVisibilityFailure = await runTest('商品卡应以固定槽位切换首次加购和删除', () => {
     assert(
       productCardSource.includes('cartQuantity > 0 ? (') &&
         productCardSource.includes('cartQuantity <= 0 ? (') &&
         productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--left"') &&
         productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--right"') &&
-        productCardSource.includes("cartQuantity > 0 ? 'shop-product-card-actions--in-cart' : ''") &&
         productCardSource.includes('const addQuantity = quantity > 0 ? quantity : stepQuantity') &&
         productCardSource.includes('void onAddToCart(product, addQuantity)') &&
-        productCardSource.includes('className="shop-product-add-button"'),
-      '商品卡没有按购物车状态切换删除/Add，或 Add 没有按当前数量/INNER 首次加购',
+        productCardSource.includes('className="shop-product-cart-button"') &&
+        productCardSource.includes('aria-label="Add product to cart"') &&
+        productCardSource.includes('title="Add product to cart"') &&
+        !productCardSource.includes('shop-product-card-actions--in-cart') &&
+        !productCardSource.includes('>\n                  Add\n                </Button>'),
+      '商品卡没有保持左右固定槽位，首次加购仍显示 Add 文字，或未补齐可访问性说明',
     )
   })
   if (productCardAddVisibilityFailure) failures.push(productCardAddVisibilityFailure)
+
+  const productCardQuickPackFailure = await runTest('商品卡 2/3/4 份快捷按钮应设置总数量', () => {
+    const quickPackCases = [
+      { packCount: 2, stepQuantity: 1, currentQuantity: 9, expected: 2 },
+      { packCount: 3, stepQuantity: 12, currentQuantity: 60, expected: 36 },
+      { packCount: 4, stepQuantity: 12, currentQuantity: 0, expected: 48 },
+    ]
+
+    assert(
+      quickPackCases.every(({ packCount, stepQuantity, expected }) => packCount * stepQuantity === expected) &&
+        quickPackCases.some(({ currentQuantity, expected }) => currentQuantity > expected) &&
+        productCardSource.includes('const handleQuickPackQuantity = (packCount: number) => {') &&
+        productCardSource.includes('const quickQuantity = packCount * stepQuantity') &&
+        productCardSource.includes('applyQuantityChange(quickQuantity)') &&
+        productCardSource.includes('[2, 3, 4].map((packCount) =>') &&
+        productCardSource.includes('onClick={() => handleQuickPackQuantity(packCount)}') &&
+        productCardSource.includes('className="shop-product-quick-pack-button"') &&
+        productCardSource.includes('aria-label={`Set total quantity to ${packCount} packs (${quickQuantity})`}') &&
+        productCardSource.includes('title={`Set total quantity to ${packCount} packs (${quickQuantity})`}'),
+      '2/3/4 份按钮未按 packCount * stepQuantity 设置总量、未连接点击处理，或缺少可访问性说明',
+    )
+  })
+  if (productCardQuickPackFailure) failures.push(productCardQuickPackFailure)
 
   const productCardRemoveOptimisticFailure = await runTest('商品卡删除应先乐观退出已入车状态并防重复点击', () => {
     const body = extractFunctionBody(
@@ -413,23 +439,23 @@ async function main() {
   })
   if (optimisticDynamicDataFailure) failures.push(optimisticDynamicDataFailure)
 
-  const productCardQuantityStyleFailure = await runTest('商品卡数量步进器应固定居中且 Add 固定宽度', () => {
+  const productCardQuantityStyleFailure = await runTest('商品卡数量操作区应使用单一固定网格布局', () => {
     assert(
       productCardSource.includes('shop-product-quantity-stepper') &&
         productCardSource.includes('shop-product-quantity-button') &&
         productCardSource.includes('shop-product-quantity-input') &&
-        globalCssSource.includes('grid-template-columns: 28px minmax(108px, 1fr) 58px') &&
-        globalCssSource.includes('.shop-product-card-actions--in-cart') &&
-        globalCssSource.includes('grid-template-columns: 28px minmax(108px, 1fr) 28px') &&
+        globalCssSource.includes('grid-template-columns: 20px 20px minmax(24px, 1fr) 20px repeat(3, 20px) 20px') &&
         globalCssSource.includes('box-sizing: border-box') &&
-        globalCssSource.includes('justify-self: center') &&
-        globalCssSource.includes('max-width: 120px') &&
-        globalCssSource.includes('min-width: 108px') &&
+        globalCssSource.includes('white-space: nowrap') &&
         globalCssSource.includes('.shop-product-quantity-stepper') &&
+        globalCssSource.includes('display: contents') &&
         globalCssSource.includes('.shop-product-quantity-button') &&
         globalCssSource.includes('.shop-product-quantity-input') &&
-        globalCssSource.includes('.shop-product-add-button'),
-      '商品卡数量步进器缺少固定居中/Add 固定宽度样式，卡片动作区可能抖动',
+        globalCssSource.includes('.shop-product-quick-pack-button') &&
+        globalCssSource.includes('.shop-product-cart-button') &&
+        !globalCssSource.includes('.shop-product-card-actions--in-cart') &&
+        !globalCssSource.includes('.shop-product-add-button'),
+      '商品卡数量操作区仍使用入车前后动态列宽，或缺少快捷按钮/图标槽样式',
     )
   })
   if (productCardQuantityStyleFailure) failures.push(productCardQuantityStyleFailure)

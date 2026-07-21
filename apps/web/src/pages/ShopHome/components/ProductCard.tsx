@@ -85,6 +85,16 @@ export default function ProductCard({
     void onAddToCart(product, addQuantity)
   }
 
+  const handleQuickPackQuantity = (packCount: number) => {
+    if (removing) {
+      return
+    }
+
+    // 快捷按钮表示设置总份数，不是在当前数量上累加。
+    const quickQuantity = packCount * stepQuantity
+    applyQuantityChange(quickQuantity)
+  }
+
   const handleCategoryPathActivate = () => {
     if (!canClickCategoryPath || !onCategoryPathClick) {
       return
@@ -139,10 +149,7 @@ export default function ProductCard({
           }
         actions={[
           <div
-            className={[
-              'shop-product-card-actions',
-              cartQuantity > 0 ? 'shop-product-card-actions--in-cart' : '',
-            ].filter(Boolean).join(' ')}
+            className="shop-product-card-actions"
             key="actions"
           >
             <div className="shop-product-card-action-slot shop-product-card-action-slot--left">
@@ -157,6 +164,7 @@ export default function ProductCard({
                   disabled={loading}
                   size="small"
                   title="Remove from cart"
+                  aria-label="Remove product from cart"
                 />
               ) : null}
             </div>
@@ -166,6 +174,7 @@ export default function ProductCard({
                 onClick={() => applyQuantityChange(quantity - stepQuantity)}
                 disabled={removing || quantity <= 0}
                 aria-label="Decrease quantity"
+                title="Decrease quantity"
                 className="shop-product-quantity-button"
               >
                 -
@@ -189,11 +198,28 @@ export default function ProductCard({
                 onClick={() => applyQuantityChange(quantity + stepQuantity)}
                 disabled={removing}
                 aria-label="Increase quantity"
+                title="Increase quantity"
                 className="shop-product-quantity-button"
               >
                 +
               </Button>
             </div>
+            {[2, 3, 4].map((packCount) => {
+              const quickQuantity = packCount * stepQuantity
+              return (
+                <Button
+                  key={packCount}
+                  size="small"
+                  onClick={() => handleQuickPackQuantity(packCount)}
+                  disabled={removing}
+                  aria-label={`Set total quantity to ${packCount} packs (${quickQuantity})`}
+                  title={`Set total quantity to ${packCount} packs (${quickQuantity})`}
+                  className="shop-product-quick-pack-button"
+                >
+                  {packCount}
+                </Button>
+              )
+            })}
             <div className="shop-product-card-action-slot shop-product-card-action-slot--right">
               {cartQuantity <= 0 ? (
                 <Button
@@ -202,10 +228,11 @@ export default function ProductCard({
                   icon={<ShoppingCartOutlined />}
                   onClick={handleAddToCart}
                   loading={loading}
-                  className="shop-product-add-button"
-                >
-                  Add
-                </Button>
+                  disabled={removing}
+                  aria-label="Add product to cart"
+                  title="Add product to cart"
+                  className="shop-product-cart-button"
+                />
               ) : null}
             </div>
           </div>,
