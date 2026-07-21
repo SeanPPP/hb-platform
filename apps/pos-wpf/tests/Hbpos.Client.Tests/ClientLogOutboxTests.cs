@@ -193,6 +193,47 @@ public sealed class ClientLogOutboxTests
         }
     }
 
+    [Fact]
+    public async Task Selected_audits_are_scoped_and_reset_for_immediate_retry()
+    {
+        var databasePath = CreateDatabasePath();
+        try
+        {
+            var store = new ClientLogOutboxStore(databasePath);
+            await store.InitializeAsync(CancellationToken.None);
+            var now = DateTimeOffset.Parse("2026-07-21T01:00:00Z");
+            var selectedId = Guid.NewGuid();
+            var otherDeviceId = Guid.NewGuid();
+            await store.EnqueueAsync(ClientLogOutboxKind.OperationAudit, selectedId, now,
+                "{\"storeCode\":\"S001\",\"deviceCode\":\"POS-01\"}", now, CancellationToken.None);
+            await store.EnqueueAsync(ClientLogOutboxKind.OperationAudit, otherDeviceId, now,
+                "{\"storeCode\":\"S001\",\"deviceCode\":\"POS-02\"}", now, CancellationToken.None);
+            await store.ApplyResultsAsync(
+                ClientLogOutboxKind.OperationAudit,
+                [],
+                [new ClientLogRejection(selectedId, "REJECTED", "old error")],
+                now,
+                CancellationToken.None);
+
+            var scoped = Assert.Single(await store.ReadOperationForScopeAsync(
+                "S001", "POS-01", 100, CancellationToken.None));
+            Assert.Equal("Rejected", scoped.State);
+
+            Assert.Equal(1, await store.ResetOperationForRetryAsync([selectedId], now.AddMinutes(1), CancellationToken.None));
+            var retry = Assert.Single(await store.ReadOperationForScopeAsync(
+                "S001", "POS-01", 100, CancellationToken.None));
+            Assert.Equal("Pending", retry.State);
+            Assert.Equal(0, retry.AttemptCount);
+            Assert.Null(retry.LastErrorCode);
+            Assert.Null(retry.LastErrorMessage);
+            Assert.Equal(now.AddMinutes(1), retry.NextAttemptAtUtc);
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
     private static string CreateDatabasePath()
     {
         return Path.Combine(Path.GetTempPath(), $"hbpos-logs-test-{Guid.NewGuid():N}.db");

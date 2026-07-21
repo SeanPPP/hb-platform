@@ -348,94 +348,175 @@
                         </DockPanel>
                     </Border>
 
-                    <Grid Grid.Row="1" Margin="16,12">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-
-                        <Border Background="#FFFFF7E8"
-                                BorderBrush="#FFFFD59B"
-                                BorderThickness="1"
-                                CornerRadius="10"
-                                Padding="10"
-                                Margin="0,0,0,10">
-                            <StackPanel Orientation="Horizontal">
-                                <materialDesign:PackIcon Kind="AlertCircleOutline"
-                                                         Width="18"
-                                                         Height="18"
-                                                         Foreground="#FF8F4E00"
-                                                         Margin="0,0,8,0" />
-                                <TextBlock Text="{Binding LastOrderSyncErrorText}"
-                                           Foreground="#FF8F4E00"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Grid.Row="1" Background="#FFFAFAFA" CornerRadius="10" Padding="8">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding SyncCenterOrders}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Margin="0,0,0,8"
-                                                    Padding="10"
-                                                    Background="White"
-                                                    BorderBrush="#FFE7E8EB"
-                                                    BorderThickness="1"
-                                                    CornerRadius="10">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="Auto" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding ShortEntityId}" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" />
-                                                            <TextBlock Text="{Binding Status, StringFormat='  [{0}]'}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource PosPrimaryBrush}" Margin="6,0,0,0" />
+                    <TabControl Grid.Row="1" Margin="16,12" Background="Transparent" BorderThickness="0">
+                        <TabItem Header="{loc:Loc shell.sync.ordersTab}">
+                            <Grid Margin="0,8,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Border Background="#FFFFF7E8"
+                                        BorderBrush="#FFFFD59B"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Padding="8"
+                                        Margin="0,0,0,8">
+                                    <TextBlock Text="{Binding LastOrderSyncErrorText}"
+                                               Foreground="#FF8F4E00"
+                                               FontSize="10"
+                                               TextWrapping="Wrap" />
+                                </Border>
+                                <DockPanel Grid.Row="1" Margin="0,0,0,8">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{loc:Loc shell.sync.retryAll}"
+                                            Command="{Binding RetryAllSyncOrdersCommand}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                            Padding="10,4"
+                                            Margin="8,0,0,0" />
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{loc:Loc shell.sync.retrySelected}"
+                                            Command="{Binding RetrySelectedSyncOrdersCommand}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                            Padding="10,4" />
+                                    <Button DockPanel.Dock="Left"
+                                            Content="{loc:Loc shell.sync.selectAll}"
+                                            Command="{Binding SelectAllSyncOrdersCommand}"
+                                            Style="{StaticResource TitleBarButtonStyle}"
+                                            Padding="10,4" />
+                                </DockPanel>
+                                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding SyncCenterOrders}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,8"
+                                                        Padding="10"
+                                                        Background="White"
+                                                        BorderBrush="#FFE7E8EB"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <CheckBox IsChecked="{Binding Selection.IsSelected}"
+                                                                  IsEnabled="{Binding CanRetry}"
+                                                                  VerticalAlignment="Center"
+                                                                  Margin="0,0,10,0" />
+                                                        <StackPanel Grid.Column="1">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding ShortEntityId}" FontWeight="Bold" />
+                                                                <TextBlock Text="{Binding Status, StringFormat='  [{0}]'}"
+                                                                           Foreground="{StaticResource PosPrimaryBrush}"
+                                                                           Margin="6,0,0,0" />
+                                                            </StackPanel>
+                                                            <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                                                <Run Text="{loc:Loc shell.sync.created}" />
+                                                                <Run Text=" " />
+                                                                <Run Text="{Binding CreatedAtDisplay, Mode=OneWay}" />
+                                                            </TextBlock>
+                                                            <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                                                <Run Text="{loc:Loc shell.sync.lastAttempt}" />
+                                                                <Run Text=" " />
+                                                                <Run Text="{Binding LastTriedAtDisplay, Mode=OneWay}" />
+                                                            </TextBlock>
+                                                            <TextBlock Text="{Binding ErrorMessage}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource PosDangerBrush}"
+                                                                       TextWrapping="Wrap" />
                                                         </StackPanel>
-                                                        <TextBlock Text="{Binding EntityType}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
-                                                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,2,0,0">
-                                                            <Run Text="{loc:Loc shell.sync.created}" />
-                                                            <Run Text=" " />
-                                                            <Run Text="{Binding CreatedAtDisplay, Mode=OneWay}" />
-                                                        </TextBlock>
-                                                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,2,0,0">
-                                                            <Run Text="{loc:Loc shell.sync.lastAttempt}" />
-                                                            <Run Text=" " />
-                                                            <Run Text="{Binding LastTriedAtDisplay, Mode=OneWay}" />
-                                                        </TextBlock>
-                                                        <TextBlock Text="{Binding ErrorMessage}" FontSize="10" Foreground="{StaticResource PosDangerBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding AmountDisplay}" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Right" />
-                                                        <Button Content="{loc:Loc shell.sync.retry}"
-                                                                Command="{Binding DataContext.RetrySyncOrderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                CommandParameter="{Binding}"
-                                                                Style="{StaticResource PosPrimaryButtonStyle}"
-                                                                Padding="10,4"
-                                                                MinHeight="28"
-                                                                FontSize="10"
-                                                                Margin="0,8,0,0" />
-                                                    </StackPanel>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
-                        </Border>
-                    </Grid>
+                                                        <StackPanel Grid.Column="2" Margin="12,0,0,0">
+                                                            <TextBlock Text="{Binding AmountDisplay}"
+                                                                       FontWeight="Black"
+                                                                       Foreground="{StaticResource PosPrimaryBrush}" />
+                                                            <Button Content="{loc:Loc shell.sync.retry}"
+                                                                    Command="{Binding DataContext.RetrySyncOrderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                                                    Padding="10,4"
+                                                                    Margin="0,6,0,0" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </TabItem>
+                        <TabItem Header="{loc:Loc shell.sync.auditTab}">
+                            <Grid Margin="0,8,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <DockPanel Margin="0,0,0,8">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{loc:Loc shell.sync.retrySelected}"
+                                            Command="{Binding RetrySelectedAuditLogsCommand}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                            Padding="10,4" />
+                                    <Button DockPanel.Dock="Left"
+                                            Content="{loc:Loc shell.sync.selectAll}"
+                                            Command="{Binding SelectAllAuditLogsCommand}"
+                                            Style="{StaticResource TitleBarButtonStyle}"
+                                            Padding="10,4" />
+                                </DockPanel>
+                                <TextBlock Grid.Row="1"
+                                           Text="{Binding LastAuditSyncErrorText}"
+                                           Visibility="{Binding LastAuditSyncErrorText, Converter={StaticResource StringHasValueToVis}}"
+                                           Foreground="{StaticResource PosDangerBrush}"
+                                           FontSize="10"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,8" />
+                                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding SyncCenterAuditLogs}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,8"
+                                                        Padding="10"
+                                                        Background="White"
+                                                        BorderBrush="#FFE7E8EB"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <CheckBox IsChecked="{Binding Selection.IsSelected}"
+                                                                  VerticalAlignment="Center"
+                                                                  Margin="0,0,10,0" />
+                                                        <StackPanel Grid.Column="1">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding ShortEventId}" FontWeight="Bold" />
+                                                                <TextBlock Text="{Binding Status, StringFormat='  [{0}]'}"
+                                                                           Foreground="{StaticResource PosPrimaryBrush}"
+                                                                           Margin="6,0,0,0" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="{Binding OccurredAtDisplay}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                            <TextBlock Text="{Binding ErrorMessage}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource PosDangerBrush}"
+                                                                       TextWrapping="Wrap" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </TabItem>
+                    </TabControl>
 
                     <Border Grid.Row="2" Padding="16,12" Background="#FFF7F8FB" BorderBrush="#FFE7E8EB" BorderThickness="0,1,0,0" CornerRadius="0,0,14,14">
                         <DockPanel>
-                            <Button DockPanel.Dock="Right"
-                                    Content="{loc:Loc shell.sync.retryAll}"
-                                    Command="{Binding RetryAllSyncOrdersCommand}"
-                                    Style="{StaticResource PosPrimaryButtonStyle}"
-                                    MinHeight="30"
-                                    Padding="12,4"
-                                    FontSize="11" />
                             <TextBlock Text="{loc:Loc shell.sync.caption}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" />
                         </DockPanel>
                     </Border>

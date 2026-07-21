@@ -40,14 +40,8 @@ public sealed record ApiServerSwitchSafetySnapshot(
             return "settings.serverAddress.blocked.payment";
         }
 
-        if (PendingSyncCount > 0 || FailedSyncCount > 0 || SyncingCount > 0)
-        {
-            return "settings.serverAddress.blocked.sync";
-        }
-
-        return PendingOperationAuditCount > 0
-            ? "settings.serverAddress.blocked.audit"
-            : null;
+        // 同一后端数据库的两个 API 入口允许携带积压切换，稍后由新端点继续上传。
+        return null;
     }
 }
 
@@ -150,7 +144,7 @@ public sealed class ApiServerSwitchCoordinator : IApiServerSwitchCoordinator
                     return new ApiServerSwitchResult(ApiServerSwitchStatus.Blocked, finalBlockReason);
                 }
 
-                // 地址、端点和数据库只在全部屏障关闭后发布；Commit 后禁止回滚到旧环境。
+                // HTTP 端点只在全部请求屏障关闭后发布；Commit 后禁止回滚到旧环境。
                 _settingsService.SaveUserAddress(normalized);
                 addressSaved = true;
                 if (!_runtime.Commit(transition))
@@ -159,8 +153,8 @@ public sealed class ApiServerSwitchCoordinator : IApiServerSwitchCoordinator
                     transition = null;
                     TrySaveAddress(previousAddress);
                     return new ApiServerSwitchResult(
-                        ApiServerSwitchStatus.Blocked,
-                        "settings.serverAddress.blocked.audit");
+                        ApiServerSwitchStatus.PreCommitFailed,
+                        ErrorMessage: "settings.serverAddress.status.preCommitFailed");
                 }
 
                 committed = true;

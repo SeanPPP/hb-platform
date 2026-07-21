@@ -86,7 +86,10 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
         return Task.FromResult(records);
     }
 
-    internal async Task UploadOnceAsync(DateTimeOffset nowUtc, CancellationToken cancellationToken)
+    internal async Task UploadOnceAsync(
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken,
+        bool wakeAfterSuccessfulFullAuditBatch = false)
     {
         if (!await _uploadGate.WaitAsync(0, cancellationToken))
         {
@@ -149,9 +152,16 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
             {
                 response = await _httpClient.SendAsync(request, timeoutCancellation.Token);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                timeoutCancellation.IsCancellationRequested &&
+                !cancellationToken.IsCancellationRequested)
             {
                 await ScheduleRetryAsync(records, nowUtc, "TIMEOUT", "upload timed out", cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // 服务器端点切换会取消旧代际请求；保留原重试时间，切换完成后的唤醒即可立即续传。
                 return;
             }
             catch (HttpRequestException ex)
@@ -176,6 +186,13 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
                 try
                 {
                     await ApplyAcknowledgementsAsync(response, records, nowUtc, cancellationToken);
+                    if (wakeAfterSuccessfulFullAuditBatch &&
+                        _kind == ClientLogOutboxKind.OperationAudit &&
+                        records.Count == _batchSize)
+                    {
+                        // 满批成功后立即处理下一批，避免积压审计事件被 60 秒空闲轮询限速。
+                        SignalWake();
+                    }
                 }
                 catch (JsonException ex)
                 {
@@ -223,7 +240,10 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                await UploadOnceAsync(_timeProvider.GetUtcNow(), stoppingToken);
+                await UploadOnceAsync(
+                    _timeProvider.GetUtcNow(),
+                    stoppingToken,
+                    wakeAfterSuccessfulFullAuditBatch: true);
                 await WaitForNextTriggerAsync(stoppingToken);
             }
         }
@@ -451,7 +471,17 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
 
     private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs args)
     {
-        if (!args.IsAvailable || _wakeSignal.CurrentCount != 0)
+        if (!args.IsAvailable)
+        {
+            return;
+        }
+
+        SignalWake();
+    }
+
+    private void SignalWake()
+    {
+        if (_wakeSignal.CurrentCount != 0)
         {
             return;
         }
@@ -463,6 +493,11 @@ internal abstract class ClientLogUploadServiceBase : BackgroundService
         catch (SemaphoreFullException)
         {
         }
+    }
+
+    internal void RequestUpload()
+    {
+        SignalWake();
     }
 
     protected static void WriteInternalDiagnostic(string message)
@@ -503,6 +538,8 @@ internal sealed class ApplicationLogUploadService(
 
 internal sealed class OperationAuditUploadService : ClientLogUploadServiceBase
 {
+    // 服务端逐条事务写入，批量上限需在客户端 15 秒请求超时内为网络和数据库写入留出余量。
+    private const int UploadBatchSize = 8;
     private const int MaximumRequestBytes = 4 * 1024 * 1024;
     private static readonly int EmptyRequestBytes = Encoding.UTF8.GetByteCount("{\"events\":[]}");
     private readonly bool _isEnabled;
@@ -517,7 +554,8 @@ internal sealed class OperationAuditUploadService : ClientLogUploadServiceBase
             store,
             httpClient,
             ClientLogOutboxKind.OperationAudit,
-            timeProvider)
+            timeProvider,
+            batchSize: UploadBatchSize)
     {
         _isEnabled = options.Enabled && httpClient.BaseAddress is { IsAbsoluteUri: true };
         _authorizationState = authorizationState;
@@ -542,12 +580,12 @@ internal sealed class OperationAuditUploadService : ClientLogUploadServiceBase
             return Task.FromResult<IReadOnlyList<ClientLogOutboxRecord>>([]);
         }
 
-        // 先按当前设备 claims 对 payload scope 做数据库过滤，旧设备事件保留 Pending 且不会占用 100 条批次。
+        // 先按当前设备 claims 对 payload scope 做数据库过滤，旧设备事件保留 Pending 且不会占用当前上传批次。
         return Store.ReadPendingOperationForScopeAsync(
             nowUtc,
             scope.StoreCode,
             scope.DeviceCode,
-            100,
+            UploadBatchSize,
             cancellationToken);
     }
 

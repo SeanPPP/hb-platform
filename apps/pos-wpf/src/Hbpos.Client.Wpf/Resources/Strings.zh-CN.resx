@@ -1077,6 +1077,15 @@
   <data name="shell.sync.retryAll" xml:space="preserve">
     <value>全部重试</value>
   </data>
+  <data name="shell.sync.ordersTab" xml:space="preserve"><value>订单</value></data>
+  <data name="shell.sync.auditTab" xml:space="preserve"><value>审计日志</value></data>
+  <data name="shell.sync.selectAll" xml:space="preserve"><value>全选可重试项</value></data>
+  <data name="shell.sync.retrySelected" xml:space="preserve"><value>重传所选</value></data>
+  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>正在重传所选订单...</value></data>
+  <data name="shell.sync.auditRetryQueued" xml:space="preserve"><value>已将 {0} 条审计记录加入重试。</value></data>
+  <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>审计日志刷新失败：{0}</value></data>
+  <data name="history.reuploadSelected" xml:space="preserve"><value>重传所选订单</value></data>
+  <data name="history.reuploadCompleted" xml:space="preserve"><value>重传完成：成功 {0}，失败 {1}。</value></data>
   <data name="shell.sync.retryingOne" xml:space="preserve">
     <value>正在重试订单上传...</value>
   </data>
@@ -1090,7 +1099,7 @@
     <value>订单上传重试失败：{0}</value>
   </data>
   <data name="shell.sync.caption" xml:space="preserve">
-    <value>显示上传失败、待处理和正在同步的订单。</value>
+    <value>查看并重传订单或操作审计日志。</value>
   </data>
   <data name="shell.sync.created" xml:space="preserve">
     <value>创建时间：</value>

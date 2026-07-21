@@ -25,10 +25,6 @@ public sealed class ApiServerSwitchCoordinatorTests
     [InlineData(1, false, false, 0, 0, 0, 0)]
     [InlineData(0, true, false, 0, 0, 0, 0)]
     [InlineData(0, false, true, 0, 0, 0, 0)]
-    [InlineData(0, false, false, 1, 0, 0, 0)]
-    [InlineData(0, false, false, 0, 1, 0, 0)]
-    [InlineData(0, false, false, 0, 0, 1, 0)]
-    [InlineData(0, false, false, 0, 0, 0, 1)]
     public async Task Switch_blocks_for_each_unsafe_runtime_state(
         int cartCount,
         bool cardPayment,
@@ -61,7 +57,27 @@ public sealed class ApiServerSwitchCoordinatorTests
     }
 
     [Fact]
-    public async Task Switch_commits_database_endpoint_and_shell_reset_after_health_check()
+    public async Task Switch_allows_order_and_audit_backlog()
+    {
+        var runtime = new FakeRuntime
+        {
+            Snapshot = ApiServerSwitchSafetySnapshot.Safe with
+            {
+                PendingSyncCount = 2,
+                FailedSyncCount = 1,
+                SyncingCount = 1,
+                PendingOperationAuditCount = 8
+            }
+        };
+        var (coordinator, _, _) = CreateCoordinator(runtime);
+
+        var result = await coordinator.SwitchAsync("https://new.example.com/pos-api/");
+
+        Assert.Equal(ApiServerSwitchStatus.Success, result.Status);
+    }
+
+    [Fact]
+    public async Task Switch_commits_endpoint_and_shell_reset_after_health_check()
     {
         var runtime = new FakeRuntime();
         var (coordinator, _, saved) = CreateCoordinator(runtime);
@@ -130,7 +146,7 @@ public sealed class ApiServerSwitchCoordinatorTests
     {
         var runtime = new FakeRuntime
         {
-            FinalSnapshot = ApiServerSwitchSafetySnapshot.Safe with { PendingSyncCount = 1 }
+            FinalSnapshot = ApiServerSwitchSafetySnapshot.Safe with { CartCount = 1 }
         };
         var (coordinator, _, saved) = CreateCoordinator(runtime);
 
@@ -149,8 +165,8 @@ public sealed class ApiServerSwitchCoordinatorTests
 
         var result = await coordinator.SwitchAsync("https://new.example.com/pos-api/");
 
-        Assert.Equal(ApiServerSwitchStatus.Blocked, result.Status);
-        Assert.Equal("settings.serverAddress.blocked.audit", result.BlockReason);
+        Assert.Equal(ApiServerSwitchStatus.PreCommitFailed, result.Status);
+        Assert.Equal("settings.serverAddress.status.preCommitFailed", result.ErrorMessage);
         Assert.Equal(["prepare", "begin", "final-safety", "commit", "abort"], runtime.Events);
         Assert.Equal("https://current.example.com/pos-api/", saved());
     }

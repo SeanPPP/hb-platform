@@ -1,13 +1,149 @@
 using System.Net;
+using System.Net.Http.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
 public sealed class OrderUploadServiceTests
 {
+    [Fact]
+    public async Task ExecuteSelectedAsync_preserves_order_deduplicates_and_summarizes_failures()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var uploader = new RecordingOrderUploadService(second);
+        var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
+
+        var result = await executor.ExecuteSelectedAsync([first, second, first, Guid.Empty]);
+
+        Assert.Equal([first, second], uploader.Attempts);
+        Assert.Equal(new OrderUploadExecutionResult(2, 1, 1), result);
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_with_empty_selection_does_not_upload()
+    {
+        var uploader = new RecordingOrderUploadService(Guid.Empty);
+        var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
+
+        var result = await executor.ExecuteSelectedAsync([]);
+
+        Assert.Empty(uploader.Attempts);
+        Assert.Equal(new OrderUploadExecutionResult(0, 0, 0), result);
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_queues_remaining_orders_until_inflight_endpoint_switch_commits()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-switch-{Guid.NewGuid():N}.db");
+        const string oldAddress = "https://old.example.test/pos-api/";
+        const string newAddress = "https://new.example.test/pos-api/";
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var first = CreateLocalOrder();
+            var alreadySynced = CreateLocalOrder();
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(first);
+            await orders.SavePendingOrderAsync(alreadySynced);
+            await uploadRepository.MarkSyncedAsync(alreadySynced.OrderGuid);
+
+            var endpointState = new ApiRuntimeEndpointState(oldAddress);
+            var handler = new EndpointSwitchOrderSyncHandler();
+            using var httpClient = new HttpClient(new ApiRuntimeEndpointHandler(endpointState)
+            {
+                InnerHandler = handler
+            })
+            {
+                BaseAddress = new Uri(oldAddress)
+            };
+            var executor = new OrderUploadExecutionService(
+                new OrderUploadService(orders, new OrderSyncApiClient(httpClient), uploadRepository),
+                uploadRepository);
+
+            var execution = executor.ExecuteSelectedAsync([first.OrderGuid, alreadySynced.OrderGuid]);
+            await handler.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
+            var interrupted = await execution.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(new OrderUploadExecutionResult(2, 0, 2), interrupted);
+            Assert.Equal([new Uri($"{oldAddress}api/v1/orders/sync")], handler.RequestUris);
+            Assert.All(await orders.GetRecentOrdersAsync(), item => Assert.Equal("Pending", item.SyncStatus));
+
+            endpointState.Commit(transition);
+            var resumed = await executor.ExecutePendingAsync();
+
+            Assert.Equal(new OrderUploadExecutionResult(2, 2, 0), resumed);
+            Assert.Equal(
+                [
+                    new Uri($"{oldAddress}api/v1/orders/sync"),
+                    new Uri($"{newAddress}api/v1/orders/sync"),
+                    new Uri($"{newAddress}api/v1/orders/sync")
+                ],
+                handler.RequestUris);
+            Assert.Equal(
+                "Synced",
+                (await orders.GetRecentOrdersAsync())
+                    .Single(item => item.OrderGuid == alreadySynced.OrderGuid)
+                    .SyncStatus);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_stops_immediately_when_caller_cancels()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var uploader = new CallerCancellationOrderUploadService();
+        var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
+        using var cancellation = new CancellationTokenSource();
+
+        var execution = executor.ExecuteSelectedAsync([first, second], cancellation.Token);
+        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            execution.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal([first], uploader.Attempts);
+    }
+
+    [Fact]
+    public async Task Execution_service_serializes_cross_entry_point_uploads()
+    {
+        var orderGuid = Guid.NewGuid();
+        var uploader = new BlockingOrderUploadService();
+        var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
+
+        var automatic = executor.ExecuteOneAsync(orderGuid);
+        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        var manual = executor.ExecuteSelectedAsync([orderGuid]);
+        await Task.Yield();
+
+        Assert.Single(uploader.Attempts);
+        Assert.Equal(1, uploader.MaximumConcurrency);
+
+        uploader.ReleaseFirstRequest();
+        await Task.WhenAll(automatic, manual).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal([orderGuid, orderGuid], uploader.Attempts);
+        Assert.Equal(1, uploader.MaximumConcurrency);
+    }
+
     [Fact]
     public async Task Order_upload_execution_service_marks_order_synced_when_api_accepts()
     {
@@ -300,6 +436,74 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task ExecuteSelectedAsync_counts_missing_authorization_as_failed_and_keeps_order_pending()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-selected-auth-{Guid.NewGuid():N}.db");
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder();
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(order);
+            var executor = new OrderUploadExecutionService(
+                new OrderUploadService(orders, new UnauthorizedOrderSyncApiClient(), uploadRepository),
+                uploadRepository);
+
+            var result = await executor.ExecuteSelectedAsync([order.OrderGuid]);
+
+            Assert.Equal(new OrderUploadExecutionResult(1, 0, 1), result);
+            Assert.Equal("Pending", Assert.Single(await orders.GetRecentOrdersAsync()).SyncStatus);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_keeps_already_synced_order_synced()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-already-synced-{Guid.NewGuid():N}.db");
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder();
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(order);
+            await uploadRepository.MarkSyncedAsync(order.OrderGuid);
+            var executor = new OrderUploadExecutionService(
+                new OrderUploadService(
+                    orders,
+                    new StubOrderSyncApiClient(new OrderSyncResponse(order.OrderGuid, true, true, "AlreadySynced")),
+                    uploadRepository),
+                uploadRepository);
+
+            var result = await executor.ExecuteSelectedAsync([order.OrderGuid]);
+
+            Assert.Equal(new OrderUploadExecutionResult(1, 1, 0), result);
+            Assert.Equal("Synced", Assert.Single(await orders.GetRecentOrdersAsync()).SyncStatus);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task UploadOrderAsync_ignores_voucher_balance_suffix_when_mapping_payment()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-voucher-upload-{Guid.NewGuid():N}.db");
@@ -435,5 +639,113 @@ public sealed class OrderUploadServiceTests
         {
             throw new CatalogApiException("forbidden", HttpStatusCode.Forbidden);
         }
+    }
+
+    private sealed class RecordingOrderUploadService(Guid failingOrder) : IOrderUploadService
+    {
+        public List<Guid> Attempts { get; } = [];
+
+        public Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            Attempts.Add(orderGuid);
+            return orderGuid == failingOrder
+                ? Task.FromException(new InvalidOperationException("failed"))
+                : Task.CompletedTask;
+        }
+    }
+
+    private sealed class CallerCancellationOrderUploadService : IOrderUploadService
+    {
+        private readonly TaskCompletionSource _firstRequestStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task FirstRequestStarted => _firstRequestStarted.Task;
+
+        public List<Guid> Attempts { get; } = [];
+
+        public async Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            Attempts.Add(orderGuid);
+            _firstRequestStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
+    private sealed class BlockingOrderUploadService : IOrderUploadService
+    {
+        private readonly TaskCompletionSource _firstRequestStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFirstRequest =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _activeRequests;
+
+        public Task FirstRequestStarted => _firstRequestStarted.Task;
+
+        public List<Guid> Attempts { get; } = [];
+
+        public int MaximumConcurrency { get; private set; }
+
+        public void ReleaseFirstRequest() => _releaseFirstRequest.TrySetResult();
+
+        public async Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            Attempts.Add(orderGuid);
+            var active = Interlocked.Increment(ref _activeRequests);
+            MaximumConcurrency = Math.Max(MaximumConcurrency, active);
+            try
+            {
+                if (Attempts.Count == 1)
+                {
+                    _firstRequestStarted.TrySetResult();
+                    await _releaseFirstRequest.Task.WaitAsync(cancellationToken);
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeRequests);
+            }
+        }
+    }
+
+    private sealed class EndpointSwitchOrderSyncHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource _firstRequestStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _requestCount;
+
+        public Task FirstRequestStarted => _firstRequestStarted.Task;
+
+        public List<Uri> RequestUris { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            var syncRequest = await request.Content!.ReadFromJsonAsync<OrderSyncRequest>(
+                cancellationToken: cancellationToken);
+            if (Interlocked.Increment(ref _requestCount) == 1)
+            {
+                _firstRequestStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(ApiResult<OrderSyncResponse>.Ok(
+                    new OrderSyncResponse(syncRequest!.OrderGuid, true, true, "AlreadySynced")))
+            };
+        }
+    }
+
+    private sealed class StubOrderUploadRepository : ILocalOrderUploadRepository
+    {
+        public Task<IReadOnlyList<Guid>> GetPendingOrderGuidsAsync(int take = 20, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task MarkSyncingAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

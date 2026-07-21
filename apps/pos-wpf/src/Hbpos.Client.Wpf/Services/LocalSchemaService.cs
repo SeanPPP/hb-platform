@@ -37,6 +37,31 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             command.CommandText = sql;
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        // 进程中断会遗留无法自行重试的 Syncing；启动时仅恢复订单上传状态，不触碰支付记录。
+        await using var transaction = connection.BeginTransaction();
+        await using var recoveryCommand = connection.CreateCommand();
+        recoveryCommand.Transaction = transaction;
+        recoveryCommand.CommandText =
+            """
+            UPDATE LocalOrders
+            SET SyncStatus = 'Pending'
+            WHERE SyncStatus = 'Syncing'
+              AND EXISTS (
+                  SELECT 1
+                  FROM SyncQueue
+                  WHERE EntityType = 'Order'
+                    AND Status = 'Syncing'
+                    AND EntityId = LocalOrders.OrderGuid
+              );
+
+            UPDATE SyncQueue
+            SET Status = 'Pending'
+            WHERE EntityType = 'Order'
+              AND Status = 'Syncing';
+            """;
+        await recoveryCommand.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task EnsureDeviceCacheColumnsAsync(

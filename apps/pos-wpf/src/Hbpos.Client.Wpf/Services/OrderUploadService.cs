@@ -23,6 +23,24 @@ public interface IOrderUploadExecutionService
     Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
     Task<OrderUploadExecutionResult> ExecutePendingAsync(int batchSize = 20, CancellationToken cancellationToken = default);
+
+    async Task<OrderUploadExecutionResult> ExecuteSelectedAsync(
+        IReadOnlyCollection<Guid> orderGuids,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(orderGuids);
+        var selected = orderGuids.Where(id => id != Guid.Empty).Distinct().ToArray();
+        var uploaded = 0;
+        var failed = 0;
+        foreach (var orderGuid in selected)
+        {
+            var result = await ExecuteOneAsync(orderGuid, cancellationToken);
+            uploaded += result.UploadedCount;
+            failed += result.FailedCount;
+        }
+
+        return new OrderUploadExecutionResult(selected.Length, uploaded, failed);
+    }
 }
 
 public sealed class OrderUploadService(
@@ -145,75 +163,154 @@ public sealed class OrderUploadExecutionService(
     IOrderUploadService uploadService,
     ILocalOrderUploadRepository uploadRepository) : IOrderUploadExecutionService
 {
-    public async Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+    // ponytail: 单客户端全局串行足以消除状态覆盖；仅在实测吞吐不足时升级为按订单 GUID 加锁。
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
+
+    public async Task<OrderUploadExecutionResult> ExecuteSelectedAsync(
+        IReadOnlyCollection<Guid> orderGuids,
+        CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
-        Log($"execute one start orderGuid={orderGuid:D}");
+        await _executionGate.WaitAsync(cancellationToken);
         try
         {
-            await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
-            Log($"execute one completed orderGuid={orderGuid:D} uploaded=1 failed=0 elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return new OrderUploadExecutionResult(1, 1, 0);
+            ArgumentNullException.ThrowIfNull(orderGuids);
+            // 保留收银员勾选顺序并去重，串行上传可避免同一订单的状态互相覆盖。
+            var selected = orderGuids.Where(id => id != Guid.Empty).Distinct().ToArray();
+            var uploadedCount = 0;
+            var failedCount = 0;
+            for (var index = 0; index < selected.Length; index++)
+            {
+                var orderGuid = selected[index];
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
+                    uploadedCount++;
+                }
+                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // 端点发布前新请求仍被封闭；将当前项和剩余选择统一入队，交给新端点继续上传。
+                    for (var pendingIndex = index; pendingIndex < selected.Length; pendingIndex++)
+                    {
+                        await uploadRepository.MarkPendingAsync(selected[pendingIndex], cancellationToken);
+                    }
+
+                    failedCount += selected.Length - index;
+                    Log(
+                        $"execute selected batch interrupted orderGuid={orderGuid:D} queued={selected.Length - index} " +
+                        "reason=endpoint-generation-canceled " +
+                        $"error={ex.GetType().Name}");
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (OrderUploadAuthorizationRequiredException)
+                {
+                    failedCount++;
+                    Log($"execute selected item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+                }
+                catch (Exception ex)
+                {
+                    failedCount++;
+                    Log($"execute selected item failed orderGuid={orderGuid:D} error={ex.GetType().Name} message={ex.Message}");
+                }
+            }
+
+            return new OrderUploadExecutionResult(selected.Length, uploadedCount, failedCount);
         }
-        catch (OperationCanceledException)
+        finally
         {
-            Log($"execute one canceled orderGuid={orderGuid:D} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            throw;
+            _executionGate.Release();
         }
-        catch (OrderUploadAuthorizationRequiredException)
+    }
+
+    public async Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+    {
+        await _executionGate.WaitAsync(cancellationToken);
+        try
         {
-            Log($"execute one deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
-            return new OrderUploadExecutionResult(1, 0, 0);
+            var stopwatch = Stopwatch.StartNew();
+            Log($"execute one start orderGuid={orderGuid:D}");
+            try
+            {
+                await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
+                Log($"execute one completed orderGuid={orderGuid:D} uploaded=1 failed=0 elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return new OrderUploadExecutionResult(1, 1, 0);
+            }
+            catch (OperationCanceledException)
+            {
+                Log($"execute one canceled orderGuid={orderGuid:D} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                throw;
+            }
+            catch (OrderUploadAuthorizationRequiredException)
+            {
+                Log($"execute one deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+                return new OrderUploadExecutionResult(1, 0, 0);
+            }
+            catch (Exception ex)
+            {
+                Log($"execute one failed orderGuid={orderGuid:D} error={ex.GetType().Name} message={ex.Message} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return new OrderUploadExecutionResult(1, 0, 1);
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            Log($"execute one failed orderGuid={orderGuid:D} error={ex.GetType().Name} message={ex.Message} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return new OrderUploadExecutionResult(1, 0, 1);
+            _executionGate.Release();
         }
     }
 
     public async Task<OrderUploadExecutionResult> ExecutePendingAsync(int batchSize = 20, CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
-        Log($"execute pending start batchSize={batchSize}");
-        var orderGuids = await uploadRepository.GetPendingOrderGuidsAsync(batchSize, cancellationToken);
-        Log($"execute pending queued count={orderGuids.Count} batchSize={batchSize}");
-        var uploadedCount = 0;
-        var failedCount = 0;
-
-        foreach (var orderGuid in orderGuids)
+        await _executionGate.WaitAsync(cancellationToken);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
-                uploadedCount++;
-                Log($"execute pending item completed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount}");
-            }
-            catch (OperationCanceledException)
-            {
-                Log(
-                    $"execute pending canceled orderGuid={orderGuid:D} attempted={orderGuids.Count} uploaded={uploadedCount} " +
-                    $"failed={failedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
-                throw;
-            }
-            catch (OrderUploadAuthorizationRequiredException)
-            {
-                Log($"execute pending item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
-            }
-            catch (Exception ex)
-            {
-                failedCount++;
-                Log(
-                    $"execute pending item failed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount} " +
-                    $"error={ex.GetType().Name} message={ex.Message}");
-            }
-        }
+            var stopwatch = Stopwatch.StartNew();
+            Log($"execute pending start batchSize={batchSize}");
+            var orderGuids = await uploadRepository.GetPendingOrderGuidsAsync(batchSize, cancellationToken);
+            Log($"execute pending queued count={orderGuids.Count} batchSize={batchSize}");
+            var uploadedCount = 0;
+            var failedCount = 0;
 
-        Log(
-            $"execute pending completed attempted={orderGuids.Count} uploaded={uploadedCount} failed={failedCount} " +
-            $"elapsedMs={stopwatch.ElapsedMilliseconds}");
-        return new OrderUploadExecutionResult(orderGuids.Count, uploadedCount, failedCount);
+            foreach (var orderGuid in orderGuids)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
+                    uploadedCount++;
+                    Log($"execute pending item completed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount}");
+                }
+                catch (OperationCanceledException)
+                {
+                    Log(
+                        $"execute pending canceled orderGuid={orderGuid:D} attempted={orderGuids.Count} uploaded={uploadedCount} " +
+                        $"failed={failedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                    throw;
+                }
+                catch (OrderUploadAuthorizationRequiredException)
+                {
+                    Log($"execute pending item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+                }
+                catch (Exception ex)
+                {
+                    failedCount++;
+                    Log(
+                        $"execute pending item failed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount} " +
+                        $"error={ex.GetType().Name} message={ex.Message}");
+                }
+            }
+
+            Log(
+                $"execute pending completed attempted={orderGuids.Count} uploaded={uploadedCount} failed={failedCount} " +
+                $"elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return new OrderUploadExecutionResult(orderGuids.Count, uploadedCount, failedCount);
+        }
+        finally
+        {
+            _executionGate.Release();
+        }
     }
 
     private static void Log(string message)
@@ -238,6 +335,13 @@ public sealed class NoopOrderUploadExecutionService : IOrderUploadExecutionServi
     public Task<OrderUploadExecutionResult> ExecutePendingAsync(int batchSize = 20, CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new OrderUploadExecutionResult(0, 0, 0));
+    }
+
+    public Task<OrderUploadExecutionResult> ExecuteSelectedAsync(
+        IReadOnlyCollection<Guid> orderGuids,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new OrderUploadExecutionResult(orderGuids?.Distinct().Count() ?? 0, 0, 0));
     }
 }
 
