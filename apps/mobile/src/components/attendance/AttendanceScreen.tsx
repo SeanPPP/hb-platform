@@ -92,6 +92,7 @@ import {
   usePunchVerification,
   verifyAttendanceNetworkReachability,
 } from "@/modules/attendance/use-punch-verification";
+import { playAttendancePunchSuccessSound } from "@/modules/scanner/scan-sound";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
@@ -869,6 +870,23 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     setAttendanceScannerSubmitting(false);
   };
 
+  const hideAttendanceScannerForProcessing = () => {
+    // 格式通过后只卸载相机，当前 session 继续保护后续异步链路。
+    setAttendanceScannerVisible(false);
+  };
+
+  const failAttendanceQrProcessing = (
+    session: AttendanceQrScanSession,
+    message: string,
+  ) => {
+    if (!attendanceScannerSessionGate.isActive(session)) return;
+    showMessage(message);
+    attendanceScannerSessionGate.finishSubmitting(session);
+    attendanceScannerSessionGate.invalidate();
+    attendanceScannerSessionRef.current = null;
+    setAttendanceScannerSubmitting(false);
+  };
+
   const handleAttendanceQrScan = async (qrToken: string) => {
     const session = attendanceScannerSessionRef.current;
     if (!session
@@ -890,10 +908,12 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
 
+    hideAttendanceScannerForProcessing();
+
     const network = await verifyAttendanceNetworkReachability();
     if (!attendanceScannerSessionGate.isActive(session)) return;
     if (network.status !== "available") {
-      failAttendanceQrScan(session, t("messages.qrNetworkRequired"));
+      failAttendanceQrProcessing(session, t("messages.qrNetworkRequired"));
       return;
     }
 
@@ -903,8 +923,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       resolvedQr = await resolveAttendanceQr(normalizedQrToken);
     } catch (error) {
       if (!attendanceScannerSessionGate.isActive(session)) return;
-      const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
-      failAttendanceQrScan(
+      const code = getAttendancePunchErrorCode(error);
+      // 仅记录阶段与业务错误码，严禁输出二维码 token、请求体或完整响应。
+      console.warn("[attendance] qr request failed", { stage: "resolve", code });
+      const errorKey = getAttendancePunchErrorKey(code);
+      failAttendanceQrProcessing(
         session,
         errorKey ? t(errorKey) : getErrorMessage(error, "messages.punchFailed"),
       );
@@ -917,7 +940,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       qrStore = resolveAttendanceQrStore(resolvedQr, stores);
     } catch (error) {
       const code = error instanceof Error ? error.message : undefined;
-      failAttendanceQrScan(
+      failAttendanceQrProcessing(
         session,
         t(getAttendancePunchErrorKey(code) ?? "messages.qrStoreForbidden"),
       );
@@ -932,7 +955,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       qrToday = await getMyAttendanceToday(qrStore.storeCode, todayDate);
     } catch (error) {
       if (attendanceScannerSessionGate.isActive(session)) {
-        failAttendanceQrScan(
+        failAttendanceQrProcessing(
           session,
           getErrorMessage(error, "messages.qrNetworkRequired"),
         );
@@ -968,25 +991,31 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
         : preparation.status === "gpsRequired"
           ? "messages.qrGpsRequired"
           : "messages.qrNetworkRequired";
-      failAttendanceQrScan(session, t(messageKey));
+      failAttendanceQrProcessing(session, t(messageKey));
       return;
     }
 
     let result: AttendancePunch;
     try {
       result = await punchMutation.mutateAsync(
-        buildAttendanceQrPunchPayload(normalizedQrToken, preparation.verification.payload),
+        buildAttendanceQrPunchPayload(
+          normalizedQrToken,
+          resolvedQr.punchAuthorizationToken,
+          preparation.verification.payload,
+        ),
       );
     } catch (error) {
       if (attendanceScannerSessionGate.isActive(session)) {
         const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
-        failAttendanceQrScan(
+        failAttendanceQrProcessing(
           session,
           errorKey ? t(errorKey) : getErrorMessage(error, "messages.punchFailed"),
         );
       }
       return;
     }
+
+    playAttendancePunchSuccessSound();
 
     let trackingWarning = "";
     try {
@@ -1271,7 +1300,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 today={todayQuery.data}
                 isLoading={todayQuery.isFetching}
                 isVerificationRefreshing={isRefreshingVerification}
-                isPunching={punchMutation.isPending}
+                isPunching={attendanceScannerSubmitting || punchMutation.isPending}
                 hasAuthorizedStores={stores.length > 0}
                 verification={verification}
                 lastQrPunch={lastQrPunch}

@@ -34,12 +34,18 @@ namespace BlazorApp.Api.Tests
         private readonly SqliteConnection _sqliteConnection;
         private readonly SqlSugarClient _db;
         private readonly byte[] _attendanceKey = RandomNumberGenerator.GetBytes(32);
-        private readonly AttendanceQrKeyProtector _attendanceProtector =
-            AttendanceQrKeyDataProtection.CreateProtector(new EphemeralDataProtectionProvider());
+        private readonly IDataProtectionProvider _attendanceDataProtectionProvider =
+            new EphemeralDataProtectionProvider();
+        private readonly AttendanceQrKeyProtector _attendanceProtector;
+        private readonly AttendancePunchAuthorizationProtector _punchAuthorizationProtector;
         private readonly MutableTimeProvider _timeProvider = new(DateTimeOffset.UtcNow);
 
         public AttendanceReactServiceTests()
         {
+            _attendanceProtector = AttendanceQrKeyDataProtection.CreateProtector(
+                _attendanceDataProtectionProvider);
+            _punchAuthorizationProtector = AttendancePunchAuthorizationDataProtection.CreateProtector(
+                _attendanceDataProtectionProvider);
             _dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
             _sqliteConnection = new SqliteConnection($"Data Source={_dbPath}");
             _sqliteConnection.Open();
@@ -101,6 +107,167 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("POS-001", result.Data.DeviceCode);
             Assert.Equal("Brisbane", result.Data.StoreName);
             Assert.Equal(issuedAt.AddSeconds(15), result.Data.ExpiresAtUtc);
+            Assert.False(string.IsNullOrWhiteSpace(result.Data.PunchAuthorizationToken));
+            Assert.Equal(
+                _timeProvider.GetUtcNow().UtcDateTime.AddMinutes(2),
+                result.Data.PunchAuthorizationExpiresAtUtc);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithValidAuthorization_AllowsResolvedQrAfterQrExpiry()
+        {
+            await SeedStoreScopeAsync();
+            var issuedAt = TruncateToMilliseconds(DateTime.UtcNow);
+            var tokenId = Guid.NewGuid();
+            var request = CreateQrPunchRequest(issuedAt, tokenId);
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(10));
+            var resolved = await service.ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+            {
+                QrToken = request.QrToken,
+            });
+
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(45));
+            request.LocationCapturedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+            request.PunchAuthorizationToken = resolved.Data!.PunchAuthorizationToken;
+            var result = await service.PunchAsync(request);
+
+            Assert.True(result.Success);
+            Assert.Equal(tokenId.ToString(), result.Data!.QrTokenId);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithExpiredAuthorization_ReturnsAuthorizationExpired()
+        {
+            await SeedStoreScopeAsync();
+            var issuedAt = TruncateToMilliseconds(DateTime.UtcNow);
+            var request = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(10));
+            var resolved = await service.ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+            {
+                QrToken = request.QrToken,
+            });
+
+            _timeProvider.SetUtcNow(resolved.Data!.PunchAuthorizationExpiresAtUtc);
+            request.LocationCapturedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+            request.PunchAuthorizationToken = resolved.Data.PunchAuthorizationToken;
+            var result = await service.PunchAsync(request);
+
+            Assert.False(result.Success);
+            Assert.Equal("ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WithTamperedOrChangedBindingAuthorization_ReturnsAuthorizationInvalid()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new User
+            {
+                UserGUID = "other-user",
+                Username = "other",
+                Email = "other@example.com",
+                PasswordHash = "hash",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = "other-store-bri",
+                UserGUID = "other-user",
+                StoreGUID = "store-bri",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var issuedAt = TruncateToMilliseconds(DateTime.UtcNow);
+            var originalRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(5));
+            var resolved = await service.ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+            {
+                QrToken = originalRequest.QrToken,
+            });
+
+            var tamperedRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            tamperedRequest.QrToken = originalRequest.QrToken;
+            tamperedRequest.PunchAuthorizationToken = MutateProtectedToken(
+                resolved.Data!.PunchAuthorizationToken);
+            var tampered = await service.PunchAsync(tamperedRequest);
+
+            var changedQrRequest = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            changedQrRequest.PunchAuthorizationToken = resolved.Data.PunchAuthorizationToken;
+            var changedQr = await service.PunchAsync(changedQrRequest);
+
+            originalRequest.PunchAuthorizationToken = resolved.Data.PunchAuthorizationToken;
+            var changedUser = await CreateService("other-user", "other", "StoreStaff")
+                .PunchAsync(originalRequest);
+
+            Assert.Equal("ATTENDANCE_PUNCH_AUTHORIZATION_INVALID", tampered.ErrorCode);
+            Assert.Equal("ATTENDANCE_PUNCH_AUTHORIZATION_INVALID", changedQr.ErrorCode);
+            Assert.Equal("ATTENDANCE_PUNCH_AUTHORIZATION_INVALID", changedUser.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_ExpiredAuthorizationForExistingPunch_RemainsIdempotent()
+        {
+            await SeedStoreScopeAsync();
+            var issuedAt = TruncateToMilliseconds(DateTime.UtcNow);
+            var request = CreateQrPunchRequest(issuedAt, Guid.NewGuid());
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            _timeProvider.SetUtcNow(issuedAt.AddSeconds(5));
+            var resolved = await service.ResolveAttendanceQrAsync(new AttendanceQrResolveRequestDto
+            {
+                QrToken = request.QrToken,
+            });
+            request.PunchAuthorizationToken = resolved.Data!.PunchAuthorizationToken;
+            var first = await service.PunchAsync(request);
+
+            _timeProvider.SetUtcNow(resolved.Data.PunchAuthorizationExpiresAtUtc);
+            var duplicate = await service.PunchAsync(request);
+
+            Assert.True(first.Success);
+            Assert.True(duplicate.Success);
+            Assert.Equal(first.Data!.PunchGuid, duplicate.Data!.PunchGuid);
+        }
+
+        [Theory]
+        [InlineData("OTHER", "POS-001")]
+        [InlineData("BRI", "POS-002")]
+        public void AttendancePunchAuthorization_ChangedStoreOrDevice_IsInvalid(
+            string storeCode,
+            string deviceCode)
+        {
+            var now = TruncateToMilliseconds(DateTime.UtcNow);
+            var token = CreateQrToken(now);
+            Assert.True(AttendanceQrTokenCodec.TryDecryptIdentity(
+                token, _attendanceKey, out var payload, out var kid, out _));
+            var authorization = _punchAuthorizationProtector.Issue(
+                "staff-user", token, kid, payload!, now);
+            var changedPayload = new AttendanceQrTokenPayload
+            {
+                TokenId = payload!.TokenId,
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
+                IssuedAtUtc = payload.IssuedAtUtc,
+            };
+
+            var validation = _punchAuthorizationProtector.Validate(
+                authorization.Token,
+                "staff-user",
+                token,
+                kid,
+                changedPayload,
+                now.AddSeconds(30));
+            var changedKeyValidation = _punchAuthorizationProtector.Validate(
+                authorization.Token,
+                "staff-user",
+                token,
+                "K2",
+                payload,
+                now.AddSeconds(30));
+
+            Assert.Equal(AttendancePunchAuthorizationValidationResult.Invalid, validation);
+            Assert.Equal(
+                AttendancePunchAuthorizationValidationResult.Invalid,
+                changedKeyValidation);
         }
 
         [Fact]
@@ -1260,8 +1427,19 @@ namespace BlazorApp.Api.Tests
                 uploadService,
                 new StubAttendancePosDeviceStatusProvider(posDeviceActive),
                 _timeProvider,
-                _attendanceProtector
+                _attendanceProtector,
+                _punchAuthorizationProtector
             );
+        }
+
+        private static DateTime TruncateToMilliseconds(DateTime value) =>
+            new(value.Ticks / TimeSpan.TicksPerMillisecond * TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
+
+        private static string MutateProtectedToken(string token)
+        {
+            var index = token.Length / 2;
+            var replacement = token[index] == 'A' ? 'B' : 'A';
+            return token[..index] + replacement + token[(index + 1)..];
         }
 
         private string CreateQrToken(DateTime now, string storeCode = "BRI", string deviceCode = "POS-001") =>

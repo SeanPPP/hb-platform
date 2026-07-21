@@ -7,8 +7,10 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(directory, "api.ts"), "utf8");
 const types = readFileSync(join(directory, "types.ts"), "utf8");
 
-assert.match(types, /interface AttendanceQrResolveResult\s*\{[\s\S]*storeCode:\s*string;[\s\S]*deviceCode:\s*string;[\s\S]*expiresAtUtc:\s*string;[\s\S]*storeName\?:\s*string;/,
-  "resolve 结果必须暴露后端验证的门店、设备、有效期和可选门店名");
+assert.match(types, /interface AttendanceQrResolveResult\s*\{[\s\S]*storeCode:\s*string;[\s\S]*deviceCode:\s*string;[\s\S]*expiresAtUtc:\s*string;[\s\S]*punchAuthorizationToken\?:\s*string;[\s\S]*punchAuthorizationExpiresAtUtc\?:\s*string;[\s\S]*storeName\?:\s*string;/,
+  "resolve 结果必须暴露后端验证身份，并兼容旧后端不返回短时凭证");
+assert.match(types, /interface AttendancePunchPayload\s*\{[\s\S]*qrToken:\s*string;[\s\S]*punchAuthorizationToken\?:\s*string;/,
+  "punch payload 必须支持向后端透传可选短时凭证");
 assert.match(source, /export async function resolveAttendanceQr\(\s*qrToken:\s*string[\s\S]*apiClient\.post\(\s*`\$\{ATTENDANCE_BASE\}\/qr\/resolve`\s*,\s*\{\s*qrToken\s*\}/,
   "resolve 必须通过现有 apiClient POST 原始 token");
 assert.match(source, /import \{[\s\S]{0,200}normalizeAttendanceQrResolveResult[\s\S]{0,200}\} from "@\/modules\/attendance\/attendance-qr";/,

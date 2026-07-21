@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
+using Hbpos.Api.Security;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Attendance;
 using Hbpos.Contracts.Common;
@@ -10,6 +11,7 @@ using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Logging;
 
 namespace Hbpos.Api.Tests;
 
@@ -54,7 +56,8 @@ public sealed class AttendanceSigningKeysControllerTests
     [InlineData(51000, true)]
     [InlineData(2601, true)]
     [InlineData(2627, true)]
-    [InlineData(1205, true)]
+    [InlineData(51001, false)]
+    [InlineData(1205, false)]
     [InlineData(50000, false)]
     public void IsRegistrationConflictSqlErrorNumber_ClassifiesExpectedErrors(
         int number,
@@ -63,6 +66,31 @@ public sealed class AttendanceSigningKeysControllerTests
         Assert.Equal(
             expected,
             AttendanceSigningKeyRegistrationService.IsRegistrationConflictSqlErrorNumber(number));
+    }
+
+    [Theory]
+    [InlineData(51001, true)]
+    [InlineData(1205, true)]
+    [InlineData(51000, false)]
+    public void IsRegistrationTransientSqlErrorNumber_ClassifiesExpectedErrors(
+        int number,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            AttendanceSigningKeyRegistrationService.IsRegistrationTransientSqlErrorNumber(number));
+    }
+
+    [Fact]
+    public void AttendanceSigningKeyUnavailableException_PreservesOriginalFailure()
+    {
+        var original = new InvalidOperationException("database failure");
+
+        var exception = new AttendanceSigningKeyUnavailableException(
+            "registration temporarily unavailable",
+            original);
+
+        Assert.Same(original, exception.InnerException);
     }
 
     [Fact]
@@ -95,6 +123,21 @@ public sealed class AttendanceSigningKeysControllerTests
         Assert.Equal(expectedCode, body.ErrorCode);
         Assert.DoesNotContain("internal-secret", body.Message);
     }
+
+    [Fact]
+    public async Task Register_WhenRegistrationTemporarilyUnavailable_ReturnsRetryableFailure()
+    {
+        var controller = CreateController(new UnavailableService(), includeHardwareClaim: true);
+
+        var result = await controller.Register(new("K1", "A256GCM", "key"), CancellationToken.None);
+
+        var objectResult = Assert.IsAssignableFrom<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, objectResult.StatusCode);
+        var body = Assert.IsType<ApiResult<AttendanceSigningKeyRegistrationResponse>>(objectResult.Value);
+        Assert.Equal("ATTENDANCE_QR_KEY_TEMPORARILY_UNAVAILABLE", body.ErrorCode);
+        Assert.DoesNotContain("internal-secret", body.Message);
+    }
+
     [Fact]
     public void RegistrationSql_PreservesKidIdentityAndRevokesDeviceOrHardwareHistory()
     {
@@ -108,7 +151,98 @@ public sealed class AttendanceSigningKeysControllerTests
         Assert.Contains("[Status] <> N'Active'", sql);
         Assert.Contains("[DeviceCode] = @DeviceCode OR [HardwareId] = @HardwareId", sql);
         Assert.Contains("@ExistingRegisteredAtUtc", sql);
-        Assert.Contains("SELECT [RegisteredAtUtc], [ProtectedKey]", sql);
+        Assert.Contains("AttendancePosQrKey_Registration", sql);
+        Assert.Contains("sys.sp_getapplock", sql);
+        Assert.Contains("@LockOwner = N'Transaction'", sql);
+        Assert.Contains("@LockTimeout = 3000", sql);
+        Assert.DoesNotContain("@LockTimeout = 10000", sql);
+        Assert.Contains("SET @RegistrationTimeUtc = SYSUTCDATETIME();", sql);
+        Assert.Contains("[RevokedAtUtc] = @RegistrationTimeUtc", sql);
+        Assert.Contains("N'Active', @RegistrationTimeUtc);", sql);
+        Assert.Contains("SELECT [RegisteredAtUtc], [ProtectedKey], SYSUTCDATETIME() AS [ServerTimeUtc]", sql);
+        Assert.DoesNotContain("@RegisteredAtUtc", sql);
+
+        var initialLookupIndex = sql.IndexOf(
+            "FROM [dbo].[AttendancePosQrKey]",
+            StringComparison.Ordinal);
+        var registrationLockIndex = sql.IndexOf(
+            "AttendancePosQrKey_Registration",
+            StringComparison.Ordinal);
+        var lockIndex = sql.IndexOf("WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal);
+        var registrationTimeIndex = sql.IndexOf(
+            "SET @RegistrationTimeUtc = SYSUTCDATETIME();",
+            StringComparison.Ordinal);
+        var commitIndex = sql.IndexOf("COMMIT TRANSACTION;", StringComparison.Ordinal);
+        var responseTimeIndex = sql.IndexOf(
+            "SYSUTCDATETIME() AS [ServerTimeUtc]",
+            StringComparison.Ordinal);
+        Assert.True(initialLookupIndex >= 0 && registrationLockIndex > initialLookupIndex);
+        Assert.True(lockIndex > registrationLockIndex);
+        Assert.True(registrationTimeIndex > lockIndex);
+        Assert.True(commitIndex >= 0 && responseTimeIndex > commitIndex);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void UnprotectStoredKey_WhenRecordIsAtOrBeforeCutoff_ReturnsKidConflict(
+        int cutoffMinutesAfterRegistration)
+    {
+        var registeredAtUtc = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc);
+
+        WithMismatchedKeyRings((currentProtector, protectedKey) =>
+        {
+            Assert.Throws<AttendanceSigningKeyConflictException>(() =>
+                AttendanceSigningKeyRegistrationService.UnprotectStoredKey(
+                    currentProtector,
+                    protectedKey,
+                    registeredAtUtc,
+                    new DateTimeOffset(registeredAtUtc.AddMinutes(cutoffMinutesAfterRegistration)),
+                    new CapturingLogger<AttendanceSigningKeyRegistrationService>()));
+        });
+    }
+
+    [Fact]
+    public void UnprotectStoredKey_WhenRecordIsAfterCutoff_LogsAndThrowsInvalidOperation()
+    {
+        var registeredAtUtc = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc);
+        var logger = new CapturingLogger<AttendanceSigningKeyRegistrationService>();
+
+        WithMismatchedKeyRings((currentProtector, protectedKey) =>
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                AttendanceSigningKeyRegistrationService.UnprotectStoredKey(
+                    currentProtector,
+                    protectedKey,
+                    registeredAtUtc,
+                    new DateTimeOffset(registeredAtUtc.AddMinutes(-1)),
+                    logger));
+
+            Assert.Equal("考勤二维码密钥保护数据无法解密", exception.Message);
+        });
+        Assert.Equal(
+            [AttendanceSigningKeyRegistrationService.ProtectedKeyDecryptionFailureLogMessage],
+            logger.Messages);
+    }
+
+    [Fact]
+    public void UnprotectStoredKey_WithoutCutoff_LogsAndThrowsInvalidOperation()
+    {
+        var logger = new CapturingLogger<AttendanceSigningKeyRegistrationService>();
+
+        WithMismatchedKeyRings((currentProtector, protectedKey) =>
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                AttendanceSigningKeyRegistrationService.UnprotectStoredKey(
+                    currentProtector,
+                    protectedKey,
+                    new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc),
+                    legacyProtectedKeyCutoffUtc: null,
+                    logger));
+        });
+        Assert.Equal(
+            [AttendanceSigningKeyRegistrationService.ProtectedKeyDecryptionFailureLogMessage],
+            logger.Messages);
     }
 
     [Fact]
@@ -191,6 +325,54 @@ public sealed class AttendanceSigningKeysControllerTests
             CancellationToken cancellationToken) => throw (invalid
                 ? new AttendanceSigningKeyValidationException("internal-secret")
                 : new AttendanceSigningKeyConflictException("internal-secret"));
+    }
+
+    private sealed class UnavailableService : IAttendanceSigningKeyRegistrationService
+    {
+        public Task<AttendanceSigningKeyRegistrationResponse> RegisterAsync(
+            AttendanceSigningKeyDeviceIdentity identity,
+            AttendanceSigningKeyRegistrationRequest request,
+            CancellationToken cancellationToken) =>
+            throw new AttendanceSigningKeyUnavailableException(
+                "internal-secret",
+                new InvalidOperationException("database failure"));
+    }
+
+    private static void WithMismatchedKeyRings(
+        Action<AttendanceQrKeyProtector, string> assertion)
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"hbpos-attendance-ring-{Guid.NewGuid():N}");
+        var legacyProtector = AttendanceQrKeyDataProtection.CreateProtector(Path.Combine(testRoot, "legacy"));
+        var currentProtector = AttendanceQrKeyDataProtection.CreateProtector(Path.Combine(testRoot, "current"));
+
+        try
+        {
+            assertion(currentProtector, legacyProtector.Protect(new byte[32]));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
     }
 
     private static string Base64UrlEncode(byte[] bytes) =>

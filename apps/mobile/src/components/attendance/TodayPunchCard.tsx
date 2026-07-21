@@ -250,7 +250,7 @@ export function TodayPunchCard({
           >
             <Text variant="headlineSmall" style={styles.punchButtonText}>
               {isPunching
-                ? t("common:loading")
+                ? t("actions.processingPunch")
                 : t("actions.scanPunch")}
             </Text>
           </Pressable>

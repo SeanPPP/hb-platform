@@ -168,10 +168,39 @@ builder.Services
     // SMTP 密码需要跨重启/部署解密，key ring 必须落在稳定目录，目录本身不提交到 git。
     .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 
-// 关键逻辑：考勤二维码密钥使用同一 key-ring，但隔离应用名和 purpose，确保两个 API 可互通且不影响全局 Data Protection。
+var attendanceQrDataProtectionKeysPath = builder.Configuration.GetValue<string>(
+    "AttendanceQrDataProtection:KeysPath");
+if (string.IsNullOrWhiteSpace(attendanceQrDataProtectionKeysPath))
+{
+    // 关键逻辑：生产环境禁止回退到容器内部目录，避免考勤密钥在重建后丢失或与 POS 不一致。
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "生产环境必须配置 AttendanceQrDataProtection:KeysPath。");
+    }
+
+    attendanceQrDataProtectionKeysPath = Path.Combine("App_Data", "AttendanceQrDataProtectionKeys");
+}
+
+if (!Path.IsPathRooted(attendanceQrDataProtectionKeysPath))
+{
+    attendanceQrDataProtectionKeysPath = Path.Combine(
+        builder.Environment.ContentRootPath,
+        attendanceQrDataProtectionKeysPath);
+}
+
+// 关键逻辑：考勤二维码使用专用 key ring，避免 POS 获得全局 Data Protection 密钥。
+Directory.CreateDirectory(attendanceQrDataProtectionKeysPath);
+var attendanceQrDataProtectionProvider =
+    BlazorApp.Api.Security.AttendanceQrKeyDataProtection.CreateProvider(
+            attendanceQrDataProtectionKeysPath);
 builder.Services.AddSingleton(
     BlazorApp.Api.Security.AttendanceQrKeyDataProtection.CreateProtector(
-        BlazorApp.Api.Security.AttendanceQrKeyDataProtection.CreateProvider(dataProtectionKeysPath)));
+        attendanceQrDataProtectionProvider));
+// 关键逻辑：短时打卡凭证复用考勤专用 key ring，但使用独立 purpose 与签码密钥隔离。
+builder.Services.AddSingleton(
+    BlazorApp.Api.Security.AttendancePunchAuthorizationDataProtection.CreateProtector(
+        attendanceQrDataProtectionProvider));
 
 builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSection("TencentCloud"));
 builder.Services.Configure<ApplicationLoggingOptions>(

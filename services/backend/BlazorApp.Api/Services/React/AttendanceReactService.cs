@@ -32,6 +32,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IAttendancePosDeviceStatusProvider? _attendancePosDeviceStatusProvider;
         private readonly TimeProvider _timeProvider;
         private readonly AttendanceQrKeyProtector _attendanceQrKeyProtector;
+        private readonly AttendancePunchAuthorizationProtector _punchAuthorizationProtector;
 
         public AttendanceReactService(
             SqlSugarContext context,
@@ -42,7 +43,8 @@ namespace BlazorApp.Api.Services.React
             TencentCloudUploadService uploadService,
             IAttendancePosDeviceStatusProvider? attendancePosDeviceStatusProvider = null,
             TimeProvider? timeProvider = null,
-            AttendanceQrKeyProtector? attendanceQrKeyProtector = null
+            AttendanceQrKeyProtector? attendanceQrKeyProtector = null,
+            AttendancePunchAuthorizationProtector? punchAuthorizationProtector = null
         )
         {
             _db = context.Db;
@@ -55,6 +57,8 @@ namespace BlazorApp.Api.Services.React
             _timeProvider = timeProvider ?? TimeProvider.System;
             _attendanceQrKeyProtector = attendanceQrKeyProtector
                 ?? throw new ArgumentNullException(nameof(attendanceQrKeyProtector));
+            _punchAuthorizationProtector = punchAuthorizationProtector
+                ?? throw new ArgumentNullException(nameof(punchAuthorizationProtector));
         }
 
         public async Task<ApiResponse<List<AttendanceScheduleDto>>> GetSchedulesAsync(
@@ -528,7 +532,38 @@ namespace BlazorApp.Api.Services.React
                     "打卡已保存");
             }
 
-            if (!AttendanceQrTokenCodec.TryValidateLifetime(tokenPayload, serverNow, out tokenError))
+            var hasPunchAuthorization = !string.IsNullOrWhiteSpace(
+                request.PunchAuthorizationToken);
+            if (hasPunchAuthorization)
+            {
+                // 关键逻辑：凭证只替代二维码过期检查，原二维码认证和所有设备、门店校验仍照常执行。
+                var authorizationValidation = _punchAuthorizationProtector.Validate(
+                    request.PunchAuthorizationToken,
+                    userGuid,
+                    request.QrToken,
+                    signingKeyId,
+                    tokenPayload,
+                    serverNow);
+                if (authorizationValidation == AttendancePunchAuthorizationValidationResult.Expired)
+                {
+                    return ApiResponse<AttendancePunchDto>.Error(
+                        "打卡授权凭证已过期，请重新扫码",
+                        "ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED");
+                }
+                if (authorizationValidation != AttendancePunchAuthorizationValidationResult.Valid)
+                {
+                    return ApiResponse<AttendancePunchDto>.Error(
+                        "打卡授权凭证无效，请重新扫码",
+                        "ATTENDANCE_PUNCH_AUTHORIZATION_INVALID");
+                }
+            }
+
+            if (!AttendanceQrTokenCodec.TryValidateLifetime(tokenPayload, serverNow, out tokenError)
+                && (!hasPunchAuthorization
+                    || !string.Equals(
+                        tokenError,
+                        "ATTENDANCE_QR_EXPIRED",
+                        StringComparison.Ordinal)))
             {
                 return ApiResponse<AttendancePunchDto>.Error("考勤二维码验证失败", tokenError);
             }
@@ -740,12 +775,20 @@ namespace BlazorApp.Api.Services.React
 
             var store = await _db.Queryable<Store>()
                 .FirstAsync(item => item.StoreCode == payload.StoreCode);
+            var punchAuthorization = _punchAuthorizationProtector.Issue(
+                userGuid,
+                request.QrToken,
+                kid,
+                payload,
+                serverNow);
             return ApiResponse<AttendanceQrResolveDto>.OK(new AttendanceQrResolveDto
             {
                 StoreCode = payload.StoreCode,
                 DeviceCode = payload.DeviceCode,
                 StoreName = store?.StoreName,
                 ExpiresAtUtc = payload.ExpiresAtUtc,
+                PunchAuthorizationToken = punchAuthorization.Token,
+                PunchAuthorizationExpiresAtUtc = punchAuthorization.ExpiresAtUtc,
             });
         }
 

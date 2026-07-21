@@ -45,4 +45,3 @@ This project is indexed by GitNexus as **hb-platform** (51281 symbols, 147728 re
 ## Notes
 
 - 提交添加 reasonix
-- 子代理默认使用 GPT-5.6 Sol；复杂任务、验证和代码审查使用 GPT-5.6 Sol xhigh。

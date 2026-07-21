@@ -70,8 +70,31 @@ export function normalizeAttendanceQrResolveResult(
   const storeCode = readResolveString(raw, "storeCode", "StoreCode");
   const deviceCode = readResolveString(raw, "deviceCode", "DeviceCode");
   const expiresAtUtc = readResolveString(raw, "expiresAtUtc", "ExpiresAtUtc");
+  const punchAuthorizationToken = readResolveString(
+    raw,
+    "punchAuthorizationToken",
+    "PunchAuthorizationToken",
+  );
+  const punchAuthorizationExpiresAtUtc = readResolveString(
+    raw,
+    "punchAuthorizationExpiresAtUtc",
+    "PunchAuthorizationExpiresAtUtc",
+  );
   const storeName = readResolveString(raw, "storeName", "StoreName");
-  if (!storeCode || !deviceCode || !expiresAtUtc || Number.isNaN(Date.parse(expiresAtUtc))) {
+  const hasPunchAuthorization = Boolean(
+    punchAuthorizationToken || punchAuthorizationExpiresAtUtc,
+  );
+  if (
+    !storeCode
+    || !deviceCode
+    || !expiresAtUtc
+    || Number.isNaN(Date.parse(expiresAtUtc))
+    || (hasPunchAuthorization && (
+      !punchAuthorizationToken
+      || !punchAuthorizationExpiresAtUtc
+      || Number.isNaN(Date.parse(punchAuthorizationExpiresAtUtc))
+    ))
+  ) {
     throw Object.assign(new Error("ATTENDANCE_QR_FORMAT_INVALID"), {
       code: "ATTENDANCE_QR_FORMAT_INVALID",
     });
@@ -80,6 +103,9 @@ export function normalizeAttendanceQrResolveResult(
     storeCode,
     deviceCode,
     expiresAtUtc,
+    ...(punchAuthorizationToken && punchAuthorizationExpiresAtUtc
+      ? { punchAuthorizationToken, punchAuthorizationExpiresAtUtc }
+      : {}),
     ...(storeName ? { storeName } : {}),
   };
 }
@@ -128,10 +154,12 @@ export function resolveAttendanceQrStore<T extends { storeCode: string }>(
 
 export function buildAttendanceQrPunchPayload(
   qrToken: string,
+  punchAuthorizationToken: string | undefined,
   verification: AttendancePunchVerificationPayload,
 ): AttendancePunchPayload {
   return {
     qrToken,
+    ...(punchAuthorizationToken ? { punchAuthorizationToken } : {}),
     locationLatitude: verification.locationLatitude,
     locationLongitude: verification.locationLongitude,
     locationAccuracy: verification.locationAccuracy,
@@ -240,6 +268,8 @@ const ATTENDANCE_ERROR_KEYS: Record<string, string> = {
   ATTENDANCE_QR_KEY_REVOKED: "messages.qrKeyRevoked",
   ATTENDANCE_QR_NOT_ACTIVE: "messages.qrNotActive",
   ATTENDANCE_QR_EXPIRED: "messages.qrExpired",
+  ATTENDANCE_PUNCH_AUTHORIZATION_INVALID: "messages.qrPunchAuthorizationInvalid",
+  ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED: "messages.qrPunchAuthorizationExpired",
   POS_DEVICE_DISABLED: "messages.qrDeviceDisabled",
   ATTENDANCE_STORE_FORBIDDEN: "messages.qrStoreForbidden",
   STORE_ACCESS_DENIED: "messages.qrStoreForbidden",

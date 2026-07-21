@@ -2,7 +2,10 @@ import { createAudioPlayer } from "expo-audio";
 import type { ScanFeedbackState } from "@/modules/scanner/types";
 
 type PlayableScanStatus = Exclude<ScanFeedbackState["status"], "ready" | "scanning">;
-type GeneratedToneKey = PlayableScanStatus | "barcode_captured";
+type GeneratedToneKey =
+  | PlayableScanStatus
+  | "barcode_captured"
+  | "attendance_punch_success";
 
 interface ToneStep {
   durationMs: number;
@@ -18,6 +21,13 @@ const PLAYER_CLEANUP_PADDING_MS = 300;
 const SOUND_PATTERNS: Record<GeneratedToneKey, ToneStep[]> = {
   barcode_captured: [
     { frequency: 660, durationMs: 55, volume: 0.24 },
+  ],
+  attendance_punch_success: [
+    { frequency: 784, durationMs: 85, volume: 0.34 },
+    { frequency: 0, durationMs: 25 },
+    { frequency: 988, durationMs: 95, volume: 0.38 },
+    { frequency: 0, durationMs: 25 },
+    { frequency: 1319, durationMs: 150, volume: 0.42 },
   ],
   found: [
     { frequency: 988, durationMs: 90, volume: 0.32 },
@@ -172,6 +182,10 @@ function playGeneratedTone(key: GeneratedToneKey) {
 
 export function playBarcodeCapturedSound() {
   playGeneratedTone("barcode_captured");
+}
+
+export function playAttendancePunchSuccessSound() {
+  playGeneratedTone("attendance_punch_success");
 }
 
 export function playScanFeedbackSound(status: ScanFeedbackState["status"]) {

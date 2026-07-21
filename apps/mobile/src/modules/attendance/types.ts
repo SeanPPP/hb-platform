@@ -95,6 +95,7 @@ export interface AttendancePunchVerificationPayload {
 
 export interface AttendancePunchPayload {
   qrToken: string;
+  punchAuthorizationToken?: string;
   locationLatitude?: number;
   locationLongitude?: number;
   locationAccuracy?: number;
@@ -105,6 +106,8 @@ export interface AttendanceQrResolveResult {
   storeCode: string;
   deviceCode: string;
   expiresAtUtc: string;
+  punchAuthorizationToken?: string;
+  punchAuthorizationExpiresAtUtc?: string;
   storeName?: string;
 }
 

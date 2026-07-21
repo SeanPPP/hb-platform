@@ -52,5 +52,14 @@ public sealed class AttendanceSigningKeysController(
                 "ATTENDANCE_QR_KEY_KID_CONFLICT",
                 "The QR key id is already assigned; generate a new kid."));
         }
+        catch (AttendanceSigningKeyUnavailableException)
+        {
+            // 临时锁竞争允许 POS 稍后重试，不能伪装成需要更换 kid 的永久冲突。
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                ApiResult<AttendanceSigningKeyRegistrationResponse>.Fail(
+                    "ATTENDANCE_QR_KEY_TEMPORARILY_UNAVAILABLE",
+                    "Attendance QR key registration is temporarily unavailable; retry shortly."));
+        }
     }
 }

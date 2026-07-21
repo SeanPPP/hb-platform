@@ -225,6 +225,7 @@
   },
   "actions": {
     "scanPunch": "Scan to punch",
+    "processingPunch": "Processing...",
     "clockIn": "Clock in",
     "clockOut": "Clock out",
     "addAvailability": "Add slot",
@@ -294,6 +295,8 @@
     "qrKeyRevoked": "This POS attendance key has been revoked.",
     "qrNotActive": "This attendance QR code is not active yet.",
     "qrExpired": "This attendance QR code has expired. Scan the refreshed code.",
+    "qrPunchAuthorizationInvalid": "The punch authorization is invalid. Scan the QR code again.",
+    "qrPunchAuthorizationExpired": "Punch processing timed out. Scan the QR code again.",
     "qrDeviceDisabled": "This POS device is disabled for attendance.",
     "qrDeviceMismatch": "The QR code does not match its registered POS device. Ask the store to refresh it.",
     "qrStoreForbidden": "You do not have attendance access to the QR code's store.",

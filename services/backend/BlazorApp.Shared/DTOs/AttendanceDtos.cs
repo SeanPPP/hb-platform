@@ -96,6 +96,7 @@ namespace BlazorApp.Shared.DTOs
     public class AttendancePunchRequestDto
     {
         public string? QrToken { get; set; }
+        public string? PunchAuthorizationToken { get; set; }
         public string StoreCode { get; set; } = string.Empty;
         public string PunchType { get; set; } = "ClockIn";
         public string? StoreTimeZone { get; set; }
@@ -120,6 +121,8 @@ namespace BlazorApp.Shared.DTOs
         public string DeviceCode { get; set; } = string.Empty;
         public string? StoreName { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
+        public string PunchAuthorizationToken { get; set; } = string.Empty;
+        public DateTime PunchAuthorizationExpiresAtUtc { get; set; }
     }
 
     public class AttendancePunchQueryDto

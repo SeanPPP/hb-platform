@@ -12,32 +12,31 @@ public static class ServiceRegistration
         this IServiceCollection services,
         IConfiguration? configuration = null)
     {
-        var dataProtection = services.AddDataProtection();
-        if (configuration is not null)
+        var globalKeysPath = ResolveDataProtectionKeysPath(
+            configuration?["DataProtection:KeysPath"],
+            "DataProtectionKeys");
+        var configuredAttendanceKeysPath = configuration?["AttendanceQrDataProtection:KeysPath"];
+        var environmentName = configuration?["ASPNETCORE_ENVIRONMENT"]
+            ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        if (string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(configuredAttendanceKeysPath))
         {
-            var keysPath = configuration["DataProtection:KeysPath"];
-            if (string.IsNullOrWhiteSpace(keysPath))
-            {
-                keysPath = Path.Combine(AppContext.BaseDirectory, "App_Data", "DataProtectionKeys");
-            }
-            else if (!Path.IsPathRooted(keysPath))
-            {
-                keysPath = Path.GetFullPath(keysPath, AppContext.BaseDirectory);
-            }
+            // 关键逻辑：生产环境不得静默创建本地考勤 ring，否则会与主 backend 永久失配。
+            throw new InvalidOperationException(
+                "Production requires AttendanceQrDataProtection:KeysPath.");
+        }
 
-            Directory.CreateDirectory(keysPath);
-            // 关键逻辑：24 小时收银员票据必须跨进程重启、多实例共用同一密钥环。
-            dataProtection
-                .SetApplicationName(configuration["DataProtection:ApplicationName"] ?? "Hbpos.Api")
-                .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
-            // 关键逻辑：沿用同一绝对 key-ring 路径，但考勤密钥使用固定隔离应用名和 purpose。
-            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(keysPath));
-        }
-        else
-        {
-            services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(
-                Path.Combine(AppContext.BaseDirectory, "App_Data", "DataProtectionKeys")));
-        }
+        var attendanceKeysPath = ResolveDataProtectionKeysPath(
+            configuredAttendanceKeysPath,
+            "AttendanceQrDataProtectionKeys");
+
+        Directory.CreateDirectory(globalKeysPath);
+        // 关键逻辑：POS 自身票据使用独立持久 ring，不能挂载主 backend 的全局 ring。
+        services.AddDataProtection()
+            .SetApplicationName(configuration?["DataProtection:ApplicationName"] ?? "Hbpos.Api")
+            .PersistKeysToFileSystem(new DirectoryInfo(globalKeysPath));
+        // 关键逻辑：考勤密钥使用单独目录及固定应用名/purpose，仅与主 backend 的考勤 ring 共享。
+        services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(attendanceKeysPath));
         services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
         services.AddMemoryCache();
         services.AddScoped<IEmergencyLoginPublicKeyRepository, SqlSugarEmergencyLoginPublicKeyRepository>();
@@ -153,6 +152,18 @@ public static class ServiceRegistration
         });
 
         return services;
+    }
+
+    private static string ResolveDataProtectionKeysPath(string? configuredPath, string defaultDirectoryName)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return Path.Combine(AppContext.BaseDirectory, "App_Data", defaultDirectoryName);
+        }
+
+        return Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.GetFullPath(configuredPath, AppContext.BaseDirectory);
     }
 
     private static void ApplyLinklyCloudBackendAsyncOptionsSection(

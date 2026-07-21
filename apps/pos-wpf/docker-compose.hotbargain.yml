@@ -12,6 +12,8 @@ services:
       - ASPNETCORE_URLS=http://+:5003
       - ASPNETCORE_HTTP_PORTS=5003
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
+      - AttendanceQrDataProtection__KeysPath=/app/App_Data/AttendanceQrDataProtectionKeys
+      - AttendanceQrDataProtection__LegacyProtectedKeyCutoffUtc=${ATTENDANCE_QR_LEGACY_PROTECTED_KEY_CUTOFF_UTC:-}
       # WPF API 主库与 POSM 库复用服务器 .env，仓库内不保存连接串明文。
       - ConnectionStrings__MainConnection=${CONNECTION_STRING_DEFAULT}
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
@@ -39,7 +41,10 @@ services:
       - Square__WebhookSignatureKeys__Sandbox=${SQUARE_WEBHOOK_SIGNATURE_KEY_SANDBOX:-}
     volumes:
       - hbpos-api-logs:/app/logs
-      - ../../services/backend/data-protection-keys:/app/App_Data/DataProtectionKeys
+      # POS 全局票据 ring 独立持久化，不得复用主 backend 的全局 ring。
+      - hbpos-api-data-protection-keys:/app/App_Data/DataProtectionKeys
+      # 考勤 ring 必须显式挂载到主 backend 共用的宿主机目录，缺失时拒绝启动 compose。
+      - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
     restart: unless-stopped
     networks:
       - hb-network
@@ -57,4 +62,6 @@ networks:
 
 volumes:
   hbpos-api-logs:
+    driver: local
+  hbpos-api-data-protection-keys:
     driver: local

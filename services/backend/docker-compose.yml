@@ -56,6 +56,8 @@ services:
       - ApplicationLogging__Projects__4__ApiKeyHash=${CENTER_LOG_HBPOS_API_KEY_SHA256:?required}
       # SMTP 密码密文依赖 DataProtection key ring，必须落到宿主机目录以跨容器重建保留。
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
+      # 考勤二维码使用独立 key ring，仅向需要互通的考勤服务共享。
+      - AttendanceQrDataProtection__KeysPath=/app/App_Data/AttendanceQrDataProtectionKeys
       # EAS webhook secret 只从服务器 .env 注入；profile 白名单固定允许生产与预览构建回写。
       - EasWebhook__Secret=${EAS_WEBHOOK_SECRET}
       - EasWebhook__AllowedAccountName=${EAS_WEBHOOK_ALLOWED_ACCOUNT_NAME}
@@ -74,6 +76,7 @@ services:
     volumes:
       - hb-api-logs:/app/logs
       - ./data-protection-keys:/app/App_Data/DataProtectionKeys
+      - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
     restart: unless-stopped
     networks:
       - hb-network

@@ -73,7 +73,8 @@ assert.throws(
   "后端返回的二维码门店不在员工授权列表时必须拒绝",
 );
 
-const payload = buildAttendanceQrPunchPayload(token, {
+const punchAuthorizationToken = "attendance-punch-authorization";
+const payload = buildAttendanceQrPunchPayload(token, punchAuthorizationToken, {
   locationLatitude: -27.47,
   locationLongitude: 153.03,
   locationAccuracy: 8,
@@ -83,9 +84,25 @@ const payload = buildAttendanceQrPunchPayload(token, {
 });
 assert.deepEqual(
   Object.keys(payload).sort(),
-  ["locationAccuracy", "locationCapturedAtUtc", "locationLatitude", "locationLongitude", "qrToken"],
-  "punch 仍只能提交原始 token 与实时 GPS",
+  [
+    "locationAccuracy",
+    "locationCapturedAtUtc",
+    "locationLatitude",
+    "locationLongitude",
+    "punchAuthorizationToken",
+    "qrToken",
+  ],
+  "punch 必须同时提交原始 token、短时凭证与实时 GPS",
 );
+assert.equal(payload.punchAuthorizationToken, punchAuthorizationToken);
+
+const legacyPayload = buildAttendanceQrPunchPayload(token, undefined, {
+  locationLatitude: -27.47,
+  locationLongitude: 153.03,
+  locationCapturedAtUtc: "2026-07-16T00:00:00Z",
+});
+assert.equal("punchAuthorizationToken" in legacyPayload, false,
+  "旧后端无短时凭证时必须保持原二维码打卡 payload");
 
 assert.equal(canOpenAttendanceQrScanner({ isLoading: false, isPunching: false, isToday: true, hasAuthorizedStores: true }), true);
 assert.equal(canOpenAttendanceQrScanner({ isLoading: false, isPunching: false, isToday: true, hasAuthorizedStores: false }), false);
@@ -109,6 +126,8 @@ const errorCases: Record<string, string> = {
   ATTENDANCE_QR_FORMAT_INVALID: "messages.qrFormatInvalid",
   ATTENDANCE_QR_NOT_ACTIVE: "messages.qrNotActive",
   ATTENDANCE_QR_EXPIRED: "messages.qrExpired",
+  ATTENDANCE_PUNCH_AUTHORIZATION_INVALID: "messages.qrPunchAuthorizationInvalid",
+  ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED: "messages.qrPunchAuthorizationExpired",
   ATTENDANCE_QR_DEVICE_MISMATCH: "messages.qrDeviceMismatch",
   POS_DEVICE_DISABLED: "messages.qrDeviceDisabled",
   STORE_ACCESS_DENIED: "messages.qrStoreForbidden",
@@ -146,17 +165,64 @@ assert.deepEqual(normalizeAttendanceQrResolveResult({
   DeviceCode: "POS-09",
   StoreName: "Gold Coast",
   ExpiresAtUtc: "2026-07-16T00:00:30Z",
+  PunchAuthorizationToken: punchAuthorizationToken,
+  PunchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
 }), {
   storeCode: "STORE-02",
   deviceCode: "POS-09",
   storeName: "Gold Coast",
   expiresAtUtc: "2026-07-16T00:00:30Z",
+  punchAuthorizationToken,
+  punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
 });
+assert.deepEqual(normalizeAttendanceQrResolveResult({
+  StoreCode: "STORE-02",
+  DeviceCode: "POS-09",
+  StoreName: "Gold Coast",
+  ExpiresAtUtc: "2026-07-16T00:00:30Z",
+}), {
+  storeCode: "STORE-02",
+  deviceCode: "POS-09",
+  storeName: "Gold Coast",
+  expiresAtUtc: "2026-07-16T00:00:30Z",
+}, "旧后端 resolve 响应必须继续可用");
 for (const malformed of [
   {},
-  { storeCode: "", deviceCode: "POS-01", expiresAtUtc: "2026-07-16T00:00:30Z" },
-  { storeCode: "STORE-01", deviceCode: "", expiresAtUtc: "2026-07-16T00:00:30Z" },
-  { storeCode: "STORE-01", deviceCode: "POS-01", expiresAtUtc: "not-a-date" },
+  {
+    storeCode: "",
+    deviceCode: "POS-01",
+    expiresAtUtc: "2026-07-16T00:00:30Z",
+    punchAuthorizationToken,
+    punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
+  },
+  {
+    storeCode: "STORE-01",
+    deviceCode: "",
+    expiresAtUtc: "2026-07-16T00:00:30Z",
+    punchAuthorizationToken,
+    punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
+  },
+  {
+    storeCode: "STORE-01",
+    deviceCode: "POS-01",
+    expiresAtUtc: "not-a-date",
+    punchAuthorizationToken,
+    punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
+  },
+  {
+    storeCode: "STORE-01",
+    deviceCode: "POS-01",
+    expiresAtUtc: "2026-07-16T00:00:30Z",
+    punchAuthorizationToken: "",
+    punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
+  },
+  {
+    storeCode: "STORE-01",
+    deviceCode: "POS-01",
+    expiresAtUtc: "2026-07-16T00:00:30Z",
+    punchAuthorizationToken,
+    punchAuthorizationExpiresAtUtc: "invalid",
+  },
 ]) {
   assert.throws(
     () => normalizeAttendanceQrResolveResult(malformed),
@@ -170,6 +236,8 @@ try {
     storeCode: "STORE-01",
     deviceCode: "POS-01",
     expiresAtUtc: "invalid",
+    punchAuthorizationToken,
+    punchAuthorizationExpiresAtUtc: "2026-07-16T00:02:00Z",
   });
 } catch (error) {
   malformedResolveError = error;
