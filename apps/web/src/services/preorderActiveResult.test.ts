@@ -14,7 +14,7 @@ import { runPreorderSubmit } from '../pages/ShopPreorder/preorderSubmitFlow'
 import type { PreorderActivationDetail, PreorderActiveResult } from '../types/preorder'
 
 const createValidActiveRow = (overrides: Record<string, unknown> = {}) => ({
-  activationGuid: '11111111-1111-7111-8111-111111111111',
+  activationGuid: '11111111111171118111111111111111',
   templateGuid: '22222222-2222-4222-8222-222222222222',
   templateName: 'Preorder A',
   periodNumber: 1,
@@ -58,10 +58,18 @@ const confirmedBlocked = normalizePreorderActiveResult({
   activations: [createValidActiveRow() as never],
 })
 assert.equal(confirmedBlocked.normalOrderBlocked, true, '只有明确阻塞且存在有效待处理批次时才拦截普通订单')
-assert.equal(confirmedBlocked.activations[0]?.activationGuid, '11111111-1111-7111-8111-111111111111', 'UUIDv7 批次必须正常参与门禁')
+assert.equal(confirmedBlocked.activations[0]?.activationGuid, '11111111111171118111111111111111', '后端 N 格式批次必须正常参与门禁')
+
+const canonicalGuidBlocked = normalizePreorderActiveResult({
+  normalOrderBlocked: true,
+  activations: [createValidActiveRow({ activationGuid: '11111111-1111-7111-8111-111111111111' }) as never],
+})
+assert.equal(canonicalGuidBlocked.normalOrderBlocked, true, '标准带连字符 GUID 必须保持兼容')
 
 const malformedActivationCases: Array<[string, Record<string, unknown>]> = [
   ['不安全导航标识', { activationGuid: '../orders' }],
+  ['GUID 长度错误', { activationGuid: '1111111111117111811111111111111' }],
+  ['GUID 包含非十六进制字符', { activationGuid: '1111111111117111811111111111111g' }],
   ['无法解析的开始时间', { startAtUtc: 'not-a-date' }],
   ['结束时间不晚于开始时间', { endAtUtc: '2026-06-01T00:00:00Z' }],
   ['已关闭状态', { status: 'Closed' }],

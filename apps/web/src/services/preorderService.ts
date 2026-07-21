@@ -109,8 +109,8 @@ interface ApiPreorderActiveResult {
   activations?: ApiActivationSummary[] | null
 }
 
-// 后端使用 UUIDv7；这里只校验 canonical GUID 形状，不能把版本限制在旧的 1-5。
-const PREORDER_ACTIVATION_GUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+// 后端 ActivationGuid 使用 Guid 的 N 格式；同时兼容历史 canonical 格式，并严格限制为十六进制 GUID。
+const PREORDER_ACTIVATION_GUID_PATTERN = /^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i
 
 function isApiActivationSummary(value: unknown): value is ApiActivationSummary {
   if (!value || typeof value !== 'object') return false
