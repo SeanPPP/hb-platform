@@ -350,7 +350,7 @@
   <data name="shell.cashierLogin.status.invalidOrDisabled" xml:space="preserve"><value>Cashier barcode is invalid or disabled.</value></data>
   <data name="shell.cashierLogin.status.apiUnavailable" xml:space="preserve"><value>Cashier login service is unavailable.</value></data>
   <data name="shell.cashierLogin.status.success" xml:space="preserve"><value>Cashier login successful.</value></data>
-  <data name="shell.cashierLogin.status.locked" xml:space="preserve"><value>POS locked. Sign in again.</value></data>
+  <data name="shell.cashierLogin.status.locked" xml:space="preserve"><value>Signed out. Sign in again.</value></data>
   <data name="shell.cashierLogin.status.offlineSuccess" xml:space="preserve"><value>Signed in using the offline cashier cache.</value></data>
   <data name="shell.cashierLogin.status.emergencyExpired" xml:space="preserve"><value>The emergency login QR code has expired.</value></data>
   <data name="shell.cashierLogin.status.emergencyNotActive" xml:space="preserve"><value>The emergency login QR code is not active yet.</value></data>
@@ -369,6 +369,9 @@
   <data name="shell.top.cashierInfo" xml:space="preserve"><value>Cashier: {0}</value></data>
   <data name="shell.footer.terminalInfo" xml:space="preserve"><value>Terminal: {0}</value></data>
   <data name="shell.footer.versionReady" xml:space="preserve"><value>Offline shell ready</value></data>
+  <data name="shell.footer.currentVersion" xml:space="preserve"><value>Current version</value></data>
+  <data name="shell.footer.latestVersion" xml:space="preserve"><value>Latest version</value></data>
+  <data name="shell.footer.targetVersion" xml:space="preserve"><value>Target version</value></data>
   <data name="shell.catalogDownload.preparing" xml:space="preserve"><value>Preparing data</value></data>
   <data name="shell.catalogDownload.comparing" xml:space="preserve"><value>Checking local data</value></data>
   <data name="shell.catalogDownload.downloading" xml:space="preserve"><value>Data download {0}%</value></data>
@@ -552,7 +555,7 @@
   <data name="pos.terminal.actions.customerDisplay" xml:space="preserve"><value>Customer Display</value></data>
   <data name="pos.terminal.actions.printLastReceipt" xml:space="preserve"><value>Last Receipt</value></data>
   <data name="pos.terminal.actions.openCashDrawer" xml:space="preserve"><value>Open Drawer</value></data>
-  <data name="pos.terminal.actions.lock" xml:space="preserve"><value>Lock</value></data>
+  <data name="pos.terminal.actions.lock" xml:space="preserve"><value>Log Out</value></data>
   <data name="pos.terminal.actions.exitApplication" xml:space="preserve"><value>Exit</value></data>
   <data name="history.source.local" xml:space="preserve"><value>Local</value></data>
   <data name="history.source.online" xml:space="preserve"><value>Online</value></data>

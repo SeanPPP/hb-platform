@@ -25,6 +25,54 @@ public sealed class MainWindowXamlTests
         Assert.Equal("{Binding LastTriedAtDisplay, Mode=OneWay}", (string?)lastTriedAtRun.Attribute("Text"));
     }
 
+    [Fact]
+    public void Footer_versions_bind_current_and_conditionally_show_upgrade_or_rollback_target()
+    {
+        var repoRoot = FindRepoRoot();
+        var document = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        var attributeValues = document.Descendants()
+            .Attributes()
+            .Select(attribute => attribute.Value)
+            .ToList();
+
+        Assert.Contains("{Binding AppUpdate.CurrentVersion, Mode=OneWay}", attributeValues);
+        Assert.Equal(
+            2,
+            attributeValues.Count(value =>
+                string.Equals(value, "{Binding AppUpdate.TargetVersion, Mode=OneWay}", StringComparison.Ordinal)));
+        Assert.Contains("{Binding AppUpdate.HasDifferentTargetVersion}", attributeValues);
+        Assert.Contains("{Binding AppUpdate.IsRollbackTarget}", attributeValues);
+        Assert.Contains("{loc:Loc shell.footer.currentVersion}", attributeValues);
+        Assert.Contains("{loc:Loc shell.footer.latestVersion}", attributeValues);
+        Assert.Contains("{loc:Loc shell.footer.targetVersion}", attributeValues);
+        Assert.DoesNotContain("{Binding VersionStatusText}", attributeValues);
+
+        foreach (var resourceName in new[] { "Strings.resx", "Strings.zh-CN.resx" })
+        {
+            var resource = XDocument.Load(Path.Combine(
+                repoRoot,
+                "apps",
+                "pos-wpf",
+                "src",
+                "Hbpos.Client.Wpf",
+                "Resources",
+                resourceName));
+            var keys = resource.Descendants("data")
+                .Select(element => (string?)element.Attribute("name"))
+                .ToHashSet(StringComparer.Ordinal);
+
+            Assert.Contains("shell.footer.currentVersion", keys);
+            Assert.Contains("shell.footer.latestVersion", keys);
+            Assert.Contains("shell.footer.targetVersion", keys);
+        }
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

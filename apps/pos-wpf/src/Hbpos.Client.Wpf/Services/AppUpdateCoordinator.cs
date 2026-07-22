@@ -148,6 +148,7 @@ public sealed class AppUpdateCoordinator(
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
+            state.ClearVersionCheckResult();
             if (manual)
             {
                 state.SetStatus("settings.status.appUpdateCheckFailed");
@@ -158,6 +159,7 @@ public sealed class AppUpdateCoordinator(
 
         if (update.CheckFailed)
         {
+            state.ClearVersionCheckResult();
             if (IsPolicyCheckFailure(update))
             {
                 if (manual)
@@ -176,6 +178,8 @@ public sealed class AppUpdateCoordinator(
 
             return AppUpdateCoordinatorResult.CheckFailed(update.ErrorCode, update.ErrorMessage);
         }
+
+        state.ApplyVersionCheck(update);
 
         if (!update.UpdateAvailable)
         {

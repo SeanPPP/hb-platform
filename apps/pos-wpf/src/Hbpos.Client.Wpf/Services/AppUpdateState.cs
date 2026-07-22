@@ -37,6 +37,12 @@ public sealed partial class AppUpdateState : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsInstallerReady))]
     private string? _installerPath;
 
+    private string _currentVersion = string.Empty;
+
+    private bool _hasDifferentTargetVersion;
+
+    private bool _isRollbackTarget;
+
     [ObservableProperty]
     private string? _targetVersion;
 
@@ -66,6 +72,24 @@ public sealed partial class AppUpdateState : ObservableObject
 
     public bool IsInstallerReady => !string.IsNullOrWhiteSpace(InstallerPath);
 
+    public string CurrentVersion
+    {
+        get => _currentVersion;
+        private set => SetProperty(ref _currentVersion, value);
+    }
+
+    public bool HasDifferentTargetVersion
+    {
+        get => _hasDifferentTargetVersion;
+        private set => SetProperty(ref _hasDifferentTargetVersion, value);
+    }
+
+    public bool IsRollbackTarget
+    {
+        get => _isRollbackTarget;
+        private set => SetProperty(ref _isRollbackTarget, value);
+    }
+
     public IAsyncRelayCommand InstallUpdateCommand { get; }
 
     public IRelayCommand DismissOptionalUpdateCommand { get; }
@@ -73,6 +97,28 @@ public sealed partial class AppUpdateState : ObservableObject
     public IAsyncRelayCommand RetryForceUpdateCommand { get; }
 
     public IRelayCommand ExitApplicationCommand { get; }
+
+    public void InitializeCurrentVersion(string currentVersion)
+    {
+        CurrentVersion = AppVersionProvider.NormalizeVersionText(currentVersion);
+        ClearVersionCheckResult();
+    }
+
+    public void ApplyVersionCheck(AppUpdateCheckResponse update)
+    {
+        var targetVersion = AppVersionProvider.NormalizeVersionText(update.TargetVersion);
+        TargetVersion = targetVersion;
+        HasDifferentTargetVersion = update.UpdateAvailable &&
+            !string.IsNullOrWhiteSpace(targetVersion) &&
+            !string.Equals(CurrentVersion, targetVersion, StringComparison.OrdinalIgnoreCase);
+        IsRollbackTarget = HasDifferentTargetVersion && update.IsRollback;
+    }
+
+    public void ClearVersionCheckResult()
+    {
+        HasDifferentTargetVersion = false;
+        IsRollbackTarget = false;
+    }
 
     public void SetStatus(string statusKey, params object[] args)
     {

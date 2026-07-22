@@ -610,7 +610,57 @@
                     </Border>
 
                     <TextBlock Text="{Binding TerminalInfo}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
-                    <TextBlock Text="{Binding VersionStatusText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock FontSize="10"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   VerticalAlignment="Center">
+                            <Run Text="{loc:Loc shell.footer.currentVersion}" />
+                            <Run Text=": " />
+                            <Run Text="{Binding AppUpdate.CurrentVersion, Mode=OneWay}" />
+                        </TextBlock>
+                        <TextBlock FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PosPrimaryBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="{x:Type TextBlock}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding AppUpdate.HasDifferentTargetVersion}" Value="True" />
+                                                <Condition Binding="{Binding AppUpdate.IsRollbackTarget}" Value="False" />
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="{loc:Loc shell.footer.latestVersion}" />
+                            <Run Text=": " />
+                            <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                        </TextBlock>
+                        <TextBlock FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PosDangerBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="{x:Type TextBlock}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding AppUpdate.IsRollbackTarget}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="{loc:Loc shell.footer.targetVersion}" />
+                            <Run Text=": " />
+                            <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                        </TextBlock>
+                    </StackPanel>
 
                     <Button Command="{Binding ToggleSyncCenterCommand}"
                             Background="Transparent"

@@ -1116,7 +1116,7 @@
                 <Button Command="{Binding LockCashierCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="LockOutline" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="ExitToApp" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding LockCashierText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
