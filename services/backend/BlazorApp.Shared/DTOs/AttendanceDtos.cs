@@ -7,6 +7,8 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? WeekStartDate { get; set; }
         public DateTime? FromDate { get; set; }
         public DateTime? ToDate { get; set; }
+        public int Page { get; set; } = 1;
+        public int PageSize { get; set; } = 50;
     }
 
     public class CreateAttendanceScheduleDto
@@ -48,6 +50,43 @@ namespace BlazorApp.Shared.DTOs
         public TimeSpan EndTime { get; set; }
         public string Status { get; set; } = string.Empty;
         public string? Remark { get; set; }
+        public string ScheduleState { get; set; } = "NotStarted";
+        public int SegmentLimit { get; set; } = 2;
+        public int CompletedSegmentCount { get; set; }
+        public int WorkedMinutes { get; set; }
+        public int BreakMinutes { get; set; }
+        public bool HasOpenSegment { get; set; }
+        public bool HasMissingClockOut { get; set; }
+        public int EarlyOvertimeMinutes { get; set; }
+        public int LateOvertimeMinutes { get; set; }
+        public int CandidateOvertimeMinutes { get; set; }
+        public int ApprovedOvertimeMinutes { get; set; }
+        public string? OvertimeApprovalStatus { get; set; }
+        public List<AttendanceShiftSegmentDto> Segments { get; set; } = new();
+    }
+
+    public class AttendanceShiftSegmentDto
+    {
+        public int SegmentIndex { get; set; }
+        public AttendancePunchDto? ClockIn { get; set; }
+        public AttendancePunchDto? ClockOut { get; set; }
+        public int? DurationMinutes { get; set; }
+        public string Status { get; set; } = "Open";
+    }
+
+    public class AttendanceWorkSessionDto
+    {
+        public string ScheduleState { get; set; } = "NotStarted";
+        public int SegmentLimit { get; set; }
+        public int CompletedSegmentCount { get; set; }
+        public int WorkedMinutes { get; set; }
+        public int BreakMinutes { get; set; }
+        public bool HasOpenSegment { get; set; }
+        public bool HasMissingClockOut { get; set; }
+        public int EarlyOvertimeMinutes { get; set; }
+        public int LateOvertimeMinutes { get; set; }
+        public int CandidateOvertimeMinutes { get; set; }
+        public List<AttendanceShiftSegmentDto> Segments { get; set; } = new();
     }
 
     public class AttendanceAvailabilityQueryDto
@@ -160,6 +199,15 @@ namespace BlazorApp.Shared.DTOs
         public string? StoreName { get; set; }
         public DateTime? ServerTimeUtc { get; set; }
         public string? Remark { get; set; }
+        public int? SegmentIndex { get; set; }
+        public string? SegmentStatus { get; set; }
+        public bool IsBreakBoundary { get; set; }
+        public string? SupersedesPunchGuid { get; set; }
+        public string? AdjustmentGuid { get; set; }
+        public int? EarlyArrivalMinutes { get; set; }
+        public int? LateMinutes { get; set; }
+        public int? EarlyLeaveMinutes { get; set; }
+        public int? LateDepartureMinutes { get; set; }
     }
 
     public class AttendanceLocationSampleRequestDto
@@ -208,6 +256,18 @@ namespace BlazorApp.Shared.DTOs
         public List<AttendanceScheduleDto> Schedules { get; set; } = new();
         public List<AttendancePunchDto> Punches { get; set; } = new();
         public List<AttendanceStoreHolidayDto> Holidays { get; set; } = new();
+        public bool CanRequestAdjustment { get; set; }
+        public List<AttendanceStorePunchStateDto> StorePunchStates { get; set; } = new();
+    }
+
+    public class AttendanceStorePunchStateDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string? StoreName { get; set; }
+        public string State { get; set; } = "NotStarted";
+        public bool HasOpenSegment { get; set; }
+        public bool HasMissingClockOut { get; set; }
+        public string? ScheduleGuid { get; set; }
     }
 
     public class AttendanceApprovalQueryDto
@@ -220,6 +280,7 @@ namespace BlazorApp.Shared.DTOs
     public class ReviewAttendanceApprovalDto
     {
         public string? ReviewRemark { get; set; }
+        public int? ApprovedOvertimeMinutes { get; set; }
     }
 
     public class AttendanceApprovalDto
@@ -239,6 +300,52 @@ namespace BlazorApp.Shared.DTOs
         public string? ReviewRemark { get; set; }
         public DateTime? ReviewedAt { get; set; }
         public DateTime CreatedAt { get; set; }
+        public int? CandidateOvertimeMinutes { get; set; }
+        public int? ApprovedOvertimeMinutes { get; set; }
+        public AttendancePunchAdjustmentDto? Adjustment { get; set; }
+    }
+
+    public class CreateAttendancePunchAdjustmentDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string? ScheduleGuid { get; set; }
+        public string? OriginalPunchGuid { get; set; }
+        public string PunchType { get; set; } = "ClockIn";
+        public DateTime RequestedPunchTimeLocal { get; set; }
+        public DateTimeOffset? RequestedPunchTimeUtc { get; set; }
+        public string Reason { get; set; } = string.Empty;
+    }
+
+    public class AttendancePunchAdjustmentDto
+    {
+        public string AdjustmentGuid { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string UserGuid { get; set; } = string.Empty;
+        public string? ScheduleGuid { get; set; }
+        public string? OriginalPunchGuid { get; set; }
+        public string PunchType { get; set; } = string.Empty;
+        public DateTime RequestedPunchTimeLocal { get; set; }
+        public DateTime RequestedPunchTimeUtc { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string? AppliedPunchGuid { get; set; }
+        public bool IsManagerSelfDirect { get; set; }
+        public string RequestedByUserGuid { get; set; } = string.Empty;
+        public string? ReviewedByUserGuid { get; set; }
+        public DateTime? ReviewedAt { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class AttendancePunchAdjustmentPreviewDto
+    {
+        public bool IsValid { get; set; }
+        public string? ValidationErrorCode { get; set; }
+        public string? ValidationMessage { get; set; }
+        public AttendanceWorkSessionDto? ExistingSession { get; set; }
+        public AttendanceWorkSessionDto? ProposedSession { get; set; }
+        public int WorkedMinutesDelta { get; set; }
+        public int CandidateOvertimeMinutesDelta { get; set; }
+        public bool WouldAutoApprove { get; set; }
     }
 
     public class AttendanceStoreHolidayQueryDto

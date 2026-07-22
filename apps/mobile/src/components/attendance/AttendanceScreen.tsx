@@ -24,6 +24,7 @@ import { HolidayManagementCard } from "@/components/attendance/HolidayManagement
 import { LeaveManagementCard } from "@/components/attendance/LeaveManagementCard";
 import { ManagerApprovalList } from "@/components/attendance/ManagerApprovalList";
 import { MonthDatePickerField } from "@/components/attendance/MonthDatePicker";
+import { PunchAdjustmentCard } from "@/components/attendance/PunchAdjustmentCard";
 import { ScheduleManagementCard } from "@/components/attendance/ScheduleManagementCard";
 import { TodayPunchCard } from "@/components/attendance/TodayPunchCard";
 import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
@@ -35,6 +36,7 @@ import {
   createAttendanceHoliday,
   createAttendanceSchedule,
   createAvailability,
+  createMyAttendancePunchAdjustment,
   createManagedLeaveRequest,
   deleteAttendanceHoliday,
   deleteAttendanceSchedule,
@@ -46,6 +48,7 @@ import {
   getPendingApprovals,
   punchAttendance,
   publishAttendanceSchedulesWeek,
+  previewMyAttendancePunchAdjustment,
   rejectAttendanceApproval,
   resolveAttendanceQr,
   syncAttendanceHolidays,
@@ -418,6 +421,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     },
   });
 
+  const previewPunchAdjustmentMutation = useMutation({
+    mutationFn: previewMyAttendancePunchAdjustment,
+  });
+
+  const createPunchAdjustmentMutation = useMutation({
+    mutationFn: createMyAttendancePunchAdjustment,
+    onSuccess: async (adjustment) => {
+      await invalidateEmployeeData();
+      showMessage(
+        adjustment.status.toLowerCase() === "applied"
+          ? t("messages.adjustmentApplied")
+          : t("messages.adjustmentSubmitted"),
+      );
+    },
+  });
+
   const createAvailabilityMutation = useMutation({
     mutationFn: createAvailability,
     onSuccess: async () => {
@@ -633,6 +652,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     createAvailabilityMutation.isPending ||
     updateAvailabilityMutation.isPending ||
     cancelAvailabilityMutation.isPending;
+  const isAdjustmentBusy =
+    previewPunchAdjustmentMutation.isPending ||
+    createPunchAdjustmentMutation.isPending;
   const isApprovalBusy = approveMutation.isPending || rejectMutation.isPending;
   const isScheduleBusy =
     createScheduleMutation.isPending ||
@@ -1292,7 +1314,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
               onChange={setSelectedDate}
             />
             {isPunchRecordsTab ? (
-              <TodayPunchCard
+              <>
+                <TodayPunchCard
                 title={t("sections.selectedDay")}
                 selectedDate={selectedDate}
                 storeName={selectedStoreName}
@@ -1306,7 +1329,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 lastQrPunch={lastQrPunch}
                 trackingWarning={lastQrTrackingWarning}
                 onScan={() => void openAttendanceScanner()}
-              />
+                />
+                <PunchAdjustmentCard
+                  today={todayQuery.data}
+                  selectedDate={selectedDate}
+                  storeCode={selectedStoreCode}
+                  isManagerStore={Boolean(
+                    selectedStoreCode &&
+                    managerStores.some((store) => store.storeCode === selectedStoreCode),
+                  )}
+                  isBusy={isAdjustmentBusy}
+                  onPreview={(payload) => previewPunchAdjustmentMutation.mutateAsync(payload)}
+                  onSubmit={async (payload) => {
+                    await createPunchAdjustmentMutation.mutateAsync(payload);
+                  }}
+                />
+              </>
             ) : null}
             {isAvailabilityWeekTab ? (
               <>

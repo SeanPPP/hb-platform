@@ -68,6 +68,12 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, Length = 64)]
         public string? SigningKeyId { get; set; }
 
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? SupersedesPunchGuid { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? AdjustmentGuid { get; set; }
+
         [SugarColumn(IsNullable = true, Length = 500)]
         public string? Remark { get; set; }
     }

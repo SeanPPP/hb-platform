@@ -561,6 +561,10 @@ public class ControllerAuthorizationMetadataTests
             Permissions.SeasonalCards.Remaining.ViewManagedStore
         );
         yield return Policy<ReactAttendanceController>(
+            nameof(ReactAttendanceController.GetAttendanceRecords),
+            Permissions.Attendance.Punch.ViewManagedStore
+        );
+        yield return Policy<ReactAttendanceController>(
             nameof(ReactAttendanceController.ResolveQr),
             Permissions.Attendance.Punch.Self
         );

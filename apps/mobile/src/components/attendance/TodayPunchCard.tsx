@@ -4,10 +4,15 @@ import { Card, Chip, Text } from "react-native-paper";
 import type {
   AttendancePunchVerificationState,
   AttendancePunch,
-  AttendancePunchType,
   AttendanceToday,
 } from "@/modules/attendance/types";
 import { canOpenAttendanceQrScanner } from "@/modules/attendance/attendance-qr";
+import {
+  buildAttendanceTodayDisplay,
+  resolveAttendancePunchExceptionMinutes,
+} from "@/modules/attendance/attendance-today-normalization";
+import { resolveAttendanceTodayStatus } from "@/modules/attendance/attendance-today-status";
+import { resolveAttendancePunchDisplayTime } from "@/modules/attendance/attendance-device-time";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function formatTime(value?: string) {
@@ -25,20 +30,6 @@ function formatClockTime(value: Date) {
     second: "2-digit",
     hour12: false,
   });
-}
-
-function getLatestPunch(
-  today: AttendanceToday | undefined,
-  punchType: AttendancePunchType,
-) {
-  return today?.punches
-    .filter((item) => item.punchType === punchType)
-    .sort((left, right) =>
-      (left.punchTimeLocal || left.punchTimeUtc || "").localeCompare(
-        right.punchTimeLocal || right.punchTimeUtc || "",
-      ),
-    )
-    .at(-1);
 }
 
 export function TodayPunchCard({
@@ -80,7 +71,6 @@ export function TodayPunchCard({
     return () => clearInterval(timer);
   }, []);
 
-  const nextPunchType = today?.nextPunchType ?? "ClockIn";
   const canScan = canOpenAttendanceQrScanner({
     isLoading,
     isPunching,
@@ -89,24 +79,12 @@ export function TodayPunchCard({
   });
   const cardSubtitle =
     subtitle ?? selectedDate ?? today?.workDate ?? t("common:loading");
-  const clockInPunch = getLatestPunch(today, "ClockIn");
-  const clockOutPunch = getLatestPunch(today, "ClockOut");
+  const display = useMemo(() => buildAttendanceTodayDisplay(today), [today]);
   const primarySchedule = today?.schedules[0];
-  const statusLabel = useMemo(() => {
-    if (!allowPunch) {
-      return t("today.status.viewOnly");
-    }
-    if (today?.holidayName) {
-      return t("today.status.holiday");
-    }
-    if (nextPunchType === "ClockOut") {
-      return t("today.status.readyToClockOut");
-    }
-    if (clockOutPunch) {
-      return t("today.status.completed");
-    }
-    return t("today.status.readyToClockIn");
-  }, [allowPunch, clockOutPunch, nextPunchType, t, today?.holidayName]);
+  const statusLabel = useMemo(
+    () => t(`today.status.${resolveAttendanceTodayStatus(today, allowPunch)}`),
+    [allowPunch, t, today],
+  );
 
   const networkValue = useMemo(() => {
     if (verification.network.status === "available") {
@@ -127,51 +105,6 @@ export function TodayPunchCard({
   const networkChipLabel = t(
     `today.verification.statuses.${verification.network.status}`,
   );
-
-  const records = [
-    {
-      key: "clockIn",
-      accent: "#34D399",
-      iconBg: "#ECFDF5",
-      title: t("today.dailyRecords.clockInTitle"),
-      time: formatTime(
-        clockInPunch?.punchTimeLocal || clockInPunch?.punchTimeUtc,
-      ),
-      body: clockInPunch
-        ? t("today.dailyRecords.clockInSuccess", {
-            status: t(`statuses.${clockInPunch.status}`, clockInPunch.status),
-          })
-        : primarySchedule
-          ? t("today.dailyRecords.clockInPending", {
-              startTime: formatTime(primarySchedule.startTime),
-            })
-          : t("today.dailyRecords.noSchedule"),
-      muted: !clockInPunch,
-      punch: clockInPunch,
-    },
-    {
-      key: "clockOut",
-      accent: "#D1D5DB",
-      iconBg: "#F3F4F6",
-      title: t("today.dailyRecords.clockOutTitle"),
-      time: formatTime(
-        clockOutPunch?.punchTimeLocal ||
-          clockOutPunch?.punchTimeUtc ||
-          primarySchedule?.endTime,
-      ),
-      body: clockOutPunch
-        ? t("today.dailyRecords.clockOutSuccess", {
-            status: t(`statuses.${clockOutPunch.status}`, clockOutPunch.status),
-          })
-        : primarySchedule
-          ? t("today.dailyRecords.clockOutPending", {
-              endTime: formatTime(primarySchedule.endTime),
-            })
-          : t("today.dailyRecords.awaitingShift"),
-      muted: !clockOutPunch,
-      punch: clockOutPunch,
-    },
-  ];
 
   const alertMessage = !allowPunch
     ? t("today.dailyRecords.alertSelectedDate")
@@ -209,26 +142,24 @@ export function TodayPunchCard({
               {today.holidayName}
             </Chip>
           ) : null}
-          {today?.schedules.length ? (
+          {display.stores.length ? (
             <View style={styles.shiftSummary}>
               <Text variant="labelLarge">{t("today.schedules")}</Text>
-              {today.schedules.map((schedule) => (
-                <View
-                  key={
-                    schedule.scheduleGuid ||
-                    `${schedule.workDate}-${schedule.startTime}`
-                  }
-                  style={styles.shiftRow}
-                >
-                  <Text variant="bodyMedium" style={styles.flexText}>
-                    {schedule.storeName || schedule.storeCode || t("common:na")}
-                  </Text>
-                  <Text variant="bodyMedium">
-                    {formatTime(schedule.startTime)} -{" "}
-                    {formatTime(schedule.endTime)}
-                  </Text>
-                </View>
-              ))}
+              {display.stores.map((store) => store.sessions.map((session) => (
+                  <View
+                    key={session.scheduleGuid || `${store.storeCode}-${session.startTime}`}
+                    style={styles.shiftRow}
+                  >
+                    <Text variant="bodyMedium" style={styles.flexText}>
+                      {store.storeName || store.storeCode || storeName || t("common:na")}
+                    </Text>
+                    <Text variant="bodyMedium">
+                      {session.scheduleState === "NoSchedule"
+                        ? t("today.timeline.unscheduledPunches")
+                        : `${formatTime(session.startTime)} - ${formatTime(session.endTime)}`}
+                    </Text>
+                  </View>
+                ))) }
             </View>
           ) : (
             <Text variant="bodyMedium" style={styles.muted}>
@@ -271,8 +202,10 @@ export function TodayPunchCard({
               <Text selectable>{t("today.qrResult.action", {
                 action: t(`punchTypes.${lastQrPunch.punchType}`, lastQrPunch.punchType),
               })}</Text>
-              <Text selectable style={styles.tabularText}>{t("today.qrResult.serverTime", {
-                time: lastQrPunch.serverTimeUtc || lastQrPunch.punchTimeUtc || t("common:na"),
+              <Text selectable style={styles.tabularText}>{t("today.qrResult.deviceTime", {
+                time: resolveAttendancePunchDisplayTime({
+                  punchTimeUtc: lastQrPunch.punchTimeUtc || lastQrPunch.serverTimeUtc,
+                }) || t("common:na"),
               })}</Text>
               <Text selectable>{t("today.qrResult.status", {
                 status: t(`statuses.${lastQrPunch.status}`, lastQrPunch.status),
@@ -303,41 +236,168 @@ export function TodayPunchCard({
         <View style={styles.recordsCard}>
           <Text variant="titleMedium">{t("today.dailyRecords.title")}</Text>
           <View style={styles.recordList}>
-            {records.map((record) => (
+            {display.relatedStoreAlerts.map((alert) => (
               <View
-                key={record.key}
-                style={[styles.recordItem, { borderLeftColor: record.accent }]}
+                key={`${alert.missingStoreCode}-${alert.activeStoreCode}`}
+                style={styles.relatedAlert}
               >
-                <View
-                  style={[
-                    styles.recordIcon,
-                    { backgroundColor: record.iconBg },
-                  ]}
-                >
-                  <Text variant="labelSmall">
-                    {t(
-                      record.key === "clockIn"
-                        ? "today.dailyRecords.clockInBadge"
-                        : "today.dailyRecords.clockOutBadge",
-                    )}
-                  </Text>
-                </View>
-                <View style={styles.recordBody}>
-                  <View style={styles.recordHeader}>
-                    <Text variant="titleSmall">{record.title}</Text>
-                    <Text variant="labelMedium" style={styles.muted}>
-                      {record.time}
-                    </Text>
-                  </View>
-                  <Text
-                    variant="bodySmall"
-                    style={record.muted ? styles.muted : undefined}
-                  >
-                    {record.body}
-                  </Text>
-                </View>
+                <Text variant="labelMedium" style={styles.relatedAlertTitle}>
+                  {t("today.timeline.relatedStoreAlert")}
+                </Text>
+                <Text variant="bodySmall">
+                  {t("today.timeline.relatedStoreConflict", {
+                    missingStore: alert.missingStoreName || alert.missingStoreCode,
+                    activeStore: alert.activeStoreName || alert.activeStoreCode,
+                  })}
+                </Text>
               </View>
             ))}
+            {display.relatedStoreReminders.map((reminder) => (
+              <View key={reminder} style={styles.relatedAlert}>
+                <Text variant="labelMedium" style={styles.relatedAlertTitle}>
+                  {t("today.timeline.relatedStoreAlert")}
+                </Text>
+                <Text variant="bodySmall">{reminder}</Text>
+              </View>
+            ))}
+            {display.stores.map((store) => (
+              <View key={store.storeCode || store.storeName} style={styles.storeGroup}>
+                <View style={styles.storeHeader}>
+                  <Text variant="titleSmall">
+                    {store.storeName || store.storeCode || storeName || t("common:na")}
+                  </Text>
+                  <Chip compact>{t("today.timeline.shiftCount", { count: store.sessions.length })}</Chip>
+                </View>
+                {store.relatedReminder && !display.relatedStoreReminders.includes(store.relatedReminder) ? (
+                  <Text variant="bodySmall" style={styles.relatedAlertTitle}>
+                    {store.relatedReminder}
+                  </Text>
+                ) : null}
+                {store.sessions.map((session) => (
+                  <View
+                    key={session.scheduleGuid || `${store.storeCode}-${session.startTime}`}
+                    style={styles.sessionCard}
+                  >
+                    <View style={styles.sessionHeader}>
+                      <View style={styles.flexText}>
+                        <Text variant="labelLarge">
+                          {session.scheduleState === "NoSchedule"
+                            ? t("today.timeline.unscheduledPunches")
+                            : `${formatTime(session.startTime)} - ${formatTime(session.endTime)}`}
+                        </Text>
+                        <Text variant="bodySmall" style={styles.muted}>
+                          {t("today.timeline.segmentProgress", {
+                            completed: session.completedSegmentCount ?? session.segments.filter((item) => item.clockOut).length,
+                            limit: session.segmentLimit ?? session.segments.length,
+                          })}
+                        </Text>
+                      </View>
+                      {session.scheduleState ? <Chip compact>{session.scheduleState}</Chip> : null}
+                    </View>
+                    <View style={styles.metricsRow}>
+                      <Text variant="bodySmall">
+                        {t("today.timeline.workedMinutes", { minutes: session.workedMinutes })}
+                      </Text>
+                      {session.breakMinutes !== undefined ? (
+                        <Text variant="bodySmall" style={styles.muted}>
+                          {t("today.timeline.breakMinutes", { minutes: session.breakMinutes })}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {session.hasMissingClockOut ? (
+                      <Text variant="bodySmall" style={styles.exceptionText}>
+                        {t("today.timeline.missingClockOut")}
+                      </Text>
+                    ) : null}
+                    <View style={styles.segmentList}>
+                      {session.segments.map((segment) => {
+                        const clockInException = segment.clockIn && segment.clockIn.status !== "Normal";
+                        const clockOutException = segment.clockOut && segment.clockOut.status !== "Normal";
+                        const clockInMinutes = segment.clockIn
+                          ? resolveAttendancePunchExceptionMinutes(segment.clockIn)
+                          : undefined;
+                        const clockOutMinutes = segment.clockOut
+                          ? resolveAttendancePunchExceptionMinutes(segment.clockOut)
+                          : undefined;
+                        return (
+                          <View key={segment.segmentIndex} style={styles.segmentRow}>
+                            <View style={styles.segmentHeader}>
+                              <Text variant="labelMedium">
+                                {t("today.timeline.segment", { number: segment.segmentNumber })}
+                              </Text>
+                              <Text variant="labelMedium" style={styles.muted}>
+                                {segment.workedMinutes ?? segment.durationMinutes ?? 0} min
+                              </Text>
+                            </View>
+                            <View style={styles.punchPair}>
+                              <Text variant="bodySmall" style={styles.flexText}>
+                                {t("today.timeline.clockIn", {
+                                  time: formatTime(resolveAttendancePunchDisplayTime(segment.clockIn)),
+                                })}
+                              </Text>
+                              <Text variant="bodySmall" style={styles.flexText}>
+                                {t("today.timeline.clockOut", {
+                                  time: formatTime(resolveAttendancePunchDisplayTime(segment.clockOut)),
+                                })}
+                              </Text>
+                            </View>
+                            {segment.showClockInException && segment.clockIn ? (
+                              <Text variant="bodySmall" style={clockInException ? styles.exceptionText : styles.muted}>
+                                {clockInMinutes !== undefined
+                                  ? t("today.timeline.firstClockInStatus", {
+                                      status: t(`statuses.${segment.clockIn.status}`, segment.clockIn.status),
+                                      minutes: clockInMinutes,
+                                    })
+                                  : t("today.timeline.firstClockInStatusOnly", {
+                                      status: t(`statuses.${segment.clockIn.status}`, segment.clockIn.status),
+                                    })}
+                              </Text>
+                            ) : null}
+                            {segment.showClockOutException && segment.clockOut ? (
+                              <Text variant="bodySmall" style={clockOutException ? styles.exceptionText : styles.muted}>
+                                {clockOutMinutes !== undefined
+                                  ? t("today.timeline.finalClockOutStatus", {
+                                      status: t(`statuses.${segment.clockOut.status}`, segment.clockOut.status),
+                                      minutes: clockOutMinutes,
+                                    })
+                                  : t("today.timeline.finalClockOutStatusOnly", {
+                                      status: t(`statuses.${segment.clockOut.status}`, segment.clockOut.status),
+                                    })}
+                              </Text>
+                            ) : null}
+                            {segment.isBreakAfter ? (
+                              <Chip compact icon="coffee-outline" style={styles.breakChip}>
+                                {t("today.timeline.onBreak")}
+                              </Chip>
+                            ) : null}
+                          </View>
+                        );
+                      })}
+                    </View>
+                    {(session.overtime.rawMinutes > 0 ||
+                      session.overtime.candidateMinutes > 0 ||
+                      session.overtime.approvedMinutes > 0) ? (
+                      <View style={styles.overtimeBox}>
+                        <Text variant="labelMedium">{t("today.timeline.overtimeTitle")}</Text>
+                        <Text variant="bodySmall">
+                          {t("today.timeline.overtimeSummary", {
+                            raw: session.overtime.rawMinutes,
+                            candidate: session.overtime.candidateMinutes,
+                            approved: session.overtime.approvedMinutes,
+                          })}
+                        </Text>
+                        {session.overtime.status ? (
+                          <Text variant="bodySmall" style={styles.muted}>{session.overtime.status}</Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ))}
+            {!display.stores.length && !isLoading ? (
+              <Text variant="bodySmall" style={styles.muted}>{t("today.dailyRecords.noSchedule")}</Text>
+            ) : null}
             <View style={styles.alertItem}>
               <View style={styles.alertIcon}>
                 <Text variant="labelSmall" style={styles.alertIconText}>
@@ -399,6 +459,13 @@ const styles = StyleSheet.create({
   alertTitle: {
     color: "#B42318",
   },
+  breakChip: {
+    alignSelf: "flex-start",
+    backgroundColor: "#E8F1F8",
+  },
+  exceptionText: {
+    color: "#B42318",
+  },
   flexText: {
     flex: 1,
   },
@@ -444,6 +511,21 @@ const styles = StyleSheet.create({
   },
   muted: {
     color: "#6B7280",
+  },
+  metricsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  overtimeBox: {
+    backgroundColor: "#FFF7E6",
+    borderRadius: 8,
+    gap: 3,
+    padding: 10,
+  },
+  punchPair: {
+    flexDirection: "row",
+    gap: 8,
   },
   punchButton: {
     alignItems: "center",
@@ -506,6 +588,17 @@ const styles = StyleSheet.create({
   recordList: {
     gap: 8,
   },
+  relatedAlert: {
+    backgroundColor: "#FFF7E6",
+    borderLeftColor: "#F59E0B",
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    gap: 3,
+    padding: 10,
+  },
+  relatedAlertTitle: {
+    color: "#92400E",
+  },
   recordsCard: {
     backgroundColor: "#FFFFFF",
     borderColor: "#D8DEE6",
@@ -522,6 +615,40 @@ const styles = StyleSheet.create({
   shiftSummary: {
     alignSelf: "stretch",
     gap: 8,
+  },
+  segmentHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  segmentList: {
+    gap: 8,
+  },
+  segmentRow: {
+    backgroundColor: "#F5F7FA",
+    borderRadius: 8,
+    gap: 5,
+    padding: 10,
+  },
+  sessionCard: {
+    borderColor: "#D8DEE6",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 9,
+    padding: 10,
+  },
+  sessionHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  storeGroup: {
+    gap: 8,
+  },
+  storeHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
   },
   statusChip: {
     backgroundColor: "#F3F4F6",

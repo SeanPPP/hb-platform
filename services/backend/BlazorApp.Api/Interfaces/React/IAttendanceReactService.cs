@@ -6,6 +6,7 @@ namespace BlazorApp.Api.Interfaces.React
     {
         Task<ApiResponse<List<AttendanceScheduleDto>>> GetSchedulesAsync(AttendanceScheduleQueryDto query);
         Task<ApiResponse<List<AttendanceScheduleDto>>> GetWeekSchedulesAsync(AttendanceScheduleQueryDto query);
+        Task<ApiResponse<PagedResult<AttendanceScheduleDto>>> GetAttendanceRecordsAsync(AttendanceScheduleQueryDto query);
         Task<ApiResponse<AttendanceScheduleDto>> CreateScheduleAsync(CreateAttendanceScheduleDto request);
         Task<ApiResponse<AttendanceScheduleDto>> UpdateScheduleAsync(string scheduleGuid, UpdateAttendanceScheduleDto request);
         Task<ApiResponse<int>> PublishWeekAsync(PublishAttendanceWeekDto request);
@@ -17,6 +18,9 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<AttendanceAvailabilityDto>> UpdateMyAvailabilityAsync(string availabilityGuid, UpdateAttendanceAvailabilityDto request);
         Task<ApiResponse<bool>> CancelMyAvailabilityAsync(string availabilityGuid);
         Task<ApiResponse<AttendancePunchDto>> PunchAsync(AttendancePunchRequestDto request);
+        Task<ApiResponse<AttendancePunchAdjustmentPreviewDto>> PreviewMyPunchAdjustmentAsync(CreateAttendancePunchAdjustmentDto request);
+        Task<ApiResponse<AttendancePunchAdjustmentDto>> CreateMyPunchAdjustmentAsync(CreateAttendancePunchAdjustmentDto request);
+        Task<ApiResponse<List<AttendancePunchAdjustmentDto>>> GetMyPunchAdjustmentsAsync();
         Task<ApiResponse<AttendanceQrResolveDto>> ResolveAttendanceQrAsync(AttendanceQrResolveRequestDto request);
         Task<ApiResponse<AttendanceLocationSampleDto>> CreateLocationSampleAsync(AttendanceLocationSampleRequestDto request);
         Task<ApiResponse<List<AttendanceLocationSampleDto>>> GetLocationSamplesAsync(AttendanceLocationSampleQueryDto query);

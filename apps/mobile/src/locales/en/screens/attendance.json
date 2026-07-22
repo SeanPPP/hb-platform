@@ -76,6 +76,26 @@
       "alertVerificationSentForReview": "Location capture and network verification are required before punching.",
       "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
     },
+    "timeline": {
+      "relatedStoreAlert": "Linked store alert",
+      "relatedStoreConflict": "{{missingStore}} is missing a clock-out while {{activeStore}} has an active clock-in; both store records need attention.",
+      "unscheduledPunches": "Unscheduled punches",
+      "shiftCount": "{{count}} shifts",
+      "segmentProgress": "{{completed}} / {{limit}} segments completed",
+      "workedMinutes": "Worked {{minutes}} min",
+      "breakMinutes": "Break {{minutes}} min",
+      "missingClockOut": "A missing clock-out was detected. Submit a correction or contact your manager.",
+      "segment": "Segment {{number}}",
+      "clockIn": "In {{time}}",
+      "clockOut": "Out {{time}}",
+      "firstClockInStatus": "First clock-in: {{status}} ({{minutes}} min)",
+      "firstClockInStatusOnly": "First clock-in: {{status}}",
+      "finalClockOutStatus": "Final clock-out: {{status}} ({{minutes}} min)",
+      "finalClockOutStatusOnly": "Final clock-out: {{status}}",
+      "onBreak": "On break",
+      "overtimeTitle": "Overtime",
+      "overtimeSummary": "Raw {{raw}} min · candidate {{candidate}} min · approved {{approved}} min"
+    },
     "qrResult": {
       "title": "Latest QR punch",
       "employee": "Employee: {{employee}}",
@@ -83,6 +103,7 @@
       "posDevice": "POS device: {{device}}",
       "action": "Action: {{action}}",
       "serverTime": "Server time: {{time}}",
+      "deviceTime": "Punch time (device timezone): {{time}}",
       "status": "Attendance status: {{status}}"
     }
   },
@@ -205,6 +226,34 @@
       "minute": "MM"
     }
   },
+  "adjustment": {
+    "title": "Punch correction",
+    "employeeDescription": "Employees can request a missing or corrected punch within the last 2 days.",
+    "managerDescription": "Your own correction in a managed store is applied after preview confirmation.",
+    "outsideWindow": "This date is outside the 2-day employee correction window.",
+    "editingExisting": "Editing punch",
+    "selectExisting": "Select a punch to edit, or add a missing punch",
+    "selectSchedule": "Select the schedule for this correction",
+    "scheduleOption": "Shift {{number}} · {{start}}-{{end}}",
+    "addMissing": "Add missing punch",
+    "requestedTime": "Corrected time on this phone (YYYY-MM-DDTHH:mm)",
+    "preview": "Preview changes",
+    "previewTitle": "Review before saving",
+    "previewWorked": "Worked: {{before}} → {{after}} min ({{delta}})",
+    "previewOvertime": "Candidate overtime: {{before}} → {{after}} min ({{delta}})",
+    "directApplyNotice": "Saving will apply this correction immediately.",
+    "pendingNotice": "This request will wait for manager review.",
+    "saveDirect": "Save and apply",
+    "submitRequest": "Submit correction",
+    "validation": {
+      "required": "Store, corrected time, and reason are required."
+    },
+    "messages": {
+      "previewFailed": "Correction preview failed.",
+      "submitFailed": "Correction submission failed.",
+      "invalid": "This correction cannot be saved."
+    }
+  },
   "datePicker": {
     "selectDate": "Select date",
     "openDatePicker": "Open date picker",
@@ -247,7 +296,8 @@
   },
   "sourceTypes": {
     "Punch": "Punch",
-    "Leave": "Leave"
+    "Leave": "Leave",
+    "PunchAdjustment": "Punch correction"
   },
   "statuses": {
     "Normal": "Normal",
@@ -324,6 +374,8 @@
     "publishFailed": "Publish failed.",
     "holidaySaved": "Public holiday saved.",
     "holidayDeleted": "Public holiday deleted.",
-    "holidaySyncSuccess": "Synced {{count}} public holidays."
+    "holidaySyncSuccess": "Synced {{count}} public holidays.",
+    "adjustmentSubmitted": "Punch correction submitted.",
+    "adjustmentApplied": "Punch correction applied."
   }
 }

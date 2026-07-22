@@ -3,6 +3,7 @@ import { StyleSheet, View } from "react-native";
 import { Button, Card, Chip, Text, TextInput } from "react-native-paper";
 import type { AttendanceApproval } from "@/modules/attendance/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { toAttendanceDeviceLocalTime } from "@/modules/attendance/attendance-device-time";
 
 export function ManagerApprovalList({
   title,
@@ -47,7 +48,15 @@ export function ManagerApprovalList({
                 {item.storeName || item.storeCode || t("common:na")} ·{" "}
                 {item.workDate || t("common:na")}
               </Text>
-              {item.detail ? (
+              {item.adjustment ? (
+                <Text variant="bodySmall" style={styles.muted}>
+                  {t(`punchTypes.${item.adjustment.punchType}`, item.adjustment.punchType)} ·{" "}
+                  {item.adjustment.requestedPunchTimeUtc
+                    ? toAttendanceDeviceLocalTime(item.adjustment.requestedPunchTimeUtc)
+                    : item.adjustment.requestedPunchTimeLocal}
+                  {item.adjustment.reason ? ` · ${item.adjustment.reason}` : ""}
+                </Text>
+              ) : item.detail ? (
                 <Text variant="bodySmall" style={styles.muted}>
                   {item.detail}
                 </Text>

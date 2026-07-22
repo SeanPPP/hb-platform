@@ -12,6 +12,11 @@ internal static class AttendancePunchPersistenceException
             {
                 return true;
             }
+            if (current.GetType().FullName == "Microsoft.Data.Sqlite.SqliteException"
+                && current.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
         }
 
         return false;

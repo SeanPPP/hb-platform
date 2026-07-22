@@ -7,6 +7,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Security;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Security;
 using Microsoft.AspNetCore.Http;
@@ -83,7 +84,9 @@ namespace BlazorApp.Api.Services.React
                 .OrderBy(item => item.StartTime)
                 .ToListAsync();
 
-            return ApiResponse<List<AttendanceScheduleDto>>.OK(rows.Select(item => ToDto(item)).ToList());
+            var result = rows.Select(item => ToDto(item)).ToList();
+            await PopulateScheduleDisplayFieldsAsync(result);
+            return ApiResponse<List<AttendanceScheduleDto>>.OK(result);
         }
 
         public Task<ApiResponse<List<AttendanceScheduleDto>>> GetWeekSchedulesAsync(
@@ -92,6 +95,47 @@ namespace BlazorApp.Api.Services.React
         {
             query.WeekStartDate ??= GetWeekStart(DateTime.Today);
             return GetSchedulesAsync(query);
+        }
+
+        public async Task<ApiResponse<PagedResult<AttendanceScheduleDto>>> GetAttendanceRecordsAsync(
+            AttendanceScheduleQueryDto query)
+        {
+            var storeAccess = await ResolveManagedStoreAccessAsync(query.StoreCode);
+            if (!storeAccess.Success)
+            {
+                return ApiResponse<PagedResult<AttendanceScheduleDto>>.Error(
+                    storeAccess.Message,
+                    storeAccess.ErrorCode);
+            }
+
+            var page = Math.Max(1, query.Page);
+            var pageSize = Math.Clamp(query.PageSize, 1, 200);
+            var rowsQuery = _db.Queryable<AttendanceSchedule>()
+                .Where(item => !item.IsDeleted)
+                .WhereIF(!string.IsNullOrWhiteSpace(query.StoreCode), item => item.StoreCode == query.StoreCode!.Trim())
+                .WhereIF(string.IsNullOrWhiteSpace(query.StoreCode) && storeAccess.StoreCodes.Count > 0, item => storeAccess.StoreCodes.Contains(item.StoreCode))
+                .WhereIF(!string.IsNullOrWhiteSpace(query.UserGuid), item => item.UserGuid == query.UserGuid!.Trim())
+                .WhereIF(query.WeekStartDate.HasValue, item => item.WorkDate >= query.WeekStartDate!.Value.Date && item.WorkDate <= query.WeekStartDate!.Value.Date.AddDays(6))
+                .WhereIF(query.FromDate.HasValue, item => item.WorkDate >= query.FromDate!.Value.Date)
+                .WhereIF(query.ToDate.HasValue, item => item.WorkDate <= query.ToDate!.Value.Date);
+            var total = await rowsQuery.CountAsync();
+            // 关键逻辑：先由数据库分页，再批量加载当前页打卡，避免全量记录和逐排班查询。
+            var rows = await rowsQuery
+                .OrderBy(item => item.WorkDate)
+                .OrderBy(item => item.StartTime)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+            var items = rows.Select(item => ToDto(item)).ToList();
+            await PopulateScheduleDisplayFieldsAsync(items);
+            await PopulateWorkSessionFieldsAsync(items, rows, reconcileDerivedApprovals: false);
+            return ApiResponse<PagedResult<AttendanceScheduleDto>>.OK(new PagedResult<AttendanceScheduleDto>
+            {
+                Items = items,
+                Total = total,
+                Page = page,
+                PageSize = pageSize,
+            });
         }
 
         public async Task<ApiResponse<AttendanceScheduleDto>> CreateScheduleAsync(
@@ -270,13 +314,21 @@ namespace BlazorApp.Api.Services.React
                 .WhereIF(access.StoreCodes.Count > 0, item => access.StoreCodes.Contains(item.StoreCode))
                 .ToListAsync();
 
-            return ApiResponse<AttendanceTodayDto>.OK(new AttendanceTodayDto
+            var scheduleDtos = schedules.Select(item => ToDto(item, userGuid)).ToList();
+            var punchDtos = punches.Select(item => ToDto(item)).ToList();
+            await PopulateWorkSessionFieldsAsync(scheduleDtos, schedules, punches, punchDtos);
+            var todayDto = new AttendanceTodayDto
             {
                 WorkDate = today,
-                Schedules = schedules.Select(item => ToDto(item)).ToList(),
-                Punches = punches.Select(item => ToDto(item)).ToList(),
+                Schedules = scheduleDtos,
+                Punches = punchDtos,
                 Holidays = holidays.Select(ToDto).ToList(),
-            });
+                CanRequestAdjustment = await IsWithinAdjustmentWindowAsync(
+                    today,
+                    scheduleDtos.FirstOrDefault()?.StoreCode ?? storeCode),
+                StorePunchStates = await BuildRelatedStorePunchStatesAsync(userGuid, today),
+            };
+            return ApiResponse<AttendanceTodayDto>.OK(todayDto);
         }
 
         public async Task<ApiResponse<List<AttendanceScheduleDto>>> GetMyWeekAsync(
@@ -297,6 +349,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(item =>
                     !item.IsDeleted
                     && item.Status == "Active"
+                    && item.UserGuid == userGuid
                     && item.WorkDate >= start
                     && item.WorkDate <= end
                 )
@@ -307,6 +360,7 @@ namespace BlazorApp.Api.Services.React
 
             var result = rows.Select(item => ToDto(item, userGuid)).ToList();
             await PopulateScheduleDisplayFieldsAsync(result);
+            await PopulateWorkSessionFieldsAsync(result, rows);
             return ApiResponse<List<AttendanceScheduleDto>>.OK(result);
         }
 
@@ -589,36 +643,141 @@ namespace BlazorApp.Api.Services.React
             var punchUtc = DateTime.SpecifyKind(serverNow, DateTimeKind.Utc);
             var punchLocal = ConvertUtcToStoreLocal(punchUtc, storeTimeZone);
             var workDate = punchLocal.Date;
-            var todayPunches = await _db.Queryable<AttendancePunch>()
+            var observedPunchCount = await _db.Queryable<AttendancePunch>().CountAsync(item =>
+                !item.IsDeleted
+                && item.UserGuid == userGuid
+                && item.StoreCode == storeCode
+                && item.WorkDate >= workDate
+                && item.WorkDate < workDate.AddDays(1));
+            var mutationResource = AttendanceDailyMutationLock.BuildResource(
+                userGuid,
+                storeCode,
+                workDate);
+            await using var processLock = await AttendanceDailyMutationLock.AcquireProcessAsync(
+                mutationResource);
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                // 进锁后必须重新查 token；不同实例可能已经完成同一二维码请求。
+                existingTokenPunch = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
+                    item.UserGuid == userGuid && item.QrTokenId == tokenId);
+                if (existingTokenPunch != null)
+                {
+                    await _db.Ado.CommitTranAsync();
+                    return ApiResponse<AttendancePunchDto>.OK(
+                        ToDto(existingTokenPunch, employeeName, storeName, serverNow),
+                        "打卡已保存");
+                }
+            var settings = await GetOrCreateSettingsModelAsync();
+            var scheduleSegmentLimit = await ResolveSegmentLimitAsync(userGuid, storeCode);
+            var schedule = await FindScheduleForPunchAsync(
+                storeCode,
+                userGuid,
+                workDate,
+                punchLocal.TimeOfDay,
+                scheduleSegmentLimit,
+                settings);
+            var sameDayUserPunches = await _db.Queryable<AttendancePunch>()
                 .Where(item =>
                     !item.IsDeleted
-                    && item.StoreCode == storeCode
                     && item.UserGuid == userGuid
-                    && item.WorkDate == workDate)
+                    && item.WorkDate >= workDate
+                    && item.WorkDate < workDate.AddDays(1))
                 .ToListAsync();
-            var hasClockIn = todayPunches.Any(item => item.PunchType == "ClockIn");
-            var hasClockOut = todayPunches.Any(item => item.PunchType == "ClockOut");
-            if (hasClockIn && hasClockOut)
+            var todayPunches = sameDayUserPunches
+                .Where(item => item.StoreCode.Equals(storeCode, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            string punchType;
+            var segmentLimit = schedule == null ? 1 : scheduleSegmentLimit;
+            var isFirstClockIn = false;
+            var isFinalClockOut = false;
+            if (schedule == null)
             {
-                return ApiResponse<AttendancePunchDto>.Error("今日打卡已完成", "DAY_COMPLETE");
+                if (todayPunches.Any(item => item.ScheduleGuid != null)
+                    && CountEffectiveStoreSegments(todayPunches) >= scheduleSegmentLimit)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchDto>.Error(
+                        "该员工在本店今日班段数量已达到上限",
+                        "SEGMENT_LIMIT_REACHED");
+                }
+                var hasClockIn = todayPunches.Any(item => item.PunchType == "ClockIn");
+                var hasClockOut = todayPunches.Any(item => item.PunchType == "ClockOut");
+                if (hasClockIn && hasClockOut)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchDto>.Error("今日打卡已完成", "DAY_COMPLETE");
+                }
+                punchType = hasClockIn ? "ClockOut" : "ClockIn";
+                isFirstClockIn = punchType == "ClockIn";
+                isFinalClockOut = punchType == "ClockOut";
+            }
+            else
+            {
+                var existingSession = AttendanceWorkSessionCalculator.Calculate(
+                    schedule,
+                    todayPunches,
+                    segmentLimit,
+                    punchLocal,
+                    settings.EarlyLeaveGraceMinutes,
+                    settings.LateGraceMinutes);
+                if (!existingSession.HasOpenSegment
+                    && existingSession.Segments.Count >= segmentLimit)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchDto>.Error(
+                        "班段数量已达到今日上限",
+                        "SEGMENT_LIMIT_REACHED");
+                }
+                if (!existingSession.HasOpenSegment
+                    && existingSession.ScheduleState == "Completed")
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchDto>.Error(
+                        "今日排班打卡已完成",
+                        "DAY_COMPLETE");
+                }
+                punchType = existingSession.HasOpenSegment ? "ClockOut" : "ClockIn";
+                isFirstClockIn = punchType == "ClockIn" && existingSession.Segments.Count == 0;
+                isFinalClockOut = punchType == "ClockOut"
+                    && (existingSession.Segments.Count >= segmentLimit
+                        || punchLocal.TimeOfDay >= schedule.EndTime.Subtract(
+                            TimeSpan.FromMinutes(settings.EarlyLeaveGraceMinutes)));
+            }
+            if (punchType == "ClockIn"
+                && CountEffectiveStoreSegments(todayPunches) >= segmentLimit)
+            {
+                await _db.Ado.RollbackTranAsync();
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "该员工在本店今日班段数量已达到上限",
+                    "SEGMENT_LIMIT_REACHED");
             }
 
-            var punchType = hasClockIn ? "ClockOut" : "ClockIn";
-            var settings = await GetOrCreateSettingsModelAsync();
-
-            var schedule = await FindScheduleForPunchAsync(storeCode, userGuid, workDate, punchLocal.TimeOfDay);
-            var isDuplicate = await _db.Queryable<AttendancePunch>().AnyAsync(item =>
-                !item.IsDeleted
-                && item.StoreCode == storeCode
-                && item.UserGuid == userGuid
-                && item.WorkDate == workDate
-                && item.PunchType == punchType
-            );
-
-            var status = ResolvePunchStatus(schedule, punchType, punchLocal.TimeOfDay, settings, isDuplicate);
+            var status = ResolveSegmentPunchStatus(
+                schedule,
+                punchType,
+                punchLocal.TimeOfDay,
+                settings,
+                isFirstClockIn,
+                isFinalClockOut);
             if (status == "NoSchedule" && !settings.AllowNoSchedulePunch)
             {
+                await _db.Ado.RollbackTranAsync();
                 return ApiResponse<AttendancePunchDto>.Error("当前没有排班，无法打卡", "NO_SCHEDULE");
+            }
+
+            var latestPunch = todayPunches
+                .OrderByDescending(item => item.PunchTimeUtc)
+                .FirstOrDefault();
+            if (latestPunch != null
+                && latestPunch.QrTokenId != tokenId
+                && todayPunches.Count > observedPunchCount)
+            {
+                await _db.Ado.RollbackTranAsync();
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "另一次打卡正在处理，请稍后重试",
+                    "PUNCH_CONCURRENT_CONFLICT");
             }
 
             var now = serverNow;
@@ -649,27 +808,69 @@ namespace BlazorApp.Api.Services.React
                 CreatedBy = _currentUserService.GetCurrentUsername(),
             };
 
-            try
+            if (punchType == "ClockOut"
+                && HasCrossScheduleOverlap(sameDayUserPunches.Append(punch).ToList()))
             {
-                await _db.Ado.BeginTranAsync();
-                try
+                await _db.Ado.RollbackTranAsync();
+                return ApiResponse<AttendancePunchDto>.Error(
+                    "该下班卡会与其他分店的已完成班段重叠，请通过补卡修正漏打记录",
+                    "CROSS_STORE_PUNCH_OVERLAP");
+            }
+
+            await _db.Insertable(punch).ExecuteCommandAsync();
+            if (RequiresApproval(status, settings))
+            {
+                await CreatePendingApprovalAsync("Punch", punch.PunchGuid, punch.StoreCode, userGuid);
+            }
+            if (schedule != null && punchType == "ClockOut")
+            {
+                var completedSession = AttendanceWorkSessionCalculator.Calculate(
+                    schedule,
+                    todayPunches.Append(punch),
+                    segmentLimit,
+                    punchLocal,
+                    settings.EarlyLeaveGraceMinutes,
+                    settings.LateGraceMinutes);
+                if (completedSession.ScheduleState == "Completed"
+                    && completedSession.CandidateOvertimeMinutes > 0)
                 {
-                    await _db.Insertable(punch).ExecuteCommandAsync();
-                    if (RequiresApproval(status, settings))
-                    {
-                        await CreatePendingApprovalAsync("Punch", punch.PunchGuid, punch.StoreCode, userGuid);
-                    }
-                    await _db.Ado.CommitTranAsync();
+                    await ReconcileOvertimeApprovalAsync(schedule, completedSession);
                 }
-                catch
+            }
+            await _db.Ado.CommitTranAsync();
+            var resultDto = ToDto(punch, employeeName, storeName, serverNow);
+            if (schedule != null)
+            {
+                var updatedSession = AttendanceWorkSessionCalculator.Calculate(
+                    schedule,
+                    todayPunches.Append(punch),
+                    segmentLimit,
+                    punchLocal,
+                    settings.EarlyLeaveGraceMinutes,
+                    settings.LateGraceMinutes);
+                var segment = updatedSession.Segments.FirstOrDefault(item =>
+                    item.ClockIn?.PunchGuid == punch.PunchGuid
+                    || item.ClockOut?.PunchGuid == punch.PunchGuid);
+                if (segment != null)
                 {
-                    await _db.Ado.RollbackTranAsync();
-                    throw;
+                    var projectedPunch = punchType == "ClockIn" ? segment.ClockIn : segment.ClockOut;
+                    ApplySegmentMetadata(
+                        projectedPunch,
+                        segment,
+                        new Dictionary<string, AttendancePunchDto>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            [resultDto.PunchGuid] = resultDto,
+                        });
                 }
+            }
+            return ApiResponse<AttendancePunchDto>.OK(
+                resultDto,
+                "打卡已保存");
             }
             catch (Exception exception) when (
                 AttendancePunchPersistenceException.IsUniqueConstraintViolation(exception))
             {
+                await _db.Ado.RollbackTranAsync();
                 // 关键逻辑：并发重复扫码由数据库唯一索引裁决，输掉竞争的请求返回首次结果，不能翻转动作。
                 var firstResult = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
                     item.UserGuid == userGuid && item.QrTokenId == tokenId);
@@ -682,9 +883,144 @@ namespace BlazorApp.Api.Services.React
 
                 throw;
             }
-            return ApiResponse<AttendancePunchDto>.OK(
-                ToDto(punch, employeeName, storeName, serverNow),
-                "打卡已保存");
+            catch
+            {
+                await _db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
+        public async Task<ApiResponse<AttendancePunchAdjustmentPreviewDto>> PreviewMyPunchAdjustmentAsync(
+            CreateAttendancePunchAdjustmentDto request)
+        {
+            var context = await BuildPunchAdjustmentContextAsync(request);
+            if (!context.Success)
+            {
+                return ApiResponse<AttendancePunchAdjustmentPreviewDto>.Error(
+                    context.Message,
+                    context.ErrorCode);
+            }
+
+            return ApiResponse<AttendancePunchAdjustmentPreviewDto>.OK(context.Preview!);
+        }
+
+        public async Task<ApiResponse<List<AttendancePunchAdjustmentDto>>> GetMyPunchAdjustmentsAsync()
+        {
+            var userGuid = ResolveCurrentUserGuid();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return ApiResponse<List<AttendancePunchAdjustmentDto>>.Error(
+                    "无法识别当前员工",
+                    "USER_NOT_FOUND");
+            }
+
+            var rows = await _db.Queryable<AttendancePunchAdjustment>()
+                .Where(item => !item.IsDeleted && item.UserGuid == userGuid)
+                .OrderByDescending(item => item.CreatedAt)
+                .ToListAsync();
+            return ApiResponse<List<AttendancePunchAdjustmentDto>>.OK(rows.Select(ToDto).ToList());
+        }
+
+        public async Task<ApiResponse<AttendancePunchAdjustmentDto>> CreateMyPunchAdjustmentAsync(
+            CreateAttendancePunchAdjustmentDto request)
+        {
+            var context = await BuildPunchAdjustmentContextAsync(request);
+            if (!context.Success)
+            {
+                return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                    context.Message,
+                    context.ErrorCode);
+            }
+
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            var userGuid = ResolveCurrentUserGuid();
+            var mutationResource = context.Preview!.WouldAutoApprove
+                ? AttendanceDailyMutationLock.BuildResource(
+                    userGuid,
+                    request.StoreCode,
+                    context.ProposedPunch!.PunchTimeLocal.Date)
+                : null;
+            await using IAsyncDisposable? directProcessLock = mutationResource == null
+                ? null
+                : await AttendanceDailyMutationLock.AcquireProcessAsync(mutationResource);
+            var adjustment = new AttendancePunchAdjustment
+            {
+                AdjustmentGuid = Guid.NewGuid().ToString(),
+                StoreCode = request.StoreCode.Trim(),
+                UserGuid = userGuid,
+                ScheduleGuid = context.Schedule!.ScheduleGuid,
+                OriginalPunchGuid = string.IsNullOrWhiteSpace(request.OriginalPunchGuid)
+                    ? null
+                    : request.OriginalPunchGuid.Trim(),
+                PunchType = NormalizePunchType(request.PunchType),
+                RequestedPunchTimeLocal = context.ProposedPunch!.PunchTimeLocal,
+                RequestedPunchTimeUtc = context.ProposedPunch!.PunchTimeUtc,
+                Reason = request.Reason.Trim(),
+                Status = context.Preview!.WouldAutoApprove ? "Applied" : "Pending",
+                IsManagerSelfDirect = context.Preview.WouldAutoApprove,
+                RequestedByUserGuid = userGuid,
+                ReviewedByUserGuid = context.Preview.WouldAutoApprove ? userGuid : null,
+                ReviewedAt = context.Preview.WouldAutoApprove ? now : null,
+                CreatedAt = now,
+                CreatedBy = _currentUserService.GetCurrentUsername(),
+            };
+
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                if (mutationResource != null)
+                {
+                    await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                    var lockedContext = await BuildPunchAdjustmentContextAsync(request);
+                    if (!lockedContext.Success)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                            lockedContext.Message,
+                            lockedContext.ErrorCode);
+                    }
+                    context = lockedContext;
+                    adjustment.ScheduleGuid = context.Schedule!.ScheduleGuid;
+                    adjustment.RequestedPunchTimeLocal = context.ProposedPunch!.PunchTimeLocal;
+                    adjustment.RequestedPunchTimeUtc = context.ProposedPunch!.PunchTimeUtc;
+                }
+                await _db.Insertable(adjustment).ExecuteCommandAsync();
+                if (context.Preview!.WouldAutoApprove)
+                {
+                    var appliedPunch = await ApplyPunchAdjustmentAsync(adjustment, context.ProposedPunch!);
+                    adjustment.AppliedPunchGuid = appliedPunch.PunchGuid;
+                    await _db.Updateable(adjustment).ExecuteCommandAsync();
+                    await ReconcileOvertimeForScheduleAsync(
+                        context.Schedule!.ScheduleGuid,
+                        Math.Max(0, context.Preview.CandidateOvertimeMinutesDelta));
+                }
+                else
+                {
+                    await CreatePendingApprovalAsync(
+                        "PunchAdjustment",
+                        adjustment.AdjustmentGuid,
+                        adjustment.StoreCode,
+                        userGuid);
+                }
+                await _db.Ado.CommitTranAsync();
+            }
+            catch (Exception exception) when (
+                AttendancePunchPersistenceException.IsUniqueConstraintViolation(exception))
+            {
+                await _db.Ado.RollbackTranAsync();
+                return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                    "同一原打卡记录已有待审或已生效补卡",
+                    "ADJUSTMENT_ALREADY_EXISTS");
+            }
+            catch
+            {
+                await _db.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            return ApiResponse<AttendancePunchAdjustmentDto>.OK(
+                ToDto(adjustment),
+                adjustment.Status == "Applied" ? "补卡已直接生效" : "补卡申请已提交");
         }
 
         public async Task<ApiResponse<AttendanceQrResolveDto>> ResolveAttendanceQrAsync(
@@ -1050,7 +1386,24 @@ namespace BlazorApp.Api.Services.React
                 .WhereIF(!string.IsNullOrWhiteSpace(query.Status), item => item.Status == query.Status!.Trim())
                 .OrderByDescending(item => item.PunchTimeUtc)
                 .ToListAsync();
-            return ApiResponse<List<AttendancePunchDto>>.OK(rows.Select(item => ToDto(item)).ToList());
+            var result = rows.Select(item => ToDto(item)).ToList();
+            var scheduleGuids = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.ScheduleGuid))
+                .Select(item => item.ScheduleGuid!)
+                .Distinct()
+                .ToList();
+            if (scheduleGuids.Count > 0)
+            {
+                var schedules = await _db.Queryable<AttendanceSchedule>()
+                    .Where(item => !item.IsDeleted && scheduleGuids.Contains(item.ScheduleGuid))
+                    .ToListAsync();
+                await PopulateWorkSessionFieldsAsync(
+                    schedules.Select(item => ToDto(item)).ToList(),
+                    schedules,
+                    knownPunches: null,
+                    punchDtos: result);
+            }
+            return ApiResponse<List<AttendancePunchDto>>.OK(result);
         }
 
         public async Task<ApiResponse<List<AttendanceLocationSampleDto>>> GetLocationSamplesAsync(
@@ -1131,12 +1484,16 @@ namespace BlazorApp.Api.Services.React
         public Task<ApiResponse<AttendanceApprovalDto>> ApproveAsync(
             string approvalGuid,
             ReviewAttendanceApprovalDto request
-        ) => ReviewApprovalAsync(approvalGuid, "Approved", request.ReviewRemark);
+        ) => ReviewApprovalAsync(
+            approvalGuid,
+            "Approved",
+            request.ReviewRemark,
+            request.ApprovedOvertimeMinutes);
 
         public Task<ApiResponse<AttendanceApprovalDto>> RejectAsync(
             string approvalGuid,
             ReviewAttendanceApprovalDto request
-        ) => ReviewApprovalAsync(approvalGuid, "Rejected", request.ReviewRemark);
+        ) => ReviewApprovalAsync(approvalGuid, "Rejected", request.ReviewRemark, null);
 
         public async Task<ApiResponse<List<AttendanceStoreHolidayDto>>> GetHolidaysAsync(
             AttendanceStoreHolidayQueryDto query
@@ -1380,7 +1737,8 @@ namespace BlazorApp.Api.Services.React
         private async Task<ApiResponse<AttendanceApprovalDto>> ReviewApprovalAsync(
             string approvalGuid,
             string reviewStatus,
-            string? reviewRemark
+            string? reviewRemark,
+            int? approvedOvertimeMinutes
         )
         {
             var model = await _db.Queryable<AttendanceApproval>()
@@ -1397,30 +1755,220 @@ namespace BlazorApp.Api.Services.React
             }
 
             var reviewer = ResolveCurrentUserGuid();
-            model.ReviewStatus = reviewStatus;
-            model.ReviewRemark = reviewRemark;
-            model.ReviewerUserGuid = reviewer;
-            model.ReviewedAt = DateTime.UtcNow;
-            model.UpdatedAt = DateTime.UtcNow;
-            model.UpdatedBy = _currentUserService.GetCurrentUsername();
-            await _db.Updateable(model).ExecuteCommandAsync();
-
-            if (model.SourceType == "Punch")
+            if (!model.ReviewStatus.Equals("Pending", StringComparison.OrdinalIgnoreCase))
             {
-                await _db.Updateable<AttendancePunch>()
-                    .SetColumns(item => item.Status == reviewStatus)
-                    .Where(item => item.PunchGuid == model.SourceGuid)
-                    .ExecuteCommandAsync();
+                return ApiResponse<AttendanceApprovalDto>.Error("审核记录已处理", "APPROVAL_ALREADY_REVIEWED");
             }
-            else if (model.SourceType == "Leave")
+            if (model.ApplicantUserGuid.Equals(reviewer, StringComparison.OrdinalIgnoreCase))
             {
-                await _db.Updateable<AttendanceLeaveRequest>()
-                    .SetColumns(item => item.Status == reviewStatus)
-                    .SetColumns(item => item.ReviewedBy == reviewer)
-                    .SetColumns(item => item.ReviewedAt == model.ReviewedAt)
+                return ApiResponse<AttendanceApprovalDto>.Error(
+                    "申请人不能审核自己的考勤申请",
+                    "SELF_REVIEW_FORBIDDEN");
+            }
+
+            AttendancePunchAdjustment? adjustment = null;
+            if (model.SourceType == "PunchAdjustment")
+            {
+                adjustment = await _db.Queryable<AttendancePunchAdjustment>()
+                    .FirstAsync(item => item.AdjustmentGuid == model.SourceGuid && !item.IsDeleted);
+                if (adjustment == null)
+                {
+                    return ApiResponse<AttendanceApprovalDto>.Error(
+                        "补卡申请不存在",
+                        "ADJUSTMENT_NOT_FOUND");
+                }
+            }
+            AttendanceSchedule? overtimeSchedule = null;
+            if (model.SourceType == "Overtime")
+            {
+                overtimeSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                    !item.IsDeleted && item.ScheduleGuid == model.SourceGuid);
+                if (overtimeSchedule == null)
+                {
+                    return ApiResponse<AttendanceApprovalDto>.Error(
+                        "加班排班不存在",
+                        "SCHEDULE_NOT_FOUND");
+                }
+            }
+            var reviewedAt = _timeProvider.GetUtcNow().UtcDateTime;
+            var updatedBy = _currentUserService.GetCurrentUsername();
+            var mutationResource = overtimeSchedule != null
+                ? AttendanceDailyMutationLock.BuildResource(
+                    overtimeSchedule.UserGuid,
+                    overtimeSchedule.StoreCode,
+                    overtimeSchedule.WorkDate)
+                : adjustment != null && reviewStatus == "Approved"
+                    ? AttendanceDailyMutationLock.BuildResource(
+                        adjustment.UserGuid,
+                        adjustment.StoreCode,
+                        adjustment.RequestedPunchTimeLocal.Date)
+                    : null;
+            await using IAsyncDisposable? processLock = mutationResource == null
+                ? null
+                : await AttendanceDailyMutationLock.AcquireProcessAsync(mutationResource);
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                if (mutationResource != null)
+                {
+                    await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                }
+                // 进员工日锁后重读审批和候选分钟，禁止用锁外旧快照批准已变化的加班。
+                model = await _db.Queryable<AttendanceApproval>()
+                    .FirstAsync(item => item.ApprovalGuid == approvalGuid && !item.IsDeleted);
+                if (model == null
+                    || !model.ReviewStatus.Equals("Pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendanceApprovalDto>.Error(
+                        "审核记录已处理",
+                        "APPROVAL_ALREADY_REVIEWED");
+                }
+                if (model.SourceType == "Overtime")
+                {
+                    overtimeSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                        !item.IsDeleted && item.ScheduleGuid == model.SourceGuid);
+                    var currentSession = overtimeSchedule == null
+                        ? null
+                        : await BuildWorkSessionAsync(overtimeSchedule);
+                    var terminalRows = await _db.Queryable<AttendanceApproval>()
+                        .Where(item =>
+                            !item.IsDeleted
+                            && item.SourceType == "Overtime"
+                            && item.SourceGuid == model.SourceGuid
+                            && (item.ReviewStatus == "Approved" || item.ReviewStatus == "Rejected"))
+                        .ToListAsync();
+                    var processedMinutes = terminalRows.Sum(item =>
+                        item.CandidateOvertimeMinutes ?? 0);
+                    var expectedCandidate = currentSession?.ScheduleState == "Completed"
+                        ? Math.Max(0, currentSession.CandidateOvertimeMinutes - processedMinutes)
+                        : 0;
+                    if (currentSession == null
+                        || model.CandidateOvertimeMinutes != expectedCandidate)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "加班候选分钟已变化，请刷新后重新审核",
+                            "OVERTIME_CANDIDATE_CHANGED");
+                    }
+
+                    if (reviewStatus == "Approved")
+                    {
+                        var approved = approvedOvertimeMinutes ?? expectedCandidate;
+                        if (approved < 0 || approved % 15 != 0 || approved > expectedCandidate)
+                        {
+                            await _db.Ado.RollbackTranAsync();
+                            return ApiResponse<AttendanceApprovalDto>.Error(
+                                "加班审批分钟数只能按15分钟倍数向下调整",
+                                "INVALID_OVERTIME_MINUTES");
+                        }
+                        if (approved < expectedCandidate && string.IsNullOrWhiteSpace(reviewRemark))
+                        {
+                            await _db.Ado.RollbackTranAsync();
+                            return ApiResponse<AttendanceApprovalDto>.Error(
+                                "下调加班分钟数必须填写审核备注",
+                                "REVIEW_REMARK_REQUIRED");
+                        }
+                        model.ApprovedOvertimeMinutes = approved;
+                    }
+                    if (reviewStatus == "Rejected" && string.IsNullOrWhiteSpace(reviewRemark))
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "拒绝加班必须填写审核备注",
+                            "REVIEW_REMARK_REQUIRED");
+                    }
+                }
+                // 条件更新是审批的原子领取点；并发请求只有一个能把 Pending 改为终态。
+                var claimed = await _db.Updateable<AttendanceApproval>()
+                    .SetColumns(item => item.ReviewStatus == reviewStatus)
                     .SetColumns(item => item.ReviewRemark == reviewRemark)
-                    .Where(item => item.LeaveGuid == model.SourceGuid)
+                    .SetColumns(item => item.ReviewerUserGuid == reviewer)
+                    .SetColumns(item => item.ReviewedAt == reviewedAt)
+                    .SetColumns(item => item.ApprovedOvertimeMinutes == model.ApprovedOvertimeMinutes)
+                    .SetColumns(item => item.UpdatedAt == reviewedAt)
+                    .SetColumns(item => item.UpdatedBy == updatedBy)
+                    .Where(item =>
+                        !item.IsDeleted
+                        && item.ApprovalGuid == approvalGuid
+                        && item.ReviewStatus == "Pending")
                     .ExecuteCommandAsync();
+                if (claimed != 1)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendanceApprovalDto>.Error(
+                        "审核记录已处理",
+                        "APPROVAL_ALREADY_REVIEWED");
+                }
+
+                PunchAdjustmentApplicationContext? application = null;
+                if (adjustment != null && reviewStatus == "Approved")
+                {
+                    application = await ValidateStoredPunchAdjustmentForApplicationAsync(adjustment);
+                    if (!application.Success)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            application.Message,
+                            application.ErrorCode);
+                    }
+                }
+
+                if (model.SourceType == "Punch")
+                {
+                    await _db.Updateable<AttendancePunch>()
+                        .SetColumns(item => item.Status == reviewStatus)
+                        .Where(item => item.PunchGuid == model.SourceGuid)
+                        .ExecuteCommandAsync();
+                }
+                else if (model.SourceType == "Leave")
+                {
+                    await _db.Updateable<AttendanceLeaveRequest>()
+                        .SetColumns(item => item.Status == reviewStatus)
+                        .SetColumns(item => item.ReviewedBy == reviewer)
+                        .SetColumns(item => item.ReviewedAt == reviewedAt)
+                        .SetColumns(item => item.ReviewRemark == reviewRemark)
+                        .Where(item => item.LeaveGuid == model.SourceGuid)
+                        .ExecuteCommandAsync();
+                }
+                else if (adjustment != null)
+                {
+                    adjustment.Status = reviewStatus == "Approved" ? "Applied" : "Rejected";
+                    adjustment.ReviewedByUserGuid = reviewer;
+                    adjustment.ReviewedAt = reviewedAt;
+                    if (reviewStatus == "Approved")
+                    {
+                        var punch = await ApplyPunchAdjustmentAsync(
+                            adjustment,
+                            application!.ProposedPunch);
+                        adjustment.AppliedPunchGuid = punch.PunchGuid;
+                    }
+                    await _db.Updateable(adjustment).ExecuteCommandAsync();
+                    if (reviewStatus == "Approved" && adjustment.ScheduleGuid != null)
+                    {
+                        await ReconcileOvertimeForScheduleAsync(adjustment.ScheduleGuid);
+                    }
+                }
+                await _db.Ado.CommitTranAsync();
+                model.ReviewStatus = reviewStatus;
+                model.ReviewRemark = reviewRemark;
+                model.ReviewerUserGuid = reviewer;
+                model.ReviewedAt = reviewedAt;
+                model.UpdatedAt = reviewedAt;
+                model.UpdatedBy = updatedBy;
+            }
+            catch (Exception exception) when (
+                AttendancePunchPersistenceException.IsUniqueConstraintViolation(exception))
+            {
+                await _db.Ado.RollbackTranAsync();
+                return ApiResponse<AttendanceApprovalDto>.Error(
+                    "补卡记录已被其他请求处理",
+                    "ADJUSTMENT_CONFLICT");
+            }
+            catch
+            {
+                await _db.Ado.RollbackTranAsync();
+                throw;
             }
 
             return ApiResponse<AttendanceApprovalDto>.OK(ToDto(model), "审核已处理");
@@ -1430,31 +1978,736 @@ namespace BlazorApp.Api.Services.React
             string sourceType,
             string sourceGuid,
             string storeCode,
-            string applicantUserGuid
+            string applicantUserGuid,
+            int? candidateOvertimeMinutes = null
         )
         {
+            var allowAfterTerminalReview = sourceType is "MissingClockOut" or "Overtime";
             var exists = await _db.Queryable<AttendanceApproval>().AnyAsync(item =>
                 !item.IsDeleted
                 && item.SourceType == sourceType
                 && item.SourceGuid == sourceGuid
-                && item.ReviewStatus == "Pending"
+                && (!allowAfterTerminalReview || item.ReviewStatus == "Pending")
             );
             if (exists)
             {
                 return;
             }
 
-            await _db.Insertable(new AttendanceApproval
+            await InsertPendingApprovalWithConflictGuardAsync(
+                sourceType,
+                sourceGuid,
+                storeCode,
+                applicantUserGuid,
+                candidateOvertimeMinutes);
+        }
+
+        private async Task InsertPendingApprovalWithConflictGuardAsync(
+            string sourceType,
+            string sourceGuid,
+            string storeCode,
+            string applicantUserGuid,
+            int? candidateOvertimeMinutes)
+        {
+            try
             {
-                ApprovalGuid = Guid.NewGuid().ToString(),
-                SourceType = sourceType,
-                SourceGuid = sourceGuid,
+                await _db.Insertable(new AttendanceApproval
+                {
+                    ApprovalGuid = Guid.NewGuid().ToString(),
+                    SourceType = sourceType,
+                    SourceGuid = sourceGuid,
+                    StoreCode = storeCode,
+                    ApplicantUserGuid = applicantUserGuid,
+                    ReviewStatus = "Pending",
+                    CandidateOvertimeMinutes = candidateOvertimeMinutes,
+                    CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                    CreatedBy = _currentUserService.GetCurrentUsername(),
+                }).ExecuteCommandAsync();
+            }
+            catch (Exception exception) when (
+                AttendancePunchPersistenceException.IsUniqueConstraintViolation(exception))
+            {
+                var existing = await _db.Queryable<AttendanceApproval>().AnyAsync(item =>
+                    !item.IsDeleted
+                    && item.SourceType == sourceType
+                    && item.SourceGuid == sourceGuid
+                    && item.ReviewStatus == "Pending");
+                if (!existing)
+                {
+                    throw;
+                }
+            }
+        }
+
+        private async Task CancelPendingApprovalsAsync(
+            string sourceType,
+            string sourceGuid,
+            string reason)
+        {
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            await _db.Updateable<AttendanceApproval>()
+                .SetColumns(item => item.ReviewStatus == "Cancelled")
+                .SetColumns(item => item.ReviewRemark == reason)
+                .SetColumns(item => item.ReviewerUserGuid == "system")
+                .SetColumns(item => item.ReviewedAt == now)
+                .SetColumns(item => item.UpdatedAt == now)
+                .SetColumns(item => item.UpdatedBy == "system")
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.SourceType == sourceType
+                    && item.SourceGuid == sourceGuid
+                    && item.ReviewStatus == "Pending")
+                .ExecuteCommandAsync();
+        }
+
+        private async Task ReconcileOvertimeApprovalAsync(
+            AttendanceSchedule schedule,
+            AttendanceWorkSessionDto session,
+            int autoApproveDelta = 0)
+        {
+            var rows = await _db.Queryable<AttendanceApproval>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.SourceType == "Overtime"
+                    && item.SourceGuid == schedule.ScheduleGuid)
+                .OrderBy(item => item.CreatedAt)
+                .ToListAsync();
+            // 终态候选分钟是“已处理水位”；部分批准和拒绝都不能把剩余候选重新开单。
+            var processedTotal = rows
+                .Where(item => item.ReviewStatus is "Approved" or "Rejected")
+                .Sum(item => item.CandidateOvertimeMinutes ?? 0);
+            var autoApproved = Math.Min(
+                Math.Max(0, autoApproveDelta),
+                Math.Max(0, session.CandidateOvertimeMinutes - processedTotal));
+            if (autoApproved > 0)
+            {
+                await _db.Insertable(new AttendanceApproval
+                {
+                    ApprovalGuid = Guid.NewGuid().ToString(),
+                    SourceType = "Overtime",
+                    SourceGuid = schedule.ScheduleGuid,
+                    StoreCode = schedule.StoreCode,
+                    ApplicantUserGuid = schedule.UserGuid,
+                    ReviewerUserGuid = "system",
+                    ReviewStatus = "Approved",
+                    ReviewRemark = "店长本人直接改时产生，系统仅批准本次加班增量",
+                    ReviewedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                    CandidateOvertimeMinutes = autoApproved,
+                    ApprovedOvertimeMinutes = autoApproved,
+                    CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                    CreatedBy = _currentUserService.GetCurrentUsername(),
+                }).ExecuteCommandAsync();
+                processedTotal += autoApproved;
+            }
+
+            var remaining = session.ScheduleState == "Completed"
+                ? Math.Max(0, session.CandidateOvertimeMinutes - processedTotal)
+                : 0;
+            var pending = rows.FirstOrDefault(item => item.ReviewStatus == "Pending");
+            if (remaining <= 0)
+            {
+                await CancelPendingApprovalsAsync(
+                    "Overtime",
+                    schedule.ScheduleGuid,
+                    "排班状态或加班候选已变化，原待审加班已自动取消");
+                return;
+            }
+
+            if (pending != null)
+            {
+                pending.CandidateOvertimeMinutes = remaining;
+                pending.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                pending.UpdatedBy = _currentUserService.GetCurrentUsername();
+                await _db.Updateable(pending).ExecuteCommandAsync();
+                return;
+            }
+
+            await InsertPendingApprovalWithConflictGuardAsync(
+                "Overtime",
+                schedule.ScheduleGuid,
+                schedule.StoreCode,
+                schedule.UserGuid,
+                remaining);
+        }
+
+        private async Task ReconcileOvertimeForScheduleAsync(
+            string scheduleGuid,
+            int autoApproveDelta = 0)
+        {
+            var schedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                !item.IsDeleted && item.ScheduleGuid == scheduleGuid);
+            if (schedule == null)
+            {
+                return;
+            }
+            var session = await BuildWorkSessionAsync(schedule);
+            await ReconcileOvertimeApprovalAsync(schedule, session, autoApproveDelta);
+        }
+
+        private async Task<AttendanceWorkSessionDto> BuildWorkSessionAsync(
+            AttendanceSchedule schedule)
+        {
+            var punches = await _db.Queryable<AttendancePunch>()
+                .Where(item => !item.IsDeleted && item.ScheduleGuid == schedule.ScheduleGuid)
+                .ToListAsync();
+            var settings = await GetOrCreateSettingsModelAsync();
+            var segmentLimit = await ResolveSegmentLimitAsync(schedule.UserGuid, schedule.StoreCode);
+            var timeZone = await ResolveStoreTimeZoneAsync(schedule.StoreCode, null);
+            return AttendanceWorkSessionCalculator.Calculate(
+                schedule,
+                punches,
+                segmentLimit,
+                ConvertUtcToStoreLocal(_timeProvider.GetUtcNow().UtcDateTime, timeZone),
+                settings.EarlyLeaveGraceMinutes,
+                settings.LateGraceMinutes);
+        }
+
+        private async Task ReconcileFinalPunchApprovalsAsync(
+            AttendanceWorkSessionDto session,
+            AttendanceSettings settings)
+        {
+            var firstClockIn = session.Segments.FirstOrDefault()?.ClockIn;
+            if (firstClockIn?.Status == "Late" && settings.RequireApprovalForLate)
+            {
+                await CreatePendingApprovalAsync(
+                    "Punch",
+                    firstClockIn.PunchGuid,
+                    firstClockIn.StoreCode,
+                    firstClockIn.UserGuid);
+            }
+
+            var finalClockOut = session.Segments.LastOrDefault(item => item.Status == "Final")?.ClockOut;
+            if (finalClockOut?.Status == "EarlyLeave" && settings.RequireApprovalForEarlyLeave)
+            {
+                await CreatePendingApprovalAsync(
+                    "Punch",
+                    finalClockOut.PunchGuid,
+                    finalClockOut.StoreCode,
+                    finalClockOut.UserGuid);
+            }
+        }
+
+        private async Task ReconcileMissingClockOutApprovalAsync(
+            AttendanceSchedule schedule,
+            AttendanceWorkSessionDto session)
+        {
+            if (!session.HasMissingClockOut)
+            {
+                await CancelPendingApprovalsAsync(
+                    "MissingClockOut",
+                    schedule.ScheduleGuid,
+                    "漏下班状态已消除，待处理记录已自动取消");
+                return;
+            }
+            await CreatePendingApprovalAsync(
+                "MissingClockOut",
+                schedule.ScheduleGuid,
+                schedule.StoreCode,
+                schedule.UserGuid);
+        }
+
+        private async Task<PunchAdjustmentContext> BuildPunchAdjustmentContextAsync(
+            CreateAttendancePunchAdjustmentDto request)
+        {
+            var userGuid = ResolveCurrentUserGuid();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return PunchAdjustmentContext.Error("无法识别当前员工", "USER_NOT_FOUND");
+            }
+            if (string.IsNullOrWhiteSpace(request.StoreCode))
+            {
+                return PunchAdjustmentContext.Error("分店代码不能为空", "STORE_REQUIRED");
+            }
+            if (string.IsNullOrWhiteSpace(request.Reason))
+            {
+                return PunchAdjustmentContext.Error("补卡原因不能为空", "REASON_REQUIRED");
+            }
+
+            var storeCode = request.StoreCode.Trim();
+            var access = await ResolveRelatedStoreAccessAsync(userGuid, storeCode);
+            if (!access.Success)
+            {
+                return PunchAdjustmentContext.Error(access.Message, access.ErrorCode);
+            }
+
+            var punchType = NormalizePunchType(request.PunchType);
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, null);
+            DateTime requestedPunchTimeLocal;
+            DateTime requestedPunchTimeUtc;
+            if (request.RequestedPunchTimeUtc.HasValue)
+            {
+                // 服务器与数据库以 UTC 为权威；客户端 local 只用于兼容未升级的旧请求。
+                requestedPunchTimeUtc = request.RequestedPunchTimeUtc.Value.UtcDateTime;
+                requestedPunchTimeLocal = DateTime.SpecifyKind(
+                    ConvertUtcToStoreLocal(requestedPunchTimeUtc, storeTimeZone),
+                    DateTimeKind.Unspecified);
+            }
+            else
+            {
+                requestedPunchTimeLocal = DateTime.SpecifyKind(
+                    request.RequestedPunchTimeLocal,
+                    DateTimeKind.Unspecified);
+                TimeZoneInfo timezone;
+                try
+                {
+                    timezone = TimeZoneInfo.FindSystemTimeZoneById(storeTimeZone);
+                }
+                catch (TimeZoneNotFoundException)
+                {
+                    timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
+                }
+                catch (InvalidTimeZoneException)
+                {
+                    timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
+                }
+
+                if (timezone.IsInvalidTime(requestedPunchTimeLocal)
+                    || timezone.IsAmbiguousTime(requestedPunchTimeLocal))
+                {
+                    return PunchAdjustmentContext.Error(
+                        "该门店本地时间无效或存在歧义，请升级客户端并传入 UTC 时间",
+                        "PUNCH_TIME_INVALID");
+                }
+                requestedPunchTimeUtc = ConvertStoreLocalToUtc(
+                    requestedPunchTimeLocal,
+                    storeTimeZone);
+            }
+
+            var scheduleQuery = _db.Queryable<AttendanceSchedule>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.Status == "Active"
+                    && item.StoreCode == storeCode
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= requestedPunchTimeLocal.Date
+                    && item.WorkDate < requestedPunchTimeLocal.Date.AddDays(1));
+            var schedule = string.IsNullOrWhiteSpace(request.ScheduleGuid)
+                ? await scheduleQuery.OrderBy(item => item.StartTime).FirstAsync()
+                : await scheduleQuery.FirstAsync(item => item.ScheduleGuid == request.ScheduleGuid.Trim());
+            if (schedule == null)
+            {
+                return PunchAdjustmentContext.Error("补卡日期没有有效排班", "SCHEDULE_NOT_FOUND");
+            }
+
+            var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+            var nowLocal = ConvertUtcToStoreLocal(nowUtc, storeTimeZone);
+            var wouldAutoApprove = await IsCurrentUserManagerForStoreAsync(storeCode);
+            if (!IsAdmin())
+            {
+                var ageDays = (nowLocal.Date - requestedPunchTimeLocal.Date).Days;
+                if (ageDays < 0 || ageDays > 2)
+                {
+                    return PunchAdjustmentContext.Error(
+                        "非 Admin 员工只能申请两天内的补卡",
+                        "ADJUSTMENT_WINDOW_EXPIRED");
+                }
+            }
+
+            AttendancePunch? originalPunch = null;
+            if (!string.IsNullOrWhiteSpace(request.OriginalPunchGuid))
+            {
+                originalPunch = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
+                    !item.IsDeleted
+                    && item.PunchGuid == request.OriginalPunchGuid.Trim()
+                    && item.UserGuid == userGuid
+                    && item.StoreCode == storeCode
+                    && item.ScheduleGuid == schedule.ScheduleGuid);
+                if (originalPunch == null)
+                {
+                    return PunchAdjustmentContext.Error("原打卡记录不存在", "PUNCH_NOT_FOUND");
+                }
+
+                var existingAdjustment = await _db.Queryable<AttendancePunchAdjustment>().AnyAsync(item =>
+                    !item.IsDeleted
+                    && item.OriginalPunchGuid == originalPunch.PunchGuid
+                    && (item.Status == "Pending" || item.Status == "Applied"));
+                if (existingAdjustment)
+                {
+                    return PunchAdjustmentContext.Error(
+                        "原打卡记录已有待处理或已生效的调整",
+                        "ADJUSTMENT_ALREADY_EXISTS");
+                }
+
+                var alreadySuperseded = await _db.Queryable<AttendancePunch>().AnyAsync(item =>
+                    !item.IsDeleted && item.SupersedesPunchGuid == originalPunch.PunchGuid);
+                if (alreadySuperseded)
+                {
+                    return PunchAdjustmentContext.Error("原打卡记录已被调整", "PUNCH_ALREADY_ADJUSTED");
+                }
+            }
+
+            var punches = await _db.Queryable<AttendancePunch>()
+                .Where(item => !item.IsDeleted && item.ScheduleGuid == schedule.ScheduleGuid)
+                .ToListAsync();
+            var segmentLimit = await ResolveSegmentLimitAsync(userGuid, storeCode);
+            var proposedPunch = new AttendancePunch
+            {
+                PunchGuid = Guid.NewGuid().ToString(),
+                ScheduleGuid = schedule.ScheduleGuid,
                 StoreCode = storeCode,
-                ApplicantUserGuid = applicantUserGuid,
-                ReviewStatus = "Pending",
-                CreatedAt = DateTime.UtcNow,
-                CreatedBy = _currentUserService.GetCurrentUsername(),
-            }).ExecuteCommandAsync();
+                UserGuid = userGuid,
+                WorkDate = schedule.WorkDate,
+                StoreTimeZone = storeTimeZone,
+                PunchType = punchType,
+                PunchTimeLocal = requestedPunchTimeLocal,
+                PunchTimeUtc = requestedPunchTimeUtc,
+                Status = "Normal",
+                Source = "ManualAdjustment",
+                SupersedesPunchGuid = originalPunch?.PunchGuid,
+            };
+            var proposedPunches = punches.Append(proposedPunch).ToList();
+            var sequenceValidation = ValidateEffectivePunchSequence(proposedPunches, segmentLimit);
+            if (!sequenceValidation.Success)
+            {
+                return PunchAdjustmentContext.Error(sequenceValidation.Message, sequenceValidation.ErrorCode);
+            }
+
+            var sameDayPunches = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= schedule.WorkDate.Date
+                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1))
+                .ToListAsync();
+            sameDayPunches.Add(proposedPunch);
+            var dailyLimitValidation = ValidateDailyStoreSegmentLimit(
+                sameDayPunches.Where(item => item.StoreCode.Equals(
+                    storeCode,
+                    StringComparison.OrdinalIgnoreCase)),
+                segmentLimit);
+            if (!dailyLimitValidation.Success)
+            {
+                return PunchAdjustmentContext.Error(
+                    dailyLimitValidation.Message,
+                    dailyLimitValidation.ErrorCode);
+            }
+            if (HasCrossScheduleOverlap(sameDayPunches))
+            {
+                return PunchAdjustmentContext.Error(
+                    "补卡后与其他排班或分店的班段重叠",
+                    "PUNCH_TIME_OVERLAP");
+            }
+
+            var settings = await GetOrCreateSettingsModelAsync();
+            var existingSession = AttendanceWorkSessionCalculator.Calculate(
+                schedule,
+                punches,
+                segmentLimit,
+                nowLocal,
+                settings.EarlyLeaveGraceMinutes,
+                settings.LateGraceMinutes);
+            var proposedSession = AttendanceWorkSessionCalculator.Calculate(
+                schedule,
+                proposedPunches,
+                segmentLimit,
+                nowLocal,
+                settings.EarlyLeaveGraceMinutes,
+                settings.LateGraceMinutes);
+            return PunchAdjustmentContext.OK(
+                schedule,
+                proposedPunch,
+                new AttendancePunchAdjustmentPreviewDto
+                {
+                    IsValid = true,
+                    ExistingSession = existingSession,
+                    ProposedSession = proposedSession,
+                    WorkedMinutesDelta = proposedSession.WorkedMinutes - existingSession.WorkedMinutes,
+                    CandidateOvertimeMinutesDelta = proposedSession.CandidateOvertimeMinutes
+                        - existingSession.CandidateOvertimeMinutes,
+                    WouldAutoApprove = wouldAutoApprove,
+                });
+        }
+
+        private async Task<PunchAdjustmentApplicationContext> ValidateStoredPunchAdjustmentForApplicationAsync(
+            AttendancePunchAdjustment adjustment)
+        {
+            var schedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                !item.IsDeleted
+                && item.Status == "Active"
+                && item.ScheduleGuid == adjustment.ScheduleGuid
+                && item.StoreCode == adjustment.StoreCode
+                && item.UserGuid == adjustment.UserGuid);
+            if (schedule == null)
+            {
+                return PunchAdjustmentApplicationContext.Error(
+                    "补卡对应的排班已失效",
+                    "SCHEDULE_NOT_FOUND");
+            }
+
+            if (!string.IsNullOrWhiteSpace(adjustment.OriginalPunchGuid))
+            {
+                var originalExists = await _db.Queryable<AttendancePunch>().AnyAsync(item =>
+                    !item.IsDeleted
+                    && item.PunchGuid == adjustment.OriginalPunchGuid
+                    && item.ScheduleGuid == schedule.ScheduleGuid
+                    && item.UserGuid == adjustment.UserGuid
+                    && item.StoreCode == adjustment.StoreCode);
+                if (!originalExists)
+                {
+                    return PunchAdjustmentApplicationContext.Error(
+                        "原打卡记录不存在",
+                        "PUNCH_NOT_FOUND");
+                }
+                var superseded = await _db.Queryable<AttendancePunch>().AnyAsync(item =>
+                    !item.IsDeleted && item.SupersedesPunchGuid == adjustment.OriginalPunchGuid);
+                if (superseded)
+                {
+                    return PunchAdjustmentApplicationContext.Error(
+                        "原打卡记录已被调整",
+                        "PUNCH_ALREADY_ADJUSTED");
+                }
+                var competingAdjustment = await _db.Queryable<AttendancePunchAdjustment>().AnyAsync(item =>
+                    !item.IsDeleted
+                    && item.AdjustmentGuid != adjustment.AdjustmentGuid
+                    && item.OriginalPunchGuid == adjustment.OriginalPunchGuid
+                    && (item.Status == "Pending" || item.Status == "Applied"));
+                if (competingAdjustment)
+                {
+                    return PunchAdjustmentApplicationContext.Error(
+                        "原打卡记录已有其他待处理或已生效的调整",
+                        "ADJUSTMENT_ALREADY_EXISTS");
+                }
+            }
+
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(adjustment.StoreCode, null);
+            var proposedPunch = new AttendancePunch
+            {
+                PunchGuid = Guid.NewGuid().ToString(),
+                ScheduleGuid = schedule.ScheduleGuid,
+                StoreCode = adjustment.StoreCode,
+                UserGuid = adjustment.UserGuid,
+                WorkDate = schedule.WorkDate,
+                StoreTimeZone = storeTimeZone,
+                PunchType = adjustment.PunchType,
+                PunchTimeLocal = adjustment.RequestedPunchTimeLocal,
+                PunchTimeUtc = adjustment.RequestedPunchTimeUtc,
+                Status = "Normal",
+                Source = "ManualAdjustment",
+                SupersedesPunchGuid = adjustment.OriginalPunchGuid,
+                AdjustmentGuid = adjustment.AdjustmentGuid,
+            };
+            var schedulePunches = await _db.Queryable<AttendancePunch>()
+                .Where(item => !item.IsDeleted && item.ScheduleGuid == schedule.ScheduleGuid)
+                .ToListAsync();
+            var segmentLimit = await ResolveSegmentLimitAsync(adjustment.UserGuid, adjustment.StoreCode);
+            var sequenceValidation = ValidateEffectivePunchSequence(
+                schedulePunches.Append(proposedPunch).ToList(),
+                segmentLimit);
+            if (!sequenceValidation.Success)
+            {
+                return PunchAdjustmentApplicationContext.Error(
+                    sequenceValidation.Message,
+                    sequenceValidation.ErrorCode);
+            }
+
+            var sameDayPunches = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.UserGuid == adjustment.UserGuid
+                    && item.WorkDate >= schedule.WorkDate.Date
+                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1))
+                .ToListAsync();
+            sameDayPunches.Add(proposedPunch);
+            var dailyLimitValidation = ValidateDailyStoreSegmentLimit(
+                sameDayPunches.Where(item => item.StoreCode.Equals(
+                    adjustment.StoreCode,
+                    StringComparison.OrdinalIgnoreCase)),
+                segmentLimit);
+            if (!dailyLimitValidation.Success)
+            {
+                return PunchAdjustmentApplicationContext.Error(
+                    dailyLimitValidation.Message,
+                    dailyLimitValidation.ErrorCode);
+            }
+            if (HasCrossScheduleOverlap(sameDayPunches))
+            {
+                return PunchAdjustmentApplicationContext.Error(
+                    "补卡后与其他排班或分店的班段重叠",
+                    "PUNCH_TIME_OVERLAP");
+            }
+
+            return PunchAdjustmentApplicationContext.OK(schedule, proposedPunch);
+        }
+
+        private async Task<AttendancePunch> ApplyPunchAdjustmentAsync(
+            AttendancePunchAdjustment adjustment,
+            AttendancePunch? preparedPunch = null)
+        {
+            var punch = preparedPunch ?? new AttendancePunch
+            {
+                PunchGuid = Guid.NewGuid().ToString(),
+                ScheduleGuid = adjustment.ScheduleGuid,
+                StoreCode = adjustment.StoreCode,
+                UserGuid = adjustment.UserGuid,
+                WorkDate = adjustment.RequestedPunchTimeLocal.Date,
+                StoreTimeZone = await ResolveStoreTimeZoneAsync(adjustment.StoreCode, null),
+                PunchType = adjustment.PunchType,
+                PunchTimeLocal = adjustment.RequestedPunchTimeLocal,
+                PunchTimeUtc = adjustment.RequestedPunchTimeUtc,
+                Status = "Normal",
+                Source = "ManualAdjustment",
+                SupersedesPunchGuid = adjustment.OriginalPunchGuid,
+            };
+            punch.AdjustmentGuid = adjustment.AdjustmentGuid;
+            punch.Remark = adjustment.Reason;
+            punch.CreatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+            punch.CreatedBy = _currentUserService.GetCurrentUsername();
+            await _db.Insertable(punch).ExecuteCommandAsync();
+            return punch;
+        }
+
+        private async Task<bool> IsCurrentUserManagerForStoreAsync(string storeCode)
+        {
+            if (IsAdmin())
+            {
+                return true;
+            }
+
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (!CurrentUserManageableStoreScopeService.HasAnyRole(
+                    user,
+                    CurrentUserManageableStoreScopeService.StoreManagerRoleAliases))
+            {
+                return false;
+            }
+
+            var scope = await _scopeService.GetScopeAsync();
+            return scope.IsAllowed && scope.CanAccessStoreCode(storeCode);
+        }
+
+        private async Task<int> ResolveSegmentLimitAsync(string userGuid, string storeCode)
+        {
+            var roleNames = await _db.Queryable<UserRole>()
+                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                .Where((userRole, role) =>
+                    !userRole.IsDeleted
+                    && !role.IsDeleted
+                    && role.IsActive
+                    && userRole.UserGUID == userGuid)
+                .Select((userRole, role) => role.RoleName)
+                .ToListAsync();
+            if (!roleNames.Any(roleName => Permissions.StoreManagerRoleNames.Contains(
+                    roleName,
+                    StringComparer.OrdinalIgnoreCase)))
+            {
+                return 2;
+            }
+
+            // 任一仍有效的店长管理关系即可获得三段上限，不把上限错误收窄到当前门店。
+            var hasActiveManagementRelation = await _db.Queryable<UserStore>()
+                .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
+                .Where((userStore, store) =>
+                    !userStore.IsDeleted
+                    && !store.IsDeleted
+                    && userStore.IsPrimary
+                    && userStore.UserGUID == userGuid)
+                .AnyAsync();
+            return hasActiveManagementRelation ? 3 : 2;
+        }
+
+        private static ValidationResult ValidateEffectivePunchSequence(
+            List<AttendancePunch> punches,
+            int segmentLimit)
+        {
+            var superseded = punches
+                .Where(item => !string.IsNullOrWhiteSpace(item.SupersedesPunchGuid))
+                .Select(item => item.SupersedesPunchGuid!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var effective = punches
+                .Where(item => !superseded.Contains(item.PunchGuid))
+                .OrderBy(item => item.PunchTimeLocal)
+                .ThenBy(item => item.Id)
+                .ToList();
+            if (effective.Count > segmentLimit * 2)
+            {
+                return ValidationResult.Error("班段数量已达到上限", "SEGMENT_LIMIT_REACHED");
+            }
+
+            for (var index = 0; index < effective.Count; index++)
+            {
+                var expectedType = index % 2 == 0 ? "ClockIn" : "ClockOut";
+                if (!effective[index].PunchType.Equals(expectedType, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ValidationResult.Error("打卡顺序无效或班段发生重叠", "INVALID_PUNCH_SEQUENCE");
+                }
+            }
+
+            return ValidationResult.OK();
+        }
+
+        private static ValidationResult ValidateDailyStoreSegmentLimit(
+            IEnumerable<AttendancePunch> punches,
+            int segmentLimit)
+        {
+            if (CountEffectiveStoreSegments(punches) > segmentLimit)
+            {
+                return ValidationResult.Error(
+                    "该员工在本店当日班段数量已达到上限",
+                    "SEGMENT_LIMIT_REACHED");
+            }
+            return ValidationResult.OK();
+        }
+
+        private static int CountEffectiveStoreSegments(IEnumerable<AttendancePunch> punches)
+        {
+            var rows = punches.ToList();
+            var superseded = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.SupersedesPunchGuid))
+                .Select(item => item.SupersedesPunchGuid!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return rows.Count(item =>
+                !superseded.Contains(item.PunchGuid)
+                && item.PunchType.Equals("ClockIn", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool HasCrossScheduleOverlap(List<AttendancePunch> punches)
+        {
+            var superseded = punches
+                .Where(item => !string.IsNullOrWhiteSpace(item.SupersedesPunchGuid))
+                .Select(item => item.SupersedesPunchGuid!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var intervals = new List<(string Key, DateTime Start, DateTime End)>();
+            foreach (var group in punches
+                .Where(item => !superseded.Contains(item.PunchGuid))
+                .GroupBy(item => item.ScheduleGuid ?? $"{item.StoreCode}:{item.WorkDate:yyyyMMdd}"))
+            {
+                var ordered = group.OrderBy(item => item.PunchTimeUtc).ThenBy(item => item.Id).ToList();
+                for (var index = 0; index + 1 < ordered.Count; index += 2)
+                {
+                    if (ordered[index].PunchType != "ClockIn"
+                        || ordered[index + 1].PunchType != "ClockOut")
+                    {
+                        continue;
+                    }
+                    intervals.Add((group.Key, ordered[index].PunchTimeUtc, ordered[index + 1].PunchTimeUtc));
+                }
+            }
+
+            var orderedIntervals = intervals.OrderBy(item => item.Start).ToList();
+            for (var index = 1; index < orderedIntervals.Count; index++)
+            {
+                if (orderedIntervals[index].Start < orderedIntervals[index - 1].End
+                    && !orderedIntervals[index].Key.Equals(
+                        orderedIntervals[index - 1].Key,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private async Task<bool> IsWithinAdjustmentWindowAsync(DateTime workDate, string? storeCode)
+        {
+            if (IsAdmin())
+            {
+                return true;
+            }
+
+            var timeZone = await ResolveStoreTimeZoneAsync(storeCode, null);
+            var today = ConvertUtcToStoreLocal(_timeProvider.GetUtcNow().UtcDateTime, timeZone).Date;
+            var ageDays = (today - workDate.Date).Days;
+            return ageDays is >= 0 and <= 2;
         }
 
         private async Task<bool> HasOverlappingScheduleAsync(
@@ -1485,7 +2738,9 @@ namespace BlazorApp.Api.Services.React
             string storeCode,
             string userGuid,
             DateTime workDate,
-            TimeSpan localTime
+            TimeSpan localTime,
+            int segmentLimit,
+            AttendanceSettings settings
         )
         {
             var rows = await _db.Queryable<AttendanceSchedule>()
@@ -1498,41 +2753,93 @@ namespace BlazorApp.Api.Services.React
                     && item.WorkDate < workDate.Date.AddDays(1)
                 )
                 .ToListAsync();
+            if (rows.Count == 0)
+            {
+                return null;
+            }
 
-            return rows
-                .OrderBy(item => Math.Abs((item.StartTime - localTime).TotalMinutes))
+            var scheduleGuids = rows.Select(item => item.ScheduleGuid).ToList();
+            var punches = await _db.Queryable<AttendancePunch>()
+                .Where(item => !item.IsDeleted
+                    && item.ScheduleGuid != null
+                    && scheduleGuids.Contains(item.ScheduleGuid))
+                .ToListAsync();
+            var nowLocal = workDate.Date.Add(localTime);
+            var sessions = rows.Select(schedule => new
+            {
+                Schedule = schedule,
+                Session = AttendanceWorkSessionCalculator.Calculate(
+                    schedule,
+                    punches,
+                    segmentLimit,
+                    nowLocal,
+                    settings.EarlyLeaveGraceMinutes,
+                    settings.LateGraceMinutes),
+            }).ToList();
+
+            var open = sessions
+                .Where(item => item.Session.HasOpenSegment)
+                .OrderByDescending(item => item.Session.Segments.Last().ClockIn?.PunchTimeLocal)
+                .FirstOrDefault();
+            if (open != null)
+            {
+                return open.Schedule;
+            }
+
+            return sessions
+                .Where(item => item.Session.ScheduleState != "Completed")
+                .Where(item => item.Session.Segments.Count < segmentLimit)
+                .Where(item => item.Session.ScheduleState != "NotStarted"
+                    || localTime < item.Schedule.EndTime)
+                .OrderBy(item => localTime < item.Schedule.StartTime
+                    ? (item.Schedule.StartTime - localTime).TotalMinutes
+                    : localTime > item.Schedule.EndTime
+                        ? (localTime - item.Schedule.EndTime).TotalMinutes
+                        : 0)
+                .ThenBy(item => item.Schedule.StartTime)
+                .Select(item => item.Schedule)
                 .FirstOrDefault();
         }
 
-        private static string ResolvePunchStatus(
+        private static string ResolveSegmentPunchStatus(
             AttendanceSchedule? schedule,
             string punchType,
             TimeSpan localTime,
             AttendanceSettings settings,
-            bool isDuplicate
-        )
+            bool isFirstClockIn,
+            bool isFinalClockOut)
         {
-            if (isDuplicate)
-            {
-                return "Duplicate";
-            }
-
             if (schedule == null)
             {
                 return "NoSchedule";
             }
-
-            if (punchType == "ClockIn" && localTime > schedule.StartTime.Add(TimeSpan.FromMinutes(settings.LateGraceMinutes)))
+            if (punchType == "ClockIn")
             {
-                return "Late";
+                if (!isFirstClockIn)
+                {
+                    return "Normal";
+                }
+                if (localTime > schedule.StartTime.Add(
+                        TimeSpan.FromMinutes(settings.LateGraceMinutes)))
+                {
+                    return "Late";
+                }
+                return schedule.StartTime - localTime >= TimeSpan.FromMinutes(15)
+                    ? "Early"
+                    : "Normal";
             }
-
-            if (punchType == "ClockOut" && localTime < schedule.EndTime.Subtract(TimeSpan.FromMinutes(settings.EarlyLeaveGraceMinutes)))
+            if (!isFinalClockOut)
+            {
+                return "Break";
+            }
+            if (localTime < schedule.EndTime.Subtract(
+                    TimeSpan.FromMinutes(settings.EarlyLeaveGraceMinutes)))
             {
                 return "EarlyLeave";
             }
-
-            return "Normal";
+            return localTime - schedule.EndTime >= TimeSpan.FromMinutes(15)
+                ? "LateLeave"
+                : "Normal";
         }
 
         private static bool RequiresApproval(string status, AttendanceSettings settings) =>
@@ -1667,6 +2974,273 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task<List<AttendanceStorePunchStateDto>> BuildRelatedStorePunchStatesAsync(
+            string userGuid,
+            DateTime workDate)
+        {
+            var relatedStoreCodes = await GetRelatedStoreCodesAsync(userGuid);
+            var nextDate = workDate.Date.AddDays(1);
+            var schedules = await _db.Queryable<AttendanceSchedule>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.Status == "Active"
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= workDate.Date
+                    && item.WorkDate < nextDate)
+                .WhereIF(relatedStoreCodes.Count > 0, item => relatedStoreCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var punches = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= workDate.Date
+                    && item.WorkDate < nextDate)
+                .WhereIF(relatedStoreCodes.Count > 0, item => relatedStoreCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var scheduleDtos = schedules.Select(item => ToDto(item, userGuid)).ToList();
+            await PopulateScheduleDisplayFieldsAsync(scheduleDtos);
+            await PopulateWorkSessionFieldsAsync(scheduleDtos, schedules, punches);
+
+            // 同店可能有多个排班；异常必须按门店 any 聚合，不能被后一个已完成排班覆盖。
+            var states = scheduleDtos
+                .GroupBy(item => item.StoreCode, StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    var primary = group
+                        .OrderByDescending(item => StorePunchStatePriority(item.ScheduleState))
+                        .ThenBy(item => item.StartTime)
+                        .First();
+                    var hasMissingClockOut = group.Any(item => item.HasMissingClockOut);
+                    var hasOpenSegment = group.Any(item => item.HasOpenSegment);
+                    return new AttendanceStorePunchStateDto
+                    {
+                        StoreCode = group.Key,
+                        StoreName = primary.StoreName,
+                        ScheduleGuid = primary.ScheduleGuid,
+                        State = hasMissingClockOut
+                            ? "MissingClockOut"
+                            : hasOpenSegment
+                                ? "Working"
+                                : primary.ScheduleState,
+                        HasOpenSegment = hasOpenSegment,
+                        HasMissingClockOut = hasMissingClockOut,
+                    };
+                })
+                .ToList();
+            var scheduledStores = states.Select(item => item.StoreCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storeNames = await _db.Queryable<Store>()
+                .Where(item => relatedStoreCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var storeNameMap = storeNames.ToDictionary(
+                item => item.StoreCode,
+                item => item.StoreName,
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var group in punches
+                .Where(item => !scheduledStores.Contains(item.StoreCode))
+                .GroupBy(item => item.StoreCode, StringComparer.OrdinalIgnoreCase))
+            {
+                var ordered = group.OrderBy(item => item.PunchTimeLocal).ToList();
+                var hasOpenSegment = ordered.Count(item => item.PunchType == "ClockIn")
+                    > ordered.Count(item => item.PunchType == "ClockOut");
+                states.Add(new AttendanceStorePunchStateDto
+                {
+                    StoreCode = group.Key,
+                    StoreName = storeNameMap.GetValueOrDefault(group.Key),
+                    State = hasOpenSegment ? "Working" : "Completed",
+                    HasOpenSegment = hasOpenSegment,
+                });
+            }
+            return states;
+        }
+
+        private static int StorePunchStatePriority(string? state) => state switch
+        {
+            "MissingClockOut" => 5,
+            "Working" => 4,
+            "OnBreak" => 3,
+            "Completed" => 2,
+            _ => 1,
+        };
+
+        private async Task PopulateWorkSessionFieldsAsync(
+            List<AttendanceScheduleDto> scheduleDtos,
+            List<AttendanceSchedule> schedules,
+            List<AttendancePunch>? knownPunches = null,
+            List<AttendancePunchDto>? punchDtos = null,
+            bool reconcileDerivedApprovals = true)
+        {
+            if (schedules.Count == 0)
+            {
+                return;
+            }
+
+            var scheduleGuids = schedules.Select(item => item.ScheduleGuid).Distinct().ToList();
+            var punches = knownPunches ?? await _db.Queryable<AttendancePunch>()
+                .Where(item => !item.IsDeleted && item.ScheduleGuid != null && scheduleGuids.Contains(item.ScheduleGuid))
+                .ToListAsync();
+            var settings = await GetOrCreateSettingsModelAsync();
+            var dtoMap = scheduleDtos.ToDictionary(item => item.ScheduleGuid, StringComparer.OrdinalIgnoreCase);
+            var segmentLimitMap = await ResolveSegmentLimitMapAsync(schedules);
+            var storeCodes = schedules.Select(item => item.StoreCode).Distinct().ToList();
+            var stores = await _db.Queryable<Store>()
+                .Where(item => !item.IsDeleted && storeCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var timeZoneMap = stores.ToDictionary(
+                item => item.StoreCode,
+                item => ResolveStoreTimeZoneFromStore(item) ?? DefaultStoreTimeZone,
+                StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, List<AttendanceApproval>>? overtimeApprovalMap = null;
+            if (!reconcileDerivedApprovals)
+            {
+                var overtimeApprovals = await _db.Queryable<AttendanceApproval>()
+                    .Where(item =>
+                        !item.IsDeleted
+                        && item.SourceType == "Overtime"
+                        && scheduleGuids.Contains(item.SourceGuid))
+                    .OrderByDescending(item => item.CreatedAt)
+                    .ToListAsync();
+                overtimeApprovalMap = overtimeApprovals
+                    .GroupBy(item => item.SourceGuid, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.ToList(),
+                        StringComparer.OrdinalIgnoreCase);
+            }
+            var punchDtoMap = punchDtos?.ToDictionary(
+                item => item.PunchGuid,
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var schedule in schedules)
+            {
+                if (!dtoMap.TryGetValue(schedule.ScheduleGuid, out var dto))
+                {
+                    continue;
+                }
+
+                var segmentLimit = segmentLimitMap.GetValueOrDefault(schedule.UserGuid, 2);
+                var timeZone = timeZoneMap.GetValueOrDefault(schedule.StoreCode, DefaultStoreTimeZone);
+                var nowLocal = ConvertUtcToStoreLocal(_timeProvider.GetUtcNow().UtcDateTime, timeZone);
+                var session = AttendanceWorkSessionCalculator.Calculate(
+                    schedule,
+                    punches,
+                    segmentLimit,
+                    nowLocal,
+                    settings.EarlyLeaveGraceMinutes,
+                    settings.LateGraceMinutes);
+                if (reconcileDerivedApprovals)
+                {
+                    await ReconcileOvertimeApprovalAsync(schedule, session);
+                    await ReconcileFinalPunchApprovalsAsync(session, settings);
+                    await ReconcileMissingClockOutApprovalAsync(schedule, session);
+                }
+                dto.ScheduleState = session.ScheduleState;
+                dto.SegmentLimit = session.SegmentLimit;
+                dto.CompletedSegmentCount = session.CompletedSegmentCount;
+                dto.WorkedMinutes = session.WorkedMinutes;
+                dto.BreakMinutes = session.BreakMinutes;
+                dto.HasOpenSegment = session.HasOpenSegment;
+                dto.HasMissingClockOut = session.HasMissingClockOut;
+                dto.EarlyOvertimeMinutes = session.EarlyOvertimeMinutes;
+                dto.LateOvertimeMinutes = session.LateOvertimeMinutes;
+                dto.CandidateOvertimeMinutes = session.CandidateOvertimeMinutes;
+                dto.Segments = session.Segments;
+                var overtimeApprovals = overtimeApprovalMap != null
+                    ? overtimeApprovalMap.GetValueOrDefault(schedule.ScheduleGuid) ?? new List<AttendanceApproval>()
+                    : await _db.Queryable<AttendanceApproval>()
+                        .Where(item =>
+                            !item.IsDeleted
+                            && item.SourceType == "Overtime"
+                            && item.SourceGuid == schedule.ScheduleGuid)
+                        .OrderByDescending(item => item.CreatedAt)
+                        .ToListAsync();
+                var approvedTotal = overtimeApprovals
+                    .Where(item => item.ReviewStatus == "Approved")
+                    .Sum(item => item.ApprovedOvertimeMinutes ?? 0);
+                dto.ApprovedOvertimeMinutes = Math.Min(
+                    session.CandidateOvertimeMinutes,
+                    approvedTotal);
+                if (overtimeApprovals.Any(item => item.ReviewStatus == "Pending"))
+                {
+                    dto.OvertimeApprovalStatus = "Pending";
+                }
+                else if (dto.ApprovedOvertimeMinutes > 0)
+                {
+                    dto.OvertimeApprovalStatus = "Approved";
+                }
+                else
+                {
+                    dto.OvertimeApprovalStatus = overtimeApprovals.FirstOrDefault()?.ReviewStatus;
+                }
+
+                if (punchDtoMap == null)
+                {
+                    continue;
+                }
+                foreach (var segment in session.Segments)
+                {
+                    ApplySegmentMetadata(segment.ClockIn, segment, punchDtoMap);
+                    ApplySegmentMetadata(segment.ClockOut, segment, punchDtoMap);
+                }
+            }
+        }
+
+        private async Task<Dictionary<string, int>> ResolveSegmentLimitMapAsync(
+            List<AttendanceSchedule> schedules)
+        {
+            var userGuids = schedules.Select(item => item.UserGuid).Distinct().ToList();
+            var roleLinks = await _db.Queryable<UserRole>()
+                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                .Where((userRole, role) =>
+                    !userRole.IsDeleted
+                    && !role.IsDeleted
+                    && role.IsActive
+                    && userGuids.Contains(userRole.UserGUID))
+                .Select((userRole, role) => new { userRole.UserGUID, role.RoleName })
+                .ToListAsync();
+            var managerUsers = roleLinks
+                .Where(item => Permissions.StoreManagerRoleNames.Contains(
+                    item.RoleName,
+                    StringComparer.OrdinalIgnoreCase))
+                .Select(item => item.UserGUID)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var managedUsers = await _db.Queryable<UserStore>()
+                .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
+                .Where((userStore, store) =>
+                    !userStore.IsDeleted
+                    && !store.IsDeleted
+                    && userStore.IsPrimary
+                    && userGuids.Contains(userStore.UserGUID))
+                .Select((userStore, store) => userStore.UserGUID)
+                .ToListAsync();
+            var managedUserSet = managedUsers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return userGuids.ToDictionary(
+                userGuid => userGuid,
+                userGuid => managerUsers.Contains(userGuid) && managedUserSet.Contains(userGuid) ? 3 : 2,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void ApplySegmentMetadata(
+            AttendancePunchDto? projectedPunch,
+            AttendanceShiftSegmentDto segment,
+            Dictionary<string, AttendancePunchDto> punchDtoMap)
+        {
+            if (projectedPunch == null
+                || !punchDtoMap.TryGetValue(projectedPunch.PunchGuid, out var punch))
+            {
+                return;
+            }
+
+            punch.SegmentIndex = segment.SegmentIndex;
+            punch.SegmentStatus = segment.Status;
+            punch.IsBreakBoundary = punch.PunchType == "ClockOut" && segment.Status == "Break";
+            punch.Status = projectedPunch.Status;
+            punch.EarlyArrivalMinutes = projectedPunch.EarlyArrivalMinutes;
+            punch.LateMinutes = projectedPunch.LateMinutes;
+            punch.EarlyLeaveMinutes = projectedPunch.EarlyLeaveMinutes;
+            punch.LateDepartureMinutes = projectedPunch.LateDepartureMinutes;
+        }
+
         private async Task PopulateApprovalDisplayFieldsAsync(List<AttendanceApprovalDto> approvals)
         {
             if (approvals.Count == 0)
@@ -1683,6 +3257,11 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
             var leaveGuids = approvals
                 .Where(item => item.SourceType.Equals("Leave", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.SourceGuid)
+                .Distinct()
+                .ToList();
+            var adjustmentGuids = approvals
+                .Where(item => item.SourceType.Equals("PunchAdjustment", StringComparison.OrdinalIgnoreCase))
                 .Select(item => item.SourceGuid)
                 .Distinct()
                 .ToList();
@@ -1703,11 +3282,19 @@ namespace BlazorApp.Api.Services.React
                 : await _db.Queryable<AttendanceLeaveRequest>()
                     .Where(item => leaveGuids.Contains(item.LeaveGuid))
                     .ToListAsync();
+            var adjustments = adjustmentGuids.Count == 0
+                ? new List<AttendancePunchAdjustment>()
+                : await _db.Queryable<AttendancePunchAdjustment>()
+                    .Where(item => adjustmentGuids.Contains(item.AdjustmentGuid))
+                    .ToListAsync();
 
             var userMap = users.ToDictionary(item => item.UserGUID, StringComparer.OrdinalIgnoreCase);
             var storeMap = stores.ToDictionary(item => item.StoreCode, StringComparer.OrdinalIgnoreCase);
             var punchMap = punches.ToDictionary(item => item.PunchGuid, StringComparer.OrdinalIgnoreCase);
             var leaveMap = leaves.ToDictionary(item => item.LeaveGuid, StringComparer.OrdinalIgnoreCase);
+            var adjustmentMap = adjustments.ToDictionary(
+                item => item.AdjustmentGuid,
+                StringComparer.OrdinalIgnoreCase);
 
             foreach (var approval in approvals)
             {
@@ -1737,6 +3324,24 @@ namespace BlazorApp.Api.Services.React
                     approval.Title = leave.LeaveType;
                     approval.Detail = $"{leave.StartDate:yyyy-MM-dd} - {leave.EndDate:yyyy-MM-dd}"
                         + (string.IsNullOrWhiteSpace(leave.Reason) ? string.Empty : $" · {leave.Reason}");
+                }
+                else if (approval.SourceType.Equals("PunchAdjustment", StringComparison.OrdinalIgnoreCase)
+                    && adjustmentMap.TryGetValue(approval.SourceGuid, out var adjustment))
+                {
+                    approval.WorkDate = adjustment.RequestedPunchTimeLocal.Date;
+                    approval.Title = "补卡申请";
+                    approval.Detail = $"{adjustment.PunchType} · {adjustment.RequestedPunchTimeLocal:yyyy-MM-dd HH:mm} · {adjustment.Reason}";
+                    approval.Adjustment = ToDto(adjustment);
+                }
+                else if (approval.SourceType.Equals("Overtime", StringComparison.OrdinalIgnoreCase))
+                {
+                    approval.Title = "加班审批";
+                    approval.Detail = $"候选 {approval.CandidateOvertimeMinutes ?? 0} 分钟";
+                }
+                else if (approval.SourceType.Equals("MissingClockOut", StringComparison.OrdinalIgnoreCase))
+                {
+                    approval.Title = "漏下班待处理";
+                    approval.Detail = "排班结束后仍存在未闭合班段";
                 }
                 else
                 {
@@ -2119,32 +3724,34 @@ namespace BlazorApp.Api.Services.React
             string? employeeName = null,
             string? storeName = null,
             DateTime? serverTimeUtc = null) => new()
-        {
-            PunchGuid = item.PunchGuid,
-            ScheduleGuid = item.ScheduleGuid,
-            StoreCode = item.StoreCode,
-            UserGuid = item.UserGuid,
-            WorkDate = item.WorkDate,
-            StoreTimeZone = item.StoreTimeZone,
-            PunchType = item.PunchType,
-            PunchTimeUtc = item.PunchTimeUtc,
-            PunchTimeLocal = item.PunchTimeLocal,
-            Status = item.Status,
-            DeviceId = item.DeviceId,
-            LocationLatitude = item.LocationLatitude,
-            LocationLongitude = item.LocationLongitude,
-            LocationAccuracy = item.LocationAccuracyMeters,
-            LocationPermissionStatus = item.LocationPermissionStatus,
-            LocationCapturedAtUtc = item.LocationCapturedAtUtc,
-            Source = item.Source,
-            QrTokenId = item.QrTokenId,
-            PosDeviceCode = item.PosDeviceCode,
-            SigningKeyId = item.SigningKeyId,
-            EmployeeName = employeeName,
-            StoreName = storeName,
-            ServerTimeUtc = serverTimeUtc,
-            Remark = item.Remark,
-        };
+            {
+                PunchGuid = item.PunchGuid,
+                ScheduleGuid = item.ScheduleGuid,
+                StoreCode = item.StoreCode,
+                UserGuid = item.UserGuid,
+                WorkDate = item.WorkDate,
+                StoreTimeZone = item.StoreTimeZone,
+                PunchType = item.PunchType,
+                PunchTimeUtc = item.PunchTimeUtc,
+                PunchTimeLocal = item.PunchTimeLocal,
+                Status = item.Status,
+                DeviceId = item.DeviceId,
+                LocationLatitude = item.LocationLatitude,
+                LocationLongitude = item.LocationLongitude,
+                LocationAccuracy = item.LocationAccuracyMeters,
+                LocationPermissionStatus = item.LocationPermissionStatus,
+                LocationCapturedAtUtc = item.LocationCapturedAtUtc,
+                Source = item.Source,
+                QrTokenId = item.QrTokenId,
+                PosDeviceCode = item.PosDeviceCode,
+                SigningKeyId = item.SigningKeyId,
+                SupersedesPunchGuid = item.SupersedesPunchGuid,
+                AdjustmentGuid = item.AdjustmentGuid,
+                EmployeeName = employeeName,
+                StoreName = storeName,
+                ServerTimeUtc = serverTimeUtc,
+                Remark = item.Remark,
+            };
 
         private static AttendanceLocationSampleDto ToDto(AttendanceLocationSample item) => new()
         {
@@ -2174,6 +3781,28 @@ namespace BlazorApp.Api.Services.React
             Title = item.SourceType,
             ReviewStatus = item.ReviewStatus,
             ReviewRemark = item.ReviewRemark,
+            ReviewedAt = item.ReviewedAt,
+            CreatedAt = item.CreatedAt,
+            CandidateOvertimeMinutes = item.CandidateOvertimeMinutes,
+            ApprovedOvertimeMinutes = item.ApprovedOvertimeMinutes,
+        };
+
+        private static AttendancePunchAdjustmentDto ToDto(AttendancePunchAdjustment item) => new()
+        {
+            AdjustmentGuid = item.AdjustmentGuid,
+            StoreCode = item.StoreCode,
+            UserGuid = item.UserGuid,
+            ScheduleGuid = item.ScheduleGuid,
+            OriginalPunchGuid = item.OriginalPunchGuid,
+            PunchType = item.PunchType,
+            RequestedPunchTimeLocal = item.RequestedPunchTimeLocal,
+            RequestedPunchTimeUtc = item.RequestedPunchTimeUtc,
+            Reason = item.Reason,
+            Status = item.Status,
+            AppliedPunchGuid = item.AppliedPunchGuid,
+            IsManagerSelfDirect = item.IsManagerSelfDirect,
+            RequestedByUserGuid = item.RequestedByUserGuid,
+            ReviewedByUserGuid = item.ReviewedByUserGuid,
             ReviewedAt = item.ReviewedAt,
             CreatedAt = item.CreatedAt,
         };
@@ -2239,6 +3868,42 @@ namespace BlazorApp.Api.Services.React
                 Message = message,
                 ErrorCode = errorCode,
             };
+        }
+
+        private sealed record PunchAdjustmentContext(
+            bool Success,
+            string Message,
+            string? ErrorCode,
+            AttendanceSchedule? Schedule,
+            AttendancePunch? ProposedPunch,
+            AttendancePunchAdjustmentPreviewDto? Preview)
+        {
+            public static PunchAdjustmentContext Error(string message, string? errorCode) =>
+                new(false, message, errorCode, null, null, null);
+
+            public static PunchAdjustmentContext OK(
+                AttendanceSchedule schedule,
+                AttendancePunch proposedPunch,
+                AttendancePunchAdjustmentPreviewDto preview) =>
+                new(true, string.Empty, null, schedule, proposedPunch, preview);
+        }
+
+        private sealed record PunchAdjustmentApplicationContext(
+            bool Success,
+            string Message,
+            string? ErrorCode,
+            AttendanceSchedule? Schedule,
+            AttendancePunch? ProposedPunch)
+        {
+            public static PunchAdjustmentApplicationContext Error(
+                string message,
+                string? errorCode) =>
+                new(false, message, errorCode, null, null);
+
+            public static PunchAdjustmentApplicationContext OK(
+                AttendanceSchedule schedule,
+                AttendancePunch proposedPunch) =>
+                new(true, string.Empty, null, schedule, proposedPunch);
         }
 
         private sealed class ValidationResult

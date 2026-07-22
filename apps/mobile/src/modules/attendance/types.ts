@@ -60,6 +60,19 @@ export interface AttendanceSchedule {
   isMine: boolean;
   holidayName?: string;
   holidayBusinessStatus?: string;
+  scheduleState?: string;
+  segmentLimit?: number;
+  completedSegmentCount?: number;
+  workedMinutes?: number;
+  breakMinutes?: number;
+  hasOpenSegment?: boolean;
+  hasMissingClockOut?: boolean;
+  earlyOvertimeMinutes?: number;
+  lateOvertimeMinutes?: number;
+  candidateOvertimeMinutes?: number;
+  approvedOvertimeMinutes?: number;
+  overtimeApprovalStatus?: string;
+  segments?: AttendancePunchSegment[];
 }
 
 export interface AttendancePunch {
@@ -82,6 +95,80 @@ export interface AttendancePunch {
   employeeName?: string;
   posDeviceCode?: string;
   serverTimeUtc?: string;
+  effectivePunchTime?: string;
+  segmentIndex?: number;
+  segmentStatus?: string;
+  isBreakBoundary?: boolean;
+  supersedesPunchGuid?: string;
+  adjustmentGuid?: string;
+  earlyArrivalMinutes?: number;
+  lateMinutes?: number;
+  earlyLeaveMinutes?: number;
+  lateDepartureMinutes?: number;
+}
+
+export interface AttendancePunchSegment {
+  segmentIndex: number;
+  segmentNumber: number;
+  clockIn?: AttendancePunch;
+  clockOut?: AttendancePunch;
+  durationMinutes?: number;
+  workedMinutes?: number;
+  status?: string;
+  adjustmentStatus?: string;
+}
+
+export interface AttendanceScheduleSession extends AttendanceSchedule {
+  segments: AttendancePunchSegment[];
+  overtimeRawMinutes?: number;
+  overtimeCandidateMinutes?: number;
+  adjustmentStatus?: string;
+}
+
+export interface AttendanceStorePunchState {
+  storeCode: string;
+  storeName?: string;
+  state?: string;
+  hasOpenSegment?: boolean;
+  hasMissingClockOut?: boolean;
+  scheduleGuid?: string;
+  relatedReminder?: string;
+  scheduleSessions: AttendanceScheduleSession[];
+}
+
+export interface AttendancePunchAdjustmentPayload {
+  storeCode: string;
+  scheduleGuid?: string;
+  originalPunchGuid?: string;
+  punchType: AttendancePunchType;
+  requestedPunchTimeLocal: string;
+  requestedPunchTimeUtc?: string;
+  reason: string;
+}
+
+export interface AttendancePunchAdjustment {
+  adjustmentGuid: string;
+  storeCode: string;
+  scheduleGuid?: string;
+  originalPunchGuid?: string;
+  punchType: AttendancePunchType;
+  requestedPunchTimeLocal: string;
+  requestedPunchTimeUtc?: string;
+  reason: string;
+  status: AttendanceApprovalStatus;
+  submittedAt?: string;
+  reviewedAt?: string;
+}
+
+export interface AttendanceAdjustmentPreview {
+  isValid: boolean;
+  validationErrorCode?: string;
+  validationMessage?: string;
+  existingSession?: AttendanceScheduleSession;
+  proposedSession?: AttendanceScheduleSession;
+  workedMinutesDelta: number;
+  candidateOvertimeMinutesDelta: number;
+  wouldAutoApprove: boolean;
 }
 
 export interface AttendancePunchVerificationPayload {
@@ -160,6 +247,10 @@ export interface AttendanceToday {
   nextPunchType: AttendancePunchType;
   canClockIn: boolean;
   canClockOut: boolean;
+  storePunchStates: AttendanceStorePunchState[];
+  scheduleSessions: AttendanceScheduleSession[];
+  relatedStoreReminders: string[];
+  canRequestAdjustment?: boolean;
 }
 
 export interface AttendanceWeekDay {
@@ -306,6 +397,7 @@ export interface AttendanceApproval {
   detail?: string;
   status: AttendanceApprovalStatus;
   submittedAt?: string;
+  adjustment?: AttendancePunchAdjustment;
 }
 
 export interface AttendanceApprovalPayload {

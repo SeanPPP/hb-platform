@@ -384,6 +384,81 @@ async function run() {
   );
   assert.equal(seasonalSubmissions.items[0]?.cardType, 1);
 
+  const secondStoreSchedule = await request(
+    "POST",
+    "/react/v1/attendance/schedules",
+    {
+      storeCode: "REV002",
+      userGuid: "review-user",
+      workDate: "2026-07-16",
+      startTime: "09:00",
+      endTime: "17:00",
+      status: "Active",
+    },
+  );
+  const secondStoreToday = await request(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV002&workDate=2026-07-16",
+  );
+  assert.equal(secondStoreToday.workDate, "2026-07-16");
+  assert.equal(secondStoreToday.schedules.length, 1);
+  assert.equal(secondStoreToday.schedules[0]?.storeCode, "REV002");
+  assert.equal(secondStoreToday.punches.length, 0);
+  assert.equal(secondStoreToday.holidays.length, 0);
+
+  const historicalToday = await request(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001&workDate=2026-07-15",
+  );
+  assert.equal(historicalToday.workDate, "2026-07-15");
+  assert.equal(historicalToday.schedules.length, 0, "历史日期不能泄漏当天排班");
+  assert.equal(historicalToday.punches.length, 0, "历史日期不能泄漏当天打卡");
+  assert.equal(historicalToday.holidays.length, 0, "历史日期不能泄漏当天节假日");
+
+  const outOnlyPayload = {
+    storeCode: "REV001",
+    scheduleGuid: "review-schedule-001",
+    punchType: "ClockOut",
+    requestedPunchTimeLocal: "2026-07-16T09:00:00",
+    reason: "Invalid out-only review fixture",
+  };
+  const outOnlyPreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    outOnlyPayload,
+  );
+  assert.equal(outOnlyPreview.isValid, false);
+  assert.equal(outOnlyPreview.validationErrorCode, "PUNCH_SEQUENCE_OUT_WITHOUT_IN");
+  await assert.rejects(
+    () => request(
+      "POST",
+      "/react/v1/attendance/my/punch-adjustments",
+      outOnlyPayload,
+    ),
+    /PUNCH_SEQUENCE_OUT_WITHOUT_IN/,
+    "create 不能绕过 preview 的 out-only 校验",
+  );
+
+  const utcPriorityPreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    {
+      storeCode: "REV001",
+      scheduleGuid: "review-schedule-001",
+      punchType: "ClockIn",
+      requestedPunchTimeLocal: "2026-07-16T09:00:00",
+      // 故意与 local 的 Brisbane 推导值不同：Review mock 必须把 UTC 作为权威 instant。
+      requestedPunchTimeUtc: "2026-07-16T01:00:00Z",
+      reason: "UTC priority review fixture",
+    },
+  );
+  assert.equal(utcPriorityPreview.isValid, true);
+  assert.equal(
+    utcPriorityPreview.proposedSession.segments[0]?.clockIn?.punchTimeUtc,
+    "2026-07-16T01:00:00Z",
+    "iOS Review mock 必须优先使用 requestedPunchTimeUtc，而不是重新从 local 推导 instant",
+  );
+
   let todayAttendance = await request(
     "GET",
     "/react/v1/attendance/my/today?storeCode=REV001",
@@ -425,6 +500,22 @@ async function run() {
     },
     "ClockIn 后 refetch 必须显示已打卡并允许 ClockOut",
   );
+  const consecutiveClockInPreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    {
+      storeCode: "REV001",
+      scheduleGuid: "review-schedule-001",
+      punchType: "ClockIn",
+      requestedPunchTimeLocal: "2026-07-16T10:15:00",
+      reason: "Invalid consecutive clock-in",
+    },
+  );
+  assert.equal(consecutiveClockInPreview.isValid, false);
+  assert.equal(
+    consecutiveClockInPreview.validationErrorCode,
+    "PUNCH_SEQUENCE_CONSECUTIVE_TYPE",
+  );
   await request("POST", "/react/v1/attendance/punch", {
     storeCode: "REV001",
     punchType: "ClockOut",
@@ -434,7 +525,161 @@ async function run() {
     "/react/v1/attendance/my/today?storeCode=REV001",
   );
   assert.equal(todayAttendance.punches.length, 2);
+  assert.deepEqual(
+    {
+      nextPunchType: todayAttendance.nextPunchType,
+      canClockIn: todayAttendance.canClockIn,
+      canClockOut: todayAttendance.canClockOut,
+    },
+    {
+      nextPunchType: "ClockIn",
+      canClockIn: true,
+      canClockOut: false,
+    },
+    "第一段完成后必须允许继续第二段 ClockIn",
+  );
+
+  const originalClockOut = todayAttendance.punches.find(
+    (punch: { punchType?: string }) => punch.punchType === "ClockOut",
+  );
+  const adjustmentPayload = {
+    storeCode: "REV001",
+    scheduleGuid: "review-schedule-001",
+    originalPunchGuid: originalClockOut.punchGuid,
+    punchType: "ClockOut",
+    requestedPunchTimeLocal: "2026-07-16T17:00:00",
+    reason: "App Review correction",
+  };
+  const adjustmentPreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    adjustmentPayload,
+  );
+  assert.equal(adjustmentPreview.isValid, true);
+  assert.equal(adjustmentPreview.wouldAutoApprove, true);
+  assert.equal(adjustmentPreview.existingSession.scheduleGuid, "review-schedule-001");
+  assert.equal(adjustmentPreview.existingSession.segmentLimit, 3);
+  assert.equal(adjustmentPreview.proposedSession.segmentLimit, 3);
+  assert.equal(adjustmentPreview.proposedSession.segments[0].clockOut.punchTimeLocal, "2026-07-16T17:00:00");
+  assert.equal(adjustmentPreview.existingSession.workedMinutes, 0);
+  assert.equal(adjustmentPreview.proposedSession.workedMinutes, 420);
+  assert.equal(adjustmentPreview.workedMinutesDelta, 420);
+  assert.equal(adjustmentPreview.candidateOvertimeMinutesDelta, 0);
+
+  const createdAdjustment = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments",
+    adjustmentPayload,
+  );
+  assert.equal(createdAdjustment.status, "Applied");
+  assert.equal(createdAdjustment.originalPunchGuid, originalClockOut.punchGuid);
+
+  const adjustmentRows = await request(
+    "GET",
+    "/react/v1/attendance/my/punch-adjustments",
+  );
+  assert.equal(adjustmentRows.length, 1, "补卡提交后必须保存在 Review route state");
+  assert.equal(adjustmentRows[0].adjustmentGuid, createdAdjustment.adjustmentGuid);
+
+  todayAttendance = await request(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001",
+  );
+  assert.equal(todayAttendance.punches.length, 2, "修改原打卡不能同时保留旧卡造成重复班段");
+  assert.equal(
+    todayAttendance.punches.find(
+      (punch: { punchType?: string }) => punch.punchType === "ClockOut",
+    )?.punchTimeLocal,
+    "2026-07-16T17:00:00",
+    "补卡提交后的 Today refetch 必须立即反映修正时间",
+  );
+  assert.equal(todayAttendance.canClockIn, true);
   assert.equal(todayAttendance.canClockOut, false);
+
+  const createMissingPunch = async (
+    punchType: "ClockIn" | "ClockOut",
+    requestedPunchTimeLocal: string,
+  ) => {
+    const payload = {
+      storeCode: "REV001",
+      scheduleGuid: "review-schedule-001",
+      punchType,
+      requestedPunchTimeLocal,
+      reason: `Create review ${punchType}`,
+    };
+    const preview = await request(
+      "POST",
+      "/react/v1/attendance/my/punch-adjustments/preview",
+      payload,
+    );
+    assert.equal(preview.isValid, true, `${requestedPunchTimeLocal} 应属于店长允许的三段内`);
+    return request(
+      "POST",
+      "/react/v1/attendance/my/punch-adjustments",
+      payload,
+    );
+  };
+  await createMissingPunch("ClockIn", "2026-07-16T17:15:00");
+  await createMissingPunch("ClockOut", "2026-07-16T17:30:00");
+  await createMissingPunch("ClockIn", "2026-07-16T17:45:00");
+  await createMissingPunch("ClockOut", "2026-07-16T18:00:00");
+  todayAttendance = await request(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001&workDate=2026-07-16",
+  );
+  assert.deepEqual(
+    {
+      nextPunchType: todayAttendance.nextPunchType,
+      canClockIn: todayAttendance.canClockIn,
+      canClockOut: todayAttendance.canClockOut,
+    },
+    {
+      nextPunchType: "ClockIn",
+      canClockIn: false,
+      canClockOut: false,
+    },
+    "第三段完成后必须关闭继续 ClockIn",
+  );
+
+  const fourthSegmentPayload = {
+    storeCode: "REV001",
+    scheduleGuid: "review-schedule-001",
+    punchType: "ClockIn",
+    requestedPunchTimeLocal: "2026-07-16T18:15:00",
+    reason: "Fourth manager segment must fail",
+  };
+  const fourthSegmentPreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    fourthSegmentPayload,
+  );
+  assert.equal(fourthSegmentPreview.isValid, false);
+  assert.equal(
+    fourthSegmentPreview.validationErrorCode,
+    "PUNCH_SEGMENT_LIMIT_EXCEEDED",
+  );
+  await assert.rejects(
+    () => request(
+      "POST",
+      "/react/v1/attendance/my/punch-adjustments",
+      fourthSegmentPayload,
+    ),
+    /PUNCH_SEGMENT_LIMIT_EXCEEDED/,
+    "create 不能绕过店长每日每店三段上限",
+  );
+
+  const secondStorePreview = await request(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    {
+      storeCode: "REV002",
+      scheduleGuid: secondStoreSchedule.scheduleGuid,
+      punchType: "ClockIn",
+      requestedPunchTimeLocal: "2026-07-16T09:00:00",
+      reason: "Cross-store independent segment count",
+    },
+  );
+  assert.equal(secondStorePreview.isValid, true, "REV001 三段不能占用 REV002 的独立上限");
 
   const getNormalizedDevices = async () =>
     normalizeDeviceManagementListResponse(
@@ -825,6 +1070,43 @@ async function run() {
   const productMirrorCount = dataStore.list("carts").length;
   assert.ok(productMirrorCount > 1, "代表性写操作必须同步到 ReviewDataStore");
 
+  const overtimeDataStore = createIosReviewDataStore(
+    new Date("2026-07-16T00:00:00.000Z"),
+  );
+  const overtimeTransport = createIosReviewTransport(overtimeDataStore);
+  const overtimeRequest = async (method: Method, url: string, body?: unknown) =>
+    (await overtimeTransport.dispatch({ method, url, data: body })).data as any;
+  const earlyClockIn = await overtimeRequest(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments",
+    {
+      storeCode: "REV001",
+      scheduleGuid: "review-schedule-001",
+      punchType: "ClockIn",
+      requestedPunchTimeLocal: "2000-01-01T00:00:00",
+      requestedPunchTimeUtc: "2026-07-15T22:30:00Z",
+      reason: "REV001 store local 08:30",
+    },
+  );
+  assert.equal(earlyClockIn.status, "Applied");
+  const overtimePreview = await overtimeRequest(
+    "POST",
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    {
+      storeCode: "REV001",
+      scheduleGuid: "review-schedule-001",
+      punchType: "ClockOut",
+      requestedPunchTimeLocal: "2000-01-01T00:00:00",
+      requestedPunchTimeUtc: "2026-07-16T08:00:00Z",
+      reason: "REV001 store local 18:00",
+    },
+  );
+  assert.equal(overtimePreview.isValid, true);
+  assert.equal(overtimePreview.proposedSession.earlyOvertimeMinutes, 30);
+  assert.equal(overtimePreview.proposedSession.lateOvertimeMinutes, 60);
+  assert.equal(overtimePreview.proposedSession.candidateOvertimeMinutes, 90,
+    "REV001 的 08:30/18:00 必须按 Brisbane 门店本地时间相对 09:00-17:00 计算加班");
+
   resetIosReviewAppRouteState(dataStore);
   const resetCart = await request("GET", "/react/v1/store-order/cart/REV001");
   assert.equal(
@@ -833,6 +1115,11 @@ async function run() {
     ),
     false,
     "退出或重启时必须恢复路由 fixture 初始快照",
+  );
+  assert.equal(
+    (await request("GET", "/react/v1/attendance/my/punch-adjustments")).length,
+    0,
+    "退出或重启时必须清除 Review 内存中的补卡记录",
   );
 
   await assert.rejects(

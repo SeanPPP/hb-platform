@@ -34,6 +34,12 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> GetWeekSchedules([FromQuery] AttendanceScheduleQueryDto query) =>
             Ok(await _service.GetWeekSchedulesAsync(query));
 
+        [HttpGet("records")]
+        [Authorize(Policy = Permissions.Attendance.Punch.ViewManagedStore)]
+        public async Task<IActionResult> GetAttendanceRecords(
+            [FromQuery] AttendanceScheduleQueryDto query) =>
+            Ok(await _service.GetAttendanceRecordsAsync(query));
+
         [HttpPost("schedules")]
         [Authorize(Policy = Permissions.Attendance.Schedule.EditManagedStore)]
         public async Task<IActionResult> CreateSchedule([FromBody] CreateAttendanceScheduleDto request) =>
@@ -99,6 +105,23 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Attendance.Punch.Self)]
         public async Task<IActionResult> Punch([FromBody] AttendancePunchRequestDto request) =>
             Ok(await _service.PunchAsync(request));
+
+        [HttpPost("my/punch-adjustments/preview")]
+        [Authorize(Policy = Permissions.Attendance.Punch.Self)]
+        public async Task<IActionResult> PreviewMyPunchAdjustment(
+            [FromBody] CreateAttendancePunchAdjustmentDto request
+        ) => Ok(await _service.PreviewMyPunchAdjustmentAsync(request));
+
+        [HttpPost("my/punch-adjustments")]
+        [Authorize(Policy = Permissions.Attendance.Punch.Self)]
+        public async Task<IActionResult> CreateMyPunchAdjustment(
+            [FromBody] CreateAttendancePunchAdjustmentDto request
+        ) => Ok(await _service.CreateMyPunchAdjustmentAsync(request));
+
+        [HttpGet("my/punch-adjustments")]
+        [Authorize(Policy = Permissions.Attendance.Punch.Self)]
+        public async Task<IActionResult> GetMyPunchAdjustments() =>
+            Ok(await _service.GetMyPunchAdjustmentsAsync());
 
         [HttpPost("qr/resolve")]
         [Authorize(Policy = Permissions.Attendance.Punch.Self)]

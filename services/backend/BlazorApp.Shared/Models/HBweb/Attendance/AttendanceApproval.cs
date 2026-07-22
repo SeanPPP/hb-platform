@@ -34,5 +34,11 @@ namespace BlazorApp.Shared.Models
 
         [SugarColumn(IsNullable = true)]
         public DateTime? ReviewedAt { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? CandidateOvertimeMinutes { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? ApprovedOvertimeMinutes { get; set; }
     }
 }

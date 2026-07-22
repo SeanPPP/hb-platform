@@ -76,6 +76,26 @@
       "alertVerificationSentForReview": "打卡前必须完成定位采集和网络校验。",
       "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
     },
+    "timeline": {
+      "relatedStoreAlert": "跨店关联提醒",
+      "relatedStoreConflict": "{{missingStore}} 尚未下班，但已在 {{activeStore}} 上班；两店记录均需处理。",
+      "unscheduledPunches": "未排班打卡",
+      "shiftCount": "{{count}} 个排班",
+      "segmentProgress": "已完成 {{completed}} / {{limit}} 段",
+      "workedMinutes": "工时 {{minutes}} 分钟",
+      "breakMinutes": "休息 {{minutes}} 分钟",
+      "missingClockOut": "检测到漏下班，请尽快补卡或联系店长。",
+      "segment": "第 {{number}} 段",
+      "clockIn": "上班 {{time}}",
+      "clockOut": "下班 {{time}}",
+      "firstClockInStatus": "首次上班：{{status}}（{{minutes}} 分钟）",
+      "firstClockInStatusOnly": "首次上班：{{status}}",
+      "finalClockOutStatus": "最终下班：{{status}}（{{minutes}} 分钟）",
+      "finalClockOutStatusOnly": "最终下班：{{status}}",
+      "onBreak": "休息中",
+      "overtimeTitle": "加班",
+      "overtimeSummary": "原始 {{raw}} 分钟 · 候选 {{candidate}} 分钟 · 已批准 {{approved}} 分钟"
+    },
     "qrResult": {
       "title": "最近一次扫码打卡",
       "employee": "员工：{{employee}}",
@@ -83,6 +103,7 @@
       "posDevice": "POS 设备：{{device}}",
       "action": "动作：{{action}}",
       "serverTime": "服务器时间：{{time}}",
+      "deviceTime": "打卡时间（本机时区）：{{time}}",
       "status": "考勤状态：{{status}}"
     }
   },
@@ -205,6 +226,34 @@
       "minute": "分钟"
     }
   },
+  "adjustment": {
+    "title": "补卡与修改",
+    "employeeDescription": "普通员工可申请补录或修改最近 2 天的打卡。",
+    "managerDescription": "管理门店内的本人补卡会在预览确认后直接应用。",
+    "outsideWindow": "当前日期已超出普通员工 2 天补卡窗口。",
+    "editingExisting": "修改记录",
+    "selectExisting": "选择要修改的打卡，或新增漏打卡",
+    "selectSchedule": "选择补卡所属排班",
+    "scheduleOption": "排班 {{number}} · {{start}}-{{end}}",
+    "addMissing": "新增漏打卡",
+    "requestedTime": "本机补卡时间（YYYY-MM-DDTHH:mm）",
+    "preview": "预览变化",
+    "previewTitle": "保存前预览",
+    "previewWorked": "工时：{{before}} → {{after}} 分钟（{{delta}}）",
+    "previewOvertime": "候选加班：{{before}} → {{after}} 分钟（{{delta}}）",
+    "directApplyNotice": "此次保存将直接应用。",
+    "pendingNotice": "提交后将等待店长审核。",
+    "saveDirect": "保存并直接应用",
+    "submitRequest": "提交补卡申请",
+    "validation": {
+      "required": "请填写分店、补卡时间和原因。"
+    },
+    "messages": {
+      "previewFailed": "补卡预览失败。",
+      "submitFailed": "补卡提交失败。",
+      "invalid": "当前补卡内容无法保存。"
+    }
+  },
   "datePicker": {
     "selectDate": "选择日期",
     "openDatePicker": "打开日期选择",
@@ -247,7 +296,8 @@
   },
   "sourceTypes": {
     "Punch": "打卡",
-    "Leave": "请假"
+    "Leave": "请假",
+    "PunchAdjustment": "补卡"
   },
   "statuses": {
     "Normal": "正常",
@@ -324,6 +374,8 @@
     "publishFailed": "发布失败",
     "holidaySaved": "公共假期已保存",
     "holidayDeleted": "公共假期已删除",
-    "holidaySyncSuccess": "已同步 {{count}} 条公共假期"
+    "holidaySyncSuccess": "已同步 {{count}} 条公共假期",
+    "adjustmentSubmitted": "补卡申请已提交",
+    "adjustmentApplied": "补卡修改已直接应用"
   }
 }

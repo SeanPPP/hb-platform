@@ -11,6 +11,7 @@ import {
   type ReviewTransportRequest,
   type ReviewTransportResult,
 } from "./transport";
+import { normalizeAttendanceToday } from "../attendance/attendance-today-normalization";
 
 type ReviewMethod = ReviewTransportRequest["method"];
 type JsonRecord = Record<string, any>;
@@ -39,6 +40,7 @@ interface AppRouteState {
   seasonalCatalog: JsonRecord[];
   seasonalSubmissions: JsonRecord[];
   punches: JsonRecord[];
+  punchAdjustments: JsonRecord[];
   availability: JsonRecord[];
   leaveRequests: JsonRecord[];
   approvals: JsonRecord[];
@@ -59,6 +61,7 @@ interface AppRouteStateHolder {
 }
 
 const stateHolders = new WeakMap<ReviewDataStore, AppRouteStateHolder>();
+const IOS_REVIEW_MANAGER_SEGMENT_LIMIT = 3;
 
 function clone<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -107,6 +110,25 @@ function toStoreLocalDateOnly(value: unknown, storeCode: unknown) {
     parts.map((part) => [part.type, part.value]),
   );
   return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function toStoreLocalDateTime(value: unknown, storeCode: unknown) {
+  const instant = new Date(String(value ?? ""));
+  if (!Number.isFinite(instant.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: resolveReviewStoreTimeZone(storeCode),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const byType = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return `${byType.year}-${byType.month}-${byType.day}T${byType.hour}:${byType.minute}:${byType.second}`;
 }
 
 function createInitialState(now = new Date()): AppRouteState {
@@ -737,6 +759,7 @@ function createInitialState(now = new Date()): AppRouteState {
     seasonalCatalog,
     seasonalSubmissions,
     punches: [],
+    punchAdjustments: [],
     availability,
     leaveRequests,
     approvals,
@@ -2635,32 +2658,397 @@ export function registerIosReviewAppRoutes(
   registerReportRoutes(transport, holder);
 }
 
+function reviewPunchTimestamp(punch: JsonRecord | undefined) {
+  return String(
+    punch?.punchTimeUtc
+      ?? punch?.punchTimeLocal
+      ?? punch?.effectivePunchTime
+      ?? "",
+  );
+}
+
+function reviewPunchStoreLocalTimestamp(
+  punch: JsonRecord | undefined,
+  storeCode: unknown,
+) {
+  const punchTimeUtc = String(punch?.punchTimeUtc ?? "").trim();
+  if (punchTimeUtc) return toStoreLocalDateTime(punchTimeUtc, storeCode);
+  return String(punch?.punchTimeLocal ?? punch?.effectivePunchTime ?? "");
+}
+
+function reviewMinuteOfDay(value: unknown) {
+  const match = /(?:T|^)(\d{2}):(\d{2})/.exec(String(value ?? ""));
+  return match ? Number(match[1]) * 60 + Number(match[2]) : undefined;
+}
+
+function roundReviewOvertime(actualMinutes: number) {
+  if (actualMinutes < 15) return 0;
+  return Math.floor(actualMinutes / 15 + 0.5) * 15;
+}
+
+function toReviewPunchUtc(value: string) {
+  const normalized = value.length === 16 ? `${value}:00` : value;
+  const withOffset = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized)
+    ? normalized
+    : `${normalized}+10:00`;
+  const instant = new Date(withOffset);
+  return Number.isFinite(instant.getTime()) ? instant.toISOString() : "";
+}
+
+function normalizeReviewUtcInstant(value: unknown) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/i.test(trimmed)
+    ? trimmed
+    : `${trimmed}Z`;
+  return Number.isFinite(new Date(normalized).getTime()) ? normalized : "";
+}
+
+function buildReviewAttendanceSession(
+  current: AppRouteState,
+  schedule: JsonRecord,
+  punches: JsonRecord[],
+) {
+  const normalized = normalizeAttendanceToday({
+    workDate: schedule.workDate ?? current.today,
+    schedules: [schedule],
+    punches,
+  }).scheduleSessions[0];
+  if (!normalized) return undefined;
+
+  const workedMinutes = normalized.segments.reduce(
+    (sum, segment) => sum + (segment.workedMinutes ?? segment.durationMinutes ?? 0),
+    0,
+  );
+  const firstClockIn = normalized.segments.find((segment) => segment.clockIn)?.clockIn;
+  const finalClockOut = [...normalized.segments]
+    .reverse()
+    .find((segment) => segment.clockOut)?.clockOut;
+  const scheduledStart = reviewMinuteOfDay(schedule.startTime);
+  const scheduledEnd = reviewMinuteOfDay(schedule.endTime);
+  const firstClockInMinute = reviewMinuteOfDay(
+    reviewPunchStoreLocalTimestamp(firstClockIn as JsonRecord, schedule.storeCode),
+  );
+  const finalClockOutMinute = reviewMinuteOfDay(
+    reviewPunchStoreLocalTimestamp(finalClockOut as JsonRecord, schedule.storeCode),
+  );
+  const earlyActual = scheduledStart !== undefined && firstClockInMinute !== undefined
+    ? Math.max(0, scheduledStart - firstClockInMinute)
+    : 0;
+  const lateActual = scheduledEnd !== undefined && finalClockOutMinute !== undefined
+    ? Math.max(0, finalClockOutMinute - scheduledEnd)
+    : 0;
+  const sequence = summarizeReviewPunchSequence(punches);
+  const hasOpenSegment = sequence.hasOpenSegment;
+  const completedSegmentCount = sequence.completedSegmentCount;
+  const canFinalize = !hasOpenSegment
+    && completedSegmentCount > 0
+    && finalClockOutMinute !== undefined
+    && scheduledEnd !== undefined
+    && finalClockOutMinute >= scheduledEnd;
+
+  return {
+    ...normalized,
+    segmentLimit: IOS_REVIEW_MANAGER_SEGMENT_LIMIT,
+    completedSegmentCount,
+    workedMinutes,
+    hasOpenSegment,
+    hasMissingClockOut: false,
+    scheduleState: hasOpenSegment
+      ? "Working"
+      : canFinalize
+        ? "Completed"
+        : completedSegmentCount > 0
+          ? "OnBreak"
+          : "NotStarted",
+    earlyOvertimeMinutes: roundReviewOvertime(earlyActual),
+    lateOvertimeMinutes: roundReviewOvertime(lateActual),
+    overtimeRawMinutes: earlyActual + lateActual,
+    candidateOvertimeMinutes:
+      roundReviewOvertime(earlyActual) + roundReviewOvertime(lateActual),
+  };
+}
+
+function summarizeReviewPunchSequence(punches: JsonRecord[]) {
+  const sorted = [...punches].sort((left, right) =>
+    reviewPunchTimestamp(left).localeCompare(reviewPunchTimestamp(right)),
+  );
+  let hasOpenSegment = false;
+  let completedSegmentCount = 0;
+  let previousPunchType = "";
+  const invalid = (errorCode: string) => ({
+    errorCode,
+    hasOpenSegment,
+    completedSegmentCount,
+  });
+  for (const punch of sorted) {
+    const punchType = String(punch.punchType ?? "");
+    if (punchType === previousPunchType) {
+      return invalid("PUNCH_SEQUENCE_CONSECUTIVE_TYPE");
+    }
+    if (punchType === "ClockIn") {
+      if (hasOpenSegment) return invalid("PUNCH_SEQUENCE_CONSECUTIVE_TYPE");
+      hasOpenSegment = true;
+    } else if (punchType === "ClockOut") {
+      if (!hasOpenSegment) return invalid("PUNCH_SEQUENCE_OUT_WITHOUT_IN");
+      hasOpenSegment = false;
+      completedSegmentCount += 1;
+    } else {
+      return invalid("PUNCH_TYPE_INVALID");
+    }
+    previousPunchType = punchType;
+  }
+  return {
+    errorCode: undefined,
+    hasOpenSegment,
+    completedSegmentCount,
+  };
+}
+
+function prepareReviewPunchAdjustment(
+  current: AppRouteState,
+  payload: JsonRecord,
+): {
+  preview: JsonRecord;
+  schedule?: JsonRecord;
+  originalPunch?: JsonRecord;
+  originalPunchIndex?: number;
+  proposedPunch?: JsonRecord;
+} {
+  const storeCode = String(payload.storeCode ?? "").trim();
+  const scheduleGuid = String(payload.scheduleGuid ?? "").trim();
+  const originalPunchGuid = String(payload.originalPunchGuid ?? "").trim();
+  const punchType = String(payload.punchType ?? "").trim();
+  const requestedPunchTimeLocal = String(payload.requestedPunchTimeLocal ?? "").trim();
+  const requestedPunchTimeUtc = normalizeReviewUtcInstant(payload.requestedPunchTimeUtc);
+  const requestedPunchTimeAtStore = requestedPunchTimeUtc
+    ? toStoreLocalDateTime(requestedPunchTimeUtc, storeCode)
+    : requestedPunchTimeLocal;
+  const reason = String(payload.reason ?? "").trim();
+  const workDate = requestedPunchTimeAtStore.slice(0, 10);
+  const invalid = (validationErrorCode: string, validationMessage: string) => ({
+    preview: {
+      isValid: false,
+      validationErrorCode,
+      validationMessage,
+      workedMinutesDelta: 0,
+      candidateOvertimeMinutesDelta: 0,
+      wouldAutoApprove: false,
+    },
+  });
+
+  if (!storeCode) return invalid("STORE_REQUIRED", "Store code is required");
+  if (!reason) return invalid("REASON_REQUIRED", "Reason is required");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(requestedPunchTimeAtStore)) {
+    return invalid("PUNCH_TIME_INVALID", "Requested punch time is invalid");
+  }
+  if (punchType !== "ClockIn" && punchType !== "ClockOut") {
+    return invalid("PUNCH_TYPE_INVALID", "Punch type is invalid");
+  }
+
+  const schedule = current.schedules.find((item) =>
+    item.isMine
+    && String(item.storeCode ?? "") === storeCode
+    && String(item.workDate ?? current.today).slice(0, 10) === workDate
+    && (!scheduleGuid || item.scheduleGuid === scheduleGuid),
+  );
+  if (!schedule) return invalid("SCHEDULE_NOT_FOUND", "No matching schedule");
+
+  const schedulePunches = current.punches.filter((item) =>
+    item.scheduleGuid === schedule.scheduleGuid
+    && String(item.workDate ?? "").slice(0, 10) === workDate,
+  );
+  const originalPunchIndex = originalPunchGuid
+    ? current.punches.findIndex((item) =>
+        item.punchGuid === originalPunchGuid
+        && item.scheduleGuid === schedule.scheduleGuid)
+    : -1;
+  if (originalPunchGuid && originalPunchIndex < 0) {
+    return invalid("PUNCH_NOT_FOUND", "Original punch was not found");
+  }
+  const originalPunch = originalPunchIndex >= 0
+    ? current.punches[originalPunchIndex]
+    : undefined;
+  if (originalPunch && originalPunch.punchType !== punchType) {
+    return invalid("PUNCH_TYPE_MISMATCH", "Original punch type does not match");
+  }
+
+  const proposedPunch: JsonRecord = {
+    ...(originalPunch ?? {}),
+    punchGuid: originalPunch?.punchGuid ?? "review-preview-punch",
+    scheduleGuid: schedule.scheduleGuid,
+    storeCode,
+    storeName: schedule.storeName ?? "Demo Brisbane",
+    userGuid: "review-user",
+    employeeName: "App Review Demo",
+    workDate,
+    punchType,
+    punchTimeLocal: requestedPunchTimeAtStore,
+    punchTimeUtc: requestedPunchTimeUtc || toReviewPunchUtc(requestedPunchTimeLocal),
+    effectivePunchTime: requestedPunchTimeAtStore,
+    status: "Normal",
+  };
+  const proposedPunches = originalPunch
+    ? schedulePunches.map((item) => item.punchGuid === originalPunchGuid ? proposedPunch : item)
+    : [...schedulePunches, proposedPunch];
+  const sequence = summarizeReviewPunchSequence(proposedPunches);
+  if (sequence.errorCode) {
+    return invalid(sequence.errorCode, "Punch sequence is invalid");
+  }
+  const currentStoreDayClockIns = current.punches.filter((item) =>
+    item.storeCode === storeCode
+    && String(item.workDate ?? "").slice(0, 10) === workDate
+    && item.punchType === "ClockIn",
+  ).length;
+  const proposedStoreDaySegmentCount = currentStoreDayClockIns
+    - (originalPunch?.punchType === "ClockIn" ? 1 : 0)
+    + (punchType === "ClockIn" ? 1 : 0);
+  // Review 账号固定为店长身份；员工路径由真实后端执行 2 段上限，店长演示允许 3 段。
+  if (proposedStoreDaySegmentCount > IOS_REVIEW_MANAGER_SEGMENT_LIMIT) {
+    return invalid(
+      "PUNCH_SEGMENT_LIMIT_EXCEEDED",
+      "Daily store segment limit exceeded",
+    );
+  }
+  const existingSession = buildReviewAttendanceSession(current, schedule, schedulePunches);
+  const proposedSession = buildReviewAttendanceSession(current, schedule, proposedPunches);
+  const preview = {
+    isValid: true,
+    existingSession,
+    proposedSession,
+    workedMinutesDelta:
+      (proposedSession?.workedMinutes ?? 0) - (existingSession?.workedMinutes ?? 0),
+    candidateOvertimeMinutesDelta:
+      (proposedSession?.candidateOvertimeMinutes ?? 0)
+      - (existingSession?.candidateOvertimeMinutes ?? 0),
+    wouldAutoApprove: true,
+  };
+  return {
+    preview,
+    schedule,
+    originalPunch,
+    originalPunchIndex,
+    proposedPunch,
+  };
+}
+
 function registerAttendanceRoutes(
   transport: ReviewTransport,
   dataStore: ReviewDataStore,
   holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
-  register(transport, ["GET"], "/react/v1/attendance/my/today", () => {
+  register(transport, ["GET"], "/react/v1/attendance/my/today", ({ query }) => {
     const current = state();
-    const punches = current.punches.filter(
-      (item) => item.workDate === current.today,
+    const storeCode = query.get("storeCode")?.trim() || undefined;
+    const workDate = (query.get("workDate")?.trim() || current.today).slice(0, 10);
+    const matchesStore = (item: JsonRecord) =>
+      !storeCode || String(item.storeCode ?? "") === storeCode;
+    const schedules = current.schedules.filter((item) =>
+      item.isMine
+      && matchesStore(item)
+      && String(item.workDate ?? "").slice(0, 10) === workDate,
     );
-    const hasClockIn = punches.some((item) => item.punchType === "ClockIn");
-    const hasClockOut = punches.some((item) => item.punchType === "ClockOut");
+    const punches = current.punches.filter(
+      (item) => matchesStore(item)
+        && String(item.workDate ?? "").slice(0, 10) === workDate,
+    );
+    const holidays = current.holidays.filter(
+      (item) => matchesStore(item)
+        && String(item.holidayDate ?? "").slice(0, 10) === workDate,
+    );
+    const sequence = summarizeReviewPunchSequence(punches);
+    const canClockOut = !sequence.errorCode && sequence.hasOpenSegment;
+    const canClockIn = !sequence.errorCode
+      && !sequence.hasOpenSegment
+      && sequence.completedSegmentCount < IOS_REVIEW_MANAGER_SEGMENT_LIMIT;
     return {
       data: {
-        workDate: current.today,
-        storeTimeZone: "Australia/Brisbane",
-        schedules: clone(current.schedules.filter((item) => item.isMine)),
+        workDate,
+        storeTimeZone: resolveReviewStoreTimeZone(storeCode ?? schedules[0]?.storeCode),
+        schedules: clone(schedules),
         punches: clone(punches),
-        holidays: clone(current.holidays),
-        nextPunchType: hasClockIn && !hasClockOut ? "ClockOut" : "ClockIn",
-        canClockIn: !hasClockIn,
-        canClockOut: hasClockIn && !hasClockOut,
+        holidays: clone(holidays),
+        nextPunchType: sequence.hasOpenSegment ? "ClockOut" : "ClockIn",
+        canClockIn,
+        canClockOut,
+        canRequestAdjustment: true,
       },
     };
   });
+  register(
+    transport,
+    ["GET"],
+    "/react/v1/attendance/my/punch-adjustments",
+    () => ({ data: clone(state().punchAdjustments) }),
+  );
+  register(
+    transport,
+    ["POST"],
+    "/react/v1/attendance/my/punch-adjustments/preview",
+    ({ body }) => ({
+      data: clone(prepareReviewPunchAdjustment(state(), asRecord(body)).preview),
+    }),
+  );
+  register(
+    transport,
+    ["POST"],
+    "/react/v1/attendance/my/punch-adjustments",
+    ({ body }) => {
+      const current = state();
+      const payload = asRecord(body);
+      const prepared = prepareReviewPunchAdjustment(current, payload);
+      if (!prepared.preview.isValid || !prepared.schedule || !prepared.proposedPunch) {
+        throw new Error(
+          `IOS_REVIEW_ATTENDANCE_ADJUSTMENT_INVALID: ${prepared.preview.validationErrorCode ?? "UNKNOWN"}`,
+        );
+      }
+
+      const adjustmentGuid = nextId(current, "review-punch-adjustment");
+      const appliedPunchGuid = nextId(current, "review-punch");
+      const appliedPunch = {
+        ...prepared.proposedPunch,
+        punchGuid: appliedPunchGuid,
+        supersedesPunchGuid: prepared.originalPunch?.punchGuid,
+        adjustmentGuid,
+      };
+      if (prepared.originalPunchIndex !== undefined && prepared.originalPunchIndex >= 0) {
+        current.punches.splice(prepared.originalPunchIndex, 1, appliedPunch);
+      } else {
+        current.punches.push(appliedPunch);
+      }
+
+      const adjustment = {
+        adjustmentGuid,
+        storeCode: String(payload.storeCode ?? "").trim(),
+        userGuid: "review-user",
+        scheduleGuid: prepared.schedule.scheduleGuid,
+        originalPunchGuid: prepared.originalPunch?.punchGuid,
+        punchType: prepared.proposedPunch.punchType,
+        requestedPunchTimeLocal: prepared.proposedPunch.punchTimeLocal,
+        requestedPunchTimeUtc: prepared.proposedPunch.punchTimeUtc,
+        reason: String(payload.reason ?? "").trim(),
+        status: "Applied",
+        appliedPunchGuid,
+        isManagerSelfDirect: true,
+        requestedByUserGuid: "review-user",
+        reviewedByUserGuid: "review-user",
+        submittedAt: current.now,
+        reviewedAt: current.now,
+        createdAt: current.now,
+      };
+      current.punchAdjustments.unshift(adjustment);
+      mirrorCreate(
+        current,
+        dataStore,
+        "attendance",
+        adjustmentGuid,
+        "Punch adjustment",
+        "applied",
+      );
+      return { data: clone(adjustment), status: 201 };
+    },
+  );
   register(transport, ["GET"], "/react/v1/attendance/my/week", ({ query }) => {
     const current = state();
     const weekStart = query.get("weekStartDate") ?? current.today;
@@ -2758,13 +3146,24 @@ function registerAttendanceRoutes(
   register(transport, ["POST"], "/react/v1/attendance/punch", ({ body }) => {
     const current = state();
     const payload = asRecord(body);
+    const schedule = current.schedules.find((item) =>
+      item.isMine
+      && item.storeCode === (payload.storeCode ?? "REV001")
+      && item.workDate === (payload.workDate ?? current.today),
+    );
     const punch = {
       ...payload,
       punchGuid: nextId(current, "review-punch"),
+      scheduleGuid: payload.scheduleGuid ?? schedule?.scheduleGuid,
+      storeCode: payload.storeCode ?? schedule?.storeCode ?? "REV001",
+      storeName: payload.storeName ?? schedule?.storeName ?? "Demo Brisbane",
       workDate: payload.workDate ?? current.today,
       punchType: payload.punchType ?? "ClockIn",
       punchTimeUtc: current.now,
-      punchTimeLocal: current.now,
+      punchTimeLocal: toStoreLocalDateTime(
+        current.now,
+        payload.storeCode ?? schedule?.storeCode ?? "REV001",
+      ),
       status: "Normal",
       locationLatitude: payload.locationLatitude ?? -27.4698,
       locationLongitude: payload.locationLongitude ?? 153.0251,

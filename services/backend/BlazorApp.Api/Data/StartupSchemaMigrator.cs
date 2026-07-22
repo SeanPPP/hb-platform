@@ -24,6 +24,7 @@ namespace BlazorApp.Api.Data
             await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);
             await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureAttendanceQrSchemaAsync(db, logger);
+            await EnsureAttendanceWorkSessionSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
@@ -31,6 +32,260 @@ namespace BlazorApp.Api.Data
             await EnsureEmployeeProfileSensitiveChangeSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
             await EnsurePreorderSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureAttendanceWorkSessionSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger)
+        {
+            const string sql = """
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @AttendanceWorkSessionLockResult int;
+    EXEC @AttendanceWorkSessionLockResult = sys.sp_getapplock
+        @Resource = N'AttendanceWorkSession_Schema_Initialization',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Transaction',
+        @LockTimeout = 30000;
+    IF @AttendanceWorkSessionLockResult < 0
+        THROW 51021, 'Unable to acquire attendance work-session schema lock.', 1;
+
+    IF OBJECT_ID(N'[dbo].[AttendancePunch]', N'U') IS NOT NULL
+    BEGIN
+        IF COL_LENGTH('dbo.AttendancePunch', 'SupersedesPunchGuid') IS NULL
+            ALTER TABLE [dbo].[AttendancePunch] ADD [SupersedesPunchGuid] nvarchar(50) NULL;
+        IF COL_LENGTH('dbo.AttendancePunch', 'AdjustmentGuid') IS NULL
+            ALTER TABLE [dbo].[AttendancePunch] ADD [AdjustmentGuid] nvarchar(50) NULL;
+    END;
+
+    IF OBJECT_ID(N'[dbo].[AttendanceApproval]', N'U') IS NOT NULL
+    BEGIN
+        IF COL_LENGTH('dbo.AttendanceApproval', 'CandidateOvertimeMinutes') IS NULL
+            ALTER TABLE [dbo].[AttendanceApproval] ADD [CandidateOvertimeMinutes] int NULL;
+        IF COL_LENGTH('dbo.AttendanceApproval', 'ApprovedOvertimeMinutes') IS NULL
+            ALTER TABLE [dbo].[AttendanceApproval] ADD [ApprovedOvertimeMinutes] int NULL;
+    END;
+
+    IF OBJECT_ID(N'[dbo].[AttendancePunchAdjustment]', N'U') IS NULL
+    BEGIN
+        CREATE TABLE [dbo].[AttendancePunchAdjustment] (
+            [Id] int IDENTITY(1,1) NOT NULL CONSTRAINT [PK_AttendancePunchAdjustment] PRIMARY KEY,
+            [AdjustmentGuid] nvarchar(50) NOT NULL,
+            [StoreCode] nvarchar(50) NOT NULL,
+            [UserGuid] nvarchar(50) NOT NULL,
+            [ScheduleGuid] nvarchar(50) NULL,
+            [OriginalPunchGuid] nvarchar(50) NULL,
+            [PunchType] nvarchar(30) NOT NULL,
+            [RequestedPunchTimeLocal] datetime2 NOT NULL,
+            [RequestedPunchTimeUtc] datetime2 NOT NULL,
+            [Reason] nvarchar(500) NOT NULL,
+            [Status] nvarchar(30) NOT NULL,
+            [AppliedPunchGuid] nvarchar(50) NULL,
+            [IsManagerSelfDirect] bit NOT NULL CONSTRAINT [DF_AttendancePunchAdjustment_IsManagerSelfDirect] DEFAULT(0),
+            [RequestedByUserGuid] nvarchar(50) NOT NULL,
+            [ReviewedByUserGuid] nvarchar(50) NULL,
+            [ReviewedAt] datetime2 NULL,
+            [CreatedAt] datetime2 NOT NULL CONSTRAINT [DF_AttendancePunchAdjustment_CreatedAt] DEFAULT(SYSUTCDATETIME()),
+            [CreatedBy] nvarchar(255) NULL,
+            [UpdatedAt] datetime2 NULL,
+            [UpdatedBy] nvarchar(255) NULL,
+            [IsDeleted] bit NULL CONSTRAINT [DF_AttendancePunchAdjustment_IsDeleted] DEFAULT(0)
+        );
+    END;
+
+    -- 过滤索引只能使用基础列；先把历史 NULL 归一为未删除，避免它们绕过有效补卡唯一性。
+    UPDATE [dbo].[AttendancePunchAdjustment] SET [IsDeleted] = 0 WHERE [IsDeleted] IS NULL;
+
+    -- 先选 canonical adjustment，再按同一个 AdjustmentGuid 成对保留 Punch，禁止两套独立排序破坏审计链。
+    EXEC(N'IF OBJECT_ID(N''tempdb..#CanonicalAttendanceAdjustment'') IS NOT NULL
+        DROP TABLE #CanonicalAttendanceAdjustment;
+
+    ;WITH RankedAdjustments AS (
+        SELECT adjustment.[Id], adjustment.[OriginalPunchGuid], adjustment.[AdjustmentGuid],
+            ROW_NUMBER() OVER (
+                PARTITION BY adjustment.[OriginalPunchGuid]
+                ORDER BY
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM [dbo].[AttendancePunch] punch
+                            WHERE ISNULL(punch.[IsDeleted], 0) = 0
+                              AND punch.[PunchGuid] = adjustment.[AppliedPunchGuid]
+                              AND punch.[AdjustmentGuid] = adjustment.[AdjustmentGuid]
+                              AND punch.[SupersedesPunchGuid] = adjustment.[OriginalPunchGuid]
+                        ) THEN 0
+                        WHEN EXISTS (
+                            SELECT 1 FROM [dbo].[AttendancePunch] punch
+                            WHERE ISNULL(punch.[IsDeleted], 0) = 0
+                              AND punch.[AdjustmentGuid] = adjustment.[AdjustmentGuid]
+                              AND punch.[SupersedesPunchGuid] = adjustment.[OriginalPunchGuid]
+                        ) THEN 1
+                        WHEN adjustment.[Status] = N''Applied'' THEN 2
+                        ELSE 3
+                    END,
+                    CASE WHEN adjustment.[ReviewedAt] IS NULL THEN 1 ELSE 0 END,
+                    adjustment.[ReviewedAt], adjustment.[CreatedAt], adjustment.[Id]
+            ) AS [rn]
+        FROM [dbo].[AttendancePunchAdjustment] adjustment
+        WHERE ISNULL(adjustment.[IsDeleted], 0) = 0
+          AND adjustment.[OriginalPunchGuid] IS NOT NULL
+          AND adjustment.[Status] IN (N''Pending'', N''Applied'')
+    )
+    SELECT [OriginalPunchGuid], [AdjustmentGuid]
+    INTO #CanonicalAttendanceAdjustment
+    FROM RankedAdjustments
+    WHERE [rn] = 1;
+
+    UPDATE adjustment
+    SET [Status] = N''Superseded'',
+        [UpdatedAt] = SYSUTCDATETIME(),
+        [UpdatedBy] = N''startup-schema-dedup''
+    FROM [dbo].[AttendancePunchAdjustment] adjustment
+    INNER JOIN #CanonicalAttendanceAdjustment canonical
+        ON canonical.[OriginalPunchGuid] = adjustment.[OriginalPunchGuid]
+    WHERE adjustment.[AdjustmentGuid] <> canonical.[AdjustmentGuid]
+      AND ISNULL(adjustment.[IsDeleted], 0) = 0
+      AND adjustment.[Status] IN (N''Pending'', N''Applied'');
+
+    UPDATE punch
+    SET [Remark] = CONCAT(COALESCE(punch.[Remark] + N''；'', N''''),
+            N''启动迁移停用非 canonical 补卡链: '', punch.[AdjustmentGuid]),
+        [IsDeleted] = 1,
+        [UpdatedAt] = SYSUTCDATETIME(),
+        [UpdatedBy] = N''startup-schema-dedup''
+    FROM [dbo].[AttendancePunch] punch
+    INNER JOIN [dbo].[AttendancePunchAdjustment] adjustment
+        ON adjustment.[AdjustmentGuid] = punch.[AdjustmentGuid]
+    INNER JOIN #CanonicalAttendanceAdjustment canonical
+        ON canonical.[OriginalPunchGuid] = adjustment.[OriginalPunchGuid]
+    WHERE adjustment.[AdjustmentGuid] <> canonical.[AdjustmentGuid]
+      AND ISNULL(punch.[IsDeleted], 0) = 0;
+
+    ;WITH RankedCanonicalPunch AS (
+        SELECT punch.[Id], ROW_NUMBER() OVER (
+            PARTITION BY punch.[AdjustmentGuid]
+            ORDER BY
+                CASE WHEN punch.[PunchGuid] = adjustment.[AppliedPunchGuid] THEN 0 ELSE 1 END,
+                punch.[CreatedAt], punch.[Id]
+        ) AS [rn]
+        FROM [dbo].[AttendancePunch] punch
+        LEFT JOIN [dbo].[AttendancePunchAdjustment] adjustment
+            ON adjustment.[AdjustmentGuid] = punch.[AdjustmentGuid]
+        WHERE ISNULL(punch.[IsDeleted], 0) = 0
+          AND punch.[AdjustmentGuid] IS NOT NULL
+    )
+    UPDATE punch
+    SET [Remark] = CONCAT(COALESCE(punch.[Remark] + N''；'', N''''),
+            N''启动迁移停用同 adjustment 重复 Punch''),
+        [IsDeleted] = 1,
+        [UpdatedAt] = SYSUTCDATETIME(),
+        [UpdatedBy] = N''startup-schema-dedup''
+    FROM [dbo].[AttendancePunch] punch
+    INNER JOIN RankedCanonicalPunch ranked ON ranked.[Id] = punch.[Id]
+    WHERE ranked.[rn] > 1;
+
+    ;WITH RankedSupersedesPunch AS (
+        SELECT punch.[Id], ROW_NUMBER() OVER (
+            PARTITION BY punch.[SupersedesPunchGuid]
+            ORDER BY
+                CASE WHEN punch.[AdjustmentGuid] = canonical.[AdjustmentGuid] THEN 0 ELSE 1 END,
+                punch.[CreatedAt], punch.[Id]
+        ) AS [rn]
+        FROM [dbo].[AttendancePunch] punch
+        LEFT JOIN #CanonicalAttendanceAdjustment canonical
+            ON canonical.[OriginalPunchGuid] = punch.[SupersedesPunchGuid]
+        WHERE ISNULL(punch.[IsDeleted], 0) = 0
+          AND punch.[SupersedesPunchGuid] IS NOT NULL
+    )
+    UPDATE punch
+    SET [Remark] = CONCAT(COALESCE(punch.[Remark] + N''；'', N''''),
+            N''启动迁移停用历史重复 SupersedesPunchGuid: '', punch.[SupersedesPunchGuid]),
+        [IsDeleted] = 1,
+        [UpdatedAt] = SYSUTCDATETIME(),
+        [UpdatedBy] = N''startup-schema-dedup''
+    FROM [dbo].[AttendancePunch] punch
+    INNER JOIN RankedSupersedesPunch ranked ON ranked.[Id] = punch.[Id]
+    WHERE ranked.[rn] > 1;
+
+    DROP TABLE #CanonicalAttendanceAdjustment;');
+
+    EXEC(N';WITH RankedApproval AS (
+        SELECT [Id], ROW_NUMBER() OVER (
+            PARTITION BY [SourceType], [SourceGuid]
+            ORDER BY [CreatedAt], [Id]
+        ) AS [rn]
+        FROM [dbo].[AttendanceApproval]
+        WHERE ISNULL([IsDeleted], 0) = 0 AND [ReviewStatus] = N''Pending''
+    )
+    UPDATE approval
+    SET [ReviewStatus] = N''Cancelled'',
+        [ReviewRemark] = CONCAT(COALESCE([ReviewRemark] + N''；'', N''''), N''启动迁移取消历史重复待审记录''),
+        [ReviewerUserGuid] = N''system'',
+        [ReviewedAt] = SYSUTCDATETIME(),
+        [UpdatedAt] = SYSUTCDATETIME(),
+        [UpdatedBy] = N''startup-schema-dedup''
+    FROM [dbo].[AttendanceApproval] approval
+    INNER JOIN RankedApproval ranked ON ranked.[Id] = approval.[Id]
+    WHERE ranked.[rn] > 1');
+
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_AttendancePunchAdjustment_AdjustmentGuid'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunchAdjustment]'))
+        EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunchAdjustment_AdjustmentGuid]
+            ON [dbo].[AttendancePunchAdjustment]([AdjustmentGuid])');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'IX_AttendancePunchAdjustment_User_Status'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunchAdjustment]'))
+        EXEC(N'CREATE INDEX [IX_AttendancePunchAdjustment_User_Status]
+            ON [dbo].[AttendancePunchAdjustment]([UserGuid], [Status], [CreatedAt])');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'IX_AttendancePunch_AdjustmentGuid'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunch]'))
+        EXEC(N'CREATE INDEX [IX_AttendancePunch_AdjustmentGuid]
+            ON [dbo].[AttendancePunch]([AdjustmentGuid]) WHERE [AdjustmentGuid] IS NOT NULL');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_AttendancePunch_AdjustmentGuid'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunch]'))
+        EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunch_AdjustmentGuid]
+            ON [dbo].[AttendancePunch]([AdjustmentGuid])
+            WHERE [AdjustmentGuid] IS NOT NULL AND [IsDeleted] = 0');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_AttendancePunch_SupersedesPunchGuid'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunch]'))
+        EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunch_SupersedesPunchGuid]
+            ON [dbo].[AttendancePunch]([SupersedesPunchGuid])
+            WHERE [SupersedesPunchGuid] IS NOT NULL AND [IsDeleted] = 0');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_AttendanceApproval_Pending_Source'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendanceApproval]'))
+        EXEC(N'CREATE UNIQUE INDEX [UX_AttendanceApproval_Pending_Source]
+            ON [dbo].[AttendanceApproval]([SourceType], [SourceGuid])
+            WHERE [ReviewStatus] = N''Pending'' AND [IsDeleted] = 0');
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_AttendancePunchAdjustment_ActiveOriginalPunchGuid'
+          AND [object_id] = OBJECT_ID(N'[dbo].[AttendancePunchAdjustment]'))
+        EXEC(N'CREATE UNIQUE INDEX [UX_AttendancePunchAdjustment_ActiveOriginalPunchGuid]
+            ON [dbo].[AttendancePunchAdjustment]([OriginalPunchGuid])
+            WHERE [OriginalPunchGuid] IS NOT NULL
+              AND [Status] IN (N''Pending'', N''Applied'')
+              AND [IsDeleted] = 0');
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+""";
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("考勤班段、加班与补卡增量结构检查完成");
         }
 
         private static async Task EnsureEmployeeProfileSensitiveChangeSchemaAsync(

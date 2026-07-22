@@ -18,6 +18,9 @@ import type {
   AttendanceLocationSamplePayload,
   AttendancePublishWeekPayload,
   AttendancePunch,
+  AttendancePunchAdjustment,
+  AttendancePunchAdjustmentPayload,
+  AttendanceAdjustmentPreview,
   AttendancePunchPayload,
   AttendanceQrResolveResult,
   AttendancePunchType,
@@ -36,6 +39,11 @@ import {
   normalizeAustralianHolidayJurisdiction,
   resolveAustralianHolidayJurisdiction,
 } from "@/modules/attendance/public-holiday-sync";
+import { normalizeAttendanceToday } from "@/modules/attendance/attendance-today-normalization";
+import {
+  normalizeAttendancePunchAdjustment,
+  normalizeAttendancePunchAdjustmentPreview,
+} from "@/modules/attendance/attendance-punch-adjustment";
 
 type ApiRecord = Record<string, unknown>;
 
@@ -241,26 +249,7 @@ function normalizeHolidaySyncResult(
 }
 
 function normalizeToday(payload: unknown): AttendanceToday {
-  const raw = isRecord(payload) ? payload : {};
-  const punches = getArray(pick(raw, "punches", "Punches")).map(normalizePunch);
-  const holidays = getArray(pick(raw, "holidays", "Holidays")).map(normalizeHoliday);
-  const primaryHoliday = holidays[0];
-  const hasClockIn = punches.some((item) => item.punchType === "ClockIn");
-  const hasClockOut = punches.some((item) => item.punchType === "ClockOut");
-  const fallbackNextPunchType = hasClockIn && !hasClockOut ? "ClockOut" : "ClockIn";
-  return {
-    workDate: asDateString(pick(raw, "workDate", "WorkDate")),
-    storeTimeZone: asOptionalString(pick(raw, "storeTimeZone", "StoreTimeZone")),
-    holidayName: asOptionalString(pick(raw, "holidayName", "HolidayName")) ?? primaryHoliday?.holidayName,
-    holidayBusinessStatus:
-      asOptionalString(pick(raw, "holidayBusinessStatus", "HolidayBusinessStatus")) ?? primaryHoliday?.businessStatus,
-    holidays,
-    schedules: getArray(pick(raw, "schedules", "Schedules")).map(normalizeSchedule),
-    punches,
-    nextPunchType: asString(pick(raw, "nextPunchType", "NextPunchType"), fallbackNextPunchType) as AttendancePunchType,
-    canClockIn: asBoolean(pick(raw, "canClockIn", "CanClockIn"), !hasClockIn),
-    canClockOut: asBoolean(pick(raw, "canClockOut", "CanClockOut"), hasClockIn && !hasClockOut),
-  };
+  return normalizeAttendanceToday(payload);
 }
 
 function normalizeWeekDay(raw: ApiRecord): AttendanceWeekDay {
@@ -358,7 +347,10 @@ function normalizeDirectUploadSignature(payload: unknown): AttendanceDirectUploa
 
 function normalizeApproval(raw: ApiRecord): AttendanceApproval {
   const sourceType = asString(pick(raw, "sourceType", "SourceType"), "Punch");
-  const status = asString(pick(raw, "status", "Status"), "Pending");
+  const status = asString(
+    pick(raw, "status", "Status", "reviewStatus", "ReviewStatus"),
+    "Pending",
+  );
   return {
     approvalGuid: asString(pick(raw, "approvalGuid", "ApprovalGuid", "guid", "Guid")),
     sourceGuid: asString(pick(raw, "sourceGuid", "SourceGuid", "punchGuid", "PunchGuid", "leaveGuid", "LeaveGuid")),
@@ -371,6 +363,9 @@ function normalizeApproval(raw: ApiRecord): AttendanceApproval {
     detail: asOptionalString(pick(raw, "detail", "Detail", "reason", "Reason", "statusReason", "StatusReason")),
     status,
     submittedAt: asOptionalString(pick(raw, "submittedAt", "SubmittedAt", "createdAt", "CreatedAt")),
+    adjustment: isRecord(pick(raw, "adjustment", "Adjustment"))
+      ? normalizeAttendancePunchAdjustment(pick(raw, "adjustment", "Adjustment"))
+      : undefined,
   };
 }
 
@@ -583,6 +578,32 @@ export async function createAttendanceLocationSample(
 export async function getMyLeaveRequests(): Promise<AttendanceLeaveRequest[]> {
   const response = await apiClient.get(`${ATTENDANCE_BASE}/my/leave-requests`);
   return getArray(response.data).map(normalizeLeaveRequest);
+}
+
+export async function getMyAttendancePunchAdjustments(): Promise<AttendancePunchAdjustment[]> {
+  const response = await apiClient.get(`${ATTENDANCE_BASE}/my/punch-adjustments`);
+  return getArray(response.data).map(normalizeAttendancePunchAdjustment);
+}
+
+export async function previewMyAttendancePunchAdjustment(
+  payload: AttendancePunchAdjustmentPayload,
+): Promise<AttendanceAdjustmentPreview> {
+  const response = await apiClient.post(
+    `${ATTENDANCE_BASE}/my/punch-adjustments/preview`,
+    sanitizePayload({ ...payload, reason: payload.reason.trim() }),
+  );
+  return normalizeAttendancePunchAdjustmentPreview(response.data);
+}
+
+export async function createMyAttendancePunchAdjustment(
+  payload: AttendancePunchAdjustmentPayload,
+): Promise<AttendancePunchAdjustment> {
+  const response = await apiClient.post(
+    `${ATTENDANCE_BASE}/my/punch-adjustments`,
+    sanitizePayload({ ...payload, reason: payload.reason.trim() }),
+  );
+  const rows = getArray(response.data);
+  return normalizeAttendancePunchAdjustment(rows[0] ?? response.data);
 }
 
 export async function createLeaveRequest(payload: AttendanceLeaveRequestPayload): Promise<AttendanceLeaveRequest> {

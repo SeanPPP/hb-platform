@@ -102,6 +102,96 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task AttendanceWorkSessionSchema_IsWiredAndIdempotentlyPreservesPunchEvidence()
+    {
+        var repoRoot = FindRepoRoot();
+        var migration = (await File.ReadAllTextAsync(Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"))).ReplaceLineEndings("\n");
+
+        Assert.Contains("await EnsureAttendanceWorkSessionSchemaAsync(db, logger);", migration);
+        Assert.Contains("private static async Task EnsureAttendanceWorkSessionSchemaAsync", migration);
+        Assert.Contains("COL_LENGTH('dbo.AttendancePunch', 'SupersedesPunchGuid') IS NULL", migration);
+        Assert.Contains("COL_LENGTH('dbo.AttendancePunch', 'AdjustmentGuid') IS NULL", migration);
+        Assert.Contains("COL_LENGTH('dbo.AttendanceApproval', 'CandidateOvertimeMinutes') IS NULL", migration);
+        Assert.Contains("OBJECT_ID(N'[dbo].[AttendancePunchAdjustment]', N'U') IS NULL", migration);
+        Assert.Contains("UX_AttendancePunch_AdjustmentGuid", migration);
+        Assert.Contains("UX_AttendancePunch_SupersedesPunchGuid", migration);
+        Assert.Contains("UX_AttendanceApproval_Pending_Source", migration);
+        Assert.Contains("UX_AttendancePunchAdjustment_ActiveOriginalPunchGuid", migration);
+        Assert.Contains("PARTITION BY [SourceType], [SourceGuid]", migration);
+        Assert.Contains("[ReviewStatus] = N''Cancelled''", migration);
+        Assert.Contains("SET [Remark] = CONCAT", migration);
+        Assert.Contains("[IsDeleted] = 1", migration);
+        Assert.DoesNotContain("[AdjustmentGuid] = NULL", migration);
+        Assert.DoesNotContain("[SupersedesPunchGuid] = NULL", migration);
+        Assert.DoesNotContain("UPDATE [dbo].[AttendancePunch] SET [PunchTime", migration);
+    }
+
+    [Fact]
+    public async Task AttendanceWorkSessionSchema_ActiveOriginalPunchUniqueIndexUsesBaseColumnsOnly()
+    {
+        var migration = (await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"))).ReplaceLineEndings("\n");
+        var normalizeNullableDeleteFlag = migration.IndexOf(
+            "UPDATE [dbo].[AttendancePunchAdjustment] SET [IsDeleted] = 0 WHERE [IsDeleted] IS NULL",
+            StringComparison.Ordinal);
+        var createActiveOriginalPunchIndex = migration.IndexOf(
+            "CREATE UNIQUE INDEX [UX_AttendancePunchAdjustment_ActiveOriginalPunchGuid]",
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ON [dbo].[AttendancePunchAdjustment]([OriginalPunchGuid])\n" +
+            "            WHERE [OriginalPunchGuid] IS NOT NULL\n" +
+            "              AND [Status] IN (N''Pending'', N''Applied'')\n" +
+            "              AND [IsDeleted] = 0",
+            migration);
+        Assert.DoesNotContain("ADD [ActiveOriginalPunchGuid] AS", migration);
+        Assert.DoesNotContain("WHERE [ActiveOriginalPunchGuid] IS NOT NULL", migration);
+        Assert.True(normalizeNullableDeleteFlag >= 0, "建立唯一索引前必须把历史 NULL 软删除标记规范为 0。 ");
+        Assert.True(
+            createActiveOriginalPunchIndex > normalizeNullableDeleteFlag,
+            "历史软删除标记规范化必须发生在唯一索引创建之前。 ");
+    }
+
+    [Fact]
+    public async Task AttendanceWorkSessionSchema_DedupKeepsAdjustmentAndPunchAsOneCanonicalChain()
+    {
+        var migration = (await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"))).ReplaceLineEndings("\n");
+        var start = migration.IndexOf("#CanonicalAttendanceAdjustment", StringComparison.Ordinal);
+        var validAppliedPunch = migration.IndexOf(
+            "punch.[PunchGuid] = adjustment.[AppliedPunchGuid]",
+            start,
+            StringComparison.Ordinal);
+        var reviewedAt = migration.IndexOf(
+            "adjustment.[ReviewedAt], adjustment.[CreatedAt]",
+            start,
+            StringComparison.Ordinal);
+        var pairedPunchJoin = migration.IndexOf(
+            "canonical.[OriginalPunchGuid] = adjustment.[OriginalPunchGuid]",
+            reviewedAt,
+            StringComparison.Ordinal);
+        var matchingAdjustmentGuard = migration.IndexOf(
+            "adjustment.[AdjustmentGuid] <> canonical.[AdjustmentGuid]",
+            pairedPunchJoin,
+            StringComparison.Ordinal);
+
+        // A 先申请但晚审批、B 后申请但早审批时，先按有效 AppliedPunch 链和 ReviewedAt 选 B，不能按 CreatedAt 各自排名。
+        Assert.True(start >= 0, "迁移必须先物化唯一 canonical adjustment。 ");
+        Assert.True(validAppliedPunch > start, "有效 AppliedPunchGuid/实际 Punch 链必须是最高优先级。 ");
+        Assert.True(reviewedAt > validAppliedPunch, "相同链证据下必须先按审批时间，再按申请时间兜底。 ");
+        Assert.True(pairedPunchJoin > reviewedAt, "Punch 去重必须复用已经选中的 original-adjustment 映射。 ");
+        Assert.True(matchingAdjustmentGuard > pairedPunchJoin, "非 canonical adjustment 与其 Punch 必须成对停用。 ");
+        Assert.Contains("CASE WHEN punch.[PunchGuid] = adjustment.[AppliedPunchGuid] THEN 0", migration);
+        Assert.DoesNotContain(
+            "PARTITION BY [OriginalPunchGuid]\n            ORDER BY CASE WHEN [Status]",
+            migration);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_考勤二维码密钥与幂等索引使用追加式迁移()
     {
         var migrator = await File.ReadAllTextAsync(

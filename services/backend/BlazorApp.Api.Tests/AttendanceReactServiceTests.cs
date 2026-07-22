@@ -67,12 +67,32 @@ namespace BlazorApp.Api.Tests
                 typeof(AttendancePunch),
                 typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
+                typeof(AttendancePunchAdjustment),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
                 typeof(AttendanceSettings),
                 typeof(EmployeeProfile),
                 typeof(AttendancePosQrKey)
+                ,typeof(Role)
+                ,typeof(UserRole)
             );
+            _db.Ado.ExecuteCommand(
+                "CREATE UNIQUE INDEX UX_Test_AttendanceApproval_Pending_Source "
+                + "ON AttendanceApproval(SourceType, SourceGuid) "
+                + "WHERE ReviewStatus = 'Pending' AND IsDeleted = 0");
+            _db.Ado.ExecuteCommand(
+                "CREATE UNIQUE INDEX UX_Test_AttendancePunch_AdjustmentGuid "
+                + "ON AttendancePunch(AdjustmentGuid) "
+                + "WHERE AdjustmentGuid IS NOT NULL AND IsDeleted = 0");
+            _db.Ado.ExecuteCommand(
+                "CREATE UNIQUE INDEX UX_Test_AttendancePunch_SupersedesPunchGuid "
+                + "ON AttendancePunch(SupersedesPunchGuid) "
+                + "WHERE SupersedesPunchGuid IS NOT NULL AND IsDeleted = 0");
+            _db.Ado.ExecuteCommand(
+                "CREATE UNIQUE INDEX UX_Test_AttendancePunchAdjustment_ActiveOriginal "
+                + "ON AttendancePunchAdjustment(OriginalPunchGuid) "
+                + "WHERE OriginalPunchGuid IS NOT NULL AND IsDeleted = 0 "
+                + "AND Status IN ('Pending', 'Applied')");
             SeedAttendanceSigningKeyAsync().GetAwaiter().GetResult();
         }
 
@@ -530,6 +550,66 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetSchedulesAsync_WithPunches_ReturnsRosterFieldsWithoutAttendanceDetails()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("roster-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("roster-out", "ClockOut", new DateTime(2026, 5, 18, 17, 30, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .GetSchedulesAsync(new AttendanceScheduleQueryDto
+                {
+                    StoreCode = "BRI",
+                    WeekStartDate = new DateTime(2026, 5, 18),
+                });
+
+            Assert.True(result.Success, result.Message);
+            var schedule = Assert.Single(result.Data!);
+            Assert.Empty(schedule.Segments);
+            Assert.Equal(0, schedule.WorkedMinutes);
+            Assert.Equal(0, schedule.CandidateOvertimeMinutes);
+            Assert.Equal(0, await _db.Queryable<AttendanceApproval>().CountAsync());
+        }
+
+        [Fact]
+        public async Task GetAttendanceRecordsAsync_PaginatesBeforePopulatingAttendanceDetails()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("record-1", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await SeedScheduleAsync("record-2", "BRI", "staff-user", new DateTime(2026, 5, 19), "Active");
+            await SeedScheduleAsync("record-3", "BRI", "staff-user", new DateTime(2026, 5, 20), "Active");
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("record-2-in", "record-2", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 19, 9, 0, 0)),
+                CreateStoredPunchForSchedule("record-2-out", "record-2", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 19, 17, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 20, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .GetAttendanceRecordsAsync(new AttendanceScheduleQueryDto
+                {
+                    StoreCode = "BRI",
+                    WeekStartDate = new DateTime(2026, 5, 18),
+                    Page = 2,
+                    PageSize = 1,
+                });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(3, result.Data!.Total);
+            Assert.Equal(2, result.Data.Page);
+            Assert.Equal(1, result.Data.PageSize);
+            var schedule = Assert.Single(result.Data.Items!);
+            Assert.Equal("record-2", schedule.ScheduleGuid);
+            Assert.Equal(480, schedule.WorkedMinutes);
+            Assert.Single(schedule.Segments);
+        }
+
+        [Fact]
         public async Task CreateMyAvailabilityAsync_AllowsMultipleSegmentsWithinWeek()
         {
             await SeedStoreScopeAsync();
@@ -680,7 +760,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task GetMyWeekAsync_ReturnsRelatedStoreActiveSchedules()
+        public async Task GetMyWeekAsync_ReturnsOnlyCurrentUsersRelatedStoreActiveSchedules()
         {
             await SeedStoreScopeAsync();
             await SeedScheduleAsync("my-active", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
@@ -691,21 +771,10 @@ namespace BlazorApp.Api.Tests
             var result = await service.GetMyWeekAsync(new DateTime(2026, 5, 18), "BRI");
 
             Assert.True(result.Success);
-            Assert.Collection(
-                result.Data!,
-                schedule =>
-                {
-                    Assert.Equal("my-active", schedule.ScheduleGuid);
-                    Assert.True(schedule.IsMine);
-                    Assert.Equal("Active", schedule.Status);
-                },
-                schedule =>
-                {
-                    Assert.Equal("manager-active", schedule.ScheduleGuid);
-                    Assert.False(schedule.IsMine);
-                    Assert.Equal("manager", schedule.EmployeeName);
-                }
-            );
+            var schedule = Assert.Single(result.Data!);
+            Assert.Equal("my-active", schedule.ScheduleGuid);
+            Assert.True(schedule.IsMine);
+            Assert.Equal("Active", schedule.Status);
         }
 
         [Fact]
@@ -744,6 +813,1183 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("selected-day", Assert.Single(result.Data.Schedules).ScheduleGuid);
             Assert.Equal("selected-punch", Assert.Single(result.Data.Punches).PunchGuid);
             Assert.Equal("selected-holiday", Assert.Single(result.Data.Holidays).HolidayGuid);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_MultipleSegments_DerivesBreakAndOvertime()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            var workDate = new DateTime(2026, 5, 18);
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("in-1", "ClockIn", workDate.AddHours(8).AddMinutes(42)),
+                CreateStoredPunch("out-1", "ClockOut", workDate.AddHours(12)),
+                CreateStoredPunch("in-2", "ClockIn", workDate.AddHours(13)),
+                CreateStoredPunch("out-2", "ClockOut", workDate.AddHours(17).AddMinutes(22)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(workDate, "BRI");
+
+            Assert.True(result.Success);
+            var schedule = Assert.Single(result.Data!.Schedules);
+            Assert.Equal("Completed", schedule.ScheduleState);
+            Assert.Equal(2, schedule.CompletedSegmentCount);
+            Assert.Equal(460, schedule.WorkedMinutes);
+            Assert.Equal(60, schedule.BreakMinutes);
+            Assert.Equal(30, schedule.CandidateOvertimeMinutes);
+            Assert.Equal("Break", schedule.Segments[0].Status);
+            Assert.Equal("Final", schedule.Segments[1].Status);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_StaffWithinTwoDays_CreatesPendingApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                    Reason = "忘记打卡",
+                });
+
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+            Assert.Equal("Pending", result.Data!.Status);
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "PunchAdjustment"));
+            Assert.Equal(0, await _db.Queryable<AttendancePunch>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_RequestedUtc优先且按门店本地时间匹配排班和落库同一瞬间()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var requestedUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc);
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    // UTC 对应 Brisbane 2026-05-18 09:00；故意传冲突旧字段以验证 UTC 优先。
+                    RequestedPunchTimeLocal = new DateTime(2030, 1, 1, 9, 0, 0),
+                    RequestedPunchTimeUtc = requestedUtc,
+                    Reason = "跨时区设备补卡",
+                });
+
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+            var stored = await _db.Queryable<AttendancePunchAdjustment>()
+                .FirstAsync(item => item.AdjustmentGuid == result.Data!.AdjustmentGuid);
+            Assert.Equal("schedule-1", stored.ScheduleGuid);
+            Assert.Equal(requestedUtc, stored.RequestedPunchTimeUtc);
+            Assert.Equal(new DateTime(2026, 5, 18, 9, 0, 0), stored.RequestedPunchTimeLocal);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_LegacyLocalOnly仍按门店本地时间兼容()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var requestedLocal = new DateTime(2026, 5, 18, 9, 0, 0);
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = requestedLocal,
+                    Reason = "旧客户端补卡",
+                });
+
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+            var stored = await _db.Queryable<AttendancePunchAdjustment>()
+                .FirstAsync(item => item.AdjustmentGuid == result.Data!.AdjustmentGuid);
+            Assert.Equal(requestedLocal, stored.RequestedPunchTimeLocal);
+            Assert.Equal(new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc), stored.RequestedPunchTimeUtc);
+        }
+
+        [Theory]
+        [InlineData(2026, 10, 4, 2, 30, "Sydney 夏令时跳过时段")]
+        [InlineData(2026, 4, 5, 2, 30, "Sydney 夏令时回拨重叠时段")]
+        public async Task CreateMyPunchAdjustmentAsync_LegacySydney无效或歧义本地时间_返回结构化错误且不落库(
+            int year,
+            int month,
+            int day,
+            int hour,
+            int minute,
+            string scenario
+        )
+        {
+            await SeedStoreScopeAsync();
+            await _db.Updateable<Store>()
+                .SetColumns(item => item.Address == "Sydney NSW 2000")
+                .Where(item => item.StoreCode == "BRI")
+                .ExecuteCommandAsync();
+            var workDate = new DateTime(year, month, day);
+            await SeedScheduleAsync("sydney-schedule", "BRI", "staff-user", workDate, "Active");
+            _timeProvider.SetUtcNow(workDate.AddHours(6));
+
+            ApiResponse<AttendancePunchAdjustmentDto>? result = null;
+            var exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await CreateService("staff-user", "staff", "StoreStaff")
+                    .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                    {
+                        StoreCode = "BRI",
+                        ScheduleGuid = "sydney-schedule",
+                        PunchType = "ClockIn",
+                        // 不提供 UTC，明确覆盖旧客户端的门店 local-only 输入。
+                        RequestedPunchTimeLocal = new DateTime(year, month, day, hour, minute, 0),
+                        Reason = scenario,
+                    });
+            });
+
+            Assert.Null(exception);
+            Assert.NotNull(result);
+            Assert.False(result!.Success);
+            Assert.Equal("PUNCH_TIME_INVALID", result.ErrorCode);
+            Assert.Equal(0, await _db.Queryable<AttendancePunchAdjustment>().CountAsync());
+            Assert.Equal(0, await _db.Queryable<AttendanceApproval>().CountAsync());
+            Assert.Equal(0, await _db.Queryable<AttendancePunch>().CountAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_补卡审批使用结构化AdjustmentUtc而不是重新解析Local文本()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var requestedUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc);
+            var created = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2030, 1, 1, 9, 0, 0),
+                    RequestedPunchTimeUtc = requestedUtc,
+                    Reason = "审批 UTC 契约",
+                });
+            Assert.True(created.Success, $"{created.ErrorCode}: {created.Message}");
+            var approval = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceGuid == created.Data!.AdjustmentGuid);
+
+            var approved = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(approval.ApprovalGuid, new ReviewAttendanceApprovalDto { ReviewRemark = "同意" });
+
+            Assert.True(approved.Success, $"{approved.ErrorCode}: {approved.Message}");
+            var appliedPunch = await _db.Queryable<AttendancePunch>()
+                .FirstAsync(item => item.AdjustmentGuid == created.Data!.AdjustmentGuid);
+            Assert.Equal(requestedUtc, appliedPunch.PunchTimeUtc);
+            Assert.Equal(new DateTime(2026, 5, 18, 9, 0, 0), appliedPunch.PunchTimeLocal);
+        }
+
+        [Fact]
+        public async Task PreviewMyPunchAdjustmentAsync_ValidRequest_ReturnsAuthoritativeDelta()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .PreviewMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 40, 0),
+                    Reason = "补上班卡",
+                });
+
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+            Assert.True(result.Data!.IsValid);
+            Assert.Equal(15, result.Data.CandidateOvertimeMinutesDelta);
+            Assert.False(result.Data.WouldAutoApprove);
+        }
+
+        [Fact]
+        public async Task PunchAsync_ActiveSchedule_AllowsTwoSegmentsAndTreatsMiddleOutAsBreak()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var firstIn = await service.PunchAsync(CreatePunchRequest("ClockIn", "2026-05-17T22:42:00Z"));
+            var breakOut = await service.PunchAsync(CreatePunchRequest("ClockOut", "2026-05-18T02:00:00Z"));
+            var secondIn = await service.PunchAsync(CreatePunchRequest("ClockIn", "2026-05-18T03:00:00Z"));
+            var finalOut = await service.PunchAsync(CreatePunchRequest("ClockOut", "2026-05-18T07:22:00Z"));
+            var overflow = await service.PunchAsync(CreatePunchRequest("ClockIn", "2026-05-18T07:23:00Z"));
+
+            Assert.True(firstIn.Success, firstIn.Message);
+            Assert.True(breakOut.Success, breakOut.Message);
+            Assert.Equal("Break", breakOut.Data!.Status);
+            Assert.True(breakOut.Data.IsBreakBoundary);
+            Assert.True(secondIn.Success, secondIn.Message);
+            Assert.Equal("Normal", secondIn.Data!.Status);
+            Assert.True(finalOut.Success, finalOut.Message);
+            Assert.Equal("Final", finalOut.Data!.SegmentStatus);
+            Assert.False(overflow.Success);
+            Assert.Equal("SEGMENT_LIMIT_REACHED", overflow.ErrorCode);
+            var overtime = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceType == "Overtime");
+            Assert.Equal(30, overtime.CandidateOvertimeMinutes);
+            Assert.Equal("Pending", overtime.ReviewStatus);
+            Assert.All(
+                await _db.Queryable<AttendancePunch>().ToListAsync(),
+                item => Assert.Equal("schedule-1", item.ScheduleGuid));
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_ManagerOlderThanTwoDays_IsRejected()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("old-schedule", "BRI", "manager-user", new DateTime(2026, 5, 15), "Active");
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "old-schedule",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 15, 9, 0, 0),
+                    Reason = "补卡",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("ADJUSTMENT_WINDOW_EXPIRED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_ManagerSelfDirect_AutoAppliesFullOvertime()
+        {
+            await SeedStoreScopeAsync();
+            await SeedStoreManagerRoleAsync("manager-user");
+            await SeedScheduleAsync("manager-schedule", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active");
+            await _db.Insertable(new AttendancePunch
+            {
+                PunchGuid = "manager-out",
+                ScheduleGuid = "manager-schedule",
+                StoreCode = "BRI",
+                UserGuid = "manager-user",
+                WorkDate = new DateTime(2026, 5, 18),
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockOut",
+                PunchTimeLocal = new DateTime(2026, 5, 18, 17, 22, 30),
+                PunchTimeUtc = new DateTime(2026, 5, 18, 7, 22, 30, DateTimeKind.Utc),
+                Status = "Normal",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "manager-schedule",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 42, 0),
+                    Reason = "直接补卡",
+                });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("Applied", result.Data!.Status);
+            Assert.True(result.Data.IsManagerSelfDirect);
+            var overtime = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceType == "Overtime");
+            Assert.Equal("Approved", overtime.ReviewStatus);
+            Assert.Equal(45, overtime.CandidateOvertimeMinutes);
+            Assert.Equal(45, overtime.ApprovedOvertimeMinutes);
+            Assert.Equal("system", overtime.ReviewerUserGuid);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_ManagerWithAnyActiveManagementRelation_GetsThreeSegmentLimit()
+        {
+            await SeedStoreScopeAsync();
+            await SeedStoreManagerRoleAsync("manager-user");
+            await _db.Updateable<UserStore>()
+                .SetColumns(item => item.IsPrimary == false)
+                .Where(item => item.UserStoreGUID == "manager-store-bri")
+                .ExecuteCommandAsync();
+            await SeedManagerStoreAccessAsync("manager-user", "store-other");
+            await SeedScheduleAsync("manager-schedule", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active");
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(3, Assert.Single(result.Data!.Schedules).SegmentLimit);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_SelectedStore_ReturnsAllRelatedStorePunchStates()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = "staff-store-other",
+                UserGUID = "staff-user",
+                StoreGUID = "store-other",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await SeedScheduleAsync();
+            await SeedScheduleAsync("other-schedule", "OTHER", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await _db.Insertable(new AttendancePunch
+            {
+                PunchGuid = "other-open",
+                ScheduleGuid = "other-schedule",
+                StoreCode = "OTHER",
+                UserGuid = "staff-user",
+                WorkDate = new DateTime(2026, 5, 18),
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn",
+                PunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                PunchTimeUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc),
+                Status = "Normal",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("schedule-1", Assert.Single(result.Data!.Schedules).ScheduleGuid);
+            Assert.Contains(result.Data.StorePunchStates, item => item.StoreCode == "BRI");
+            var otherState = Assert.Single(result.Data.StorePunchStates, item => item.StoreCode == "OTHER");
+            Assert.True(otherState.HasMissingClockOut);
+            Assert.Equal("MissingClockOut", otherState.State);
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "MissingClockOut"
+                    && item.SourceGuid == "other-schedule"));
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_SameStoreMultipleSchedules_AggregatesAnomalyStateOnce()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("early-complete", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(6, 0, 0), new TimeSpan(8, 0, 0));
+            await SeedScheduleAsync("late-missing", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(9, 0, 0), new TimeSpan(17, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("early-in", "early-complete", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 6, 0, 0)),
+                CreateStoredPunchForSchedule("early-out", "early-complete", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("late-in", "late-missing", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            var state = Assert.Single(result.Data!.StorePunchStates, item => item.StoreCode == "BRI");
+            Assert.True(state.HasOpenSegment);
+            Assert.True(state.HasMissingClockOut);
+            Assert.Equal("MissingClockOut", state.State);
+            Assert.Equal("late-missing", state.ScheduleGuid);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_BoundaryPunches_IncludeAuthoritativeExceptionMinutes()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("minutes-in", "ClockIn", new DateTime(2026, 5, 18, 9, 7, 0)),
+                CreateStoredPunch("minutes-out", "ClockOut", new DateTime(2026, 5, 18, 16, 41, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            var segment = Assert.Single(Assert.Single(result.Data!.Schedules).Segments);
+            Assert.Equal(7, segment.ClockIn!.LateMinutes);
+            Assert.Equal(0, segment.ClockIn.EarlyArrivalMinutes);
+            Assert.Equal(19, segment.ClockOut!.EarlyLeaveMinutes);
+            Assert.Equal(0, segment.ClockOut.LateDepartureMinutes);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_EarlyBreakWithoutReturn_FinalizesAndReconcilesApprovalIdempotently()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("early-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("early-out", "ClockOut", new DateTime(2026, 5, 18, 12, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var first = await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            var second = await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(first.Success, first.Message);
+            Assert.True(second.Success, second.Message);
+            var schedule = Assert.Single(first.Data!.Schedules);
+            Assert.Equal("Completed", schedule.ScheduleState);
+            Assert.Equal("EarlyLeave", Assert.Single(schedule.Segments).ClockOut!.Status);
+            Assert.Equal("EarlyLeave", Assert.Single(first.Data.Punches, item => item.PunchGuid == "early-out").Status);
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "Punch" && item.SourceGuid == "early-out"));
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_FinalEarlyLeaveWithReviewedApproval_DoesNotReopenPending()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("reviewed-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("reviewed-out", "ClockOut", new DateTime(2026, 5, 18, 12, 0, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "reviewed-early-leave",
+                SourceType = "Punch",
+                SourceGuid = "reviewed-out",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewerUserGuid = "manager-user",
+                ReviewStatus = "Approved",
+                ReviewedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "Punch" && item.SourceGuid == "reviewed-out"));
+            Assert.Equal(0, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "Punch"
+                    && item.SourceGuid == "reviewed-out"
+                    && item.ReviewStatus == "Pending"));
+        }
+
+        [Fact]
+        public async Task PreviewMyPunchAdjustmentAsync_WhenAnotherStoreSegmentOverlaps_ReturnsConflict()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new AttendanceSchedule
+            {
+                ScheduleGuid = "other-schedule",
+                StoreCode = "OTHER",
+                UserGuid = "staff-user",
+                WorkDate = new DateTime(2026, 5, 18),
+                StartTime = new TimeSpan(10, 0, 0),
+                EndTime = new TimeSpan(11, 0, 0),
+                Status = "Active",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("bri-out", "ClockOut", new DateTime(2026, 5, 18, 10, 30, 0)),
+                new AttendancePunch
+                {
+                    PunchGuid = "other-in", ScheduleGuid = "other-schedule", StoreCode = "OTHER",
+                    UserGuid = "staff-user", WorkDate = new DateTime(2026, 5, 18),
+                    StoreTimeZone = "Australia/Brisbane", PunchType = "ClockIn",
+                    PunchTimeLocal = new DateTime(2026, 5, 18, 10, 0, 0),
+                    PunchTimeUtc = new DateTime(2026, 5, 18, 0, 0, 0, DateTimeKind.Utc), Status = "Normal",
+                },
+                new AttendancePunch
+                {
+                    PunchGuid = "other-out", ScheduleGuid = "other-schedule", StoreCode = "OTHER",
+                    UserGuid = "staff-user", WorkDate = new DateTime(2026, 5, 18),
+                    StoreTimeZone = "Australia/Brisbane", PunchType = "ClockOut",
+                    PunchTimeLocal = new DateTime(2026, 5, 18, 11, 0, 0),
+                    PunchTimeUtc = new DateTime(2026, 5, 18, 1, 0, 0, DateTimeKind.Utc), Status = "Normal",
+                },
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .PreviewMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 30, 0),
+                    Reason = "补卡",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_TIME_OVERLAP", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenApplicantReviewsOwnOvertime_ReturnsForbidden()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "self-overtime",
+                SourceType = "Overtime",
+                SourceGuid = "schedule-1",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "manager-user",
+                ReviewStatus = "Pending",
+                CandidateOvertimeMinutes = 30,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync("self-overtime", new ReviewAttendanceApprovalDto
+                {
+                    ApprovedOvertimeMinutes = 15,
+                    ReviewRemark = "调整",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("SELF_REVIEW_FORBIDDEN", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_TwoSchedulesAtBoundary_ClosesOpenMorningSchedule()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("morning", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(9, 0, 0), new TimeSpan(12, 0, 0));
+            await SeedScheduleAsync("afternoon", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(13, 0, 0), new TimeSpan(17, 0, 0));
+            await _db.Insertable(CreateStoredPunchForSchedule(
+                "morning-in", "morning", "BRI", "staff-user", "ClockIn",
+                new DateTime(2026, 5, 18, 9, 0, 0))).ExecuteCommandAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(CreatePunchRequest("ClockOut", "2026-05-18T02:00:00Z"));
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("ClockOut", result.Data!.PunchType);
+            Assert.Equal("morning", result.Data.ScheduleGuid);
+        }
+
+        [Fact]
+        public async Task PunchAsync_TwoSchedulesAtBoundary_SelectsUnfinishedAfternoonAfterMorningCompleted()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("morning", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(9, 0, 0), new TimeSpan(12, 0, 0));
+            await SeedScheduleAsync("afternoon", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(13, 0, 0), new TimeSpan(17, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("morning-in", "morning", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunchForSchedule("morning-out", "morning", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 12, 0, 0)),
+            }).ExecuteCommandAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(CreatePunchRequest("ClockIn", "2026-05-18T02:00:00Z"));
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("ClockIn", result.Data!.PunchType);
+            Assert.Equal("afternoon", result.Data.ScheduleGuid);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenOriginalHasPendingAdjustment_ReturnsConflict()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch("original-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new AttendancePunchAdjustment
+            {
+                AdjustmentGuid = "existing-adjustment",
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                ScheduleGuid = "schedule-1",
+                OriginalPunchGuid = "original-in",
+                PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 55, 0),
+                RequestedPunchTimeUtc = new DateTime(2026, 5, 17, 22, 55, 0, DateTimeKind.Utc),
+                Reason = "已有申请",
+                Status = "Pending",
+                RequestedByUserGuid = "staff-user",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    OriginalPunchGuid = "original-in",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 50, 0),
+                    Reason = "重复申请",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("ADJUSTMENT_ALREADY_EXISTS", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenOriginalWasSupersededAfterSubmission_RollsBackClaim()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch("original-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var created = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI", ScheduleGuid = "schedule-1", OriginalPunchGuid = "original-in",
+                    PunchType = "ClockIn", RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 55, 0), Reason = "调整",
+                });
+            Assert.True(created.Success, created.Message);
+            await _db.Insertable(new AttendancePunch
+            {
+                PunchGuid = "competing-adjustment", ScheduleGuid = "schedule-1", StoreCode = "BRI",
+                UserGuid = "staff-user", WorkDate = new DateTime(2026, 5, 18), StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn", PunchTimeLocal = new DateTime(2026, 5, 18, 8, 58, 0),
+                PunchTimeUtc = new DateTime(2026, 5, 17, 22, 58, 0, DateTimeKind.Utc), Status = "Normal",
+                Source = "ManualAdjustment", SupersedesPunchGuid = "original-in", AdjustmentGuid = "other-adjustment",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var approval = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceType == "PunchAdjustment");
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(approval.ApprovalGuid, new ReviewAttendanceApprovalDto { ReviewRemark = "同意" });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_ALREADY_ADJUSTED", result.ErrorCode);
+            Assert.Equal("Pending", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == approval.ApprovalGuid)
+                .Select(item => item.ReviewStatus).FirstAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_ConcurrentReview_OnlyOneClaimsPendingApproval()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "concurrent-review", SourceType = "MissingClockOut", SourceGuid = "schedule-1",
+                StoreCode = "BRI", ApplicantUserGuid = "staff-user", ReviewStatus = "Pending", CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var results = await Task.WhenAll(
+                service.ApproveAsync("concurrent-review", new ReviewAttendanceApprovalDto { ReviewRemark = "处理1" }),
+                service.ApproveAsync("concurrent-review", new ReviewAttendanceApprovalDto { ReviewRemark = "处理2" }));
+
+            Assert.Equal(1, results.Count(item => item.Success));
+            Assert.Equal(1, results.Count(item => item.ErrorCode == "APPROVAL_ALREADY_REVIEWED"));
+        }
+
+        [Fact]
+        public async Task ApproveAsync_PartialOvertimeApproval_DoesNotRegenerateProcessedMinutes()
+        {
+            var approval = await SeedCompletedOvertimeAndGetPendingAsync("partial-terminal");
+
+            var reviewed = await CreateService("admin-user", "admin", "Admin")
+                .ApproveAsync(approval.ApprovalGuid, new ReviewAttendanceApprovalDto
+                {
+                    ApprovedOvertimeMinutes = 15,
+                    ReviewRemark = "仅批准十五分钟",
+                });
+            var refreshed = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(reviewed.Success, reviewed.Message);
+            Assert.True(refreshed.Success, refreshed.Message);
+            var approvals = await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.SourceType == "Overtime" && item.SourceGuid == "partial-terminal")
+                .ToListAsync();
+            var terminal = Assert.Single(approvals);
+            Assert.Equal("Approved", terminal.ReviewStatus);
+            Assert.Equal(30, terminal.CandidateOvertimeMinutes);
+            Assert.Equal(15, terminal.ApprovedOvertimeMinutes);
+            Assert.DoesNotContain(approvals, item => item.ReviewStatus == "Pending");
+        }
+
+        [Fact]
+        public async Task RejectAsync_Overtime_DoesNotRegenerateProcessedMinutes()
+        {
+            var approval = await SeedCompletedOvertimeAndGetPendingAsync("rejected-terminal");
+
+            var reviewed = await CreateService("admin-user", "admin", "Admin")
+                .RejectAsync(approval.ApprovalGuid, new ReviewAttendanceApprovalDto
+                {
+                    ReviewRemark = "不批准加班",
+                });
+            var refreshed = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(reviewed.Success, reviewed.Message);
+            Assert.True(refreshed.Success, refreshed.Message);
+            var approvals = await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.SourceType == "Overtime" && item.SourceGuid == "rejected-terminal")
+                .ToListAsync();
+            var terminal = Assert.Single(approvals);
+            Assert.Equal("Rejected", terminal.ReviewStatus);
+            Assert.Equal(30, terminal.CandidateOvertimeMinutes);
+            Assert.DoesNotContain(approvals, item => item.ReviewStatus == "Pending");
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenOvertimeCandidateChanged_RejectsStaleApprovalInsideDailyLock()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("stale-overtime", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("stale-in", "stale-overtime", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunchForSchedule("stale-out", "stale-overtime", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 17, 16, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "stale-approval",
+                SourceType = "Overtime",
+                SourceGuid = "stale-overtime",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CandidateOvertimeMinutes = 30,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("admin-user", "admin", "Admin")
+                .ApproveAsync("stale-approval", new ReviewAttendanceApprovalDto
+                {
+                    ApprovedOvertimeMinutes = 30,
+                    ReviewRemark = "按旧候选批准",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("OVERTIME_CANDIDATE_CHANGED", result.ErrorCode);
+            var stored = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.ApprovalGuid == "stale-approval");
+            Assert.Equal("Pending", stored.ReviewStatus);
+            Assert.Null(stored.ApprovedOvertimeMinutes);
+        }
+
+        [Fact]
+        public async Task PunchAsync_CrossStoreOpen_AllowsSecondStoreButRejectsOverlappingClose()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Insertable(new UserStore
+            {
+                UserStoreGUID = "staff-store-other",
+                UserGUID = "staff-user",
+                StoreGUID = "store-other",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await SeedScheduleAsync("bri-open", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await SeedScheduleAsync("other-shift", "OTHER", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(10, 0, 0), new TimeSpan(17, 0, 0));
+            await _db.Insertable(CreateStoredPunchForSchedule(
+                "bri-in", "bri-open", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            await SeedAttendanceSigningKeyAsync("K2", "OTHER", "POS-002");
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var otherIn = await service.PunchAsync(CreatePunchRequest(
+                "ClockIn", "2026-05-18T00:00:00Z", storeCode: "OTHER", kid: "K2", deviceCode: "POS-002"));
+            var otherOut = await service.PunchAsync(CreatePunchRequest(
+                "ClockOut", "2026-05-18T01:00:00Z", storeCode: "OTHER", kid: "K2", deviceCode: "POS-002"));
+            var briOut = await service.PunchAsync(CreatePunchRequest(
+                "ClockOut", "2026-05-18T08:00:00Z"));
+
+            Assert.True(otherIn.Success, otherIn.Message);
+            Assert.Equal("ClockIn", otherIn.Data!.PunchType);
+            Assert.True(otherOut.Success, otherOut.Message);
+            Assert.False(briOut.Success);
+            Assert.Equal("CROSS_STORE_PUNCH_OVERLAP", briOut.ErrorCode);
+            Assert.Equal(1, await _db.Queryable<AttendancePunch>()
+                .CountAsync(item => !item.IsDeleted && item.ScheduleGuid == "bri-open"));
+            var today = await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            var briState = Assert.Single(today.Data!.StorePunchStates, item => item.StoreCode == "BRI");
+            Assert.True(briState.HasMissingClockOut);
+        }
+
+        [Fact]
+        public void AttendanceDailyMutationLock_DifferentStoresShareUserWorkDateResource()
+        {
+            var workDate = new DateTime(2026, 5, 18);
+
+            Assert.Equal(
+                AttendanceDailyMutationLock.BuildResource("staff-user", "BRI", workDate),
+                AttendanceDailyMutationLock.BuildResource("staff-user", "OTHER", workDate));
+        }
+
+        [Fact]
+        public async Task ManagerDirectEarlyOvertime_DoesNotAutoApproveLaterNormalLateOvertime()
+        {
+            await SeedStoreScopeAsync();
+            await SeedStoreManagerRoleAsync("manager-user");
+            await SeedScheduleAsync("manager-schedule", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active");
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 17, 22, 42, 0, DateTimeKind.Utc));
+            var service = CreateService("manager-user", "manager", "StoreManager");
+
+            var direct = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI", ScheduleGuid = "manager-schedule", PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 42, 0), Reason = "直接补早班卡",
+            });
+            var finalOut = await service.PunchAsync(CreatePunchRequest("ClockOut", "2026-05-18T07:22:30Z"));
+
+            Assert.True(direct.Success, direct.Message);
+            Assert.True(finalOut.Success, finalOut.Message);
+            var overtime = await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.SourceType == "Overtime" && item.SourceGuid == "manager-schedule")
+                .OrderBy(item => item.CreatedAt).ToListAsync();
+            Assert.Contains(overtime, item => item.ReviewStatus == "Approved" && item.ApprovedOvertimeMinutes == 15);
+            Assert.Contains(overtime, item => item.ReviewStatus == "Pending" && item.CandidateOvertimeMinutes == 30);
+
+            var today = await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            var schedule = Assert.Single(today.Data!.Schedules);
+            Assert.Equal(45, schedule.CandidateOvertimeMinutes);
+            Assert.Equal(15, schedule.ApprovedOvertimeMinutes);
+            Assert.Equal("Pending", schedule.OvertimeApprovalStatus);
+
+            var pending = overtime.Single(item => item.ReviewStatus == "Pending");
+            var approved = await CreateService("admin-user", "admin", "Admin")
+                .ApproveAsync(pending.ApprovalGuid, new ReviewAttendanceApprovalDto
+                {
+                    ApprovedOvertimeMinutes = 30,
+                    ReviewRemark = "批准剩余加班",
+                });
+            Assert.True(approved.Success, approved.Message);
+            Assert.Equal(1, await _db.Queryable<AttendanceSchedule>().CountAsync(item =>
+                !item.IsDeleted && item.Status == "Active" && item.ScheduleGuid == "manager-schedule"));
+            var afterApproval = await CreateService("manager-user", "manager", "StoreManager")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            Assert.True(afterApproval.Success, afterApproval.Message);
+            var approvedSchedule = Assert.Single(afterApproval.Data!.Schedules);
+            Assert.Equal(45, approvedSchedule.CandidateOvertimeMinutes);
+            Assert.Equal(45, approvedSchedule.ApprovedOvertimeMinutes);
+            Assert.Equal("Approved", approvedSchedule.OvertimeApprovalStatus);
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_WhenAnomalyDisappears_CancelsPendingDerivedApprovals()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch("open-in", "ClockIn", new DateTime(2026, 5, 18, 8, 40, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            await _db.Insertable(CreateStoredPunch("final-out", "ClockOut", new DateTime(2026, 5, 18, 17, 0, 0)))
+                .ExecuteCommandAsync();
+            await _db.Updateable<AttendancePunch>()
+                .SetColumns(item => item.PunchTimeLocal == new DateTime(2026, 5, 18, 9, 0, 0))
+                .SetColumns(item => item.PunchTimeUtc == new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc))
+                .Where(item => item.PunchGuid == "open-in")
+                .ExecuteCommandAsync();
+
+            await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.Equal(0, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.ReviewStatus == "Pending"
+                    && (item.SourceType == "MissingClockOut" || item.SourceType == "Overtime")));
+            Assert.True(await _db.Queryable<AttendanceApproval>()
+                .AnyAsync(item => item.ReviewStatus == "Cancelled"
+                    && (item.SourceType == "MissingClockOut" || item.SourceType == "Overtime")));
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_WhenMissingClockOutReturns_CreatesNewPendingApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch("reopen-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            await _db.Insertable(CreateStoredPunch("temporary-out", "ClockOut", new DateTime(2026, 5, 18, 17, 0, 0)))
+                .ExecuteCommandAsync();
+            await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            await _db.Updateable<AttendancePunch>()
+                .SetColumns(item => item.IsDeleted == true)
+                .Where(item => item.PunchGuid == "temporary-out")
+                .ExecuteCommandAsync();
+
+            await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>().CountAsync(item =>
+                item.SourceType == "MissingClockOut"
+                && item.SourceGuid == "schedule-1"
+                && item.ReviewStatus == "Cancelled"));
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>().CountAsync(item =>
+                item.SourceType == "MissingClockOut"
+                && item.SourceGuid == "schedule-1"
+                && item.ReviewStatus == "Pending"));
+        }
+
+        [Fact]
+        public async Task PunchAsync_SameStoreSchedulesShareDailySegmentLimit()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("morning", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(8, 0, 0), new TimeSpan(10, 0, 0));
+            await SeedScheduleAsync("afternoon", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(11, 0, 0), new TimeSpan(13, 0, 0));
+            await SeedScheduleAsync("evening", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("morning-in", "morning", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("morning-out", "morning", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+                CreateStoredPunchForSchedule("afternoon-in", "afternoon", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 11, 0, 0)),
+                CreateStoredPunchForSchedule("afternoon-out", "afternoon", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 13, 0, 0)),
+            }).ExecuteCommandAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var result = await service.PunchAsync(CreatePunchRequest("ClockIn", "2026-05-18T08:00:00Z"));
+
+            Assert.False(result.Success);
+            Assert.Equal("SEGMENT_LIMIT_REACHED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_ConcurrentDifferentQrTokens_OnlyOneClockInSucceeds()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var firstRequest = CreatePunchRequest("ClockIn", "2026-05-17T23:00:00Z");
+            var secondRequest = CreatePunchRequest("ClockIn", "2026-05-17T23:00:00Z");
+            var resource = AttendanceDailyMutationLock.BuildResource(
+                "staff-user", "BRI", new DateTime(2026, 5, 18));
+            var heldLock = await AttendanceDailyMutationLock.AcquireProcessAsync(resource);
+
+            var pendingResults = Task.WhenAll(
+                service.PunchAsync(firstRequest),
+                service.PunchAsync(secondRequest));
+            for (var attempt = 0;
+                attempt < 1000 && AttendanceDailyMutationLock.GetProcessReferenceCount(resource) < 3;
+                attempt++)
+            {
+                await Task.Yield();
+            }
+            Assert.Equal(3, AttendanceDailyMutationLock.GetProcessReferenceCount(resource));
+            await heldLock.DisposeAsync();
+            var results = await pendingResults;
+
+            Assert.Equal(1, results.Count(item => item.Success));
+            Assert.Equal(1, results.Count(item => item.ErrorCode == "PUNCH_CONCURRENT_CONFLICT"));
+            Assert.Equal(1, await _db.Queryable<AttendancePunch>().CountAsync(item =>
+                !item.IsDeleted
+                && item.UserGuid == "staff-user"
+                && item.StoreCode == "BRI"
+                && item.PunchType == "ClockIn"));
+        }
+
+        [Fact]
+        public async Task PunchAdjustment_DailySegmentLimitIsSharedPerStoreButIndependentAcrossStores()
+        {
+            await SeedStoreScopeAsync();
+            await SeedManagerStoreAccessAsync("staff-user", "store-other");
+            await SeedScheduleAsync("first", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(8, 0, 0), new TimeSpan(10, 0, 0));
+            await SeedScheduleAsync("second", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(11, 0, 0), new TimeSpan(13, 0, 0));
+            await SeedScheduleAsync("third", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await SeedScheduleAsync("other-store", "OTHER", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("first-in", "first", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("first-out", "first", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+                CreateStoredPunchForSchedule("second-in", "second", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 11, 0, 0)),
+                CreateStoredPunchForSchedule("second-out", "second", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 13, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var sameStore = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "第三段",
+            });
+            var otherStore = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "OTHER", ScheduleGuid = "other-store", PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "跨店第一段",
+            });
+
+            Assert.False(sameStore.Success);
+            Assert.Equal("SEGMENT_LIMIT_REACHED", sameStore.ErrorCode);
+            Assert.True(otherStore.Success, otherStore.Message);
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenOtherScheduleConsumesDailyLimit_RollsBackClaim()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("first", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(8, 0, 0), new TimeSpan(10, 0, 0));
+            await SeedScheduleAsync("second", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(11, 0, 0), new TimeSpan(13, 0, 0));
+            await SeedScheduleAsync("third", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("first-in", "first", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("first-out", "first", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var created = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "申请第二段",
+                });
+            Assert.True(created.Success, created.Message);
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("second-in", "second", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 11, 0, 0)),
+                CreateStoredPunchForSchedule("second-out", "second", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 13, 0, 0)),
+            }).ExecuteCommandAsync();
+            var approval = await _db.Queryable<AttendanceApproval>()
+                .FirstAsync(item => item.SourceType == "PunchAdjustment");
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(approval.ApprovalGuid, new ReviewAttendanceApprovalDto { ReviewRemark = "同意" });
+
+            Assert.False(result.Success);
+            Assert.Equal("SEGMENT_LIMIT_REACHED", result.ErrorCode);
+            Assert.Equal("Pending", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == approval.ApprovalGuid)
+                .Select(item => item.ReviewStatus).FirstAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_ConcurrentAdjustmentsForLastSegment_OnlyOneApplies()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("first", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(8, 0, 0), new TimeSpan(10, 0, 0));
+            await SeedScheduleAsync("second", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(11, 0, 0), new TimeSpan(13, 0, 0));
+            await SeedScheduleAsync("third", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("first-in", "first", "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("first-out", "first", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var staffService = CreateService("staff-user", "staff", "StoreStaff");
+            var second = await staffService.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI", ScheduleGuid = "second", PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 11, 0, 0), Reason = "申请第二段A",
+            });
+            var third = await staffService.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "申请第二段B",
+            });
+            Assert.True(second.Success, second.Message);
+            Assert.True(third.Success, third.Message);
+            var approvalGuids = await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.SourceType == "PunchAdjustment" && item.ReviewStatus == "Pending")
+                .Select(item => item.ApprovalGuid)
+                .ToListAsync();
+            Assert.Equal(2, approvalGuids.Count);
+
+            var manager = CreateService("manager-user", "manager", "StoreManager");
+            var results = await Task.WhenAll(approvalGuids.Select(guid =>
+                manager.ApproveAsync(guid, new ReviewAttendanceApprovalDto { ReviewRemark = "同意" })));
+
+            Assert.Equal(1, results.Count(item => item.Success));
+            Assert.Equal(1, results.Count(item => item.ErrorCode == "SEGMENT_LIMIT_REACHED"));
+            Assert.Equal(1, await _db.Queryable<AttendancePunchAdjustment>()
+                .CountAsync(item => item.Status == "Applied"));
+            Assert.Equal(1, await _db.Queryable<AttendancePunchAdjustment>()
+                .CountAsync(item => item.Status == "Pending"));
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "PunchAdjustment" && item.ReviewStatus == "Pending"));
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_ConcurrentManagerDirectForLastSegment_OnlyOneApplies()
+        {
+            await SeedStoreScopeAsync();
+            await SeedStoreManagerRoleAsync("manager-user");
+            await SeedScheduleAsync("first", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(8, 0, 0), new TimeSpan(10, 0, 0));
+            await SeedScheduleAsync("second", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(11, 0, 0), new TimeSpan(13, 0, 0));
+            await SeedScheduleAsync("third", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(14, 0, 0), new TimeSpan(16, 0, 0));
+            await SeedScheduleAsync("fourth", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active", new TimeSpan(17, 0, 0), new TimeSpan(20, 0, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule("first-in", "first", "BRI", "manager-user", "ClockIn", new DateTime(2026, 5, 18, 8, 0, 0)),
+                CreateStoredPunchForSchedule("first-out", "first", "BRI", "manager-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+                CreateStoredPunchForSchedule("second-in", "second", "BRI", "manager-user", "ClockIn", new DateTime(2026, 5, 18, 11, 0, 0)),
+                CreateStoredPunchForSchedule("second-out", "second", "BRI", "manager-user", "ClockOut", new DateTime(2026, 5, 18, 13, 0, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("manager-user", "manager", "StoreManager");
+            var resource = AttendanceDailyMutationLock.BuildResource(
+                "manager-user", "BRI", new DateTime(2026, 5, 18));
+            var heldLock = await AttendanceDailyMutationLock.AcquireProcessAsync(resource);
+
+            var pendingResults = Task.WhenAll(
+                service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 14, 0, 0), Reason = "直接第三段A",
+                }),
+                service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI", ScheduleGuid = "fourth", PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "直接第三段B",
+                }));
+            for (var attempt = 0;
+                attempt < 1000 && AttendanceDailyMutationLock.GetProcessReferenceCount(resource) < 3;
+                attempt++)
+            {
+                await Task.Yield();
+            }
+            Assert.Equal(3, AttendanceDailyMutationLock.GetProcessReferenceCount(resource));
+            await heldLock.DisposeAsync();
+            var results = await pendingResults;
+
+            Assert.Equal(1, results.Count(item => item.Success));
+            Assert.Equal(1, results.Count(item => item.ErrorCode == "SEGMENT_LIMIT_REACHED"));
+            Assert.Equal(1, await _db.Queryable<AttendancePunchAdjustment>()
+                .CountAsync(item => item.Status == "Applied"));
+            Assert.Equal(1, await _db.Queryable<AttendancePunch>()
+                .CountAsync(item => !item.IsDeleted && item.AdjustmentGuid != null));
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_ConcurrentReconcile_CreatesSinglePendingApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch("concurrent-open", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            await Task.WhenAll(
+                service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI"),
+                service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI"));
+
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "MissingClockOut"
+                    && item.SourceGuid == "schedule-1"
+                    && item.ReviewStatus == "Pending"));
         }
 
         [Fact]
@@ -814,13 +2060,14 @@ namespace BlazorApp.Api.Tests
         }
 
         [Theory]
-        [InlineData("ClockIn", "2026-05-18T00:20:00Z", "Late")]
-        [InlineData("ClockOut", "2026-05-18T06:40:00Z", "EarlyLeave")]
-        [InlineData("ClockIn", "2026-05-19T00:00:00Z", "NoSchedule")]
+        [InlineData("ClockIn", "2026-05-18T00:20:00Z", "Late", 1)]
+        [InlineData("ClockOut", "2026-05-18T06:40:00Z", "Break", 0)]
+        [InlineData("ClockIn", "2026-05-19T00:00:00Z", "NoSchedule", 1)]
         public async Task PunchAsync_WhenExceptionalStatus_CreatesPendingApproval(
             string punchType,
             string punchTimeUtc,
-            string expectedStatus
+            string expectedStatus,
+            int expectedApprovalCount
         )
         {
             await SeedStoreScopeAsync();
@@ -832,6 +2079,7 @@ namespace BlazorApp.Api.Tests
                 await _db.Insertable(new AttendancePunch
                 {
                     PunchGuid = Guid.NewGuid().ToString(),
+                    ScheduleGuid = "schedule-1",
                     StoreCode = "BRI",
                     UserGuid = "staff-user",
                     WorkDate = DateTime.Parse(punchTimeUtc).ToUniversalTime().AddHours(10).Date,
@@ -848,7 +2096,7 @@ namespace BlazorApp.Api.Tests
 
             Assert.True(result.Success);
             Assert.Equal(expectedStatus, result.Data!.Status);
-            Assert.Equal(1, await _db.Queryable<AttendanceApproval>().CountAsync());
+            Assert.Equal(expectedApprovalCount, await _db.Queryable<AttendanceApproval>().CountAsync());
         }
 
         [Fact]
@@ -1322,15 +2570,21 @@ namespace BlazorApp.Api.Tests
             }
         }
 
-        private async Task SeedAttendanceSigningKeyAsync()
+        private Task SeedAttendanceSigningKeyAsync() =>
+            SeedAttendanceSigningKeyAsync("K1", "BRI", "POS-001");
+
+        private async Task SeedAttendanceSigningKeyAsync(
+            string kid,
+            string storeCode,
+            string deviceCode)
         {
             await _db.Insertable(new AttendancePosQrKey
             {
-                Kid = "K1",
+                Kid = kid,
                 Algorithm = "A256GCM",
                 ProtectedKey = _attendanceProtector.Protect(_attendanceKey),
-                StoreCode = "BRI",
-                DeviceCode = "POS-001",
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
                 HardwareId = "HW-001",
                 Status = "Active",
                 RegisteredAtUtc = DateTime.UtcNow,
@@ -1361,14 +2615,16 @@ namespace BlazorApp.Api.Tests
             string punchType,
             string punchTimeUtc,
             string storeTimeZone = "Australia/Brisbane",
-            string storeCode = "BRI"
+            string storeCode = "BRI",
+            string kid = "K1",
+            string deviceCode = "POS-001"
         )
         {
             var punchAtUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime();
             _timeProvider.SetUtcNow(punchAtUtc);
             return new AttendancePunchRequestDto
             {
-                QrToken = CreateQrToken(punchAtUtc),
+                QrToken = CreateQrToken(punchAtUtc, storeCode, deviceCode, kid),
                 StoreCode = storeCode,
                 StoreTimeZone = storeTimeZone,
                 PunchType = punchType,
@@ -1442,14 +2698,38 @@ namespace BlazorApp.Api.Tests
             return token[..index] + replacement + token[(index + 1)..];
         }
 
-        private string CreateQrToken(DateTime now, string storeCode = "BRI", string deviceCode = "POS-001") =>
+        private string CreateQrToken(
+            DateTime now,
+            string storeCode = "BRI",
+            string deviceCode = "POS-001",
+            string kid = "K1") =>
             AttendanceQrTokenCodec.Encrypt(new AttendanceQrTokenPayload
             {
                 TokenId = Guid.NewGuid(),
                 StoreCode = storeCode,
                 DeviceCode = deviceCode,
                 IssuedAtUtc = now,
-            }, "K1", _attendanceKey);
+            }, kid, _attendanceKey);
+
+        private async Task<AttendanceApproval> SeedCompletedOvertimeAndGetPendingAsync(
+            string scheduleGuid)
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync(scheduleGuid, "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule($"{scheduleGuid}-in", scheduleGuid, "BRI", "staff-user", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunchForSchedule($"{scheduleGuid}-out", scheduleGuid, "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 17, 23, 0)),
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var today = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            Assert.True(today.Success, today.Message);
+            return await _db.Queryable<AttendanceApproval>().FirstAsync(item =>
+                item.SourceType == "Overtime"
+                && item.SourceGuid == scheduleGuid
+                && item.ReviewStatus == "Pending");
+        }
 
         private sealed class StubAttendancePosDeviceStatusProvider(bool isActive)
             : IAttendancePosDeviceStatusProvider
@@ -1571,6 +2851,24 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
+        private async Task SeedStoreManagerRoleAsync(string userGuid)
+        {
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "store-manager-role",
+                RoleName = "StoreManager",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new UserRole
+            {
+                UserRoleGUID = $"{userGuid}-store-manager-role",
+                UserGUID = userGuid,
+                RoleGUID = "store-manager-role",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
         private async Task SeedEmployeeProfileAsync(string userGuid, EmployeeType? employeeType)
         {
             await _db.Insertable(new EmployeeProfile
@@ -1608,7 +2906,9 @@ namespace BlazorApp.Api.Tests
             string storeCode,
             string userGuid,
             DateTime workDate,
-            string status
+            string status,
+            TimeSpan? startTime = null,
+            TimeSpan? endTime = null
         )
         {
             await _db.Insertable(new AttendanceSchedule
@@ -1617,11 +2917,56 @@ namespace BlazorApp.Api.Tests
                 StoreCode = storeCode,
                 UserGuid = userGuid,
                 WorkDate = workDate,
-                StartTime = new TimeSpan(9, 0, 0),
-                EndTime = new TimeSpan(17, 0, 0),
+                StartTime = startTime ?? new TimeSpan(9, 0, 0),
+                EndTime = endTime ?? new TimeSpan(17, 0, 0),
                 Status = status,
                 CreatedAt = DateTime.UtcNow,
             }).ExecuteCommandAsync();
+        }
+
+        private static AttendancePunch CreateStoredPunch(
+            string punchGuid,
+            string punchType,
+            DateTime punchTimeLocal)
+        {
+            return new AttendancePunch
+            {
+                PunchGuid = punchGuid,
+                ScheduleGuid = "schedule-1",
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                WorkDate = punchTimeLocal.Date,
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = punchType,
+                PunchTimeLocal = punchTimeLocal,
+                PunchTimeUtc = DateTime.SpecifyKind(punchTimeLocal.AddHours(-10), DateTimeKind.Utc),
+                Status = "Normal",
+                CreatedAt = DateTime.UtcNow,
+            };
+        }
+
+        private static AttendancePunch CreateStoredPunchForSchedule(
+            string punchGuid,
+            string scheduleGuid,
+            string storeCode,
+            string userGuid,
+            string punchType,
+            DateTime punchTimeLocal)
+        {
+            return new AttendancePunch
+            {
+                PunchGuid = punchGuid,
+                ScheduleGuid = scheduleGuid,
+                StoreCode = storeCode,
+                UserGuid = userGuid,
+                WorkDate = punchTimeLocal.Date,
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = punchType,
+                PunchTimeLocal = punchTimeLocal,
+                PunchTimeUtc = DateTime.SpecifyKind(punchTimeLocal.AddHours(-10), DateTimeKind.Utc),
+                Status = "Normal",
+                CreatedAt = DateTime.UtcNow,
+            };
         }
 
         private async Task<string> GetScheduleStatusAsync(string scheduleGuid)
