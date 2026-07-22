@@ -3461,6 +3461,8 @@
       "target": "Current Target",
       "forceStatus": "Force Status",
       "updatedAt": "Updated At",
+      "viewQrCode": "View QR Code",
+      "qrCodeTitle": "WPF Download QR Code",
       "setCurrentConfirm": "Set this as the current release?",
       "setCurrent": "Set Current",
       "rollback": "Rollback",

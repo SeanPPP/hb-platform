@@ -3461,6 +3461,8 @@
       "target": "当前目标",
       "forceStatus": "强制状态",
       "updatedAt": "更新时间",
+      "viewQrCode": "查看二维码",
+      "qrCodeTitle": "WPF 下载二维码",
       "setCurrentConfirm": "设为当前发布版本？",
       "setCurrent": "设为当前",
       "rollback": "回退",

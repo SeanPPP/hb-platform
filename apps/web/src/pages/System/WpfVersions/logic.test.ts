@@ -409,6 +409,7 @@ assertEqual(
 await verifyWpfScopeChangeUsesOneFirstPageRequest()
 
 const wpfVersionsPageSource = readFileSync(resolve(process.cwd(), 'src/pages/System/WpfVersions/index.tsx'), 'utf8')
+const wpfQrActionGuardPattern = /\{record\.downloadUrl \? \(\s*<>\s*<Button[\s\S]*?href=\{record\.downloadUrl\}[\s\S]*?<Button[\s\S]*?onClick=\{\(\) => setQrRelease\(record\)\}[\s\S]*?<\/>\s*\) : null\}/
 assertTruthy(
   wpfVersionsPageSource.includes('const resetReleaseScope = useCallback((nextChannel: string, nextIncludeDisabled: boolean) =>')
     && wpfVersionsPageSource.includes('page: 1,')
@@ -435,6 +436,23 @@ assertTruthy(
   wpfVersionsPageSource.includes('expectedQuery.scopeRevision !== currentQuery.scopeRevision')
     && wpfVersionsPageSource.includes('if (!targetChannel || targetChannel !== currentQuery.channel) {'),
   'WPF 旧 mutation 的目标通道与当前 scope 不同时必须直接放弃刷新',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('const [qrRelease, setQrRelease] = useState<WpfAppRelease | null>(null)')
+    && wpfVersionsPageSource.includes('onClick={() => setQrRelease(record)}')
+    && wpfVersionsPageSource.includes("t('system.wpfVersions.viewQrCode', '查看二维码')")
+    && wpfQrActionGuardPattern.test(wpfVersionsPageSource),
+  '只有带下载地址的 WPF 版本操作区才能打开当前行的下载二维码',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('open={Boolean(qrRelease)}')
+    && wpfVersionsPageSource.includes('onCancel={() => setQrRelease(null)}')
+    && wpfVersionsPageSource.includes('<QRCode value={qrRelease.downloadUrl} size={220} />')
+    && wpfVersionsPageSource.includes('<Text strong>{qrRelease.version}</Text>')
+    && wpfVersionsPageSource.includes('<Text>{qrRelease.fileName}</Text>')
+    && wpfVersionsPageSource.includes('copyable={{ text: qrRelease.downloadUrl }}')
+    && wpfVersionsPageSource.includes('{qrRelease.downloadUrl}'),
+  'WPF 下载二维码弹窗必须展示当前版本、文件名、二维码和可复制的同一下载链接',
 )
 
 const localeKeys = collectWpfVersionLocaleKeys()

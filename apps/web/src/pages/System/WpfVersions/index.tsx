@@ -1,6 +1,7 @@
 import {
   CloudUploadOutlined,
   DownloadOutlined,
+  QrcodeOutlined,
   ReloadOutlined,
   RollbackOutlined,
   SaveOutlined,
@@ -18,6 +19,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  QRCode,
   Select,
   Space,
   Switch,
@@ -153,6 +155,7 @@ export default function WpfVersionsPage() {
   const [policySaving, setPolicySaving] = useState(false)
   const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [qrRelease, setQrRelease] = useState<WpfAppRelease | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([])
   const [calculatedSha256, setCalculatedSha256] = useState('')
@@ -685,9 +688,14 @@ export default function WpfVersionsPage() {
         return (
           <Space wrap>
             {record.downloadUrl ? (
-              <Button size="small" icon={<DownloadOutlined />} href={record.downloadUrl} target="_blank">
-                {t('common.download', '下载')}
-              </Button>
+              <>
+                <Button size="small" icon={<DownloadOutlined />} href={record.downloadUrl} target="_blank">
+                  {t('common.download', '下载')}
+                </Button>
+                <Button size="small" icon={<QrcodeOutlined />} onClick={() => setQrRelease(record)}>
+                  {t('system.wpfVersions.viewQrCode', '查看二维码')}
+                </Button>
+              </>
             ) : null}
             <Popconfirm
               title={t('system.wpfVersions.setCurrentConfirm', '设为当前发布版本？')}
@@ -872,6 +880,30 @@ export default function WpfVersionsPage() {
           }}
         />
       </Card>
+
+      <Modal
+        open={Boolean(qrRelease)}
+        title={t('system.wpfVersions.qrCodeTitle', 'WPF 下载二维码')}
+        footer={null}
+        onCancel={() => setQrRelease(null)}
+        destroyOnHidden
+      >
+        {qrRelease?.downloadUrl ? (
+          <Space direction="vertical" size={16} style={{ width: '100%', alignItems: 'center' }}>
+            <QRCode value={qrRelease.downloadUrl} size={220} />
+            <Space direction="vertical" size={2} align="center">
+              <Text strong>{qrRelease.version}</Text>
+              <Text>{qrRelease.fileName}</Text>
+            </Space>
+            <Paragraph
+              copyable={{ text: qrRelease.downloadUrl }}
+              style={{ width: '100%', marginBottom: 0, textAlign: 'center', overflowWrap: 'anywhere' }}
+            >
+              {qrRelease.downloadUrl}
+            </Paragraph>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Drawer
         title={t('system.wpfVersions.uploadTitle', '上传 WPF 安装包')}
