@@ -144,10 +144,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
             await viewModel.LockCashierCommand.ExecuteAsync(null);
 
             Assert.True(locked);
-            Assert.Equal("Lock", viewModel.LockCashierText);
+            Assert.Equal("Log Out", viewModel.LockCashierText);
 
             await localization.SetCultureAsync("zh-CN");
-            Assert.Equal("锁屏", viewModel.LockCashierText);
+            Assert.Equal("登出", viewModel.LockCashierText);
         }
         finally
         {

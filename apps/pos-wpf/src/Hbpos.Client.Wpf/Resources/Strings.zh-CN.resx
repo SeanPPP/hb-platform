@@ -985,7 +985,7 @@
     <value>收银员登录成功。</value>
   </data>
   <data name="shell.cashierLogin.status.locked" xml:space="preserve">
-    <value>已锁屏，请重新登录。</value>
+    <value>已登出，请重新登录。</value>
   </data>
   <data name="shell.cashierLogin.status.offlineSuccess" xml:space="preserve">
     <value>已使用离线收银员缓存登录。</value>
@@ -1583,7 +1583,7 @@
     <value>开钱箱</value>
   </data>
   <data name="pos.terminal.actions.lock" xml:space="preserve">
-    <value>锁屏</value>
+    <value>登出</value>
   </data>
   <data name="pos.terminal.actions.exitApplication" xml:space="preserve">
     <value>退出软件</value>

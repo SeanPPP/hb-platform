@@ -261,7 +261,7 @@ public sealed class MainViewModelScannerTests
         Assert.Empty(viewModel.Session.CashierName);
         Assert.Empty(viewModel.CashierBarcodeInput);
         Assert.True(viewModel.IsCashierLoginOverlayOpen);
-        Assert.Equal("POS locked. Sign in again.", viewModel.StatusMessage);
+        Assert.Equal("Signed out. Sign in again.", viewModel.StatusMessage);
         Assert.Single(cart.Lines);
 
         var logout = Assert.Single(auditLogger.Events.Where(auditEvent =>
