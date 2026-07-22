@@ -369,6 +369,9 @@
   <data name="shell.top.cashierInfo" xml:space="preserve"><value>Cashier: {0}</value></data>
   <data name="shell.footer.terminalInfo" xml:space="preserve"><value>Terminal: {0}</value></data>
   <data name="shell.footer.versionReady" xml:space="preserve"><value>Offline shell ready</value></data>
+  <data name="shell.footer.currentVersion" xml:space="preserve"><value>Current version</value></data>
+  <data name="shell.footer.latestVersion" xml:space="preserve"><value>Latest version</value></data>
+  <data name="shell.footer.targetVersion" xml:space="preserve"><value>Target version</value></data>
   <data name="shell.catalogDownload.preparing" xml:space="preserve"><value>Preparing data</value></data>
   <data name="shell.catalogDownload.comparing" xml:space="preserve"><value>Checking local data</value></data>
   <data name="shell.catalogDownload.downloading" xml:space="preserve"><value>Data download {0}%</value></data>

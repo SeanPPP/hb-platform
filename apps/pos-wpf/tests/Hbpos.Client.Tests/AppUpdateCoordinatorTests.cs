@@ -1,8 +1,10 @@
 using System.Reflection;
 using System.Xml.Linq;
+using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.AppUpdates;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Client.Tests;
 
@@ -97,6 +99,65 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
+    public void AppUpdateState_initializes_current_version_from_registered_provider()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        services.AddSingleton<IAppVersionProvider>(new StaticVersionProvider("2.3.4"));
+
+        using var provider = services.BuildServiceProvider();
+        var state = provider.GetRequiredService<AppUpdateState>();
+
+        Assert.Equal("2.3.4", state.CurrentVersion);
+        Assert.False(state.HasDifferentTargetVersion);
+        Assert.False(state.IsRollbackTarget);
+    }
+
+    [Theory]
+    [InlineData("1.0.0", false, false, false)]
+    [InlineData("1.1.0", true, false, true)]
+    [InlineData("0.9.0", true, true, true)]
+    public void AppUpdateState_applies_equal_upgrade_and_rollback_versions(
+        string targetVersion,
+        bool updateAvailable,
+        bool isRollback,
+        bool expectedDifferent)
+    {
+        var state = new AppUpdateState();
+        state.InitializeCurrentVersion("1.0.0");
+
+        state.ApplyVersionCheck(new AppUpdateCheckResponse
+        {
+            CurrentVersion = "1.0.0",
+            TargetVersion = targetVersion,
+            UpdateAvailable = updateAvailable,
+            IsRollback = isRollback
+        });
+
+        Assert.Equal("1.0.0", state.CurrentVersion);
+        Assert.Equal(expectedDifferent, state.HasDifferentTargetVersion);
+        Assert.Equal(expectedDifferent && isRollback, state.IsRollbackTarget);
+    }
+
+    [Fact]
+    public void AppUpdateState_repeated_check_and_failure_clear_previous_target_display()
+    {
+        var state = new AppUpdateState();
+        state.InitializeCurrentVersion("1.0.0");
+        state.ApplyVersionCheck(CreateRelease(force: false));
+
+        state.ApplyVersionCheck(AppUpdateCheckResponse.NoUpdate("1.0.0"));
+        Assert.False(state.HasDifferentTargetVersion);
+
+        state.ApplyVersionCheck(CreateRelease(force: false));
+        state.ClearVersionCheckResult();
+
+        Assert.Equal("1.0.0", state.CurrentVersion);
+        Assert.False(state.HasDifferentTargetVersion);
+        Assert.False(state.IsRollbackTarget);
+    }
+
+    [Fact]
     public async Task CheckForUpdatesAsync_downloads_optional_update_before_install_confirmation()
     {
         var release = CreateRelease(force: false);
@@ -141,6 +202,10 @@ public sealed class AppUpdateCoordinatorTests
         Assert.Equal(1, download.CallCount);
         Assert.Equal(0, installer.LaunchCallCount);
         Assert.False(state.IsOptionalUpdateReady);
+        Assert.Equal("1.0.0", state.CurrentVersion);
+        Assert.True(state.HasDifferentTargetVersion);
+        Assert.False(state.IsRollbackTarget);
+        Assert.Equal("1.1.0", state.TargetVersion);
     }
 
     [Fact]
@@ -452,17 +517,20 @@ public sealed class AppUpdateCoordinatorTests
     [Fact]
     public async Task CheckForUpdatesAsync_manual_no_update_returns_localized_status()
     {
+        var state = new AppUpdateState();
         var coordinator = CreateCoordinator(
             AppUpdateCheckResponse.NoUpdate("1.0.0"),
             new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe")),
             new CapturingInstallerLauncher(),
             new CapturingPromptService(),
-            new AppUpdateState());
+            state);
 
         var result = await coordinator.CheckForUpdatesAsync(manual: true);
 
         Assert.Equal(AppUpdateCoordinatorStatus.NoUpdate, result.Status);
         Assert.Equal("settings.status.appUpdateLatest", result.StatusKey);
+        Assert.Equal("1.0.0", state.CurrentVersion);
+        Assert.False(state.HasDifferentTargetVersion);
     }
 
     [Fact]
@@ -520,6 +588,7 @@ public sealed class AppUpdateCoordinatorTests
             new CapturingInstallerLauncher(),
             new CapturingPromptService(),
             state);
+        state.ApplyVersionCheck(CreateRelease(force: false));
 
         var result = await coordinator.CheckForUpdatesAsync(manual: true);
 
@@ -528,6 +597,9 @@ public sealed class AppUpdateCoordinatorTests
         Assert.False(state.IsForceUpdateBlocking);
         Assert.False(state.IsInstallerReady);
         Assert.Equal("settings.status.appUpdateCheckFailed", state.StatusKey);
+        Assert.Equal("1.0.0", state.CurrentVersion);
+        Assert.False(state.HasDifferentTargetVersion);
+        Assert.False(state.IsRollbackTarget);
     }
 
     [Fact]
@@ -645,8 +717,10 @@ public sealed class AppUpdateCoordinatorTests
         IAppUpdateChannelProvider? channelProvider = null,
         IAppUpdateInstallSafetyGuard? guard = null)
     {
+        var versionProvider = new StaticVersionProvider("1.0.0");
+        state.InitializeCurrentVersion(versionProvider.CurrentVersion);
         return new AppUpdateCoordinator(
-            new StaticVersionProvider("1.0.0"),
+            versionProvider,
             apiClient,
             downloadService,
             installerLauncher,

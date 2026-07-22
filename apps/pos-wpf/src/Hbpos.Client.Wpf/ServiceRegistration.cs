@@ -254,8 +254,14 @@ public static class ServiceRegistration
         services.AddSingleton<IShellCatalogService, ShellCatalogService>();
         services.AddSingleton<IMainShellStartupService, MainShellStartupService>();
         services.AddSingleton<IShellSyncCenterService, ShellSyncCenterService>();
-        services.AddSingleton<AppUpdateState>();
         services.AddSingleton<IAppVersionProvider, AppVersionProvider>();
+        services.AddSingleton(serviceProvider =>
+        {
+            var state = new AppUpdateState();
+            state.InitializeCurrentVersion(
+                serviceProvider.GetRequiredService<IAppVersionProvider>().CurrentVersion);
+            return state;
+        });
         services.AddSingleton<IAppUpdateChannelProvider, AppUpdateChannelProvider>();
         services.AddHttpClient<IAppUpdateApiClient, AppUpdateApiClient>(client =>
         {

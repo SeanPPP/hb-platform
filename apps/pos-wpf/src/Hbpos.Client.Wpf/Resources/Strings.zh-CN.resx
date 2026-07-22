@@ -1041,6 +1041,15 @@
   <data name="shell.footer.versionReady" xml:space="preserve">
     <value>离线 Shell 已就绪</value>
   </data>
+  <data name="shell.footer.currentVersion" xml:space="preserve">
+    <value>当前版本</value>
+  </data>
+  <data name="shell.footer.latestVersion" xml:space="preserve">
+    <value>最新版本</value>
+  </data>
+  <data name="shell.footer.targetVersion" xml:space="preserve">
+    <value>目标版本</value>
+  </data>
   <data name="shell.catalogDownload.preparing" xml:space="preserve">
     <value>正在准备数据</value>
   </data>
