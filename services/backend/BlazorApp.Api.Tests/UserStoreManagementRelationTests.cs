@@ -1552,6 +1552,31 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Data.Users[0].IsPrimary);
         }
 
+        [Theory]
+        [InlineData("store-1", true)]
+        [InlineData("inactive-store", false)]
+        public async Task GetStoreByGuidAsync_ReturnsPersistedIsActiveForEnabledAndInactiveStores(
+            string storeGuid,
+            bool expectedIsActive
+        )
+        {
+            await SeedUsersAndStoresAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "inactive-store",
+                StoreCode = "INACTIVE-DETAIL",
+                StoreName = "Inactive Detail Store",
+                IsActive = false,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetStoreByGuidAsync(storeGuid);
+
+            Assert.True(result.Success);
+            Assert.Equal(expectedIsActive, result.Data!.IsActive);
+        }
+
         [Fact]
         public async Task GetStoresAsync_FiltersByBrandNameAndSortsStoreColumns()
         {

@@ -1356,6 +1356,8 @@ WHEN NOT MATCHED THEN
                     Address = store.Address,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
+                    // 分店详情必须保留数据库状态，避免 DTO 默认值覆盖停用分店。
+                    IsActive = store.IsActive,
                     Users = users,
                     TotalUsers = users.Count,
                     ActiveUsers = users.Count(u => true), // 这里可以根据用户状态进一步筛选
