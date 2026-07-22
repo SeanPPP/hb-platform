@@ -88,6 +88,10 @@ public sealed class MainViewModelScannerTests
         Assert.Same(originalScreen, viewModel.CurrentScreen);
         Assert.Empty(authorization.Barcodes);
         Assert.Null(scanner.ActivePageId);
+
+        viewModel.IsApiServerSwitching = false;
+
+        Assert.Equal(PosTerminalViewModel.PageId, scanner.ActivePageId);
     }
 
     [Fact]

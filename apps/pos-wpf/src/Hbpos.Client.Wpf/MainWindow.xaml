@@ -834,7 +834,8 @@
               Visibility="{Binding IsCashierLoginOverlayOpen, Converter={StaticResource BoolToVis}}"
               Background="#99000000"
               Panel.ZIndex="97"
-              IsVisibleChanged="CashierLoginOverlayIsVisibleChanged">
+              IsVisibleChanged="CashierLoginOverlayIsVisibleChanged"
+              IsEnabledChanged="CashierLoginOverlayIsEnabledChanged">
             <Border Width="520"
                     MaxHeight="680"
                     Padding="26"
