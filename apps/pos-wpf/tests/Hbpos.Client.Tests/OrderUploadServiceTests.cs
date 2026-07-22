@@ -37,6 +37,98 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task GetReuploadableOrderGuidsAsync_forwards_the_date_range_and_terminal()
+    {
+        var soldFrom = DateTimeOffset.Parse("2026-07-21T00:00:00+10:00");
+        var soldTo = soldFrom.AddDays(1).AddTicks(-1);
+        var expected = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var repository = new StubOrderUploadRepository
+        {
+            ReuploadableOrderGuids = expected
+        };
+        var executor = new OrderUploadExecutionService(new RecordingOrderUploadService(Guid.Empty), repository);
+
+        var actual = await executor.GetReuploadableOrderGuidsAsync(soldFrom, soldTo, "pos-01");
+
+        Assert.Equal(expected, actual);
+        Assert.NotNull(repository.LastReuploadableQuery);
+        Assert.Equal(soldFrom, repository.LastReuploadableQuery.Value.SoldFrom);
+        Assert.Equal(soldTo, repository.LastReuploadableQuery.Value.SoldTo);
+        Assert.Equal("pos-01", repository.LastReuploadableQuery.Value.DeviceCode);
+    }
+
+    [Fact]
+    public async Task Local_order_upload_repository_returns_all_reuploadable_orders_in_stable_range_order()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-reupload-query-{Guid.NewGuid():N}.db");
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalOrderUploadRepository(store);
+            var soldFrom = DateTimeOffset.Parse("2026-07-21T00:00:00+10:00");
+            var soldTo = soldFrom.AddDays(1).AddTicks(-1);
+            var eligible = new List<ReuploadableOrderSeed>
+            {
+                new(Guid.Parse("00000000-0000-0000-0000-000000000002"), soldFrom, "POS-01", "Synced"),
+                new(Guid.Parse("00000000-0000-0000-0000-000000000001"), soldFrom, "POS-01", "Pending")
+            };
+
+            for (var index = 0; index <= 500; index++)
+            {
+                eligible.Add(new(
+                    Guid.Parse($"00000000-0000-0000-0000-{index + 3:D12}"),
+                    soldFrom.AddMinutes(index + 1),
+                    "POS-01",
+                    (index % 3) switch
+                    {
+                        0 => "Synced",
+                        1 => "Pending",
+                        _ => "Failed"
+                    }));
+            }
+
+            eligible.Add(new(
+                Guid.Parse("00000000-0000-0000-0000-999999999999"),
+                soldTo,
+                "POS-01",
+                "Failed"));
+            var excluded = new[]
+            {
+                new ReuploadableOrderSeed(Guid.NewGuid(), soldFrom, "POS-01", "Syncing"),
+                new ReuploadableOrderSeed(Guid.NewGuid(), soldFrom, "POS-02", "Synced"),
+                new ReuploadableOrderSeed(Guid.NewGuid(), soldFrom.AddTicks(-1), "POS-01", "Pending"),
+                new ReuploadableOrderSeed(Guid.NewGuid(), soldTo.AddTicks(1), "POS-01", "Failed")
+            };
+
+            await schema.InitializeAsync();
+            await SeedLocalOrdersAsync(store, eligible.Concat(excluded));
+
+            var actual = await repository.GetReuploadableOrderGuidsAsync(soldFrom, soldTo, "pos-01");
+            var expected = eligible
+                .OrderBy(order => order.SoldAt)
+                .ThenBy(order => order.OrderGuid)
+                .Select(order => order.OrderGuid)
+                .ToArray();
+
+            Assert.Equal(504, actual.Count);
+            Assert.Equal(expected, actual);
+
+            var allTerminals = await repository.GetReuploadableOrderGuidsAsync(soldFrom, soldTo, null);
+            Assert.Equal(505, allTerminals.Count);
+            Assert.Contains(excluded[1].OrderGuid, allTerminals);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ExecuteSelectedAsync_queues_remaining_orders_until_inflight_endpoint_switch_commits()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-switch-{Guid.NewGuid():N}.db");
@@ -73,7 +165,7 @@ public sealed class OrderUploadServiceTests
             var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
             var interrupted = await execution.WaitAsync(TimeSpan.FromSeconds(2));
 
-            Assert.Equal(new OrderUploadExecutionResult(2, 0, 2), interrupted);
+            Assert.Equal(new OrderUploadExecutionResult(2, 0, 2, WasInterrupted: true), interrupted);
             Assert.Equal([new Uri($"{oldAddress}api/v1/orders/sync")], handler.RequestUris);
             Assert.All(await orders.GetRecentOrdersAsync(), item => Assert.Equal("Pending", item.SyncStatus));
 
@@ -102,6 +194,101 @@ public sealed class OrderUploadServiceTests
                 File.Delete(databasePath);
             }
         }
+    }
+
+    [Fact]
+    public async Task UploadOrderAsync_keeps_order_pending_when_new_request_is_rejected_during_transition()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-transition-open-{Guid.NewGuid():N}.db");
+        const string oldAddress = "https://old.example.test/pos-api/";
+        const string newAddress = "https://new.example.test/pos-api/";
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder();
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(order);
+
+            var endpointState = new ApiRuntimeEndpointState(oldAddress);
+            using var httpClient = new HttpClient(new ApiRuntimeEndpointHandler(endpointState)
+            {
+                InnerHandler = new EndpointSwitchOrderSyncHandler()
+            })
+            {
+                BaseAddress = new Uri(oldAddress)
+            };
+            var uploadService = new OrderUploadService(
+                orders,
+                new OrderSyncApiClient(httpClient),
+                uploadRepository);
+            var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                uploadService.UploadOrderAsync(order.OrderGuid));
+
+            Assert.Equal(
+                "Pending",
+                Assert.Single(await orders.GetRecentOrdersAsync()).SyncStatus);
+            endpointState.Abort(transition);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_stops_batch_when_new_request_is_rejected_during_transition()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var uploader = new EndpointTransitionOrderUploadService();
+        var repository = new StubOrderUploadRepository();
+        var executor = new OrderUploadExecutionService(uploader, repository);
+
+        var result = await executor.ExecuteSelectedAsync([first, second]);
+
+        Assert.Equal(new OrderUploadExecutionResult(2, 0, 2, WasInterrupted: true), result);
+        Assert.Equal([first], uploader.Attempts);
+        Assert.Equal([first, second], repository.MarkedPendingOrderGuids);
+    }
+
+    [Fact]
+    public async Task ExecuteOneAsync_reports_endpoint_transition_as_interrupted_not_failed()
+    {
+        var orderGuid = Guid.NewGuid();
+        var uploader = new EndpointTransitionOrderUploadService();
+        var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
+
+        var result = await executor.ExecuteOneAsync(orderGuid);
+
+        Assert.Equal(new OrderUploadExecutionResult(1, 0, 0, WasInterrupted: true), result);
+        Assert.Equal([orderGuid], uploader.Attempts);
+    }
+
+    [Fact]
+    public async Task ExecutePendingAsync_stops_after_endpoint_transition_rejection()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var uploader = new EndpointTransitionOrderUploadService();
+        var repository = new StubOrderUploadRepository
+        {
+            PendingOrderGuids = [first, second]
+        };
+        var executor = new OrderUploadExecutionService(uploader, repository);
+
+        var result = await executor.ExecutePendingAsync();
+
+        Assert.Equal(new OrderUploadExecutionResult(2, 0, 0, WasInterrupted: true), result);
+        Assert.Equal([first], uploader.Attempts);
     }
 
     [Fact]
@@ -604,6 +791,53 @@ public sealed class OrderUploadServiceTests
             ]);
     }
 
+    private static async Task SeedLocalOrdersAsync(
+        LocalSqliteStore store,
+        IEnumerable<ReuploadableOrderSeed> orders)
+    {
+        await using var connection = await store.OpenConnectionAsync();
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO LocalOrders (
+                OrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SoldAt,
+                TotalAmount, DiscountAmount, ActualAmount, SyncStatus)
+            VALUES (
+                $OrderGuid, 'S001', $DeviceCode, 'C001', 'Alice', $SoldAt,
+                '1.00', '0.00', '1.00', $SyncStatus);
+            """;
+        var orderGuid = command.CreateParameter();
+        orderGuid.ParameterName = "$OrderGuid";
+        command.Parameters.Add(orderGuid);
+        var deviceCode = command.CreateParameter();
+        deviceCode.ParameterName = "$DeviceCode";
+        command.Parameters.Add(deviceCode);
+        var soldAt = command.CreateParameter();
+        soldAt.ParameterName = "$SoldAt";
+        command.Parameters.Add(soldAt);
+        var syncStatus = command.CreateParameter();
+        syncStatus.ParameterName = "$SyncStatus";
+        command.Parameters.Add(syncStatus);
+
+        foreach (var order in orders)
+        {
+            orderGuid.Value = order.OrderGuid.ToString("D");
+            deviceCode.Value = order.DeviceCode;
+            soldAt.Value = order.SoldAt.ToString("O");
+            syncStatus.Value = order.SyncStatus;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+    }
+
+    private sealed record ReuploadableOrderSeed(
+        Guid OrderGuid,
+        DateTimeOffset SoldAt,
+        string DeviceCode,
+        string SyncStatus);
+
     private sealed class StubOrderSyncApiClient(OrderSyncResponse response) : IOrderSyncApiClient
     {
         public Task<OrderSyncResponse> SyncAsync(OrderSyncRequest request, CancellationToken cancellationToken = default)
@@ -668,6 +902,17 @@ public sealed class OrderUploadServiceTests
             Attempts.Add(orderGuid);
             _firstRequestStarted.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
+    private sealed class EndpointTransitionOrderUploadService : IOrderUploadService
+    {
+        public List<Guid> Attempts { get; } = [];
+
+        public Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            Attempts.Add(orderGuid);
+            return Task.FromCanceled(new CancellationToken(canceled: true));
         }
     }
 
@@ -740,11 +985,33 @@ public sealed class OrderUploadServiceTests
 
     private sealed class StubOrderUploadRepository : ILocalOrderUploadRepository
     {
+        public IReadOnlyList<Guid> PendingOrderGuids { get; init; } = [];
+
+        public IReadOnlyList<Guid> ReuploadableOrderGuids { get; init; } = [];
+
+        public List<Guid> MarkedPendingOrderGuids { get; } = [];
+
+        public (DateTimeOffset SoldFrom, DateTimeOffset SoldTo, string? DeviceCode)? LastReuploadableQuery { get; private set; }
+
         public Task<IReadOnlyList<Guid>> GetPendingOrderGuidsAsync(int take = 20, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Guid>>([]);
+            Task.FromResult<IReadOnlyList<Guid>>(PendingOrderGuids.Take(take).ToArray());
+
+        public Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+            DateTimeOffset soldFrom,
+            DateTimeOffset soldTo,
+            string? deviceCode,
+            CancellationToken cancellationToken = default)
+        {
+            LastReuploadableQuery = (soldFrom, soldTo, deviceCode);
+            return Task.FromResult(ReuploadableOrderGuids);
+        }
 
         public Task MarkSyncingAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            MarkedPendingOrderGuids.Add(orderGuid);
+            return Task.CompletedTask;
+        }
         public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }

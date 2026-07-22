@@ -20,13 +20,6 @@
             <Setter Property="SnapsToDevicePixels" Value="True" />
         </Style>
 
-        <Style x:Key="HistoryFilterLabel" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Foreground" Value="#FF64748B" />
-            <Setter Property="Margin" Value="0,0,0,6" />
-        </Style>
-
         <Style x:Key="HistoryColumnHeaderStyle" TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#FFF8FAFC" />
             <Setter Property="Foreground" Value="#FF475569" />
@@ -90,9 +83,10 @@
 
         <Style x:Key="HistorySegmentRadioStyle" TargetType="RadioButton">
             <Setter Property="MinHeight" Value="42" />
-            <Setter Property="MinWidth" Value="72" />
-            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="MinWidth" Value="52" />
+            <Setter Property="Padding" Value="10,0" />
             <Setter Property="Margin" Value="0" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="#FF334155" />
             <Setter Property="Cursor" Value="Hand" />
@@ -187,7 +181,6 @@
         <Grid Grid.Column="0" Margin="20,18,14,18">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -195,6 +188,9 @@
             <Grid Grid.Row="0" Margin="0,0,0,14">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="128" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
@@ -202,136 +198,119 @@
                 <Button Grid.Column="0"
                         Command="{Binding ReturnToPosCommand}"
                         Height="44"
-                        Padding="14,0"
-                        Margin="0,0,16,0"
+                        Padding="10,0"
+                        Margin="0,0,8,0"
+                        FontSize="12"
                         Style="{StaticResource PosSecondaryButtonStyle}">
                     <StackPanel Orientation="Horizontal">
-                        <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
+                        <materialDesign:PackIcon Kind="ArrowLeft" Width="16" Height="16" Margin="0,0,6,0" />
                         <TextBlock Text="{loc:Loc shell.backToPos}" FontWeight="SemiBold" />
                     </StackPanel>
                 </Button>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding TitleText}"
-                               FontSize="28"
-                               FontWeight="Black"
-                               Foreground="{StaticResource PosTextBrush}" />
-                    <Border Margin="16,3,0,0"
-                            Padding="10,4"
-                            CornerRadius="12"
-                            Background="#FFEFF6FF"
-                            BorderBrush="#FFBFDBFE"
-                            BorderThickness="1"
-                            VerticalAlignment="Center">
-                        <TextBlock Foreground="{StaticResource PosPrimaryBrush}" FontWeight="SemiBold">
-                            <Run Text="{loc:Loc history.showingPrefix}" />
-                            <Run Text="{Binding Orders.Count, Mode=OneWay}" />
-                            <Run Text=" " />
-                            <Run Text="{loc:Loc history.transactions}" />
-                        </TextBlock>
-                    </Border>
-                </StackPanel>
+                <Border Grid.Column="1"
+                        Height="44"
+                        Padding="2"
+                        Margin="0,0,8,0"
+                        BorderBrush="#FFD7DEE8"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Background="#FFF8FAFC">
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton Content="{loc:Loc history.source.local}"
+                                     GroupName="HistorySource"
+                                     IsChecked="{Binding IsLocalSourceSelected, Mode=TwoWay}"
+                                     Style="{StaticResource HistorySegmentRadioStyle}" />
+                        <RadioButton Content="{loc:Loc history.source.online}"
+                                     GroupName="HistorySource"
+                                     IsChecked="{Binding IsOnlineSourceSelected, Mode=TwoWay}"
+                                     Style="{StaticResource HistorySegmentRadioStyle}" />
+                        <RadioButton Content="{loc:Loc history.source.installments}"
+                                     GroupName="HistorySource"
+                                     IsChecked="{Binding IsInstallmentSourceSelected, Mode=TwoWay}"
+                                     Style="{StaticResource HistorySegmentRadioStyle}" />
+                    </StackPanel>
+                </Border>
 
-                <Button Grid.Column="2"
+                <Border Grid.Column="2"
+                        Height="44"
+                        Margin="0,0,8,0"
+                        Padding="2,0"
+                        Background="White"
+                        BorderBrush="#FFD7DEE8"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        ToolTip="{loc:Loc history.dateRangeLabel}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DatePicker SelectedDate="{Binding DateFrom, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                    SelectedDateFormat="Short"
+                                    Height="42"
+                                    FontSize="12"
+                                    BorderThickness="0"
+                                    Background="Transparent"
+                                    ToolTip="{loc:Loc history.dateRangeLabel}" />
+                        <TextBlock Grid.Column="1"
+                                   Text="-"
+                                   Foreground="#FF64748B"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                        <DatePicker Grid.Column="2"
+                                    SelectedDate="{Binding DateTo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                    SelectedDateFormat="Short"
+                                    Height="42"
+                                    FontSize="12"
+                                    BorderThickness="0"
+                                    Background="Transparent"
+                                    ToolTip="{loc:Loc history.dateRangeLabel}" />
+                    </Grid>
+                </Border>
+
+                <ComboBox Grid.Column="3"
+                          ItemsSource="{Binding TerminalOptions}"
+                          SelectedItem="{Binding SelectedTerminalOption, Mode=TwoWay}"
+                          DisplayMemberPath="Label"
+                          Height="44"
+                          Margin="0,0,8,0"
+                          FontSize="12"
+                          ToolTip="{loc:Loc Terminal}" />
+
+                <Grid Grid.Column="4" Margin="0,0,8,0" MinWidth="96">
+                    <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                             materialDesign:HintAssist.Hint="{Binding SearchHintText}"
+                             Height="44"
+                             FontSize="13"
+                             Padding="36,0,8,0"
+                             Style="{StaticResource PosSearchTextBoxStyle}" />
+                    <materialDesign:PackIcon Kind="Magnify"
+                                             Width="17"
+                                             Height="17"
+                                             Foreground="#FF94A3B8"
+                                             Margin="12,0,0,0"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Center"
+                                             IsHitTestVisible="False" />
+                </Grid>
+
+                <Button Grid.Column="5"
                         Command="{Binding LoadCommand}"
                         Height="44"
-                        MinWidth="96"
-                        Padding="14,0"
+                        MinWidth="74"
+                        Padding="10,0"
+                        FontSize="12"
                         Style="{StaticResource PosSecondaryButtonStyle}">
                     <StackPanel Orientation="Horizontal">
-                        <materialDesign:PackIcon Kind="Refresh" Width="17" Height="17" Margin="0,0,7,0" />
+                        <materialDesign:PackIcon Kind="Refresh" Width="16" Height="16" Margin="0,0,6,0" />
                         <TextBlock Text="{loc:Loc common.load}" FontWeight="SemiBold" />
                     </StackPanel>
                 </Button>
             </Grid>
 
             <Border Grid.Row="1"
-                    Style="{StaticResource HistoryPanelStyle}"
-                    Padding="14"
-                    Margin="0,0,0,14">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="300" />
-                        <ColumnDefinition Width="160" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0"
-                            Height="48"
-                            Padding="3"
-                            BorderBrush="#FFD7DEE8"
-                            BorderThickness="1"
-                            CornerRadius="8"
-                            Background="#FFF8FAFC"
-                            VerticalAlignment="Bottom"
-                            Margin="0,0,12,0">
-                        <StackPanel Orientation="Horizontal">
-                            <RadioButton Content="{loc:Loc history.source.local}"
-                                         GroupName="HistorySource"
-                                         IsChecked="{Binding IsLocalSourceSelected, Mode=TwoWay}"
-                                         Style="{StaticResource HistorySegmentRadioStyle}" />
-                            <RadioButton Content="{loc:Loc history.source.online}"
-                                         GroupName="HistorySource"
-                                         IsChecked="{Binding IsOnlineSourceSelected, Mode=TwoWay}"
-                                         Style="{StaticResource HistorySegmentRadioStyle}" />
-                            <RadioButton Content="{loc:Loc history.source.installments}"
-                                         GroupName="HistorySource"
-                                         IsChecked="{Binding IsInstallmentSourceSelected, Mode=TwoWay}"
-                                         Style="{StaticResource HistorySegmentRadioStyle}" />
-                        </StackPanel>
-                    </Border>
-
-                    <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="{loc:Loc history.dateRangeLabel}" Style="{StaticResource HistoryFilterLabel}" />
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="8" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <DatePicker SelectedDate="{Binding DateFrom, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                        Height="48"
-                                        FontSize="15" />
-                            <DatePicker Grid.Column="2"
-                                        SelectedDate="{Binding DateTo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                        Height="48"
-                                        FontSize="15" />
-                        </Grid>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="2" Margin="0,0,12,0">
-                        <TextBlock Text="{loc:Loc Terminal}" Style="{StaticResource HistoryFilterLabel}" />
-                        <ComboBox ItemsSource="{Binding TerminalOptions}"
-                                  SelectedItem="{Binding SelectedTerminalOption, Mode=TwoWay}"
-                                  DisplayMemberPath="Label"
-                                  Height="48"
-                                  FontSize="15" />
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="3">
-                        <TextBlock Text="{loc:Loc history.searchLabel}" Style="{StaticResource HistoryFilterLabel}" />
-                        <Grid>
-                            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                                     materialDesign:HintAssist.Hint="{Binding SearchHintText}"
-                                     Height="48"
-                                     FontSize="15"
-                                     Padding="40,0,12,0"
-                                     Style="{StaticResource PosSearchTextBoxStyle}" />
-                            <materialDesign:PackIcon Kind="Magnify"
-                                                     Width="18"
-                                                     Height="18"
-                                                     Foreground="#FF94A3B8"
-                                                     Margin="14,0,0,0"
-                                                     HorizontalAlignment="Left"
-                                                     VerticalAlignment="Center"
-                                                     IsHitTestVisible="False" />
-                        </Grid>
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="2"
                     Style="{StaticResource HistoryPanelStyle}"
                     ClipToBounds="True">
                 <DataGrid x:Name="HistoryOrdersGrid"
@@ -421,7 +400,7 @@
                 </DataGrid>
             </Border>
 
-            <Border Grid.Row="3"
+            <Border Grid.Row="2"
                     Style="{StaticResource HistoryPanelStyle}"
                     Padding="16,12"
                     Margin="0,14,0,0">
@@ -462,6 +441,20 @@
                             Padding="14,0"
                             Margin="12,0,0,0"
                             Style="{StaticResource PosPrimaryButtonStyle}" />
+
+                    <Button DockPanel.Dock="Right"
+                            Command="{Binding ReuploadDateRangeCommand}"
+                            ToolTip="{loc:Loc history.reuploadDateRangeTooltip}"
+                            Visibility="{Binding IsLocalSourceSelected, Converter={StaticResource BoolToVis}}"
+                            Height="40"
+                            Padding="14,0"
+                            Margin="12,0,0,0"
+                            Style="{StaticResource HistoryIconTextButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Upload" Width="16" Height="16" Margin="0,0,6,0" />
+                            <TextBlock Text="{loc:Loc history.reuploadDateRange}" />
+                        </StackPanel>
+                    </Button>
 
                     <Button DockPanel.Dock="Right"
                             Command="{Binding SelectAllReuploadableCommand}"

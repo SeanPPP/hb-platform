@@ -46,12 +46,8 @@ public sealed class ServiceRegistrationSquareClientTests
     }
 
     [Fact]
-    public void AddHbposClientServices_configures_square_terminal_clients_with_hbpos_api_base_and_device_auth_handler()
+    public void AddHbposClientServices_configures_square_terminal_clients_with_resolved_api_base_and_device_auth_handler()
     {
-        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
-        {
-            ["HBPOS_API_BASE_URL"] = "http://127.0.0.1:55159"
-        });
         var services = new ServiceCollection();
         services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
 
@@ -64,7 +60,7 @@ public sealed class ServiceRegistrationSquareClientTests
 
         var clientFactory = provider.GetRequiredService<IHttpClientFactory>();
         var handlerFactory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
-        var expectedBaseAddress = new Uri("http://127.0.0.1:55159/");
+        var expectedBaseAddress = ServiceRegistration.GetApiBaseAddress();
 
         AssertSquareTerminalClientRegistration(
             clientFactory,
@@ -113,25 +109,4 @@ public sealed class ServiceRegistrationSquareClientTests
         return handlerTypes;
     }
 
-    private sealed class EnvironmentVariableScope : IDisposable
-    {
-        private readonly Dictionary<string, string?> _originalValues = new(StringComparer.OrdinalIgnoreCase);
-
-        public EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
-        {
-            foreach (var entry in values)
-            {
-                _originalValues[entry.Key] = Environment.GetEnvironmentVariable(entry.Key);
-                Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-            }
-        }
-
-        public void Dispose()
-        {
-            foreach (var entry in _originalValues)
-            {
-                Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-            }
-        }
-    }
 }

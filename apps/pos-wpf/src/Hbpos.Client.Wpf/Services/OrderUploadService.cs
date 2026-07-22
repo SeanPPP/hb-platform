@@ -20,6 +20,13 @@ public sealed class OrderUploadAuthorizationRequiredException(string message, Ex
 
 public interface IOrderUploadExecutionService
 {
+    Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+        DateTimeOffset soldFrom,
+        DateTimeOffset soldTo,
+        string? deviceCode,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Guid>>([]);
+
     Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
     Task<OrderUploadExecutionResult> ExecutePendingAsync(int batchSize = 20, CancellationToken cancellationToken = default);
@@ -79,6 +86,13 @@ public sealed class OrderUploadService(
             await uploadRepository.MarkPendingAsync(orderGuid, cancellationToken);
             Log($"upload deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
             throw new OrderUploadAuthorizationRequiredException("需要有效收银员授权后再上传订单。", ex);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 旧端点代际被切换取消不属于订单失败；恢复 Pending，交给新端点继续上传。
+            await uploadRepository.MarkPendingAsync(orderGuid, CancellationToken.None);
+            Log($"upload deferred orderGuid={orderGuid:D} reason=endpoint-generation-canceled");
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -166,6 +180,15 @@ public sealed class OrderUploadExecutionService(
     // ponytail: 单客户端全局串行足以消除状态覆盖；仅在实测吞吐不足时升级为按订单 GUID 加锁。
     private readonly SemaphoreSlim _executionGate = new(1, 1);
 
+    public Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+        DateTimeOffset soldFrom,
+        DateTimeOffset soldTo,
+        string? deviceCode,
+        CancellationToken cancellationToken = default)
+    {
+        return uploadRepository.GetReuploadableOrderGuidsAsync(soldFrom, soldTo, deviceCode, cancellationToken);
+    }
+
     public async Task<OrderUploadExecutionResult> ExecuteSelectedAsync(
         IReadOnlyCollection<Guid> orderGuids,
         CancellationToken cancellationToken = default)
@@ -178,6 +201,7 @@ public sealed class OrderUploadExecutionService(
             var selected = orderGuids.Where(id => id != Guid.Empty).Distinct().ToArray();
             var uploadedCount = 0;
             var failedCount = 0;
+            var wasInterrupted = false;
             for (var index = 0; index < selected.Length; index++)
             {
                 var orderGuid = selected[index];
@@ -187,7 +211,7 @@ public sealed class OrderUploadExecutionService(
                     await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
                     uploadedCount++;
                 }
-                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (IsEndpointTransitionInterruption(ex, cancellationToken))
                 {
                     // 端点发布前新请求仍被封闭；将当前项和剩余选择统一入队，交给新端点继续上传。
                     for (var pendingIndex = index; pendingIndex < selected.Length; pendingIndex++)
@@ -196,9 +220,10 @@ public sealed class OrderUploadExecutionService(
                     }
 
                     failedCount += selected.Length - index;
+                    wasInterrupted = true;
                     Log(
                         $"execute selected batch interrupted orderGuid={orderGuid:D} queued={selected.Length - index} " +
-                        "reason=endpoint-generation-canceled " +
+                        "reason=endpoint-transition " +
                         $"error={ex.GetType().Name}");
                     break;
                 }
@@ -218,7 +243,7 @@ public sealed class OrderUploadExecutionService(
                 }
             }
 
-            return new OrderUploadExecutionResult(selected.Length, uploadedCount, failedCount);
+            return new OrderUploadExecutionResult(selected.Length, uploadedCount, failedCount, wasInterrupted);
         }
         finally
         {
@@ -238,6 +263,13 @@ public sealed class OrderUploadExecutionService(
                 await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
                 Log($"execute one completed orderGuid={orderGuid:D} uploaded=1 failed=0 elapsedMs={stopwatch.ElapsedMilliseconds}");
                 return new OrderUploadExecutionResult(1, 1, 0);
+            }
+            catch (Exception ex) when (IsEndpointTransitionInterruption(ex, cancellationToken))
+            {
+                Log(
+                    $"execute one interrupted orderGuid={orderGuid:D} reason=endpoint-transition " +
+                    $"error={ex.GetType().Name} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return new OrderUploadExecutionResult(1, 0, 0, WasInterrupted: true);
             }
             catch (OperationCanceledException)
             {
@@ -272,6 +304,7 @@ public sealed class OrderUploadExecutionService(
             Log($"execute pending queued count={orderGuids.Count} batchSize={batchSize}");
             var uploadedCount = 0;
             var failedCount = 0;
+            var wasInterrupted = false;
 
             foreach (var orderGuid in orderGuids)
             {
@@ -281,6 +314,14 @@ public sealed class OrderUploadExecutionService(
                     await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
                     uploadedCount++;
                     Log($"execute pending item completed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount}");
+                }
+                catch (Exception ex) when (IsEndpointTransitionInterruption(ex, cancellationToken))
+                {
+                    wasInterrupted = true;
+                    Log(
+                        $"execute pending interrupted orderGuid={orderGuid:D} uploaded={uploadedCount} failed={failedCount} " +
+                        $"reason=endpoint-transition error={ex.GetType().Name} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                    break;
                 }
                 catch (OperationCanceledException)
                 {
@@ -305,7 +346,7 @@ public sealed class OrderUploadExecutionService(
             Log(
                 $"execute pending completed attempted={orderGuids.Count} uploaded={uploadedCount} failed={failedCount} " +
                 $"elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return new OrderUploadExecutionResult(orderGuids.Count, uploadedCount, failedCount);
+            return new OrderUploadExecutionResult(orderGuids.Count, uploadedCount, failedCount, wasInterrupted);
         }
         finally
         {
@@ -317,6 +358,11 @@ public sealed class OrderUploadExecutionService(
     {
         ConsoleLog.Write("OrderSync", message);
     }
+
+    private static bool IsEndpointTransitionInterruption(Exception exception, CancellationToken callerToken)
+    {
+        return exception is OperationCanceledException && !callerToken.IsCancellationRequested;
+    }
 }
 
 public sealed class NoopOrderUploadExecutionService : IOrderUploadExecutionService
@@ -325,6 +371,15 @@ public sealed class NoopOrderUploadExecutionService : IOrderUploadExecutionServi
 
     private NoopOrderUploadExecutionService()
     {
+    }
+
+    public Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+        DateTimeOffset soldFrom,
+        DateTimeOffset soldTo,
+        string? deviceCode,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<Guid>>([]);
     }
 
     public Task<OrderUploadExecutionResult> ExecuteOneAsync(Guid orderGuid, CancellationToken cancellationToken = default)
@@ -412,6 +467,12 @@ public interface ILocalOrderUploadRepository
 {
     Task<IReadOnlyList<Guid>> GetPendingOrderGuidsAsync(int take = 20, CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+        DateTimeOffset soldFrom,
+        DateTimeOffset soldTo,
+        string? deviceCode,
+        CancellationToken cancellationToken = default);
+
     Task MarkSyncingAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
     Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default);
@@ -436,6 +497,47 @@ public sealed class LocalOrderUploadRepository(LocalSqliteStore store) : ILocalO
             LIMIT $Take;
             """;
         command.Parameters.AddWithValue("$Take", Math.Clamp(take, 1, 100));
+
+        var orderGuids = new List<Guid>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (Guid.TryParse(reader.GetString(0), out var orderGuid))
+            {
+                orderGuids.Add(orderGuid);
+            }
+        }
+
+        return orderGuids;
+    }
+
+    public async Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+        DateTimeOffset soldFrom,
+        DateTimeOffset soldTo,
+        string? deviceCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (soldFrom > soldTo)
+        {
+            return [];
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT OrderGuid
+            FROM LocalOrders
+            WHERE julianday(SoldAt) >= julianday($SoldFrom)
+              AND julianday(SoldAt) <= julianday($SoldTo)
+              AND ($DeviceCode IS NULL OR DeviceCode = $DeviceCode COLLATE NOCASE)
+              AND SyncStatus IN ('Synced', 'Pending', 'Failed')
+            ORDER BY julianday(SoldAt) ASC, OrderGuid ASC;
+            """;
+        command.Parameters.AddWithValue("$SoldFrom", soldFrom.ToString("O"));
+        command.Parameters.AddWithValue("$SoldTo", soldTo.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$DeviceCode",
+            string.IsNullOrWhiteSpace(deviceCode) ? DBNull.Value : deviceCode.Trim());
 
         var orderGuids = new List<Guid>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -512,4 +614,5 @@ public sealed class LocalOrderUploadRepository(LocalSqliteStore store) : ILocalO
 public sealed record OrderUploadExecutionResult(
     int AttemptedCount,
     int UploadedCount,
-    int FailedCount);
+    int FailedCount,
+    bool WasInterrupted = false);

@@ -586,6 +586,7 @@
                                      Minimum="0"
                                      Maximum="100"
                                      Value="{Binding CatalogDownloadProgressValue}"
+                                     IsIndeterminate="{Binding IsCatalogDownloadProgressIndeterminate}"
                                      Foreground="{StaticResource PosSuccessBrush}"
                                      Background="#FFE1F4EA"
                                      BorderThickness="0"

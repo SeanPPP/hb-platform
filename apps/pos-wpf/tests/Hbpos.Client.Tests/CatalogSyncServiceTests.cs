@@ -29,11 +29,15 @@ public sealed class CatalogSyncServiceTests
             CompareException = new CatalogApiException("remote compare failed")
         };
         var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
-        await Assert.ThrowsAsync<CatalogApiException>(() => service.FullSyncAsync("S01"));
+        await Assert.ThrowsAsync<CatalogApiException>(() => service.FullSyncAsync("S01", progress: progress));
 
         Assert.Empty(repository.UpsertedBatches);
         Assert.Empty(repository.DeleteCalls);
+        Assert.Contains(progressReports, report => report.Stage == CatalogSyncProgressStage.Failed);
+        Assert.DoesNotContain(progressReports, report => report.Stage == CatalogSyncProgressStage.Completed);
     }
 
     [Fact]
@@ -203,9 +207,11 @@ public sealed class CatalogSyncServiceTests
             TotalCount: 2));
         var logs = new ConcurrentQueue<string>();
         var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
         using var logCapture = CaptureClientLog(logs);
-        var result = await service.FullSyncAsync("S01");
+        var result = await service.FullSyncAsync("S01", progress: progress);
 
         Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 1, RemotePages: 1, UpsertedCount: 0, DeletedCount: 0), result);
         Assert.Empty(repository.UpsertedBatches);
@@ -213,6 +219,11 @@ public sealed class CatalogSyncServiceTests
         var pageRequest = Assert.Single(apiClient.PageRequests);
         Assert.Equal(("S01", null, 5000), pageRequest);
         Assert.True(HasLog(logs, "download skipped store=S01 reason=no-changes"));
+        Assert.Contains(progressReports, report =>
+            report.Stage == CatalogSyncProgressStage.Downloading &&
+            report.TotalCount == 2 &&
+            report.DownloadedCount == 2 &&
+            report.Percent == 99);
     }
 
     [Fact]
@@ -316,8 +327,10 @@ public sealed class CatalogSyncServiceTests
             TotalCount: 2001));
         var uiPriority = new RecordingUiPriorityCoordinator(events);
         var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
-        var result = await service.FullSyncAsync("S01", forceFullDownload: true);
+        var result = await service.FullSyncAsync("S01", progress: progress, forceFullDownload: true);
 
         Assert.Equal(2001, result.UpsertedCount);
         Assert.Empty(repository.UpsertedBatches);
@@ -330,6 +343,14 @@ public sealed class CatalogSyncServiceTests
             .ToArray();
         Assert.Equal(repository.StagedBatches.Count, stageIndexes.Length);
         Assert.All(stageIndexes, index => Assert.True(index > 0 && events[index - 1] == "wait"));
+        Assert.Contains(progressReports, report =>
+            report.Stage == CatalogSyncProgressStage.Downloading &&
+            report.DownloadedCount == 2000 &&
+            report.UpsertedCount == 2000);
+        Assert.All(
+            progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Downloading),
+            report => Assert.InRange(report.Percent, 0, 99));
+        Assert.Equal(100, Assert.Single(progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Completed)).Percent);
     }
 
     [Fact]
@@ -398,12 +419,62 @@ public sealed class CatalogSyncServiceTests
             TotalCount: 2001));
         var uiPriority = new CountingUiPriorityCoordinator();
         var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
-        var result = await service.FullSyncAsync("S01");
+        var result = await service.FullSyncAsync("S01", progress: progress);
 
         Assert.Equal(2001, result.UpsertedCount);
         Assert.True(repository.UpsertedBatches.Count > 1);
         Assert.True(uiPriority.WaitCount >= repository.UpsertedBatches.Count);
+        Assert.Contains(progressReports, report =>
+            report.Stage == CatalogSyncProgressStage.Downloading &&
+            report.DownloadedCount == 2000 &&
+            report.UpsertedCount == 2000);
+        Assert.All(
+            progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Downloading),
+            report => Assert.InRange(report.Percent, 0, 99));
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_ReportsComparedCountMonotonicallyAcrossLocalPages()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue(
+        [
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-1", "hash-1", Timestamp),
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-2", "hash-2", Timestamp)
+        ]);
+        repository.ComparePages.Enqueue(
+        [
+            new LocalSellableItemCompareRow("S01", "LOCAL-CODE-3", "hash-3", Timestamp)
+        ]);
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.CompareResponses.Enqueue(new CatalogCompareResponse("S01", Timestamp, [], [], null, false));
+        apiClient.CompareResponses.Enqueue(new CatalogCompareResponse("S01", Timestamp, [], [], null, false));
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 3));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
+
+        await service.FullSyncAsync("S01", progress: progress);
+
+        var comparedCounts = progressReports
+            .Where(report => report.Stage == CatalogSyncProgressStage.Comparing)
+            .Select(report => report.ComparedCount)
+            .Distinct()
+            .ToArray();
+        Assert.Equal([0, 2, 3], comparedCounts);
+        Assert.True(comparedCounts.SequenceEqual(comparedCounts.Order()));
     }
 
     [Fact]
@@ -441,6 +512,9 @@ public sealed class CatalogSyncServiceTests
             report.DownloadedCount == 1 &&
             report.TotalCount == 2 &&
             report.Percent == 50);
+        Assert.All(
+            progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Downloading),
+            report => Assert.InRange(report.Percent, 0, 99));
         var completed = Assert.Single(progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Completed));
         Assert.Equal(100, completed.Percent);
         Assert.Equal(2, completed.DownloadedCount);
@@ -466,13 +540,19 @@ public sealed class CatalogSyncServiceTests
             HasMore: false,
             TotalCount: 0));
         var service = new LocalCatalogSyncService(repository, apiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
-        await service.FullSyncAsync("S01");
+        await service.FullSyncAsync("S01", progress: progress);
 
         var pageRequest = Assert.Single(apiClient.PageRequests);
         Assert.Equal(("S01", null, 5000), pageRequest);
         var comparePageRequest = Assert.Single(repository.ComparePageRequests);
         Assert.Equal(("S01", null, 2000), comparePageRequest);
+        Assert.All(
+            progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Downloading),
+            report => Assert.NotEqual(100, report.Percent));
+        Assert.Equal(100, Assert.Single(progressReports.Where(report => report.Stage == CatalogSyncProgressStage.Completed)).Percent);
     }
 
     [Fact]
@@ -645,6 +725,151 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal("http://localhost:5000/api/v1/catalog/sellable-items/compare", capturedRequest?.RequestUri?.ToString());
         Assert.Equal("S01", response.StoreCode);
         Assert.Equal("CMP-001", Assert.Single(response.UpsertedLookups).ProductCode);
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_CompareSellableItemsAsync_RetriesInvalidGatewayJsonOnce()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var logs = new ConcurrentQueue<string>();
+        var expected = new CatalogCompareResponse(
+            "S01",
+            Timestamp,
+            [CreateLookupItem("CMP-RETRY", "cmp-retry")],
+            [],
+            NextCursor: null,
+            HasMore: false);
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            attempts++;
+            return attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.GatewayTimeout)
+                {
+                    Content = new StringContent("gateway-secret-html", Encoding.UTF8, "text/html")
+                }
+                : JsonResponse(ApiResult<CatalogCompareResponse>.Ok(expected));
+        });
+        var client = new CatalogApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000/") },
+            (delay, _) =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            });
+
+        using var logCapture = CaptureClientLog(logs);
+        var response = await client.CompareSellableItemsAsync(new CatalogCompareRequest("S01", []));
+
+        Assert.Equal(2, attempts);
+        Assert.Equal([CatalogApiClient.TransientRetryDelay], delays);
+        Assert.Equal("CMP-RETRY", Assert.Single(response.UpsertedLookups).ProductCode);
+        Assert.True(HasLog(logs, "attempt=2"));
+        Assert.True(HasLog(logs, "reason=invalid-json"));
+        Assert.True(HasLog(logs, "status=504"));
+        Assert.True(HasLog(logs, "contentType=text/html"));
+        Assert.True(HasLog(logs, "bodyLength="));
+        Assert.DoesNotContain(logs, line => line.Contains("gateway-secret-html", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_GetSellableItemsPageAsync_RetriesGatewayStatusOnce()
+    {
+        var attempts = 0;
+        var expected = new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [CreateLookupItem("PAGE-RETRY", "page-retry")],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 1);
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            attempts++;
+            return attempts == 1
+                ? JsonResponse(
+                    ApiResult<CatalogSyncPageResponse>.Fail("GATEWAY_TIMEOUT", "temporary gateway failure"),
+                    HttpStatusCode.BadGateway)
+                : JsonResponse(ApiResult<CatalogSyncPageResponse>.Ok(expected));
+        });
+        var client = new CatalogApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000/") },
+            (_, _) => Task.CompletedTask);
+
+        var response = await client.GetSellableItemsPageAsync("S01", cursor: null, pageSize: 100);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal("PAGE-RETRY", Assert.Single(response.Items).ProductCode);
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_CompareSellableItemsAsync_DoesNotRetryUnauthorizedResponse()
+    {
+        var attempts = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            attempts++;
+            return JsonResponse(
+                ApiResult<CatalogCompareResponse>.Fail("UNAUTHORIZED", "authorization required"),
+                HttpStatusCode.Unauthorized);
+        });
+        var client = new CatalogApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000/") },
+            (_, _) => throw new InvalidOperationException("Retry delay must not run."));
+
+        var exception = await Assert.ThrowsAsync<CatalogApiException>(() =>
+            client.CompareSellableItemsAsync(new CatalogCompareRequest("S01", [])));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, exception.StatusCode);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_CompareSellableItemsAsync_DoesNotRetryCallerCancellation()
+    {
+        var attempts = 0;
+        using var cancellation = new CancellationTokenSource();
+        var handler = new StubHttpMessageHandler((_, cancellationToken) =>
+        {
+            attempts++;
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("Cancellation should stop the request.");
+        });
+        var client = new CatalogApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000/") },
+            (_, _) => throw new InvalidOperationException("Retry delay must not run."));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.CompareSellableItemsAsync(
+                new CatalogCompareRequest("S01", []),
+                cancellation.Token));
+
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_CompareSellableItemsAsync_StopsAfterOneTransientRetry()
+    {
+        var attempts = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            attempts++;
+            return new HttpResponseMessage(HttpStatusCode.GatewayTimeout)
+            {
+                Content = new StringContent("gateway timeout", Encoding.UTF8, "text/html")
+            };
+        });
+        var client = new CatalogApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000/") },
+            (_, _) => Task.CompletedTask);
+
+        await Assert.ThrowsAsync<CatalogApiException>(() =>
+            client.CompareSellableItemsAsync(new CatalogCompareRequest("S01", [])));
+
+        Assert.Equal(2, attempts);
     }
 
     [Fact]

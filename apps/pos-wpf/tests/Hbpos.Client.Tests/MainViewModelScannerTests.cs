@@ -1788,6 +1788,88 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task CatalogDownloadProgress_TransitionsFromComparingToDownloadingAndCompleted()
+    {
+        var syncRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var shellCatalog = new RecordingShellCatalogService
+        {
+            SyncRelease = syncRelease
+        };
+        var viewModel = CreateMainViewModelWithShellCatalog(
+            new FakeCatalogRepository(),
+            shellCatalog,
+            new FakeConnectivityApiClient(true));
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+        var startupTask = viewModel.ContinueStartupAfterShownAsync(startupOptions);
+        await WaitUntilAsync(() => shellCatalog.LastProgress is not null);
+
+        shellCatalog.LastProgress!.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Comparing,
+            TotalCount: 0,
+            DownloadedCount: 0,
+            Percent: 0,
+            ComparePages: 1,
+            RemotePages: 0,
+            UpsertedCount: 603,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 85_000)
+        {
+            ComparedCount = 2_000
+        });
+        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressDetailText.Contains("2000", StringComparison.Ordinal));
+
+        Assert.True(viewModel.IsCatalogDownloadProgressIndeterminate);
+        Assert.Equal("Checking local data", viewModel.CatalogDownloadProgressText);
+        Assert.DoesNotContain('%', viewModel.CatalogDownloadProgressText);
+        Assert.Contains("603", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+
+        shellCatalog.LastProgress.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Downloading,
+            TotalCount: 1_000,
+            DownloadedCount: 500,
+            Percent: 50,
+            ComparePages: 1,
+            RemotePages: 1,
+            UpsertedCount: 603,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 86_000)
+        {
+            ComparedCount = 2_000
+        });
+        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressValue == 50);
+
+        Assert.False(viewModel.IsCatalogDownloadProgressIndeterminate);
+        Assert.Equal("Data download 50%", viewModel.CatalogDownloadProgressText);
+        Assert.Contains("500/1000", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+
+        shellCatalog.LastProgress.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Completed,
+            TotalCount: 1_000,
+            DownloadedCount: 1_000,
+            Percent: 100,
+            ComparePages: 1,
+            RemotePages: 2,
+            UpsertedCount: 1_000,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 87_000)
+        {
+            ComparedCount = 2_000
+        });
+        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressValue == 100);
+
+        Assert.False(viewModel.IsCatalogDownloadProgressIndeterminate);
+        Assert.Equal("Data download complete 100%", viewModel.CatalogDownloadProgressText);
+
+        syncRelease.SetResult();
+        await startupTask;
+    }
+
+    [Fact]
     public async Task ContinueStartupAfterShownAsync_WithEmptyLocalCatalogSyncFailure_ShowsInitialDownloadFailure()
     {
         var shellCatalog = new RecordingShellCatalogService
@@ -5449,9 +5531,13 @@ public sealed class MainViewModelScannerTests
 
         public Exception? SyncException { get; init; }
 
+        public TaskCompletionSource? SyncRelease { get; init; }
+
         public int SyncCallCount { get; private set; }
 
         public CancellationToken LastSyncCancellationToken { get; private set; }
+
+        public IProgress<CatalogSyncProgress>? LastProgress { get; private set; }
 
         public bool IsCatalogSyncActive => false;
 
@@ -5467,7 +5553,7 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult(LocalItems);
         }
 
-        public Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(
+        public async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(
             string storeCode,
             bool forceFullDownload,
             IProgress<CatalogSyncProgress>? progress = null,
@@ -5475,9 +5561,18 @@ public sealed class MainViewModelScannerTests
         {
             SyncCallCount++;
             LastSyncCancellationToken = cancellationToken;
-            return SyncException is null
-                ? Task.FromResult(SyncItems)
-                : Task.FromException<IReadOnlyList<SellableItemDto>>(SyncException);
+            LastProgress = progress;
+            if (SyncRelease is not null)
+            {
+                await SyncRelease.Task.WaitAsync(cancellationToken);
+            }
+
+            if (SyncException is not null)
+            {
+                throw SyncException;
+            }
+
+            return SyncItems;
         }
     }
 
@@ -6112,6 +6207,15 @@ public sealed class MainViewModelScannerTests
         {
             ConfirmInstallmentPickupAfterPaidOffCallCount++;
             return Task.FromResult(ConfirmInstallmentPickupAfterPaidOffResult);
+        }
+
+        public Task<bool> ConfirmOrderDateRangeReuploadAsync(
+            int orderCount,
+            int batchCount,
+            DateTime dateFrom,
+            DateTime dateTo)
+        {
+            return Task.FromResult(false);
         }
     }
 

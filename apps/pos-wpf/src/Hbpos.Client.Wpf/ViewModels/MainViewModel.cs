@@ -345,6 +345,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isCatalogDownloadProgressFailed;
 
+    [ObservableProperty]
+    private bool _isCatalogDownloadProgressIndeterminate;
+
     public bool IsOrderSyncRetrying
     {
         get => _syncOrchestrator?.IsOrderSyncRetrying ?? false;
@@ -1886,16 +1889,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _catalogDownloadHideTimer.Stop();
         IsCatalogDownloadProgressVisible = true;
         IsCatalogDownloadProgressFailed = progress.Stage == CatalogSyncProgressStage.Failed;
+        IsCatalogDownloadProgressIndeterminate = progress.Stage is
+            CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing;
         CatalogDownloadProgressValue = progress.Percent;
 
         if (progress.Stage == CatalogSyncProgressStage.Failed)
         {
-            CatalogDownloadProgressText = string.Format(
-                _localization.CurrentCulture,
-                _localization.T("shell.catalogDownload.failed"),
-                progress.Percent);
+            CatalogDownloadProgressText = _localization.T("shell.catalogDownload.failed");
             CatalogDownloadProgressDetailText = progress.ErrorMessage ?? string.Empty;
             StartCatalogDownloadHideTimer(TimeSpan.FromSeconds(15));
+            return;
+        }
+
+        if (progress.Stage is CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing)
+        {
+            var stageTitleKey = progress.Stage == CatalogSyncProgressStage.Preparing
+                ? "shell.catalogDownload.preparing"
+                : "shell.catalogDownload.comparing";
+            CatalogDownloadProgressText = _localization.T(stageTitleKey);
+            CatalogDownloadProgressDetailText = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("shell.catalogDownload.compareDetail"),
+                progress.ComparedCount,
+                progress.ComparePages,
+                progress.UpsertedCount,
+                progress.DeletedCount,
+                FormatElapsed(progress.ElapsedMilliseconds));
             return;
         }
 

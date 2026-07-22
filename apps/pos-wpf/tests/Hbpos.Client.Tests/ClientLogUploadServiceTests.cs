@@ -593,6 +593,89 @@ public sealed class ClientLogUploadServiceTests
     }
 
     [Fact]
+    public async Task Endpoint_transition_rejection_keeps_audit_event_immediately_retryable()
+    {
+        var databasePath = CreateDatabasePath();
+        const string oldAddress = "https://old.example.test/pos-api/";
+        const string newAddress = "https://new.example.test/pos-api/";
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var now = DateTimeOffset.UtcNow;
+        var eventId = Guid.NewGuid();
+        await store.EnqueueAsync(
+            ClientLogOutboxKind.OperationAudit,
+            eventId,
+            now,
+            JsonSerializer.Serialize(new { eventId, storeCode = "S001", deviceCode = "POS-01" }),
+            now,
+            CancellationToken.None);
+        var authorizationState = new DeviceAuthorizationState();
+        authorizationState.Set(new DeviceAuthorizationContext("POS-01", "S001", "HW-01", "secret"));
+        var endpointState = new ApiRuntimeEndpointState(oldAddress);
+        var requestUris = new List<Uri>();
+        using var client = new HttpClient(new ApiRuntimeEndpointHandler(endpointState)
+        {
+            InnerHandler = new StubHttpMessageHandler(async request =>
+            {
+                requestUris.Add(request.RequestUri!);
+                var body = await request.Content!.ReadAsStringAsync();
+                using var document = JsonDocument.Parse(body);
+                var uploadedEventId = document.RootElement
+                    .GetProperty("events")[0]
+                    .GetProperty("eventId")
+                    .GetGuid();
+                return JsonResponse(
+                    HttpStatusCode.OK,
+                    JsonSerializer.Serialize(new
+                    {
+                        results = new[] { new { eventId = uploadedEventId, status = "accepted" } }
+                    }));
+            })
+        })
+        {
+            BaseAddress = new Uri(oldAddress)
+        };
+        using var service = new OperationAuditUploadService(
+            store,
+            client,
+            TimeProvider.System,
+            new OperationAuditUploadOptions(true),
+            authorizationState);
+
+        try
+        {
+            var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
+
+            await service.UploadOnceAsync(now, CancellationToken.None);
+
+            var pending = Assert.Single(await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                now.AddDays(1),
+                10,
+                CancellationToken.None));
+            Assert.Equal(eventId, pending.EventId);
+            Assert.Equal(0, pending.AttemptCount);
+            Assert.Null(pending.LastErrorCode);
+            Assert.Empty(requestUris);
+
+            endpointState.Commit(transition);
+            await service.UploadOnceAsync(now, CancellationToken.None);
+
+            Assert.Equal([new Uri($"{newAddress}api/v1/operation-audits/batch")], requestUris);
+            Assert.Empty(await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                now.AddDays(1),
+                10,
+                CancellationToken.None));
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Authorization_failure_writes_critical_diagnostic_without_reentering_runtime_sink()
     {
         var databasePath = CreateDatabasePath();
