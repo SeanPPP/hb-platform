@@ -125,13 +125,13 @@ public sealed class ApiRuntimeEndpointState
         }
     }
 
-    internal ApiRuntimeEndpointLease AcquireRequestLease()
+    internal ApiRuntimeEndpointLease? AcquireRequestLease()
     {
         lock (_gate)
         {
             if (_transition is not null)
             {
-                throw new ApiEndpointTransitionException("API 服务器正在切换，新请求已拒绝。");
+                return null;
             }
 
             _activeRequestCount++;
@@ -195,6 +195,12 @@ public sealed class ApiRuntimeEndpointHandler(ApiRuntimeEndpointState endpointSt
         CancellationToken cancellationToken)
     {
         var lease = endpointState.AcquireRequestLease();
+        if (lease is null)
+        {
+            // 切换窗口内封闭新请求，并统一为端点代际取消，避免正常协调流程抛出业务异常。
+            return Task.FromCanceled<HttpResponseMessage>(new CancellationToken(canceled: true));
+        }
+
         var endpoint = lease.Snapshot;
         var requestUri = request.RequestUri;
         if (requestUri is not null &&

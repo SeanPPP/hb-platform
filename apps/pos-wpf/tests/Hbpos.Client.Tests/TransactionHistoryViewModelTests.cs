@@ -80,6 +80,225 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal(string.Empty, viewModel.StatusMessage);
     }
 
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(499, 1)]
+    [InlineData(500, 1)]
+    [InlineData(501, 2)]
+    public async Task Reupload_date_range_splits_candidates_into_500_order_batches(int orderCount, int expectedBatchCount)
+    {
+        var orderGuids = Enumerable.Range(0, orderCount).Select(_ => Guid.NewGuid()).ToArray();
+        var executor = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0),
+            orderGuids);
+        var confirmation = new CapturingConfirmationDialogService { Result = true };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: confirmation)
+        {
+            DateFrom = new DateTime(2026, 7, 1),
+            DateTo = new DateTime(2026, 7, 1)
+        };
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Equal(expectedBatchCount, executor.SelectedBatches.Count);
+        Assert.All(executor.SelectedBatches, batch => Assert.InRange(batch.Count, 1, 500));
+        Assert.Equal(orderGuids, executor.SelectedBatches.SelectMany(batch => batch));
+        Assert.Equal(orderCount, confirmation.OrderCount);
+        Assert.Equal(expectedBatchCount, confirmation.BatchCount);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_with_1201_orders_executes_500_500_201_and_ignores_search_text()
+    {
+        var orderGuids = Enumerable.Range(0, 1201).Select(_ => Guid.NewGuid()).ToArray();
+        var executor = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0),
+            orderGuids);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: new CapturingConfirmationDialogService { Result = true })
+        {
+            DateFrom = new DateTime(2026, 7, 1),
+            DateTo = new DateTime(2026, 7, 2),
+            SearchText = "ignored search term"
+        };
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Equal([500, 500, 201], executor.SelectedBatches.Select(batch => batch.Count));
+        Assert.Equal(
+            new DateTimeOffset(new DateTime(2026, 7, 1)),
+            executor.LastReuploadableQuery?.SoldFrom);
+        Assert.Equal(
+            new DateTimeOffset(new DateTime(2026, 7, 3).AddTicks(-1)),
+            executor.LastReuploadableQuery?.SoldTo);
+        Assert.Equal("POS-01", executor.LastReuploadableQuery?.DeviceCode);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_stops_before_the_next_batch_when_endpoint_switch_interrupts()
+    {
+        var batchNumber = 0;
+        var orderGuids = Enumerable.Range(0, 1201).Select(_ => Guid.NewGuid()).ToArray();
+        var executor = new CallbackOrderExecutor(
+            ids =>
+            {
+                batchNumber++;
+                return batchNumber == 2
+                    ? new OrderUploadExecutionResult(ids.Count, 300, 200, WasInterrupted: true)
+                    : new OrderUploadExecutionResult(ids.Count, ids.Count, 0);
+            },
+            orderGuids);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: new CapturingConfirmationDialogService { Result = true });
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Equal([500, 500], executor.SelectedBatches.Select(batch => batch.Count));
+        Assert.Contains("server address was switching", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_aggregates_partial_failures_across_batches()
+    {
+        var batchNumber = 0;
+        var orderGuids = Enumerable.Range(0, 501).Select(_ => Guid.NewGuid()).ToArray();
+        var executor = new CallbackOrderExecutor(
+            ids =>
+            {
+                batchNumber++;
+                return batchNumber == 1
+                    ? new OrderUploadExecutionResult(ids.Count, 498, 2)
+                    : new OrderUploadExecutionResult(ids.Count, 0, 1);
+            },
+            orderGuids);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: new CapturingConfirmationDialogService { Result = true });
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Contains("501 attempted, 498 succeeded, 3 failed", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_resets_busy_state_when_a_later_batch_throws()
+    {
+        var batchNumber = 0;
+        var orderGuids = Enumerable.Range(0, 1001).Select(_ => Guid.NewGuid()).ToArray();
+        var executor = new CallbackOrderExecutor(
+            ids =>
+            {
+                batchNumber++;
+                return batchNumber == 2
+                    ? throw new InvalidOperationException("second batch failed")
+                    : new OrderUploadExecutionResult(ids.Count, ids.Count, 0);
+            },
+            orderGuids);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: new CapturingConfirmationDialogService { Result = true });
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Equal([500, 500], executor.SelectedBatches.Select(batch => batch.Count));
+        Assert.False(viewModel.IsReuploading);
+        Assert.True(viewModel.ReuploadDateRangeCommand.CanExecute(null));
+        Assert.Contains("second batch failed", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_does_not_upload_when_confirmation_is_cancelled_or_no_orders_match()
+    {
+        var orderGuids = new[] { Guid.NewGuid() };
+        var executor = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0),
+            orderGuids);
+        var confirmation = new CapturingConfirmationDialogService { Result = false };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: confirmation)
+        {
+            DateFrom = new DateTime(2026, 7, 1),
+            DateTo = new DateTime(2026, 7, 1)
+        };
+
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Empty(executor.SelectedBatches);
+        Assert.Equal(1, confirmation.CallCount);
+
+        executor.ReuploadableOrderGuids = [];
+        confirmation.Result = true;
+        await viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, confirmation.CallCount);
+        Assert.Empty(executor.SelectedBatches);
+    }
+
+    [Fact]
+    public async Task Reupload_date_range_disables_other_reupload_actions_until_the_current_batch_finishes()
+    {
+        var completion = new TaskCompletionSource<OrderUploadExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var executor = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0),
+            [Guid.NewGuid()])
+        {
+            SelectedExecutionCompletion = completion
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            null,
+            null,
+            CreateSession(),
+            orderUploadExecutionService: executor,
+            confirmationDialogService: new CapturingConfirmationDialogService { Result = true })
+        {
+            DateFrom = new DateTime(2026, 7, 1),
+            DateTo = new DateTime(2026, 7, 1)
+        };
+
+        var reuploadTask = viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+        await executor.SelectedExecutionStarted.Task;
+
+        Assert.True(viewModel.IsReuploading);
+        Assert.False(viewModel.ReuploadDateRangeCommand.CanExecute(null));
+        Assert.False(viewModel.ReuploadSelectedCommand.CanExecute(null));
+        Assert.False(viewModel.SelectAllReuploadableCommand.CanExecute(null));
+
+        completion.SetResult(new OrderUploadExecutionResult(1, 1, 0));
+        await reuploadTask;
+
+        Assert.False(viewModel.IsReuploading);
+    }
+
     [Fact]
     public void Constructor_initializes_readonly_store_and_terminal_dropdown()
     {
@@ -810,9 +1029,20 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     private sealed class CallbackOrderExecutor(
-        Func<IReadOnlyCollection<Guid>, OrderUploadExecutionResult> execute) : IOrderUploadExecutionService
+        Func<IReadOnlyCollection<Guid>, OrderUploadExecutionResult> execute,
+        IReadOnlyList<Guid>? reuploadableOrderGuids = null) : IOrderUploadExecutionService
     {
         public IReadOnlyList<Guid> SelectedIds { get; private set; } = [];
+
+        public List<IReadOnlyList<Guid>> SelectedBatches { get; } = [];
+
+        public IReadOnlyList<Guid> ReuploadableOrderGuids { get; set; } = reuploadableOrderGuids ?? [];
+
+        public (DateTimeOffset SoldFrom, DateTimeOffset SoldTo, string? DeviceCode)? LastReuploadableQuery { get; private set; }
+
+        public TaskCompletionSource<OrderUploadExecutionResult>? SelectedExecutionCompletion { get; set; }
+
+        public TaskCompletionSource SelectedExecutionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int SelectedCallCount { get; private set; }
 
@@ -828,7 +1058,55 @@ public sealed class TransactionHistoryViewModelTests
         {
             SelectedCallCount++;
             SelectedIds = orderGuids.ToArray();
+            SelectedBatches.Add(SelectedIds);
+            SelectedExecutionStarted.TrySetResult();
+            if (SelectedExecutionCompletion is not null)
+            {
+                return SelectedExecutionCompletion.Task;
+            }
+
             return Task.FromResult(execute(orderGuids));
+        }
+
+        public Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
+            DateTimeOffset soldFrom,
+            DateTimeOffset soldTo,
+            string? deviceCode,
+            CancellationToken cancellationToken = default)
+        {
+            LastReuploadableQuery = (soldFrom, soldTo, deviceCode);
+            return Task.FromResult(ReuploadableOrderGuids);
+        }
+    }
+
+    private sealed class CapturingConfirmationDialogService : IConfirmationDialogService
+    {
+        public bool Result { get; set; }
+
+        public int CallCount { get; private set; }
+
+        public int OrderCount { get; private set; }
+
+        public int BatchCount { get; private set; }
+
+        public Task<bool> ConfirmExitApplicationAsync() => throw new NotSupportedException();
+
+        public Task<bool> ConfirmResetTestSalesDataAsync() => throw new NotSupportedException();
+
+        public Task<bool> ConfirmInstallmentFullFirstPaymentAsync() => throw new NotSupportedException();
+
+        public Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync() => throw new NotSupportedException();
+
+        public Task<bool> ConfirmOrderDateRangeReuploadAsync(
+            int orderCount,
+            int batchCount,
+            DateTime dateFrom,
+            DateTime dateTo)
+        {
+            CallCount++;
+            OrderCount = orderCount;
+            BatchCount = batchCount;
+            return Task.FromResult(Result);
         }
     }
 

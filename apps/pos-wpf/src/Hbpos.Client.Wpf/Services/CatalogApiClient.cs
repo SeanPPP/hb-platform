@@ -41,9 +41,28 @@ public interface ICatalogApiClient
         CancellationToken cancellationToken = default);
 }
 
-public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
+public sealed class CatalogApiClient : ICatalogApiClient
 {
+    private const string InvalidJsonDataKey = "Hbpos.CatalogApi.InvalidJson";
+    private const string ContentTypeDataKey = "Hbpos.CatalogApi.ContentType";
+    private const string BodyLengthDataKey = "Hbpos.CatalogApi.BodyLength";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal static readonly TimeSpan TransientRetryDelay = TimeSpan.FromSeconds(3);
+    private readonly HttpClient _httpClient;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
+
+    public CatalogApiClient(HttpClient httpClient)
+        : this(httpClient, Task.Delay)
+    {
+    }
+
+    internal CatalogApiClient(
+        HttpClient httpClient,
+        Func<TimeSpan, CancellationToken, Task> delayAsync)
+    {
+        _httpClient = httpClient;
+        _delayAsync = delayAsync;
+    }
 
     public async Task<CatalogSyncPageResponse> GetSellableItemsPageAsync(
         string storeCode,
@@ -58,14 +77,21 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             ("pageSize", pageSize.ToString(CultureInfo.InvariantCulture)));
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        Log($"GET {requestUri} start base={_httpClient.BaseAddress}");
         try
         {
-            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
-            var result = await ReadApiResultAsync<CatalogSyncPageResponse>(response, cancellationToken);
+            var responseResult = await ExecuteWithTransientRetryAsync(
+                $"GET {requestUri}",
+                async token =>
+                {
+                    using var response = await _httpClient.GetAsync(requestUri, token);
+                    var result = await ReadApiResultAsync<CatalogSyncPageResponse>(response, token);
+                    return (Result: result, response.StatusCode);
+                },
+                cancellationToken);
             stopwatch.Stop();
-            Log($"GET {requestUri} completed status={(int)response.StatusCode} items={result.Items.Count} total={result.TotalCount} deletedLookups={result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return result;
+            Log($"GET {requestUri} completed status={(int)responseResult.StatusCode} items={responseResult.Result.Items.Count} total={responseResult.Result.TotalCount} deletedLookups={responseResult.Result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return responseResult.Result;
         }
         catch (Exception ex)
         {
@@ -81,19 +107,25 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
     {
         const string requestUri = "api/v1/catalog/sellable-items/compare";
         var stopwatch = Stopwatch.StartNew();
-        Log($"POST {requestUri} start base={httpClient.BaseAddress} store={request.StoreCode} localLookups={request.LocalLookups.Count}");
+        Log($"POST {requestUri} start base={_httpClient.BaseAddress} store={request.StoreCode} localLookups={request.LocalLookups.Count}");
         try
         {
-            using var response = await httpClient.PostAsJsonAsync(
-                requestUri,
-                request,
-                JsonOptions,
+            var responseResult = await ExecuteWithTransientRetryAsync(
+                $"POST {requestUri}",
+                async token =>
+                {
+                    using var response = await _httpClient.PostAsJsonAsync(
+                        requestUri,
+                        request,
+                        JsonOptions,
+                        token);
+                    var result = await ReadApiResultAsync<CatalogCompareResponse>(response, token);
+                    return (Result: result, response.StatusCode);
+                },
                 cancellationToken);
-
-            var result = await ReadApiResultAsync<CatalogCompareResponse>(response, cancellationToken);
             stopwatch.Stop();
-            Log($"POST {requestUri} completed status={(int)response.StatusCode} upsertedLookups={result.UpsertedLookups.Count} deletedLookups={result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return result;
+            Log($"POST {requestUri} completed status={(int)responseResult.StatusCode} upsertedLookups={responseResult.Result.UpsertedLookups.Count} deletedLookups={responseResult.Result.DeletedLookups.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return responseResult.Result;
         }
         catch (Exception ex)
         {
@@ -112,10 +144,10 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             ("storeCode", storeCode));
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        Log($"GET {requestUri} start base={_httpClient.BaseAddress}");
         try
         {
-            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
+            using var response = await _httpClient.GetAsync(requestUri, cancellationToken);
             var result = await ReadApiResultAsync<CatalogPromotionsResponse>(response, cancellationToken);
             stopwatch.Stop();
             Log($"GET {requestUri} completed status={(int)response.StatusCode} promotions={result.Promotions.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
@@ -142,10 +174,10 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             ("pageSize", pageSize.ToString(CultureInfo.InvariantCulture)));
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        Log($"GET {requestUri} start base={_httpClient.BaseAddress}");
         try
         {
-            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
+            using var response = await _httpClient.GetAsync(requestUri, cancellationToken);
             var result = await ReadApiResultAsync<CatalogSpecialProductsPageResponse>(response, cancellationToken);
             stopwatch.Stop();
             Log($"GET {requestUri} completed status={(int)response.StatusCode} items={result.Items.Count} total={result.TotalCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
@@ -170,10 +202,10 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             ("lookupCode", lookupCode));
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"GET {requestUri} start base={httpClient.BaseAddress} storeCode={storeCode} lookupCode={lookupCode}");
+        Log($"GET {requestUri} start base={_httpClient.BaseAddress} storeCode={storeCode} lookupCode={lookupCode}");
         try
         {
-            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
+            using var response = await _httpClient.GetAsync(requestUri, cancellationToken);
             CatalogLookupResponse? result;
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
@@ -208,10 +240,10 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
     {
         const string requestUri = "api/v1/catalog/special-products/mark";
         var stopwatch = Stopwatch.StartNew();
-        Log($"POST {requestUri} start base={httpClient.BaseAddress} store={request.StoreCode} product={request.ProductCode} isSpecial={request.IsSpecialProduct}");
+        Log($"POST {requestUri} start base={_httpClient.BaseAddress} store={request.StoreCode} product={request.ProductCode} isSpecial={request.IsSpecialProduct}");
         try
         {
-            using var response = await httpClient.PostAsJsonAsync(
+            using var response = await _httpClient.PostAsJsonAsync(
                 requestUri,
                 request,
                 JsonOptions,
@@ -282,11 +314,16 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
             }
             catch (JsonException ex)
             {
-                throw new CatalogApiException(
+                var formatException = new CatalogApiException(
                     "Catalog API returned invalid JSON.",
                     response.StatusCode,
                     errorCode: null,
                     ex);
+                formatException.Data[InvalidJsonDataKey] = true;
+                formatException.Data[ContentTypeDataKey] =
+                    response.Content.Headers.ContentType?.MediaType ?? "<none>";
+                formatException.Data[BodyLengthDataKey] = content.Length;
+                throw formatException;
             }
         }
 
@@ -322,6 +359,97 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
         }
 
         return result.Data;
+    }
+
+    private async Task<T> ExecuteWithTransientRetryAsync<T>(
+        string operation,
+        Func<CancellationToken, Task<T>> executeAsync,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await executeAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ShouldRetry(ex, cancellationToken))
+        {
+            var details = DescribeRetry(ex);
+            Log($"retry operation={operation} attempt=2 maxAttempts=2 reason={details.Reason} status={details.Status} contentType={details.ContentType} bodyLength={details.BodyLength} delayMs={TransientRetryDelay.TotalMilliseconds:0}");
+            await _delayAsync(TransientRetryDelay, cancellationToken);
+            return await executeAsync(cancellationToken);
+        }
+    }
+
+    private static bool ShouldRetry(Exception exception, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested || exception is OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (exception is CatalogApiException invalidJsonException && IsInvalidJson(invalidJsonException))
+        {
+            return !IsClientError(invalidJsonException.StatusCode);
+        }
+
+        return exception switch
+        {
+            CatalogApiException apiException => IsGatewayStatus(apiException.StatusCode),
+            HttpRequestException httpException => !IsClientError(httpException.StatusCode),
+            _ => false
+        };
+    }
+
+    private static (string Reason, string Status, string ContentType, string BodyLength) DescribeRetry(
+        Exception exception)
+    {
+        if (exception is CatalogApiException invalidJsonException && IsInvalidJson(invalidJsonException))
+        {
+            return (
+                "invalid-json",
+                FormatStatus(invalidJsonException.StatusCode),
+                invalidJsonException.Data[ContentTypeDataKey]?.ToString() ?? "<none>",
+                invalidJsonException.Data[BodyLengthDataKey]?.ToString() ?? "<unknown>");
+        }
+
+        return exception switch
+        {
+            CatalogApiException apiException => (
+                "gateway-status",
+                FormatStatus(apiException.StatusCode),
+                "<unknown>",
+                "<unknown>"),
+            HttpRequestException httpException => (
+                "http-request",
+                FormatStatus(httpException.StatusCode),
+                "<unknown>",
+                "<unknown>"),
+            _ => ("unknown", "<unknown>", "<unknown>", "<unknown>")
+        };
+    }
+
+    private static bool IsInvalidJson(CatalogApiException exception)
+    {
+        return exception.Data[InvalidJsonDataKey] is true;
+    }
+
+    private static bool IsGatewayStatus(HttpStatusCode? statusCode)
+    {
+        return statusCode is
+            HttpStatusCode.BadGateway or
+            HttpStatusCode.ServiceUnavailable or
+            HttpStatusCode.GatewayTimeout;
+    }
+
+    private static bool IsClientError(HttpStatusCode? statusCode)
+    {
+        return statusCode is not null && (int)statusCode is >= 400 and < 500;
+    }
+
+    private static string FormatStatus(HttpStatusCode? statusCode)
+    {
+        return statusCode is null
+            ? "<none>"
+            : ((int)statusCode).ToString(CultureInfo.InvariantCulture);
     }
 
     private static string BuildUri(string path, params (string Name, string? Value)[] query)

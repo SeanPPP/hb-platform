@@ -631,7 +631,8 @@ internal sealed class ScreenNavigator
             OnSuspendedOrderRecalledAsync,
             ShowPos,
             viewModel => _printSelectedHistoryReceiptAsync(viewModel),
-            ShowInstallmentRepaymentAsync);
+            ShowInstallmentRepaymentAsync,
+            _confirmationDialogService);
     }
 
     public InstallmentCenterViewModel CreateInstallmentCenterViewModel()

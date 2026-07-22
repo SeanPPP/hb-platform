@@ -96,13 +96,15 @@ public sealed class ApiRuntimeEndpointTests
         var transition = await state.BeginTransitionAsync(
             "https://new.example.com/pos-api/",
             CancellationToken.None);
+        var capture = new CaptureHandler();
         var client = new HttpClient(new ApiRuntimeEndpointHandler(state)
         {
-            InnerHandler = new CaptureHandler()
+            InnerHandler = capture
         });
 
-        await Assert.ThrowsAsync<ApiEndpointTransitionException>(() =>
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             client.GetAsync("https://old.example.com/pos-api/api/v1/catalog"));
+        Assert.Null(capture.RequestUri);
 
         state.Abort(transition);
         using var response = await client.GetAsync("https://old.example.com/pos-api/api/v1/catalog");

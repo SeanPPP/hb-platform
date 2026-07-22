@@ -62,6 +62,8 @@ public sealed record HistoryOrderListItem(
 
 public sealed partial class TransactionHistoryViewModel : ObservableObject, IDisposable
 {
+    private const int ReuploadBatchSize = 500;
+
     private readonly IReceiptQueryService? _receiptQueryService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
@@ -77,6 +79,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IOrderUploadExecutionService _orderUploadExecutionService;
+    private readonly IConfirmationDialogService? _confirmationDialogService;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
 
@@ -126,20 +129,23 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private string _statusMessage = string.Empty;
 
     [ObservableProperty]
+    private bool _isReuploading;
+
+    [ObservableProperty]
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -159,8 +165,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        IOrderUploadExecutionService? orderUploadExecutionService = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, initialize: true)
+        IOrderUploadExecutionService? orderUploadExecutionService = null,
+        IConfirmationDialogService? confirmationDialogService = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, initialize: true)
     {
     }
 
@@ -181,6 +188,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IOperationAuditLogger? operationAuditLogger,
         IOperationAuthorizationService? operationAuthorizationService,
         IOrderUploadExecutionService? orderUploadExecutionService,
+        IConfirmationDialogService? confirmationDialogService,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -198,6 +206,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
         _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
+        _confirmationDialogService = confirmationDialogService;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -227,8 +236,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ConfirmInstallmentPickupCommand = new AsyncRelayCommand<HistoryOrderListItem>(ConfirmInstallmentPickupAsync, CanConfirmInstallmentPickup);
         ReprintCommand = new AsyncRelayCommand(ReprintSelectedAsync, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
-        SelectAllReuploadableCommand = new RelayCommand(SelectAllReuploadable);
-        ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync);
+        SelectAllReuploadableCommand = new RelayCommand(SelectAllReuploadable, CanStartReupload);
+        ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync, CanStartReupload);
+        ReuploadDateRangeCommand = new AsyncRelayCommand(ReuploadDateRangeAsync, CanReuploadDateRange);
     }
 
     public event EventHandler? ReprintRequested;
@@ -264,6 +274,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public IRelayCommand SelectAllReuploadableCommand { get; }
 
     public IAsyncRelayCommand ReuploadSelectedCommand { get; }
+
+    public IAsyncRelayCommand ReuploadDateRangeCommand { get; }
 
     public TransactionHistorySource SelectedSource => SelectedSourceOption?.Source ?? TransactionHistorySource.LocalOrders;
 
@@ -380,6 +392,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
+        NotifyReuploadCanExecuteChanged();
         if (!_suppressSourceAutoLoad)
         {
             _ = LoadAsync(CancellationToken.None);
@@ -467,6 +480,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             .ToList();
     }
 
+    partial void OnDateFromChanged(DateTime? value) => ReuploadDateRangeCommand?.NotifyCanExecuteChanged();
+
+    partial void OnDateToChanged(DateTime? value) => ReuploadDateRangeCommand?.NotifyCanExecuteChanged();
+
+    partial void OnIsReuploadingChanged(bool value) => NotifyReuploadCanExecuteChanged();
+
     private void SelectAllReuploadable()
     {
         foreach (var order in Orders.Where(order => order.CanReupload))
@@ -486,13 +505,117 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
-        var result = await _orderUploadExecutionService.ExecuteSelectedAsync(selected);
-        await LoadAsync();
-        StatusMessage = string.Format(
-            CultureInfo.CurrentCulture,
-            T("history.reuploadCompleted"),
-            result.UploadedCount,
-            result.FailedCount);
+        IsReuploading = true;
+        try
+        {
+            var result = await _orderUploadExecutionService.ExecuteSelectedAsync(selected);
+            await LoadAsync();
+            StatusMessage = string.Format(
+                CultureInfo.CurrentCulture,
+                T("history.reuploadCompleted"),
+                result.UploadedCount,
+                result.FailedCount);
+        }
+        finally
+        {
+            IsReuploading = false;
+        }
+    }
+
+    private bool CanStartReupload() => IsLocalSourceSelected && !IsReuploading;
+
+    private bool CanReuploadDateRange() =>
+        CanStartReupload() &&
+        DateFrom is not null &&
+        DateTo is not null &&
+        DateFrom.Value.Date <= DateTo.Value.Date;
+
+    private void NotifyReuploadCanExecuteChanged()
+    {
+        SelectAllReuploadableCommand?.NotifyCanExecuteChanged();
+        ReuploadSelectedCommand?.NotifyCanExecuteChanged();
+        ReuploadDateRangeCommand?.NotifyCanExecuteChanged();
+    }
+
+    private async Task ReuploadDateRangeAsync()
+    {
+        var dateFrom = DateFrom;
+        var dateTo = DateTo;
+        if (!CanReuploadDateRange() || dateFrom is null || dateTo is null)
+        {
+            return;
+        }
+
+        var soldFrom = ParseDateFrom(dateFrom)!.Value;
+        var soldTo = ParseDateTo(dateTo)!.Value;
+
+        IsReuploading = true;
+        try
+        {
+            var orderGuids = await _orderUploadExecutionService.GetReuploadableOrderGuidsAsync(
+                soldFrom,
+                soldTo,
+                SelectedTerminalDeviceCode);
+            if (orderGuids.Count == 0)
+            {
+                StatusMessage = T("history.reuploadRangeEmpty");
+                return;
+            }
+
+            var batchCount = (orderGuids.Count + ReuploadBatchSize - 1) / ReuploadBatchSize;
+            if (_confirmationDialogService is null ||
+                !await _confirmationDialogService.ConfirmOrderDateRangeReuploadAsync(
+                    orderGuids.Count,
+                    batchCount,
+                    dateFrom.Value,
+                    dateTo.Value))
+            {
+                StatusMessage = T("history.reuploadRangeCancelled");
+                return;
+            }
+
+            StatusMessage = string.Format(
+                CultureInfo.CurrentCulture,
+                T("history.reuploadRangeProgress"),
+                orderGuids.Count,
+                batchCount);
+            var attemptedCount = 0;
+            var uploadedCount = 0;
+            var failedCount = 0;
+            var wasInterrupted = false;
+            foreach (var batch in orderGuids.Chunk(ReuploadBatchSize))
+            {
+                var result = await _orderUploadExecutionService.ExecuteSelectedAsync(batch);
+                attemptedCount += result.AttemptedCount;
+                uploadedCount += result.UploadedCount;
+                failedCount += result.FailedCount;
+                if (result.WasInterrupted)
+                {
+                    wasInterrupted = true;
+                    break;
+                }
+            }
+
+            await LoadAsync();
+            StatusMessage = string.Format(
+                CultureInfo.CurrentCulture,
+                T(wasInterrupted ? "history.reuploadRangeInterrupted" : "history.reuploadRangeCompleted"),
+                attemptedCount,
+                uploadedCount,
+                failedCount);
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = T("history.reuploadRangeCancelled");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = string.Format(CultureInfo.CurrentCulture, T("history.reuploadRangeFailed"), ex.Message);
+        }
+        finally
+        {
+            IsReuploading = false;
+        }
     }
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadSuspendedOrdersAsync(CancellationToken cancellationToken)
@@ -1065,6 +1188,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "success.receiptPreview" => "Receipt Preview",
             "history.reprint" => "Reprint",
             "history.reuploadCompleted" => "Reupload completed: {0} succeeded, {1} failed.",
+            "history.reuploadRangeEmpty" => "No eligible local orders were found for the selected date range.",
+            "history.reuploadRangeCancelled" => "Date-range reupload cancelled.",
+            "history.reuploadRangeProgress" => "Reuploading {0} orders in {1} batch(es)...",
+            "history.reuploadRangeCompleted" => "Date-range reupload completed: {0} attempted, {1} succeeded, {2} failed.",
+            "history.reuploadRangeInterrupted" => "Date-range reupload stopped while the server address was switching: {0} attempted, {1} succeeded, {2} did not complete in the batches already started. Later batches were not started; queued orders will continue uploading after the switch.",
+            "history.reuploadRangeFailed" => "Date-range reupload stopped: {0}",
             "history.refund" => "Refund",
             "history.search" => "Search order, cashier, or terminal...",
             "history.allTerminals" => "All Terminals",

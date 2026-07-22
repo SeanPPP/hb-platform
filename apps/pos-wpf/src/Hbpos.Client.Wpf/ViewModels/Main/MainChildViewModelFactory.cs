@@ -135,7 +135,8 @@ internal sealed class MainChildViewModelFactory
         Func<Task> onSuspendedOrderRecalledAsync,
         Action showPos,
         Func<TransactionHistoryViewModel, Task> printSelectedHistoryReceiptAsync,
-        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null)
+        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null,
+        IConfirmationDialogService? confirmationDialogService = null)
     {
         var viewModel = new TransactionHistoryViewModel(
             _receiptQueryService,
@@ -153,7 +154,8 @@ internal sealed class MainChildViewModelFactory
             continueInstallmentPaymentAsync,
             _operationAuditLogger,
             _operationAuthorizationService,
-            _orderUploadExecutionService);
+            _orderUploadExecutionService,
+            confirmationDialogService);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }

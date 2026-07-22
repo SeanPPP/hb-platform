@@ -1041,6 +1041,12 @@
   <data name="shell.footer.versionReady" xml:space="preserve">
     <value>离线 Shell 已就绪</value>
   </data>
+  <data name="shell.catalogDownload.preparing" xml:space="preserve">
+    <value>正在准备数据</value>
+  </data>
+  <data name="shell.catalogDownload.comparing" xml:space="preserve">
+    <value>正在核对本地数据</value>
+  </data>
   <data name="shell.catalogDownload.downloading" xml:space="preserve">
     <value>数据下载中 {0}%</value>
   </data>
@@ -1048,10 +1054,13 @@
     <value>数据下载完成 {0}%</value>
   </data>
   <data name="shell.catalogDownload.failed" xml:space="preserve">
-    <value>数据下载失败 {0}%</value>
+    <value>数据下载失败</value>
+  </data>
+  <data name="shell.catalogDownload.compareDetail" xml:space="preserve">
+    <value>已核对: {0}  比较页: {1}  写入: {2}  删除: {3}  耗时: {4}</value>
   </data>
   <data name="shell.catalogDownload.detail" xml:space="preserve">
-    <value>{0}/{1}  页: {2}  写入: {3}  删除: {4}  耗时: {5}</value>
+    <value>已处理: {0}/{1}  下载页: {2}  写入: {3}  删除: {4}  耗时: {5}</value>
   </data>
   <data name="shell.catalogDownload.elapsedSeconds" xml:space="preserve">
     <value>{0:0.0}s</value>
@@ -1086,6 +1095,16 @@
   <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>审计日志刷新失败：{0}</value></data>
   <data name="history.reuploadSelected" xml:space="preserve"><value>重传所选订单</value></data>
   <data name="history.reuploadCompleted" xml:space="preserve"><value>重传完成：成功 {0}，失败 {1}。</value></data>
+  <data name="history.reuploadDateRange" xml:space="preserve"><value>重传日期范围</value></data>
+  <data name="history.reuploadDateRangeTooltip" xml:space="preserve"><value>按所选日期范围和终端重传可重传的本地订单，不使用搜索条件。</value></data>
+  <data name="history.reuploadRangeConfirm.title" xml:space="preserve"><value>确认重传日期范围</value></data>
+  <data name="history.reuploadRangeConfirm.message" xml:space="preserve"><value>将重传 {2:d} 至 {3:d} 的 {0} 个本地订单，共 {1} 批。是否继续？</value></data>
+  <data name="history.reuploadRangeEmpty" xml:space="preserve"><value>所选日期范围内没有可重传的本地订单。</value></data>
+  <data name="history.reuploadRangeCancelled" xml:space="preserve"><value>已取消重传日期范围。</value></data>
+  <data name="history.reuploadRangeProgress" xml:space="preserve"><value>正在重传 {0} 个订单，共 {1} 批...</value></data>
+  <data name="history.reuploadRangeCompleted" xml:space="preserve"><value>日期范围重传完成：尝试 {0}，成功 {1}，失败 {2}。</value></data>
+  <data name="history.reuploadRangeInterrupted" xml:space="preserve"><value>服务器地址切换期间已停止日期范围重传：尝试 {0}，成功 {1}，已启动批次中未完成 {2}。后续批次未启动，已入队订单会在切换后继续上传。</value></data>
+  <data name="history.reuploadRangeFailed" xml:space="preserve"><value>日期范围重传已停止：{0}</value></data>
   <data name="shell.sync.retryingOne" xml:space="preserve">
     <value>正在重试订单上传...</value>
   </data>

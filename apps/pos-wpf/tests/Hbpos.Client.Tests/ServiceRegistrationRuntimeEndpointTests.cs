@@ -7,6 +7,50 @@ namespace Hbpos.Client.Tests;
 public sealed class ServiceRegistrationRuntimeEndpointTests
 {
     [Fact]
+    public void Persisted_user_api_address_overrides_stale_process_address()
+    {
+        var address = ServiceRegistration.ResolveApiBaseAddress(
+            " https://saved.example.test/pos-api ",
+            "https://stale.example.test/pos-api/");
+
+        Assert.Equal("https://saved.example.test/pos-api/", address.AbsoluteUri);
+    }
+
+    [Fact]
+    public void Process_api_address_is_used_when_user_address_is_blank()
+    {
+        var address = ServiceRegistration.ResolveApiBaseAddress(
+            " ",
+            " https://launcher.example.test/pos-api ");
+
+        Assert.Equal("https://launcher.example.test/pos-api/", address.AbsoluteUri);
+    }
+
+    [Fact]
+    public void Default_api_address_is_used_when_no_address_is_configured()
+    {
+        var address = ServiceRegistration.ResolveApiBaseAddress(null, null);
+
+#if DEBUG
+        Assert.Equal(ApiServerSettingsService.DevelopmentApiBaseAddress, address.AbsoluteUri);
+#else
+        Assert.Equal(ApiServerSettingsService.ReleaseApiBaseAddress, address.AbsoluteUri);
+#endif
+    }
+
+    [Fact]
+    public void Runtime_endpoint_starts_with_the_resolved_api_address()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(
+            ServiceRegistration.GetApiBaseAddress(),
+            provider.GetRequiredService<ApiRuntimeEndpointState>().CurrentAddress);
+    }
+
+    [Fact]
     public void Api_endpoint_switch_keeps_the_single_local_database_path()
     {
         var services = new ServiceCollection();

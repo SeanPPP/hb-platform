@@ -369,10 +369,13 @@
   <data name="shell.top.cashierInfo" xml:space="preserve"><value>Cashier: {0}</value></data>
   <data name="shell.footer.terminalInfo" xml:space="preserve"><value>Terminal: {0}</value></data>
   <data name="shell.footer.versionReady" xml:space="preserve"><value>Offline shell ready</value></data>
+  <data name="shell.catalogDownload.preparing" xml:space="preserve"><value>Preparing data</value></data>
+  <data name="shell.catalogDownload.comparing" xml:space="preserve"><value>Checking local data</value></data>
   <data name="shell.catalogDownload.downloading" xml:space="preserve"><value>Data download {0}%</value></data>
   <data name="shell.catalogDownload.completed" xml:space="preserve"><value>Data download complete {0}%</value></data>
-  <data name="shell.catalogDownload.failed" xml:space="preserve"><value>Data download failed {0}%</value></data>
-  <data name="shell.catalogDownload.detail" xml:space="preserve"><value>{0}/{1}  Pages: {2}  Upserted: {3}  Deleted: {4}  Elapsed: {5}</value></data>
+  <data name="shell.catalogDownload.failed" xml:space="preserve"><value>Data download failed</value></data>
+  <data name="shell.catalogDownload.compareDetail" xml:space="preserve"><value>Checked: {0}  Compare pages: {1}  Upserted: {2}  Deleted: {3}  Elapsed: {4}</value></data>
+  <data name="shell.catalogDownload.detail" xml:space="preserve"><value>Processed: {0}/{1}  Download pages: {2}  Upserted: {3}  Deleted: {4}  Elapsed: {5}</value></data>
   <data name="shell.catalogDownload.elapsedSeconds" xml:space="preserve"><value>{0:0.0}s</value></data>
   <data name="shell.sync.title" xml:space="preserve"><value>Sync Center</value></data>
   <data name="shell.sync.orderStatus" xml:space="preserve"><value>Orders {0}/{1}/{2}</value></data>
@@ -390,6 +393,16 @@
   <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>Audit log refresh failed: {0}</value></data>
   <data name="history.reuploadSelected" xml:space="preserve"><value>Reupload Selected</value></data>
   <data name="history.reuploadCompleted" xml:space="preserve"><value>Reupload completed: {0} succeeded, {1} failed.</value></data>
+  <data name="history.reuploadDateRange" xml:space="preserve"><value>Reupload Date Range</value></data>
+  <data name="history.reuploadDateRangeTooltip" xml:space="preserve"><value>Reupload eligible local orders for the selected date range and terminal. Search text is not used.</value></data>
+  <data name="history.reuploadRangeConfirm.title" xml:space="preserve"><value>Confirm date-range reupload</value></data>
+  <data name="history.reuploadRangeConfirm.message" xml:space="preserve"><value>Reupload {0} local orders from {2:d} to {3:d} in {1} batch(es)?</value></data>
+  <data name="history.reuploadRangeEmpty" xml:space="preserve"><value>No eligible local orders were found for the selected date range.</value></data>
+  <data name="history.reuploadRangeCancelled" xml:space="preserve"><value>Date-range reupload cancelled.</value></data>
+  <data name="history.reuploadRangeProgress" xml:space="preserve"><value>Reuploading {0} orders in {1} batch(es)...</value></data>
+  <data name="history.reuploadRangeCompleted" xml:space="preserve"><value>Date-range reupload completed: {0} attempted, {1} succeeded, {2} failed.</value></data>
+  <data name="history.reuploadRangeInterrupted" xml:space="preserve"><value>Date-range reupload stopped while the server address was switching: {0} attempted, {1} succeeded, {2} did not complete in the batches already started. Later batches were not started; queued orders will continue uploading after the switch.</value></data>
+  <data name="history.reuploadRangeFailed" xml:space="preserve"><value>Date-range reupload stopped: {0}</value></data>
   <data name="shell.sync.retryingOne" xml:space="preserve"><value>Retrying order upload...</value></data>
   <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying order uploads...</value></data>
   <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Order upload retry completed: {0} succeeded, {1} failed.</value></data>

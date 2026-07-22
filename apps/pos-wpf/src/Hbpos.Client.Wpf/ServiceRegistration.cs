@@ -12,6 +12,7 @@ namespace Hbpos.Client.Wpf;
 
 public static class ServiceRegistration
 {
+    private const string ApiBaseUrlEnvironmentVariable = "HBPOS_API_BASE_URL";
     private const string ApplicationLogUploadClientName = "HbposApplicationLogUpload";
     private const string OperationAuditUploadClientName = "HbposOperationAuditUpload";
 
@@ -488,7 +489,20 @@ public static class ServiceRegistration
 
     internal static Uri GetApiBaseAddress()
     {
-        var configuredBaseUrl = Environment.GetEnvironmentVariable("HBPOS_API_BASE_URL");
+        return ResolveApiBaseAddress(
+            Environment.GetEnvironmentVariable(
+                ApiBaseUrlEnvironmentVariable,
+                EnvironmentVariableTarget.User),
+            Environment.GetEnvironmentVariable(
+                ApiBaseUrlEnvironmentVariable,
+                EnvironmentVariableTarget.Process));
+    }
+
+    internal static Uri ResolveApiBaseAddress(string? userBaseUrl, string? processBaseUrl)
+    {
+        var configuredBaseUrl = !string.IsNullOrWhiteSpace(userBaseUrl)
+            ? userBaseUrl
+            : processBaseUrl;
         var baseUrl = string.IsNullOrWhiteSpace(configuredBaseUrl)
 #if DEBUG
             ? ApiServerSettingsService.DevelopmentApiBaseAddress

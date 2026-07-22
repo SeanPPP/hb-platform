@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -19,6 +20,12 @@ public interface IConfirmationDialogService
     Task<bool> ConfirmInstallmentFullFirstPaymentAsync();
 
     Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync();
+
+    Task<bool> ConfirmOrderDateRangeReuploadAsync(
+        int orderCount,
+        int batchCount,
+        DateTime dateFrom,
+        DateTime dateTo);
 }
 
 public interface IConfirmationDialogPresenter
@@ -70,6 +77,7 @@ public sealed class WpfConfirmationDialogService :
     private string _titleKey = string.Empty;
     private string _messageKey = string.Empty;
     private string _confirmButtonKey = string.Empty;
+    private object[] _messageFormatArguments = [];
     private bool _isOpen;
     private string _titleText = string.Empty;
     private string _messageText = string.Empty;
@@ -162,11 +170,24 @@ public sealed class WpfConfirmationDialogService :
             "common.confirm",
             isDestructive: false);
 
+    public Task<bool> ConfirmOrderDateRangeReuploadAsync(
+        int orderCount,
+        int batchCount,
+        DateTime dateFrom,
+        DateTime dateTo) =>
+        ShowAsync(
+            "history.reuploadRangeConfirm.title",
+            "history.reuploadRangeConfirm.message",
+            "history.reuploadDateRange",
+            isDestructive: false,
+            messageFormatArguments: [orderCount, batchCount, dateFrom, dateTo]);
+
     private Task<bool> ShowAsync(
         string titleKey,
         string messageKey,
         string confirmButtonKey,
-        bool isDestructive)
+        bool isDestructive,
+        params object[] messageFormatArguments)
     {
         var completionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Interlocked.CompareExchange(ref _completionSource, completionSource, null) is not null)
@@ -178,6 +199,7 @@ public sealed class WpfConfirmationDialogService :
         _titleKey = titleKey;
         _messageKey = messageKey;
         _confirmButtonKey = confirmButtonKey;
+        _messageFormatArguments = messageFormatArguments;
         IsDestructive = isDestructive;
         RefreshLocalizedText();
         IsOpen = true;
@@ -208,7 +230,10 @@ public sealed class WpfConfirmationDialogService :
     private void RefreshLocalizedText()
     {
         TitleText = _localization.T(_titleKey);
-        MessageText = _localization.T(_messageKey);
+        MessageText = string.Format(
+            CultureInfo.CurrentCulture,
+            _localization.T(_messageKey),
+            _messageFormatArguments);
         ConfirmButtonText = _localization.T(_confirmButtonKey);
         CancelButtonText = _localization.T("common.cancel");
     }

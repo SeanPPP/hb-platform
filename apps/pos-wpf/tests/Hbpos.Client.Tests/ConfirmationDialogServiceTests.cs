@@ -88,6 +88,32 @@ public sealed class ConfirmationDialogServiceTests
         Assert.False(await resultTask);
     }
 
+    [Fact]
+    public async Task Date_range_reupload_confirmation_formats_count_batches_and_localizes_open_dialog()
+    {
+        var localization = new LocalizationService();
+        var service = new WpfConfirmationDialogService(localization);
+        var presenter = (IConfirmationDialogPresenter)service;
+
+        var resultTask = service.ConfirmOrderDateRangeReuploadAsync(
+            501,
+            2,
+            new DateTime(2026, 7, 1),
+            new DateTime(2026, 7, 2));
+
+        Assert.Equal("Confirm date-range reupload", presenter.TitleText);
+        Assert.Contains("501", presenter.MessageText);
+        Assert.Contains("2 batch", presenter.MessageText);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("确认重传日期范围", presenter.TitleText);
+        Assert.Contains("501", presenter.MessageText);
+        Assert.Contains("2 批", presenter.MessageText);
+        presenter.CancelCommand.Execute(null);
+        Assert.False(await resultTask);
+    }
+
     private static Task<bool> OpenAsync(IConfirmationDialogService service, string scenario) =>
         scenario switch
         {

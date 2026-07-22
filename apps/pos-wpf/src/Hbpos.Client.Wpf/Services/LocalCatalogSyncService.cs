@@ -39,7 +39,10 @@ public sealed record CatalogSyncProgress(
     int UpsertedCount,
     int DeletedCount,
     long ElapsedMilliseconds,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null)
+{
+    public int ComparedCount { get; init; }
+}
 
 public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
@@ -69,6 +72,7 @@ public sealed class LocalCatalogSyncService(
         var deletedCount = 0;
         var totalCount = 0;
         var downloadedCount = 0;
+        var comparedCount = 0;
         var localItemCount = 0;
         var hasCompareChanges = false;
         string? afterLookupCodeNormalized = null;
@@ -93,6 +97,19 @@ public sealed class LocalCatalogSyncService(
             }
             else
             {
+                ReportProgress(
+                    progress,
+                    storeCode,
+                    CatalogSyncProgressStage.Comparing,
+                    totalCount,
+                    downloadedCount,
+                    comparePages,
+                    remotePages,
+                    upsertedCount,
+                    deletedCount,
+                    totalStopwatch,
+                    comparedCount: comparedCount);
+
                 while (true)
                 {
                     await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
@@ -120,12 +137,25 @@ public sealed class LocalCatalogSyncService(
                     compareStopwatch.Stop();
                     Log($"compare response store={storeCode} page={comparePages + 1} upsertedLookups={response.UpsertedLookups.Count} deletedLookups={response.DeletedLookups.Count} apiElapsedMs={compareStopwatch.ElapsedMilliseconds}");
                     hasCompareChanges |= response.UpsertedLookups.Count > 0 || response.DeletedLookups.Count > 0;
+                    comparedCount += localPage.Count;
 
                     var applied = await ApplyChangesAsync(
                         storeCode,
                         response.UpsertedLookups,
                         response.DeletedLookups,
-                        cancellationToken);
+                        cancellationToken,
+                        (batchUpsertedCount, batchDeletedCount) => ReportProgress(
+                            progress,
+                            storeCode,
+                            CatalogSyncProgressStage.Comparing,
+                            totalCount,
+                            downloadedCount,
+                            comparePages + 1,
+                            remotePages,
+                            upsertedCount + batchUpsertedCount,
+                            deletedCount + batchDeletedCount,
+                            totalStopwatch,
+                            comparedCount: comparedCount));
 
                     comparePages++;
                     upsertedCount += applied.UpsertedCount;
@@ -141,7 +171,8 @@ public sealed class LocalCatalogSyncService(
                         remotePages,
                         upsertedCount,
                         deletedCount,
-                        totalStopwatch);
+                        totalStopwatch,
+                        comparedCount: comparedCount);
                 }
             }
 
@@ -164,15 +195,41 @@ public sealed class LocalCatalogSyncService(
                     downloadStopwatch.Stop();
                     totalCount = Math.Max(totalCount, response.TotalCount);
                     Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds} mode=snapshot");
+                    ReportProgress(
+                        progress,
+                        storeCode,
+                        CatalogSyncProgressStage.Downloading,
+                        totalCount,
+                        downloadedCount,
+                        comparePages,
+                        remotePages,
+                        upsertedCount,
+                        deletedCount,
+                        totalStopwatch,
+                        comparedCount: comparedCount);
 
                     var stageStopwatch = Stopwatch.StartNew();
                     var stagedItems = response.Items
                         .Select(item => item.ToSellableItemDto())
                         .ToArray();
+                    var stagedCount = 0;
                     foreach (var batch in stagedItems.Chunk(ApplyBatchSize))
                     {
                         await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
                         await replaceSession.StageAsync(batch, cancellationToken);
+                        stagedCount += batch.Length;
+                        ReportProgress(
+                            progress,
+                            storeCode,
+                            CatalogSyncProgressStage.Downloading,
+                            totalCount,
+                            downloadedCount + stagedCount,
+                            comparePages,
+                            remotePages + 1,
+                            upsertedCount + stagedCount,
+                            deletedCount,
+                            totalStopwatch,
+                            comparedCount: comparedCount);
                     }
 
                     stageStopwatch.Stop();
@@ -192,7 +249,8 @@ public sealed class LocalCatalogSyncService(
                         upsertedCount,
                         deletedCount,
                         totalStopwatch,
-                        forceComplete: false);
+                        forceComplete: false,
+                        comparedCount: comparedCount);
 
                     if (!response.HasMore)
                     {
@@ -231,12 +289,36 @@ public sealed class LocalCatalogSyncService(
                     downloadStopwatch.Stop();
                     totalCount = Math.Max(totalCount, response.TotalCount);
                     Log($"download page response store={storeCode} page={remotePages + 1} items={response.Items.Count} total={response.TotalCount} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} apiElapsedMs={downloadStopwatch.ElapsedMilliseconds}");
+                    ReportProgress(
+                        progress,
+                        storeCode,
+                        CatalogSyncProgressStage.Downloading,
+                        totalCount,
+                        downloadedCount,
+                        comparePages,
+                        remotePages,
+                        upsertedCount,
+                        deletedCount,
+                        totalStopwatch,
+                        comparedCount: comparedCount);
 
                     if (remotePages == 0 && !hasCompareChanges && localItemCount == response.TotalCount)
                     {
                         remotePages++;
                         downloadedCount = response.TotalCount;
                         Log($"download skipped store={storeCode} reason=no-changes localCount={localItemCount} total={response.TotalCount} comparePages={comparePages} remotePages={remotePages} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
+                        ReportProgress(
+                            progress,
+                            storeCode,
+                            CatalogSyncProgressStage.Downloading,
+                            totalCount,
+                            downloadedCount,
+                            comparePages,
+                            remotePages,
+                            upsertedCount,
+                            deletedCount,
+                            totalStopwatch,
+                            comparedCount: comparedCount);
                         break;
                     }
 
@@ -244,7 +326,19 @@ public sealed class LocalCatalogSyncService(
                         storeCode,
                         response.Items,
                         response.DeletedLookups,
-                        cancellationToken);
+                        cancellationToken,
+                        (batchUpsertedCount, batchDeletedCount) => ReportProgress(
+                            progress,
+                            storeCode,
+                            CatalogSyncProgressStage.Downloading,
+                            totalCount,
+                            downloadedCount + batchUpsertedCount,
+                            comparePages,
+                            remotePages + 1,
+                            upsertedCount + batchUpsertedCount,
+                            deletedCount + batchDeletedCount,
+                            totalStopwatch,
+                            comparedCount: comparedCount));
 
                     remotePages++;
                     downloadedCount += response.Items.Count;
@@ -262,7 +356,8 @@ public sealed class LocalCatalogSyncService(
                         upsertedCount,
                         deletedCount,
                         totalStopwatch,
-                        forceComplete: !response.HasMore);
+                        forceComplete: false,
+                        comparedCount: comparedCount);
 
                     if (!response.HasMore)
                     {
@@ -329,7 +424,8 @@ public sealed class LocalCatalogSyncService(
                 upsertedCount,
                 deletedCount,
                 totalStopwatch,
-                forceComplete: true);
+                forceComplete: true,
+                comparedCount: comparedCount);
             return new LocalCatalogSyncResult(
                 storeCode,
                 comparePages,
@@ -357,7 +453,8 @@ public sealed class LocalCatalogSyncService(
                 upsertedCount,
                 deletedCount,
                 totalStopwatch,
-                ex.Message);
+                ex.Message,
+                comparedCount: comparedCount);
             throw;
         }
     }
@@ -366,13 +463,15 @@ public sealed class LocalCatalogSyncService(
         string storeCode,
         IReadOnlyList<CatalogLookupItemDto> upsertedLookups,
         IReadOnlyList<DeletedLookupDto> deletedLookups,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<int, int>? batchApplied = null)
     {
         var applyStopwatch = Stopwatch.StartNew();
         var upsertItems = upsertedLookups
             .Select(item => item.ToSellableItemDto())
             .ToArray();
         var upsertElapsedMs = 0L;
+        var upsertedCount = 0;
         if (upsertItems.Length > 0)
         {
             var upsertStopwatch = Stopwatch.StartNew();
@@ -380,6 +479,8 @@ public sealed class LocalCatalogSyncService(
             {
                 await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
                 await localCatalogRepository.UpsertSellableItemsAsync(batch, cancellationToken);
+                upsertedCount += batch.Length;
+                batchApplied?.Invoke(upsertedCount, 0);
             }
 
             upsertStopwatch.Stop();
@@ -395,9 +496,13 @@ public sealed class LocalCatalogSyncService(
         var deletedCount = deletedCodes.Length == 0
             ? 0
             : await DeleteByLookupCodesWithTimingAsync(storeCode, deletedCodes, cancellationToken);
+        if (deletedCount > 0)
+        {
+            batchApplied?.Invoke(upsertedCount, deletedCount);
+        }
 
         applyStopwatch.Stop();
-        return (upsertItems.Length, deletedCount, upsertElapsedMs, deleteElapsedMs, applyStopwatch.ElapsedMilliseconds);
+        return (upsertedCount, deletedCount, upsertElapsedMs, deleteElapsedMs, applyStopwatch.ElapsedMilliseconds);
 
         async Task<int> DeleteByLookupCodesWithTimingAsync(
             string deleteStoreCode,
@@ -435,7 +540,8 @@ public sealed class LocalCatalogSyncService(
         int deletedCount,
         Stopwatch stopwatch,
         string? errorMessage = null,
-        bool forceComplete = false)
+        bool forceComplete = false,
+        int comparedCount = 0)
     {
         if (progress is null)
         {
@@ -454,7 +560,10 @@ public sealed class LocalCatalogSyncService(
             upsertedCount,
             deletedCount,
             stopwatch.ElapsedMilliseconds,
-            errorMessage));
+            errorMessage)
+        {
+            ComparedCount = comparedCount
+        });
     }
 
     private static int CalculatePercent(int totalCount, int downloadedCount, bool forceComplete)
