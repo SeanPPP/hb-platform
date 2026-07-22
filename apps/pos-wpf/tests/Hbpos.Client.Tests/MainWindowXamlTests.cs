@@ -5,6 +5,28 @@ namespace Hbpos.Client.Tests;
 public sealed class MainWindowXamlTests
 {
     [Fact]
+    public void Cashier_login_overlay_restores_focus_when_server_switch_reenables_window()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var overlay = Assert.Single(document.Descendants(presentation + "Grid").Where(
+            element => element.Attributes().Any(attribute =>
+                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, "CashierLoginOverlay", StringComparison.Ordinal))));
+
+        Assert.Equal(
+            "CashierLoginOverlayIsEnabledChanged",
+            (string?)overlay.Attribute("IsEnabledChanged"));
+    }
+
+    [Fact]
     public void Sync_center_order_timestamp_runs_use_one_way_bindings()
     {
         var document = XDocument.Load(Path.Combine(

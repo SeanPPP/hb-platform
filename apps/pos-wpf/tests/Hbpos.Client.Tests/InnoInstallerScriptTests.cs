@@ -3,6 +3,17 @@ namespace Hbpos.Client.Tests;
 public sealed class InnoInstallerScriptTests
 {
     [Fact]
+    public void Inno_script_launches_hb_pos_after_silent_update()
+    {
+        var script = ReadRepoFile("apps/pos-wpf/installer/inno/Hbpos.Client.Wpf.iss");
+
+        Assert.Contains("[Run]", script);
+        Assert.Contains("Filename: \"{app}\\{#AppExeName}\"", script);
+        Assert.Contains("Flags: nowait runasoriginaluser", script);
+        Assert.DoesNotContain("skipifsilent", script.ToLowerInvariant());
+    }
+
+    [Fact]
     public void Inno_script_uninstalls_legacy_msi_by_configured_product_codes()
     {
         var script = ReadRepoFile("apps/pos-wpf/installer/inno/Hbpos.Client.Wpf.iss");

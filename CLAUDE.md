@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **hb-platform-main** (60440 symbols, 1746
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/hb-platform-main/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/hb-platform-main/clusters` | All functional areas |
-| `gitnexus://repo/hb-platform-main/processes` | All execution flows |
-| `gitnexus://repo/hb-platform-main/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/hb-platform/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/hb-platform/clusters` | All functional areas |
+| `gitnexus://repo/hb-platform/processes` | All execution flows |
+| `gitnexus://repo/hb-platform/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

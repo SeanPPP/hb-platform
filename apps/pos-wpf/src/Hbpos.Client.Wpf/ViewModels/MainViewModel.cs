@@ -1450,6 +1450,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!value)
         {
             _apiServerSwitchFrozenScreen = null;
+            RefreshActiveScannerPage();
             return;
         }
 

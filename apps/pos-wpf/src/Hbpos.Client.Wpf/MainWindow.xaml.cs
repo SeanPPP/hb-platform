@@ -148,11 +148,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 关键逻辑：遮盖打开后立即把焦点交给扫码输入框，扫码枪可直接录入收银员条码。
+        FocusCashierLoginOverlayInput();
+    }
+
+    private void CashierLoginOverlayIsEnabledChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is true && sender is UIElement { IsVisible: true })
+        {
+            // 服务器热切换会暂时禁用整个窗口；解冻后必须重新夺回扫码焦点。
+            FocusCashierLoginOverlayInput();
+        }
+    }
+
+    private void FocusCashierLoginOverlayInput()
+    {
+        // 关键逻辑：遮盖打开或重新启用后把焦点交给扫码输入框，扫码枪可直接录入收银员条码。
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(() =>
             {
+                if (!CashierLoginOverlayPasswordBox.IsVisible || !CashierLoginOverlayPasswordBox.IsEnabled)
+                {
+                    return;
+                }
+
                 CashierLoginOverlayPasswordBox.Focus();
                 Keyboard.Focus(CashierLoginOverlayPasswordBox);
             }));
