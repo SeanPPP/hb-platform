@@ -2867,6 +2867,18 @@
       "confirmDeleteInvoice": "Confirm delete this invoice?",
       "deleteIrreversible": "Delete is irreversible",
       "loadFailed": "Failed to load invoices",
+      "dragColumn": "Drag to reorder column: {{column}}",
+      "resetColumns": "Reset Columns",
+      "columnOrderReset": "Column order restored to default",
+      "dnd": {
+        "instructions": "Press Space to pick up a column, use the left and right arrow keys to move it, then press Space to drop it. Press Escape to cancel.",
+        "unknownColumn": "current",
+        "dragStart": "Picked up the {{column}} column.",
+        "dragOver": "Moving the {{column}} column to the {{overColumn}} column position.",
+        "dragOverNone": "The {{column}} column is outside a valid drop area.",
+        "dragEnd": "Placed the {{column}} column at the {{overColumn}} column position.",
+        "dragCancel": "Cancelled moving the {{column}} column."
+      },
       "receivedTotal": "Received Total",
       "flowStatus": "Flow Status",
       "inboundStatus": "Inbound Status",

@@ -255,6 +255,17 @@ namespace BlazorApp.Api.Services
                 return ApiResponse<bool>.OK(true, "证件照已提交审批");
             }
 
+            // 关键逻辑：媒体完成可能补建资料，需与 GET/敏感资料首建及用户删除共用 lifecycle 锁。
+            await using var lifecycleLock = await EmployeeProfileMediaLock
+                .AcquireProfileLifecycleAsync(db, userGuid, _logger, cancellationToken);
+            var user = await db.Queryable<User>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            if (user is null)
+            {
+                await MarkFailedAndCleanupAsync(ticket, deleteFinal: true);
+                return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+            }
+
             var profile = await db.Queryable<EmployeeProfile>()
                 .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
             var oldObjectKey = GetManagedObjectKey(profile, userGuid, kind);

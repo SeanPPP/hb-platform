@@ -10,6 +10,13 @@ using System.Text.Json;
 
 namespace BlazorApp.Api.Services;
 
+internal sealed record EmployeeProfileObjectCleanupTarget(string Kind, string ObjectKey);
+
+internal sealed record EmployeeProfileDataRemovalPlan(
+    IReadOnlyList<string> SupersededPendingKeys,
+    IReadOnlyList<EmployeeProfileObjectCleanupTarget> DetachedProfileObjects
+);
+
 public sealed class EmployeeProfileSensitiveChangeService
 {
     public const string VersionConflictCode = "EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT";
@@ -549,7 +556,10 @@ public sealed class EmployeeProfileSensitiveChangeService
             .Where(item => item.UserGUID == userGuid
                 && item.Status == EmployeeProfileSensitiveChangeStatus.Pending)
             .ExecuteCommandAsync();
-        foreach (var item in pending)
+        foreach (var item in pending
+            .Where(item => !string.IsNullOrWhiteSpace(item.IdentityPhotoObjectKey))
+            .GroupBy(item => item.IdentityPhotoObjectKey!, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(item => item.SubmittedAt).First()))
         {
             await ScheduleTicketCleanupAsync(
                 item.RequestId,
@@ -566,7 +576,7 @@ public sealed class EmployeeProfileSensitiveChangeService
 
     public async Task CleanupSupersededObjectsAsync(string userGuid, IEnumerable<string> keys)
     {
-        foreach (var key in keys)
+        foreach (var key in keys.Distinct(StringComparer.Ordinal))
         {
             var request = await _context.Db.Queryable<EmployeeProfileSensitiveChangeRequest>()
                 .Where(item => item.UserGUID == userGuid
@@ -574,7 +584,84 @@ public sealed class EmployeeProfileSensitiveChangeService
                     && item.IdentityPhotoObjectKey == key)
                 .OrderBy(item => item.SupersededAt, SqlSugar.OrderByType.Desc)
                 .FirstAsync();
-            await CleanupObjectAsync(key, null, userGuid, "管理员直改后待审证件照", request?.RequestId);
+            await CleanupScheduledObjectBestEffortAsync(
+                userGuid,
+                new EmployeeProfileObjectCleanupTarget("identity", key),
+                request?.RequestId,
+                "管理员直改后待审证件照"
+            );
+        }
+    }
+
+    internal async Task<EmployeeProfileDataRemovalPlan> PrepareProfileDataRemovalWithinTransactionAsync(
+        string userGuid,
+        EmployeeProfile? profile,
+        string actor
+    )
+    {
+        var pendingKeys = await SupersedePendingWithinTransactionAsync(userGuid, actor);
+        var seen = new HashSet<EmployeeProfileObjectCleanupTarget>();
+        foreach (var key in pendingKeys)
+        {
+            seen.Add(new EmployeeProfileObjectCleanupTarget("identity", key));
+        }
+
+        var detached = new List<EmployeeProfileObjectCleanupTarget>();
+        if (profile is not null)
+        {
+            AddDetachedTarget("identity", profile.IdentityPhotoObjectKey);
+            if (_storage is not null
+                && _storage.TryGetPublicObjectKey(profile.AvatarUrl, out var avatarObjectKey))
+            {
+                AddDetachedTarget("avatar", avatarObjectKey);
+            }
+        }
+
+        foreach (var target in detached)
+        {
+            await ScheduleObjectCleanupWithinTransactionAsync(userGuid, target);
+        }
+
+        return new EmployeeProfileDataRemovalPlan(pendingKeys, detached);
+
+        void AddDetachedTarget(string kind, string? objectKey)
+        {
+            if (string.IsNullOrWhiteSpace(objectKey)
+                || !EmployeeProfileImageRules.OwnsObjectKey(objectKey, userGuid, kind))
+            {
+                return;
+            }
+
+            var target = new EmployeeProfileObjectCleanupTarget(kind, objectKey);
+            if (seen.Add(target))
+            {
+                detached.Add(target);
+            }
+        }
+    }
+
+    internal async Task CleanupProfileDataRemovalAsync(
+        string userGuid,
+        EmployeeProfileDataRemovalPlan plan
+    )
+    {
+        try
+        {
+            await CleanupSupersededObjectsAsync(userGuid, plan.SupersededPendingKeys);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "提交后清理已作废员工敏感资料对象失败。UserGUID: {UserGUID}", userGuid);
+        }
+
+        foreach (var target in plan.DetachedProfileObjects.Distinct())
+        {
+            await CleanupScheduledObjectBestEffortAsync(
+                userGuid,
+                target,
+                requestId: null,
+                "恢复软删除员工资料后的历史图片"
+            );
         }
     }
 
@@ -585,21 +672,38 @@ public sealed class EmployeeProfileSensitiveChangeService
         bool preservePendingPhoto
     )
     {
-        await using var sensitiveLock = await EmployeeProfileMediaLock.AcquireAsync(
-            _context.Db,
-            userGuid,
-            "sensitive-change",
-            _logger
-        );
-        return await ReplacePendingLockedAsync(
-            userGuid,
-            dto,
-            identityPhotoObjectKey,
-            preservePendingPhoto
-        );
+        (
+            ApiResponse<EmployeeProfileSensitiveChangeDetailDto> Response,
+            EmployeeProfileDataRemovalPlan? RemovalPlan
+        ) result;
+        {
+            await using var sensitiveLock = await EmployeeProfileMediaLock.AcquireAsync(
+                _context.Db,
+                userGuid,
+                "sensitive-change",
+                _logger
+            );
+            await using var lifecycleLock = await EmployeeProfileMediaLock
+                .AcquireProfileLifecycleAsync(_context.Db, userGuid, _logger);
+            result = await ReplacePendingLockedAsync(
+                userGuid,
+                dto,
+                identityPhotoObjectKey,
+                preservePendingPhoto
+            );
+        }
+
+        if (result.RemovalPlan is not null)
+        {
+            await CleanupProfileDataRemovalAsync(userGuid, result.RemovalPlan);
+        }
+        return result.Response;
     }
 
-    private async Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>> ReplacePendingLockedAsync(
+    private async Task<(
+        ApiResponse<EmployeeProfileSensitiveChangeDetailDto> Response,
+        EmployeeProfileDataRemovalPlan? RemovalPlan
+    )> ReplacePendingLockedAsync(
         string userGuid,
         EmployeeProfileSensitiveChangeUpsertDto dto,
         string? identityPhotoObjectKey,
@@ -609,47 +713,76 @@ public sealed class EmployeeProfileSensitiveChangeService
         var db = _context.Db;
         var actor = _currentUser.GetCurrentUsername();
         var now = DateTime.UtcNow;
-        var profile = await db.Queryable<EmployeeProfile>()
-            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
-        var currentSensitiveRevision = profile?.SensitiveRevision ?? 0;
-        if (dto.ExpectedSensitiveRevision.HasValue
-            && dto.ExpectedSensitiveRevision.Value != currentSensitiveRevision)
-        {
-            // 员工敏感表单也以打开时 revision 做 CAS；冲突发生在任何申请写入之前。
-            return VersionConflict();
-        }
-        profile ??= await EnsureProfileAsync(userGuid, actor, now);
-        var old = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
-            .FirstAsync(item => item.UserGUID == userGuid
-                && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
-        var retainedPhoto = preservePendingPhoto
-            ? old is not null ? old.IdentityPhotoObjectKey : profile.IdentityPhotoObjectKey
-            : identityPhotoObjectKey;
-        var removeIdentityPhoto = preservePendingPhoto
-            ? old?.RemoveIdentityPhoto ?? false
-            : string.IsNullOrWhiteSpace(identityPhotoObjectKey);
-        var request = new EmployeeProfileSensitiveChangeRequest
-        {
-            UserGUID = userGuid,
-            BankBsb = Normalize(dto.BankBsb),
-            BankAccountNumber = Normalize(dto.BankAccountNumber),
-            SuperannuationCompanyName = Normalize(dto.SuperannuationCompanyName),
-            SuperannuationCompanyCode = Normalize(dto.SuperannuationCompanyCode),
-            SuperannuationAccountNumber = Normalize(dto.SuperannuationAccountNumber),
-            IdentityType = Normalize(dto.IdentityType),
-            IdentityId = Normalize(dto.IdentityId),
-            IdentityPhotoObjectKey = retainedPhoto,
-            RemoveIdentityPhoto = removeIdentityPhoto,
-            Status = EmployeeProfileSensitiveChangeStatus.Pending,
-            BaseSensitiveRevision = profile.SensitiveRevision,
-            SubmittedAt = now,
-            SubmittedBy = actor,
-        };
-        // 关键逻辑：变更字段以提交瞬间的正式资料为基线固化，终态后不随正式资料继续漂移。
-        request.ChangedFieldsJson = JsonSerializer.Serialize(GetChangedFields(profile, request));
-        await db.Ado.BeginTranAsync();
+        EmployeeProfileDataRemovalPlan? removalPlan = null;
+        EmployeeProfile? profile = null;
+        EmployeeProfileSensitiveChangeRequest? old = null;
+        EmployeeProfileSensitiveChangeRequest? request = null;
+        string? retainedPhoto = null;
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
         {
+            // 生命周期锁只能串行化参与者；事务内仍须确认用户未被先行物理删除，避免创建孤立资料和申请。
+            var user = await db.Queryable<User>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            if (user is null)
+            {
+                await db.Ado.RollbackTranAsync();
+                return (
+                    ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.Error(
+                        "用户不存在",
+                        "USER_NOT_FOUND"
+                    ),
+                    null
+                );
+            }
+
+            profile = await db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            var currentSensitiveRevision = profile?.SensitiveRevision ?? 0;
+            if (dto.ExpectedSensitiveRevision.HasValue
+                && dto.ExpectedSensitiveRevision.Value != currentSensitiveRevision)
+            {
+                // 员工敏感表单也以打开时 revision 做 CAS；冲突发生在任何申请写入之前。
+                await db.Ado.RollbackTranAsync();
+                return (VersionConflict(), null);
+            }
+
+            if (profile is null)
+            {
+                (profile, removalPlan) = await EnsureProfileWithinTransactionAsync(
+                    userGuid,
+                    actor,
+                    now
+                );
+            }
+            old = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .FirstAsync(item => item.UserGUID == userGuid
+                    && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
+            retainedPhoto = preservePendingPhoto
+                ? old is not null ? old.IdentityPhotoObjectKey : profile.IdentityPhotoObjectKey
+                : identityPhotoObjectKey;
+            var removeIdentityPhoto = preservePendingPhoto
+                ? old?.RemoveIdentityPhoto ?? false
+                : string.IsNullOrWhiteSpace(identityPhotoObjectKey);
+            request = new EmployeeProfileSensitiveChangeRequest
+            {
+                UserGUID = userGuid,
+                BankBsb = Normalize(dto.BankBsb),
+                BankAccountNumber = Normalize(dto.BankAccountNumber),
+                SuperannuationCompanyName = Normalize(dto.SuperannuationCompanyName),
+                SuperannuationCompanyCode = Normalize(dto.SuperannuationCompanyCode),
+                SuperannuationAccountNumber = Normalize(dto.SuperannuationAccountNumber),
+                IdentityType = Normalize(dto.IdentityType),
+                IdentityId = Normalize(dto.IdentityId),
+                IdentityPhotoObjectKey = retainedPhoto,
+                RemoveIdentityPhoto = removeIdentityPhoto,
+                Status = EmployeeProfileSensitiveChangeStatus.Pending,
+                BaseSensitiveRevision = profile.SensitiveRevision,
+                SubmittedAt = now,
+                SubmittedBy = actor,
+            };
+            // 关键逻辑：变更字段以提交瞬间的正式资料为基线固化，终态后不随正式资料继续漂移。
+            request.ChangedFieldsJson = JsonSerializer.Serialize(GetChangedFields(profile, request));
             if (old is not null)
             {
                 var superseded = await db.Updateable<EmployeeProfileSensitiveChangeRequest>()
@@ -666,7 +799,7 @@ public sealed class EmployeeProfileSensitiveChangeService
                 {
                     // CAS 失败说明旧申请已被其他写入终结；本次不能继续插入基于旧 revision 的新 Pending。
                     await db.Ado.RollbackTranAsync();
-                    return RequestNotPending();
+                    return (RequestNotPending(), null);
                 }
                 if (!string.IsNullOrWhiteSpace(old.IdentityPhotoObjectKey)
                     && !string.Equals(old.IdentityPhotoObjectKey, retainedPhoto, StringComparison.Ordinal))
@@ -704,7 +837,13 @@ public sealed class EmployeeProfileSensitiveChangeService
         {
             await CleanupObjectAsync(old.IdentityPhotoObjectKey, retainedPhoto, userGuid, "覆盖待审证件照", old.RequestId);
         }
-        return ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(MapDetail(request, profile), "敏感资料变更已提交审批");
+        return (
+            ApiResponse<EmployeeProfileSensitiveChangeDetailDto>.OK(
+                MapDetail(request, profile),
+                "敏感资料变更已提交审批"
+            ),
+            removalPlan
+        );
     }
 
     private async Task<EmployeeProfileSensitiveChangeUpsertDto> BuildCurrentSnapshotAsync(string userGuid)
@@ -739,14 +878,36 @@ public sealed class EmployeeProfileSensitiveChangeService
         };
     }
 
-    private async Task<EmployeeProfile> EnsureProfileAsync(string userGuid, string actor, DateTime now)
+    private async Task<(EmployeeProfile Profile, EmployeeProfileDataRemovalPlan? RemovalPlan)>
+        EnsureProfileWithinTransactionAsync(string userGuid, string actor, DateTime now)
     {
         var profile = await _context.Db.Queryable<EmployeeProfile>()
             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
         if (profile is not null)
         {
-            return profile;
+            return (profile, null);
         }
+
+        var deletedProfile = await _context.Db.Queryable<EmployeeProfile>()
+            .FirstAsync(item => item.UserGUID == userGuid);
+        if (deletedProfile is not null)
+        {
+            var removalPlan = await PrepareProfileDataRemovalWithinTransactionAsync(
+                userGuid,
+                deletedProfile,
+                actor
+            );
+            return (
+                await ReactivateProfileWithinTransactionAsync(
+                    deletedProfile,
+                    userGuid,
+                    actor,
+                    now
+                ),
+                removalPlan
+            );
+        }
+
         profile = new EmployeeProfile
         {
             UserGUID = userGuid,
@@ -755,8 +916,93 @@ public sealed class EmployeeProfileSensitiveChangeService
             UpdatedAt = now,
             UpdatedBy = actor,
         };
-        profile.EmployeeInfoId = await _context.Db.Insertable(profile).ExecuteReturnIdentityAsync();
-        return profile;
+        try
+        {
+            profile.EmployeeInfoId = await _context.Db.Insertable(profile).ExecuteReturnIdentityAsync();
+            return (profile, null);
+        }
+        catch (Exception ex) when (EmployeeCashierBarcodeService.IsUniqueConstraintViolation(ex))
+        {
+            // 数据库唯一键兜底跨进程竞态；冲突后必须回读胜出行，不能遗留孤立申请。
+            var winner = await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            if (winner is not null)
+            {
+                return (winner, null);
+            }
+
+            deletedProfile = await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid);
+            if (deletedProfile is null)
+            {
+                throw;
+            }
+            var removalPlan = await PrepareProfileDataRemovalWithinTransactionAsync(
+                userGuid,
+                deletedProfile,
+                actor
+            );
+            return (
+                await ReactivateProfileWithinTransactionAsync(
+                    deletedProfile,
+                    userGuid,
+                    actor,
+                    now
+                ),
+                removalPlan
+            );
+        }
+    }
+
+    private async Task<EmployeeProfile> ReactivateProfileWithinTransactionAsync(
+        EmployeeProfile deletedProfile,
+        string userGuid,
+        string actor,
+        DateTime now
+    )
+    {
+        var reactivated = await _context.Db.Updateable<EmployeeProfile>()
+            .SetColumns(item => item.BankBSB == null)
+            .SetColumns(item => item.BankACC == null)
+            .SetColumns(item => item.SuperannuationCompanyName == null)
+            .SetColumns(item => item.SuperannuationCompanyCode == null)
+            .SetColumns(item => item.SuperannuationAccount == null)
+            .SetColumns(item => item.Phone == null)
+            .SetColumns(item => item.Birthday == null)
+            .SetColumns(item => item.Gender == null)
+            .SetColumns(item => item.EmployeeType == null)
+            .SetColumns(item => item.AvatarUrl == null)
+            .SetColumns(item => item.IdentityId == null)
+            .SetColumns(item => item.IdentityType == null)
+            .SetColumns(item => item.IdentityPhotoUrl == null)
+            .SetColumns(item => item.IdentityPhotoObjectKey == null)
+            .SetColumns(item => item.Address == null)
+            .SetColumns(item => item.SensitiveRevision == 0)
+            .SetColumns(item => item.CreatedAt == now)
+            .SetColumns(item => item.CreatedBy == actor)
+            .SetColumns(item => item.UpdatedAt == now)
+            .SetColumns(item => item.UpdatedBy == actor)
+            .SetColumns(item => item.IsDeleted == false)
+            .Where(item => item.EmployeeInfoId == deletedProfile.EmployeeInfoId && item.IsDeleted)
+            .ExecuteCommandAsync();
+        if (reactivated != 1)
+        {
+            var winner = await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            return winner ?? throw new InvalidOperationException("恢复软删除员工资料时状态已变化");
+        }
+
+        return new EmployeeProfile
+        {
+            EmployeeInfoId = deletedProfile.EmployeeInfoId,
+            UserGUID = userGuid,
+            CreatedAt = now,
+            CreatedBy = actor,
+            UpdatedAt = now,
+            UpdatedBy = actor,
+            IsDeleted = false,
+            SensitiveRevision = 0,
+        };
     }
 
     private async Task CleanupObjectAsync(
@@ -807,38 +1053,163 @@ public sealed class EmployeeProfileSensitiveChangeService
                 && item.PreviousObjectKey == objectKey)
             .ExecuteCommandAsync();
 
+    private async Task CleanupScheduledObjectBestEffortAsync(
+        string userGuid,
+        EmployeeProfileObjectCleanupTarget target,
+        int? requestId,
+        string context
+    )
+    {
+        try
+        {
+            if (_storage is null
+                || string.IsNullOrWhiteSpace(target.ObjectKey)
+                || !EmployeeProfileImageRules.OwnsObjectKey(
+                    target.ObjectKey,
+                    userGuid,
+                    target.Kind
+                ))
+            {
+                return;
+            }
+
+            await using var mediaLock = await EmployeeProfileMediaLock.AcquireAsync(
+                _context.Db,
+                userGuid,
+                target.Kind,
+                _logger
+            );
+            var profile = await _context.Db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+            EmployeeProfileSensitiveChangeRequest? pending = null;
+            if (target.Kind == "identity")
+            {
+                pending = await _context.Db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                    .FirstAsync(item => item.UserGUID == userGuid
+                        && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
+                        && item.IdentityPhotoObjectKey == target.ObjectKey);
+            }
+
+            var isReferenced = target.Kind == "identity"
+                ? string.Equals(
+                    profile?.IdentityPhotoObjectKey,
+                    target.ObjectKey,
+                    StringComparison.Ordinal
+                ) || pending is not null
+                : profile is not null
+                    && _storage.TryGetPublicObjectKey(profile.AvatarUrl, out var currentObjectKey)
+                    && string.Equals(currentObjectKey, target.ObjectKey, StringComparison.Ordinal);
+            if (isReferenced)
+            {
+                await MarkScheduledCleanupCompletedAsync(userGuid, target, requestId);
+                return;
+            }
+
+            var result = await _storage.DeleteObjectAsync(target.ObjectKey, CancellationToken.None);
+            if (!result.Success)
+            {
+                _logger.LogWarning(
+                    "{Context}清理失败，保留 Pending 票据供后台重试。UserGUID: {UserGUID}, Kind: {Kind}, ObjectKey: {ObjectKey}",
+                    context,
+                    userGuid,
+                    target.Kind,
+                    target.ObjectKey
+                );
+                return;
+            }
+
+            await MarkScheduledCleanupCompletedAsync(userGuid, target, requestId);
+        }
+        catch (Exception ex)
+        {
+            // 提交后的 COS/票据清理只能尽力执行，不能让已成功的 GET 或删除接口反向失败。
+            _logger.LogWarning(
+                ex,
+                "{Context}清理异常，保留 Pending 票据供后台重试。UserGUID: {UserGUID}, Kind: {Kind}, ObjectKey: {ObjectKey}",
+                context,
+                userGuid,
+                target.Kind,
+                target.ObjectKey
+            );
+        }
+    }
+
+    private Task<int> MarkScheduledCleanupCompletedAsync(
+        string userGuid,
+        EmployeeProfileObjectCleanupTarget target,
+        int? requestId
+    )
+    {
+        var update = _context.Db.Updateable<EmployeeImageUploadTicket>()
+            .SetColumns(item => new EmployeeImageUploadTicket
+            {
+                PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Completed,
+                PreviousObjectCleanupStartedAt = null,
+            })
+            .Where(item => item.UserGUID == userGuid
+                && item.Kind == target.Kind
+                && item.Status == EmployeeImageUploadStatus.Completed
+                && item.PreviousObjectKey == target.ObjectKey);
+        if (requestId.HasValue)
+        {
+            update = update.Where(item => item.SensitiveChangeRequestId == requestId.Value);
+        }
+        return update.ExecuteCommandAsync();
+    }
+
     private async Task<int> ScheduleTicketCleanupAsync(
         int requestId,
         string? objectKey,
         string userGuid
+    ) => await ScheduleObjectCleanupWithinTransactionAsync(
+        userGuid,
+        new EmployeeProfileObjectCleanupTarget("identity", objectKey ?? string.Empty),
+        requestId
+    );
+
+    private async Task<int> ScheduleObjectCleanupWithinTransactionAsync(
+        string userGuid,
+        EmployeeProfileObjectCleanupTarget target,
+        int? requestId = null
     )
     {
-        if (string.IsNullOrWhiteSpace(objectKey))
+        if (string.IsNullOrWhiteSpace(target.ObjectKey)
+            || !EmployeeProfileImageRules.OwnsObjectKey(target.ObjectKey, userGuid, target.Kind))
         {
             return 0;
         }
-        var scheduled = await _context.Db.Updateable<EmployeeImageUploadTicket>()
+
+        var schedule = _context.Db.Updateable<EmployeeImageUploadTicket>()
             .SetColumns(item => new EmployeeImageUploadTicket
             {
-                PreviousObjectKey = objectKey,
+                PreviousObjectKey = target.ObjectKey,
                 PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Pending,
                 PreviousObjectCleanupStartedAt = null,
             })
-            .Where(item => item.SensitiveChangeRequestId == requestId
-                && item.Status == EmployeeImageUploadStatus.Completed)
-            .ExecuteCommandAsync();
+            .Where(item => item.UserGUID == userGuid
+                && item.Kind == target.Kind
+                && item.Status == EmployeeImageUploadStatus.Completed
+                && (item.PreviousObjectKey == null
+                    || item.PreviousObjectKey == ""
+                    || item.PreviousObjectKey == target.ObjectKey
+                    || item.PreviousObjectCleanupStatus == EmployeeImageObjectCleanupStatus.None
+                    || item.PreviousObjectCleanupStatus == EmployeeImageObjectCleanupStatus.Completed));
+        schedule = requestId.HasValue
+            ? schedule.Where(item => item.SensitiveChangeRequestId == requestId.Value)
+            : schedule.Where(item => item.FinalObjectKey == target.ObjectKey);
+        var scheduled = await schedule.ExecuteCommandAsync();
         if (scheduled > 0)
         {
             return scheduled;
         }
 
-        // 删除正式证件照可能没有对应上传票据；补建恢复票据，确保 COS 短暂失败后可重试。
+        // 正式图片可能来自旧链路而没有上传票据；补建恢复票据，确保 COS 短暂失败后可重试。
         var now = DateTime.UtcNow;
         var recoveryTicket = new EmployeeImageUploadTicket
         {
-            PendingObjectKey = $"cleanup/employee-profiles/{userGuid}/identity/{Guid.NewGuid():N}",
+            PendingObjectKey = $"cleanup/employee-profiles/{userGuid}/{target.Kind}/{Guid.NewGuid():N}",
             UserGUID = userGuid,
-            Kind = "identity",
+            Kind = target.Kind,
             ContentType = "application/octet-stream",
             FileSize = 0,
             CreatedAt = now,
@@ -846,7 +1217,7 @@ public sealed class EmployeeProfileSensitiveChangeService
             Status = EmployeeImageUploadStatus.Completed,
             CompletedAt = now,
             StageChangedAt = now,
-            PreviousObjectKey = objectKey,
+            PreviousObjectKey = target.ObjectKey,
             PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Pending,
             SensitiveChangeRequestId = requestId,
         };

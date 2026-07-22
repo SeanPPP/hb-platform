@@ -1430,6 +1430,15 @@ async function main() {
       !columnsSection.includes("dataIndex: 'middlePackQty'"),
       "\u4E3B\u8868\u4E2D\u5305\u6570\u5217\u4E0D\u80FD\u7ED1\u5B9A middlePackQty\uFF0C\u907F\u514D\u4E0E MiddlePackQuantity \u6765\u6E90\u6DF7\u6DC6"
     );
+    const packingColumnSection = extractSection(
+      columnsSection,
+      "key: 'packingQty'",
+      "key: 'volume'"
+    );
+    assert(
+      packingColumnSection.includes(`record.isPackingQtyFallback ? <Tag color="green">{t('warehouse.warehouse')}</Tag> : <Tag color="gold">{t('warehouse.domestic')}</Tag>`),
+      "\u88C5\u7BB1\u6570\u4F7F\u7528\u4ED3\u5E93\u56DE\u9000\u503C\u65F6\u5E94\u663E\u793A\u4ED3\u5E93\u6765\u6E90\uFF0C\u5426\u5219\u663E\u793A\u56FD\u5185\u6765\u6E90"
+    );
   });
   if (minOrderQuantityColumnFailure) failures.push(minOrderQuantityColumnFailure);
   const batchEditFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u652F\u6301\u6309\u9009\u4E2D\u5546\u54C1\u6279\u91CF\u4FEE\u6539\u5E38\u7528\u5B57\u6BB5", () => {
@@ -1798,9 +1807,14 @@ async function main() {
       "const showHqSyncJobResult",
       "const startHqSyncJobPolling"
     );
+    const refreshSection = extractSection(
+      pageSource,
+      "const refreshCurrentList",
+      "const stopHqSyncJobPolling"
+    );
     assert(
-      resultSection.includes("notification.success") && descriptionSection.includes("addedCount") && descriptionSection.includes("updatedCount") && descriptionSection.includes("errorCount") && resultSection.includes("void loadDataRef.current?.({ page: 1 })"),
-      "\u540E\u53F0\u540C\u6B65\u6210\u529F\u5E94\u901A\u8FC7 notification \u5C55\u793A\u65B0\u589E/\u66F4\u65B0/\u9519\u8BEF\u7EDF\u8BA1\u5E76\u5237\u65B0\u7B2C\u4E00\u9875"
+      resultSection.includes("notification.success") && descriptionSection.includes("addedCount") && descriptionSection.includes("updatedCount") && descriptionSection.includes("errorCount") && resultSection.includes("void refreshCurrentList({ page: 1 })") && refreshSection.includes("if (!isMountedRef.current) {") && refreshSection.includes("loadDataRef.current?.(overrides)"),
+      "\u540E\u53F0\u540C\u6B65\u6210\u529F\u5E94\u5C55\u793A\u7ED3\u679C\uFF0C\u5E76\u5728 mounted gate \u540E\u901A\u8FC7 current loader \u5237\u65B0\u7B2C\u4E00\u9875"
     );
   });
   if (successRefreshFailure) failures.push(successRefreshFailure);
@@ -1815,7 +1829,7 @@ async function main() {
       "\u540E\u53F0\u540C\u6B65\u5931\u8D25\u65F6\u5E94\u4F7F\u7528 notification.error"
     );
     assert(
-      !extractSection(resultSection, "if (!success) {", "const errorCount").includes("loadDataRef.current?.({ page: 1 })"),
+      !extractSection(resultSection, "if (!success) {", "const errorCount").includes("refreshCurrentList("),
       "\u540E\u53F0\u540C\u6B65\u5931\u8D25\u5206\u652F\u4E0D\u5E94\u5237\u65B0\u7B2C\u4E00\u9875"
     );
   });

@@ -29,7 +29,7 @@ async function main() {
   const failures = [];
   const successRefreshFailure = await runTest("\u540C\u6B65\u6210\u529F\u540E\u624D\u63D0\u793A\u6210\u529F\u5E76\u5237\u65B0\u7B2C\u4E00\u9875", () => {
     assert(
-      pageSource.includes("if (success) {") && pageSource.includes("message.success(msg)") && pageSource.includes("await loadData(1, pageSize)"),
+      pageSource.includes("if (success) {") && pageSource.includes("message.success(msg)") && pageSource.includes("await latestRequestFirstPageRef.current()"),
       "\u9875\u9762\u5E94\u663E\u5F0F\u533A\u5206\u6210\u529F\u5206\u652F\uFF0C\u5E76\u5728\u6210\u529F\u540E\u63D0\u793A\u6210\u529F\u4E14\u5237\u65B0\u7B2C\u4E00\u9875"
     );
     assert(
@@ -43,8 +43,8 @@ async function main() {
       pageSource.includes("const errorMessage = error instanceof Error ? error.message : t('containers.messages.syncFailed')") && pageSource.includes("message.error(errorMessage)"),
       "\u9875\u9762\u5931\u8D25\u5206\u652F\u5E94\u4F18\u5148\u5C55\u793A error.message\uFF0C\u5E76\u4E3A\u975E Error \u5F02\u5E38\u4FDD\u7559\u515C\u5E95\u6587\u6848"
     );
-    const loadDataCount = pageSource.split("await loadData(1, pageSize)").length - 1;
-    assertEqual(loadDataCount, 2, "\u9875\u9762\u6E90\u7801\u4E2D\u5237\u65B0\u7B2C\u4E00\u9875\u7684\u8C03\u7528\u6B21\u6570\u5E94\u4FDD\u6301\u4E3A\u521B\u5EFA\u6210\u529F\u4E00\u6B21\u3001\u540C\u6B65\u6210\u529F\u4E00\u6B21");
+    const firstPageRequestCount = pageSource.split("await latestRequestFirstPageRef.current()").length - 1;
+    assertEqual(firstPageRequestCount, 2, "\u521B\u5EFA\u6210\u529F\u548C\u540C\u6B65\u6210\u529F\u5E94\u5206\u522B\u901A\u8FC7\u5F53\u524D\u5355\u4E00\u5165\u53E3\u5237\u65B0\u7B2C\u4E00\u9875\u4E00\u6B21");
   });
   if (errorHandlingFailure) failures.push(errorHandlingFailure);
   const loadingGuardFailure = await runTest("\u540C\u6B65\u6309\u94AE\u5E94\u4FDD\u7559 loading \u4E0E disabled \u884C\u4E3A", () => {

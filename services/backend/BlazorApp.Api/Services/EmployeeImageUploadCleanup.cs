@@ -50,17 +50,27 @@ namespace BlazorApp.Api.Services
                 var profile = await db.Queryable<EmployeeProfile>()
                     .FirstAsync(item => item.UserGUID == ticket.UserGUID && !item.IsDeleted);
                 EmployeeProfileSensitiveChangeRequest? sensitiveRequest = null;
+                EmployeeProfileSensitiveChangeRequest? previousObjectSensitiveRequest = null;
                 if (ticket.SensitiveChangeRequestId.HasValue)
                 {
                     sensitiveRequest = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
                         .FirstAsync(item => item.RequestId == ticket.SensitiveChangeRequestId.Value
                             && item.Status == EmployeeProfileSensitiveChangeStatus.Pending);
                 }
+                if (ticket.Kind == "identity"
+                    && !string.IsNullOrWhiteSpace(ticket.PreviousObjectKey))
+                {
+                    // 恢复票据可能不绑定当前申请；按旧对象键优先回读，防止删除刚被新 Pending 复用的图片。
+                    previousObjectSensitiveRequest = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                        .FirstAsync(item => item.UserGUID == ticket.UserGUID
+                            && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
+                            && item.IdentityPhotoObjectKey == ticket.PreviousObjectKey);
+                }
                 if (sensitiveRequest is null
                     && ticket.Kind == "identity"
                     && !string.IsNullOrWhiteSpace(ticket.FinalObjectKey))
                 {
-                    // 崩溃可能发生在申请已落库、票据关联尚未写回之间，按对象键兜底保护。
+                    // 崩溃可能发生在申请已落库、票据关联尚未写回之间，按最终对象键兜底保护。
                     sensitiveRequest = await db.Queryable<EmployeeProfileSensitiveChangeRequest>()
                         .FirstAsync(item => item.UserGUID == ticket.UserGUID
                             && item.Status == EmployeeProfileSensitiveChangeStatus.Pending
@@ -75,6 +85,7 @@ namespace BlazorApp.Api.Services
                         logger,
                         ticket,
                         profile,
+                        previousObjectSensitiveRequest ?? sensitiveRequest,
                         utcNow,
                         cancellationToken
                     );
@@ -125,6 +136,7 @@ namespace BlazorApp.Api.Services
                             logger,
                             ticket,
                             profile,
+                            previousObjectSensitiveRequest ?? sensitiveRequest,
                             utcNow,
                             cancellationToken
                         );
@@ -192,6 +204,7 @@ namespace BlazorApp.Api.Services
             ILogger logger,
             EmployeeImageUploadTicket ticket,
             EmployeeProfile? profile,
+            EmployeeProfileSensitiveChangeRequest? sensitiveRequest,
             DateTime utcNow,
             CancellationToken cancellationToken
         )
@@ -229,7 +242,13 @@ namespace BlazorApp.Api.Services
             {
                 return;
             }
-            if (IsObjectReferenced(profile, null, storage, ticket.Kind, ticket.PreviousObjectKey))
+            if (IsObjectReferenced(
+                profile,
+                sensitiveRequest,
+                storage,
+                ticket.Kind,
+                ticket.PreviousObjectKey
+            ))
             {
                 await MarkPreviousCleanupAsync(
                     db,

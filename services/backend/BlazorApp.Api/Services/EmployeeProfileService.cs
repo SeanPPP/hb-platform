@@ -1,7 +1,9 @@
+using System.Data;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using SqlSugar;
 
 namespace BlazorApp.Api.Services
 {
@@ -165,10 +167,127 @@ namespace BlazorApp.Api.Services
             return await UpsertForUserAsync(userGuid, dto, allowLegacyImageUrls: true, isAdmin: true);
         }
 
-        public Task<ApiResponse<EmployeeProfileDetailDto>> GetSelfAsync()
+        public async Task<ApiResponse<EmployeeProfileDetailDto>> GetSelfAsync()
         {
             var userGuid = _currentUserService.GetCurrentUserGuid();
-            return GetByUserGuidAsync(userGuid);
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return ApiResponse<EmployeeProfileDetailDto>.Error("未找到当前用户", "CURRENT_USER_NOT_FOUND");
+            }
+
+            try
+            {
+                var db = _context.Db;
+                var user = await db.Queryable<User>()
+                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                if (user == null)
+                {
+                    return ApiResponse<EmployeeProfileDetailDto>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var profile = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                if (profile != null)
+                {
+                    // 关键逻辑：已有有效资料只读返回，不等待首建所需的敏感变更与生命周期锁。
+                    return ApiResponse<EmployeeProfileDetailDto>.OK(
+                        MapDetail(user, profile),
+                        "获取员工个人信息成功"
+                    );
+                }
+
+                EmployeeProfileDataRemovalPlan? removalPlan = null;
+                {
+                    // 关键逻辑：资料首建与用户删除统一按 sensitive-change → lifecycle → transaction 排序。
+                    await using var sensitiveChangeLock = await EmployeeProfileMediaLock.AcquireAsync(
+                        db,
+                        userGuid,
+                        "sensitive-change",
+                        _logger
+                    );
+                    await using var lifecycleLock = await EmployeeProfileMediaLock
+                        .AcquireProfileLifecycleAsync(db, userGuid, _logger);
+                    await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                    try
+                    {
+                        // 等锁期间用户可能已被物理删除、资料也可能已由并发请求创建，必须在事务内重读。
+                        user = await db.Queryable<User>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (user == null)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error("用户不存在", "USER_NOT_FOUND");
+                        }
+
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (profile == null)
+                        {
+                            var actor = _currentUserService.GetCurrentUsername();
+                            var now = DateTime.UtcNow;
+                            var deletedProfile = await db.Queryable<EmployeeProfile>()
+                                .FirstAsync(item => item.UserGUID == userGuid);
+                            if (_sensitiveChangeService is not null)
+                            {
+                                removalPlan = await _sensitiveChangeService
+                                    .PrepareProfileDataRemovalWithinTransactionAsync(
+                                        userGuid,
+                                        deletedProfile,
+                                        actor
+                                    );
+                            }
+
+                            profile = await CreateSelfProfileIfMissingAsync(
+                                db,
+                                userGuid,
+                                actor,
+                                now,
+                                deletedProfile
+                            );
+                        }
+
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
+                    }
+                }
+
+                if (removalPlan is not null && _sensitiveChangeService is not null)
+                {
+                    try
+                    {
+                        await _sensitiveChangeService.CleanupProfileDataRemovalAsync(
+                            userGuid,
+                            removalPlan
+                        );
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        // COS 清理失败不影响已提交的资料恢复；后台/重试链路可继续处理。
+                        _logger.LogWarning(
+                            cleanupException,
+                            "清理员工资料历史对象失败，UserGUID: {UserGUID}",
+                            userGuid
+                        );
+                    }
+                }
+
+                return ApiResponse<EmployeeProfileDetailDto>.OK(
+                    MapDetail(user, profile),
+                    "获取员工个人信息成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取当前员工个人信息失败，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<EmployeeProfileDetailDto>.Error(
+                    "获取员工个人信息失败",
+                    "GET_EMPLOYEE_PROFILE_FAILED"
+                );
+            }
         }
 
         public async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertSelfAsync(EmployeeProfileUpsertDto dto)
@@ -210,6 +329,117 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        private async Task<EmployeeProfile> CreateSelfProfileIfMissingAsync(
+            ISqlSugarClient db,
+            string userGuid,
+            string actor,
+            DateTime now,
+            EmployeeProfile? deletedProfile
+        )
+        {
+            if (deletedProfile != null)
+            {
+                var reactivatedProfile = new EmployeeProfile
+                {
+                    EmployeeInfoId = deletedProfile.EmployeeInfoId,
+                    UserGUID = userGuid,
+                    CreatedAt = now,
+                    CreatedBy = actor,
+                    UpdatedAt = now,
+                    UpdatedBy = actor,
+                    IsDeleted = false,
+                    SensitiveRevision = 0,
+                };
+
+                // 关键逻辑：UserGUID 唯一键不包含软删除标记，必须复用旧行并清空资料，避免旧敏感数据重新可见。
+                var reactivated = await db.Updateable<EmployeeProfile>()
+                    .SetColumns(item => item.BankBSB == null)
+                    .SetColumns(item => item.BankACC == null)
+                    .SetColumns(item => item.SuperannuationCompanyName == null)
+                    .SetColumns(item => item.SuperannuationCompanyCode == null)
+                    .SetColumns(item => item.SuperannuationAccount == null)
+                    .SetColumns(item => item.Phone == null)
+                    .SetColumns(item => item.Birthday == null)
+                    .SetColumns(item => item.Gender == null)
+                    .SetColumns(item => item.EmployeeType == null)
+                    .SetColumns(item => item.AvatarUrl == null)
+                    .SetColumns(item => item.IdentityId == null)
+                    .SetColumns(item => item.IdentityType == null)
+                    .SetColumns(item => item.IdentityPhotoUrl == null)
+                    .SetColumns(item => item.IdentityPhotoObjectKey == null)
+                    .SetColumns(item => item.Address == null)
+                    .SetColumns(item => item.SensitiveRevision == 0)
+                    .SetColumns(item => item.CreatedAt == now)
+                    .SetColumns(item => item.CreatedBy == actor)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == actor)
+                    .SetColumns(item => item.IsDeleted == false)
+                    .Where(item =>
+                        item.EmployeeInfoId == deletedProfile.EmployeeInfoId && item.IsDeleted
+                    )
+                    .ExecuteCommandAsync();
+                if (reactivated == 1)
+                {
+                    return reactivatedProfile;
+                }
+
+                var winner = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                if (winner != null)
+                {
+                    return winner;
+                }
+
+                throw new InvalidOperationException("恢复软删除员工资料时状态已变化");
+            }
+
+            var profile = new EmployeeProfile
+            {
+                UserGUID = userGuid,
+                CreatedAt = now,
+                CreatedBy = actor,
+                UpdatedAt = now,
+                UpdatedBy = actor,
+                IsDeleted = false,
+                SensitiveRevision = 0,
+            };
+
+            try
+            {
+                profile.EmployeeInfoId = await db.Insertable(profile).ExecuteReturnIdentityAsync();
+                return profile;
+            }
+            catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+            {
+                // 跨进程竞争由唯一键兜底；冲突后回读胜出的有效资料，保持 GET 幂等。
+                var winner = await db.Queryable<EmployeeProfile>()
+                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                if (winner != null)
+                {
+                    return winner;
+                }
+
+                throw;
+            }
+        }
+
+        private static bool IsUniqueConstraintViolation(Exception exception)
+        {
+            for (var current = exception; current is not null; current = current.InnerException)
+            {
+                var message = current.Message;
+                if (message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("2601", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("2627", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private async Task<ApiResponse<EmployeeProfileDetailDto>> UpsertForUserAsync(
             string userGuid,
             EmployeeProfileUpsertDto dto,
@@ -247,9 +477,22 @@ namespace BlazorApp.Api.Services
                         "sensitive-change",
                         _logger
                     );
+                    await using var adminLifecycleLock = await EmployeeProfileMediaLock
+                        .AcquireProfileLifecycleAsync(db, userGuid, _logger);
                     await db.Ado.BeginTranAsync();
                     try
                     {
+                        user = await db.Queryable<User>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (user == null)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "用户不存在",
+                                "USER_NOT_FOUND"
+                            );
+                        }
+
                         profile = await db.Queryable<EmployeeProfile>()
                             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
                         var sensitiveChanged = HasSensitiveChanges(profile, dto);
@@ -373,30 +616,61 @@ namespace BlazorApp.Api.Services
                 {
                     profile = await db.Queryable<EmployeeProfile>()
                         .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                    var createdProfile = false;
                     if (profile == null)
                     {
-                        profile = new EmployeeProfile
+                        await using var selfLifecycleLock = await EmployeeProfileMediaLock
+                            .AcquireProfileLifecycleAsync(db, userGuid, _logger);
+                        user = await db.Queryable<User>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (user == null)
                         {
-                            UserGUID = userGuid,
-                            CreatedAt = now,
-                            CreatedBy = actor,
-                            UpdatedAt = now,
-                            UpdatedBy = actor,
-                        };
-                        ApplyChanges(
-                            profile,
-                            dto,
-                            userGuid,
-                            actor,
-                            now,
-                            isCreate: true,
-                            allowLegacyImageUrls: false,
-                            allowSensitiveChanges: false
-                        );
-                        profile.EmployeeInfoId = await db.Insertable(profile)
-                            .ExecuteReturnIdentityAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                "用户不存在",
+                                "USER_NOT_FOUND"
+                            );
+                        }
+
+                        profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (profile == null)
+                        {
+                            profile = new EmployeeProfile
+                            {
+                                UserGUID = userGuid,
+                                CreatedAt = now,
+                                CreatedBy = actor,
+                                UpdatedAt = now,
+                                UpdatedBy = actor,
+                            };
+                            ApplyChanges(
+                                profile,
+                                dto,
+                                userGuid,
+                                actor,
+                                now,
+                                isCreate: true,
+                                allowLegacyImageUrls: false,
+                                allowSensitiveChanges: false
+                            );
+                            try
+                            {
+                                profile.EmployeeInfoId = await db.Insertable(profile)
+                                    .ExecuteReturnIdentityAsync();
+                                createdProfile = true;
+                            }
+                            catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+                            {
+                                profile = await db.Queryable<EmployeeProfile>()
+                                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                                if (profile == null)
+                                {
+                                    throw;
+                                }
+                            }
+                        }
                     }
-                    else
+                    if (!createdProfile)
                     {
                         // 员工自助保存只更新非敏感白名单列，绝不写回敏感字段或 revision。
                         var birthday = dto.Birthday?.Date;

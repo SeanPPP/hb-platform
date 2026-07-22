@@ -2867,6 +2867,18 @@
       "confirmDeleteInvoice": "确认删除该进货单吗？",
       "deleteIrreversible": "删除后无法恢复",
       "loadFailed": "加载进货单列表失败",
+      "dragColumn": "拖动调整列顺序：{{column}}",
+      "resetColumns": "重置列",
+      "columnOrderReset": "列顺序已恢复默认",
+      "dnd": {
+        "instructions": "按空格键拾取列，使用左右方向键移动，再按空格键放下；按 Escape 键取消。",
+        "unknownColumn": "当前",
+        "dragStart": "已拾取{{column}}列。",
+        "dragOver": "正在将{{column}}列移动到{{overColumn}}列位置。",
+        "dragOverNone": "{{column}}列已移出可放置区域。",
+        "dragEnd": "已将{{column}}列放到{{overColumn}}列位置。",
+        "dragCancel": "已取消移动{{column}}列。"
+      },
       "receivedTotal": "已收总金额",
       "flowStatus": "流程状态",
       "inboundStatus": "入库状态",

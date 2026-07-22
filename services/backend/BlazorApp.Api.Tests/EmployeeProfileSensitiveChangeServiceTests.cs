@@ -47,7 +47,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             typeof(UserRole),
             typeof(EmployeeProfile),
             typeof(EmployeeProfileSensitiveChangeRequest),
-            typeof(EmployeeImageUploadTicket)
+            typeof(EmployeeImageUploadTicket),
+            typeof(RefreshToken)
         );
     }
 
@@ -78,6 +79,448 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, rows[1].Status);
         Assert.Equal("87654321", rows[1].BankAccountNumber);
         Assert.Equal(1, rows.Count(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending));
+    }
+
+    [Fact]
+    public async Task GetSelfAsync_恢复软删除Profile时_BaseRevision0旧待审必须作废且不可批准()
+    {
+        await SeedAsync();
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.SensitiveRevision = 0;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        var self = CreateService("user-self", "self_user");
+        var submitted = await self.UpsertSelfAsync(new()
+        {
+            BankAccountNumber = "old-pending-account",
+        });
+        Assert.True(submitted.Success);
+        var requestId = Assert.IsType<EmployeeProfileSensitiveChangeDetailDto>(submitted.Data).RequestId;
+        await _db.Updateable<EmployeeProfile>()
+            .SetColumns(item => item.IsDeleted == true)
+            .Where(item => item.UserGUID == "user-self")
+            .ExecuteCommandAsync();
+
+        var recovered = await CreateProfileService("user-self", "self_user", self).GetSelfAsync();
+        var oldRequest = await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .FirstAsync(item => item.RequestId == requestId);
+        var approved = await CreateService("admin-user", "admin").ApproveAsync(
+            requestId,
+            new EmployeeProfileSensitiveReviewDto()
+        );
+        profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+
+        Assert.True(recovered.Success);
+        Assert.Equal(EmployeeProfileSensitiveChangeStatus.Superseded, oldRequest.Status);
+        Assert.NotNull(oldRequest.SupersededAt);
+        Assert.False(approved.Success);
+        Assert.Equal("REQUEST_NOT_PENDING", approved.ErrorCode);
+        Assert.Equal(0, profile.SensitiveRevision);
+        Assert.Null(profile.BankACC);
+        Assert.Equal(0, await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+            .CountAsync(item => item.Status == EmployeeProfileSensitiveChangeStatus.Pending));
+    }
+
+    [Fact]
+    public async Task GetSelfAsync_恢复软删除资料时_旧AvatarIdentity与待审Identity清理失败后可由Worker重试()
+    {
+        await SeedAsync();
+        const string avatarKey = "employee-profiles/user-self/avatar/old.png";
+        const string formalIdentityKey = "employee-profiles/user-self/identity/formal.png";
+        const string pendingIdentityKey = "employee-profiles/user-self/identity/pending.png";
+        var storage = new FakeStorage { DeleteSucceeds = false };
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.AvatarUrl = storage.GetPublicDownloadUrl(avatarKey);
+        profile.IdentityPhotoObjectKey = formalIdentityKey;
+        profile.IsDeleted = true;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        await _db.Insertable(new EmployeeProfileSensitiveChangeRequest
+        {
+            UserGUID = "user-self",
+            IdentityPhotoObjectKey = pendingIdentityKey,
+            BaseSensitiveRevision = profile.SensitiveRevision,
+            Status = EmployeeProfileSensitiveChangeStatus.Pending,
+            SubmittedAt = DateTime.UtcNow,
+            SubmittedBy = "self_user",
+        }).ExecuteCommandAsync();
+
+        var sensitive = CreateService("user-self", "self_user", storage);
+        var result = await CreateProfileService("user-self", "self_user", sensitive).GetSelfAsync();
+        var tickets = await _db.Queryable<EmployeeImageUploadTicket>()
+            .OrderBy(item => item.PreviousObjectKey)
+            .ToListAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(3, tickets.Count);
+        Assert.All(tickets, ticket =>
+        {
+            Assert.Equal(EmployeeImageUploadStatus.Completed, ticket.Status);
+            Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, ticket.PreviousObjectCleanupStatus);
+        });
+        Assert.Equal(
+            new[] { avatarKey, formalIdentityKey, pendingIdentityKey },
+            tickets.Select(item => item.PreviousObjectKey).OrderBy(item => item)
+        );
+        Assert.Equal(1, storage.DeletedKeys.Count(key => key == avatarKey));
+        Assert.Equal(1, storage.DeletedKeys.Count(key => key == formalIdentityKey));
+        Assert.Equal(1, storage.DeletedKeys.Count(key => key == pendingIdentityKey));
+
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            DateTime.UtcNow,
+            CancellationToken.None
+        );
+        Assert.All(
+            await _db.Queryable<EmployeeImageUploadTicket>().ToListAsync(),
+            ticket => Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, ticket.PreviousObjectCleanupStatus)
+        );
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == avatarKey));
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == formalIdentityKey));
+        Assert.Equal(2, storage.DeletedKeys.Count(key => key == pendingIdentityKey));
+
+        storage.DeleteSucceeds = true;
+        await EmployeeImageUploadCleanup.CleanupExpiredAsync(
+            _db,
+            storage,
+            NullLogger.Instance,
+            DateTime.UtcNow.AddMinutes(1),
+            CancellationToken.None
+        );
+        tickets = await _db.Queryable<EmployeeImageUploadTicket>().ToListAsync();
+        Assert.All(tickets, ticket =>
+        {
+            Assert.Equal(EmployeeImageObjectCleanupStatus.Completed, ticket.PreviousObjectCleanupStatus);
+            Assert.Null(ticket.PreviousObjectCleanupStartedAt);
+        });
+        Assert.Equal(3, storage.DeletedKeys.Count(key => key == avatarKey));
+        Assert.Equal(3, storage.DeletedKeys.Count(key => key == formalIdentityKey));
+        Assert.Equal(3, storage.DeletedKeys.Count(key => key == pendingIdentityKey));
+    }
+
+    [Fact]
+    public async Task GetSelfAsync_恢复资料调度新正式对象时_不得覆盖已有Pending清理票据()
+    {
+        await SeedAsync();
+        const string newFormalObjectKey = "employee-profiles/user-self/identity/new-formal.png";
+        const string existingPreviousObjectKey = "employee-profiles/user-self/identity/older-pending.png";
+        const string existingTicketKey = "pending/employee-profiles/user-self/identity/existing.png";
+        var profile = await _db.Queryable<EmployeeProfile>().FirstAsync();
+        profile.IdentityPhotoObjectKey = newFormalObjectKey;
+        profile.IsDeleted = true;
+        await _db.Updateable(profile).ExecuteCommandAsync();
+        await _db.Insertable(new EmployeeImageUploadTicket
+        {
+            PendingObjectKey = existingTicketKey,
+            FinalObjectKey = newFormalObjectKey,
+            UserGUID = "user-self",
+            Kind = "identity",
+            ContentType = "image/png",
+            FileSize = 10,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow,
+            Status = EmployeeImageUploadStatus.Completed,
+            CompletedAt = DateTime.UtcNow,
+            StageChangedAt = DateTime.UtcNow,
+            PreviousObjectKey = existingPreviousObjectKey,
+            PreviousObjectCleanupStatus = EmployeeImageObjectCleanupStatus.Pending,
+        }).ExecuteCommandAsync();
+        var storage = new FakeStorage { DeleteSucceeds = false };
+
+        var sensitive = CreateService("user-self", "self_user", storage);
+        var recovered = await CreateProfileService("user-self", "self_user", sensitive).GetSelfAsync();
+        var tickets = await _db.Queryable<EmployeeImageUploadTicket>().ToListAsync();
+        var original = Assert.Single(tickets, item => item.PendingObjectKey == existingTicketKey);
+
+        Assert.True(recovered.Success);
+        Assert.Equal(existingPreviousObjectKey, original.PreviousObjectKey);
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, original.PreviousObjectCleanupStatus);
+        var recovery = Assert.Single(tickets, item =>
+            item.PreviousObjectKey == newFormalObjectKey
+            && item.PendingObjectKey != existingTicketKey
+        );
+        Assert.Equal(EmployeeImageUploadStatus.Completed, recovery.Status);
+        Assert.Equal(EmployeeImageObjectCleanupStatus.Pending, recovery.PreviousObjectCleanupStatus);
+    }
+
+    [Fact]
+    public async Task AcquireProfileLifecycleMany_源码契约为同Kind多用户复用一个SqlServer锁Session()
+    {
+        var source = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Services/EmployeeProfileMediaLock.cs"
+        ));
+        var acquireMany = ExtractMethodBody(source, "internal static async Task<IAsyncDisposable> AcquireManyAsync(");
+
+        Assert.DoesNotContain("await AcquireAsync(", acquireMany);
+        Assert.Contains("sys.sp_getapplock", acquireMany);
+        Assert.Equal(1, CountOccurrences(acquireMany, "new SqlSugarClient("));
+    }
+
+    [Fact]
+    public async Task GetSelfAsync_已有有效资料时_不被敏感变更锁阻塞且不修改资料或审计()
+    {
+        await SeedAsync();
+        var baselineUpdatedAt = new DateTime(2026, 7, 22, 1, 2, 3, DateTimeKind.Utc);
+        await _db.Updateable<EmployeeProfile>()
+            .SetColumns(item => item.BankACC == "formal-fast-read")
+            .SetColumns(item => item.UpdatedAt == baselineUpdatedAt)
+            .SetColumns(item => item.UpdatedBy == "baseline-audit")
+            .SetColumns(item => item.IsDeleted == false)
+            .Where(item => item.UserGUID == "user-self")
+            .ExecuteCommandAsync();
+        using var sensitiveDb = CreateAdditionalDb();
+        using var getDb = CreateAdditionalDb();
+        using var releaseSensitiveChange = new ManualResetEventSlim(false);
+        var sensitiveChangeEnteredLock = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var sensitiveSelects = 0;
+        sensitiveDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            // Upsert 的第一条查询在 sensitive-change 锁与事务内读取 User，作为持锁屏障。
+            if (IsSelect(sql) && Interlocked.Increment(ref sensitiveSelects) == 1)
+            {
+                sensitiveChangeEnteredLock.TrySetResult();
+                Assert.True(
+                    releaseSensitiveChange.Wait(TimeSpan.FromSeconds(10)),
+                    "敏感变更持锁屏障等待超时"
+                );
+            }
+        };
+
+        Task<ApiResponse<EmployeeProfileSensitiveChangeDetailDto>>? sensitiveTask = null;
+        try
+        {
+            sensitiveTask = Task.Run(() => CreateService("user-self", "self_user", db: sensitiveDb)
+                .UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+                {
+                    BankAccountNumber = "pending-must-not-block-fast-read",
+                }));
+            await sensitiveChangeEnteredLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var getSensitive = CreateService("user-self", "self_user", db: getDb);
+            var getTask = Task.Run(() => CreateProfileService(
+                "user-self",
+                "self_user",
+                getSensitive,
+                getDb
+            ).GetSelfAsync());
+            var fastReadCompletedBeforeSensitiveLockRelease = await Task.WhenAny(
+                getTask,
+                Task.Delay(TimeSpan.FromMilliseconds(250))
+            ) == getTask;
+
+            releaseSensitiveChange.Set();
+            var get = await getTask;
+            var sensitive = await sensitiveTask;
+            var persisted = await _db.Queryable<EmployeeProfile>()
+                .FirstAsync(item => item.UserGUID == "user-self");
+
+            Assert.True(
+                fastReadCompletedBeforeSensitiveLockRelease,
+                "已有有效资料的 GET 不应等待无关的 sensitive-change 锁"
+            );
+            Assert.True(get.Success, $"GET 失败: {get.ErrorCode} / {get.Message}");
+            Assert.Equal("formal-fast-read", get.Data!.BankAccountNumber);
+            Assert.Equal("baseline-audit", get.Data.UpdatedBy);
+            Assert.Equal(baselineUpdatedAt, get.Data.UpdatedAt);
+            Assert.Equal("formal-fast-read", persisted.BankACC);
+            Assert.Equal("baseline-audit", persisted.UpdatedBy);
+            Assert.Equal(baselineUpdatedAt, persisted.UpdatedAt);
+            Assert.True(sensitive.Success, $"敏感申请失败: {sensitive.ErrorCode} / {sensitive.Message}");
+        }
+        finally
+        {
+            releaseSensitiveChange.Set();
+            sensitiveDb.Aop.OnLogExecuted = null;
+        }
+    }
+
+    [Fact]
+    public async Task GetSelfAsync_与敏感申请首次创建并发时_只创建一条资料且申请成功()
+    {
+        await SeedAsync();
+        await _db.Deleteable<EmployeeProfile>().ExecuteCommandAsync();
+        // SQLite 只能稳定验证同进程 Semaphore；SQL Server 的跨进程 applock 另需集成环境。
+        var getDb = _db;
+        var sensitiveDb = _db;
+        using var releaseSensitiveEnsure = new ManualResetEventSlim(false);
+        var sensitiveReadEnsureProfile = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sensitiveProfileSelects = 0;
+        sensitiveDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsProfileSelect(sql) && Interlocked.Increment(ref sensitiveProfileSelects) == 1)
+            {
+                sensitiveReadEnsureProfile.TrySetResult();
+                Assert.True(
+                    releaseSensitiveEnsure.Wait(TimeSpan.FromSeconds(10)),
+                    "敏感申请并发屏障等待超时"
+                );
+            }
+        };
+
+        try
+        {
+            var sensitiveTask = Task.Run(() => CreateService("user-self", "self_user", db: sensitiveDb)
+                .UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+                {
+                    BankAccountNumber = "first-pending",
+                }));
+            await sensitiveReadEnsureProfile.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var getSensitive = CreateService("user-self", "self_user", db: getDb);
+            var getTask = Task.Run(() => CreateProfileService(
+                "user-self",
+                "self_user",
+                getSensitive,
+                getDb
+            ).GetSelfAsync());
+            var getCompletedWhileSensitiveCreationLockIsHeld = await Task.WhenAny(
+                getTask,
+                Task.Delay(TimeSpan.FromMilliseconds(250))
+            ) == getTask;
+            Assert.False(getCompletedWhileSensitiveCreationLockIsHeld);
+            releaseSensitiveEnsure.Set();
+
+            var sensitive = await sensitiveTask;
+            var get = await getTask;
+            Assert.True(get.Success, $"GET 失败: {get.ErrorCode} / {get.Message}");
+            Assert.True(sensitive.Success, $"敏感申请失败: {sensitive.ErrorCode} / {sensitive.Message}");
+            Assert.Single(await _db.Queryable<EmployeeProfile>()
+                .Where(item => item.UserGUID == "user-self" && !item.IsDeleted)
+                .ToListAsync());
+            var request = Assert.Single(await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .Where(item => item.UserGUID == "user-self")
+                .ToListAsync());
+            Assert.Equal(EmployeeProfileSensitiveChangeStatus.Pending, request.Status);
+            Assert.Equal(0, request.BaseSensitiveRevision);
+        }
+        finally
+        {
+            releaseSensitiveEnsure.Set();
+            sensitiveDb.Aop.OnLogExecuted = null;
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetSelfAsync_与用户物理删除并发时_不留下活动或孤立Profile(bool batchDelete)
+    {
+        await SeedAsync();
+        await _db.Deleteable<EmployeeProfile>().ExecuteCommandAsync();
+        // 缺资料 GET 先走无锁 User/Profile fast-path；第二次 User 查询才在 lifecycle 锁及事务内。
+        var getDb = _db;
+        var deleteDb = _db;
+        using var releaseGet = new ManualResetEventSlim(false);
+        var getReadInsideLifecycleLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var getUserSelects = 0;
+        getDb.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsUserSelect(sql) && Interlocked.Increment(ref getUserSelects) == 2)
+            {
+                getReadInsideLifecycleLock.TrySetResult();
+                Assert.True(releaseGet.Wait(TimeSpan.FromSeconds(10)), "删除并发屏障等待超时");
+            }
+        };
+
+        var getSensitive = CreateService("user-self", "self_user", db: getDb);
+        var getTask = Task.Run(() => CreateProfileService(
+            "user-self",
+            "self_user",
+            getSensitive,
+            getDb
+        ).GetSelfAsync());
+        try
+        {
+            await getReadInsideLifecycleLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var users = new UserService(CreateContext(deleteDb), NullLogger<UserService>.Instance);
+            var deleteTask = batchDelete
+                ? Task.Run(() => users.BatchManageUsersAsync(new BatchUserOperationDto
+                {
+                    Operation = "delete",
+                    UserGuids = ["user-self"],
+                }))
+                : Task.Run(() => users.DeleteUserByGuidAsync("user-self"));
+            var deleteCompletedWhileGetLifecycleLockIsHeld = await Task.WhenAny(
+                deleteTask,
+                Task.Delay(TimeSpan.FromMilliseconds(250))
+            ) == deleteTask;
+            Assert.False(deleteCompletedWhileGetLifecycleLockIsHeld);
+            releaseGet.Set();
+
+            var get = await getTask;
+            var deleted = await deleteTask;
+            Assert.True(get.Success);
+            Assert.True(deleted.Success);
+            Assert.Equal(0, await _db.Queryable<User>().CountAsync(item => item.UserGUID == "user-self"));
+            Assert.Equal(0, await _db.Queryable<EmployeeProfile>()
+                .CountAsync(item => item.UserGUID == "user-self"));
+        }
+        finally
+        {
+            releaseGet.Set();
+            getDb.Aop.OnLogExecuted = null;
+        }
+    }
+
+    [Fact]
+    public async Task UpsertSelfAsync_与用户删除并发且删除先线性化完成时_返回用户不存在且不创建资料或待审()
+    {
+        await SeedAsync();
+        await _db.Deleteable<EmployeeProfile>().ExecuteCommandAsync();
+        using var releaseDelete = new ManualResetEventSlim(false);
+        var deleteReadProfileInsideLock = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var profileSelects = 0;
+        _db.Aop.OnLogExecuted = (sql, _) =>
+        {
+            if (IsProfileSelect(sql) && Interlocked.Increment(ref profileSelects) == 1)
+            {
+                deleteReadProfileInsideLock.TrySetResult();
+                Assert.True(releaseDelete.Wait(TimeSpan.FromSeconds(10)), "删除线性化屏障等待超时");
+            }
+        };
+
+        try
+        {
+            var users = new UserService(CreateContext(_db), NullLogger<UserService>.Instance);
+            var deleteTask = Task.Run(() => users.DeleteUserByGuidAsync("user-self"));
+            await deleteReadProfileInsideLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var sensitiveTask = Task.Run(() => CreateService("user-self", "self_user")
+                .UpsertSelfAsync(new EmployeeProfileSensitiveChangeUpsertDto
+                {
+                    BankAccountNumber = "must-not-be-submitted",
+                }));
+            var sensitiveCompletedWhileDeleteLockIsHeld = await Task.WhenAny(
+                sensitiveTask,
+                Task.Delay(TimeSpan.FromMilliseconds(250))
+            ) == sensitiveTask;
+            Assert.False(sensitiveCompletedWhileDeleteLockIsHeld);
+
+            releaseDelete.Set();
+            var deleted = await deleteTask;
+            var sensitive = await sensitiveTask;
+
+            Assert.True(deleted.Success);
+            Assert.False(
+                sensitive.Success,
+                $"敏感申请不应在用户已删除后成功: {sensitive.ErrorCode} / {sensitive.Message}"
+            );
+            Assert.Equal("USER_NOT_FOUND", sensitive.ErrorCode);
+            Assert.Equal(0, await _db.Queryable<User>().CountAsync(item => item.UserGUID == "user-self"));
+            Assert.Equal(0, await _db.Queryable<EmployeeProfile>()
+                .CountAsync(item => item.UserGUID == "user-self"));
+            Assert.Equal(0, await _db.Queryable<EmployeeProfileSensitiveChangeRequest>()
+                .CountAsync(item => item.UserGUID == "user-self"));
+        }
+        finally
+        {
+            releaseDelete.Set();
+            _db.Aop.OnLogExecuted = null;
+        }
     }
 
     [Fact]
@@ -520,6 +963,10 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
 
         var rejectedRequest = await self.ReplacePendingIdentityPhotoAsync(
             "employee-profiles/user-self/identity/rejected.png"
+        );
+        Assert.True(
+            rejectedRequest.Success,
+            $"创建待审证件照申请失败: {rejectedRequest.ErrorCode} / {rejectedRequest.Message}"
         );
         var rejected = await admin.RejectAsync(
             rejectedRequest.Data!.RequestId,
@@ -1509,9 +1956,19 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             Email = "self@example.com",
             PasswordHash = "hashed",
             IsActive = true,
+            IsDeleted = false,
             CreatedAt = now,
             UpdatedAt = now,
         }).ExecuteCommandAsync();
+        var allSeededUsers = await _db.Queryable<User>()
+            .CountAsync(item => item.UserGUID == "user-self");
+        var activeSeededUsers = await _db.Queryable<User>()
+            .CountAsync(item => item.UserGUID == "user-self" && !item.IsDeleted);
+        var seededUser = await _db.Queryable<User>()
+            .FirstAsync(item => item.UserGUID == "user-self");
+        Assert.Equal(1, allSeededUsers);
+        Assert.Equal(1, activeSeededUsers);
+        Assert.False(seededUser.IsDeleted);
         await _db.Insertable(new EmployeeProfile
         {
             UserGUID = "user-self",
@@ -1614,6 +2071,11 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     {
         roles ??= username.Equals("admin", StringComparison.OrdinalIgnoreCase) ? ["Admin"] : [];
         var accessor = CreateHttpContextAccessor(userGuid, username, roles);
+        // HttpContextAccessor 的 HttpContext 基于 AsyncLocal；测试同时构造多个服务时不能用它固定当前操作者。
+        var currentUser = Mock.Of<ICurrentUserService>(service =>
+            service.GetCurrentUserGuid() == userGuid
+            && service.GetCurrentUsername() == username
+        );
         var scope = new Mock<ICurrentUserManageableStoreScopeService>();
         scope.Setup(service => service.GetScopeAsync()).ReturnsAsync(new CurrentUserManageableStoreScope
         {
@@ -1626,7 +2088,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         });
         return new EmployeeProfileSensitiveChangeService(
             CreateContext(db ?? _db),
-            new CurrentUserService(accessor),
+            currentUser,
             NullLogger<EmployeeProfileSensitiveChangeService>.Instance,
             scopeService ?? scope.Object,
             accessor,
@@ -1797,7 +2259,8 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
     private EmployeeProfileService CreateProfileService(
         string userGuid,
         string username,
-        EmployeeProfileSensitiveChangeService sensitive
+        EmployeeProfileSensitiveChangeService sensitive,
+        ISqlSugarClient? db = null
     )
     {
         var accessor = new HttpContextAccessor
@@ -1813,7 +2276,7 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
             },
         };
         return new EmployeeProfileService(
-            CreateContext(_db),
+            CreateContext(db ?? _db),
             new CurrentUserService(accessor),
             NullLogger<EmployeeProfileService>.Instance,
             null,
@@ -1827,6 +2290,54 @@ public sealed class EmployeeProfileSensitiveChangeServiceTests : IDisposable
         typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static bool IsProfileSelect(string sql) =>
+        sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+        && sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSelect(string sql) =>
+        sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUserSelect(string sql) =>
+        IsSelect(sql)
+        && (sql.Contains("FROM \"User\"", StringComparison.OrdinalIgnoreCase)
+            || sql.Contains("FROM [User]", StringComparison.OrdinalIgnoreCase)
+            || sql.Contains("FROM `User`", StringComparison.OrdinalIgnoreCase)
+            || sql.Contains("FROM User", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsProfileInsert(string sql) =>
+        sql.TrimStart().StartsWith("INSERT", StringComparison.OrdinalIgnoreCase)
+        && sql.Contains("EmployeeProfile", StringComparison.OrdinalIgnoreCase);
+
+    private static string ExtractMethodBody(string source, string signature)
+    {
+        var methodStart = source.IndexOf(signature, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, $"未找到方法: {signature}");
+        var bodyStart = source.IndexOf('{', methodStart);
+        Assert.True(bodyStart >= 0, $"未找到方法体: {signature}");
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{') depth++;
+            if (source[index] == '}' && --depth == 0)
+            {
+                return source[bodyStart..(index + 1)];
+            }
+        }
+        throw new InvalidOperationException($"方法体不完整: {signature}");
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var cursor = 0;
+        while ((cursor = source.IndexOf(value, cursor, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            cursor += value.Length;
+        }
+        return count;
     }
 
     private static string FindRepoRoot()

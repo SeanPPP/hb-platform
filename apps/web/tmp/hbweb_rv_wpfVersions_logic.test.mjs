@@ -122,6 +122,35 @@ function parseWpfVersion(version) {
   return match.slice(1).map((part) => Number(part ?? 0));
 }
 
+// src/utils/latestRequestGuard.ts
+function createLatestRequestGuard() {
+  let latestRequestId = 0;
+  return {
+    begin() {
+      latestRequestId += 1;
+      return latestRequestId;
+    },
+    isLatest(requestId) {
+      return latestRequestId === requestId;
+    },
+    invalidate() {
+      latestRequestId += 1;
+    }
+  };
+}
+async function runLatestGuardedRequest(guard, operation, handlers) {
+  const requestId = guard.begin();
+  handlers.onStart?.();
+  try {
+    const result = await operation();
+    if (guard.isLatest(requestId)) handlers.onSuccess(result);
+  } catch (error) {
+    if (guard.isLatest(requestId)) handlers.onError?.(error);
+  } finally {
+    if (guard.isLatest(requestId)) handlers.onSettled?.();
+  }
+}
+
 // src/pages/System/WpfVersions/logic.test.ts
 function assertEqual(actual, expected, message) {
   if (actual !== expected) {
@@ -147,6 +176,127 @@ function getNestedValue(source, path) {
     }
     return current[segment];
   }, source);
+}
+function createDeferred() {
+  let resolve2;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve2 = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve: resolve2 };
+}
+async function verifyWpfScopeChangeUsesOneFirstPageRequest() {
+  const requestGuard = createLatestRequestGuard();
+  let desiredQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: "production",
+    includeDisabled: false,
+    scopeRevision: 0
+  };
+  const state = { channel: "", page: 0 };
+  const startedQueries = [];
+  const load = (query, request) => {
+    startedQueries.push(`${query.channel}:${query.page}`);
+    return runLatestGuardedRequest(requestGuard, () => request, {
+      onSuccess: (result) => {
+        state.channel = result.channel;
+        state.page = result.page;
+      }
+    });
+  };
+  const resetScope = (channel, includeDisabled) => {
+    desiredQuery = {
+      page: 1,
+      pageSize: desiredQuery.pageSize,
+      channel,
+      includeDisabled,
+      scopeRevision: desiredQuery.scopeRevision + 1
+    };
+    requestGuard.invalidate();
+  };
+  const refreshAfterMutation = (expectedQuery, targetChannel) => {
+    const scopeChanged = expectedQuery.scopeRevision !== desiredQuery.scopeRevision;
+    if (scopeChanged) {
+      if (!targetChannel || targetChannel !== desiredQuery.channel) {
+        return false;
+      }
+    }
+    if (targetChannel && targetChannel !== desiredQuery.channel) {
+      resetScope(targetChannel, desiredQuery.includeDisabled);
+      return false;
+    }
+    return true;
+  };
+  const staleList = createDeferred();
+  const staleListTask = load(desiredQuery, staleList.promise);
+  const mutation = createDeferred();
+  const mutationTask = mutation.promise.then(() => refreshAfterMutation({
+    page: 3,
+    pageSize: 10,
+    channel: "production",
+    includeDisabled: false,
+    scopeRevision: 0
+  }));
+  resetScope("preview", false);
+  const scopeList = createDeferred();
+  const scopeListTask = load(desiredQuery, scopeList.promise);
+  mutation.resolve();
+  assertEqual(await mutationTask, false, "\u65E7 mutation \u4E0D\u5F97\u5728\u901A\u9053\u5207\u6362\u540E\u91CD\u65B0\u5F00\u59CB\u5217\u8868\u8BF7\u6C42");
+  assertDeepEqual(startedQueries, ["production:3", "preview:1"], "\u901A\u9053\u5207\u6362\u53EA\u5E94\u8865\u53D1\u4E00\u6B21\u7B2C\u4E00\u9875\u8BF7\u6C42");
+  scopeList.resolve({ ...desiredQuery });
+  await scopeListTask;
+  staleList.resolve({ page: 3, pageSize: 10, channel: "production", includeDisabled: false, scopeRevision: 0 });
+  await staleListTask;
+  assertEqual(state.channel, "preview", "\u65E7\u5217\u8868\u54CD\u5E94\u4E0D\u5F97\u8986\u76D6\u65B0\u901A\u9053");
+  assertEqual(state.page, 1, "\u65E7\u5217\u8868\u54CD\u5E94\u4E0D\u5F97\u8986\u76D6\u65B0\u901A\u9053\u7684\u7B2C\u4E00\u9875");
+  desiredQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: "production",
+    includeDisabled: false,
+    scopeRevision: 0
+  };
+  startedQueries.length = 0;
+  const targetMutation = createDeferred();
+  const targetMutationTask = targetMutation.promise.then(() => refreshAfterMutation({
+    page: 3,
+    pageSize: 10,
+    channel: "production",
+    includeDisabled: false,
+    scopeRevision: 0
+  }, "preview"));
+  targetMutation.resolve();
+  assertEqual(await targetMutationTask, false, "\u76EE\u6807\u901A\u9053\u53D8\u5316\u5E94\u4EA4\u7531 scope effect \u5355\u6B21\u52A0\u8F7D");
+  assertEqual(desiredQuery.channel, "preview", "\u76EE\u6807\u901A\u9053\u53D8\u5316\u5E94\u540C\u6B65\u66F4\u65B0 desired query");
+  assertEqual(desiredQuery.page, 1, "\u76EE\u6807\u901A\u9053\u53D8\u5316\u5FC5\u987B\u539F\u5B50\u91CD\u7F6E\u4E3A\u7B2C\u4E00\u9875");
+  const targetScopeList = createDeferred();
+  const targetScopeTask = load(desiredQuery, targetScopeList.promise);
+  assertDeepEqual(startedQueries, ["preview:1"], "\u76EE\u6807\u901A\u9053\u53D8\u5316\u4E0D\u5F97\u518D\u989D\u5916\u8BF7\u6C42\u65E7\u9875\u7801");
+  targetScopeList.resolve({ ...desiredQuery });
+  await targetScopeTask;
+  desiredQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: "production",
+    includeDisabled: false,
+    scopeRevision: 10
+  };
+  startedQueries.length = 0;
+  const conflictingMutation = createDeferred();
+  const mutationStartQuery = { ...desiredQuery };
+  const conflictingMutationTask = conflictingMutation.promise.then(() => refreshAfterMutation(mutationStartQuery, "preview"));
+  resetScope("beta", false);
+  const betaScopeList = createDeferred();
+  const betaScopeTask = load(desiredQuery, betaScopeList.promise);
+  conflictingMutation.resolve();
+  assertEqual(await conflictingMutationTask, false, "\u65E7 mutation \u4E0D\u5F97\u8986\u76D6\u7528\u6237\u540E\u6765\u9009\u62E9\u7684\u5176\u4ED6\u901A\u9053");
+  assertEqual(desiredQuery.channel, "beta", "\u7528\u6237\u5DF2\u5207\u5230 beta \u65F6\u4E0D\u5F97\u88AB\u65E7 mutation \u5207\u56DE preview");
+  assertEqual(desiredQuery.page, 1, "\u7528\u6237\u5207\u6362 beta \u540E\u4ECD\u5E94\u505C\u7559\u7B2C\u4E00\u9875");
+  assertDeepEqual(startedQueries, ["beta:1"], "\u65E7 mutation \u4E0D\u5F97\u989D\u5916\u53D1\u51FA preview \u8BF7\u6C42");
+  betaScopeList.resolve({ ...desiredQuery });
+  await betaScopeTask;
 }
 function collectWpfVersionLocaleKeys() {
   const source = readFileSync(resolve(process.cwd(), "src/pages/System/WpfVersions/index.tsx"), "utf8");
@@ -335,6 +485,33 @@ assertEqual(
   "fallback",
   "WPF versions page should keep fallback text when the thrown value is not an Error"
 );
+await verifyWpfScopeChangeUsesOneFirstPageRequest();
+var wpfVersionsPageSource = readFileSync(resolve(process.cwd(), "src/pages/System/WpfVersions/index.tsx"), "utf8");
+var wpfQrActionGuardPattern = /\{record\.downloadUrl \? \(\s*<>\s*<Button[\s\S]*?href=\{record\.downloadUrl\}[\s\S]*?<Button[\s\S]*?onClick=\{\(\) => setQrRelease\(record\)\}[\s\S]*?<\/>\s*\) : null\}/;
+assertTruthy(
+  wpfVersionsPageSource.includes("const resetReleaseScope = useCallback((nextChannel: string, nextIncludeDisabled: boolean) =>") && wpfVersionsPageSource.includes("page: 1,") && wpfVersionsPageSource.includes("latestReleaseQueryRef.current = nextQuery") && wpfVersionsPageSource.includes("releasesRequestGuardRef.current.invalidate()") && wpfVersionsPageSource.includes("scopeRevision: currentQuery.scopeRevision + 1"),
+  "WPF \u901A\u9053\u6216\u7B5B\u9009\u53D8\u66F4\u5FC5\u987B\u540C\u6B65\u53D1\u5E03\u7B2C\u4E00\u9875 desired query \u5E76\u4F7F\u65E7\u8BF7\u6C42\u5931\u6548"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("onChange={handleChannelChange}") && wpfVersionsPageSource.includes("onChange={handleIncludeDisabledChange}") && wpfVersionsPageSource.includes("onChange: handlePageChange,") && !wpfVersionsPageSource.includes("onChange={setChannel}") && !wpfVersionsPageSource.includes("onChange={setIncludeDisabled}"),
+  "WPF \u901A\u9053\u3001\u7B5B\u9009\u548C\u5206\u9875\u5FC5\u987B\u901A\u8FC7\u539F\u5B50 desired query handler \u66F4\u65B0"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("await refreshLatestReleaseQuery(payload.channel, refreshQuery)") && wpfVersionsPageSource.includes("await refreshLatestReleaseQuery(undefined, refreshQuery)") && wpfVersionsPageSource.includes("await refreshLatestReleaseQuery(uploadedChannel, refreshQuery)"),
+  "WPF mutation \u5237\u65B0\u5FC5\u987B\u643A\u5E26\u542F\u52A8\u65F6 query\uFF0C\u907F\u514D\u665A\u5B8C\u6210\u8986\u76D6\u65B0 scope"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("expectedQuery.scopeRevision !== currentQuery.scopeRevision") && wpfVersionsPageSource.includes("if (!targetChannel || targetChannel !== currentQuery.channel) {"),
+  "WPF \u65E7 mutation \u7684\u76EE\u6807\u901A\u9053\u4E0E\u5F53\u524D scope \u4E0D\u540C\u65F6\u5FC5\u987B\u76F4\u63A5\u653E\u5F03\u5237\u65B0"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("const [qrRelease, setQrRelease] = useState<WpfAppRelease | null>(null)") && wpfVersionsPageSource.includes("onClick={() => setQrRelease(record)}") && wpfVersionsPageSource.includes("t('system.wpfVersions.viewQrCode', '\u67E5\u770B\u4E8C\u7EF4\u7801')") && wpfQrActionGuardPattern.test(wpfVersionsPageSource),
+  "\u53EA\u6709\u5E26\u4E0B\u8F7D\u5730\u5740\u7684 WPF \u7248\u672C\u64CD\u4F5C\u533A\u624D\u80FD\u6253\u5F00\u5F53\u524D\u884C\u7684\u4E0B\u8F7D\u4E8C\u7EF4\u7801"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("open={Boolean(qrRelease)}") && wpfVersionsPageSource.includes("onCancel={() => setQrRelease(null)}") && wpfVersionsPageSource.includes("<QRCode value={qrRelease.downloadUrl} size={220} />") && wpfVersionsPageSource.includes("<Text strong>{qrRelease.version}</Text>") && wpfVersionsPageSource.includes("<Text>{qrRelease.fileName}</Text>") && wpfVersionsPageSource.includes("copyable={{ text: qrRelease.downloadUrl }}") && wpfVersionsPageSource.includes("{qrRelease.downloadUrl}"),
+  "WPF \u4E0B\u8F7D\u4E8C\u7EF4\u7801\u5F39\u7A97\u5FC5\u987B\u5C55\u793A\u5F53\u524D\u7248\u672C\u3001\u6587\u4EF6\u540D\u3001\u4E8C\u7EF4\u7801\u548C\u53EF\u590D\u5236\u7684\u540C\u4E00\u4E0B\u8F7D\u94FE\u63A5"
+);
 var localeKeys = collectWpfVersionLocaleKeys();
 var enLocale = loadLocale("en");
 var zhLocale = loadLocale("zh");
@@ -349,4 +526,28 @@ for (const localeKey of localeKeys) {
     `Chinese locale should define ${localeKey}`
   );
 }
+assertEqual(
+  getNestedValue(zhLocale, "system.wpfVersions.setCurrent"),
+  "\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807",
+  "WPF \u4E2D\u6587\u64CD\u4F5C\u6587\u6848\u5E94\u660E\u786E\u8868\u793A\u4FEE\u6539\u53D1\u5E03\u76EE\u6807"
+);
+assertEqual(
+  getNestedValue(enLocale, "system.wpfVersions.setCurrent"),
+  "Set as Release Target",
+  "WPF English action copy should identify the release target"
+);
+assertEqual(
+  getNestedValue(zhLocale, "system.wpfVersions.setCurrentConfirm"),
+  "\u5C06\u6B64\u7248\u672C\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807\uFF1F\u5BA2\u6237\u7AEF\u5C06\u5728\u4E0B\u6B21\u68C0\u67E5\u66F4\u65B0\u65F6\u83B7\u53D6\u8BE5\u7248\u672C\u3002",
+  "WPF \u4E2D\u6587\u786E\u8BA4\u6587\u6848\u5E94\u8BF4\u660E\u5BA2\u6237\u7AEF\u83B7\u53D6\u7248\u672C\u7684\u65F6\u673A"
+);
+assertEqual(
+  getNestedValue(enLocale, "system.wpfVersions.setCurrentConfirm"),
+  "Set this version as the release target? Clients will receive it the next time they check for updates.",
+  "WPF English confirmation copy should explain when clients receive the target"
+);
+assertTruthy(
+  wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrent', '\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807')") && wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrentConfirm', '\u5C06\u6B64\u7248\u672C\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807\uFF1F\u5BA2\u6237\u7AEF\u5C06\u5728\u4E0B\u6B21\u68C0\u67E5\u66F4\u65B0\u65F6\u83B7\u53D6\u8BE5\u7248\u672C\u3002')"),
+  "WPF \u53D1\u5E03\u76EE\u6807\u6309\u94AE\u7684\u9875\u9762 fallback \u6587\u6848\u5FC5\u987B\u4E0E locale \u8BED\u4E49\u4E00\u81F4"
+);
 console.log("WpfVersions logic.test: ok");

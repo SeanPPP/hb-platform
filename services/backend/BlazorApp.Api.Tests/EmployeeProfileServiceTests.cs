@@ -75,6 +75,187 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetSelfAsync_WhenProfileIsMissing_CreatesOnlyAnEmptyProfileForCurrentUser()
+        {
+            await SeedUsersAsync();
+
+            var result = await CreateService("user-self", "self_user").GetSelfAsync();
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            var profile = Assert.Single(await _db.Queryable<EmployeeProfile>().ToListAsync());
+            Assert.Equal("user-self", profile.UserGUID);
+            Assert.Equal("self_user", profile.CreatedBy);
+            Assert.Equal("self_user", profile.UpdatedBy);
+            Assert.NotEqual(default, profile.CreatedAt);
+            Assert.NotNull(profile.UpdatedAt);
+            Assert.False(profile.IsDeleted);
+            Assert.Equal(0, profile.SensitiveRevision);
+            Assert.Null(profile.Phone);
+            Assert.Null(profile.BankBSB);
+            Assert.Null(profile.BankACC);
+            Assert.Null(profile.SuperannuationCompanyName);
+            Assert.Null(profile.SuperannuationCompanyCode);
+            Assert.Null(profile.SuperannuationAccount);
+            Assert.Null(profile.Birthday);
+            Assert.Null(profile.Gender);
+            Assert.Null(profile.EmployeeType);
+            Assert.Null(profile.AvatarUrl);
+            Assert.Null(profile.IdentityType);
+            Assert.Null(profile.IdentityId);
+            Assert.Null(profile.IdentityPhotoUrl);
+            Assert.Null(profile.IdentityPhotoObjectKey);
+            Assert.Null(profile.Address);
+            Assert.Equal(profile.EmployeeInfoId, result.Data!.EmployeeInfoId);
+        }
+
+        [Fact]
+        public async Task GetSelfAsync_WhenOnlyDeletedProfileExists_ReusesAndResetsItWithoutExposingOldData()
+        {
+            await SeedUsersAsync();
+            var oldCreatedAt = DateTime.UtcNow.AddDays(-2);
+            var oldUpdatedAt = DateTime.UtcNow.AddDays(-1);
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                BankBSB = "123-456",
+                BankACC = "old-bank-account",
+                SuperannuationCompanyName = "Old Super",
+                SuperannuationCompanyCode = "SUPER-CODE",
+                SuperannuationAccount = "old-super-account",
+                Birthday = DateTime.UtcNow.AddYears(-30),
+                Gender = EmployeeGender.Female,
+                EmployeeType = EmployeeType.FullTime,
+                AvatarUrl = "https://old/avatar.jpg",
+                IdentityType = "passport",
+                IdentityId = "old-identity-id",
+                IdentityPhotoUrl = "https://old/identity.jpg",
+                IdentityPhotoObjectKey = "employee-profiles/user-self/identity/old.jpg",
+                Address = "Old address",
+                SensitiveRevision = 9,
+                IsDeleted = true,
+                CreatedAt = oldCreatedAt,
+                CreatedBy = "old-creator",
+                UpdatedAt = oldUpdatedAt,
+                UpdatedBy = "old-updater",
+            }).ExecuteCommandAsync();
+            var deleted = await _db.Queryable<EmployeeProfile>().FirstAsync();
+
+            var adminDetail = await CreateService("admin-user", "admin").GetAdminDetailAsync("user-self");
+            Assert.True(adminDetail.Success);
+            Assert.Null(adminDetail.Data!.EmployeeInfoId);
+            Assert.True((await _db.Queryable<EmployeeProfile>().FirstAsync()).IsDeleted);
+
+            var result = await CreateService("user-self", "self_user").GetSelfAsync();
+
+            Assert.True(result.Success);
+            var profile = Assert.Single(await _db.Queryable<EmployeeProfile>().ToListAsync());
+            Assert.Equal(deleted.EmployeeInfoId, profile.EmployeeInfoId);
+            Assert.Equal("user-self", profile.UserGUID);
+            Assert.False(profile.IsDeleted);
+            Assert.Equal(0, profile.SensitiveRevision);
+            Assert.True(profile.CreatedAt > oldCreatedAt);
+            Assert.Equal("self_user", profile.CreatedBy);
+            Assert.True(profile.UpdatedAt > oldUpdatedAt);
+            Assert.Equal("self_user", profile.UpdatedBy);
+            Assert.Null(profile.Phone);
+            Assert.Null(profile.BankBSB);
+            Assert.Null(profile.BankACC);
+            Assert.Null(profile.SuperannuationCompanyName);
+            Assert.Null(profile.SuperannuationCompanyCode);
+            Assert.Null(profile.SuperannuationAccount);
+            Assert.Null(profile.Birthday);
+            Assert.Null(profile.Gender);
+            Assert.Null(profile.EmployeeType);
+            Assert.Null(profile.AvatarUrl);
+            Assert.Null(profile.IdentityType);
+            Assert.Null(profile.IdentityId);
+            Assert.Null(profile.IdentityPhotoUrl);
+            Assert.Null(profile.IdentityPhotoObjectKey);
+            Assert.Null(profile.Address);
+            Assert.Equal(profile.EmployeeInfoId, result.Data!.EmployeeInfoId);
+            Assert.Null(result.Data.BankAccountNumber);
+            Assert.Null(result.Data.IdentityId);
+        }
+
+        [Fact]
+        public async Task GetSelfAsync_WhenReadConcurrently_CreatesOnlyOneProfile()
+        {
+            await SeedUsersAsync();
+            using var firstDb = CreateAdditionalDb();
+            using var secondDb = CreateAdditionalDb();
+            var first = CreateService("user-self", "self_user", firstDb).GetSelfAsync();
+            var second = CreateService("user-self", "self_user", secondDb).GetSelfAsync();
+
+            var results = await Task.WhenAll(first, second);
+
+            Assert.All(results, result => Assert.True(result.Success));
+            var profile = Assert.Single(await _db.Queryable<EmployeeProfile>()
+                .Where(item => item.UserGUID == "user-self")
+                .ToListAsync());
+            Assert.All(results, result => Assert.Equal(profile.EmployeeInfoId, result.Data!.EmployeeInfoId));
+        }
+
+        [Fact]
+        public async Task GetSelfAsync_WhenProfileAlreadyExists_DoesNotModifyIt()
+        {
+            await SeedUsersAsync();
+            var createdAt = DateTime.UtcNow.AddDays(-2);
+            var updatedAt = DateTime.UtcNow.AddDays(-1);
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                BankACC = "existing-sensitive-value",
+                Address = "Existing address",
+                SensitiveRevision = 7,
+                CreatedAt = createdAt,
+                CreatedBy = "creator",
+                UpdatedAt = updatedAt,
+                UpdatedBy = "updater",
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "self_user").GetSelfAsync();
+
+            Assert.True(result.Success);
+            var profile = Assert.Single(await _db.Queryable<EmployeeProfile>().ToListAsync());
+            Assert.Equal("0400000000", profile.Phone);
+            Assert.Equal("existing-sensitive-value", profile.BankACC);
+            Assert.Equal("Existing address", profile.Address);
+            Assert.Equal(7, profile.SensitiveRevision);
+            Assert.Equal(createdAt, profile.CreatedAt);
+            Assert.Equal("creator", profile.CreatedBy);
+            Assert.Equal(updatedAt, profile.UpdatedAt);
+            Assert.Equal("updater", profile.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task GetAdminDetailAsync_WhenProfileIsMissing_DoesNotCreateOne()
+        {
+            await SeedUsersAsync();
+
+            var result = await CreateService("admin-user", "admin").GetAdminDetailAsync("user-self");
+
+            Assert.True(result.Success);
+            Assert.Null(result.Data!.EmployeeInfoId);
+            Assert.Equal(0, await _db.Queryable<EmployeeProfile>().CountAsync());
+        }
+
+        [Fact]
+        public async Task GetSelfAsync_WhenCurrentUserOrUserRecordIsMissing_DoesNotCreateAProfile()
+        {
+            var currentUserMissing = await CreateService(string.Empty, "self_user").GetSelfAsync();
+            var userMissing = await CreateService("missing-user", "self_user").GetSelfAsync();
+
+            Assert.False(currentUserMissing.Success);
+            Assert.Equal("CURRENT_USER_NOT_FOUND", currentUserMissing.ErrorCode);
+            Assert.False(userMissing.Success);
+            Assert.Equal("USER_NOT_FOUND", userMissing.ErrorCode);
+            Assert.Equal(0, await _db.Queryable<EmployeeProfile>().CountAsync());
+        }
+
+        [Fact]
         public async Task UpsertSelfAsync_WhenPayloadContainsAnotherUserGuid_OnlyUpdatesCurrentUser()
         {
             await SeedUsersAsync();

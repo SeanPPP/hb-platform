@@ -499,8 +499,10 @@ try {
   await batchUpdateWarehouseProducts([
     {
       ProductCode: "P001",
-      MinOrderQuantity: 6,
-      PackingQuantity: 24
+      MinOrderQuantity: 0,
+      PackingQuantity: 0,
+      IsActive: false,
+      DomesticPrice: void 0
     }
   ], { syncStorePurchasePrice: false });
   assert(capturedBody, "\u5E94\u6355\u83B7\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0\u8BF7\u6C42\u4F53");
@@ -512,13 +514,14 @@ try {
       Items: [
         {
           ProductCode: "P001",
-          MinOrderQuantity: 6,
-          PackingQuantity: 24
+          MinOrderQuantity: 0,
+          PackingQuantity: 0,
+          IsActive: false
         }
       ],
       SyncStorePurchasePrice: false
     },
-    "\u6279\u91CF\u66F4\u65B0\u8BF7\u6C42\u4F53\u5E94\u4FDD\u7559 MinOrderQuantity \u548C PackingQuantity"
+    "\u6279\u91CF\u66F4\u65B0\u8BF7\u6C42\u4F53\u5E94\u4FDD\u7559\u6570\u91CF\u96F6\u503C\u548C false\uFF0C\u5E76\u5FFD\u7565 undefined \u5B57\u6BB5"
   );
 } finally {
   globalThis.fetch = originalFetch;

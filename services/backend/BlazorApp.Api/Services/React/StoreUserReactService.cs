@@ -359,9 +359,20 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var now = DateTime.UtcNow;
+                // 关键逻辑：店员电话补档可能首建 EmployeeProfile，必须先取得资料生命周期锁。
+                await using var lifecycleLock = await EmployeeProfileMediaLock
+                    .AcquireProfileLifecycleAsync(_db, userGuid, _logger);
                 await _db.Ado.BeginTranAsync();
                 try
                 {
+                    user = await _db.Queryable<User>()
+                        .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                    if (user is null)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<StoreUserDetailDto>.Error("用户不存在", "USER_NOT_FOUND");
+                    }
+
                     user.Username = nextUsername;
                     user.Email = nextEmail;
                     user.FullName = dto.FullName?.Trim();
@@ -611,18 +622,31 @@ namespace BlazorApp.Api.Services.React
 
             if (profile == null)
             {
-                await _db.Insertable(
-                    new EmployeeProfile
+                try
+                {
+                    await _db.Insertable(
+                        new EmployeeProfile
+                        {
+                            UserGUID = userGuid,
+                            Phone = normalizedPhone,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = updatedBy,
+                            UpdatedBy = updatedBy,
+                        }
+                    ).ExecuteCommandAsync();
+                    return;
+                }
+                catch (Exception ex) when (EmployeeCashierBarcodeService.IsUniqueConstraintViolation(ex))
+                {
+                    // 旧节点或外部写入绕过 lifecycle 锁时，以唯一键赢家为准后继续更新电话。
+                    profile = await _db.Queryable<EmployeeProfile>()
+                        .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                    if (profile is null)
                     {
-                        UserGUID = userGuid,
-                        Phone = normalizedPhone,
-                        CreatedAt = now,
-                        UpdatedAt = now,
-                        CreatedBy = updatedBy,
-                        UpdatedBy = updatedBy,
+                        throw;
                     }
-                ).ExecuteCommandAsync();
-                return;
+                }
             }
 
             profile.Phone = normalizedPhone;

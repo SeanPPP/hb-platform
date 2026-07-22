@@ -21,16 +21,19 @@ namespace BlazorApp.Api.Services
         private readonly SqlSugarContext _context;
         private readonly ILogger<UserService> _logger;
         private readonly ICurrentUserManageableStoreScopeService? _manageableStoreScopeService;
+        private readonly EmployeeProfileSensitiveChangeService? _sensitiveChangeService;
 
         public UserService(
             SqlSugarContext context,
             ILogger<UserService> logger,
-            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null
+            ICurrentUserManageableStoreScopeService? manageableStoreScopeService = null,
+            EmployeeProfileSensitiveChangeService? sensitiveChangeService = null
         )
         {
             _context = context;
             _logger = logger;
             _manageableStoreScopeService = manageableStoreScopeService;
+            _sensitiveChangeService = sensitiveChangeService;
         }
 
         /// <summary>
@@ -1334,41 +1337,88 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
                 }
 
-                // 开启事务
-                await db.Ado.BeginTranAsync();
-
-                try
+                EmployeeProfileDataRemovalPlan? removalPlan = null;
                 {
-                    // 删除用户角色关联
-                    await db.Deleteable<UserRole>()
-                        .Where(ur => ur.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
+                    // 关键逻辑：用户删除与资料首建统一按 sensitive-change → lifecycle → transaction 排序。
+                    await using var sensitiveChangeLock = await EmployeeProfileMediaLock.AcquireAsync(
+                        db,
+                        userGuid,
+                        "sensitive-change",
+                        _logger
+                    );
+                    await using var lifecycleLock = await EmployeeProfileMediaLock
+                        .AcquireProfileLifecycleAsync(db, userGuid, _logger);
+                    await db.Ado.BeginTranAsync();
+                    try
+                    {
+                        // 等锁期间用户可能已被其他删除请求移除，必须重新确认。
+                        user = await db.Queryable<User>()
+                            .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        if (user == null)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                        }
 
-                    // 删除用户分店关联
-                    await db.Deleteable<UserStore>()
-                        .Where(us => us.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
+                        var profile = await db.Queryable<EmployeeProfile>()
+                            .FirstAsync(item => item.UserGUID == userGuid);
+                        if (_sensitiveChangeService is not null)
+                        {
+                            removalPlan = await _sensitiveChangeService
+                                .PrepareProfileDataRemovalWithinTransactionAsync(
+                                    userGuid,
+                                    profile,
+                                    "System"
+                                );
+                        }
 
-                    // 删除用户刷新令牌
-                    await db.Deleteable<RefreshToken>()
-                        .Where(rt => rt.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
+                        await db.Deleteable<UserRole>()
+                            .Where(ur => ur.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                        await db.Deleteable<UserStore>()
+                            .Where(us => us.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                        await db.Deleteable<RefreshToken>()
+                            .Where(rt => rt.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                        // 必须先删资料再删用户，防止资料首建与物理删除交错留下孤儿行。
+                        await db.Deleteable<EmployeeProfile>()
+                            .Where(item => item.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                        await db.Deleteable<User>()
+                            .Where(u => u.UserGUID == userGuid)
+                            .ExecuteCommandAsync();
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
+                    }
 
-                    // 删除用户
-                    await db.Deleteable<User>()
-                        .Where(u => u.UserGUID == userGuid)
-                        .ExecuteCommandAsync();
-
-                    await db.Ado.CommitTranAsync();
-
-                    _logger.LogInformation("删除用户成功，UserGUID: {UserGUID}", userGuid);
-                    return ApiResponse<bool>.OK(true, "删除用户成功");
                 }
-                catch
+
+                if (removalPlan is not null && _sensitiveChangeService is not null)
                 {
-                    await db.Ado.RollbackTranAsync();
-                    throw;
+                    try
+                    {
+                        await _sensitiveChangeService.CleanupProfileDataRemovalAsync(
+                            userGuid,
+                            removalPlan
+                        );
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        _logger.LogWarning(
+                            cleanupException,
+                            "清理已删除用户的员工资料对象失败，UserGUID: {UserGUID}",
+                            userGuid
+                        );
+                    }
                 }
+
+                _logger.LogInformation("删除用户成功，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<bool>.OK(true, "删除用户成功");
             }
             catch (Exception ex)
             {
@@ -2371,33 +2421,95 @@ namespace BlazorApp.Api.Services
                         break;
 
                     case "delete":
-                        // 开启事务
-                        await db.Ado.BeginTranAsync();
-                        try
                         {
-                            // 删除相关数据
-                            await db.Deleteable<UserRole>()
-                                .Where(ur => dto.UserGuids.Contains(ur.UserGUID))
-                                .ExecuteCommandAsync();
+                            var userGuids = dto.UserGuids
+                                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                                .Distinct(StringComparer.Ordinal)
+                                .Order(StringComparer.Ordinal)
+                                .ToArray();
+                            var removalPlans = new List<
+                                (string UserGuid, EmployeeProfileDataRemovalPlan Plan)
+                            >();
+                            {
+                                // 关键逻辑：批量删除按 UserGUID 全序取得两层锁，避免两个批次反序等待。
+                                await using var sensitiveChangeLocks = await EmployeeProfileMediaLock
+                                    .AcquireManyAsync(
+                                        db,
+                                        userGuids,
+                                        "sensitive-change",
+                                        _logger
+                                    );
+                                await using var lifecycleLocks = await EmployeeProfileMediaLock
+                                    .AcquireProfileLifecycleManyAsync(db, userGuids, _logger);
+                                await db.Ado.BeginTranAsync();
+                                try
+                                {
+                                    // 锁内重新确认当前仍存在的目标，避免等待锁期间误删已变化的用户状态。
+                                    var existingUserGuids = await db.Queryable<User>()
+                                        .Where(item =>
+                                            userGuids.Contains(item.UserGUID) && !item.IsDeleted
+                                        )
+                                        .Select(item => item.UserGUID)
+                                        .ToListAsync();
+                                    foreach (var targetUserGuid in existingUserGuids)
+                                    {
+                                        var profile = await db.Queryable<EmployeeProfile>()
+                                            .FirstAsync(item => item.UserGUID == targetUserGuid);
+                                        if (_sensitiveChangeService is not null)
+                                        {
+                                            var plan = await _sensitiveChangeService
+                                                .PrepareProfileDataRemovalWithinTransactionAsync(
+                                                    targetUserGuid,
+                                                    profile,
+                                                    "System"
+                                                );
+                                            removalPlans.Add((targetUserGuid, plan));
+                                        }
+                                    }
 
-                            await db.Deleteable<UserStore>()
-                                .Where(us => dto.UserGuids.Contains(us.UserGUID))
-                                .ExecuteCommandAsync();
+                                    await db.Deleteable<UserRole>()
+                                        .Where(ur => existingUserGuids.Contains(ur.UserGUID))
+                                        .ExecuteCommandAsync();
+                                    await db.Deleteable<UserStore>()
+                                        .Where(us => existingUserGuids.Contains(us.UserGUID))
+                                        .ExecuteCommandAsync();
+                                    await db.Deleteable<RefreshToken>()
+                                        .Where(rt => existingUserGuids.Contains(rt.UserGUID))
+                                        .ExecuteCommandAsync();
+                                    await db.Deleteable<EmployeeProfile>()
+                                        .Where(item => existingUserGuids.Contains(item.UserGUID))
+                                        .ExecuteCommandAsync();
+                                    await db.Deleteable<User>()
+                                        .Where(u => existingUserGuids.Contains(u.UserGUID))
+                                        .ExecuteCommandAsync();
+                                    await db.Ado.CommitTranAsync();
+                                }
+                                catch
+                                {
+                                    await db.Ado.RollbackTranAsync();
+                                    throw;
+                                }
+                            }
 
-                            await db.Deleteable<RefreshToken>()
-                                .Where(rt => dto.UserGuids.Contains(rt.UserGUID))
-                                .ExecuteCommandAsync();
-
-                            await db.Deleteable<User>()
-                                .Where(u => dto.UserGuids.Contains(u.UserGUID))
-                                .ExecuteCommandAsync();
-
-                            await db.Ado.CommitTranAsync();
-                        }
-                        catch
-                        {
-                            await db.Ado.RollbackTranAsync();
-                            throw;
+                            if (_sensitiveChangeService is not null)
+                            {
+                                foreach (var (targetUserGuid, plan) in removalPlans)
+                                {
+                                    try
+                                    {
+                                        await _sensitiveChangeService
+                                            .CleanupProfileDataRemovalAsync(targetUserGuid, plan);
+                                    }
+                                    catch (Exception cleanupException)
+                                    {
+                                        _logger.LogWarning(
+                                            cleanupException,
+                                            "清理已批量删除用户的员工资料对象失败，UserGUID: {UserGUID}",
+                                            targetUserGuid
+                                        );
+                                    }
+                                }
+                            }
                         }
                         break;
 

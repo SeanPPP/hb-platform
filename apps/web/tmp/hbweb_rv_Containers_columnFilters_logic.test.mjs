@@ -33,7 +33,7 @@ async function main() {
       "\u9875\u9762\u5E94\u7EF4\u62A4\u53D7\u63A7 columnFilters \u72B6\u6001"
     );
     assert(
-      pageSource.includes("const activeColumnFilters = options.columnFilters ?? columnFilters") && pageSource.includes("...activeColumnFilters") && pageSource.includes("void loadData(1, pageSize, { columnFilters: nextFilters })"),
+      pageSource.includes("const activeColumnFilters = options.columnFilters ?? columnFilters") && pageSource.includes("...activeColumnFilters") && pageSource.includes("void requestFirstPage({ columnFilters: nextFilters })"),
       "\u5217\u5934\u8FC7\u6EE4\u5E94\u968F getContainerList \u8BF7\u6C42\u53D1\u9001\u5230\u670D\u52A1\u7AEF\uFF0C\u800C\u4E0D\u662F\u53EA\u8FC7\u6EE4\u5F53\u524D\u9875 dataSource"
     );
   });

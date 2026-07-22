@@ -9,6 +9,13 @@ function assert(condition, label) {
 var pageSource = fs.readFileSync(path.resolve(process.cwd(), "src/pages/Warehouse/StoreOrders/index.tsx"), "utf8");
 var serviceSource = fs.readFileSync(path.resolve(process.cwd(), "src/services/storeOrderService.ts"), "utf8");
 var compactCssSource = fs.readFileSync(path.resolve(process.cwd(), "src/pages/Warehouse/StoreOrders/compact.css"), "utf8");
+function extractSection(source, startMarker, endMarker, label) {
+  const startIndex = source.indexOf(startMarker);
+  assert(startIndex >= 0, `${label}\u672A\u627E\u5230\u8D77\u59CB\u6807\u8BB0`);
+  const endIndex = source.indexOf(endMarker, startIndex + startMarker.length);
+  assert(endIndex > startIndex, `${label}\u672A\u627E\u5230\u7ED3\u675F\u6807\u8BB0`);
+  return source.slice(startIndex, endIndex);
+}
 assert(
   pageSource.includes("t('storeOrders.fixStoreGuid'") && pageSource.includes("openUnmatchedStoreModal"),
   "\u5206\u5E97\u8BA2\u8D27\u5217\u8868\u5DE5\u5177\u680F\u5E94\u63D0\u4F9B\u4FEE\u590D\u5206\u5E97 GUID \u5165\u53E3"
@@ -49,9 +56,21 @@ assert(
   pageSource.includes("\u5C55\u793A\u54C1\u724C\u548C\u5730\u5740\u7528\u4E8E\u4EBA\u5DE5\u786E\u8BA4 GUID \u5BF9\u5E94\u5206\u5E97") && pageSource.includes("\u4FDD\u5B58\u65F6\u4ECD\u53EA\u63D0\u4EA4\u76EE\u6807 StoreCode"),
   "\u76EE\u6807\u672C\u5730\u5206\u5E97\u9009\u9879\u5E94\u4FDD\u7559\u4E2D\u6587\u6CE8\u91CA\u8BF4\u660E\u5C55\u793A\u4FE1\u606F\u548C\u4FDD\u5B58\u503C\u7684\u8FB9\u754C"
 );
+var refreshSection = extractSection(
+  pageSource,
+  "const refreshCurrentList",
+  "const loadUnmatchedStoreGroups",
+  "\u5F53\u524D\u5217\u8868\u5237\u65B0 helper"
+);
+var saveMappingsSection = extractSection(
+  pageSource,
+  "const handleSaveUnmatchedStoreMappings",
+  "const updateColumnFilters",
+  "\u4FDD\u5B58\u672A\u5339\u914D\u5206\u5E97\u6620\u5C04"
+);
 assert(
-  pageSource.includes("await Promise.all([loadData(), loadBranches(), loadUnmatchedStoreGroups()])"),
-  "\u4FEE\u590D\u6210\u529F\u540E\u5E94\u5237\u65B0\u4E3B\u5217\u8868\u3001\u5206\u5E97\u7B5B\u9009\u548C\u672A\u5339\u914D\u805A\u5408"
+  saveMappingsSection.includes("await Promise.all([refreshCurrentList(), loadBranches(), loadUnmatchedStoreGroups()])") && refreshSection.includes("if (!isMountedRef.current) {") && refreshSection.includes("loadDataRef.current?.(overrides)"),
+  "\u4FEE\u590D\u6210\u529F\u540E\u5E94\u5728 mounted gate \u540E\u901A\u8FC7 current loader \u5237\u65B0\u4E3B\u5217\u8868\uFF0C\u5E76\u4FDD\u7559\u5206\u5E97\u7B5B\u9009\u548C\u672A\u5339\u914D\u805A\u5408\u5237\u65B0"
 );
 assert(
   serviceSource.includes("`${API_BASE}/unmatched-store-groups`") && serviceSource.includes("`${API_BASE}/batch-map-store-code`"),

@@ -55,6 +55,23 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task Program启动_不自动执行权限种子更新()
+        {
+            var programSource = await File.ReadAllTextAsync(
+                Path.Combine(
+                    FindRepositoryRoot(),
+                    "services/backend/BlazorApp.Api/Program.cs"
+                )
+            );
+
+            Assert.DoesNotContain(
+                "InitializePermissionSeedsAsync",
+                programSource,
+                StringComparison.Ordinal
+            );
+        }
+
+        [Fact]
         public void PosTerminalPermissionSeeds_拆分折扣并给店长用户管理权限()
         {
             var expectedSalesCodes = new[]
@@ -976,6 +993,26 @@ namespace BlazorApp.Api.Tests
                 CreateSqlSugarContext(_db),
                 NullLogger<SeedDataService>.Instance
             );
+        }
+
+        private static string FindRepositoryRoot()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                var programPath = Path.Combine(
+                    directory.FullName,
+                    "services/backend/BlazorApp.Api/Program.cs"
+                );
+                if (File.Exists(programPath))
+                {
+                    return directory.FullName;
+                }
+
+                directory = directory.Parent;
+            }
+
+            throw new DirectoryNotFoundException("无法定位 hb-platform 仓库根目录");
         }
 
         private static Role CreateRole(

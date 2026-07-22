@@ -856,12 +856,9 @@ try
         hqDbContext.CheckTables();          // 检查必要的表是否存在
         Console.WriteLine("✅ HQ数据库连接检查完成");
 
-        // 🌱 初始化种子数据
-        // 创建默认管理员账号、基础角色、系统配置等
-        Console.WriteLine("🌱 开始初始化种子数据...");
-        var seedDataService = services.GetRequiredService<SeedDataService>();
-        await seedDataService.InitializePermissionSeedsAsync();
-        //  await seedDataService.InitializeAsync();
+        // 权限定义和角色权限由后台维护；Web 后端重启时不得再次按代码种子覆盖。
+        // 如需初始化或迁移权限，必须通过明确的一次性维护流程显式调用 SeedDataService。
+        Console.WriteLine("⏭️ 已跳过权限种子自动更新");
 
         // 🔍 检查并初始化角色数据
         Console.WriteLine("🔍 检查角色数据...");

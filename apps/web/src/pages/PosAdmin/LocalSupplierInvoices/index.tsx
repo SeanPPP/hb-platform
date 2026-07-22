@@ -1,4 +1,27 @@
-import { CloudSyncOutlined, CopyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
+import {
+  CloudSyncOutlined,
+  CopyOutlined,
+  HolderOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  UploadOutlined,
+} from '@ant-design/icons'
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   Button,
   Card,
@@ -17,7 +40,15 @@ import {
 import type { ColumnsType, TableRef } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type HTMLAttributes,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../../store/auth'
@@ -52,6 +83,110 @@ import {
   scheduleInvoiceTableScrollRestore,
   shouldRestoreInvoiceTableScroll,
 } from './invoiceTableScroll'
+import {
+  DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER,
+  createLocalSupplierInvoiceDndAccessibility,
+  dispatchLocalSupplierInvoiceDragHandleKeyDown,
+  isLocalSupplierInvoiceColumnOrderCustomized,
+  moveLocalSupplierInvoiceColumnOrder,
+  parseLocalSupplierInvoiceColumnOrder,
+  type LocalSupplierInvoiceColumnKey,
+} from './columnOrder'
+
+const LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY =
+  'hbweb_rv.localSupplierInvoices.columnOrder.v1'
+
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+  'data-drag-label'?: string
+}
+
+interface SortableHeaderCellProps extends DraggableHeaderCellProps {
+  columnKey: string
+  dragLabel?: string
+}
+
+function SortableHeaderCell({
+  children,
+  style,
+  columnKey,
+  dragLabel,
+  ...props
+}: SortableHeaderCellProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey,
+  })
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.8 : style?.opacity,
+  }
+  const { onKeyDown: dndKeyDownListener, ...pointerListeners } = listeners ?? {}
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%' }}>
+        <button
+          type="button"
+          aria-label={dragLabel}
+          title={dragLabel}
+          style={{
+            display: 'inline-flex',
+            flex: '0 0 auto',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 20,
+            height: 20,
+            padding: 0,
+            color: 'rgba(0, 0, 0, 0.45)',
+            cursor: isDragging ? 'grabbing' : 'grab',
+            touchAction: 'none',
+            background: 'transparent',
+            border: 0,
+            borderRadius: 2,
+          }}
+          {...attributes}
+          {...pointerListeners}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            dispatchLocalSupplierInvoiceDragHandleKeyDown(event, (dragEvent) => {
+              dndKeyDownListener?.(dragEvent)
+            })
+          }}
+        >
+          <HolderOutlined />
+        </button>
+        <div style={{ minWidth: 0 }}>{children}</div>
+      </div>
+    </th>
+  )
+}
+
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  if (!columnKey) return <th style={style} {...props}>{children}</th>
+
+  return (
+    <SortableHeaderCell
+      columnKey={columnKey}
+      dragLabel={props['data-drag-label']}
+      style={style}
+      {...props}
+    >
+      {children}
+    </SortableHeaderCell>
+  )
+}
 
 const SORT_FIELD_MAP: Record<string, string> = {
   storeName: 'storeName',
@@ -123,6 +258,18 @@ export default function LocalSupplierInvoicesPage() {
   const [pageSize, setPageSize] = useState(20)
   const [sortBy, setSortBy] = useState('createdAt')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('descend')
+  const [columnOrder, setColumnOrder] = useState<LocalSupplierInvoiceColumnKey[]>(() => {
+    if (typeof window === 'undefined') {
+      return [...DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER]
+    }
+    try {
+      return parseLocalSupplierInvoiceColumnOrder(
+        localStorage.getItem(LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY),
+      )
+    } catch {
+      return [...DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER]
+    }
+  })
 
   // 筛选条件
   const [storeCode, setStoreCode] = useState<string | undefined>(undefined)
@@ -162,6 +309,44 @@ export default function LocalSupplierInvoicesPage() {
   const listRequestGuardRef = useRef(createLatestRequestGuard())
   const mountedRef = useRef(false)
   const latestLoadDataRef = useRef<() => Promise<void>>(async () => undefined)
+
+  const columnDragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+  const columnLabels = useMemo<Record<LocalSupplierInvoiceColumnKey, string>>(
+    () => ({
+      storeCode: t('column.store'),
+      supplierCode: t('column.supplier'),
+      invoiceNo: t('posAdmin.invoices.invoiceNo'),
+      orderDate: t('posAdmin.invoices.orderDate'),
+      inboundDate: t('posAdmin.invoices.inboundDate'),
+      totalAmount: t('column.totalAmount'),
+      receivedTotalAmount: t('posAdmin.invoices.receivedTotal', '已收总金额'),
+      flowStatus: t('posAdmin.invoices.flowStatus', '流程状态'),
+      inboundStatus: t('posAdmin.invoices.inboundStatus', '入库状态'),
+      remarks: t('column.remarks'),
+      createdAt: t('column.createTime'),
+      createdBy: t('column.creator'),
+      updatedAt: t('column.updateTime'),
+      updatedBy: t('column.updater'),
+    }),
+    [t],
+  )
+  const dndAccessibility = useMemo(
+    () => createLocalSupplierInvoiceDndAccessibility(columnLabels, {
+      instructions: t('posAdmin.invoices.dnd.instructions'),
+      unknownColumn: t('posAdmin.invoices.dnd.unknownColumn'),
+      dragStart: (column) => t('posAdmin.invoices.dnd.dragStart', { column }),
+      dragOver: (column, overColumn) =>
+        t('posAdmin.invoices.dnd.dragOver', { column, overColumn }),
+      dragOverNone: (column) => t('posAdmin.invoices.dnd.dragOverNone', { column }),
+      dragEnd: (column, overColumn) =>
+        t('posAdmin.invoices.dnd.dragEnd', { column, overColumn }),
+      dragCancel: (column) => t('posAdmin.invoices.dnd.dragCancel', { column }),
+    }),
+    [columnLabels, t],
+  )
 
   const loadData = async () => {
     if (!mountedRef.current) return
@@ -527,9 +712,10 @@ export default function LocalSupplierInvoicesPage() {
     }
   }
 
-  const columns: ColumnsType<LocalSupplierInvoiceListDto> = [
+  const baseColumns: ColumnsType<LocalSupplierInvoiceListDto> = [
     {
       title: t('column.index'),
+      key: 'index',
       width: 60,
       align: 'right',
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
@@ -537,6 +723,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.store'),
       dataIndex: 'storeCode',
+      key: 'storeCode',
       width: 160,
       sorter: true,
       sortOrder: sortBy === 'storeCode' ? sortOrder : undefined,
@@ -572,6 +759,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.supplier'),
       dataIndex: 'supplierCode',
+      key: 'supplierCode',
       width: 160,
       sorter: true,
       sortOrder: sortBy === 'supplierCode' ? sortOrder : undefined,
@@ -607,6 +795,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.invoiceNo'),
       dataIndex: 'invoiceNo',
+      key: 'invoiceNo',
       width: 160,
       sorter: true,
       sortOrder: sortBy === 'invoiceNo' ? sortOrder : undefined,
@@ -627,6 +816,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.orderDate'),
       dataIndex: 'orderDate',
+      key: 'orderDate',
       width: 120,
       sorter: true,
       sortOrder: sortBy === 'orderDate' ? sortOrder : undefined,
@@ -635,6 +825,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.inboundDate'),
       dataIndex: 'inboundDate',
+      key: 'inboundDate',
       width: 120,
       sorter: true,
       sortOrder: sortBy === 'inboundDate' ? sortOrder : undefined,
@@ -643,6 +834,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.totalAmount'),
       dataIndex: 'totalAmount',
+      key: 'totalAmount',
       width: 120,
       align: 'right',
       sorter: true,
@@ -652,6 +844,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.receivedTotal', '已收总金额'),
       dataIndex: 'receivedTotalAmount',
+      key: 'receivedTotalAmount',
       width: 120,
       align: 'right',
       sorter: true,
@@ -661,6 +854,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.flowStatus', '流程状态'),
       dataIndex: 'flowStatus',
+      key: 'flowStatus',
       width: 100,
       sorter: true,
       sortOrder: sortBy === 'flowStatus' ? sortOrder : undefined,
@@ -672,6 +866,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('posAdmin.invoices.inboundStatus', '入库状态'),
       dataIndex: 'inboundStatus',
+      key: 'inboundStatus',
       width: 100,
       sorter: true,
       sortOrder: sortBy === 'inboundStatus' ? sortOrder : undefined,
@@ -683,6 +878,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.remarks'),
       dataIndex: 'remarks',
+      key: 'remarks',
       width: 180,
       ellipsis: true,
       render: (v: string) => v || '--',
@@ -690,6 +886,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.createTime'),
       dataIndex: 'createdAt',
+      key: 'createdAt',
       width: 170,
       sorter: true,
       sortOrder: sortBy === 'createdAt' ? sortOrder : undefined,
@@ -698,12 +895,14 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.creator'),
       dataIndex: 'createdBy',
+      key: 'createdBy',
       width: 120,
       render: (v: string) => v || '--',
     },
     {
       title: t('column.updateTime'),
       dataIndex: 'updatedAt',
+      key: 'updatedAt',
       width: 170,
       sorter: true,
       sortOrder: sortBy === 'updatedAt' ? sortOrder : undefined,
@@ -712,6 +911,7 @@ export default function LocalSupplierInvoicesPage() {
     {
       title: t('column.updater'),
       dataIndex: 'updatedBy',
+      key: 'updatedBy',
       width: 120,
       render: (v: string) => v || '--',
     },
@@ -754,6 +954,54 @@ export default function LocalSupplierInvoicesPage() {
       ),
     },
   ]
+
+  const isColumnOrderCustomized =
+    isLocalSupplierInvoiceColumnOrderCustomized(columnOrder)
+
+  const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    const nextOrder = moveLocalSupplierInvoiceColumnOrder(columnOrder, active.id, over.id)
+    setColumnOrder(nextOrder)
+    try {
+      localStorage.setItem(
+        LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY,
+        JSON.stringify(nextOrder),
+      )
+    } catch {
+      // localStorage 不可用时仍保留当前页面内的列顺序。
+    }
+  }
+
+  const resetColumnOrder = () => {
+    setColumnOrder([...DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER])
+    try {
+      localStorage.removeItem(LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY)
+    } catch {
+      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+    }
+    message.success(t('posAdmin.invoices.columnOrderReset'))
+  }
+
+  const columnMap = new Map(baseColumns.map((column) => [String(column.key), column]))
+  const columns = [
+    columnMap.get('index'),
+    ...columnOrder.map((key) => {
+      const column = columnMap.get(key)
+      if (!column) return undefined
+      return {
+        ...column,
+        onHeaderCell: () => ({
+          'data-column-key': key,
+          'data-drag-label': t('posAdmin.invoices.dragColumn', {
+            column: columnLabels[key],
+          }),
+        } as DraggableHeaderCellProps),
+      }
+    }),
+    columnMap.get('action'),
+  ].filter(
+    (column): column is ColumnsType<LocalSupplierInvoiceListDto>[number] => Boolean(column),
+  )
 
   return (
     <Card
@@ -846,41 +1094,56 @@ export default function LocalSupplierInvoicesPage() {
               {t('common.query')}
             </Button>
             <Button onClick={handleReset}>{t('common.reset')}</Button>
+            {isColumnOrderCustomized ? (
+              <Button icon={<ReloadOutlined />} onClick={resetColumnOrder}>
+                {t('posAdmin.invoices.resetColumns')}
+              </Button>
+            ) : null}
           </Space>
         </div>
 
         <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Table
-            ref={invoiceTableRef}
-            rowKey="invoiceGUID"
-            loading={loading}
-            dataSource={data}
-            columns={columns}
-            pagination={false}
-            scroll={{ x: 2200, y: tableScrollY }}
-            rowSelection={
-              isAdmin
-                ? {
-                    selectedRowKeys,
-                    onChange: (keys) => setSelectedRowKeys(keys),
+          <DndContext
+            sensors={columnDragSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleColumnDragEnd}
+            accessibility={dndAccessibility}
+          >
+            <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+              <Table
+                ref={invoiceTableRef}
+                rowKey="invoiceGUID"
+                loading={loading}
+                dataSource={data}
+                components={{ header: { cell: DraggableHeaderCell } }}
+                columns={columns}
+                pagination={false}
+                scroll={{ x: 2200, y: tableScrollY }}
+                rowSelection={
+                  isAdmin
+                    ? {
+                        selectedRowKeys,
+                        onChange: (keys) => setSelectedRowKeys(keys),
+                      }
+                    : undefined
+                }
+                rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
+                onScroll={handleInvoiceTableScroll}
+                onChange={(_pagination, _filters, sorter) => {
+                  const s = Array.isArray(sorter) ? sorter[0] : sorter
+                  const field = s?.field || s?.column?.dataIndex
+                  const order = s?.order as 'ascend' | 'descend' | undefined
+                  if (field && order) {
+                    setSortBy(String(field))
+                    setSortOrder(order)
+                  } else {
+                    setSortBy('createdAt')
+                    setSortOrder('descend')
                   }
-                : undefined
-            }
-            rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
-            onScroll={handleInvoiceTableScroll}
-            onChange={(_pagination, _filters, sorter) => {
-              const s = Array.isArray(sorter) ? sorter[0] : sorter
-              const field = s?.field || s?.column?.dataIndex
-              const order = s?.order as 'ascend' | 'descend' | undefined
-              if (field && order) {
-                setSortBy(String(field))
-                setSortOrder(order)
-              } else {
-                setSortBy('createdAt')
-                setSortOrder('descend')
-              }
-            }}
-          />
+                }}
+              />
+            </SortableContext>
+          </DndContext>
         </div>
 
         <div
