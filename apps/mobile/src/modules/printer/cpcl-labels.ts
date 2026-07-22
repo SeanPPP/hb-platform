@@ -251,13 +251,24 @@ export function buildEmployeeCashierBarcodeLabelCommand(
     throw new Error("Employee cashier barcode must be a valid EAN13 value.");
   }
 
+  const qrUnitWidth = 8;
+  // 13 位纯数字在 M 纠错下使用 Version 1（21×21），据此在标准标签中水平居中。
+  const qrWidth = 21 * qrUnitWidth;
+  const qrX = Math.round((STANDARD_WIDTH - qrWidth) / 2);
+  const barcodeTextX = Math.max(
+    20,
+    Math.round((STANDARD_WIDTH - estimateTextWidth(barcodeValue, 4)) / 2)
+  );
   const lines = [
     `! 0 200 200 ${STANDARD_HEIGHT} 1`,
     `PAGE-WIDTH ${STANDARD_WIDTH}`,
     text(7, 20, 30, employeeName, 30),
-    "BARCODE-TEXT 7 0 8",
+    `BARCODE QR ${qrX} 104 M 2 U ${qrUnitWidth}`,
+    `MA,${barcodeValue}`,
+    "ENDQR",
+    // CPCL 二维码不会自动打印可读文本，单独保留编号供人工核对和输入。
+    text(4, barcodeTextX, 326, barcodeValue),
   ];
-  addBarcode(lines, "EAN13", 20, 112, barcodeValue, 72);
   lines.push("PRINT");
   return command(lines);
 }

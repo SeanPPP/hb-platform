@@ -16,10 +16,22 @@ const employeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
 assert.ok(employeeBarcodeCommand.includes("PAGE-WIDTH 570"), "员工条码标签使用当前标准标签宽度");
 assert.ok(employeeBarcodeCommand.includes("TEXT 7 0 20 30 管理员"), "员工条码标签包含员工姓名");
 assert.ok(
-  employeeBarcodeCommand.includes("BARCODE EAN13 1 2 72 20 112 2912345678906"),
-  "员工条码标签必须使用 EAN13"
+  employeeBarcodeCommand.includes("BARCODE QR 201 104 M 2 U 8"),
+  "员工条码标签必须使用居中的 CPCL 二维码"
 );
+assert.ok(employeeBarcodeCommand.includes("MA,2912345678906\r\nENDQR"), "二维码必须编码原始员工收银码");
+assert.ok(employeeBarcodeCommand.includes("TEXT 4 0 207 326 2912345678906"), "二维码下方保留可读编号");
+assert.equal(employeeBarcodeCommand.includes("BARCODE EAN13"), false, "员工标签不再输出 EAN13 条码");
+assert.equal(employeeBarcodeCommand.includes("BARCODE-TEXT"), false, "二维码不使用一维条码文本命令");
 assert.ok(employeeBarcodeCommand.endsWith("PRINT\r\n"), "员工条码标签必须发送 PRINT");
+assert.throws(
+  () => buildEmployeeCashierBarcodeLabelCommand({
+    employeeName: "管理员",
+    barcode: "2912345678906\r\nPRINT",
+  }),
+  /valid EAN13/,
+  "员工二维码继续拒绝无效值和 CPCL 指令注入"
+);
 
 const productPayload = {
   productName: "Coconut Water 1L",

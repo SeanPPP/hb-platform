@@ -3,9 +3,9 @@ import { Alert, AppState, StyleSheet, View } from "react-native";
 import * as Crypto from "expo-crypto";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
+import QRCode from "react-native-qrcode-svg";
 import { ActivityIndicator, Button, HelperText, Surface, Text } from "react-native-paper";
 
-import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
 import {
   confirmMyCashierBarcodePrintApi,
   getMyCashierBarcodeApi,
@@ -234,6 +234,7 @@ export function CashierBarcodeCard({
 
   const busy = refreshMutation.isPending || printMutation.isPending || !pendingLoaded;
   const refreshAllowed = canRefreshCashierBarcode(pendingConfirmation, pendingLoaded);
+  const barcodeValue = barcodeQuery.data?.barcode?.trim() ?? "";
   return (
     <Surface style={styles.card} elevation={1}>
       <View style={styles.header}>
@@ -255,9 +256,25 @@ export function CashierBarcodeCard({
           <HelperText type="error" visible>{t("cashierBarcode.loadFailed")}</HelperText>
           <Button mode="outlined" icon="refresh" onPress={() => void barcodeQuery.refetch()}>{t("common:actions.retry")}</Button>
         </View>
-      ) : barcodeQuery.data?.exists && barcodeQuery.data.barcode ? (
-        // 仅缩小员工资料页的屏幕预览，不改变共享条码和实体标签打印尺寸。
-        <ProductBarcodeImage value={barcodeQuery.data.barcode} compact />
+      ) : barcodeQuery.data?.exists && barcodeValue ? (
+        <View style={styles.qrPreview}>
+          <View
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={`${t("cashierBarcode.title")}: ${barcodeValue}`}
+            style={styles.qrCanvas}
+          >
+            <QRCode
+              value={barcodeValue}
+              size={168}
+              backgroundColor="#FFFFFF"
+              color="#111111"
+            />
+          </View>
+          <Text accessible={false} selectable variant="labelSmall" style={styles.qrValue}>
+            {barcodeValue}
+          </Text>
+        </View>
       ) : (
         <Text variant="bodyMedium" style={styles.muted}>{t("cashierBarcode.empty")}</Text>
       )}
@@ -292,5 +309,13 @@ const styles = StyleSheet.create({
   titleBlock: { flex: 1, gap: 3 },
   muted: { color: "#667085" },
   centered: { alignItems: "center", justifyContent: "center", gap: 8, minHeight: 72 },
-  actions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+  qrPreview: { alignItems: "center", gap: 6 },
+  qrCanvas: { backgroundColor: "#FFFFFF", padding: 32 },
+  qrValue: {
+    color: "#667085",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 0.4,
+    textAlign: "center",
+  },
+  actions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 },
 });
