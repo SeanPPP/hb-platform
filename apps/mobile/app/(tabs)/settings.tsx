@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Button, HelperText, Menu, Modal, Portal, Surface, Switch, Text, TextInput } from "react-native-paper";
+import { Button, HelperText, Menu, Modal, Portal, SegmentedButtons, Surface, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   clearSavedReceiptPrinter,
@@ -192,7 +192,6 @@ export default function Settings() {
   const receiptPrinterStatus = useReceiptPrinterStore((state) => state.status);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [storeMenuVisible, setStoreMenuVisible] = useState(false);
-  const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [rawPrinters, setRawPrinters] = useState<PrinterDevice[]>([]);
   const [printerBusy, setPrinterBusy] = useState(false);
   const [printerScanCompleted, setPrinterScanCompleted] = useState(false);
@@ -408,7 +407,6 @@ export default function Settings() {
   };
 
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
-    setLanguageMenuVisible(false);
     if (isIosReviewSessionActive()) {
       // 审核模式仅切换当前内存语言，不覆盖普通用户的持久化偏好。
       await i18n.changeLanguage(nextLanguage);
@@ -736,26 +734,24 @@ export default function Settings() {
         <CompactSection title={t("groups.app")}>
           <CompactRow
             label={t("common:language.title")}
-            value={language === "en" ? t("common:language.en") : t("common:language.zh")}
             action={
-              <Menu
-                visible={languageMenuVisible}
-                onDismiss={() => setLanguageMenuVisible(false)}
-                anchor={
-                  <Button
-                    compact
-                    mode="outlined"
-                    icon="chevron-down"
-                    contentStyle={styles.dropdownButtonContent}
-                    onPress={() => setLanguageMenuVisible(true)}
-                  >
-                    {t("common:actions.select")}
-                  </Button>
-                }
-              >
-                <Menu.Item title={t("common:language.zh")} onPress={() => void handleLanguageChange("zh")} />
-                <Menu.Item title={t("common:language.en")} onPress={() => void handleLanguageChange("en")} />
-              </Menu>
+              <SegmentedButtons
+                value={language}
+                onValueChange={(value) => void handleLanguageChange(value as AppLanguage)}
+                buttons={[
+                  {
+                    value: "zh",
+                    label: t("common:language.zh"),
+                    accessibilityLabel: t("common:language.zh"),
+                  },
+                  {
+                    value: "en",
+                    label: t("common:language.en"),
+                    accessibilityLabel: t("common:language.en"),
+                  },
+                ]}
+                style={styles.languageSelector}
+              />
             }
           />
           <View style={styles.sectionDivider} />
@@ -1202,6 +1198,9 @@ const styles = StyleSheet.create({
   },
   compactRowAction: {
     flexShrink: 0,
+  },
+  languageSelector: {
+    width: 190,
   },
   sectionDivider: {
     height: StyleSheet.hairlineWidth,
