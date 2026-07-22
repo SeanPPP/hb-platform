@@ -310,6 +310,8 @@ namespace BlazorApp.Shared.DTOs
         public string StoreCode { get; set; } = string.Empty;
         public string? ScheduleGuid { get; set; }
         public string? OriginalPunchGuid { get; set; }
+        // Preview 与提交之间的服务端状态版本；旧客户端可忽略返回字段，但新提交流程必须带回。
+        public string? PreviewRevision { get; set; }
         public string PunchType { get; set; } = "ClockIn";
         public DateTime RequestedPunchTimeLocal { get; set; }
         public DateTimeOffset? RequestedPunchTimeUtc { get; set; }
@@ -323,6 +325,7 @@ namespace BlazorApp.Shared.DTOs
         public string UserGuid { get; set; } = string.Empty;
         public string? ScheduleGuid { get; set; }
         public string? OriginalPunchGuid { get; set; }
+        public DateTime? OriginalPunchTimeLocal { get; set; }
         public string PunchType { get; set; } = string.Empty;
         public DateTime RequestedPunchTimeLocal { get; set; }
         public DateTime RequestedPunchTimeUtc { get; set; }
@@ -339,6 +342,7 @@ namespace BlazorApp.Shared.DTOs
     public class AttendancePunchAdjustmentPreviewDto
     {
         public bool IsValid { get; set; }
+        public string PreviewRevision { get; set; } = string.Empty;
         public string? ValidationErrorCode { get; set; }
         public string? ValidationMessage { get; set; }
         public AttendanceWorkSessionDto? ExistingSession { get; set; }

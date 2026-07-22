@@ -1,5 +1,7 @@
+using System.Data;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
@@ -203,19 +205,62 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendanceScheduleDto>.Error("排班结束时间必须晚于开始时间", "INVALID_TIME_RANGE");
             }
 
-            if (await HasOverlappingScheduleAsync(model.ScheduleGuid, model.StoreCode, model.UserGuid, request.WorkDate.Date, request.StartTime, request.EndTime))
+            var mutationResource = AttendanceDailyMutationLock.BuildResource(
+                model.UserGuid,
+                model.StoreCode,
+                model.WorkDate);
+            await using var processLock = await AttendanceDailyMutationLock.AcquireProcessAsync(
+                mutationResource);
+            await _db.Ado.BeginTranAsync();
+            try
             {
-                return ApiResponse<AttendanceScheduleDto>.Error("同员工同分店同日排班时间不能重叠", "SCHEDULE_OVERLAP");
-            }
+                await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                model = await _db.Queryable<AttendanceSchedule>()
+                    .FirstAsync(item => item.ScheduleGuid == scheduleGuid && !item.IsDeleted);
+                if (model == null)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendanceScheduleDto>.Error("排班不存在", "NOT_FOUND");
+                }
+                if (await HasOverlappingScheduleAsync(
+                        model.ScheduleGuid,
+                        model.StoreCode,
+                        model.UserGuid,
+                        request.WorkDate.Date,
+                        request.StartTime,
+                        request.EndTime))
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendanceScheduleDto>.Error(
+                        "同员工同分店同日排班时间不能重叠",
+                        "SCHEDULE_OVERLAP");
+                }
 
-            model.WorkDate = request.WorkDate.Date;
-            model.StartTime = request.StartTime;
-            model.EndTime = request.EndTime;
-            model.Status = NormalizeScheduleStatus(request.Status, defaultStatus: model.Status);
-            model.Remark = request.Remark;
-            model.UpdatedAt = DateTime.UtcNow;
-            model.UpdatedBy = _currentUserService.GetCurrentUsername();
-            await _db.Updateable(model).ExecuteCommandAsync();
+                model.WorkDate = request.WorkDate.Date;
+                model.StartTime = request.StartTime;
+                model.EndTime = request.EndTime;
+                model.Status = NormalizeScheduleStatus(request.Status, defaultStatus: model.Status);
+                model.Remark = request.Remark;
+                model.UpdatedAt = DateTime.UtcNow;
+                model.UpdatedBy = _currentUserService.GetCurrentUsername();
+                await _db.Updateable(model).ExecuteCommandAsync();
+                if (model.Status == "Active")
+                {
+                    await ReconcileDerivedApprovalsForScheduleAsync(model.ScheduleGuid);
+                }
+                else
+                {
+                    await CancelScheduleDerivedApprovalsAsync(
+                        model.ScheduleGuid,
+                        "排班已失效，相关待审考勤已自动取消");
+                }
+                await _db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await _db.Ado.RollbackTranAsync();
+                throw;
+            }
             return ApiResponse<AttendanceScheduleDto>.OK(ToDto(model), "排班已更新");
         }
 
@@ -268,11 +313,39 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.Error(storeAccess.Message, storeAccess.ErrorCode);
             }
 
-            model.Status = "Cancelled";
-            model.IsDeleted = true;
-            model.UpdatedAt = DateTime.UtcNow;
-            model.UpdatedBy = _currentUserService.GetCurrentUsername();
-            await _db.Updateable(model).ExecuteCommandAsync();
+            var mutationResource = AttendanceDailyMutationLock.BuildResource(
+                model.UserGuid,
+                model.StoreCode,
+                model.WorkDate);
+            await using var processLock = await AttendanceDailyMutationLock.AcquireProcessAsync(
+                mutationResource);
+            await _db.Ado.BeginTranAsync();
+            try
+            {
+                await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                model = await _db.Queryable<AttendanceSchedule>()
+                    .FirstAsync(item => item.ScheduleGuid == scheduleGuid && !item.IsDeleted);
+                if (model == null)
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<bool>.Error("排班不存在", "NOT_FOUND");
+                }
+
+                model.Status = "Cancelled";
+                model.IsDeleted = true;
+                model.UpdatedAt = DateTime.UtcNow;
+                model.UpdatedBy = _currentUserService.GetCurrentUsername();
+                await _db.Updateable(model).ExecuteCommandAsync();
+                await CancelScheduleDerivedApprovalsAsync(
+                    model.ScheduleGuid,
+                    "排班已删除，相关待审考勤已自动取消");
+                await _db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await _db.Ado.RollbackTranAsync();
+                throw;
+            }
             return ApiResponse<bool>.OK(true, "排班已取消");
         }
 
@@ -685,6 +758,9 @@ namespace BlazorApp.Api.Services.React
                     && item.WorkDate >= workDate
                     && item.WorkDate < workDate.AddDays(1))
                 .ToListAsync();
+            var adjacentBusinessDayPunches = await GetAdjacentBusinessDayPunchesAsync(
+                userGuid,
+                workDate);
             var todayPunches = sameDayUserPunches
                 .Where(item => item.StoreCode.Equals(storeCode, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -809,7 +885,7 @@ namespace BlazorApp.Api.Services.React
             };
 
             if (punchType == "ClockOut"
-                && HasCrossScheduleOverlap(sameDayUserPunches.Append(punch).ToList()))
+                && HasCrossScheduleOverlap(adjacentBusinessDayPunches.Append(punch).ToList()))
             {
                 await _db.Ado.RollbackTranAsync();
                 return ApiResponse<AttendancePunchDto>.Error(
@@ -822,20 +898,19 @@ namespace BlazorApp.Api.Services.React
             {
                 await CreatePendingApprovalAsync("Punch", punch.PunchGuid, punch.StoreCode, userGuid);
             }
-            if (schedule != null && punchType == "ClockOut")
+            if (schedule != null)
             {
-                var completedSession = AttendanceWorkSessionCalculator.Calculate(
+                var updatedSession = AttendanceWorkSessionCalculator.Calculate(
                     schedule,
                     todayPunches.Append(punch),
                     segmentLimit,
                     punchLocal,
                     settings.EarlyLeaveGraceMinutes,
                     settings.LateGraceMinutes);
-                if (completedSession.ScheduleState == "Completed"
-                    && completedSession.CandidateOvertimeMinutes > 0)
-                {
-                    await ReconcileOvertimeApprovalAsync(schedule, completedSession);
-                }
+                // 打卡恢复漏下班、覆盖早退边界等状态时，派生审批必须在本次员工锁内同步撤销或更新。
+                await ReconcileOvertimeApprovalAsync(schedule, updatedSession);
+                await ReconcileFinalPunchApprovalsAsync(schedule, updatedSession, settings);
+                await ReconcileMissingClockOutApprovalAsync(schedule, updatedSession);
             }
             await _db.Ado.CommitTranAsync();
             var resultDto = ToDto(punch, employeeName, storeName, serverNow);
@@ -918,7 +993,8 @@ namespace BlazorApp.Api.Services.React
                 .Where(item => !item.IsDeleted && item.UserGuid == userGuid)
                 .OrderByDescending(item => item.CreatedAt)
                 .ToListAsync();
-            return ApiResponse<List<AttendancePunchAdjustmentDto>>.OK(rows.Select(ToDto).ToList());
+            return ApiResponse<List<AttendancePunchAdjustmentDto>>.OK(
+                rows.Select(item => ToDto(item)).ToList());
         }
 
         public async Task<ApiResponse<AttendancePunchAdjustmentDto>> CreateMyPunchAdjustmentAsync(
@@ -931,66 +1007,76 @@ namespace BlazorApp.Api.Services.React
                     context.Message,
                     context.ErrorCode);
             }
+            if (string.IsNullOrWhiteSpace(request.PreviewRevision))
+            {
+                return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                    "补卡预览已失效，请刷新后重新提交",
+                    "ADJUSTMENT_PREVIEW_STALE");
+            }
 
             var now = _timeProvider.GetUtcNow().UtcDateTime;
             var userGuid = ResolveCurrentUserGuid();
-            var mutationResource = context.Preview!.WouldAutoApprove
-                ? AttendanceDailyMutationLock.BuildResource(
-                    userGuid,
-                    request.StoreCode,
-                    context.ProposedPunch!.PunchTimeLocal.Date)
-                : null;
-            await using IAsyncDisposable? directProcessLock = mutationResource == null
-                ? null
-                : await AttendanceDailyMutationLock.AcquireProcessAsync(mutationResource);
-            var adjustment = new AttendancePunchAdjustment
-            {
-                AdjustmentGuid = Guid.NewGuid().ToString(),
-                StoreCode = request.StoreCode.Trim(),
-                UserGuid = userGuid,
-                ScheduleGuid = context.Schedule!.ScheduleGuid,
-                OriginalPunchGuid = string.IsNullOrWhiteSpace(request.OriginalPunchGuid)
-                    ? null
-                    : request.OriginalPunchGuid.Trim(),
-                PunchType = NormalizePunchType(request.PunchType),
-                RequestedPunchTimeLocal = context.ProposedPunch!.PunchTimeLocal,
-                RequestedPunchTimeUtc = context.ProposedPunch!.PunchTimeUtc,
-                Reason = request.Reason.Trim(),
-                Status = context.Preview!.WouldAutoApprove ? "Applied" : "Pending",
-                IsManagerSelfDirect = context.Preview.WouldAutoApprove,
-                RequestedByUserGuid = userGuid,
-                ReviewedByUserGuid = context.Preview.WouldAutoApprove ? userGuid : null,
-                ReviewedAt = context.Preview.WouldAutoApprove ? now : null,
-                CreatedAt = now,
-                CreatedBy = _currentUserService.GetCurrentUsername(),
-            };
+            var mutationResource = AttendanceDailyMutationLock.BuildResource(
+                userGuid,
+                context.Schedule!.StoreCode,
+                context.Schedule.WorkDate);
+            await using var processLock = await AttendanceDailyMutationLock.AcquireProcessAsync(
+                mutationResource);
+            AttendancePunchAdjustment? adjustment = null;
 
-            await _db.Ado.BeginTranAsync();
+            // SQL Server 的 Serializable 范围锁把 revision 输入快照保持到写入提交；SQLite 也支持该隔离级别。
+            await _db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
-                if (mutationResource != null)
+                await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                // 补卡无论待审还是店长直生效，都会改变同一员工的有效卡序，必须锁内重算。
+                var lockedContext = await BuildPunchAdjustmentContextAsync(request);
+                if (!lockedContext.Success)
                 {
-                    await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
-                    var lockedContext = await BuildPunchAdjustmentContextAsync(request);
-                    if (!lockedContext.Success)
-                    {
-                        await _db.Ado.RollbackTranAsync();
-                        return ApiResponse<AttendancePunchAdjustmentDto>.Error(
-                            lockedContext.Message,
-                            lockedContext.ErrorCode);
-                    }
-                    context = lockedContext;
-                    adjustment.ScheduleGuid = context.Schedule!.ScheduleGuid;
-                    adjustment.RequestedPunchTimeLocal = context.ProposedPunch!.PunchTimeLocal;
-                    adjustment.RequestedPunchTimeUtc = context.ProposedPunch!.PunchTimeUtc;
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                        lockedContext.Message,
+                        lockedContext.ErrorCode);
                 }
+                if (!string.Equals(
+                        request.PreviewRevision,
+                        lockedContext.Preview!.PreviewRevision,
+                        StringComparison.Ordinal))
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                        "补卡预览已失效，请刷新后重新提交",
+                        "ADJUSTMENT_PREVIEW_STALE");
+                }
+                context = lockedContext;
+                adjustment = new AttendancePunchAdjustment
+                {
+                    AdjustmentGuid = Guid.NewGuid().ToString(),
+                    StoreCode = request.StoreCode.Trim(),
+                    UserGuid = userGuid,
+                    ScheduleGuid = context.Schedule!.ScheduleGuid,
+                    OriginalPunchGuid = string.IsNullOrWhiteSpace(request.OriginalPunchGuid)
+                        ? null
+                        : request.OriginalPunchGuid.Trim(),
+                    PunchType = NormalizePunchType(request.PunchType),
+                    RequestedPunchTimeLocal = context.ProposedPunch!.PunchTimeLocal,
+                    RequestedPunchTimeUtc = context.ProposedPunch!.PunchTimeUtc,
+                    Reason = request.Reason.Trim(),
+                    Status = context.Preview!.WouldAutoApprove ? "Applied" : "Pending",
+                    IsManagerSelfDirect = context.Preview.WouldAutoApprove,
+                    RequestedByUserGuid = userGuid,
+                    ReviewedByUserGuid = context.Preview.WouldAutoApprove ? userGuid : null,
+                    ReviewedAt = context.Preview.WouldAutoApprove ? now : null,
+                    CreatedAt = now,
+                    CreatedBy = _currentUserService.GetCurrentUsername(),
+                };
                 await _db.Insertable(adjustment).ExecuteCommandAsync();
                 if (context.Preview!.WouldAutoApprove)
                 {
                     var appliedPunch = await ApplyPunchAdjustmentAsync(adjustment, context.ProposedPunch!);
                     adjustment.AppliedPunchGuid = appliedPunch.PunchGuid;
                     await _db.Updateable(adjustment).ExecuteCommandAsync();
-                    await ReconcileOvertimeForScheduleAsync(
+                    await ReconcileDerivedApprovalsForScheduleAsync(
                         context.Schedule!.ScheduleGuid,
                         Math.Max(0, context.Preview.CandidateOvertimeMinutesDelta));
                 }
@@ -1019,8 +1105,8 @@ namespace BlazorApp.Api.Services.React
             }
 
             return ApiResponse<AttendancePunchAdjustmentDto>.OK(
-                ToDto(adjustment),
-                adjustment.Status == "Applied" ? "补卡已直接生效" : "补卡申请已提交");
+                ToDto(adjustment!),
+                adjustment!.Status == "Applied" ? "补卡已直接生效" : "补卡申请已提交");
         }
 
         public async Task<ApiResponse<AttendanceQrResolveDto>> ResolveAttendanceQrAsync(
@@ -1779,34 +1865,19 @@ namespace BlazorApp.Api.Services.React
                 }
             }
             AttendanceSchedule? overtimeSchedule = null;
-            if (model.SourceType == "Overtime")
-            {
-                overtimeSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
-                    !item.IsDeleted && item.ScheduleGuid == model.SourceGuid);
-                if (overtimeSchedule == null)
-                {
-                    return ApiResponse<AttendanceApprovalDto>.Error(
-                        "加班排班不存在",
-                        "SCHEDULE_NOT_FOUND");
-                }
-            }
             var reviewedAt = _timeProvider.GetUtcNow().UtcDateTime;
             var updatedBy = _currentUserService.GetCurrentUsername();
-            var mutationResource = overtimeSchedule != null
+            var mutationResource = model.SourceType is "Punch" or "MissingClockOut" or "Overtime" or "PunchAdjustment"
                 ? AttendanceDailyMutationLock.BuildResource(
-                    overtimeSchedule.UserGuid,
-                    overtimeSchedule.StoreCode,
-                    overtimeSchedule.WorkDate)
-                : adjustment != null && reviewStatus == "Approved"
-                    ? AttendanceDailyMutationLock.BuildResource(
-                        adjustment.UserGuid,
-                        adjustment.StoreCode,
-                        adjustment.RequestedPunchTimeLocal.Date)
-                    : null;
+                    model.ApplicantUserGuid,
+                    model.StoreCode,
+                    default)
+                : null;
             await using IAsyncDisposable? processLock = mutationResource == null
                 ? null
                 : await AttendanceDailyMutationLock.AcquireProcessAsync(mutationResource);
-            await _db.Ado.BeginTranAsync();
+            // 审批 claim 前会重读设置、角色关系、打卡和排班；Serializable 保证该判断快照持续到提交。
+            await _db.Ado.BeginTranAsync(IsolationLevel.Serializable);
             try
             {
                 if (mutationResource != null)
@@ -1824,13 +1895,108 @@ namespace BlazorApp.Api.Services.React
                         "审核记录已处理",
                         "APPROVAL_ALREADY_REVIEWED");
                 }
+                if (model.SourceType == "Punch")
+                {
+                    var sourcePunch = await _db.Queryable<AttendancePunch>().FirstAsync(item =>
+                        !item.IsDeleted && item.PunchGuid == model.SourceGuid);
+                    var sourceWasSuperseded = sourcePunch != null
+                        && await _db.Queryable<AttendancePunch>().AnyAsync(item =>
+                            !item.IsDeleted && item.SupersedesPunchGuid == sourcePunch.PunchGuid);
+                    var settings = await GetOrCreateSettingsModelAsync();
+                    var stillRequiresApproval = false;
+                    if (sourcePunch != null && !sourceWasSuperseded
+                        && !string.IsNullOrWhiteSpace(sourcePunch.ScheduleGuid))
+                    {
+                        var activeSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                            !item.IsDeleted
+                            && item.Status == "Active"
+                            && item.ScheduleGuid == sourcePunch.ScheduleGuid);
+                        if (activeSchedule != null)
+                        {
+                            var currentSession = await BuildWorkSessionAsync(activeSchedule);
+                            stillRequiresApproval = GetExpectedPunchApprovalCandidates(
+                                    currentSession,
+                                    settings)
+                                .Any(item => item.PunchGuid.Equals(
+                                    sourcePunch.PunchGuid,
+                                    StringComparison.OrdinalIgnoreCase));
+                        }
+                    }
+                    else if (sourcePunch != null && !sourceWasSuperseded)
+                    {
+                        var hasActiveSchedule = await _db.Queryable<AttendanceSchedule>().AnyAsync(item =>
+                            !item.IsDeleted
+                            && item.Status == "Active"
+                            && item.StoreCode == sourcePunch.StoreCode
+                            && item.UserGuid == sourcePunch.UserGuid
+                            && item.WorkDate >= sourcePunch.WorkDate.Date
+                            && item.WorkDate < sourcePunch.WorkDate.Date.AddDays(1));
+                        stillRequiresApproval = !hasActiveSchedule
+                            && RequiresApproval(sourcePunch.Status, settings);
+                    }
+                    if (!stillRequiresApproval)
+                    {
+                        await CancelPendingApprovalAsync(
+                            model.ApprovalGuid,
+                            "原打卡已失效或异常状态已变化，待审记录已自动取消");
+                        await _db.Ado.CommitTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "原打卡异常状态已变化，不能批准",
+                            "PUNCH_APPROVAL_STALE");
+                    }
+                }
+                if (model.SourceType == "MissingClockOut")
+                {
+                    var missingClockOutSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
+                        !item.IsDeleted
+                        && item.Status == "Active"
+                        && item.ScheduleGuid == model.SourceGuid);
+                    var currentSession = missingClockOutSchedule == null
+                        ? null
+                        : await BuildWorkSessionAsync(missingClockOutSchedule);
+                    if (currentSession?.HasMissingClockOut != true)
+                    {
+                        await CancelPendingApprovalAsync(
+                            model.ApprovalGuid,
+                            "漏下班状态已消除，待审记录已自动取消");
+                        await _db.Ado.CommitTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "漏下班状态已消除，不能批准",
+                            "MISSING_CLOCK_OUT_RESOLVED");
+                    }
+                }
+                if (model.SourceType == "PunchAdjustment")
+                {
+                    adjustment = await _db.Queryable<AttendancePunchAdjustment>()
+                        .FirstAsync(item => item.AdjustmentGuid == model.SourceGuid && !item.IsDeleted);
+                    if (adjustment == null || adjustment.Status != "Pending")
+                    {
+                        await CancelPendingApprovalAsync(
+                            model.ApprovalGuid,
+                            "补卡申请已失效，待审记录已自动取消");
+                        await _db.Ado.CommitTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "补卡申请已失效，不能批准",
+                            "ADJUSTMENT_NOT_FOUND");
+                    }
+                }
                 if (model.SourceType == "Overtime")
                 {
                     overtimeSchedule = await _db.Queryable<AttendanceSchedule>().FirstAsync(item =>
-                        !item.IsDeleted && item.ScheduleGuid == model.SourceGuid);
-                    var currentSession = overtimeSchedule == null
-                        ? null
-                        : await BuildWorkSessionAsync(overtimeSchedule);
+                        !item.IsDeleted
+                        && item.Status == "Active"
+                        && item.ScheduleGuid == model.SourceGuid);
+                    if (overtimeSchedule == null)
+                    {
+                        await CancelPendingApprovalAsync(
+                            model.ApprovalGuid,
+                            "排班已失效，待审加班已自动取消");
+                        await _db.Ado.CommitTranAsync();
+                        return ApiResponse<AttendanceApprovalDto>.Error(
+                            "加班排班已失效，不能批准",
+                            "OVERTIME_APPROVAL_STALE");
+                    }
+                    var currentSession = await BuildWorkSessionAsync(overtimeSchedule);
                     var terminalRows = await _db.Queryable<AttendanceApproval>()
                         .Where(item =>
                             !item.IsDeleted
@@ -1843,8 +2009,7 @@ namespace BlazorApp.Api.Services.React
                     var expectedCandidate = currentSession?.ScheduleState == "Completed"
                         ? Math.Max(0, currentSession.CandidateOvertimeMinutes - processedMinutes)
                         : 0;
-                    if (currentSession == null
-                        || model.CandidateOvertimeMinutes != expectedCandidate)
+                    if (model.CandidateOvertimeMinutes != expectedCandidate)
                     {
                         await _db.Ado.RollbackTranAsync();
                         return ApiResponse<AttendanceApprovalDto>.Error(
@@ -2060,6 +2225,39 @@ namespace BlazorApp.Api.Services.React
                 .ExecuteCommandAsync();
         }
 
+        private async Task CancelPendingApprovalAsync(string approvalGuid, string reason)
+        {
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            await _db.Updateable<AttendanceApproval>()
+                .SetColumns(item => item.ReviewStatus == "Cancelled")
+                .SetColumns(item => item.ReviewRemark == reason)
+                .SetColumns(item => item.ReviewerUserGuid == "system")
+                .SetColumns(item => item.ReviewedAt == now)
+                .SetColumns(item => item.UpdatedAt == now)
+                .SetColumns(item => item.UpdatedBy == "system")
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.ApprovalGuid == approvalGuid
+                    && item.ReviewStatus == "Pending")
+                .ExecuteCommandAsync();
+        }
+
+        private async Task CancelScheduleDerivedApprovalsAsync(
+            string scheduleGuid,
+            string reason)
+        {
+            var punchGuids = await _db.Queryable<AttendancePunch>()
+                .Where(item => item.ScheduleGuid == scheduleGuid)
+                .Select(item => item.PunchGuid)
+                .ToListAsync();
+            foreach (var punchGuid in punchGuids)
+            {
+                await CancelPendingApprovalsAsync("Punch", punchGuid, reason);
+            }
+            await CancelPendingApprovalsAsync("Overtime", scheduleGuid, reason);
+            await CancelPendingApprovalsAsync("MissingClockOut", scheduleGuid, reason);
+        }
+
         private async Task ReconcileOvertimeApprovalAsync(
             AttendanceSchedule schedule,
             AttendanceWorkSessionDto session,
@@ -2130,7 +2328,7 @@ namespace BlazorApp.Api.Services.React
                 remaining);
         }
 
-        private async Task ReconcileOvertimeForScheduleAsync(
+        private async Task ReconcileDerivedApprovalsForScheduleAsync(
             string scheduleGuid,
             int autoApproveDelta = 0)
         {
@@ -2142,6 +2340,17 @@ namespace BlazorApp.Api.Services.React
             }
             var session = await BuildWorkSessionAsync(schedule);
             await ReconcileOvertimeApprovalAsync(schedule, session, autoApproveDelta);
+            var settings = await GetOrCreateSettingsModelAsync();
+            await ReconcileFinalPunchApprovalsAsync(schedule, session, settings);
+            await ReconcileMissingClockOutApprovalAsync(schedule, session);
+        }
+
+        private Task ReconcileOvertimeForScheduleAsync(
+            string scheduleGuid,
+            int autoApproveDelta = 0)
+        {
+            // 保留旧调用名，确保任何补卡恢复路径同步协调所有派生审批而非只处理加班。
+            return ReconcileDerivedApprovalsForScheduleAsync(scheduleGuid, autoApproveDelta);
         }
 
         private async Task<AttendanceWorkSessionDto> BuildWorkSessionAsync(
@@ -2163,28 +2372,57 @@ namespace BlazorApp.Api.Services.React
         }
 
         private async Task ReconcileFinalPunchApprovalsAsync(
+            AttendanceSchedule schedule,
+            AttendanceWorkSessionDto session,
+            AttendanceSettings settings)
+        {
+            var expected = GetExpectedPunchApprovalCandidates(session, settings);
+            var expectedGuids = expected
+                .Select(item => item.PunchGuid)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var schedulePunchGuids = await _db.Queryable<AttendancePunch>()
+                .Where(item => item.ScheduleGuid == schedule.ScheduleGuid)
+                .Select(item => item.PunchGuid)
+                .ToListAsync();
+            if (schedulePunchGuids.Count > 0)
+            {
+                var pending = await _db.Queryable<AttendanceApproval>()
+                    .Where(item =>
+                        !item.IsDeleted
+                        && item.SourceType == "Punch"
+                        && item.ReviewStatus == "Pending"
+                        && schedulePunchGuids.Contains(item.SourceGuid))
+                    .ToListAsync();
+                foreach (var stale in pending.Where(item => !expectedGuids.Contains(item.SourceGuid)))
+                {
+                    await CancelPendingApprovalAsync(
+                        stale.ApprovalGuid,
+                        "打卡异常状态已变化，原待审记录已自动取消");
+                }
+            }
+
+            foreach (var punch in expected)
+            {
+                await CreatePendingApprovalAsync(
+                    "Punch",
+                    punch.PunchGuid,
+                    punch.StoreCode,
+                    punch.UserGuid);
+            }
+        }
+
+        private static List<AttendancePunchDto> GetExpectedPunchApprovalCandidates(
             AttendanceWorkSessionDto session,
             AttendanceSettings settings)
         {
             var firstClockIn = session.Segments.FirstOrDefault()?.ClockIn;
-            if (firstClockIn?.Status == "Late" && settings.RequireApprovalForLate)
-            {
-                await CreatePendingApprovalAsync(
-                    "Punch",
-                    firstClockIn.PunchGuid,
-                    firstClockIn.StoreCode,
-                    firstClockIn.UserGuid);
-            }
-
             var finalClockOut = session.Segments.LastOrDefault(item => item.Status == "Final")?.ClockOut;
-            if (finalClockOut?.Status == "EarlyLeave" && settings.RequireApprovalForEarlyLeave)
-            {
-                await CreatePendingApprovalAsync(
-                    "Punch",
-                    finalClockOut.PunchGuid,
-                    finalClockOut.StoreCode,
-                    finalClockOut.UserGuid);
-            }
+            return new[] { firstClockIn, finalClockOut }
+                .Where(item => item != null && RequiresApproval(item.Status, settings))
+                .Select(item => item!)
+                .GroupBy(item => item.PunchGuid, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
         }
 
         private async Task ReconcileMissingClockOutApprovalAsync(
@@ -2362,18 +2600,18 @@ namespace BlazorApp.Api.Services.React
                 return PunchAdjustmentContext.Error(sequenceValidation.Message, sequenceValidation.ErrorCode);
             }
 
-            var sameDayPunches = await _db.Queryable<AttendancePunch>()
+            var adjacentBusinessDayPunches = await GetAdjacentBusinessDayPunchesAsync(
+                userGuid,
+                schedule.WorkDate);
+            var sameStoreBusinessDayPunches = adjacentBusinessDayPunches
                 .Where(item =>
-                    !item.IsDeleted
-                    && item.UserGuid == userGuid
-                    && item.WorkDate >= schedule.WorkDate.Date
-                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1))
-                .ToListAsync();
-            sameDayPunches.Add(proposedPunch);
+                    item.WorkDate >= schedule.WorkDate.Date
+                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1)
+                    && item.StoreCode.Equals(storeCode, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            sameStoreBusinessDayPunches.Add(proposedPunch);
             var dailyLimitValidation = ValidateDailyStoreSegmentLimit(
-                sameDayPunches.Where(item => item.StoreCode.Equals(
-                    storeCode,
-                    StringComparison.OrdinalIgnoreCase)),
+                sameStoreBusinessDayPunches,
                 segmentLimit);
             if (!dailyLimitValidation.Success)
             {
@@ -2381,7 +2619,8 @@ namespace BlazorApp.Api.Services.React
                     dailyLimitValidation.Message,
                     dailyLimitValidation.ErrorCode);
             }
-            if (HasCrossScheduleOverlap(sameDayPunches))
+            adjacentBusinessDayPunches.Add(proposedPunch);
+            if (HasCrossScheduleOverlap(adjacentBusinessDayPunches))
             {
                 return PunchAdjustmentContext.Error(
                     "补卡后与其他排班或分店的班段重叠",
@@ -2415,6 +2654,14 @@ namespace BlazorApp.Api.Services.React
                     CandidateOvertimeMinutesDelta = proposedSession.CandidateOvertimeMinutes
                         - existingSession.CandidateOvertimeMinutes,
                     WouldAutoApprove = wouldAutoApprove,
+                    PreviewRevision = ComputePunchAdjustmentPreviewRevision(
+                        schedule,
+                        proposedPunch,
+                        punches,
+                        adjacentBusinessDayPunches,
+                        segmentLimit,
+                        settings,
+                        wouldAutoApprove),
                 });
         }
 
@@ -2500,18 +2747,18 @@ namespace BlazorApp.Api.Services.React
                     sequenceValidation.ErrorCode);
             }
 
-            var sameDayPunches = await _db.Queryable<AttendancePunch>()
+            var adjacentBusinessDayPunches = await GetAdjacentBusinessDayPunchesAsync(
+                adjustment.UserGuid,
+                schedule.WorkDate);
+            var sameStoreBusinessDayPunches = adjacentBusinessDayPunches
                 .Where(item =>
-                    !item.IsDeleted
-                    && item.UserGuid == adjustment.UserGuid
-                    && item.WorkDate >= schedule.WorkDate.Date
-                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1))
-                .ToListAsync();
-            sameDayPunches.Add(proposedPunch);
+                    item.WorkDate >= schedule.WorkDate.Date
+                    && item.WorkDate < schedule.WorkDate.Date.AddDays(1)
+                    && item.StoreCode.Equals(adjustment.StoreCode, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            sameStoreBusinessDayPunches.Add(proposedPunch);
             var dailyLimitValidation = ValidateDailyStoreSegmentLimit(
-                sameDayPunches.Where(item => item.StoreCode.Equals(
-                    adjustment.StoreCode,
-                    StringComparison.OrdinalIgnoreCase)),
+                sameStoreBusinessDayPunches,
                 segmentLimit);
             if (!dailyLimitValidation.Success)
             {
@@ -2519,7 +2766,8 @@ namespace BlazorApp.Api.Services.React
                     dailyLimitValidation.Message,
                     dailyLimitValidation.ErrorCode);
             }
-            if (HasCrossScheduleOverlap(sameDayPunches))
+            adjacentBusinessDayPunches.Add(proposedPunch);
+            if (HasCrossScheduleOverlap(adjacentBusinessDayPunches))
             {
                 return PunchAdjustmentApplicationContext.Error(
                     "补卡后与其他排班或分店的班段重叠",
@@ -2553,6 +2801,14 @@ namespace BlazorApp.Api.Services.React
             punch.CreatedAt = _timeProvider.GetUtcNow().UtcDateTime;
             punch.CreatedBy = _currentUserService.GetCurrentUsername();
             await _db.Insertable(punch).ExecuteCommandAsync();
+            if (!string.IsNullOrWhiteSpace(adjustment.OriginalPunchGuid))
+            {
+                // 覆盖原卡后，原异常卡的待审已不再有可批准的来源，必须与新卡同事务取消。
+                await CancelPendingApprovalsAsync(
+                    "Punch",
+                    adjustment.OriginalPunchGuid,
+                    "原打卡已被补卡覆盖，待审异常已自动取消");
+            }
             return punch;
         }
 
@@ -2615,7 +2871,8 @@ namespace BlazorApp.Api.Services.React
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var effective = punches
                 .Where(item => !superseded.Contains(item.PunchGuid))
-                .OrderBy(item => item.PunchTimeLocal)
+                // 有效卡序必须按真实 UTC 先后验证，不能受 Sydney 回拨时本地时间倒退影响。
+                .OrderBy(item => item.PunchTimeUtc)
                 .ThenBy(item => item.Id)
                 .ToList();
             if (effective.Count > segmentLimit * 2)
@@ -2658,6 +2915,98 @@ namespace BlazorApp.Api.Services.React
             return rows.Count(item =>
                 !superseded.Contains(item.PunchGuid)
                 && item.PunchType.Equals("ClockIn", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task<List<AttendancePunch>> GetAdjacentBusinessDayPunchesAsync(
+            string userGuid,
+            DateTime workDate)
+        {
+            // 门店时区不同会使同一 UTC 班段落在相邻本地业务日；只查当天会漏掉重叠。
+            var from = workDate.Date.AddDays(-1);
+            var until = workDate.Date.AddDays(2);
+            return await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= from
+                    && item.WorkDate < until)
+                .ToListAsync();
+        }
+
+        private static string ComputePunchAdjustmentPreviewRevision(
+            AttendanceSchedule schedule,
+            AttendancePunch proposedPunch,
+            IEnumerable<AttendancePunch> schedulePunches,
+            IEnumerable<AttendancePunch> adjacentBusinessDayPunches,
+            int segmentLimit,
+            AttendanceSettings settings,
+            bool wouldAutoApprove)
+        {
+            var values = new List<string>
+            {
+                "attendance-adjustment-preview-v2",
+                schedule.ScheduleGuid,
+                schedule.StoreCode,
+                schedule.UserGuid,
+                schedule.WorkDate.Date.Ticks.ToString(),
+                schedule.StartTime.Ticks.ToString(),
+                schedule.EndTime.Ticks.ToString(),
+                schedule.Status,
+                segmentLimit.ToString(),
+                settings.LateGraceMinutes.ToString(),
+                settings.EarlyLeaveGraceMinutes.ToString(),
+                settings.AllowNoSchedulePunch ? "1" : "0",
+                settings.RequireApprovalForLate ? "1" : "0",
+                settings.RequireApprovalForEarlyLeave ? "1" : "0",
+                settings.RequireApprovalForNoSchedule ? "1" : "0",
+                settings.RequireApprovalForDuplicate ? "1" : "0",
+                wouldAutoApprove ? "1" : "0",
+                proposedPunch.PunchType,
+                proposedPunch.PunchTimeUtc.Ticks.ToString(),
+                proposedPunch.PunchTimeLocal.Ticks.ToString(),
+                proposedPunch.SupersedesPunchGuid ?? string.Empty,
+            };
+
+            // revision 只编码参与计算的有效卡链；审批状态等展示字段变化不能让预览失效。
+            var revisionPunches = schedulePunches
+                .Concat(adjacentBusinessDayPunches)
+                .GroupBy(item => item.PunchGuid, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+            var supersededPunchGuids = revisionPunches
+                .Where(item => !string.IsNullOrWhiteSpace(item.SupersedesPunchGuid))
+                .Select(item => item.SupersedesPunchGuid!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var punch in revisionPunches
+                // proposedPunch 的 GUID 每次预览重算都会新建；候选本身已在上方固定字段中编码。
+                .Where(item => !item.PunchGuid.Equals(
+                    proposedPunch.PunchGuid,
+                    StringComparison.OrdinalIgnoreCase))
+                .Where(item => !supersededPunchGuids.Contains(item.PunchGuid))
+                .OrderBy(item => item.PunchTimeUtc)
+                .ThenBy(item => item.PunchGuid, StringComparer.OrdinalIgnoreCase))
+            {
+                values.Add(string.Join(":",
+                    punch.PunchGuid,
+                    punch.ScheduleGuid ?? string.Empty,
+                    punch.StoreCode,
+                    punch.UserGuid,
+                    punch.WorkDate.Date.Ticks,
+                    punch.PunchType,
+                    punch.PunchTimeUtc.Ticks,
+                    punch.PunchTimeLocal.Ticks,
+                    punch.SupersedesPunchGuid ?? string.Empty));
+            }
+
+            var payload = Encoding.UTF8.GetBytes(string.Join("|", values));
+            try
+            {
+                return Convert.ToHexString(SHA256.HashData(payload));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(payload);
+            }
         }
 
         private static bool HasCrossScheduleOverlap(List<AttendancePunch> punches)
@@ -3063,6 +3412,85 @@ namespace BlazorApp.Api.Services.React
             _ => 1,
         };
 
+        private async Task ReconcileDerivedApprovalsUnderEmployeeLocksAsync(
+            IEnumerable<AttendanceSchedule> scheduleSnapshots)
+        {
+            foreach (var userSchedules in scheduleSnapshots
+                .GroupBy(item => item.UserGuid, StringComparer.OrdinalIgnoreCase))
+            {
+                var scheduleGuids = userSchedules
+                    .Select(item => item.ScheduleGuid)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (scheduleGuids.Count == 0)
+                {
+                    continue;
+                }
+
+                var mutationResource = AttendanceDailyMutationLock.BuildResource(
+                    userSchedules.Key,
+                    string.Empty,
+                    default);
+                await using var processLock = await AttendanceDailyMutationLock.AcquireProcessAsync(
+                    mutationResource);
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    await AttendanceDailyMutationLock.AcquireDatabaseAsync(_db, mutationResource);
+                    // GET 也可能创建/取消审批，因此必须锁内重读排班、打卡和规则，不能复用入口快照。
+                    var lockedSchedules = await _db.Queryable<AttendanceSchedule>()
+                        .Where(item => !item.IsDeleted && scheduleGuids.Contains(item.ScheduleGuid))
+                        .ToListAsync();
+                    var activeSchedules = lockedSchedules
+                        .Where(item => item.Status == "Active")
+                        .ToList();
+                    var activeScheduleGuids = activeSchedules
+                        .Select(item => item.ScheduleGuid)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    foreach (var staleScheduleGuid in scheduleGuids
+                        .Where(scheduleGuid => !activeScheduleGuids.Contains(scheduleGuid)))
+                    {
+                        await CancelScheduleDerivedApprovalsAsync(
+                            staleScheduleGuid,
+                            "排班已失效，相关待审考勤已自动取消");
+                    }
+
+                    if (activeSchedules.Count > 0)
+                    {
+                        var activeGuids = activeSchedules.Select(item => item.ScheduleGuid).ToList();
+                        var lockedPunches = await _db.Queryable<AttendancePunch>()
+                            .Where(item => !item.IsDeleted
+                                && item.ScheduleGuid != null
+                                && activeGuids.Contains(item.ScheduleGuid))
+                            .ToListAsync();
+                        var settings = await GetOrCreateSettingsModelAsync();
+                        var segmentLimitMap = await ResolveSegmentLimitMapAsync(activeSchedules);
+                        foreach (var schedule in activeSchedules)
+                        {
+                            var timeZone = await ResolveStoreTimeZoneAsync(schedule.StoreCode, null);
+                            var session = AttendanceWorkSessionCalculator.Calculate(
+                                schedule,
+                                lockedPunches,
+                                segmentLimitMap.GetValueOrDefault(schedule.UserGuid, 2),
+                                ConvertUtcToStoreLocal(_timeProvider.GetUtcNow().UtcDateTime, timeZone),
+                                settings.EarlyLeaveGraceMinutes,
+                                settings.LateGraceMinutes);
+                            await ReconcileOvertimeApprovalAsync(schedule, session);
+                            await ReconcileFinalPunchApprovalsAsync(schedule, session, settings);
+                            await ReconcileMissingClockOutApprovalAsync(schedule, session);
+                        }
+                    }
+
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+        }
+
         private async Task PopulateWorkSessionFieldsAsync(
             List<AttendanceScheduleDto> scheduleDtos,
             List<AttendanceSchedule> schedules,
@@ -3073,6 +3501,13 @@ namespace BlazorApp.Api.Services.React
             if (schedules.Count == 0)
             {
                 return;
+            }
+
+            if (reconcileDerivedApprovals)
+            {
+                await ReconcileDerivedApprovalsUnderEmployeeLocksAsync(schedules);
+                // 协调已用锁内重读后的状态完成；下方只投影 DTO，不能再用入口快照写审批。
+                reconcileDerivedApprovals = false;
             }
 
             var scheduleGuids = schedules.Select(item => item.ScheduleGuid).Distinct().ToList();
@@ -3128,12 +3563,6 @@ namespace BlazorApp.Api.Services.React
                     nowLocal,
                     settings.EarlyLeaveGraceMinutes,
                     settings.LateGraceMinutes);
-                if (reconcileDerivedApprovals)
-                {
-                    await ReconcileOvertimeApprovalAsync(schedule, session);
-                    await ReconcileFinalPunchApprovalsAsync(session, settings);
-                    await ReconcileMissingClockOutApprovalAsync(schedule, session);
-                }
                 dto.ScheduleState = session.ScheduleState;
                 dto.SegmentLimit = session.SegmentLimit;
                 dto.CompletedSegmentCount = session.CompletedSegmentCount;
@@ -3265,6 +3694,12 @@ namespace BlazorApp.Api.Services.React
                 .Select(item => item.SourceGuid)
                 .Distinct()
                 .ToList();
+            var scheduleGuids = approvals
+                .Where(item => item.SourceType.Equals("Overtime", StringComparison.OrdinalIgnoreCase)
+                    || item.SourceType.Equals("MissingClockOut", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.SourceGuid)
+                .Distinct()
+                .ToList();
 
             var users = await _db.Queryable<User>()
                 .Where(item => userGuids.Contains(item.UserGUID))
@@ -3287,6 +3722,22 @@ namespace BlazorApp.Api.Services.React
                 : await _db.Queryable<AttendancePunchAdjustment>()
                     .Where(item => adjustmentGuids.Contains(item.AdjustmentGuid))
                     .ToListAsync();
+            var originalPunchGuids = adjustments
+                .Where(item => !string.IsNullOrWhiteSpace(item.OriginalPunchGuid))
+                .Select(item => item.OriginalPunchGuid!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            // 原卡即使已被补卡覆盖或软删除，审批详情仍需展示其历史本地时间。
+            var originalPunches = originalPunchGuids.Count == 0
+                ? new List<AttendancePunch>()
+                : await _db.Queryable<AttendancePunch>()
+                    .Where(item => originalPunchGuids.Contains(item.PunchGuid))
+                    .ToListAsync();
+            var schedules = scheduleGuids.Count == 0
+                ? new List<AttendanceSchedule>()
+                : await _db.Queryable<AttendanceSchedule>()
+                    .Where(item => scheduleGuids.Contains(item.ScheduleGuid))
+                    .ToListAsync();
 
             var userMap = users.ToDictionary(item => item.UserGUID, StringComparer.OrdinalIgnoreCase);
             var storeMap = stores.ToDictionary(item => item.StoreCode, StringComparer.OrdinalIgnoreCase);
@@ -3294,6 +3745,12 @@ namespace BlazorApp.Api.Services.React
             var leaveMap = leaves.ToDictionary(item => item.LeaveGuid, StringComparer.OrdinalIgnoreCase);
             var adjustmentMap = adjustments.ToDictionary(
                 item => item.AdjustmentGuid,
+                StringComparer.OrdinalIgnoreCase);
+            var originalPunchMap = originalPunches.ToDictionary(
+                item => item.PunchGuid,
+                StringComparer.OrdinalIgnoreCase);
+            var scheduleMap = schedules.ToDictionary(
+                item => item.ScheduleGuid,
                 StringComparer.OrdinalIgnoreCase);
 
             foreach (var approval in approvals)
@@ -3331,15 +3788,25 @@ namespace BlazorApp.Api.Services.React
                     approval.WorkDate = adjustment.RequestedPunchTimeLocal.Date;
                     approval.Title = "补卡申请";
                     approval.Detail = $"{adjustment.PunchType} · {adjustment.RequestedPunchTimeLocal:yyyy-MM-dd HH:mm} · {adjustment.Reason}";
-                    approval.Adjustment = ToDto(adjustment);
+                    approval.Adjustment = ToDto(
+                        adjustment,
+                        originalPunchMap.GetValueOrDefault(adjustment.OriginalPunchGuid ?? string.Empty));
                 }
                 else if (approval.SourceType.Equals("Overtime", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (scheduleMap.TryGetValue(approval.SourceGuid, out var schedule))
+                    {
+                        approval.WorkDate = schedule.WorkDate;
+                    }
                     approval.Title = "加班审批";
                     approval.Detail = $"候选 {approval.CandidateOvertimeMinutes ?? 0} 分钟";
                 }
                 else if (approval.SourceType.Equals("MissingClockOut", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (scheduleMap.TryGetValue(approval.SourceGuid, out var schedule))
+                    {
+                        approval.WorkDate = schedule.WorkDate;
+                    }
                     approval.Title = "漏下班待处理";
                     approval.Detail = "排班结束后仍存在未闭合班段";
                 }
@@ -3787,13 +4254,16 @@ namespace BlazorApp.Api.Services.React
             ApprovedOvertimeMinutes = item.ApprovedOvertimeMinutes,
         };
 
-        private static AttendancePunchAdjustmentDto ToDto(AttendancePunchAdjustment item) => new()
+        private static AttendancePunchAdjustmentDto ToDto(
+            AttendancePunchAdjustment item,
+            AttendancePunch? originalPunch = null) => new()
         {
             AdjustmentGuid = item.AdjustmentGuid,
             StoreCode = item.StoreCode,
             UserGuid = item.UserGuid,
             ScheduleGuid = item.ScheduleGuid,
             OriginalPunchGuid = item.OriginalPunchGuid,
+            OriginalPunchTimeLocal = originalPunch?.PunchTimeLocal,
             PunchType = item.PunchType,
             RequestedPunchTimeLocal = item.RequestedPunchTimeLocal,
             RequestedPunchTimeUtc = item.RequestedPunchTimeUtc,

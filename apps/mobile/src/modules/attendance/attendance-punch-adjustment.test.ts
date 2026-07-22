@@ -178,11 +178,15 @@ const normalizedCreatedAt = normalizeAttendancePunchAdjustment({
   PunchType: "ClockIn",
   RequestedPunchTimeLocal: "2026-07-21T09:00",
   RequestedPunchTimeUtc: "2026-07-20T23:00:00Z",
+  OriginalPunchTimeLocal: "2026-07-21T08:55",
+  EffectivePunchTimeLocal: "2026-07-21T09:00",
   Reason: "补卡",
   Status: "Pending",
   CreatedAt: "2026-07-21T10:00:00Z",
 });
 assert.equal(normalizedCreatedAt.submittedAt, "2026-07-21T10:00:00Z");
+assert.equal(normalizedCreatedAt.originalPunchTimeLocal, "2026-07-21T08:55");
+assert.equal(normalizedCreatedAt.effectivePunchTimeLocal, "2026-07-21T09:00");
 assert.equal(
   (normalizedCreatedAt as typeof normalizedCreatedAt & { requestedPunchTimeUtc?: string })
     .requestedPunchTimeUtc,
@@ -225,6 +229,7 @@ const preview = normalizeAttendancePunchAdjustmentPreview({
   WorkedMinutesDelta: 80,
   CandidateOvertimeMinutesDelta: 15,
   WouldAutoApprove: true,
+  PreviewRevision: "preview-revision-1",
 });
 
 assert.equal(preview.isValid, true);
@@ -233,6 +238,7 @@ assert.equal(preview.proposedSession?.segments[0]?.segmentIndex, 1);
 assert.equal(preview.workedMinutesDelta, 80);
 assert.equal(preview.candidateOvertimeMinutesDelta, 15);
 assert.equal(preview.wouldAutoApprove, true);
+assert.equal(preview.previewRevision, "preview-revision-1");
 
 console.log("attendance-punch-adjustment.test.ts: ok");
 }

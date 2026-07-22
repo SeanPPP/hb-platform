@@ -56,12 +56,30 @@ interface AppRouteState {
   sequence: number;
 }
 
+interface ReviewAttendanceQrAuthorization {
+  qrToken: string;
+  storeCode: string;
+  storeName: string;
+  deviceCode: string;
+  issuedAtUtc: string;
+  expiresAtUtc: string;
+}
+
+interface ReviewAttendanceRouteState {
+  authorizations: Map<string, ReviewAttendanceQrAuthorization>;
+  punchResults: Map<string, JsonRecord>;
+}
+
 interface AppRouteStateHolder {
   current: AppRouteState;
 }
 
 const stateHolders = new WeakMap<ReviewDataStore, AppRouteStateHolder>();
+const attendanceRouteStates = new WeakMap<AppRouteState, ReviewAttendanceRouteState>();
 const IOS_REVIEW_MANAGER_SEGMENT_LIMIT = 3;
+const IOS_REVIEW_ATTENDANCE_QR_DEVICE_CODE = "IOS-REVIEW-POS-001";
+const IOS_REVIEW_ATTENDANCE_QR_LIFETIME_MS = 30_000;
+const IOS_REVIEW_PUNCH_AUTHORIZATION_LIFETIME_MS = 2 * 60_000;
 
 function clone<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -134,6 +152,7 @@ function toStoreLocalDateTime(value: unknown, storeCode: unknown) {
 function createInitialState(now = new Date()): AppRouteState {
   const timestamp = now.toISOString();
   const today = toDateOnly(now);
+  const attendanceToday = toStoreLocalDateOnly(timestamp, "REV001");
   const products: JsonRecord[] = [
     {
       productCode: "REV-PROD-001",
@@ -576,7 +595,7 @@ function createInitialState(now = new Date()): AppRouteState {
       storeName: "Demo Brisbane",
       userGuid: "review-user",
       employeeName: "App Review Demo",
-      workDate: today,
+      workDate: attendanceToday,
       startTime: "09:00",
       endTime: "17:00",
       status: "Active",
@@ -629,7 +648,7 @@ function createInitialState(now = new Date()): AppRouteState {
       holidayGuid: "review-holiday-001",
       storeCode: "REV001",
       storeName: "Demo Brisbane",
-      holidayDate: today,
+      holidayDate: attendanceToday,
       holidayName: "Demo Public Holiday",
       businessStatus: "Open",
       openTime: "10:00",
@@ -2906,7 +2925,7 @@ function prepareReviewPunchAdjustment(
   // Review 账号固定为店长身份；员工路径由真实后端执行 2 段上限，店长演示允许 3 段。
   if (proposedStoreDaySegmentCount > IOS_REVIEW_MANAGER_SEGMENT_LIMIT) {
     return invalid(
-      "PUNCH_SEGMENT_LIMIT_EXCEEDED",
+      "SEGMENT_LIMIT_REACHED",
       "Daily store segment limit exceeded",
     );
   }
@@ -2938,10 +2957,25 @@ function registerAttendanceRoutes(
   holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
+  const attendanceState = () => {
+    const current = state();
+    let routeState = attendanceRouteStates.get(current);
+    if (!routeState) {
+      routeState = {
+        authorizations: new Map(),
+        punchResults: new Map(),
+      };
+      attendanceRouteStates.set(current, routeState);
+    }
+    return routeState;
+  };
   register(transport, ["GET"], "/react/v1/attendance/my/today", ({ query }) => {
     const current = state();
     const storeCode = query.get("storeCode")?.trim() || undefined;
-    const workDate = (query.get("workDate")?.trim() || current.today).slice(0, 10);
+    const workDate = (
+      query.get("workDate")?.trim()
+      || toStoreLocalDateOnly(dataStore.getNow().toISOString(), storeCode ?? "REV001")
+    ).slice(0, 10);
     const matchesStore = (item: JsonRecord) =>
       !storeCode || String(item.storeCode ?? "") === storeCode;
     const schedules = current.schedules.filter((item) =>
@@ -3143,33 +3177,153 @@ function registerAttendanceRoutes(
       return { data: { success: true } };
     },
   );
+  register(
+    transport,
+    ["POST"],
+    "/react/v1/attendance/qr/resolve",
+    ({ body }) => {
+      const current = state();
+      const qrToken = String(asRecord(body).qrToken ?? "").trim();
+      if (!qrToken) {
+        throw Object.assign(new Error("QR_REQUIRED"), { code: "QR_REQUIRED" });
+      }
+
+      const storeCode = "REV001";
+      const store = IOS_REVIEW_STORES.find((item) => item.storeCode === storeCode);
+      const serverNow = dataStore.getNow();
+      if (!store || !Number.isFinite(serverNow.getTime())) {
+        throw Object.assign(new Error("IOS_REVIEW_ATTENDANCE_QR_INVALID"), {
+          code: "IOS_REVIEW_ATTENDANCE_QR_INVALID",
+        });
+      }
+
+      const expiresAtUtc = new Date(
+        serverNow.getTime() + IOS_REVIEW_ATTENDANCE_QR_LIFETIME_MS,
+      ).toISOString();
+      const punchAuthorizationExpiresAtUtc = new Date(
+        serverNow.getTime() + IOS_REVIEW_PUNCH_AUTHORIZATION_LIFETIME_MS,
+      ).toISOString();
+      const punchAuthorizationToken = nextId(
+        current,
+        "review-punch-authorization",
+      );
+      // 关键逻辑：Review mock 与生产一致，由 resolve 建立原二维码、门店和短时授权的服务端关联。
+      attendanceState().authorizations.set(punchAuthorizationToken, {
+        qrToken,
+        storeCode,
+        storeName: store.storeName,
+        deviceCode: IOS_REVIEW_ATTENDANCE_QR_DEVICE_CODE,
+        issuedAtUtc: serverNow.toISOString(),
+        expiresAtUtc: punchAuthorizationExpiresAtUtc,
+      });
+
+      return {
+        data: {
+          storeCode,
+          storeName: store.storeName,
+          deviceCode: IOS_REVIEW_ATTENDANCE_QR_DEVICE_CODE,
+          expiresAtUtc,
+          punchAuthorizationToken,
+          punchAuthorizationExpiresAtUtc,
+        },
+      };
+    },
+  );
   register(transport, ["POST"], "/react/v1/attendance/punch", ({ body }) => {
     const current = state();
     const payload = asRecord(body);
+    const qrToken = String(payload.qrToken ?? "").trim();
+    const punchAuthorizationToken = String(
+      payload.punchAuthorizationToken ?? "",
+    ).trim();
+    const routeState = attendanceState();
+    const existingPunch = routeState.punchResults.get(qrToken);
+    if (existingPunch) {
+      return { data: clone(existingPunch) };
+    }
+
+    const authorization = routeState.authorizations.get(
+      punchAuthorizationToken,
+    );
+    if (!authorization || authorization.qrToken !== qrToken) {
+      throw Object.assign(new Error("ATTENDANCE_PUNCH_AUTHORIZATION_INVALID"), {
+        code: "ATTENDANCE_PUNCH_AUTHORIZATION_INVALID",
+      });
+    }
+
+    const serverNow = dataStore.getNow();
+    const authorizationIssuedAt = new Date(authorization.issuedAtUtc);
+    const authorizationExpiresAt = new Date(authorization.expiresAtUtc);
+    if (
+      !Number.isFinite(serverNow.getTime())
+      || !Number.isFinite(authorizationIssuedAt.getTime())
+      || !Number.isFinite(authorizationExpiresAt.getTime())
+      || serverNow.getTime() < authorizationIssuedAt.getTime()
+    ) {
+      throw Object.assign(new Error("ATTENDANCE_PUNCH_AUTHORIZATION_INVALID"), {
+        code: "ATTENDANCE_PUNCH_AUTHORIZATION_INVALID",
+      });
+    }
+    if (serverNow.getTime() >= authorizationExpiresAt.getTime()) {
+      throw Object.assign(new Error("ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED"), {
+        code: "ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED",
+      });
+    }
+
+    const storeCode = authorization.storeCode;
+    const workDate = toStoreLocalDateOnly(serverNow.toISOString(), storeCode);
+    const storePunches = current.punches.filter((item) =>
+      item.storeCode === storeCode
+      && String(item.workDate ?? "").slice(0, 10) === workDate,
+    );
+    const sequence = summarizeReviewPunchSequence(storePunches);
+    if (sequence.errorCode) {
+      throw Object.assign(new Error(sequence.errorCode), { code: sequence.errorCode });
+    }
+    if (
+      !sequence.hasOpenSegment
+      && sequence.completedSegmentCount >= IOS_REVIEW_MANAGER_SEGMENT_LIMIT
+    ) {
+      throw Object.assign(new Error("SEGMENT_LIMIT_REACHED"), {
+        code: "SEGMENT_LIMIT_REACHED",
+      });
+    }
+
     const schedule = current.schedules.find((item) =>
       item.isMine
-      && item.storeCode === (payload.storeCode ?? "REV001")
-      && item.workDate === (payload.workDate ?? current.today),
+      && item.storeCode === storeCode
+      && item.workDate === workDate,
     );
-    const punch = {
-      ...payload,
+    const punchType = sequence.hasOpenSegment ? "ClockOut" : "ClockIn";
+    const serverTimeUtc = serverNow.toISOString();
+    const punch: JsonRecord = {
       punchGuid: nextId(current, "review-punch"),
-      scheduleGuid: payload.scheduleGuid ?? schedule?.scheduleGuid,
-      storeCode: payload.storeCode ?? schedule?.storeCode ?? "REV001",
-      storeName: payload.storeName ?? schedule?.storeName ?? "Demo Brisbane",
-      workDate: payload.workDate ?? current.today,
-      punchType: payload.punchType ?? "ClockIn",
-      punchTimeUtc: current.now,
+      scheduleGuid: schedule?.scheduleGuid,
+      storeCode,
+      storeName: authorization.storeName,
+      userGuid: "review-user",
+      employeeName: "App Review Demo",
+      workDate,
+      storeTimeZone: resolveReviewStoreTimeZone(storeCode),
+      punchType,
+      punchTimeUtc: serverTimeUtc,
       punchTimeLocal: toStoreLocalDateTime(
-        current.now,
-        payload.storeCode ?? schedule?.storeCode ?? "REV001",
+        serverTimeUtc,
+        storeCode,
       ),
+      // 关键逻辑：UTC instant 是服务端权威时间；本地时间仅供门店显示和业务日派生。
+      serverTimeUtc,
       status: "Normal",
+      source: "Qr",
+      posDeviceCode: authorization.deviceCode,
       locationLatitude: payload.locationLatitude ?? -27.4698,
       locationLongitude: payload.locationLongitude ?? 153.0251,
       locationAccuracy: payload.locationAccuracy ?? 5,
+      locationCapturedAtUtc: payload.locationCapturedAtUtc,
     };
     current.punches.push(punch);
+    // 关键逻辑：原二维码仅作为私有幂等键；响应和 Today DTO 不回显二维码或短时授权。
+    routeState.punchResults.set(qrToken, clone(punch));
     mirrorCreate(
       current,
       dataStore,

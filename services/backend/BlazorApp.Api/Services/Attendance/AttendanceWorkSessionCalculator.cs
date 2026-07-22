@@ -15,7 +15,8 @@ public static class AttendanceWorkSessionCalculator
     {
         var punches = sourcePunches
             .Where(item => !item.IsDeleted && item.ScheduleGuid == schedule.ScheduleGuid)
-            .OrderBy(item => item.PunchTimeLocal)
+            // 打卡先后和实际工时必须遵循同一条 UTC 时间线；夏令时回拨会让本地墙钟倒退。
+            .OrderBy(item => item.PunchTimeUtc)
             .ThenBy(item => item.Id)
             .ToList();
         var supersededPunchGuids = punches
@@ -57,7 +58,7 @@ public static class AttendanceWorkSessionCalculator
             openSegment.DurationMinutes = Math.Max(
                 0,
                 (int)Math.Round(
-                    (punch.PunchTimeLocal - openSegment.ClockIn!.PunchTimeLocal).TotalMinutes,
+                    (punch.PunchTimeUtc - openSegment.ClockIn!.PunchTimeUtc).TotalMinutes,
                     MidpointRounding.AwayFromZero));
             openSegment.Status = "Break";
             openSegment = null;
@@ -68,8 +69,8 @@ public static class AttendanceWorkSessionCalculator
         result.WorkedMinutes = result.Segments.Sum(item => item.DurationMinutes ?? 0);
         for (var index = 1; index < result.Segments.Count; index++)
         {
-            var previousOut = result.Segments[index - 1].ClockOut?.PunchTimeLocal;
-            var nextIn = result.Segments[index].ClockIn?.PunchTimeLocal;
+            var previousOut = result.Segments[index - 1].ClockOut?.PunchTimeUtc;
+            var nextIn = result.Segments[index].ClockIn?.PunchTimeUtc;
             if (previousOut.HasValue && nextIn.HasValue)
             {
                 result.BreakMinutes += Math.Max(

@@ -2568,6 +2568,8 @@
         "publishWeek": "发布本周",
         "approve": "通过",
         "reject": "拒绝",
+        "approveOvertime": "批准加班",
+        "rejectOvertime": "拒绝加班",
         "viewMap": "地图",
         "viewSamples": "样本",
         "openExternalMap": "打开外部地图"
@@ -2603,6 +2605,14 @@
         "deviceSystem": "设备系统",
         "applicant": "申请人",
         "sourceType": "来源",
+        "approvalDetail": "申请明细 / 审计",
+        "originalPunchTime": "原始打卡",
+        "requestedPunchTime": "申请打卡",
+        "effectivePunchTime": "有效打卡",
+        "reason": "原因",
+        "candidateOvertime": "候选：{{minutes}} 分钟",
+        "approvedOvertime": "批准：{{minutes}} 分钟",
+        "approvedOvertimeMinutes": "批准加班分钟",
         "reviewedAt": "审核时间",
         "holidayDate": "假期日期",
         "holidayName": "假期名称",
@@ -2617,6 +2627,26 @@
         "requireApprovalForNoSchedule": "未排班打卡需要审核",
         "updatedAt": "最后更新",
         "reviewRemark": "审核备注"
+      },
+      "approvalPresentation": {
+        "Punch": {
+          "title": "打卡异常",
+          "detail": "{{workDate}} 的打卡异常"
+        },
+        "Leave": {
+          "title": "请假申请",
+          "detail": "{{workDate}} 开始的请假申请"
+        },
+        "PunchAdjustment": {
+          "title": "补卡申请"
+        },
+        "Overtime": {
+          "title": "加班审批"
+        },
+        "MissingClockOut": {
+          "title": "漏下班待处理",
+          "detail": "{{workDate}} 排班结束后仍存在未闭合班段。"
+        }
       },
       "status": {
         "schedule": {
@@ -2646,7 +2676,10 @@
         },
         "sourceType": {
           "Punch": "打卡异常",
-          "Leave": "请假申请"
+          "Leave": "请假申请",
+          "PunchAdjustment": "补卡",
+          "Overtime": "加班",
+          "MissingClockOut": "漏下班"
         },
         "holiday": {
           "Open": "营业",
@@ -2657,7 +2690,12 @@
       "validation": {
         "userGuidRequired": "请输入员工 GUID",
         "holidayNameRequired": "请输入假期名称",
-        "storeCodesRequired": "请选择至少一个分店"
+        "storeCodesRequired": "请选择至少一个分店",
+        "overtime": {
+          "outOfRange": "批准加班必须在 0 到候选分钟之间",
+          "invalidIncrement": "批准加班必须为 15 分钟倍数",
+          "remarkRequired": "下调或拒绝加班时必须填写审核备注"
+        }
       },
       "weekdays": {
         "0": "周一",
@@ -2702,6 +2740,8 @@
         "publishWeekFailed": "发布本周排班失败",
         "reviewSuccess": "审核已提交",
         "reviewFailed": "提交审核失败",
+        "previewRevisionMissing": "服务端预览未返回版本号，请重新预览后再保存。",
+        "directAdjustment": "店长本人直接调整",
         "locationNotRecorded": "未记录位置",
         "externalMapNotice": "默认不加载第三方地图。点击下方按钮会把该坐标发送给外部地图服务。",
         "loadLocationSamplesFailed": "加载班中定位样本失败",

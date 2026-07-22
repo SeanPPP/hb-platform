@@ -534,6 +534,25 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task ReviewApprovalAsync_ExplicitlyUsesSerializableTransaction()
+        {
+            var source = await File.ReadAllTextAsync(Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Services/React/AttendanceReactService.cs"));
+            var methodStart = source.IndexOf(
+                "private async Task<ApiResponse<AttendanceApprovalDto>> ReviewApprovalAsync",
+                StringComparison.Ordinal);
+            var methodEnd = source.IndexOf(
+                "private async Task CreatePendingApprovalAsync",
+                methodStart,
+                StringComparison.Ordinal);
+
+            Assert.True(methodStart >= 0 && methodEnd > methodStart);
+            var methodSource = source[methodStart..methodEnd];
+            Assert.Contains("BeginTranAsync(IsolationLevel.Serializable)", methodSource);
+        }
+
+        [Fact]
         public async Task GetSchedulesAsync_WhenStoreManagerRequestsUnmanagedStore_ReturnsForbidden()
         {
             await SeedStoreScopeAsync();
@@ -851,8 +870,9 @@ namespace BlazorApp.Api.Tests
             await SeedScheduleAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
 
-            var result = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var result = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "schedule-1",
@@ -876,8 +896,9 @@ namespace BlazorApp.Api.Tests
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             var requestedUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc);
 
-            var result = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var result = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "schedule-1",
@@ -904,8 +925,9 @@ namespace BlazorApp.Api.Tests
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             var requestedLocal = new DateTime(2026, 5, 18, 9, 0, 0);
 
-            var result = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var result = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "schedule-1",
@@ -973,8 +995,9 @@ namespace BlazorApp.Api.Tests
             await SeedScheduleAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             var requestedUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc);
-            var created = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var created = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "schedule-1",
@@ -1016,8 +1039,277 @@ namespace BlazorApp.Api.Tests
 
             Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
             Assert.True(result.Data!.IsValid);
+            Assert.False(string.IsNullOrWhiteSpace(result.Data.PreviewRevision));
             Assert.Equal(15, result.Data.CandidateOvertimeMinutesDelta);
             Assert.False(result.Data.WouldAutoApprove);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenPunchesChangeAfterPreview_ReturnsStaleRevision()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var request = new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI",
+                ScheduleGuid = "schedule-1",
+                PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 11, 0, 0),
+                Reason = "预览后状态变化",
+            };
+
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            Assert.True(preview.Success, preview.Message);
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("state-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("state-out", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
+            }).ExecuteCommandAsync();
+
+            var created = await service.CreateMyPunchAdjustmentAsync(request);
+
+            Assert.False(created.Success);
+            Assert.Equal("ADJUSTMENT_PREVIEW_STALE", created.ErrorCode);
+            Assert.Equal(0, await _db.Queryable<AttendancePunchAdjustment>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenScheduleChangesAfterPreview_ReturnsStaleRevision()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var request = new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI",
+                ScheduleGuid = "schedule-1",
+                PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                Reason = "排班调整后提交",
+            };
+
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            Assert.True(preview.Success, preview.Message);
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            var revisedEndTime = new TimeSpan(16, 0, 0);
+            await _db.Updateable<AttendanceSchedule>()
+                .SetColumns(item => item.EndTime == revisedEndTime)
+                .Where(item => item.ScheduleGuid == "schedule-1")
+                .ExecuteCommandAsync();
+
+            var created = await service.CreateMyPunchAdjustmentAsync(request);
+
+            Assert.False(created.Success);
+            Assert.Equal("ADJUSTMENT_PREVIEW_STALE", created.ErrorCode);
+            Assert.Equal(0, await _db.Queryable<AttendancePunchAdjustment>().CountAsync());
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenEffectivePunchApprovalStatusChanges_DoesNotInvalidatePreview()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch(
+                "revision-status-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var request = new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI",
+                ScheduleGuid = "schedule-1",
+                PunchType = "ClockOut",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0),
+                Reason = "审批状态变化不应改变有效卡序",
+            };
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            Assert.True(preview.Success, preview.Message);
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            await _db.Updateable<AttendancePunch>()
+                .SetColumns(item => item.Status == "Approved")
+                .Where(item => item.PunchGuid == "revision-status-in")
+                .ExecuteCommandAsync();
+
+            var created = await service.CreateMyPunchAdjustmentAsync(request);
+
+            Assert.True(created.Success, $"{created.ErrorCode}: {created.Message}");
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenSupersededPunchChanges_DoesNotInvalidatePreview()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            var superseded = CreateStoredPunch(
+                "revision-old-in", "ClockIn", new DateTime(2026, 5, 18, 9, 10, 0));
+            var replacement = CreateStoredPunch(
+                "revision-replacement-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0));
+            replacement.SupersedesPunchGuid = superseded.PunchGuid;
+            await _db.Insertable(new[] { superseded, replacement }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var request = new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI",
+                ScheduleGuid = "schedule-1",
+                PunchType = "ClockOut",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0),
+                Reason = "旧卡变化不应改变有效卡序",
+            };
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            Assert.True(preview.Success, preview.Message);
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            var changedLocal = new DateTime(2026, 5, 18, 12, 0, 0);
+            var changedUtc = new DateTime(2026, 5, 18, 2, 0, 0, DateTimeKind.Utc);
+            await _db.Updateable<AttendancePunch>()
+                .SetColumns(item => item.PunchTimeLocal == changedLocal)
+                .SetColumns(item => item.PunchTimeUtc == changedUtc)
+                .SetColumns(item => item.Status == "Approved")
+                .Where(item => item.PunchGuid == superseded.PunchGuid)
+                .ExecuteCommandAsync();
+
+            var created = await service.CreateMyPunchAdjustmentAsync(request);
+
+            Assert.True(created.Success, $"{created.ErrorCode}: {created.Message}");
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WhenSettingsChangeAfterPreview_ReturnsStaleRevision()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var request = new CreateAttendancePunchAdjustmentDto
+            {
+                StoreCode = "BRI",
+                ScheduleGuid = "schedule-1",
+                PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                Reason = "设置变化后提交",
+            };
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            Assert.True(preview.Success, preview.Message);
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            await _db.Updateable<AttendanceSettings>()
+                .SetColumns(item => item.LateGraceMinutes == item.LateGraceMinutes + 1)
+                .Where(item => !item.IsDeleted)
+                .ExecuteCommandAsync();
+
+            var created = await service.CreateMyPunchAdjustmentAsync(request);
+
+            Assert.False(created.Success);
+            Assert.Equal("ADJUSTMENT_PREVIEW_STALE", created.ErrorCode);
+        }
+
+        [Fact]
+        public async Task CreateMyPunchAdjustmentAsync_WithoutPreviewRevision_ReturnsStale()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "schedule-1",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                    Reason = "未先预览",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("ADJUSTMENT_PREVIEW_STALE", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task GetPendingApprovalsAsync_PopulatesScheduleWorkDateAndHistoricalOriginalPunchTimeInBatches()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("display-overtime", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await SeedScheduleAsync("display-missing", "BRI", "staff-user", new DateTime(2026, 5, 19), "Active");
+            var originalLocal = new DateTime(2026, 5, 18, 9, 12, 0);
+            await _db.Insertable(new AttendancePunch
+            {
+                PunchGuid = "display-original-punch",
+                ScheduleGuid = "display-overtime",
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                WorkDate = originalLocal.Date,
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn",
+                PunchTimeLocal = originalLocal,
+                PunchTimeUtc = new DateTime(2026, 5, 17, 23, 12, 0, DateTimeKind.Utc),
+                IsDeleted = true,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendancePunchAdjustment
+            {
+                AdjustmentGuid = "display-adjustment",
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                ScheduleGuid = "display-overtime",
+                OriginalPunchGuid = "display-original-punch",
+                PunchType = "ClockIn",
+                RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 9, 0, 0),
+                RequestedPunchTimeUtc = new DateTime(2026, 5, 17, 23, 0, 0, DateTimeKind.Utc),
+                Reason = "保留原始原因",
+                Status = "Pending",
+                RequestedByUserGuid = "staff-user",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new AttendanceApproval
+                {
+                    ApprovalGuid = "display-overtime-approval",
+                    SourceType = "Overtime",
+                    SourceGuid = "display-overtime",
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CandidateOvertimeMinutes = 30,
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new AttendanceApproval
+                {
+                    ApprovalGuid = "display-missing-approval",
+                    SourceType = "MissingClockOut",
+                    SourceGuid = "display-missing",
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new AttendanceApproval
+                {
+                    ApprovalGuid = "display-adjustment-approval",
+                    SourceType = "PunchAdjustment",
+                    SourceGuid = "display-adjustment",
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CreatedAt = DateTime.UtcNow,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .GetPendingApprovalsAsync(new AttendanceApprovalQueryDto { StoreCode = "BRI" });
+
+            Assert.True(result.Success, result.Message);
+            var overtime = Assert.Single(result.Data!, item => item.ApprovalGuid == "display-overtime-approval");
+            var missing = Assert.Single(result.Data!, item => item.ApprovalGuid == "display-missing-approval");
+            var adjustment = Assert.Single(result.Data!, item => item.ApprovalGuid == "display-adjustment-approval");
+            Assert.Equal(new DateTime(2026, 5, 18), overtime.WorkDate);
+            Assert.Equal(new DateTime(2026, 5, 19), missing.WorkDate);
+            Assert.NotNull(adjustment.Adjustment);
+            Assert.Equal(originalLocal, adjustment.Adjustment!.OriginalPunchTimeLocal);
+            Assert.Contains("保留原始原因", adjustment.Detail);
         }
 
         [Fact]
@@ -1059,8 +1351,9 @@ namespace BlazorApp.Api.Tests
             await SeedScheduleAsync("old-schedule", "BRI", "manager-user", new DateTime(2026, 5, 15), "Active");
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
 
-            var result = await CreateService("manager-user", "manager", "StoreManager")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var result = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("manager-user", "manager", "StoreManager"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "old-schedule",
@@ -1095,8 +1388,9 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
 
-            var result = await CreateService("manager-user", "manager", "StoreManager")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var result = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("manager-user", "manager", "StoreManager"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI",
                     ScheduleGuid = "manager-schedule",
@@ -1114,6 +1408,295 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(45, overtime.CandidateOvertimeMinutes);
             Assert.Equal(45, overtime.ApprovedOvertimeMinutes);
             Assert.Equal("system", overtime.ReviewerUserGuid);
+        }
+
+        [Fact]
+        public async Task ApplyPunchAdjustmentAsync_CancelsOriginalPendingPunchApprovalAndItCannotBeApproved()
+        {
+            await SeedStoreScopeAsync();
+            await SeedStoreManagerRoleAsync("manager-user");
+            await SeedScheduleAsync("manager-adjustment", "BRI", "manager-user", new DateTime(2026, 5, 18), "Active");
+            await _db.Insertable(CreateStoredPunchForSchedule(
+                "manager-late-in", "manager-adjustment", "BRI", "manager-user", "ClockIn",
+                new DateTime(2026, 5, 18, 9, 10, 0))).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "manager-late-approval",
+                SourceType = "Punch",
+                SourceGuid = "manager-late-in",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "manager-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var adjustment = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("manager-user", "manager", "StoreManager"),
+                new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "manager-adjustment",
+                    OriginalPunchGuid = "manager-late-in",
+                    PunchType = "ClockIn",
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 55, 0),
+                    Reason = "修正迟到卡",
+                });
+
+            Assert.True(adjustment.Success, adjustment.Message);
+            Assert.Equal("Applied", adjustment.Data!.Status);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "manager-late-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+            var approvalAttempt = await CreateService("admin-user", "admin", "Admin")
+                .ApproveAsync("manager-late-approval", new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+            Assert.False(approvalAttempt.Success);
+            Assert.Equal("APPROVAL_ALREADY_REVIEWED", approvalAttempt.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenPunchWasSuperseded_CancelsStalePunchApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("stale-punch", "ClockIn", new DateTime(2026, 5, 18, 9, 10, 0)),
+                new AttendancePunch
+                {
+                    PunchGuid = "replacement-punch",
+                    ScheduleGuid = "schedule-1",
+                    StoreCode = "BRI",
+                    UserGuid = "staff-user",
+                    WorkDate = new DateTime(2026, 5, 18),
+                    StoreTimeZone = "Australia/Brisbane",
+                    PunchType = "ClockIn",
+                    PunchTimeLocal = new DateTime(2026, 5, 18, 8, 55, 0),
+                    PunchTimeUtc = new DateTime(2026, 5, 17, 22, 55, 0, DateTimeKind.Utc),
+                    SupersedesPunchGuid = "stale-punch",
+                    Status = "Normal",
+                    CreatedAt = DateTime.UtcNow,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "stale-punch-approval",
+                SourceType = "Punch",
+                SourceGuid = "stale-punch",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync("stale-punch-approval", new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_APPROVAL_STALE", result.ErrorCode);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "stale-punch-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenLatePunchIsNoLongerLate_CancelsStalePunchApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch(
+                "schedule-changed-late", "ClockIn", new DateTime(2026, 5, 18, 9, 10, 0)))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "schedule-changed-late-approval",
+                SourceType = "Punch",
+                SourceGuid = "schedule-changed-late",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var revisedStart = new TimeSpan(9, 30, 0);
+            await _db.Updateable<AttendanceSchedule>()
+                .SetColumns(item => item.StartTime == revisedStart)
+                .Where(item => item.ScheduleGuid == "schedule-1")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(
+                    "schedule-changed-late-approval",
+                    new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_APPROVAL_STALE", result.ErrorCode);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "schedule-changed-late-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Theory]
+        [InlineData(false, 5)]
+        [InlineData(true, 15)]
+        public async Task ApproveAsync_WhenLateRuleOrGraceChangesBeforeClaim_ReReadsSettingsAndCancelsStale(
+            bool requireApprovalForLate,
+            int lateGraceMinutes)
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await CreateService("staff-user", "staff", "StoreStaff").GetSettingsAsync();
+            await _db.Insertable(CreateStoredPunch(
+                "settings-changed-late", "ClockIn", new DateTime(2026, 5, 18, 9, 10, 0)))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "settings-changed-late-approval",
+                SourceType = "Punch",
+                SourceGuid = "settings-changed-late",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Updateable<AttendanceSettings>()
+                .SetColumns(item => item.RequireApprovalForLate == requireApprovalForLate)
+                .SetColumns(item => item.LateGraceMinutes == lateGraceMinutes)
+                .Where(item => !item.IsDeleted)
+                .ExecuteCommandAsync();
+            System.Data.IsolationLevel? observedIsolation = null;
+            _db.Aop.OnLogExecuted = (sql, _) =>
+            {
+                if (sql.Contains("AttendanceSettings", StringComparison.OrdinalIgnoreCase)
+                    && _db.Ado.Transaction != null)
+                {
+                    observedIsolation = _db.Ado.Transaction.IsolationLevel;
+                }
+            };
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(
+                    "settings-changed-late-approval",
+                    new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_APPROVAL_STALE", result.ErrorCode);
+            Assert.Equal(System.Data.IsolationLevel.Serializable, observedIsolation);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "settings-changed-late-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenSegmentLimitChangesBeforeClaim_ReReadsRoleAndUserStore()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("segment-limit-in-1", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("segment-limit-out-1", "ClockOut", new DateTime(2026, 5, 18, 12, 0, 0)),
+                CreateStoredPunch("segment-limit-in-2", "ClockIn", new DateTime(2026, 5, 18, 13, 0, 0)),
+                CreateStoredPunch("segment-limit-out-2", "ClockOut", new DateTime(2026, 5, 18, 16, 0, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "segment-limit-early-approval",
+                SourceType = "Punch",
+                SourceGuid = "segment-limit-out-2",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await SeedStoreManagerRoleAsync("staff-user");
+            await _db.Updateable<UserStore>()
+                .SetColumns(item => item.IsPrimary == true)
+                .Where(item => item.UserStoreGUID == "staff-store-bri")
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 6, 10, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync(
+                    "segment-limit-early-approval",
+                    new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_APPROVAL_STALE", result.ErrorCode);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "segment-limit-early-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_WhenFormerFinalEarlyLeaveBecomesBreak_CancelsPendingApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("former-final-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("former-final-out", "ClockOut", new DateTime(2026, 5, 18, 16, 0, 0)),
+                CreateStoredPunch("later-segment-in", "ClockIn", new DateTime(2026, 5, 18, 16, 30, 0)),
+                CreateStoredPunch("later-segment-out", "ClockOut", new DateTime(2026, 5, 18, 17, 0, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "former-final-approval",
+                SourceType = "Punch",
+                SourceGuid = "former-final-out",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "former-final-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Fact]
+        public async Task ApproveAsync_WhenMissingClockOutWasRestored_CancelsStaleApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunch("restored-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunch("restored-out", "ClockOut", new DateTime(2026, 5, 18, 17, 0, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "restored-missing-approval",
+                SourceType = "MissingClockOut",
+                SourceGuid = "schedule-1",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .ApproveAsync("restored-missing-approval", new ReviewAttendanceApprovalDto { ReviewRemark = "不应批准" });
+
+            Assert.False(result.Success);
+            Assert.Equal("MISSING_CLOCK_OUT_RESOLVED", result.ErrorCode);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "restored-missing-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
         }
 
         [Fact]
@@ -1344,6 +1927,67 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task PreviewMyPunchAdjustmentAsync_SeesAdjacentPerthBusinessDateForCrossStoreOverlap()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync(
+                "bri-boundary", "BRI", "staff-user", new DateTime(2026, 5, 19), "Active",
+                TimeSpan.Zero, new TimeSpan(4, 0, 0));
+            await SeedScheduleAsync(
+                "perth-boundary", "OTHER", "staff-user", new DateTime(2026, 5, 18), "Active",
+                new TimeSpan(22, 0, 0), new TimeSpan(23, 30, 0));
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule(
+                    "bri-boundary-in", "bri-boundary", "BRI", "staff-user", "ClockIn",
+                    new DateTime(2026, 5, 19, 0, 0, 0)),
+                new AttendancePunch
+                {
+                    PunchGuid = "perth-boundary-in",
+                    ScheduleGuid = "perth-boundary",
+                    StoreCode = "OTHER",
+                    UserGuid = "staff-user",
+                    WorkDate = new DateTime(2026, 5, 18),
+                    StoreTimeZone = "Australia/Perth",
+                    PunchType = "ClockIn",
+                    PunchTimeLocal = new DateTime(2026, 5, 18, 22, 0, 0),
+                    PunchTimeUtc = new DateTime(2026, 5, 18, 14, 0, 0, DateTimeKind.Utc),
+                    Status = "Normal",
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new AttendancePunch
+                {
+                    PunchGuid = "perth-boundary-out",
+                    ScheduleGuid = "perth-boundary",
+                    StoreCode = "OTHER",
+                    UserGuid = "staff-user",
+                    WorkDate = new DateTime(2026, 5, 18),
+                    StoreTimeZone = "Australia/Perth",
+                    PunchType = "ClockOut",
+                    PunchTimeLocal = new DateTime(2026, 5, 18, 23, 30, 0),
+                    PunchTimeUtc = new DateTime(2026, 5, 18, 15, 30, 0, DateTimeKind.Utc),
+                    Status = "Normal",
+                    CreatedAt = DateTime.UtcNow,
+                },
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 15, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("staff-user", "staff", "StoreStaff")
+                .PreviewMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                {
+                    StoreCode = "BRI",
+                    ScheduleGuid = "bri-boundary",
+                    PunchType = "ClockOut",
+                    // Brisbane 01:00 = UTC 15:00；Perth 的前一业务日班段尚未结束。
+                    RequestedPunchTimeLocal = new DateTime(2026, 5, 19, 1, 0, 0),
+                    Reason = "跨时区边界补卡",
+                });
+
+            Assert.False(result.Success);
+            Assert.Equal("PUNCH_TIME_OVERLAP", result.ErrorCode);
+        }
+
+        [Fact]
         public async Task ApproveAsync_WhenApplicantReviewsOwnOvertime_ReturnsForbidden()
         {
             await SeedStoreScopeAsync();
@@ -1455,8 +2099,9 @@ namespace BlazorApp.Api.Tests
             await _db.Insertable(CreateStoredPunch("original-in", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
                 .ExecuteCommandAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
-            var created = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var created = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI", ScheduleGuid = "schedule-1", OriginalPunchGuid = "original-in",
                     PunchType = "ClockIn", RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 55, 0), Reason = "调整",
@@ -1488,6 +2133,11 @@ namespace BlazorApp.Api.Tests
         public async Task ApproveAsync_ConcurrentReview_OnlyOneClaimsPendingApproval()
         {
             await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch(
+                "concurrent-review-open", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0)))
+                .ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             await _db.Insertable(new AttendanceApproval
             {
                 ApprovalGuid = "concurrent-review", SourceType = "MissingClockOut", SourceGuid = "schedule-1",
@@ -1591,6 +2241,107 @@ namespace BlazorApp.Api.Tests
             Assert.Null(stored.ApprovedOvertimeMinutes);
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ApproveAsync_WhenOvertimeScheduleIsInactiveOrDeleted_CancelsStaleApproval(
+            bool isDeleted)
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync(
+                "inactive-overtime",
+                "BRI",
+                "staff-user",
+                new DateTime(2026, 5, 18),
+                isDeleted ? "Active" : "Cancelled");
+            if (isDeleted)
+            {
+                await _db.Updateable<AttendanceSchedule>()
+                    .SetColumns(item => item.IsDeleted == true)
+                    .Where(item => item.ScheduleGuid == "inactive-overtime")
+                    .ExecuteCommandAsync();
+            }
+            await _db.Insertable(new[]
+            {
+                CreateStoredPunchForSchedule(
+                    "inactive-overtime-in", "inactive-overtime", "BRI", "staff-user", "ClockIn",
+                    new DateTime(2026, 5, 18, 9, 0, 0)),
+                CreateStoredPunchForSchedule(
+                    "inactive-overtime-out", "inactive-overtime", "BRI", "staff-user", "ClockOut",
+                    new DateTime(2026, 5, 18, 17, 16, 0)),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new AttendanceApproval
+            {
+                ApprovalGuid = "inactive-overtime-approval",
+                SourceType = "Overtime",
+                SourceGuid = "inactive-overtime",
+                StoreCode = "BRI",
+                ApplicantUserGuid = "staff-user",
+                ReviewStatus = "Pending",
+                CandidateOvertimeMinutes = 15,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var result = await CreateService("admin-user", "admin", "Admin")
+                .ApproveAsync(
+                    "inactive-overtime-approval",
+                    new ReviewAttendanceApprovalDto
+                    {
+                        ApprovedOvertimeMinutes = 15,
+                        ReviewRemark = "不应批准",
+                    });
+
+            Assert.False(result.Success);
+            Assert.Equal("OVERTIME_APPROVAL_STALE", result.ErrorCode);
+            Assert.Equal("Cancelled", await _db.Queryable<AttendanceApproval>()
+                .Where(item => item.ApprovalGuid == "inactive-overtime-approval")
+                .Select(item => item.ReviewStatus)
+                .FirstAsync());
+        }
+
+        [Fact]
+        public async Task UpdateScheduleAsync_WhenScheduleIsCancelled_CancelsAllPendingDerivedApprovals()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await SeedPendingScheduleDerivedApprovalsAsync("schedule-1", "cancel-schedule-punch");
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .UpdateScheduleAsync("schedule-1", new UpdateAttendanceScheduleDto
+                {
+                    WorkDate = new DateTime(2026, 5, 18),
+                    StartTime = new TimeSpan(9, 0, 0),
+                    EndTime = new TimeSpan(17, 0, 0),
+                    Status = "Cancelled",
+                });
+
+            Assert.True(result.Success, result.Message);
+            Assert.All(
+                await _db.Queryable<AttendanceApproval>()
+                    .Where(item => item.ApprovalGuid.StartsWith("schedule-1-derived-"))
+                    .ToListAsync(),
+                item => Assert.Equal("Cancelled", item.ReviewStatus));
+        }
+
+        [Fact]
+        public async Task DeleteScheduleAsync_CancelsAllPendingDerivedApprovals()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync("delete-schedule", "BRI", "staff-user", new DateTime(2026, 5, 18), "Active");
+            await SeedPendingScheduleDerivedApprovalsAsync("delete-schedule", "delete-schedule-punch");
+
+            var result = await CreateService("manager-user", "manager", "StoreManager")
+                .DeleteScheduleAsync("delete-schedule");
+
+            Assert.True(result.Success, result.Message);
+            Assert.All(
+                await _db.Queryable<AttendanceApproval>()
+                    .Where(item => item.ApprovalGuid.StartsWith("delete-schedule-derived-"))
+                    .ToListAsync(),
+                item => Assert.Equal("Cancelled", item.ReviewStatus));
+        }
+
         [Fact]
         public async Task PunchAsync_CrossStoreOpen_AllowsSecondStoreButRejectsOverlappingClose()
         {
@@ -1630,13 +2381,11 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public void AttendanceDailyMutationLock_DifferentStoresShareUserWorkDateResource()
+        public void AttendanceDailyMutationLock_DifferentStoresAndBusinessDatesShareEmployeeResource()
         {
-            var workDate = new DateTime(2026, 5, 18);
-
             Assert.Equal(
-                AttendanceDailyMutationLock.BuildResource("staff-user", "BRI", workDate),
-                AttendanceDailyMutationLock.BuildResource("staff-user", "OTHER", workDate));
+                AttendanceDailyMutationLock.BuildResource("staff-user", "BRI", new DateTime(2026, 5, 19)),
+                AttendanceDailyMutationLock.BuildResource("staff-user", "OTHER", new DateTime(2026, 5, 18)));
         }
 
         [Fact]
@@ -1648,7 +2397,7 @@ namespace BlazorApp.Api.Tests
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 17, 22, 42, 0, DateTimeKind.Utc));
             var service = CreateService("manager-user", "manager", "StoreManager");
 
-            var direct = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var direct = await SubmitPunchAdjustmentAfterPreviewAsync(service, new CreateAttendancePunchAdjustmentDto
             {
                 StoreCode = "BRI", ScheduleGuid = "manager-schedule", PunchType = "ClockIn",
                 RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 8, 42, 0), Reason = "直接补早班卡",
@@ -1821,12 +2570,12 @@ namespace BlazorApp.Api.Tests
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             var service = CreateService("staff-user", "staff", "StoreStaff");
 
-            var sameStore = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var sameStore = await SubmitPunchAdjustmentAfterPreviewAsync(service, new CreateAttendancePunchAdjustmentDto
             {
                 StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
                 RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "第三段",
             });
-            var otherStore = await service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var otherStore = await SubmitPunchAdjustmentAfterPreviewAsync(service, new CreateAttendancePunchAdjustmentDto
             {
                 StoreCode = "OTHER", ScheduleGuid = "other-store", PunchType = "ClockIn",
                 RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "跨店第一段",
@@ -1850,8 +2599,9 @@ namespace BlazorApp.Api.Tests
                 CreateStoredPunchForSchedule("first-out", "first", "BRI", "staff-user", "ClockOut", new DateTime(2026, 5, 18, 10, 0, 0)),
             }).ExecuteCommandAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
-            var created = await CreateService("staff-user", "staff", "StoreStaff")
-                .CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var created = await SubmitPunchAdjustmentAfterPreviewAsync(
+                CreateService("staff-user", "staff", "StoreStaff"),
+                new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
                     RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "申请第二段",
@@ -1889,12 +2639,12 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
             _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
             var staffService = CreateService("staff-user", "staff", "StoreStaff");
-            var second = await staffService.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var second = await SubmitPunchAdjustmentAfterPreviewAsync(staffService, new CreateAttendancePunchAdjustmentDto
             {
                 StoreCode = "BRI", ScheduleGuid = "second", PunchType = "ClockIn",
                 RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 11, 0, 0), Reason = "申请第二段A",
             });
-            var third = await staffService.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+            var third = await SubmitPunchAdjustmentAfterPreviewAsync(staffService, new CreateAttendancePunchAdjustmentDto
             {
                 StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
                 RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "申请第二段B",
@@ -1944,12 +2694,12 @@ namespace BlazorApp.Api.Tests
             var heldLock = await AttendanceDailyMutationLock.AcquireProcessAsync(resource);
 
             var pendingResults = Task.WhenAll(
-                service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                SubmitPunchAdjustmentAfterPreviewAsync(service, new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI", ScheduleGuid = "third", PunchType = "ClockIn",
                     RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 14, 0, 0), Reason = "直接第三段A",
                 }),
-                service.CreateMyPunchAdjustmentAsync(new CreateAttendancePunchAdjustmentDto
+                SubmitPunchAdjustmentAfterPreviewAsync(service, new CreateAttendancePunchAdjustmentDto
                 {
                     StoreCode = "BRI", ScheduleGuid = "fourth", PunchType = "ClockIn",
                     RequestedPunchTimeLocal = new DateTime(2026, 5, 18, 17, 0, 0), Reason = "直接第三段B",
@@ -1990,6 +2740,50 @@ namespace BlazorApp.Api.Tests
                 .CountAsync(item => item.SourceType == "MissingClockOut"
                     && item.SourceGuid == "schedule-1"
                     && item.ReviewStatus == "Pending"));
+        }
+
+        [Fact]
+        public async Task GetMyTodayAsync_ReconcileAndClockOutInterleave_LeavesNoStaleMissingClockOutApproval()
+        {
+            await SeedStoreScopeAsync();
+            await SeedScheduleAsync();
+            await _db.Insertable(CreateStoredPunch(
+                "interleave-open", "ClockIn", new DateTime(2026, 5, 18, 9, 0, 0))).ExecuteCommandAsync();
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var resource = AttendanceDailyMutationLock.BuildResource(
+                "staff-user", "BRI", new DateTime(2026, 5, 18));
+            await using var heldLock = await AttendanceDailyMutationLock.AcquireProcessAsync(resource);
+
+            var reconcileTask = service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            for (var attempt = 0;
+                attempt < 1000 && AttendanceDailyMutationLock.GetProcessReferenceCount(resource) < 2;
+                attempt++)
+            {
+                await Task.Yield();
+            }
+            Assert.Equal(2, AttendanceDailyMutationLock.GetProcessReferenceCount(resource));
+
+            var clockOutTask = service.PunchAsync(CreatePunchRequest("ClockOut", "2026-05-18T08:00:00Z"));
+            for (var attempt = 0;
+                attempt < 1000 && AttendanceDailyMutationLock.GetProcessReferenceCount(resource) < 3;
+                attempt++)
+            {
+                await Task.Yield();
+            }
+            Assert.Equal(3, AttendanceDailyMutationLock.GetProcessReferenceCount(resource));
+            await heldLock.DisposeAsync();
+
+            await Task.WhenAll(reconcileTask, clockOutTask);
+            var reconciliation = await reconcileTask;
+            var clockOut = await clockOutTask;
+
+            Assert.True(reconciliation.Success, reconciliation.Message);
+            Assert.True(clockOut.Success, clockOut.Message);
+            Assert.Equal(0, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "MissingClockOut" && item.ReviewStatus == "Pending"));
+            Assert.Equal(1, await _db.Queryable<AttendanceApproval>()
+                .CountAsync(item => item.SourceType == "MissingClockOut" && item.ReviewStatus == "Cancelled"));
         }
 
         [Fact]
@@ -2637,6 +3431,23 @@ namespace BlazorApp.Api.Tests
             };
         }
 
+        private static async Task<ApiResponse<AttendancePunchAdjustmentDto>>
+            SubmitPunchAdjustmentAfterPreviewAsync(
+                AttendanceReactService service,
+                CreateAttendancePunchAdjustmentDto request)
+        {
+            var preview = await service.PreviewMyPunchAdjustmentAsync(request);
+            if (!preview.Success)
+            {
+                return ApiResponse<AttendancePunchAdjustmentDto>.Error(
+                    preview.Message,
+                    preview.ErrorCode);
+            }
+
+            request.PreviewRevision = preview.Data!.PreviewRevision;
+            return await service.CreateMyPunchAdjustmentAsync(request);
+        }
+
         private AttendanceReactService CreateService(string userGuid, string username, params string[] roles)
             => CreateService(userGuid, username, true, roles);
 
@@ -2921,6 +3732,54 @@ namespace BlazorApp.Api.Tests
                 EndTime = endTime ?? new TimeSpan(17, 0, 0),
                 Status = status,
                 CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedPendingScheduleDerivedApprovalsAsync(
+            string scheduleGuid,
+            string punchGuid)
+        {
+            await _db.Insertable(CreateStoredPunchForSchedule(
+                punchGuid,
+                scheduleGuid,
+                "BRI",
+                "staff-user",
+                "ClockIn",
+                new DateTime(2026, 5, 18, 9, 10, 0)))
+                .ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new AttendanceApproval
+                {
+                    ApprovalGuid = $"{scheduleGuid}-derived-punch",
+                    SourceType = "Punch",
+                    SourceGuid = punchGuid,
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new AttendanceApproval
+                {
+                    ApprovalGuid = $"{scheduleGuid}-derived-overtime",
+                    SourceType = "Overtime",
+                    SourceGuid = scheduleGuid,
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CandidateOvertimeMinutes = 15,
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new AttendanceApproval
+                {
+                    ApprovalGuid = $"{scheduleGuid}-derived-missing",
+                    SourceType = "MissingClockOut",
+                    SourceGuid = scheduleGuid,
+                    StoreCode = "BRI",
+                    ApplicantUserGuid = "staff-user",
+                    ReviewStatus = "Pending",
+                    CreatedAt = DateTime.UtcNow,
+                },
             }).ExecuteCommandAsync();
         }
 

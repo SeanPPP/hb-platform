@@ -44,6 +44,7 @@ import {
   normalizeAttendancePunchAdjustment,
   normalizeAttendancePunchAdjustmentPreview,
 } from "@/modules/attendance/attendance-punch-adjustment";
+import { buildAttendanceApprovalReviewRequest } from "@/modules/attendance/attendance-approval";
 
 type ApiRecord = Record<string, unknown>;
 
@@ -363,6 +364,8 @@ function normalizeApproval(raw: ApiRecord): AttendanceApproval {
     detail: asOptionalString(pick(raw, "detail", "Detail", "reason", "Reason", "statusReason", "StatusReason")),
     status,
     submittedAt: asOptionalString(pick(raw, "submittedAt", "SubmittedAt", "createdAt", "CreatedAt")),
+    candidateOvertimeMinutes: asOptionalNumber(pick(raw, "candidateOvertimeMinutes", "CandidateOvertimeMinutes")),
+    approvedOvertimeMinutes: asOptionalNumber(pick(raw, "approvedOvertimeMinutes", "ApprovedOvertimeMinutes")),
     adjustment: isRecord(pick(raw, "adjustment", "Adjustment"))
       ? normalizeAttendancePunchAdjustment(pick(raw, "adjustment", "Adjustment"))
       : undefined,
@@ -633,15 +636,17 @@ export async function getPendingApprovals(storeCode?: string): Promise<Attendanc
 }
 
 export async function approveAttendanceApproval(payload: AttendanceApprovalPayload): Promise<void> {
-  await apiClient.post(`${ATTENDANCE_BASE}/approvals/${encodeURIComponent(payload.approvalGuid)}/approve`, {
-    reviewRemark: payload.remark?.trim() || undefined,
-  });
+  await apiClient.post(
+    `${ATTENDANCE_BASE}/approvals/${encodeURIComponent(payload.approvalGuid)}/approve`,
+    buildAttendanceApprovalReviewRequest(payload),
+  );
 }
 
 export async function rejectAttendanceApproval(payload: AttendanceApprovalPayload): Promise<void> {
-  await apiClient.post(`${ATTENDANCE_BASE}/approvals/${encodeURIComponent(payload.approvalGuid)}/reject`, {
-    reviewRemark: payload.remark?.trim() || undefined,
-  });
+  await apiClient.post(
+    `${ATTENDANCE_BASE}/approvals/${encodeURIComponent(payload.approvalGuid)}/reject`,
+    buildAttendanceApprovalReviewRequest(payload),
+  );
 }
 
 export async function getAttendanceSchedulesWeek(params: AttendanceScheduleWeekParams): Promise<AttendanceSchedule[]> {

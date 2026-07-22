@@ -12,8 +12,12 @@ export type AttendancePunchStatus =
   | 'PendingApproval'
   | 'Approved'
   | 'Rejected'
-export type AttendanceApprovalSourceType = 'Punch' | 'Leave'
+export type AttendanceApprovalSourceType = 'Punch' | 'Leave' | 'PunchAdjustment' | 'Overtime' | 'MissingClockOut'
 export type AttendanceReviewStatus = 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'
+export type AttendanceScheduleState = 'NotStarted' | 'InProgress' | 'Completed' | 'MissingClockOut' | string
+export type AttendanceSegmentStatus = 'NotStarted' | 'Open' | 'Completed' | 'MissingClockOut' | string
+export type AttendanceOvertimeApprovalStatus = 'NotRequired' | 'Pending' | 'Approved' | 'Rejected' | string
+export type AttendancePunchAdjustmentStatus = 'Pending' | 'Applied' | 'Approved' | 'Rejected' | 'Cancelled' | string
 export type AttendanceHolidayBusinessStatus = 'Open' | 'Closed' | 'Partial'
 export type AttendanceLeaveType = 'AnnualLeave' | 'SickLeave' | 'PublicHoliday'
 
@@ -43,6 +47,30 @@ export interface AttendanceScheduleDto {
   remark?: string
   createdAt?: string
   updatedAt?: string
+  scheduleState?: AttendanceScheduleState
+  segmentLimit?: number
+  completedSegmentCount?: number
+  workedMinutes?: number
+  breakMinutes?: number
+  hasOpenSegment?: boolean
+  hasMissingClockOut?: boolean
+  earlyOvertimeMinutes?: number
+  lateOvertimeMinutes?: number
+  candidateOvertimeMinutes?: number
+  approvedOvertimeMinutes?: number
+  overtimeApprovalStatus?: AttendanceOvertimeApprovalStatus
+  lateMinutes?: number
+  earlyLeaveMinutes?: number
+  crossStoreMissingClockOutStoreCode?: string
+  segments?: AttendanceScheduleSegmentDto[]
+}
+
+export interface AttendanceScheduleSegmentDto {
+  segmentIndex: number
+  clockIn?: string | AttendancePunchDto
+  clockOut?: string | AttendancePunchDto
+  durationMinutes?: number
+  status?: AttendanceSegmentStatus
 }
 
 export interface SaveAttendanceSchedulePayload {
@@ -92,6 +120,11 @@ export interface AttendancePunchDto {
   locationPermissionStatus?: string
   locationCapturedAtUtc?: string
   createdAt?: string
+  segmentIndex?: number
+  segmentStatus?: AttendanceSegmentStatus
+  isBreakBoundary?: boolean
+  supersedesPunchGuid?: string
+  adjustmentGuid?: string
 }
 
 export interface AttendanceLocationSampleDto {
@@ -120,14 +153,92 @@ export interface AttendanceApprovalDto {
   applicantName?: string
   reviewerUserGuid?: string
   reviewerName?: string
+  workDate?: string
+  title: string
+  detail?: string
   reviewStatus: AttendanceReviewStatus
   reviewRemark?: string
   reviewedAt?: string
   createdAt?: string
+  candidateOvertimeMinutes?: number
+  approvedOvertimeMinutes?: number
+  adjustment?: AttendanceAdjustmentDetailDto
 }
 
 export interface ReviewAttendanceApprovalPayload {
   reviewRemark?: string
+  approvedOvertimeMinutes?: number
+}
+
+export interface AttendanceAdjustmentDetailDto {
+  adjustmentGuid?: string
+  originalPunchGuid?: string
+  punchType?: AttendancePunchType
+  originalPunchTimeLocal?: string
+  requestedPunchTimeLocal?: string
+  effectivePunchTimeLocal?: string
+  reason?: string
+  status?: AttendancePunchAdjustmentStatus
+  isDirectAdjustment?: boolean
+  requestedByUserGuid?: string
+  reviewedByUserGuid?: string
+  reviewedAt?: string
+}
+
+export interface AttendancePunchAdjustmentDto extends AttendanceAdjustmentDetailDto {
+  adjustmentGuid: string
+  storeCode: string
+  userGuid?: string
+  scheduleGuid?: string
+  punchType: AttendancePunchType
+  requestedPunchTimeLocal: string
+  reason: string
+  status: AttendancePunchAdjustmentStatus
+  createdAt?: string
+  requestedPunchTimeUtc?: string
+  appliedPunchGuid?: string
+  isManagerSelfDirect?: boolean
+  beforeWorkedMinutes?: number
+  afterWorkedMinutes?: number
+  beforeCandidateOvertimeMinutes?: number
+  afterCandidateOvertimeMinutes?: number
+  exceptionChanges?: string[]
+}
+
+export interface AttendancePunchAdjustmentPreviewDto {
+  isValid: boolean
+  validationErrorCode?: string
+  validationMessage?: string
+  existingSession?: AttendanceWorkSessionDto
+  proposedSession?: AttendanceWorkSessionDto
+  workedMinutesDelta: number
+  candidateOvertimeMinutesDelta: number
+  wouldAutoApprove: boolean
+  previewRevision?: string
+}
+
+export interface AttendanceWorkSessionDto {
+  scheduleState?: AttendanceScheduleState
+  segmentLimit?: number
+  completedSegmentCount?: number
+  workedMinutes: number
+  breakMinutes: number
+  hasOpenSegment?: boolean
+  hasMissingClockOut?: boolean
+  earlyOvertimeMinutes?: number
+  lateOvertimeMinutes?: number
+  candidateOvertimeMinutes: number
+  segments?: AttendanceScheduleSegmentDto[]
+}
+
+export interface SaveAttendancePunchAdjustmentPayload {
+  storeCode: string
+  scheduleGuid?: string
+  originalPunchGuid?: string
+  punchType: AttendancePunchType
+  requestedPunchTimeLocal: string
+  reason: string
+  previewRevision?: string
 }
 
 export interface AttendanceStoreHolidayDto {
@@ -201,6 +312,9 @@ export interface AttendanceSettingsDto {
   requireApprovalForNoSchedule: boolean
   updatedAt?: string
   updatedBy?: string
+  overtimeMinimumMinutes?: number
+  requireOvertimeApproval?: boolean
+  allowManagerDirectOwnAdjustment?: boolean
 }
 
 export type SaveAttendanceSettingsPayload = Pick<
@@ -211,6 +325,11 @@ export type SaveAttendanceSettingsPayload = Pick<
   | 'requireApprovalForLate'
   | 'requireApprovalForEarlyLeave'
   | 'requireApprovalForNoSchedule'
->
+> & Partial<Pick<
+  AttendanceSettingsDto,
+  | 'overtimeMinimumMinutes'
+  | 'requireOvertimeApproval'
+  | 'allowManagerDirectOwnAdjustment'
+>>
 
 export type AttendancePagedResult<T> = PagedResult<T>

@@ -135,7 +135,39 @@
     "empty": "No leave requests"
   },
   "approvals": {
-    "empty": "No pending approvals"
+    "empty": "No pending approvals",
+    "adjustmentOriginal": "Original punch: {{time}}",
+    "adjustmentRequested": "Requested {{punchType}}: {{time}}",
+    "adjustmentEffective": "Effective punch: {{time}}",
+    "overtimeCandidate": "Candidate overtime: {{minutes}} min",
+    "overtimeApproved": "Approved overtime minutes",
+    "overtimeApprovedValue": "Approved overtime: {{minutes}} min",
+    "overtimeIncrement": "Enter a 15-minute increment",
+    "presentation": {
+      "Punch": {
+        "title": "Punch exception",
+        "detail": "Punch exception on {{workDate}}"
+      },
+      "Leave": {
+        "title": "Leave request",
+        "detail": "Leave request starting {{workDate}}"
+      },
+      "PunchAdjustment": {
+        "title": "Punch correction"
+      },
+      "Overtime": {
+        "title": "Overtime approval"
+      },
+      "MissingClockOut": {
+        "title": "Missing clock-out",
+        "detail": "An open shift remains after the scheduled end on {{workDate}}."
+      }
+    },
+    "overtimeValidation": {
+      "outOfRange": "Approved overtime must be between 0 and the candidate minutes.",
+      "invalidIncrement": "Approved overtime must be a multiple of 15 minutes.",
+      "remarkRequired": "A review note is required when reducing or rejecting overtime."
+    }
   },
   "holidayManagement": {
     "noStore": "Select a store first",
@@ -251,7 +283,8 @@
     "messages": {
       "previewFailed": "Correction preview failed.",
       "submitFailed": "Correction submission failed.",
-      "invalid": "This correction cannot be saved."
+      "invalid": "This correction cannot be saved.",
+      "previewRevisionMissing": "The server preview did not include a revision. Run preview again before submitting."
     }
   },
   "datePicker": {
@@ -281,6 +314,8 @@
     "submitLeave": "Submit request",
     "approve": "Approve",
     "reject": "Reject",
+    "approveOvertime": "Approve overtime",
+    "rejectOvertime": "Reject overtime",
     "createSchedule": "Create schedule",
     "publishWeek": "Publish week",
     "viewLocation": "View location"
@@ -297,7 +332,9 @@
   "sourceTypes": {
     "Punch": "Punch",
     "Leave": "Leave",
-    "PunchAdjustment": "Punch correction"
+    "PunchAdjustment": "Punch correction",
+    "Overtime": "Overtime",
+    "MissingClockOut": "Missing clock-out"
   },
   "statuses": {
     "Normal": "Normal",

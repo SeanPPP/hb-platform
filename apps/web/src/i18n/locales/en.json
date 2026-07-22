@@ -2568,6 +2568,8 @@
         "publishWeek": "Publish This Week",
         "approve": "Approve",
         "reject": "Reject",
+        "approveOvertime": "Approve overtime",
+        "rejectOvertime": "Reject overtime",
         "viewMap": "Map",
         "viewSamples": "Samples",
         "openExternalMap": "Open external map"
@@ -2603,6 +2605,14 @@
         "deviceSystem": "Device System",
         "applicant": "Applicant",
         "sourceType": "Source",
+        "approvalDetail": "Request details / audit",
+        "originalPunchTime": "Original punch",
+        "requestedPunchTime": "Requested punch",
+        "effectivePunchTime": "Effective punch",
+        "reason": "Reason",
+        "candidateOvertime": "Candidate: {{minutes}} min",
+        "approvedOvertime": "Approved: {{minutes}} min",
+        "approvedOvertimeMinutes": "Approved overtime minutes",
         "reviewedAt": "Reviewed At",
         "holidayDate": "Holiday Date",
         "holidayName": "Holiday Name",
@@ -2617,6 +2627,26 @@
         "requireApprovalForNoSchedule": "Require Approval for No-schedule Punch",
         "updatedAt": "Last Updated",
         "reviewRemark": "Review Remark"
+      },
+      "approvalPresentation": {
+        "Punch": {
+          "title": "Punch exception",
+          "detail": "Punch exception on {{workDate}}"
+        },
+        "Leave": {
+          "title": "Leave request",
+          "detail": "Leave request starting {{workDate}}"
+        },
+        "PunchAdjustment": {
+          "title": "Punch correction"
+        },
+        "Overtime": {
+          "title": "Overtime approval"
+        },
+        "MissingClockOut": {
+          "title": "Missing clock-out",
+          "detail": "An open shift remains after the scheduled end on {{workDate}}."
+        }
       },
       "status": {
         "schedule": {
@@ -2646,7 +2676,10 @@
         },
         "sourceType": {
           "Punch": "Punch Exception",
-          "Leave": "Leave Request"
+          "Leave": "Leave Request",
+          "PunchAdjustment": "Punch correction",
+          "Overtime": "Overtime",
+          "MissingClockOut": "Missing clock-out"
         },
         "holiday": {
           "Open": "Open",
@@ -2657,7 +2690,12 @@
       "validation": {
         "userGuidRequired": "Please enter employee GUID",
         "holidayNameRequired": "Please enter holiday name",
-        "storeCodesRequired": "Please select at least one store"
+        "storeCodesRequired": "Please select at least one store",
+        "overtime": {
+          "outOfRange": "Approved overtime must be between 0 and the candidate minutes",
+          "invalidIncrement": "Approved overtime must be a multiple of 15 minutes",
+          "remarkRequired": "A review note is required when reducing or rejecting overtime"
+        }
       },
       "weekdays": {
         "0": "Mon",
@@ -2702,6 +2740,8 @@
         "publishWeekFailed": "Failed to publish this week's schedule",
         "reviewSuccess": "Review submitted",
         "reviewFailed": "Failed to submit review",
+        "previewRevisionMissing": "The server preview did not include a revision. Run preview again before saving.",
+        "directAdjustment": "Manager self-adjustment",
         "locationNotRecorded": "Location not recorded",
         "externalMapNotice": "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",
         "loadLocationSamplesFailed": "Failed to load shift location samples",

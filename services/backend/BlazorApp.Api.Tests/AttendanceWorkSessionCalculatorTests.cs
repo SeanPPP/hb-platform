@@ -111,6 +111,60 @@ public sealed class AttendanceWorkSessionCalculatorTests
         Assert.Equal("EarlyLeave", segment.ClockOut!.Status);
     }
 
+    [Fact]
+    public void Calculate_SydneyDstFallBack_UsesUtcSequenceAndElapsedMinutes()
+    {
+        var schedule = new AttendanceSchedule
+        {
+            ScheduleGuid = "sydney-dst",
+            StoreCode = "SYD",
+            UserGuid = "staff-user",
+            WorkDate = new DateTime(2026, 4, 5),
+            StartTime = new TimeSpan(1, 0, 0),
+            EndTime = new TimeSpan(4, 0, 0),
+            Status = "Active",
+        };
+        var punches = new[]
+        {
+            // 夏令时回拨后，本地 02:20 发生在本地 02:50 之后；真实顺序只能由 UTC 判断。
+            new AttendancePunch
+            {
+                PunchGuid = "dst-in",
+                ScheduleGuid = schedule.ScheduleGuid,
+                StoreCode = schedule.StoreCode,
+                UserGuid = schedule.UserGuid,
+                WorkDate = schedule.WorkDate,
+                PunchType = "ClockIn",
+                PunchTimeLocal = new DateTime(2026, 4, 5, 2, 50, 0),
+                PunchTimeUtc = new DateTime(2026, 4, 4, 15, 50, 0, DateTimeKind.Utc),
+            },
+            new AttendancePunch
+            {
+                PunchGuid = "dst-out",
+                ScheduleGuid = schedule.ScheduleGuid,
+                StoreCode = schedule.StoreCode,
+                UserGuid = schedule.UserGuid,
+                WorkDate = schedule.WorkDate,
+                PunchType = "ClockOut",
+                PunchTimeLocal = new DateTime(2026, 4, 5, 2, 20, 0),
+                PunchTimeUtc = new DateTime(2026, 4, 4, 16, 20, 0, DateTimeKind.Utc),
+            },
+        };
+
+        var result = AttendanceWorkSessionCalculator.Calculate(
+            schedule,
+            punches,
+            segmentLimit: 1,
+            nowLocal: new DateTime(2026, 4, 5, 4, 30, 0),
+            earlyLeaveGraceMinutes: 5);
+
+        var segment = Assert.Single(result.Segments);
+        Assert.Equal("dst-in", segment.ClockIn!.PunchGuid);
+        Assert.Equal("dst-out", segment.ClockOut!.PunchGuid);
+        Assert.Equal(30, segment.DurationMinutes);
+        Assert.Equal(30, result.WorkedMinutes);
+    }
+
     private static AttendancePunch Punch(string guid, string type, int hour, int minute) => new()
     {
         PunchGuid = guid,

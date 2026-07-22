@@ -43,5 +43,13 @@ assert.match(source, /toAttendanceDeviceLocalTime\(punch\.punchTimeUtc\)/,
   "选择已有打卡必须由 UTC instant 回填到手机本地输入，而非直接使用门店 local 字符串");
 assert.match(source, /requestedPunchTimeUtc/,
   "表单 payload 必须包含供 preview 和 submit 共用的 UTC instant");
+assert.match(source, /preview\.previewRevision/,
+  "提交必须读取当前 preview 返回的 revision");
+assert.match(source, /previewRevision:\s*preview\.previewRevision/,
+  "提交 payload 必须原样回传当前 preview revision");
+assert.match(source, /previewRevisionMissing/,
+  "缺少 preview revision 时必须显示明确错误");
+assert.match(source, /disabled=\{isBusy \|\| !canSubmit\}/,
+  "缺少或过期 preview revision 时必须禁用提交");
 
 console.log("punch-adjustment-card-contract.test.ts: ok");

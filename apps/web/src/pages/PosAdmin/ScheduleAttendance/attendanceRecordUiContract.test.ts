@@ -1,0 +1,48 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message)
+}
+
+const pageSource = readFileSync(path.resolve(process.cwd(), 'src/pages/PosAdmin/ScheduleAttendance/index.tsx'), 'utf8')
+const serviceSource = readFileSync(path.resolve(process.cwd(), 'src/services/scheduleAttendanceService.ts'), 'utf8')
+
+assert(pageSource.includes("type TabKey = 'schedules' | 'records'"), '考勤页应有独立记录 tab，不改变排班 CRUD')
+assert(pageSource.includes('buildAttendanceRecordSummary'), '记录表应复用首上班/最终下班与班段工时逻辑')
+assert(pageSource.includes('candidateOvertimeMinutes'), '记录与审批 UI 应显示候选加班')
+assert(pageSource.includes('approvedOvertimeMinutes'), '记录与审批 UI 应显示批准加班')
+assert(pageSource.includes('isKnownAttendanceApprovalSourceType'), '已知审批来源必须使用本地化展示文案')
+assert(pageSource.includes('getSupplementalAttendanceApprovalDetail'), 'Punch/Leave 必须保留 DTO 补充明细')
+assert(pageSource.includes('supplementalDetail ?'), 'DTO 补充明细仅在非空且不重复时渲染')
+assert(!pageSource.includes('<Typography.Text strong>{record.title}</Typography.Text>'), '已知审批不得直接展示后端标题')
+assert(pageSource.includes('record.adjustment.effectivePunchTimeLocal ?'), '补卡仅在实际生效时间存在时展示该字段')
+assert(pageSource.includes('validateOvertimeApproval'), '加班审批提交前应校验范围、15 分钟粒度与备注')
+assert(pageSource.includes('approveOvertime'), '加班审批应使用明确的批准按钮语义')
+assert(pageSource.includes('rejectOvertime'), '加班审批应使用明确的拒绝按钮语义')
+assert(pageSource.includes('buildLocalPunchAdjustmentPreview'), '补卡保存前应展示客户端预览')
+assert(pageSource.includes('if (!access.canViewAttendancePunches)'), '记录请求入口必须以 Punch.ViewManagedStore 做二次保护')
+assert(pageSource.includes('access.canViewAttendancePunches ? {'), '无 Punch 查看权限时不得渲染考勤记录 tab')
+assert(pageSource.includes("activeTab === 'records' && access.canViewAttendancePunches"), '记录 tab 的加载分支必须再次校验 Punch 查看权限')
+assert(pageSource.includes('createMyAttendancePunchAdjustment'), '店长本人补卡应调用服务层集中入口')
+assert(pageSource.match(/buildPunchAdjustmentPayload\(adjustmentTarget, values\)/g)?.length === 2, 'preview/create 必须复用同一个 payload builder')
+assert(pageSource.includes("adjustmentMode: 'create' | 'replace'"), '补卡表单必须显式区分新增和纠正模式')
+assert(pageSource.includes('resolvePunchAdjustmentOriginalGuid(values.adjustmentMode, values.originalPunchGuid)'), '新增模式必须清空 originalPunchGuid')
+assert(pageSource.includes("getDefaultPunchAdjustmentMode(record, punchType)"), '漏最终下班应由统一规则默认进入新增模式')
+assert(pageSource.includes('previewRequestIdRef'), 'preview 应使用递增请求 id 防止旧响应覆盖')
+assert(pageSource.includes('previewPayloadSnapshot'), 'preview 与提交应绑定完整 payload snapshot')
+assert(pageSource.includes('previewRevision'), '补卡 preview 与提交必须绑定后端 revision')
+assert(pageSource.includes('previewRevisionMissing'), '缺少 preview revision 时必须显示明确错误')
+assert(pageSource.includes('previewRevision: serverAdjustmentPreview.previewRevision'), '补卡提交必须原样回传当前 preview revision')
+assert(pageSource.includes('getPunchAdjustmentPayloadSnapshot(payload)'), '提交前应重新计算当前 payload snapshot')
+assert(pageSource.includes('hasMissingClockOut'), '记录 UI 应展示漏下班状态')
+assert(pageSource.includes('supersedesPunchGuid'), '打卡审计应展示原始/有效关系')
+assert(pageSource.match(/canAdjustOwnAttendanceRecord\(/g)?.length === 2, '补卡按钮和弹窗入口必须复用同一角色判断')
+assert(pageSource.includes('serverAdjustmentPreview.existingSession?.workedMinutes'), '工时预览必须以服务端结果为权威')
+assert(pageSource.includes('getProposedAdjustmentPunchStatus'), '异常状态必须从服务端 proposed session 精确匹配请求打卡')
+assert(!pageSource.includes('adjustmentPreview.exceptions.map'), '补卡预览不得继续展示忽略 grace 的本地异常推断')
+assert(pageSource.includes("window.open(externalMapUrl, '_blank', 'noopener,noreferrer')"), '地图只能由明确点击后在外部窗口打开')
+assert(serviceSource.includes('MY_PUNCH_ADJUSTMENTS_ENDPOINT'), '补卡 mutation 路由必须集中在服务层')
+assert(serviceSource.includes("`${API_BASE}/records`"), '考勤记录必须走 Punch.ViewManagedStore 保护的 records endpoint')
+
+console.log('attendanceRecordUiContract.test.ts: ok')

@@ -121,6 +121,12 @@ export function PunchAdjustmentCard({
   latestPayloadFingerprintRef.current = payloadFingerprint;
   const missingFields = validateAttendancePunchAdjustment(payload);
   const isManagerDirect = preview?.wouldAutoApprove === true;
+  const isPreviewRevisionMissing = preview?.isValid && !preview.previewRevision;
+  const canSubmit = Boolean(
+    preview?.isValid
+    && preview.previewRevision
+    && previewFingerprint === buildAttendancePunchAdjustmentFingerprint(payload),
+  );
 
   const updateDraft = (update: () => void) => {
     update();
@@ -167,13 +173,21 @@ export function PunchAdjustmentCard({
       !preview?.isValid
       || previewFingerprint !== buildAttendancePunchAdjustmentFingerprint(payload)
     ) return;
+    if (!preview.previewRevision) {
+      setLocalError(t("adjustment.messages.previewRevisionMissing"));
+      return;
+    }
     const requestedFingerprint = buildAttendancePunchAdjustmentFingerprint(payload);
     const request = submitRequestGateRef.current.begin(requestedFingerprint);
     await runLatestAttendanceAdjustmentRequest({
       gate: submitRequestGateRef.current,
       request,
       getCurrentFingerprint: () => latestPayloadFingerprintRef.current,
-      operation: () => onSubmit({ ...payload, reason: payload.reason.trim() }),
+      operation: () => onSubmit({
+        ...payload,
+        reason: payload.reason.trim(),
+        previewRevision: preview.previewRevision,
+      }),
       onSuccess: () => {
         setReason("");
         setOriginalPunchGuid(undefined);
@@ -330,6 +344,11 @@ export function PunchAdjustmentCard({
                 {preview.validationMessage || preview.validationErrorCode || t("adjustment.messages.invalid")}
               </Text>
             ) : null}
+            {isPreviewRevisionMissing ? (
+              <Text variant="bodySmall" style={styles.exceptionText}>
+                {t("adjustment.messages.previewRevisionMissing")}
+              </Text>
+            ) : null}
             {preview.wouldAutoApprove ? (
               <Text variant="bodySmall">{t("adjustment.directApplyNotice")}</Text>
             ) : (
@@ -341,7 +360,7 @@ export function PunchAdjustmentCard({
         {localError ? <Text variant="bodySmall" style={styles.exceptionText}>{localError}</Text> : null}
         <Button
           mode="contained"
-          disabled={isBusy || !preview?.isValid}
+          disabled={isBusy || !canSubmit}
           loading={isBusy && Boolean(preview)}
           onPress={() => void handleSubmit()}
         >

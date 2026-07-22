@@ -687,11 +687,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     (isHolidayManagementTab && holidaysQuery.error) ||
     (isLeaveManagementTab && (approvalsQuery.error || storeUsersQuery.error));
 
-  const leaveApprovals = useMemo(
-    () =>
-      (approvalsQuery.data ?? []).filter(
-        (item) => item.sourceType.toLowerCase() === "leave",
-      ),
+  const pendingApprovals = useMemo(
+    () => approvalsQuery.data ?? [],
     [approvalsQuery.data],
   );
 
@@ -1507,16 +1504,12 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 />
                 <ManagerApprovalList
                   title={t("sections.approvals")}
-                  emptyMessage={t("leaveManagement.empty")}
-                  approvals={leaveApprovals}
+                  emptyMessage={t("approvals.empty")}
+                  approvals={pendingApprovals}
                   isBusy={isApprovalBusy}
                   canReview={canReviewAttendance}
-                  onApprove={(approvalGuid, remark) =>
-                    approveMutation.mutate({ approvalGuid, remark })
-                  }
-                  onReject={(approvalGuid, remark) =>
-                    rejectMutation.mutate({ approvalGuid, remark })
-                  }
+                  onApprove={(payload) => approveMutation.mutate(payload)}
+                  onReject={(payload) => rejectMutation.mutate(payload)}
                 />
               </>
             ) : null}

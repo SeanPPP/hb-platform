@@ -209,6 +209,7 @@ export function normalizeAttendancePunchAdjustmentPreview(
       pick(raw, "candidateOvertimeMinutesDelta", "CandidateOvertimeMinutesDelta"),
     ),
     wouldAutoApprove: asBoolean(pick(raw, "wouldAutoApprove", "WouldAutoApprove")),
+    previewRevision: asOptionalString(pick(raw, "previewRevision", "PreviewRevision")),
   };
 }
 
@@ -221,11 +222,14 @@ export function normalizeAttendancePunchAdjustment(
     storeCode: asString(pick(raw, "storeCode", "StoreCode")),
     scheduleGuid: asOptionalString(pick(raw, "scheduleGuid", "ScheduleGuid")),
     originalPunchGuid: asOptionalString(pick(raw, "originalPunchGuid", "OriginalPunchGuid")),
+    originalPunchTimeLocal: asOptionalString(pick(raw, "originalPunchTimeLocal", "OriginalPunchTimeLocal")),
     punchType: asString(pick(raw, "punchType", "PunchType"), "ClockIn") as AttendancePunchAdjustment["punchType"],
     requestedPunchTimeLocal: asString(pick(raw, "requestedPunchTimeLocal", "RequestedPunchTimeLocal")),
     requestedPunchTimeUtc: asOptionalString(pick(raw, "requestedPunchTimeUtc", "RequestedPunchTimeUtc")),
+    effectivePunchTimeLocal: asOptionalString(pick(raw, "effectivePunchTimeLocal", "EffectivePunchTimeLocal")),
     reason: asString(pick(raw, "reason", "Reason")),
     status: asString(pick(raw, "status", "Status"), "Pending"),
+    isDirectAdjustment: asBoolean(pick(raw, "isDirectAdjustment", "IsDirectAdjustment", "isManagerSelfDirect", "IsManagerSelfDirect")),
     submittedAt: asOptionalString(pick(raw, "submittedAt", "SubmittedAt", "createdAt", "CreatedAt")),
     reviewedAt: asOptionalString(pick(raw, "reviewedAt", "ReviewedAt", "appliedAt", "AppliedAt")),
   };

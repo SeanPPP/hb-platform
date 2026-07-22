@@ -18,6 +18,10 @@ import { normalizeStatisticsFreshness } from "../reports/statistics-freshness";
 import { normalizePromotionsResponse } from "../promotions/api";
 import { normalizeWarehousePriceSyncResponse } from "../product-maintenance/warehouse-price-sync";
 import { buildInstallmentOrderListPayload } from "../installment-orders/api";
+import {
+  buildAttendanceQrPunchPayload,
+  normalizeAttendanceQrResolveResult,
+} from "../attendance/attendance-qr";
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -41,6 +45,266 @@ async function run() {
         params,
       })
     ).data as any;
+
+  const reviewQrToken = (index: number) =>
+    `HBATE1.review_${index}.${"A".repeat(16)}.${"B".repeat(40)}.${"C".repeat(22)}`;
+  const attendanceQrVerification = {
+    locationLatitude: -27.4698,
+    locationLongitude: 153.0251,
+    locationAccuracy: 5,
+    locationCapturedAtUtc: "2026-07-16T00:00:00.000Z",
+  };
+  const resolveReviewQr = async (
+    send: (
+      method: Method,
+      url: string,
+      body?: unknown,
+      params?: Record<string, unknown>,
+    ) => Promise<any>,
+    qrToken: string,
+  ) => normalizeAttendanceQrResolveResult(
+    await send("POST", "/react/v1/attendance/qr/resolve", { qrToken }),
+  );
+  const punchWithReviewQr = async (
+    send: (
+      method: Method,
+      url: string,
+      body?: unknown,
+      params?: Record<string, unknown>,
+    ) => Promise<any>,
+    qrToken: string,
+  ) => {
+    const resolved = await resolveReviewQr(send, qrToken);
+    assert.ok(resolved.punchAuthorizationToken);
+    assert.ok(resolved.punchAuthorizationExpiresAtUtc);
+    const payload = buildAttendanceQrPunchPayload(
+      qrToken,
+      resolved.punchAuthorizationToken,
+      attendanceQrVerification,
+    );
+    assert.equal("storeCode" in payload, false);
+    assert.equal("punchType" in payload, false);
+    assert.equal("workDate" in payload, false);
+    return {
+      payload,
+      punch: await send("POST", "/react/v1/attendance/punch", payload),
+      resolved,
+    };
+  };
+
+  const qrDataStore = createIosReviewDataStore(
+    new Date("2026-07-16T00:00:00.000Z"),
+  );
+  const qrTransport = createIosReviewTransport(qrDataStore);
+  const qrRequest = async (
+    method: Method,
+    url: string,
+    body?: unknown,
+    params?: Record<string, unknown>,
+  ) => (
+    await qrTransport.dispatch({ method, url, data: body, params })
+  ).data as any;
+  const invalidAuthorizationQrToken = reviewQrToken(1);
+  const invalidAuthorization = await resolveReviewQr(
+    qrRequest,
+    invalidAuthorizationQrToken,
+  );
+  await assert.rejects(
+    () => qrRequest(
+      "POST",
+      "/react/v1/attendance/punch",
+      buildAttendanceQrPunchPayload(
+        invalidAuthorizationQrToken,
+        `${invalidAuthorization.punchAuthorizationToken}-invalid`,
+        attendanceQrVerification,
+      ),
+    ),
+    /ATTENDANCE_PUNCH_AUTHORIZATION_INVALID/,
+    "Review punch 必须拒绝未由 resolve 签发的短时授权",
+  );
+
+  let qrToday = await qrRequest(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001",
+  );
+  assert.equal(qrToday.punches.length, 0);
+  const expectedQrPunches = [
+    {
+      punchType: "ClockIn",
+      punchCount: 1,
+      nextPunchType: "ClockOut",
+      canClockIn: false,
+      canClockOut: true,
+    },
+    {
+      punchType: "ClockOut",
+      punchCount: 2,
+      nextPunchType: "ClockIn",
+      canClockIn: true,
+      canClockOut: false,
+    },
+    {
+      punchType: "ClockIn",
+      punchCount: 3,
+      nextPunchType: "ClockOut",
+      canClockIn: false,
+      canClockOut: true,
+    },
+    {
+      punchType: "ClockOut",
+      punchCount: 4,
+      nextPunchType: "ClockIn",
+      canClockIn: true,
+      canClockOut: false,
+    },
+  ] as const;
+  for (const [offset, expected] of expectedQrPunches.entries()) {
+    const { punch, payload, resolved } = await punchWithReviewQr(
+      qrRequest,
+      reviewQrToken(offset + 2),
+    );
+    assert.equal(punch.punchType, expected.punchType);
+    assert.equal(punch.storeCode, resolved.storeCode);
+    assert.equal(punch.serverTimeUtc, "2026-07-16T00:00:00.000Z");
+    assert.equal(punch.workDate, "2026-07-16");
+    assert.equal(payload.punchAuthorizationToken, resolved.punchAuthorizationToken);
+    assert.equal("qrToken" in punch, false);
+    assert.equal("punchAuthorizationToken" in punch, false);
+    if (offset === 0) {
+      const sameAuthorizationRetry = await qrRequest(
+        "POST",
+        "/react/v1/attendance/punch",
+        payload,
+      );
+      const reResolved = await resolveReviewQr(qrRequest, reviewQrToken(offset + 2));
+      const reResolvedRetry = await qrRequest(
+        "POST",
+        "/react/v1/attendance/punch",
+        buildAttendanceQrPunchPayload(
+          reviewQrToken(offset + 2),
+          reResolved.punchAuthorizationToken,
+          attendanceQrVerification,
+        ),
+      );
+      for (const retry of [sameAuthorizationRetry, reResolvedRetry]) {
+        assert.equal(retry.punchGuid, punch.punchGuid);
+        assert.equal(retry.punchType, punch.punchType);
+        assert.equal("qrToken" in retry, false);
+        assert.equal("punchAuthorizationToken" in retry, false);
+      }
+    }
+    qrToday = await qrRequest(
+      "GET",
+      "/react/v1/attendance/my/today?storeCode=REV001",
+    );
+    assert.deepEqual(
+      {
+        punchCount: qrToday.punches.length,
+        nextPunchType: qrToday.nextPunchType,
+        canClockIn: qrToday.canClockIn,
+        canClockOut: qrToday.canClockOut,
+      },
+      {
+        punchCount: expected.punchCount,
+        nextPunchType: expected.nextPunchType,
+        canClockIn: expected.canClockIn,
+        canClockOut: expected.canClockOut,
+      },
+      "QR ClockIn/ClockOut 后 Today refetch 必须反映服务端推导的下一动作",
+    );
+  }
+  await punchWithReviewQr(qrRequest, reviewQrToken(6));
+  await punchWithReviewQr(qrRequest, reviewQrToken(7));
+  qrToday = await qrRequest(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001",
+  );
+  assert.deepEqual(
+    {
+      punchCount: qrToday.punches.length,
+      nextPunchType: qrToday.nextPunchType,
+      canClockIn: qrToday.canClockIn,
+      canClockOut: qrToday.canClockOut,
+    },
+    {
+      punchCount: 6,
+      nextPunchType: "ClockIn",
+      canClockIn: false,
+      canClockOut: false,
+    },
+    "Review manager 的第三段完成后，QR punch 也必须关闭下一段",
+  );
+  const fourthSegmentQrToken = reviewQrToken(8);
+  const fourthSegmentResolve = await resolveReviewQr(qrRequest, fourthSegmentQrToken);
+  await assert.rejects(
+    () => qrRequest(
+      "POST",
+      "/react/v1/attendance/punch",
+      buildAttendanceQrPunchPayload(
+        fourthSegmentQrToken,
+        fourthSegmentResolve.punchAuthorizationToken,
+        attendanceQrVerification,
+      ),
+    ),
+    /SEGMENT_LIMIT_REACHED/,
+    "Review manager 的 QR punch 不得绕过每日每店三段上限",
+  );
+
+  let boundaryNow = new Date("2026-07-15T15:00:00.000Z");
+  const boundaryBaseDataStore = createIosReviewDataStore(boundaryNow);
+  const boundaryDataStore = {
+    ...boundaryBaseDataStore,
+    getNow: () => new Date(boundaryNow.getTime()),
+  };
+  const boundaryTransport = createIosReviewTransport(boundaryDataStore);
+  const boundaryRequest = async (
+    method: Method,
+    url: string,
+    body?: unknown,
+    params?: Record<string, unknown>,
+  ) => (
+    await boundaryTransport.dispatch({ method, url, data: body, params })
+  ).data as any;
+  const businessDayQrToken = reviewQrToken(30);
+  const businessDayPunch = await punchWithReviewQr(
+    boundaryRequest,
+    businessDayQrToken,
+  );
+  const unusedQrToken = reviewQrToken(31);
+  const unusedResolve = await resolveReviewQr(boundaryRequest, unusedQrToken);
+  const boundaryToday = await boundaryRequest(
+    "GET",
+    "/react/v1/attendance/my/today?storeCode=REV001",
+  );
+  assert.equal(boundaryToday.workDate, "2026-07-16");
+  assert.equal(boundaryToday.schedules[0]?.workDate, "2026-07-16");
+  assert.equal(boundaryToday.holidays[0]?.holidayDate, "2026-07-16");
+  assert.equal(boundaryToday.punches[0]?.workDate, "2026-07-16");
+  assert.equal(boundaryToday.punches[0]?.punchGuid, businessDayPunch.punch.punchGuid);
+  assert.equal("qrToken" in boundaryToday.punches[0], false);
+  assert.equal("punchAuthorizationToken" in boundaryToday.punches[0], false);
+
+  boundaryNow = new Date(businessDayPunch.resolved.punchAuthorizationExpiresAtUtc!);
+  const idempotentAtExpiry = await boundaryRequest(
+    "POST",
+    "/react/v1/attendance/punch",
+    businessDayPunch.payload,
+  );
+  assert.equal(idempotentAtExpiry.punchGuid, businessDayPunch.punch.punchGuid);
+  assert.equal(idempotentAtExpiry.punchType, businessDayPunch.punch.punchType);
+  await assert.rejects(
+    () => boundaryRequest(
+      "POST",
+      "/react/v1/attendance/punch",
+      buildAttendanceQrPunchPayload(
+        unusedQrToken,
+        unusedResolve.punchAuthorizationToken,
+        attendanceQrVerification,
+      ),
+    ),
+    /ATTENDANCE_PUNCH_AUTHORIZATION_EXPIRED/,
+    "未落库二维码必须在短时授权到期边界拒绝，已落库重试则先命中幂等结果",
+  );
 
   const menu = await request("GET", "/navigation/app-menu");
   assert.equal(menu.length, 19, "审核菜单必须覆盖全部 19 个业务入口");
@@ -477,10 +741,7 @@ async function run() {
       canClockOut: false,
     },
   );
-  await request("POST", "/react/v1/attendance/punch", {
-    storeCode: "REV001",
-    punchType: "ClockIn",
-  });
+  await punchWithReviewQr(request, reviewQrToken(20));
   todayAttendance = await request(
     "GET",
     "/react/v1/attendance/my/today?storeCode=REV001",
@@ -516,10 +777,7 @@ async function run() {
     consecutiveClockInPreview.validationErrorCode,
     "PUNCH_SEQUENCE_CONSECUTIVE_TYPE",
   );
-  await request("POST", "/react/v1/attendance/punch", {
-    storeCode: "REV001",
-    punchType: "ClockOut",
-  });
+  await punchWithReviewQr(request, reviewQrToken(21));
   todayAttendance = await request(
     "GET",
     "/react/v1/attendance/my/today?storeCode=REV001",
@@ -656,7 +914,7 @@ async function run() {
   assert.equal(fourthSegmentPreview.isValid, false);
   assert.equal(
     fourthSegmentPreview.validationErrorCode,
-    "PUNCH_SEGMENT_LIMIT_EXCEEDED",
+    "SEGMENT_LIMIT_REACHED",
   );
   await assert.rejects(
     () => request(
@@ -664,7 +922,7 @@ async function run() {
       "/react/v1/attendance/my/punch-adjustments",
       fourthSegmentPayload,
     ),
-    /PUNCH_SEGMENT_LIMIT_EXCEEDED/,
+    /SEGMENT_LIMIT_REACHED/,
     "create 不能绕过店长每日每店三段上限",
   );
 

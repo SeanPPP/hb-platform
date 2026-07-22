@@ -144,6 +144,7 @@ export interface AttendancePunchAdjustmentPayload {
   requestedPunchTimeLocal: string;
   requestedPunchTimeUtc?: string;
   reason: string;
+  previewRevision?: string;
 }
 
 export interface AttendancePunchAdjustment {
@@ -151,11 +152,14 @@ export interface AttendancePunchAdjustment {
   storeCode: string;
   scheduleGuid?: string;
   originalPunchGuid?: string;
+  originalPunchTimeLocal?: string;
   punchType: AttendancePunchType;
   requestedPunchTimeLocal: string;
   requestedPunchTimeUtc?: string;
+  effectivePunchTimeLocal?: string;
   reason: string;
   status: AttendanceApprovalStatus;
+  isDirectAdjustment?: boolean;
   submittedAt?: string;
   reviewedAt?: string;
 }
@@ -169,6 +173,7 @@ export interface AttendanceAdjustmentPreview {
   workedMinutesDelta: number;
   candidateOvertimeMinutesDelta: number;
   wouldAutoApprove: boolean;
+  previewRevision?: string;
 }
 
 export interface AttendancePunchVerificationPayload {
@@ -388,7 +393,7 @@ export interface AttendanceLeaveAttachmentUploadResult {
 export interface AttendanceApproval {
   approvalGuid: string;
   sourceGuid: string;
-  sourceType: "Punch" | "Leave" | string;
+  sourceType: "Punch" | "Leave" | "PunchAdjustment" | "Overtime" | "MissingClockOut" | string;
   employeeName?: string;
   storeCode?: string;
   storeName?: string;
@@ -397,12 +402,15 @@ export interface AttendanceApproval {
   detail?: string;
   status: AttendanceApprovalStatus;
   submittedAt?: string;
+  candidateOvertimeMinutes?: number;
+  approvedOvertimeMinutes?: number;
   adjustment?: AttendancePunchAdjustment;
 }
 
 export interface AttendanceApprovalPayload {
   approvalGuid: string;
   remark?: string;
+  approvedOvertimeMinutes?: number;
 }
 
 export interface AttendanceScheduleWeekParams {

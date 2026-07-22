@@ -8,8 +8,9 @@ internal static class AttendanceDailyMutationLock
     private static readonly Dictionary<string, LockEntry> ProcessLocks = new(StringComparer.Ordinal);
 
     internal static string BuildResource(string userGuid, string storeCode, DateTime workDate) =>
-        // 同一员工同一工作日跨门店的写操作必须串行，门店仅保留在调用签名中兼容现有入口。
-        $"attendance-day:{userGuid.Trim()}:{workDate:yyyyMMdd}"
+        // 同一时刻在不同门店会落到不同本地 WorkDate；锁必须覆盖员工全部考勤写入，
+        // 否则跨门店重叠检查、补卡和派生审批会在相邻业务日并发穿透。
+        $"attendance-employee:{userGuid.Trim()}"
             .ToLowerInvariant();
 
     internal static int GetProcessReferenceCount(string resource)

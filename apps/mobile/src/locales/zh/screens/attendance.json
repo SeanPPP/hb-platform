@@ -135,7 +135,39 @@
     "empty": "暂无请假申请"
   },
   "approvals": {
-    "empty": "暂无待审核事项"
+    "empty": "暂无待审核事项",
+    "adjustmentOriginal": "原始打卡：{{time}}",
+    "adjustmentRequested": "申请{{punchType}}：{{time}}",
+    "adjustmentEffective": "生效打卡：{{time}}",
+    "overtimeCandidate": "候选加班：{{minutes}} 分钟",
+    "overtimeApproved": "批准加班分钟",
+    "overtimeApprovedValue": "已批准加班：{{minutes}} 分钟",
+    "overtimeIncrement": "请输入 15 分钟的倍数",
+    "presentation": {
+      "Punch": {
+        "title": "打卡异常",
+        "detail": "{{workDate}} 的打卡异常"
+      },
+      "Leave": {
+        "title": "请假申请",
+        "detail": "{{workDate}} 开始的请假申请"
+      },
+      "PunchAdjustment": {
+        "title": "补卡申请"
+      },
+      "Overtime": {
+        "title": "加班审批"
+      },
+      "MissingClockOut": {
+        "title": "漏下班待处理",
+        "detail": "{{workDate}} 排班结束后仍存在未闭合班段。"
+      }
+    },
+    "overtimeValidation": {
+      "outOfRange": "批准加班必须在 0 到候选分钟之间。",
+      "invalidIncrement": "批准加班必须为 15 分钟倍数。",
+      "remarkRequired": "下调或拒绝加班时必须填写审核备注。"
+    }
   },
   "holidayManagement": {
     "noStore": "请先选择分店",
@@ -251,7 +283,8 @@
     "messages": {
       "previewFailed": "补卡预览失败。",
       "submitFailed": "补卡提交失败。",
-      "invalid": "当前补卡内容无法保存。"
+      "invalid": "当前补卡内容无法保存。",
+      "previewRevisionMissing": "服务端预览未返回版本号，请重新预览后再提交。"
     }
   },
   "datePicker": {
@@ -281,6 +314,8 @@
     "submitLeave": "提交申请",
     "approve": "通过",
     "reject": "拒绝",
+    "approveOvertime": "批准加班",
+    "rejectOvertime": "拒绝加班",
     "createSchedule": "创建排班",
     "publishWeek": "发布本周",
     "viewLocation": "查看位置"
@@ -297,7 +332,9 @@
   "sourceTypes": {
     "Punch": "打卡",
     "Leave": "请假",
-    "PunchAdjustment": "补卡"
+    "PunchAdjustment": "补卡",
+    "Overtime": "加班",
+    "MissingClockOut": "漏下班"
   },
   "statuses": {
     "Normal": "正常",
