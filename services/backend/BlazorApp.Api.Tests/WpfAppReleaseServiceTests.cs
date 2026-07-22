@@ -2,7 +2,9 @@ using System.Net;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Models;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -28,7 +30,7 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        _db.CodeFirst.InitTables<WpfAppRelease, WpfUpdatePolicy>();
+        _db.CodeFirst.InitTables<WpfAppRelease, WpfUpdatePolicy, WpfUpdatePolicyTarget, Store>();
     }
 
     [Fact]
@@ -1493,6 +1495,230 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
         Assert.Equal(0, await _db.Queryable<WpfUpdatePolicy>().CountAsync());
     }
 
+    [Fact]
+    public async Task SetTargetedPolicyAsync_事务替换目标并回显策略元数据()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.0.0");
+        await CreateRelease("production", "1.2.0");
+
+        var storesResult = await service.SetTargetedPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.2.0",
+                MinimumSupportedVersion = "1.0.0",
+                TargetScope = "stores",
+                TargetStoreGuids = ["store-b", "store-a", "STORE-A"],
+            },
+            "admin"
+        );
+
+        Assert.True(storesResult.Success);
+        Assert.Equal("stores", storesResult.Data!.TargetScope);
+        Assert.Equal(["store-a", "store-b"], storesResult.Data.TargetStoreGuids);
+        Assert.Empty(storesResult.Data.TargetDeviceRegistrationIds);
+        var savedStores = await _db.Queryable<WpfUpdatePolicyTarget>()
+            .Where(target => target.PolicyId == storesResult.Data.Id)
+            .ToListAsync();
+        Assert.Equal(2, savedStores.Count);
+        Assert.All(savedStores, target =>
+        {
+            Assert.NotNull(target.StoreGuid);
+            Assert.Null(target.DeviceRegistrationId);
+            Assert.Equal("admin", target.CreatedBy);
+            Assert.NotEqual(default, target.CreatedAt);
+        });
+
+        var devicesResult = await service.SetTargetedPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.2.0",
+                MinimumSupportedVersion = "1.0.0",
+                TargetScope = "devices",
+                TargetDeviceRegistrationIds = [9, 4, 9],
+            },
+            "admin-2"
+        );
+
+        Assert.True(devicesResult.Success);
+        Assert.Equal("devices", devicesResult.Data!.TargetScope);
+        Assert.Equal([4, 9], devicesResult.Data.TargetDeviceRegistrationIds);
+        var savedDevices = await _db.Queryable<WpfUpdatePolicyTarget>()
+            .Where(target => target.PolicyId == devicesResult.Data.Id)
+            .ToListAsync();
+        Assert.Equal(2, savedDevices.Count);
+        Assert.All(savedDevices, target =>
+        {
+            Assert.Null(target.StoreGuid);
+            Assert.NotNull(target.DeviceRegistrationId);
+            Assert.Equal("admin-2", target.CreatedBy);
+            Assert.NotEqual(default, target.CreatedAt);
+        });
+    }
+
+    [Fact]
+    public async Task SetTargetedPolicyAsync_事务成功后摘要查询失败仍返回已保存目标并记录脱敏警告()
+    {
+        await CreateRelease("production", "1.0.0");
+        await CreateRelease("production", "1.2.0");
+        var posmDbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"wpf-app-release-posm-{Guid.NewGuid():N}.db"
+        );
+        var posmDb = new SqlSugarClient(
+            new ConnectionConfig
+            {
+                ConnectionString = $"DataSource={posmDbPath}",
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+            }
+        );
+        var logger = new RecordingLogger<WpfAppReleaseService>();
+        var service = new WpfAppReleaseService(_db, logger, posmDb);
+
+        try
+        {
+            var result = await service.SetTargetedPolicyAsync(
+                new WpfUpdatePolicyRequest
+                {
+                    Channel = "production",
+                    TargetVersion = "1.2.0",
+                    MinimumSupportedVersion = "1.0.0",
+                    TargetScope = "devices",
+                    TargetDeviceRegistrationIds = [9, 4, 9],
+                },
+                "admin"
+            );
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.NotEqual(Guid.Empty, result.Data!.Id);
+            Assert.Equal([4, 9], result.Data.TargetDeviceRegistrationIds);
+            Assert.Contains(
+                logger.Entries,
+                entry =>
+                    entry.Level == LogLevel.Warning
+                    && entry.Exception == null
+                    && entry.Message.Contains(result.Data.Id.ToString(), StringComparison.Ordinal)
+            );
+            Assert.Equal(
+                2,
+                await _db.Queryable<WpfUpdatePolicyTarget>()
+                    .CountAsync(target => target.PolicyId == result.Data.Id)
+            );
+        }
+        finally
+        {
+            posmDb.Dispose();
+            SqliteTempFileCleanup.DeleteIfExists(posmDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task SetTargetedPolicyAsync_拒绝空定向目标()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.0.0");
+
+        var storesResult = await service.SetTargetedPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.0.0",
+                MinimumSupportedVersion = "1.0.0",
+                TargetScope = "stores",
+            },
+            "admin"
+        );
+        var devicesResult = await service.SetTargetedPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.0.0",
+                MinimumSupportedVersion = "1.0.0",
+                TargetScope = "devices",
+            },
+            "admin"
+        );
+
+        Assert.False(storesResult.Success);
+        Assert.Equal("TARGET_STORES_REQUIRED", storesResult.Code);
+        Assert.False(devicesResult.Success);
+        Assert.Equal("TARGET_DEVICES_REQUIRED", devicesResult.Code);
+        Assert.Empty(await _db.Queryable<WpfUpdatePolicy>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task CheckTargetedUpdateAsync_只向当前归属分店匹配的设备返回更新()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.0.0");
+        await CreateRelease("production", "1.2.0");
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "store-1",
+            StoreCode = "BRI",
+            StoreName = "Brisbane",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        var policy = await service.SetTargetedPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.2.0",
+                MinimumSupportedVersion = "1.0.0",
+                TargetScope = "stores",
+                TargetStoreGuids = ["store-1"],
+            },
+            "admin"
+        );
+        Assert.True(policy.Success);
+
+        var matched = await service.CheckTargetedUpdateAsync(
+            "production",
+            "1.0.0",
+            new WpfUpdateCheckDeviceIdentity { DeviceRegistrationId = 10, StoreCode = "BRI" }
+        );
+        var missingIdentity = await service.CheckTargetedUpdateAsync("production", "1.0.0", null);
+        var otherStore = await service.CheckTargetedUpdateAsync(
+            "production",
+            "1.0.0",
+            new WpfUpdateCheckDeviceIdentity { DeviceRegistrationId = 11, StoreCode = "MEL" }
+        );
+
+        Assert.True(matched.Success);
+        Assert.True(matched.Data!.UpdateAvailable);
+        Assert.False(missingIdentity.Data!.UpdateAvailable);
+        Assert.False(otherStore.Data!.UpdateAvailable);
+
+        var historicalStore = await _db.Queryable<Store>().SingleAsync(store => store.StoreGUID == "store-1");
+        historicalStore.IsActive = false;
+        await _db.Updateable(historicalStore).ExecuteCommandAsync();
+
+        var listed = await service.GetReleasesAsync(new WpfAppReleaseQuery { Channel = "production" });
+        Assert.All(listed.Data!.Items!, item =>
+        {
+            Assert.Equal("stores", item.TargetScope);
+            Assert.Equal(["store-1"], item.TargetStoreGuids);
+            Assert.Empty(item.TargetDeviceRegistrationIds);
+            Assert.NotNull(item.PolicyUpdatedAt);
+            Assert.Equal("admin", item.PolicyUpdatedBy);
+            var storeSummary = Assert.Single(item.TargetStoreSummaries);
+            Assert.Equal("store-1", storeSummary.StoreGuid);
+            Assert.Equal("BRI", storeSummary.StoreCode);
+            Assert.Equal("Brisbane", storeSummary.StoreName);
+            Assert.Empty(item.TargetDeviceSummaries);
+        });
+
+        // 定向策略的只读发布列表必须包含可展示的分店摘要，不能只把 UUID 留给前端自行猜测。
+        var listJson = System.Text.Json.JsonSerializer.Serialize(listed);
+        Assert.Contains("\"TargetStoreSummaries\"", listJson, StringComparison.Ordinal);
+    }
+
     private WpfAppReleaseService CreateService()
     {
         return new WpfAppReleaseService(_db, NullLogger<WpfAppReleaseService>.Instance);
@@ -1620,4 +1846,27 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
             return responder(request);
         }
     }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
 }

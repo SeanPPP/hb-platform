@@ -78,6 +78,56 @@ public sealed class AppUpdateServiceTests
     }
 
     [Fact]
+    public async Task CheckAsync_authenticated_device_forwards_identity_as_headers_without_disclosing_it_to_url_or_logs()
+    {
+        Uri? requestedUri = null;
+        string? deviceId = null;
+        string? authorizationCode = null;
+        string? sharedUpdateKey = null;
+        var logger = new ListLogger<LocalAppUpdateService>();
+        var service = new LocalAppUpdateService(
+            new HttpClient(new CapturingHandler(request =>
+            {
+                requestedUri = request.RequestUri;
+                deviceId = request.Headers.TryGetValues("X-Device-Id", out var deviceValues)
+                    ? deviceValues.SingleOrDefault()
+                    : null;
+                authorizationCode = request.Headers.TryGetValues("X-Auth-Code", out var authorizationValues)
+                    ? authorizationValues.SingleOrDefault()
+                    : null;
+                sharedUpdateKey = request.Headers.TryGetValues(AppUpdateOptions.CenterApiKeyHeaderName, out var keyValues)
+                    ? keyValues.SingleOrDefault()
+                    : null;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(AppUpdateCheckResponse.NoUpdate("1.0.0"))
+                };
+            })),
+            Options.Create(new AppUpdateOptions
+            {
+                CenterBaseUrl = "https://center.example/base/",
+                CheckApiKey = "shared-update-key"
+            }),
+            logger);
+
+        await service.CheckAsync(
+            new AppUpdateCheckRequest { CurrentVersion = "1.0.0", Channel = "production" },
+            new AppUpdateDeviceIdentity("HW-001", "device-auth-secret"));
+
+        Assert.Equal("HW-001", deviceId);
+        Assert.Equal("device-auth-secret", authorizationCode);
+        Assert.Equal("shared-update-key", sharedUpdateKey);
+        Assert.Equal(
+            "https://center.example/base/api/wpf-app-releases/check?channel=production&currentVersion=1.0.0",
+            requestedUri?.ToString());
+        Assert.DoesNotContain("device-auth-secret", requestedUri!.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("HW-001", requestedUri.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain(logger.Entries, entry =>
+            entry.Message.Contains("device-auth-secret", StringComparison.Ordinal) ||
+            entry.Message.Contains("HW-001", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task CheckAsync_adds_check_api_key_header_when_only_check_api_key_is_configured()
     {
         string? providedKey = null;

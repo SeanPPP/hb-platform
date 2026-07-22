@@ -2,6 +2,8 @@ import {
   buildWpfReleaseObjectKey,
   createWpfAppRelease,
   getWpfAppReleases,
+  getWpfTargetDevices,
+  getWpfTargetStores,
   initWpfReleaseUpload,
   normalizeWpfAppRelease,
   normalizeWpfReleaseUploadInitResult,
@@ -64,6 +66,25 @@ const normalizedRelease = normalizeWpfAppRelease({
   forceUpdate: 'true',
   minimumSupportedVersion: '1.0.0',
   targetVersion: '1.2.3',
+  targetScope: 'Devices',
+  targetStoreGuids: ['ignored-store'],
+  targetDeviceRegistrationIds: ['9', 3, 9],
+  targetStoreSummaries: [{
+    storeGuid: 'store-guid',
+    storeCode: 'S01',
+    storeName: 'Store One',
+  }],
+  targetDeviceSummaries: [{
+    deviceRegistrationId: 9,
+    systemDeviceNumber: 'POS-009',
+    storeCode: 'S01',
+    storeName: 'Store One',
+    remarks: 'Front counter',
+    hardwareId: 'must-not-reach-ui',
+    authorizationCode: 'must-not-reach-ui',
+  }],
+  policyUpdatedAt: '2026-07-22T02:00:00Z',
+  policyUpdatedBy: 'admin',
   createdAt: '2026-06-25T01:00:00Z',
   updatedAt: '2026-06-25T02:00:00Z',
 })
@@ -71,6 +92,29 @@ const normalizedRelease = normalizeWpfAppRelease({
 assertEqual(normalizedRelease.fileSize, 1048576, 'WPF release normalizer should parse fileSize as number')
 assertEqual(normalizedRelease.forceUpdate, true, 'WPF release normalizer should parse forceUpdate boolean')
 assertEqual(normalizedRelease.sha256, 'ABCDEF', 'WPF release normalizer should keep sha256')
+assertEqual(normalizedRelease.targetScope, 'devices', 'WPF release normalizer should normalize target scope')
+assertDeepEqual(
+  normalizedRelease.targetDeviceRegistrationIds,
+  [3, 9],
+  'WPF release normalizer should deduplicate and sort target device IDs',
+)
+assertEqual(normalizedRelease.policyUpdatedBy, 'admin', 'WPF release normalizer should preserve policy audit metadata')
+assertDeepEqual(
+  normalizedRelease.targetStoreSummaries,
+  [{ storeGuid: 'store-guid', storeCode: 'S01', storeName: 'Store One' }],
+  'WPF release normalizer should preserve safe target store summaries',
+)
+assertDeepEqual(
+  normalizedRelease.targetDeviceSummaries,
+  [{
+    deviceRegistrationId: 9,
+    systemDeviceNumber: 'POS-009',
+    storeCode: 'S01',
+    storeName: 'Store One',
+    remarks: 'Front counter',
+  }],
+  'WPF release normalizer should preserve safe target device summaries without credentials',
+)
 
 assertEqual(
   normalizeWpfAppRelease({
@@ -193,6 +237,9 @@ try {
     minimumSupportedVersion: '1.0.0',
     forceUpdate: true,
     isRollback: false,
+    targetScope: 'devices',
+    targetStoreGuids: ['ignored-store'],
+    targetDeviceRegistrationIds: [9, 3, 9],
   })
 
   await updateWpfAppRelease('release-1', { isActive: false })
@@ -232,8 +279,16 @@ try {
       minimumSupportedVersion: '1.0.0',
       forceUpdate: true,
       isRollback: false,
+      targetScope: 'devices',
+      targetStoreGuids: [],
+      targetDeviceRegistrationIds: [3, 9],
     },
-    'Policy save should submit rollback and force-update contract fields',
+    'Policy save should normalize target scope and submit only active target values',
+  )
+  assertEqual(
+    calls[3]?.url,
+    '/api/wpf-app-releases/policy/production',
+    'Policy save should bind the fixed channel in the route',
   )
   assertEqual(calls[4]?.url, '/api/wpf-app-releases/release-1', 'Update release should use release id route')
   assertEqual(calls[4]?.method, 'PUT', 'Update release should use PUT')
@@ -243,6 +298,59 @@ try {
       isActive: false,
     },
     'Update release should submit status mutation payload',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+const targetOptionCalls: Array<{ url: string; method?: string }> = []
+
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = String(input)
+  targetOptionCalls.push({ url, method: init?.method })
+  const data = url.includes('/devices')
+    ? {
+        items: [{
+          deviceRegistrationId: 7,
+          systemDeviceNumber: 'POS-007',
+          storeGuid: 'store-guid',
+          storeCode: 'S01',
+          storeName: 'Store One',
+          remarks: 'Front counter',
+        }],
+        total: 1,
+        page: 2,
+        pageSize: 25,
+      }
+    : { items: [{ storeGuid: 'store-guid', storeCode: 'S01', storeName: 'Store One' }] }
+
+  return new Response(JSON.stringify({ success: true, data }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}) as typeof fetch
+
+try {
+  const stores = await getWpfTargetStores()
+  const devices = await getWpfTargetDevices({ page: 2, pageSize: 25, keyword: ' POS 007 ' })
+
+  assertEqual(stores[0]?.storeGuid, 'store-guid', 'Target store options should preserve stable StoreGUID')
+  assertDeepEqual(
+    stores[0],
+    { storeGuid: 'store-guid', storeCode: 'S01', storeName: 'Store One' },
+    'Target store options should expose only GUID, code, and name',
+  )
+  assertEqual(devices.items[0]?.deviceRegistrationId, 7, 'Target devices should use registration ID')
+  assertEqual(devices.page, 2, 'Target device search should preserve backend pagination')
+  assertEqual(
+    targetOptionCalls[0]?.url,
+    '/api/wpf-app-releases/target-options/stores',
+    'Target stores should use the WPF-scoped endpoint',
+  )
+  assertEqual(
+    targetOptionCalls[1]?.url,
+    '/api/wpf-app-releases/target-options/devices?page=2&pageSize=25&keyword=POS+007',
+    'Target device search should be paged and trim the keyword',
   )
 } finally {
   globalThis.fetch = originalFetch
@@ -624,6 +732,9 @@ try {
       forceUpdate: true,
       isRollback: true,
       rollbackConfirmed: false,
+      targetScope: 'all',
+      targetStoreGuids: [],
+      targetDeviceRegistrationIds: [],
     }),
     ['WPF_POLICY_SAVE_REJECTED', 'Rollback confirmation required'],
     'Save policy should throw backend code and message when ApiResponse.success is false',

@@ -1737,6 +1737,7 @@ BEGIN
         [TargetVersion] nvarchar(80) NOT NULL,
         [MinimumSupportedVersion] nvarchar(80) NULL,
         [ForceUpdate] bit NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_ForceUpdate] DEFAULT(0),
+        [TargetScope] nvarchar(16) NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_TargetScope] DEFAULT('all'),
         [CreatedAt] datetime2 NOT NULL,
         [CreatedBy] nvarchar(max) NULL,
         [UpdatedAt] datetime2 NULL,
@@ -1776,6 +1777,12 @@ BEGIN
     BEGIN
         ALTER TABLE [WpfUpdatePolicy]
         ADD [ForceUpdate] bit NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_ForceUpdate] DEFAULT(0);
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'TargetScope') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [TargetScope] nvarchar(16) NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_TargetScope] DEFAULT('all');
     END;
 
     IF COL_LENGTH('WpfUpdatePolicy', 'CreatedAt') IS NULL
@@ -1878,6 +1885,24 @@ BEGIN
     );
 END;
 
+-- TargetScope 可能刚由同一迁移批次补列，首次读取放在动态 SQL 中以避免旧库升级时的批编译缺列错误。
+IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NOT NULL
+BEGIN
+    EXEC(N'
+        UPDATE [WpfUpdatePolicy]
+        SET [TargetScope] = CASE
+                WHEN LOWER(LTRIM(RTRIM(ISNULL([TargetScope], '''')))) = ''stores'' THEN ''stores''
+                WHEN LOWER(LTRIM(RTRIM(ISNULL([TargetScope], '''')))) = ''devices'' THEN ''devices''
+                ELSE ''all''
+            END
+        WHERE ISNULL([TargetScope], '''') <> CASE
+                WHEN LOWER(LTRIM(RTRIM(ISNULL([TargetScope], '''')))) = ''stores'' THEN ''stores''
+                WHEN LOWER(LTRIM(RTRIM(ISNULL([TargetScope], '''')))) = ''devices'' THEN ''devices''
+                ELSE ''all''
+            END;
+    ');
+END;
+
 IF NOT EXISTS (
     SELECT *
     FROM sys.indexes
@@ -1887,6 +1912,95 @@ IF NOT EXISTS (
 BEGIN
     CREATE UNIQUE INDEX [IX_WpfUpdatePolicy_Channel]
     ON [WpfUpdatePolicy]([Channel]);
+END;
+
+-- 定向策略目标独立存表；每行只能代表一个分店或一台设备，避免类型和值分列带来的歧义。
+IF OBJECT_ID('WpfUpdatePolicyTarget', 'U') IS NULL
+BEGIN
+    CREATE TABLE [WpfUpdatePolicyTarget] (
+        [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_WpfUpdatePolicyTarget] PRIMARY KEY,
+        [PolicyId] uniqueidentifier NOT NULL,
+        [StoreGuid] nvarchar(100) NULL,
+        [DeviceRegistrationId] int NULL,
+        [CreatedAt] datetime2 NOT NULL CONSTRAINT [DF_WpfUpdatePolicyTarget_CreatedAt] DEFAULT(SYSUTCDATETIME()),
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('WpfUpdatePolicyTarget', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'PolicyId') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [PolicyId] uniqueidentifier NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'StoreGuid') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [StoreGuid] nvarchar(100) NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'DeviceRegistrationId') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [DeviceRegistrationId] int NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'CreatedAt') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [CreatedAt] datetime2 NOT NULL CONSTRAINT [DF_WpfUpdatePolicyTarget_CreatedAt] DEFAULT(SYSUTCDATETIME());
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'CreatedBy') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [CreatedBy] nvarchar(max) NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'UpdatedAt') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [UpdatedAt] datetime2 NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'UpdatedBy') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [UpdatedBy] nvarchar(max) NULL;
+    IF COL_LENGTH('WpfUpdatePolicyTarget', 'IsDeleted') IS NULL
+        ALTER TABLE [WpfUpdatePolicyTarget] ADD [IsDeleted] bit NULL;
+
+END;
+
+-- 目标表的列可能刚在上方 ALTER ADD；索引和 CHECK 也放在动态批次，避免 SQL Server 预编译旧表定义。
+IF OBJECT_ID('WpfUpdatePolicyTarget', 'U') IS NOT NULL
+BEGIN
+    EXEC(N'
+        IF NOT EXISTS (
+            SELECT * FROM sys.indexes
+            WHERE name = ''IX_WpfUpdatePolicyTarget_Policy_StoreGuid''
+              AND object_id = OBJECT_ID(''WpfUpdatePolicyTarget'')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX [IX_WpfUpdatePolicyTarget_Policy_StoreGuid]
+            ON [WpfUpdatePolicyTarget]([PolicyId], [StoreGuid])
+            WHERE [StoreGuid] IS NOT NULL;
+        END;
+
+        IF NOT EXISTS (
+            SELECT * FROM sys.indexes
+            WHERE name = ''IX_WpfUpdatePolicyTarget_Policy_DeviceRegistrationId''
+              AND object_id = OBJECT_ID(''WpfUpdatePolicyTarget'')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX [IX_WpfUpdatePolicyTarget_Policy_DeviceRegistrationId]
+            ON [WpfUpdatePolicyTarget]([PolicyId], [DeviceRegistrationId])
+            WHERE [DeviceRegistrationId] IS NOT NULL;
+        END;
+
+        IF NOT EXISTS (
+            SELECT * FROM sys.indexes
+            WHERE name = ''IX_WpfUpdatePolicyTarget_PolicyId''
+              AND object_id = OBJECT_ID(''WpfUpdatePolicyTarget'')
+        )
+        BEGIN
+            CREATE INDEX [IX_WpfUpdatePolicyTarget_PolicyId]
+            ON [WpfUpdatePolicyTarget]([PolicyId], [IsDeleted]);
+        END;
+
+        IF NOT EXISTS (
+            SELECT *
+            FROM sys.check_constraints
+            WHERE name = ''CK_WpfUpdatePolicyTarget_ExactlyOneTarget''
+              AND parent_object_id = OBJECT_ID(''WpfUpdatePolicyTarget'')
+        )
+        BEGIN
+            -- 关键位置：StoreGuid 与 DeviceRegistrationId 必须二选一，数据库层阻断含糊或双重目标。
+            ALTER TABLE [WpfUpdatePolicyTarget] WITH CHECK
+            ADD CONSTRAINT [CK_WpfUpdatePolicyTarget_ExactlyOneTarget]
+            CHECK (([StoreGuid] IS NOT NULL AND [DeviceRegistrationId] IS NULL)
+                OR ([StoreGuid] IS NULL AND [DeviceRegistrationId] IS NOT NULL));
+        END;
+    ');
 END;";
 
             // 关键位置：WPF 发布链路已经依赖校验、下载、安装器和强更字段，旧表也要在启动时补齐这些列。

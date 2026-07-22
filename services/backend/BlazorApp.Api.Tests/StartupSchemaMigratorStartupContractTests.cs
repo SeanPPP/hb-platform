@@ -689,6 +689,57 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StartupSchemaMigrator_幂等创建Wpf定向目标表并约束单一目标()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs")
+        );
+
+        Assert.Contains("IF COL_LENGTH('WpfUpdatePolicy', 'TargetScope') IS NULL", migrator);
+        Assert.Contains("IF OBJECT_ID('WpfUpdatePolicyTarget', 'U') IS NULL", migrator);
+        Assert.Contains("[StoreGuid] nvarchar(100) NULL", migrator);
+        Assert.Contains("[DeviceRegistrationId] int NULL", migrator);
+        Assert.Contains("IX_WpfUpdatePolicyTarget_Policy_StoreGuid", migrator);
+        Assert.Contains("IX_WpfUpdatePolicyTarget_Policy_DeviceRegistrationId", migrator);
+        Assert.Contains("IX_WpfUpdatePolicyTarget_PolicyId", migrator);
+        Assert.Contains("CK_WpfUpdatePolicyTarget_ExactlyOneTarget", migrator);
+        Assert.Contains("WHERE [StoreGuid] IS NOT NULL", migrator);
+        Assert.Contains("WHERE [DeviceRegistrationId] IS NOT NULL", migrator);
+        Assert.Contains("WITH CHECK", migrator);
+        Assert.Contains("[StoreGuid] IS NOT NULL AND [DeviceRegistrationId] IS NULL", migrator);
+        Assert.Contains("[StoreGuid] IS NULL AND [DeviceRegistrationId] IS NOT NULL", migrator);
+        Assert.DoesNotContain("[TargetType] nvarchar", migrator);
+        Assert.DoesNotContain("[TargetValue] nvarchar", migrator);
+
+        var targetScopeAddIndex = migrator.IndexOf(
+            "ADD [TargetScope] nvarchar(16) NOT NULL",
+            StringComparison.Ordinal
+        );
+        var targetScopeDynamicUpdateIndex = migrator.IndexOf(
+            "EXEC(N'\n        UPDATE [WpfUpdatePolicy]",
+            StringComparison.Ordinal
+        );
+        var targetColumnsAddIndex = migrator.IndexOf(
+            "IF COL_LENGTH('WpfUpdatePolicyTarget', 'StoreGuid') IS NULL",
+            StringComparison.Ordinal
+        );
+        var targetIndexesDynamicBatchIndex = migrator.IndexOf(
+            "EXEC(N'\n        IF NOT EXISTS (\n            SELECT * FROM sys.indexes",
+            StringComparison.Ordinal
+        );
+        Assert.True(targetScopeAddIndex >= 0, "WpfUpdatePolicy.TargetScope 补列 SQL 必须存在。");
+        Assert.True(
+            targetScopeDynamicUpdateIndex > targetScopeAddIndex,
+            "TargetScope 补列后的首次引用必须在动态 SQL 批次中执行。"
+        );
+        Assert.True(targetColumnsAddIndex >= 0, "WpfUpdatePolicyTarget 目标列补列 SQL 必须存在。");
+        Assert.True(
+            targetIndexesDynamicBatchIndex > targetColumnsAddIndex,
+            "目标列补齐后，索引与 CHECK 必须在独立动态批次中引用。"
+        );
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_唯一索引前先清理Wpf重复数据()
     {
         var repoRoot = FindRepoRoot();

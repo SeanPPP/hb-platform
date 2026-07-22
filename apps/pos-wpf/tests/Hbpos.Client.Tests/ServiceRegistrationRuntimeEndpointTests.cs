@@ -51,6 +51,18 @@ public sealed class ServiceRegistrationRuntimeEndpointTests
     }
 
     [Fact]
+    public void App_update_registers_dedicated_cache_and_credential_services()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<AppUpdateDeviceCacheInitializer>(provider.GetRequiredService<IAppUpdateDeviceCacheInitializer>());
+        Assert.IsType<AppUpdateDeviceCredentialProvider>(provider.GetRequiredService<IAppUpdateDeviceCredentialProvider>());
+        Assert.NotNull(provider.GetRequiredService<IAppUpdateApiClient>());
+    }
+
+    [Fact]
     public void Api_endpoint_switch_keeps_the_single_local_database_path()
     {
         var services = new ServiceCollection();

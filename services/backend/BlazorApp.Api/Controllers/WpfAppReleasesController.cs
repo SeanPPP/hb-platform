@@ -15,20 +15,25 @@ namespace BlazorApp.Api.Controllers
     public class WpfAppReleasesController : ControllerBase
     {
         private const string CheckApiKeyHeaderName = "X-HBPOS-App-Update-Key";
+        private const string DeviceIdHeaderName = "X-Device-Id";
+        private const string AuthCodeHeaderName = "X-Auth-Code";
 
         private readonly IWpfAppReleaseService _service;
+        private readonly IWpfAppReleaseTargetingService _targetingService;
         private readonly IConfiguration _configuration;
         private readonly IHostEnvironment _environment;
 
         public WpfAppReleasesController(
             IWpfAppReleaseService service,
             IConfiguration configuration,
-            IHostEnvironment environment
+            IHostEnvironment environment,
+            IWpfAppReleaseTargetingService targetingService
         )
         {
             _service = service;
             _configuration = configuration;
             _environment = environment;
+            _targetingService = targetingService;
         }
 
         [HttpGet]
@@ -71,13 +76,46 @@ namespace BlazorApp.Api.Controllers
             return Ok(result);
         }
 
-        [HttpPost("policy")]
+        [HttpPost("policy/{channel}")]
         [Authorize(Policy = Permissions.System.ManageAppDownloads)]
-        public async Task<IActionResult> SetPolicy([FromBody] WpfUpdatePolicyRequest request)
+        public async Task<IActionResult> SetPolicy(
+            [FromRoute] string channel,
+            [FromBody] WpfUpdatePolicyRequest request
+        )
         {
+            if (!TryNormalizeManagedChannel(channel, out var managedChannel))
+            {
+                return BadRequest(
+                    ApiResponse<WpfUpdatePolicyDto>.Error(
+                        "Only production and preview policy channels are supported.",
+                        "WPF_POLICY_CHANNEL_INVALID"
+                    )
+                );
+            }
+
+            // 策略渠道只由路由决定，拒绝请求体伪造其他渠道后绕过后台当前页面的策略范围。
+            request.Channel = managedChannel;
             var currentUser = User.Identity?.Name ?? "System";
-            var result = await _service.SetPolicyAsync(request, currentUser);
+            var result = await _targetingService.SetPolicyAsync(request, currentUser);
             return Ok(result);
+        }
+
+        [HttpGet("target-options/stores")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> GetTargetStoreOptions()
+        {
+            return Ok(await _targetingService.GetStoreOptionsAsync());
+        }
+
+        [HttpGet("target-options/devices")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> GetTargetDeviceOptions(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? keyword = null
+        )
+        {
+            return Ok(await _targetingService.GetDeviceOptionsAsync(page, pageSize, keyword));
         }
 
         [HttpGet("check")]
@@ -97,7 +135,12 @@ namespace BlazorApp.Api.Controllers
                 );
             }
 
-            var result = await _service.CheckUpdateAsync(channel, currentVersion);
+            var result = await _targetingService.CheckUpdateAsync(
+                channel,
+                currentVersion,
+                Request.Headers[DeviceIdHeaderName].FirstOrDefault(),
+                Request.Headers[AuthCodeHeaderName].FirstOrDefault()
+            );
             return Ok(result);
         }
 
@@ -126,6 +169,12 @@ namespace BlazorApp.Api.Controllers
         private static string? NormalizeOptional(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static bool TryNormalizeManagedChannel(string? channel, out string normalizedChannel)
+        {
+            normalizedChannel = NormalizeOptional(channel)?.ToLowerInvariant() ?? string.Empty;
+            return normalizedChannel is "production" or "preview";
         }
 
         private static string? GetFirstNonBlankValue(params string?[] values)

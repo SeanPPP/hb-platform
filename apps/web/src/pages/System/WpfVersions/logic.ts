@@ -1,4 +1,8 @@
-import type { WpfAppRelease, WpfReleasePolicyRequest } from '../../../types/wpfVersion'
+import type {
+  WpfAppRelease,
+  WpfReleasePolicyRequest,
+  WpfUpdateTargetScope,
+} from '../../../types/wpfVersion'
 
 export const WPF_RELEASE_CHANNELS = ['production', 'preview'] as const
 
@@ -43,6 +47,7 @@ export async function calculateFileSha256(file: Blob): Promise<string> {
 }
 
 export function buildWpfPolicyPayload(input: WpfReleasePolicyRequest): WpfReleasePolicyRequest {
+  const targetScope = normalizeWpfTargetScope(input.targetScope)
   return {
     channel: normalizeWpfReleaseChannel(input.channel),
     targetVersion: input.targetVersion.trim(),
@@ -50,11 +55,60 @@ export function buildWpfPolicyPayload(input: WpfReleasePolicyRequest): WpfReleas
     forceUpdate: input.forceUpdate,
     isRollback: input.isRollback,
     rollbackConfirmed: input.rollbackConfirmed,
+    targetScope,
+    targetStoreGuids: targetScope === 'stores'
+      ? normalizeUniqueStrings(input.targetStoreGuids)
+      : [],
+    targetDeviceRegistrationIds: targetScope === 'devices'
+      ? normalizeUniquePositiveIntegers(input.targetDeviceRegistrationIds)
+      : [],
   }
 }
 
-export function canSubmitWpfPolicy(input: Pick<WpfReleasePolicyRequest, 'targetVersion' | 'minimumSupportedVersion'>) {
-  return Boolean(input.targetVersion.trim() && input.minimumSupportedVersion.trim())
+export function canSubmitWpfPolicy(
+  input: Pick<WpfReleasePolicyRequest,
+    'targetVersion' | 'minimumSupportedVersion' | 'targetScope' | 'targetStoreGuids' | 'targetDeviceRegistrationIds'>,
+) {
+  if (!input.targetVersion.trim() || !input.minimumSupportedVersion.trim()) {
+    return false
+  }
+
+  const targetScope = normalizeWpfTargetScope(input.targetScope)
+  if (targetScope === 'stores') {
+    return normalizeUniqueStrings(input.targetStoreGuids).length > 0
+  }
+  if (targetScope === 'devices') {
+    return normalizeUniquePositiveIntegers(input.targetDeviceRegistrationIds).length > 0
+  }
+  return true
+}
+
+export function canSubmitWpfPolicyEditor(input: {
+  policy: WpfReleasePolicyRequest
+  policyDataReady: boolean
+  activeVersions: string[]
+  targetOptionsLoading: boolean
+  targetOptionsError: boolean
+}) {
+  if (!input.policyDataReady) {
+    return false
+  }
+
+  const policy = buildWpfPolicyPayload(input.policy)
+  const activeVersions = new Set(
+    input.activeVersions.map((version) => version.trim()).filter(Boolean),
+  )
+  if (
+    !canSubmitWpfPolicy(policy)
+    || !activeVersions.has(policy.targetVersion)
+    || !activeVersions.has(policy.minimumSupportedVersion)
+    || getWpfPolicyRangeError(policy) === 'INVALID_VERSION_RANGE'
+  ) {
+    return false
+  }
+
+  return policy.targetScope === 'all'
+    || (!input.targetOptionsLoading && !input.targetOptionsError)
 }
 
 export function getEffectiveWpfMinimumSupportedVersion(
@@ -125,7 +179,17 @@ export function getWpfCurrentVersionText(
 }
 
 export function getWpfPolicySummary(
-  releases: Array<Pick<WpfAppRelease, 'channel' | 'version' | 'isCurrent' | 'targetVersion' | 'minimumSupportedVersion' | 'forceUpdate'>>,
+  releases: Array<
+    Pick<WpfAppRelease, 'channel' | 'version' | 'isCurrent' | 'targetVersion' | 'minimumSupportedVersion' | 'forceUpdate'>
+    & Partial<Pick<WpfAppRelease,
+      | 'targetScope'
+      | 'targetStoreGuids'
+      | 'targetDeviceRegistrationIds'
+      | 'targetStoreSummaries'
+      | 'targetDeviceSummaries'
+      | 'policyUpdatedAt'
+      | 'policyUpdatedBy'>>
+  >,
 ) {
   // 策略元数据由后端随每行返回；当前目标不在当前分页时，不能用第一页发布行本身推断策略。
   const policyCarrier = releases.find((item) => item.targetVersion?.trim())
@@ -141,13 +205,51 @@ export function getWpfPolicySummary(
   }
 
   const currentRelease = releases.find((item) => item.isCurrent || item.version.trim() === targetVersion)
+  const targetScope = normalizeWpfTargetScope(policyCarrier.targetScope)
+  const targetStoreGuids = targetScope === 'stores'
+    ? normalizeUniqueStrings(policyCarrier.targetStoreGuids ?? [])
+    : []
+  const targetDeviceRegistrationIds = targetScope === 'devices'
+    ? normalizeUniquePositiveIntegers(policyCarrier.targetDeviceRegistrationIds ?? [])
+    : []
+  const targetStoreGuidSet = new Set(targetStoreGuids.map((value) => value.toLowerCase()))
+  const targetDeviceIdSet = new Set(targetDeviceRegistrationIds)
 
   return {
     channel: normalizeWpfReleaseChannel((currentRelease ?? policyCarrier).channel),
     targetVersion,
     minimumSupportedVersion: policyCarrier.minimumSupportedVersion?.trim() || targetVersion,
     forceUpdate: Boolean(policyCarrier.forceUpdate || currentRelease?.forceUpdate),
+    targetScope,
+    targetStoreGuids,
+    targetDeviceRegistrationIds,
+    targetStoreSummaries: targetScope === 'stores'
+      ? (policyCarrier.targetStoreSummaries ?? [])
+        .filter((item) => targetStoreGuidSet.has(item.storeGuid.toLowerCase()))
+      : [],
+    targetDeviceSummaries: targetScope === 'devices'
+      ? (policyCarrier.targetDeviceSummaries ?? [])
+        .filter((item) => targetDeviceIdSet.has(item.deviceRegistrationId))
+      : [],
+    policyUpdatedAt: policyCarrier.policyUpdatedAt ?? null,
+    policyUpdatedBy: policyCarrier.policyUpdatedBy ?? null,
   }
+}
+
+export function normalizeWpfTargetScope(value?: string | null): WpfUpdateTargetScope {
+  const normalized = value?.trim().toLowerCase()
+  if (normalized === 'stores' || normalized === 'devices') {
+    return normalized
+  }
+  return 'all'
+}
+
+function normalizeUniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort()
+}
+
+function normalizeUniquePositiveIntegers(values: number[]) {
+  return [...new Set(values.filter((value) => Number.isInteger(value) && value > 0))].sort((left, right) => left - right)
 }
 
 function compareWpfVersion(left: string, right: string) {

@@ -134,6 +134,7 @@
     <Compile Include="MobileAppBuildServiceTests.cs" />
     <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
+    <Compile Include="WpfAppReleaseTargetingServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />
     <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
     <Compile Include="PreorderRulesTests.cs" />

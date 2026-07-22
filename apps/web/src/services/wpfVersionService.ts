@@ -9,6 +9,12 @@ import type {
   WpfReleaseUploadInitRequest,
   WpfReleaseUploadInitRawResult,
   WpfReleaseUploadInitResult,
+  WpfTargetDeviceOption,
+  WpfTargetDevicePagedResult,
+  WpfTargetDeviceSummary,
+  WpfTargetStoreOption,
+  WpfTargetStoreSummary,
+  WpfUpdateTargetScope,
 } from '../types/wpfVersion'
 import request, { unwrapApiData } from '../utils/request'
 
@@ -65,6 +71,86 @@ function getNumber(raw: Record<string, unknown>, key: string) {
     return Number.isFinite(parsed) ? parsed : null
   }
   return null
+}
+
+function getStringArray(raw: Record<string, unknown>, key: string) {
+  const value = raw[key]
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+function getNumberArray(raw: Record<string, unknown>, key: string) {
+  const value = raw[key]
+  return Array.isArray(value)
+    ? value
+      .map((item) => typeof item === 'number' ? item : Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0)
+    : []
+}
+
+function normalizeWpfTargetScope(value: unknown): WpfUpdateTargetScope {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'stores' || normalized === 'devices') {
+      return normalized
+    }
+  }
+  return 'all'
+}
+
+function normalizeWpfTargetStoreSummary(value: unknown): WpfTargetStoreSummary | null {
+  const raw = asRecord(value)
+  const storeGuid = getString(raw, 'storeGuid')?.trim() ?? ''
+  if (!storeGuid) {
+    return null
+  }
+
+  return {
+    storeGuid,
+    storeCode: getString(raw, 'storeCode')?.trim() ?? '',
+    storeName: getString(raw, 'storeName')?.trim() ?? '',
+  }
+}
+
+function normalizeWpfTargetDeviceSummary(value: unknown): WpfTargetDeviceSummary | null {
+  const raw = asRecord(value)
+  const deviceRegistrationId = getNumber(raw, 'deviceRegistrationId')
+  if (!deviceRegistrationId || !Number.isInteger(deviceRegistrationId) || deviceRegistrationId <= 0) {
+    return null
+  }
+
+  return {
+    deviceRegistrationId,
+    systemDeviceNumber: getString(raw, 'systemDeviceNumber')?.trim() ?? '',
+    storeCode: getString(raw, 'storeCode')?.trim() ?? '',
+    storeName: getString(raw, 'storeName')?.trim() ?? '',
+    remarks: getString(raw, 'remarks')?.trim() || null,
+  }
+}
+
+function normalizeWpfTargetStoreSummaries(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const summaries = value
+    .map(normalizeWpfTargetStoreSummary)
+    .filter((item): item is WpfTargetStoreSummary => item !== null)
+  return [...new Map(summaries.map((item) => [item.storeGuid.toLowerCase(), item])).values()]
+    .sort((left, right) => left.storeGuid.localeCompare(right.storeGuid))
+}
+
+function normalizeWpfTargetDeviceSummaries(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const summaries = value
+    .map(normalizeWpfTargetDeviceSummary)
+    .filter((item): item is WpfTargetDeviceSummary => item !== null)
+  return [...new Map(summaries.map((item) => [item.deviceRegistrationId, item])).values()]
+    .sort((left, right) => left.deviceRegistrationId - right.deviceRegistrationId)
 }
 
 export function normalizeWpfInstallerType(value: unknown): WpfInstallerType | null {
@@ -170,6 +256,14 @@ export function normalizeWpfAppRelease(raw: Record<string, unknown>): WpfAppRele
     forceUpdate: getBoolean(raw, 'forceUpdate'),
     minimumSupportedVersion: getString(raw, 'minimumSupportedVersion'),
     targetVersion: getString(raw, 'targetVersion'),
+    targetScope: normalizeWpfTargetScope(raw.targetScope),
+    targetStoreGuids: [...new Set(getStringArray(raw, 'targetStoreGuids').map((item) => item.trim()).filter(Boolean))].sort(),
+    targetDeviceRegistrationIds: [...new Set(getNumberArray(raw, 'targetDeviceRegistrationIds'))].sort((left, right) => left - right),
+    // 只挑选后台约定的安全展示字段，授权码和完整硬件标识即使意外出现也不会进入页面模型。
+    targetStoreSummaries: normalizeWpfTargetStoreSummaries(raw.targetStoreSummaries),
+    targetDeviceSummaries: normalizeWpfTargetDeviceSummaries(raw.targetDeviceSummaries),
+    policyUpdatedAt: getString(raw, 'policyUpdatedAt'),
+    policyUpdatedBy: getString(raw, 'policyUpdatedBy'),
     createdAt: getString(raw, 'createdAt'),
     updatedAt: getString(raw, 'updatedAt') ?? getString(raw, 'lastModifiedAt'),
   }
@@ -297,19 +391,104 @@ export async function createWpfAppRelease(input: CreateWpfAppReleaseRequest) {
 }
 
 export async function saveWpfReleasePolicy(input: WpfReleasePolicyRequest) {
+  const targetScope = normalizeWpfTargetScope(input.targetScope)
+  const channel = input.channel.trim().toLowerCase() || 'production'
   const payload: WpfReleasePolicyRequest = {
-    channel: input.channel.trim().toLowerCase(),
+    channel,
     targetVersion: normalizeWpfVersion(input.targetVersion),
     minimumSupportedVersion: normalizeWpfVersion(input.minimumSupportedVersion),
     forceUpdate: input.forceUpdate,
     isRollback: input.isRollback,
     rollbackConfirmed: input.rollbackConfirmed,
+    targetScope,
+    targetStoreGuids: targetScope === 'stores'
+      ? [...new Set(input.targetStoreGuids.map((item) => item.trim()).filter(Boolean))].sort()
+      : [],
+    targetDeviceRegistrationIds: targetScope === 'devices'
+      ? [...new Set(input.targetDeviceRegistrationIds.filter((item) => Number.isInteger(item) && item > 0))]
+        .sort((left, right) => left - right)
+      : [],
   }
   const response = await request.post<ApiResponse<unknown> | unknown>(
-    `${WPF_APP_RELEASES_API}/policy`,
+    `${WPF_APP_RELEASES_API}/policy/${encodeURIComponent(channel)}`,
     payload,
   )
   return unwrapWpfResponseData(response)
+}
+
+function normalizeWpfTargetStoreOption(value: unknown): WpfTargetStoreOption | null {
+  const raw = asRecord(value)
+  const storeGuid = getString(raw, 'storeGuid')?.trim() ?? ''
+  if (!storeGuid) {
+    return null
+  }
+  return {
+    storeGuid,
+    storeCode: getString(raw, 'storeCode')?.trim() ?? '',
+    storeName: getString(raw, 'storeName')?.trim() ?? '',
+  }
+}
+
+function normalizeWpfTargetDeviceOption(value: unknown): WpfTargetDeviceOption | null {
+  const raw = asRecord(value)
+  const deviceRegistrationId = getNumber(raw, 'deviceRegistrationId')
+  if (!deviceRegistrationId || !Number.isInteger(deviceRegistrationId) || deviceRegistrationId <= 0) {
+    return null
+  }
+  return {
+    deviceRegistrationId,
+    systemDeviceNumber: getString(raw, 'systemDeviceNumber')?.trim() ?? '',
+    storeCode: getString(raw, 'storeCode')?.trim() ?? '',
+    storeName: getString(raw, 'storeName')?.trim() ?? '',
+    remarks: getString(raw, 'remarks'),
+  }
+}
+
+export async function getWpfTargetStores(): Promise<WpfTargetStoreOption[]> {
+  const response = await request.get<ApiResponse<unknown> | unknown>(
+    `${WPF_APP_RELEASES_API}/target-options/stores`,
+  )
+  const data = unwrapWpfResponseData(response)
+  const raw = asRecord(data)
+  const items = Array.isArray(data) ? data : Array.isArray(raw.items) ? raw.items : []
+  return items
+    .map(normalizeWpfTargetStoreOption)
+    .filter((item): item is WpfTargetStoreOption => item !== null)
+}
+
+export async function getWpfTargetDevices(params?: {
+  page?: number
+  pageSize?: number
+  keyword?: string
+}): Promise<WpfTargetDevicePagedResult> {
+  const page = params?.page ?? 1
+  const pageSize = params?.pageSize ?? 50
+  const response = await request.get<ApiResponse<unknown> | unknown>(
+    `${WPF_APP_RELEASES_API}/target-options/devices`,
+    {
+      params: {
+        page,
+        pageSize,
+        keyword: params?.keyword?.trim() || undefined,
+      },
+    },
+  )
+  const raw = asRecord(unwrapWpfResponseData(response))
+  const rawItems = Array.isArray(raw.items)
+    ? raw.items
+    : Array.isArray(raw.data)
+      ? raw.data
+      : []
+  const items = rawItems
+    .map(normalizeWpfTargetDeviceOption)
+    .filter((item): item is WpfTargetDeviceOption => item !== null)
+
+  return {
+    items,
+    total: Number(raw.total ?? raw.totalCount ?? items.length),
+    page: Number(raw.page ?? page),
+    pageSize: Number(raw.pageSize ?? pageSize),
+  }
 }
 
 export async function updateWpfAppRelease(id: string, input: WpfAppReleaseUpdateRequest) {

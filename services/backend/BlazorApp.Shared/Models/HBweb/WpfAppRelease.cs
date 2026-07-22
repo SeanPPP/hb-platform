@@ -69,5 +69,28 @@ namespace BlazorApp.Shared.Models.HBweb
 
         [SugarColumn(IsNullable = false)]
         public bool ForceUpdate { get; set; }
+
+        [SugarColumn(Length = 16, IsNullable = false)]
+        public string TargetScope { get; set; } = "all";
+    }
+
+    /// <summary>
+    /// WPF 更新策略的分店或设备定向目标。
+    /// </summary>
+    [SugarTable("WpfUpdatePolicyTarget")]
+    public class WpfUpdatePolicyTarget : BaseEntity
+    {
+        [SugarColumn(IsPrimaryKey = true, IsIdentity = false)]
+        public Guid Id { get; set; } = Guid.NewGuid();
+
+        [SugarColumn(IsNullable = false)]
+        public Guid PolicyId { get; set; }
+
+        // 每条目标只能指定一个分店或一台设备；数据库 CHECK 约束同步保证二选一。
+        [SugarColumn(Length = 100, IsNullable = true)]
+        public string? StoreGuid { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? DeviceRegistrationId { get; set; }
     }
 }

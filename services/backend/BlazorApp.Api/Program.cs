@@ -579,13 +579,15 @@ builder.Services.AddHostedService<MobileAppBuildMirrorBackgroundService>();
 builder.Services.AddScoped<WpfAppReleaseService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();
+    var posmContext = sp.GetRequiredService<POSMSqlSugarContext>();
     var uploadService = sp.GetRequiredService<TencentCloudUploadService>();
     var logger = sp.GetRequiredService<ILogger<WpfAppReleaseService>>();
-    return new WpfAppReleaseService(context.Db, uploadService, logger);
+    return new WpfAppReleaseService(context.Db, uploadService, logger, posmContext.Db);
 }); // WPF 客户端安装包发布与更新策略服务
 builder.Services.AddScoped<IWpfAppReleaseService>(sp =>
     sp.GetRequiredService<WpfAppReleaseService>()
 );
+builder.Services.AddScoped<IWpfAppReleaseTargetingService, WpfAppReleaseTargetingService>();
 builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务

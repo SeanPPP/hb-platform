@@ -117,11 +117,56 @@ public sealed class WpfAppReleasesControllerTests
         Assert.Equal("1.0.0", service.CurrentVersion);
     }
 
+    [Fact]
+    public async Task Check_共享密钥通过后将设备头交给严格定向检查服务()
+    {
+        var service = new CapturingWpfAppReleaseService();
+        var targetingService = new CapturingTargetingService();
+        var controller = CreateController(service, "terminal-secret", targetingService: targetingService);
+        controller.HttpContext.Request.Headers[AppUpdateKeyHeaderName] = "terminal-secret";
+        controller.HttpContext.Request.Headers["X-Device-Id"] = "hardware-1";
+        controller.HttpContext.Request.Headers["X-Auth-Code"] = "auth-1";
+
+        var result = await controller.Check("production", "1.0.0");
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.True(targetingService.CheckCalled);
+        Assert.Equal("hardware-1", targetingService.DeviceId);
+        Assert.Equal("auth-1", targetingService.AuthCode);
+        Assert.False(service.CheckCalled);
+    }
+
+    [Fact]
+    public async Task SetPolicy_路由渠道覆盖请求体且仅接受生产或预览渠道()
+    {
+        var service = new CapturingWpfAppReleaseService();
+        var targetingService = new CapturingTargetingService();
+        var controller = CreateController(service, targetingService: targetingService);
+        var request = new WpfUpdatePolicyRequest
+        {
+            Channel = "preview",
+            TargetVersion = "1.2.0",
+            MinimumSupportedVersion = "1.0.0",
+        };
+
+        var saved = await controller.SetPolicy("production", request);
+        var rejected = await controller.SetPolicy("staging", request);
+
+        Assert.IsType<OkObjectResult>(saved);
+        Assert.True(targetingService.SetPolicyCalled);
+        Assert.Equal("production", targetingService.PolicyChannel);
+        var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
+        var payload = Assert.IsType<ApiResponse<WpfUpdatePolicyDto>>(badRequest.Value);
+        Assert.False(payload.Success);
+        Assert.Equal("WPF_POLICY_CHANNEL_INVALID", payload.Code);
+    }
+
     private static WpfAppReleasesController CreateController(
         IWpfAppReleaseService service,
         string? wpfAppUpdateCheckApiKey = null,
         string? appUpdateCheckApiKey = null,
-        string? environmentName = "Production")
+        string? environmentName = "Production",
+        IWpfAppReleaseTargetingService? targetingService = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -133,7 +178,8 @@ public sealed class WpfAppReleasesControllerTests
         return new WpfAppReleasesController(
             service,
             configuration,
-            new TestHostEnvironment { EnvironmentName = environmentName ?? Environments.Production }
+            new TestHostEnvironment { EnvironmentName = environmentName ?? Environments.Production },
+            targetingService ?? new DelegatingTargetingService(service)
         )
         {
             ControllerContext = new ControllerContext
@@ -198,6 +244,76 @@ public sealed class WpfAppReleasesControllerTests
         public Task<ApiResponse<WpfAppReleaseUploadInitResponse>> CreateUploadInitAsync(
             WpfAppReleaseUploadInitRequest request,
             CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+    }
+
+    private sealed class CapturingTargetingService : IWpfAppReleaseTargetingService
+    {
+        public bool CheckCalled { get; private set; }
+        public bool SetPolicyCalled { get; private set; }
+        public string? DeviceId { get; private set; }
+        public string? AuthCode { get; private set; }
+        public string? PolicyChannel { get; private set; }
+
+        public Task<ApiResponse<WpfUpdatePolicyDto>> SetPolicyAsync(
+            WpfUpdatePolicyRequest request,
+            string currentUser)
+        {
+            SetPolicyCalled = true;
+            PolicyChannel = request.Channel;
+            return Task.FromResult(ApiResponse<WpfUpdatePolicyDto>.OK(new WpfUpdatePolicyDto
+            {
+                Channel = request.Channel ?? string.Empty,
+            }));
+        }
+
+        public Task<ApiResponse<WpfUpdateCheckResponse>> CheckUpdateAsync(
+            string? channel,
+            string? currentVersion,
+            string? deviceId,
+            string? authCode)
+        {
+            CheckCalled = true;
+            DeviceId = deviceId;
+            AuthCode = authCode;
+            return Task.FromResult(ApiResponse<WpfUpdateCheckResponse>.OK(new WpfUpdateCheckResponse
+            {
+                CurrentVersion = currentVersion ?? string.Empty,
+            }));
+        }
+
+        public Task<ApiResponse<WpfUpdateTargetStoreOptionsResponse>> GetStoreOptionsAsync() =>
+            throw new NotImplementedException();
+
+        public Task<ApiResponse<PagedResult<WpfUpdateTargetDeviceOptionDto>>> GetDeviceOptionsAsync(
+            int page,
+            int pageSize,
+            string? keyword) =>
+            throw new NotImplementedException();
+    }
+
+    private sealed class DelegatingTargetingService(IWpfAppReleaseService service)
+        : IWpfAppReleaseTargetingService
+    {
+        public Task<ApiResponse<WpfUpdatePolicyDto>> SetPolicyAsync(
+            WpfUpdatePolicyRequest request,
+            string currentUser) =>
+            service.SetPolicyAsync(request, currentUser);
+
+        public Task<ApiResponse<WpfUpdateCheckResponse>> CheckUpdateAsync(
+            string? channel,
+            string? currentVersion,
+            string? deviceId,
+            string? authCode) =>
+            service.CheckUpdateAsync(channel, currentVersion);
+
+        public Task<ApiResponse<WpfUpdateTargetStoreOptionsResponse>> GetStoreOptionsAsync() =>
+            throw new NotImplementedException();
+
+        public Task<ApiResponse<PagedResult<WpfUpdateTargetDeviceOptionDto>>> GetDeviceOptionsAsync(
+            int page,
+            int pageSize,
+            string? keyword) =>
             throw new NotImplementedException();
     }
 }

@@ -1,7 +1,9 @@
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Hbpos.Contracts.AppUpdates;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Devices;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -12,7 +14,9 @@ public interface IAppUpdateApiClient
         CancellationToken cancellationToken = default);
 }
 
-public sealed class AppUpdateApiClient(HttpClient httpClient) : IAppUpdateApiClient
+public sealed class AppUpdateApiClient(
+    HttpClient httpClient,
+    IAppUpdateDeviceCredentialProvider credentialProvider) : IAppUpdateApiClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -25,9 +29,12 @@ public sealed class AppUpdateApiClient(HttpClient httpClient) : IAppUpdateApiCli
     {
         var currentVersion = Uri.EscapeDataString(request.CurrentVersion);
         var channel = Uri.EscapeDataString(string.IsNullOrWhiteSpace(request.Channel) ? "production" : request.Channel);
-        using var response = await httpClient.GetAsync(
-            $"api/app-update/check?currentVersion={currentVersion}&channel={channel}",
-            cancellationToken);
+        var credentials = await credentialProvider.GetCredentialsAsync(cancellationToken);
+        using var checkRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"api/app-update/check?currentVersion={currentVersion}&channel={channel}");
+        AddDeviceCredentialHeaders(checkRequest, credentials);
+        using var response = await httpClient.SendAsync(checkRequest, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             return AppUpdateCheckResponse.Failed(
@@ -71,6 +78,22 @@ public sealed class AppUpdateApiClient(HttpClient httpClient) : IAppUpdateApiCli
             request.CurrentVersion,
             "LOCAL_APP_UPDATE_INVALID_RESPONSE",
             "Local app update check returned an unsupported response.");
+    }
+
+    private static void AddDeviceCredentialHeaders(
+        HttpRequestMessage request,
+        AppUpdateDeviceCredentials? credentials)
+    {
+        if (credentials is null)
+        {
+            return;
+        }
+
+        // 中文注释：更新检查使用独立缓存凭据，不写入通用 DeviceAuthorizationState。
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AuthorizationCode);
+        request.Headers.TryAddWithoutValidation(DeviceAuthConstants.DeviceCodeHeader, credentials.DeviceCode);
+        request.Headers.TryAddWithoutValidation(DeviceAuthConstants.StoreCodeHeader, credentials.StoreCode);
+        request.Headers.TryAddWithoutValidation(DeviceAuthConstants.HardwareIdHeader, credentials.HardwareId);
     }
 
     private static AppUpdateCheckResponse NormalizeCheckResponse(

@@ -20,6 +20,7 @@ import {
   Modal,
   Popconfirm,
   QRCode,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -32,18 +33,28 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   createWpfAppRelease,
   getWpfAppReleases,
+  getWpfTargetDevices,
+  getWpfTargetStores,
   initWpfReleaseUpload,
   saveWpfReleasePolicy,
   updateWpfAppRelease,
   uploadWpfReleaseFile,
 } from '../../../services/wpfVersionService'
 import { useAuthStore } from '../../../store/auth'
-import type { WpfAppRelease, WpfReleasePolicyRequest } from '../../../types/wpfVersion'
+import type {
+  WpfAppRelease,
+  WpfReleasePolicyRequest,
+  WpfTargetDeviceOption,
+  WpfTargetDeviceSummary,
+  WpfTargetStoreOption,
+  WpfTargetStoreSummary,
+  WpfUpdateTargetScope,
+} from '../../../types/wpfVersion'
 import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
@@ -53,6 +64,7 @@ import {
   buildWpfPolicyPayload,
   calculateFileSha256,
   canSubmitWpfPolicy,
+  canSubmitWpfPolicyEditor,
   getEffectiveWpfMinimumSupportedVersion,
   getDefaultWpfInstallerArguments,
   getWpfCurrentVersionText,
@@ -82,6 +94,9 @@ interface PolicyFormValues {
   targetVersion: string
   minimumSupportedVersion: string
   forceUpdate: boolean
+  targetScope: WpfUpdateTargetScope
+  targetStoreGuids: string[]
+  targetDeviceRegistrationIds: number[]
 }
 
 interface WpfReleaseQuery {
@@ -130,11 +145,30 @@ function isPolicyReferencedRelease(record: WpfAppRelease) {
   return record.version === record.targetVersion || record.version === record.minimumSupportedVersion
 }
 
+function formatTargetStoreLabel(item: WpfTargetStoreSummary) {
+  return [item.storeCode, item.storeName].filter(Boolean).join(' · ') || item.storeGuid
+}
+
+function formatTargetDeviceLabel(item: WpfTargetDeviceSummary) {
+  return [
+    item.storeCode ? `[${item.storeCode}]` : '',
+    item.systemDeviceNumber || `#${item.deviceRegistrationId}`,
+    item.storeName,
+    item.remarks,
+  ].filter(Boolean).join(' · ')
+}
+
 export default function WpfVersionsPage() {
   const { t } = useTranslation()
   const canManageAppDownloads = useAuthStore((state) => state.access.canManageAppDownloads)
   const [uploadForm] = Form.useForm<UploadFormValues>()
   const [policyForm] = Form.useForm<PolicyFormValues>()
+  const targetScope = Form.useWatch('targetScope', policyForm) ?? 'all'
+  const policyTargetVersion = Form.useWatch('targetVersion', policyForm) ?? ''
+  const policyMinimumSupportedVersion = Form.useWatch('minimumSupportedVersion', policyForm) ?? ''
+  const policyForceUpdate = Form.useWatch('forceUpdate', policyForm) ?? false
+  const selectedTargetStoreGuids = Form.useWatch('targetStoreGuids', policyForm) ?? []
+  const selectedTargetDeviceIds = Form.useWatch('targetDeviceRegistrationIds', policyForm) ?? []
   const [channel, setChannel] = useState('production')
   const [includeDisabled, setIncludeDisabled] = useState(false)
   const [page, setPage] = useState(1)
@@ -142,6 +176,8 @@ export default function WpfVersionsPage() {
   const [releases, setReleases] = useState<WpfAppRelease[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [policyDataReady, setPolicyDataReady] = useState(false)
+  const [releaseLoadError, setReleaseLoadError] = useState<string | null>(null)
   const releasesRequestGuardRef = useRef(createLatestRequestGuard())
   const mountedRef = useRef(false)
   const latestReleaseQueryRef = useRef<WpfReleaseQuery>({
@@ -153,6 +189,15 @@ export default function WpfVersionsPage() {
   })
   const [uploading, setUploading] = useState(false)
   const [policySaving, setPolicySaving] = useState(false)
+  const [targetStores, setTargetStores] = useState<WpfTargetStoreOption[]>([])
+  const [targetDevices, setTargetDevices] = useState<WpfTargetDeviceOption[]>([])
+  const [targetDevicesPage, setTargetDevicesPage] = useState(1)
+  const [targetDevicesTotal, setTargetDevicesTotal] = useState(0)
+  const [targetDeviceKeyword, setTargetDeviceKeyword] = useState('')
+  const [targetOptionsLoading, setTargetOptionsLoading] = useState(false)
+  const [targetOptionsError, setTargetOptionsError] = useState<string | null>(null)
+  const targetDevicesRequestGuardRef = useRef(createLatestRequestGuard())
+  const targetDeviceSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [qrRelease, setQrRelease] = useState<WpfAppRelease | null>(null)
@@ -179,7 +224,11 @@ export default function WpfVersionsPage() {
         channel: nextChannel,
         includeDisabled: nextIncludeDisabled,
       }), {
-      onStart: () => setLoading(true),
+      onStart: () => {
+        setLoading(true)
+        setPolicyDataReady(false)
+        setReleaseLoadError(null)
+      },
       onSuccess: (result) => {
         setReleases(result.items)
         setTotal(result.total)
@@ -193,6 +242,9 @@ export default function WpfVersionsPage() {
             targetVersion: policySummary.targetVersion,
             minimumSupportedVersion: policySummary.minimumSupportedVersion,
             forceUpdate: policySummary.forceUpdate,
+            targetScope: policySummary.targetScope,
+            targetStoreGuids: policySummary.targetStoreGuids,
+            targetDeviceRegistrationIds: policySummary.targetDeviceRegistrationIds,
           })
         } else {
           policyForm.setFieldsValue({
@@ -200,18 +252,81 @@ export default function WpfVersionsPage() {
             targetVersion: undefined,
             minimumSupportedVersion: undefined,
             forceUpdate: false,
+            targetScope: 'all',
+            targetStoreGuids: [],
+            targetDeviceRegistrationIds: [],
           })
         }
+        setPolicyDataReady(true)
       },
       onError: (error) => {
         console.error('Failed to load WPF releases', error)
-        message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.loadFailed', '加载 WPF 版本失败')))
+        const errorMessage = getWpfVersionErrorMessage(
+          error,
+          t('system.wpfVersions.loadFailed', '加载 WPF 版本失败'),
+        )
+        setPolicyDataReady(false)
+        setReleaseLoadError(errorMessage)
+        message.error(errorMessage)
       },
       onSettled: () => setLoading(false),
     })
   }, [policyForm, t])
 
   const latestLoadReleasesRef = useRef(loadReleases)
+
+  const loadTargetStores = useCallback(async () => {
+    await runLatestGuardedRequest(targetDevicesRequestGuardRef.current, getWpfTargetStores, {
+      onStart: () => {
+        setTargetOptionsLoading(true)
+        setTargetOptionsError(null)
+      },
+      onSuccess: setTargetStores,
+      onError: (error) => {
+        console.error('Failed to load WPF target stores', error)
+        setTargetOptionsError(getWpfVersionErrorMessage(
+          error,
+          t('system.wpfVersions.targetOptionsLoadFailed', '加载定向更新目标失败'),
+        ))
+      },
+      onSettled: () => setTargetOptionsLoading(false),
+    })
+  }, [t])
+
+  const loadTargetDevices = useCallback(async (
+    keyword = '',
+    nextPage = 1,
+    append = false,
+  ) => {
+    const normalizedKeyword = keyword.trim()
+    await runLatestGuardedRequest(
+      targetDevicesRequestGuardRef.current,
+      () => getWpfTargetDevices({ page: nextPage, pageSize: 50, keyword: normalizedKeyword }),
+      {
+        onStart: () => {
+          setTargetOptionsLoading(true)
+          setTargetOptionsError(null)
+        },
+        onSuccess: (result) => {
+          setTargetDevices((current) => {
+            const candidates = append ? [...current, ...result.items] : result.items
+            return [...new Map(candidates.map((item) => [item.deviceRegistrationId, item])).values()]
+          })
+          setTargetDevicesPage(result.page)
+          setTargetDevicesTotal(result.total)
+          setTargetDeviceKeyword(normalizedKeyword)
+        },
+        onError: (error) => {
+          console.error('Failed to load WPF target devices', error)
+          setTargetOptionsError(getWpfVersionErrorMessage(
+            error,
+            t('system.wpfVersions.targetOptionsLoadFailed', '加载定向更新目标失败'),
+          ))
+        },
+        onSettled: () => setTargetOptionsLoading(false),
+      },
+    )
+  }, [t])
 
   useLayoutEffect(() => {
     latestReleaseQueryRef.current = {
@@ -229,8 +344,72 @@ export default function WpfVersionsPage() {
     return () => {
       mountedRef.current = false
       releasesRequestGuardRef.current.invalidate()
+      targetDevicesRequestGuardRef.current.invalidate()
+      if (targetDeviceSearchTimerRef.current) {
+        clearTimeout(targetDeviceSearchTimerRef.current)
+      }
     }
   }, [])
+
+  useEffect(() => {
+    targetDevicesRequestGuardRef.current.invalidate()
+    if (targetDeviceSearchTimerRef.current) {
+      clearTimeout(targetDeviceSearchTimerRef.current)
+      targetDeviceSearchTimerRef.current = null
+    }
+
+    if (!canManageAppDownloads || targetScope === 'all') {
+      setTargetOptionsError(null)
+      setTargetOptionsLoading(false)
+      return
+    }
+
+    if (targetScope === 'stores') {
+      if (targetStores.length === 0) {
+        void loadTargetStores()
+      }
+      return
+    }
+
+    if (targetDevices.length === 0) {
+      void loadTargetDevices()
+    }
+  }, [
+    canManageAppDownloads,
+    loadTargetDevices,
+    loadTargetStores,
+    targetDevices.length,
+    targetScope,
+    targetStores.length,
+  ])
+
+  const handleTargetDeviceSearch = useCallback((keyword: string) => {
+    if (targetDeviceSearchTimerRef.current) {
+      clearTimeout(targetDeviceSearchTimerRef.current)
+    }
+    targetDeviceSearchTimerRef.current = setTimeout(() => {
+      void loadTargetDevices(keyword, 1, false)
+    }, 300)
+  }, [loadTargetDevices])
+
+  const handleTargetDevicePopupScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget
+    const reachesBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 24
+    if (
+      reachesBottom
+      && !targetOptionsLoading
+      && targetDevices.length < targetDevicesTotal
+    ) {
+      void loadTargetDevices(targetDeviceKeyword, targetDevicesPage + 1, true)
+    }
+  }, [
+    loadTargetDevices,
+    targetDeviceKeyword,
+    targetDevices.length,
+    targetDevicesPage,
+    targetDevicesTotal,
+    targetOptionsLoading,
+  ])
 
   useEffect(() => {
     const currentQuery = latestReleaseQueryRef.current
@@ -256,6 +435,8 @@ export default function WpfVersionsPage() {
     // 先同步发布目标查询，再提交状态更新；mutation 晚完成时不会拼出“新通道 + 旧页码”。
     latestReleaseQueryRef.current = nextQuery
     releasesRequestGuardRef.current.invalidate()
+    setPolicyDataReady(false)
+    setReleaseLoadError(null)
     setPage(nextQuery.page)
     setChannel(nextQuery.channel)
     setIncludeDisabled(nextQuery.includeDisabled)
@@ -330,20 +511,176 @@ export default function WpfVersionsPage() {
     )
   }, [resetReleaseScope])
 
-  const activeVersionOptions = useMemo(
-    () => releases
-      .filter((item) => item.isActive)
-      .map((item) => ({ label: `${item.version} (${item.fileName})`, value: item.version })),
-    [releases],
-  )
-
   const policySummary = useMemo(() => getWpfPolicySummary(releases), [releases])
+  const activeVersionOptions = useMemo(() => {
+    const options = new Map(
+      releases
+        .filter((item) => item.isActive)
+        .map((item) => [item.version, { label: `${item.version} (${item.fileName})`, value: item.version }]),
+    )
+    for (const version of [policySummary?.targetVersion, policySummary?.minimumSupportedVersion]) {
+      if (version && !options.has(version)) {
+        options.set(version, { label: version, value: version })
+      }
+    }
+    return [...options.values()]
+  }, [policySummary, releases])
+  const activePolicyVersions = useMemo(
+    () => activeVersionOptions.map((option) => option.value),
+    [activeVersionOptions],
+  )
   const currentVersionText = useMemo(() => getWpfCurrentVersionText(releases), [releases])
+  const targetStoreOptions = useMemo(
+    () => {
+      const summaries = policySummary?.targetStoreSummaries ?? []
+      const options = new Map<string, { label: string; value: string }>()
+      for (const item of summaries) {
+        options.set(item.storeGuid.toLowerCase(), {
+          label: formatTargetStoreLabel(item),
+          value: item.storeGuid,
+        })
+      }
+      for (const item of targetStores) {
+        options.set(item.storeGuid.toLowerCase(), {
+          label: formatTargetStoreLabel(item),
+          value: item.storeGuid,
+        })
+      }
+      for (const storeGuid of selectedTargetStoreGuids) {
+        const key = storeGuid.toLowerCase()
+        if (!options.has(key)) {
+          options.set(key, { label: storeGuid, value: storeGuid })
+        }
+      }
+      return [...options.values()]
+    },
+    [policySummary, selectedTargetStoreGuids, targetStores],
+  )
+  const targetDeviceOptions = useMemo(() => {
+    const options = new Map<number, { label: string; value: number }>()
+    for (const item of policySummary?.targetDeviceSummaries ?? []) {
+      options.set(item.deviceRegistrationId, {
+        label: formatTargetDeviceLabel(item),
+        value: item.deviceRegistrationId,
+      })
+    }
+    for (const item of targetDevices) {
+      options.set(item.deviceRegistrationId, {
+        label: formatTargetDeviceLabel(item),
+        value: item.deviceRegistrationId,
+      })
+    }
+    for (const id of selectedTargetDeviceIds) {
+      if (!options.has(id)) {
+        options.set(id, { label: `#${id}`, value: id })
+      }
+    }
+    return [...options.values()]
+  }, [policySummary, selectedTargetDeviceIds, targetDevices])
+
+  const savedTargetSummary = useMemo(() => {
+    if (!policySummary || policySummary.targetScope === 'all') {
+      return t('system.wpfVersions.targetAllSummary', '全部机器')
+    }
+    if (policySummary.targetScope === 'stores') {
+      const summaries = new Map(
+        policySummary.targetStoreSummaries.map((item) => [item.storeGuid.toLowerCase(), item]),
+      )
+      return policySummary.targetStoreGuids
+        .map((storeGuid) => {
+          const summary = summaries.get(storeGuid.toLowerCase())
+          return summary ? formatTargetStoreLabel(summary) : storeGuid
+        })
+        .join('；')
+    }
+    const summaries = new Map(
+      policySummary.targetDeviceSummaries.map((item) => [item.deviceRegistrationId, item]),
+    )
+    return policySummary.targetDeviceRegistrationIds
+      .map((id) => {
+        const summary = summaries.get(id)
+        return summary ? formatTargetDeviceLabel(summary) : `#${id}`
+      })
+      .join('；')
+  }, [policySummary, t])
+
+  const editingTargetSummary = useMemo(() => {
+    if (targetScope === 'stores') {
+      return t('system.wpfVersions.targetStoresSummary', '指定 {{count}} 个分店', {
+        count: selectedTargetStoreGuids.length,
+      })
+    }
+    if (targetScope === 'devices') {
+      return t('system.wpfVersions.targetDevicesSummary', '指定 {{count}} 台机器', {
+        count: selectedTargetDeviceIds.length,
+      })
+    }
+    return t('system.wpfVersions.targetAllSummary', '全部机器')
+  }, [selectedTargetDeviceIds.length, selectedTargetStoreGuids.length, t, targetScope])
+
+  const canSubmitPolicyDraft = useMemo(() => canSubmitWpfPolicyEditor({
+    policy: {
+      channel,
+      targetVersion: policyTargetVersion,
+      minimumSupportedVersion: policyMinimumSupportedVersion,
+      forceUpdate: Boolean(policyForceUpdate),
+      isRollback: isWpfRollbackTarget(policyTargetVersion, releases),
+      targetScope,
+      targetStoreGuids: selectedTargetStoreGuids,
+      targetDeviceRegistrationIds: selectedTargetDeviceIds,
+    },
+    policyDataReady,
+    activeVersions: activePolicyVersions,
+    targetOptionsLoading,
+    targetOptionsError: Boolean(targetOptionsError),
+  }), [
+    activePolicyVersions,
+    channel,
+    policyDataReady,
+    policyForceUpdate,
+    policyMinimumSupportedVersion,
+    policyTargetVersion,
+    releases,
+    selectedTargetDeviceIds,
+    selectedTargetStoreGuids,
+    targetOptionsError,
+    targetOptionsLoading,
+    targetScope,
+  ])
+
+  const getCurrentPolicyTargets = useCallback(() => {
+    const values = policyForm.getFieldsValue()
+    return {
+      targetScope: values.targetScope ?? policySummary?.targetScope ?? 'all',
+      targetStoreGuids: values.targetStoreGuids ?? policySummary?.targetStoreGuids ?? [],
+      targetDeviceRegistrationIds:
+        values.targetDeviceRegistrationIds ?? policySummary?.targetDeviceRegistrationIds ?? [],
+    }
+  }, [policyForm, policySummary])
 
   const validatePolicyPayload = useCallback((input: WpfReleasePolicyRequest) => {
     const payload = buildWpfPolicyPayload({ ...input })
-    if (!canSubmitWpfPolicy(payload)) {
+    if (!policyDataReady) {
+      message.warning(releaseLoadError ?? t('system.wpfVersions.loadFailed', '加载 WPF 版本失败'))
+      return null
+    }
+    if (!payload.targetVersion.trim() || !payload.minimumSupportedVersion.trim()) {
       message.warning(t('system.wpfVersions.policyMissing', '请选择目标版本和最低支持版本'))
+      return null
+    }
+    if (!canSubmitWpfPolicy(payload)) {
+      message.warning(t('system.wpfVersions.targetRequired', '指定范围时请至少选择一个目标'))
+      return null
+    }
+    if (
+      !activePolicyVersions.includes(payload.targetVersion)
+      || !activePolicyVersions.includes(payload.minimumSupportedVersion)
+    ) {
+      message.warning(t('system.wpfVersions.policyMissing', '请选择目标版本和最低支持版本'))
+      return null
+    }
+    if (payload.targetScope !== 'all' && (targetOptionsLoading || targetOptionsError)) {
+      message.warning(t('system.wpfVersions.targetOptionsLoadFailed', '加载定向更新目标失败'))
       return null
     }
     if (getWpfPolicyRangeError(payload) === 'INVALID_VERSION_RANGE') {
@@ -352,7 +689,14 @@ export default function WpfVersionsPage() {
     }
 
     return payload
-  }, [t])
+  }, [
+    activePolicyVersions,
+    policyDataReady,
+    releaseLoadError,
+    t,
+    targetOptionsError,
+    targetOptionsLoading,
+  ])
 
   const submitPolicy = async (input: WpfReleasePolicyRequest, options?: { rollbackConfirmed?: boolean }) => {
     const payload = validatePolicyPayload({
@@ -388,6 +732,9 @@ export default function WpfVersionsPage() {
       minimumSupportedVersion: values.minimumSupportedVersion,
       forceUpdate: Boolean(values.forceUpdate),
       isRollback: isWpfRollbackTarget(values.targetVersion, releases),
+      targetScope: values.targetScope,
+      targetStoreGuids: values.targetStoreGuids ?? [],
+      targetDeviceRegistrationIds: values.targetDeviceRegistrationIds ?? [],
     }
     const payload = validatePolicyPayload(input)
     if (!payload) {
@@ -419,6 +766,7 @@ export default function WpfVersionsPage() {
       }),
       forceUpdate: Boolean(values.forceUpdate),
       isRollback: isWpfRollbackTarget(record.version, releases),
+      ...getCurrentPolicyTargets(),
     }
     const payload = validatePolicyPayload(input)
     if (!payload) {
@@ -451,10 +799,15 @@ export default function WpfVersionsPage() {
       forceUpdate: Boolean(values.forceUpdate),
       isRollback: true,
       rollbackConfirmed: true,
+      ...getCurrentPolicyTargets(),
     }, { rollbackConfirmed: true })
   }
 
   const handleToggleReleaseActive = async (record: WpfAppRelease, nextIsActive: boolean) => {
+    if (!policyDataReady) {
+      message.warning(releaseLoadError ?? t('system.wpfVersions.loadFailed', '加载 WPF 版本失败'))
+      return
+    }
     const refreshQuery = latestReleaseQueryRef.current
     setStatusUpdatingId(record.id)
     try {
@@ -683,7 +1036,8 @@ export default function WpfVersionsPage() {
       width: 360,
       render: (_, record) => {
         const policyReferenced = isPolicyReferencedRelease(record)
-        const cannotPromote = !record.isActive || record.isCurrent
+        const cannotMutate = !policyDataReady
+        const cannotPromote = cannotMutate || !record.isActive || record.isCurrent
 
         return (
           <Space wrap>
@@ -718,14 +1072,14 @@ export default function WpfVersionsPage() {
             {record.isActive ? (
               <Popconfirm
                 title={t('system.wpfVersions.disableConfirm', '确认禁用这个版本？')}
-                disabled={!canManageAppDownloads || policyReferenced}
+                disabled={!canManageAppDownloads || cannotMutate || policyReferenced}
                 onConfirm={() => void handleToggleReleaseActive(record, false)}
               >
                 <Button
                   size="small"
                   danger
                   loading={statusUpdatingId === record.id}
-                  disabled={!canManageAppDownloads || policyReferenced}
+                  disabled={!canManageAppDownloads || cannotMutate || policyReferenced}
                 >
                   {t('system.wpfVersions.disable', '禁用')}
                 </Button>
@@ -733,13 +1087,13 @@ export default function WpfVersionsPage() {
             ) : (
               <Popconfirm
                 title={t('system.wpfVersions.restoreConfirm', '确认恢复这个版本？')}
-                disabled={!canManageAppDownloads}
+                disabled={!canManageAppDownloads || cannotMutate}
                 onConfirm={() => void handleToggleReleaseActive(record, true)}
               >
                 <Button
                   size="small"
                   loading={statusUpdatingId === record.id}
-                  disabled={!canManageAppDownloads}
+                  disabled={!canManageAppDownloads || cannotMutate}
                 >
                   {t('system.wpfVersions.restore', '恢复')}
                 </Button>
@@ -803,6 +1157,14 @@ export default function WpfVersionsPage() {
           <Descriptions.Item label={t('system.wpfVersions.forceUpdate', '强制更新')}>
             {policySummary?.forceUpdate ? t('common.yes', '是') : t('common.no', '否')}
           </Descriptions.Item>
+          <Descriptions.Item label={t('system.wpfVersions.targetScope', '更新范围')}>
+            {savedTargetSummary}
+          </Descriptions.Item>
+          <Descriptions.Item label={t('system.wpfVersions.policyUpdated', '策略更新')}>
+            {policySummary?.policyUpdatedAt
+              ? `${formatDateTime(policySummary.policyUpdatedAt)}${policySummary.policyUpdatedBy ? ` · ${policySummary.policyUpdatedBy}` : ''}`
+              : '-'}
+          </Descriptions.Item>
           <Descriptions.Item label={t('system.wpfVersions.objectKeyPrefix', 'COS 路径')}>
             <Text code>wpf-releases/{channel}/{'{version}'}/{'{fileName}'}</Text>
           </Descriptions.Item>
@@ -810,44 +1172,126 @@ export default function WpfVersionsPage() {
       </Card>
 
       <Card title={t('system.wpfVersions.policyTitle', '发布策略')}>
-        <Form<PolicyFormValues>
-          form={policyForm}
-          layout="inline"
-          initialValues={{ channel, forceUpdate: false }}
-          onFinish={(values) => void handlePolicyFinish(values)}
-        >
-          <Form.Item name="channel" label={t('system.wpfVersions.channel', '通道')} rules={[{ required: true }]}>
-            <Select style={{ width: 140 }} options={WPF_RELEASE_CHANNELS.map((item) => ({ label: item, value: item }))} />
-          </Form.Item>
-          <Form.Item
-            name="targetVersion"
-            label={t('system.wpfVersions.targetVersion', '目标版本')}
-            rules={[{ required: true }]}
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {releaseLoadError ? (
+            <Alert type="error" showIcon message={releaseLoadError} />
+          ) : null}
+          {targetScope !== 'all' && targetOptionsError ? (
+            <Alert type="error" showIcon message={targetOptionsError} />
+          ) : null}
+          <Form<PolicyFormValues>
+            form={policyForm}
+            layout="inline"
+            initialValues={{
+              channel,
+              forceUpdate: false,
+              targetScope: 'all',
+              targetStoreGuids: [],
+              targetDeviceRegistrationIds: [],
+            }}
+            onFinish={(values) => void handlePolicyFinish(values)}
           >
-            <Select style={{ width: 220 }} options={activeVersionOptions} placeholder={t('system.wpfVersions.selectVersion', '选择版本')} />
-          </Form.Item>
-          <Form.Item
-            name="minimumSupportedVersion"
-            label={t('system.wpfVersions.minimumSupportedVersion', '最低支持版本')}
-            rules={[{ required: true }]}
-          >
-            <Select style={{ width: 220 }} options={activeVersionOptions} placeholder={t('system.wpfVersions.selectVersion', '选择版本')} />
-          </Form.Item>
-          <Form.Item name="forceUpdate" label={t('system.wpfVersions.forceUpdate', '强制更新')} valuePropName="checked">
-            <Switch disabled={!canManageAppDownloads} />
-          </Form.Item>
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              icon={<SaveOutlined />}
-              loading={policySaving}
-              disabled={!canManageAppDownloads}
+            <Form.Item name="channel" label={t('system.wpfVersions.channel', '通道')} rules={[{ required: true }]}>
+              <Select
+                disabled
+                style={{ width: 140 }}
+                options={WPF_RELEASE_CHANNELS.map((item) => ({ label: item, value: item }))}
+              />
+            </Form.Item>
+            <Form.Item
+              name="targetVersion"
+              label={t('system.wpfVersions.targetVersion', '目标版本')}
+              rules={[{ required: true }]}
             >
-              {t('system.wpfVersions.savePolicy', '保存策略')}
-            </Button>
-          </Form.Item>
-        </Form>
+              <Select
+                disabled={!canManageAppDownloads}
+                style={{ width: 220 }}
+                options={activeVersionOptions}
+                placeholder={t('system.wpfVersions.selectVersion', '选择版本')}
+              />
+            </Form.Item>
+            <Form.Item
+              name="minimumSupportedVersion"
+              label={t('system.wpfVersions.minimumSupportedVersion', '最低支持版本')}
+              rules={[{ required: true }]}
+            >
+              <Select
+                disabled={!canManageAppDownloads}
+                style={{ width: 220 }}
+                options={activeVersionOptions}
+                placeholder={t('system.wpfVersions.selectVersion', '选择版本')}
+              />
+            </Form.Item>
+            <Form.Item name="forceUpdate" label={t('system.wpfVersions.forceUpdate', '强制更新')} valuePropName="checked">
+              <Switch disabled={!canManageAppDownloads} />
+            </Form.Item>
+            <Form.Item name="targetScope" label={t('system.wpfVersions.targetScope', '更新范围')}>
+              <Segmented
+                disabled={!canManageAppDownloads}
+                options={[
+                  { label: t('system.wpfVersions.targetAll', '全部机器'), value: 'all' },
+                  { label: t('system.wpfVersions.targetStores', '指定分店'), value: 'stores' },
+                  { label: t('system.wpfVersions.targetDevices', '指定机器'), value: 'devices' },
+                ]}
+              />
+            </Form.Item>
+            {targetScope === 'stores' ? (
+              <Form.Item
+                name="targetStoreGuids"
+                label={t('system.wpfVersions.targetStores', '指定分店')}
+                rules={[{ required: true, message: t('system.wpfVersions.targetRequired', '指定范围时请至少选择一个目标') }]}
+              >
+                <Select
+                  mode="multiple"
+                  showSearch
+                  optionFilterProp="label"
+                  maxTagCount="responsive"
+                  loading={targetOptionsLoading}
+                  disabled={!canManageAppDownloads || Boolean(targetOptionsError)}
+                  style={{ minWidth: 360 }}
+                  options={targetStoreOptions}
+                  placeholder={t('system.wpfVersions.selectStores', '选择分店')}
+                />
+              </Form.Item>
+            ) : null}
+            {targetScope === 'devices' ? (
+              <Form.Item
+                name="targetDeviceRegistrationIds"
+                label={t('system.wpfVersions.targetDevices', '指定机器')}
+                rules={[{ required: true, message: t('system.wpfVersions.targetRequired', '指定范围时请至少选择一个目标') }]}
+              >
+                <Select
+                  mode="multiple"
+                  showSearch
+                  filterOption={false}
+                  maxTagCount="responsive"
+                  loading={targetOptionsLoading}
+                  disabled={!canManageAppDownloads || Boolean(targetOptionsError)}
+                  style={{ minWidth: 420 }}
+                  options={targetDeviceOptions}
+                  placeholder={t('system.wpfVersions.searchDevices', '搜索机器编号、分店或备注')}
+                  onSearch={handleTargetDeviceSearch}
+                  onPopupScroll={handleTargetDevicePopupScroll}
+                />
+              </Form.Item>
+            ) : null}
+            <Form.Item>
+              <Button
+                type="primary"
+                htmlType="submit"
+                icon={<SaveOutlined />}
+                loading={policySaving}
+                disabled={
+                  !canManageAppDownloads
+                  || !canSubmitPolicyDraft
+                }
+              >
+                {t('system.wpfVersions.savePolicy', '保存策略')}
+              </Button>
+            </Form.Item>
+          </Form>
+          <Text type="secondary">{editingTargetSummary}</Text>
+        </Space>
       </Card>
 
       <Card title={t('system.wpfVersions.listTitle', '版本列表')}>

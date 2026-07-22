@@ -2,6 +2,22 @@ export type WpfReleaseChannel = 'production' | 'preview' | string
 
 export type WpfInstallerType = 'exe' | 'msi'
 
+export type WpfUpdateTargetScope = 'all' | 'stores' | 'devices'
+
+export interface WpfTargetStoreSummary {
+  storeGuid: string
+  storeCode: string
+  storeName: string
+}
+
+export interface WpfTargetDeviceSummary {
+  deviceRegistrationId: number
+  systemDeviceNumber: string
+  storeCode: string
+  storeName: string
+  remarks: string | null
+}
+
 export interface WpfAppRelease {
   id: string
   version: string
@@ -20,6 +36,13 @@ export interface WpfAppRelease {
   forceUpdate: boolean
   minimumSupportedVersion: string | null
   targetVersion: string | null
+  targetScope: WpfUpdateTargetScope
+  targetStoreGuids: string[]
+  targetDeviceRegistrationIds: number[]
+  targetStoreSummaries: WpfTargetStoreSummary[]
+  targetDeviceSummaries: WpfTargetDeviceSummary[]
+  policyUpdatedAt: string | null
+  policyUpdatedBy: string | null
   createdAt: string | null
   updatedAt: string | null
 }
@@ -86,6 +109,30 @@ export interface WpfReleasePolicyRequest {
   forceUpdate: boolean
   isRollback: boolean
   rollbackConfirmed?: boolean
+  targetScope: WpfUpdateTargetScope
+  targetStoreGuids: string[]
+  targetDeviceRegistrationIds: number[]
+}
+
+export interface WpfTargetStoreOption {
+  storeGuid: string
+  storeCode: string
+  storeName: string
+}
+
+export interface WpfTargetDeviceOption {
+  deviceRegistrationId: number
+  systemDeviceNumber: string
+  storeCode: string
+  storeName: string
+  remarks: string | null
+}
+
+export interface WpfTargetDevicePagedResult {
+  items: WpfTargetDeviceOption[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface WpfUpdateCheckResponse {

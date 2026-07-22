@@ -5,6 +5,7 @@ import {
   buildWpfPolicyPayload,
   calculateFileSha256,
   canSubmitWpfPolicy,
+  canSubmitWpfPolicyEditor,
   getEffectiveWpfMinimumSupportedVersion,
   getDefaultWpfInstallerArguments,
   getWpfVersionErrorMessage,
@@ -39,6 +40,32 @@ function assertTruthy(value: unknown, message: string) {
   if (!value) {
     throw new Error(message)
   }
+}
+
+function canSubmitPolicyEditor(
+  input: Parameters<typeof canSubmitWpfPolicy>[0] & {
+    releaseDataReady: boolean
+    activeReleaseVersions: string[]
+    targetOptionsLoading: boolean
+    targetOptionsError: boolean
+  },
+) {
+  return canSubmitWpfPolicyEditor({
+    policy: {
+      channel: 'production',
+      targetVersion: input.targetVersion,
+      minimumSupportedVersion: input.minimumSupportedVersion,
+      forceUpdate: false,
+      isRollback: false,
+      targetScope: input.targetScope,
+      targetStoreGuids: input.targetStoreGuids,
+      targetDeviceRegistrationIds: input.targetDeviceRegistrationIds,
+    },
+    policyDataReady: input.releaseDataReady,
+    activeVersions: input.activeReleaseVersions,
+    targetOptionsLoading: input.targetOptionsLoading,
+    targetOptionsError: input.targetOptionsError,
+  })
 }
 
 function getNestedValue(source: Record<string, unknown>, path: string) {
@@ -245,6 +272,9 @@ assertDeepEqual(
     forceUpdate: true,
     isRollback: true,
     rollbackConfirmed: true,
+    targetScope: 'stores',
+    targetStoreGuids: [' store-b ', 'store-a', 'store-a'],
+    targetDeviceRegistrationIds: [9, 3],
   }),
   {
     channel: 'preview',
@@ -253,8 +283,11 @@ assertDeepEqual(
     forceUpdate: true,
     isRollback: true,
     rollbackConfirmed: true,
+    targetScope: 'stores',
+    targetStoreGuids: ['store-a', 'store-b'],
+    targetDeviceRegistrationIds: [],
   },
-  'Rollback policy payload should keep target, minimum version, force flag, rollback flag, and confirmation',
+  'Policy payload should normalize the active target scope and clear inactive target values',
 )
 
 assertEqual(
@@ -338,6 +371,19 @@ assertDeepEqual(
       targetVersion: '1.2.0',
       minimumSupportedVersion: '1.0.0',
       forceUpdate: true,
+      targetScope: 'devices',
+      targetStoreGuids: [],
+      targetDeviceRegistrationIds: [21, 8],
+      targetStoreSummaries: [],
+      targetDeviceSummaries: [{
+        deviceRegistrationId: 8,
+        systemDeviceNumber: 'POS-008',
+        storeCode: 'S01',
+        storeName: 'Store One',
+        remarks: 'Front counter',
+      }],
+      policyUpdatedAt: '2026-07-22T01:00:00Z',
+      policyUpdatedBy: 'admin',
     },
   ]),
   {
@@ -345,26 +391,165 @@ assertDeepEqual(
     targetVersion: '1.2.0',
     minimumSupportedVersion: '1.0.0',
     forceUpdate: true,
+    targetScope: 'devices',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [8, 21],
+    targetStoreSummaries: [],
+    targetDeviceSummaries: [{
+      deviceRegistrationId: 8,
+      systemDeviceNumber: 'POS-008',
+      storeCode: 'S01',
+      storeName: 'Store One',
+      remarks: 'Front counter',
+    }],
+    policyUpdatedAt: '2026-07-22T01:00:00Z',
+    policyUpdatedBy: 'admin',
   },
   'Policy summary should preserve force-update metadata when the current target is not in the page',
 )
 
 assertEqual(
-  canSubmitWpfPolicy({
+  canSubmitPolicyEditor({
     targetVersion: '1.2.3',
     minimumSupportedVersion: '1.0.0',
+    targetScope: 'all',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
   }),
   true,
   'Policy can be submitted when target and minimum versions are present',
 )
 
 assertEqual(
-  canSubmitWpfPolicy({
+  canSubmitPolicyEditor({
     targetVersion: '1.2.3',
     minimumSupportedVersion: '',
+    targetScope: 'all',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
   }),
   false,
   'Policy should require a minimum supported version',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'stores',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
+  }),
+  false,
+  'Store targeting should require at least one selected store',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'devices',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [8],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
+  }),
+  true,
+  'Device targeting should accept at least one selected device',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'all',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: false,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
+  }),
+  false,
+  'Policy submission should require the current release scope to be ready',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'all',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
+  }),
+  false,
+  'Policy submission should require both versions to exist in active releases',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'stores',
+    targetStoreGuids: ['store-a'],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: true,
+    targetOptionsError: false,
+  }),
+  false,
+  'Targeted policy submission should wait for target options to finish loading',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.3.0',
+    targetScope: 'all',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.2.3', '1.3.0'],
+    targetOptionsLoading: false,
+    targetOptionsError: false,
+  }),
+  false,
+  'Policy submission should reject an invalid minimum-to-target version range',
+)
+
+assertEqual(
+  canSubmitPolicyEditor({
+    targetVersion: '1.2.3',
+    minimumSupportedVersion: '1.0.0',
+    targetScope: 'devices',
+    targetStoreGuids: [],
+    targetDeviceRegistrationIds: [8],
+    releaseDataReady: true,
+    activeReleaseVersions: ['1.0.0', '1.2.3'],
+    targetOptionsLoading: false,
+    targetOptionsError: true,
+  }),
+  false,
+  'Targeted policy submission should reject target option load failures',
 )
 
 assertEqual(
@@ -496,6 +681,31 @@ assertTruthy(
   wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrent', '设为发布目标')")
     && wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrentConfirm', '将此版本设为发布目标？客户端将在下次检查更新时获取该版本。')"),
   'WPF 发布目标按钮的页面 fallback 文案必须与 locale 语义一致',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('name="targetScope"')
+    && wpfVersionsPageSource.includes('name="targetStoreGuids"')
+    && wpfVersionsPageSource.includes('name="targetDeviceRegistrationIds"')
+    && wpfVersionsPageSource.includes('disabled={!canManageAppDownloads}'),
+  'WPF 策略表单应支持只读安全的全部、分店和机器目标编辑',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('policySummary.targetStoreSummaries')
+    && wpfVersionsPageSource.includes('policySummary.targetDeviceSummaries')
+    && wpfVersionsPageSource.includes('!canManageAppDownloads || targetScope === \'all\'')
+    && wpfVersionsPageSource.includes('return summary ? formatTargetStoreLabel(summary) : storeGuid')
+    && wpfVersionsPageSource.includes('return summary ? formatTargetDeviceLabel(summary) : `#${id}`'),
+  'WPF 页面应使用策略安全摘要回显已选目标，且只读用户不得调用管理权限目标选项接口',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('const [policyDataReady, setPolicyDataReady] = useState(false)')
+    && wpfVersionsPageSource.includes('const canSubmitPolicyDraft = useMemo(() => canSubmitWpfPolicyEditor({')
+    && wpfVersionsPageSource.includes('setPolicyDataReady(false)')
+    && wpfVersionsPageSource.includes('setReleaseLoadError(errorMessage)')
+    && wpfVersionsPageSource.includes('|| !canSubmitPolicyDraft')
+    && wpfVersionsPageSource.includes('const cannotMutate = !policyDataReady')
+    && wpfVersionsPageSource.includes('if (!policyDataReady) {'),
+  'WPF 策略及发布 mutation 必须由当前 scope 最新请求的 ready 状态统一门控',
 )
 
 console.log('WpfVersions logic.test: ok')

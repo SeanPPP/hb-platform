@@ -28,6 +28,8 @@ services:
       - CentralLogging__SourceType=Backend
       - CentralLogging__ServiceName=Hbpos.Api
       - CentralLogging__MinimumLevel=Warning
+      # 与中心后端共用更新检查密钥，只从服务器 .env 注入。
+      - AppUpdate__CheckApiKey=${WPF_APP_UPDATE_CHECK_API_KEY:?required}
       # Linkly 回调必须是公网 HTTPS；服务会在该 base 后拼接 api/v1/linkly/cloud-notifications/...
       - LinklyCloudBackendAsync__PublicNotificationBaseUrl=https://hotbargain.vip/pos-api/
       - LinklyCloudBackendAsync__ProductionNotificationBearer=${LINKLY_CLOUD_PRODUCTION_NOTIFICATION_BEARER:-}

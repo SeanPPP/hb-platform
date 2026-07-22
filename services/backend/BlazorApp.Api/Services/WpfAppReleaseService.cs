@@ -1,7 +1,9 @@
 using System.Text.RegularExpressions;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services
@@ -47,24 +49,32 @@ namespace BlazorApp.Api.Services
         );
 
         private readonly ISqlSugarClient _db;
+        private readonly ISqlSugarClient? _posmDb;
         private readonly TencentCloudUploadService? _uploadService;
         private readonly ILogger<WpfAppReleaseService> _logger;
 
-        public WpfAppReleaseService(ISqlSugarClient db, ILogger<WpfAppReleaseService> logger)
+        public WpfAppReleaseService(
+            ISqlSugarClient db,
+            ILogger<WpfAppReleaseService> logger,
+            ISqlSugarClient? posmDb = null
+        )
         {
             _db = db;
             _logger = logger;
+            _posmDb = posmDb;
         }
 
         public WpfAppReleaseService(
             ISqlSugarClient db,
             TencentCloudUploadService uploadService,
-            ILogger<WpfAppReleaseService> logger
+            ILogger<WpfAppReleaseService> logger,
+            ISqlSugarClient? posmDb = null
         )
         {
             _db = db;
             _uploadService = uploadService;
             _logger = logger;
+            _posmDb = posmDb;
         }
 
         public async Task<ApiResponse<PagedResult<WpfAppReleaseDto>>> GetReleasesAsync(
@@ -89,11 +99,19 @@ namespace BlazorApp.Api.Services
                 .Take(pageSize)
                 .ToListAsync();
             var policy = await _db.Queryable<WpfUpdatePolicy>().FirstAsync(x => x.Channel == channel && !x.IsDeleted);
+            var policyTargets = policy == null
+                ? new List<WpfUpdatePolicyTarget>()
+                : await _db.Queryable<WpfUpdatePolicyTarget>()
+                    .Where(x => x.PolicyId == policy.Id && !x.IsDeleted)
+                    .ToListAsync();
+            var targetSummaries = await GetTargetSummariesAsync(policy?.TargetScope, policyTargets);
 
             return ApiResponse<PagedResult<WpfAppReleaseDto>>.OK(
                 new PagedResult<WpfAppReleaseDto>
                 {
-                    Items = items.Select(item => MapRelease(item, policy)).ToList(),
+                    Items = items
+                        .Select(item => MapRelease(item, policy, policyTargets, targetSummaries))
+                        .ToList(),
                     Total = total,
                     Page = page,
                     PageSize = pageSize,
@@ -501,6 +519,144 @@ namespace BlazorApp.Api.Services
             return ApiResponse<WpfUpdatePolicyDto>.OK(MapPolicy(entity));
         }
 
+        /// <summary>
+        /// 在同一事务中保存渠道策略及其定向目标。旧 SetPolicyAsync 保留给既有调用方，避免改变其高影响语义。
+        /// </summary>
+        public async Task<ApiResponse<WpfUpdatePolicyDto>> SetTargetedPolicyAsync(
+            WpfUpdatePolicyRequest request,
+            string currentUser
+        )
+        {
+            if (!TryBuildPolicyTargets(request, out var targetScope, out var targets, out var errorCode))
+            {
+                return ApiResponse<WpfUpdatePolicyDto>.Error(
+                    "Target scope or target list is invalid.",
+                    errorCode
+                );
+            }
+
+            ApiResponse<WpfUpdatePolicyDto>? policyResult = null;
+            var transaction = await _db.Ado.UseTranAsync(async () =>
+            {
+                // 沿用既有策略版本、回退确认和工件校验逻辑，目标替换与策略行写入由同一数据库事务提交。
+                policyResult = await SetPolicyAsync(request, currentUser);
+                if (policyResult?.Success != true || policyResult.Data == null)
+                {
+                    return;
+                }
+
+                var policy = await _db
+                    .Queryable<WpfUpdatePolicy>()
+                    .SingleAsync(x => x.Id == policyResult.Data.Id);
+                policy.TargetScope = targetScope;
+                policy.UpdatedAt = DateTime.UtcNow;
+                policy.UpdatedBy = currentUser;
+                await _db.Updateable(policy).ExecuteCommandAsync();
+
+                await _db
+                    .Deleteable<WpfUpdatePolicyTarget>()
+                    .Where(x => x.PolicyId == policy.Id)
+                    .ExecuteCommandAsync();
+                if (targets.Count > 0)
+                {
+                    foreach (var target in targets)
+                    {
+                        target.PolicyId = policy.Id;
+                        target.CreatedAt = DateTime.UtcNow;
+                        target.CreatedBy = currentUser;
+                    }
+
+                    await _db.Insertable(targets).ExecuteCommandAsync();
+                }
+
+                policyResult = ApiResponse<WpfUpdatePolicyDto>.OK(MapPolicy(policy, targets));
+            });
+
+            if (policyResult?.Success != true)
+            {
+                return policyResult
+                    ?? ApiResponse<WpfUpdatePolicyDto>.Error(
+                        "WPF update policy could not be saved.",
+                        "WPF_UPDATE_POLICY_SAVE_FAILED"
+                    );
+            }
+
+            if (!transaction.IsSuccess)
+            {
+                _logger.LogError(transaction.ErrorException, "WPF 定向更新策略事务保存失败");
+                return ApiResponse<WpfUpdatePolicyDto>.Error(
+                    "WPF update policy could not be saved.",
+                    "WPF_UPDATE_POLICY_SAVE_FAILED"
+                );
+            }
+
+            var savedPolicy = policyResult.Data;
+            if (savedPolicy == null)
+            {
+                return ApiResponse<WpfUpdatePolicyDto>.Error(
+                    "WPF update policy could not be saved.",
+                    "WPF_UPDATE_POLICY_SAVE_FAILED"
+                );
+            }
+
+            try
+            {
+                var savedTargets = await _db.Queryable<WpfUpdatePolicyTarget>()
+                    .Where(target => target.PolicyId == savedPolicy.Id && !target.IsDeleted)
+                    .ToListAsync();
+                ApplyTargetSummaries(
+                    savedPolicy,
+                    await GetTargetSummariesAsync(savedPolicy.TargetScope, savedTargets)
+                );
+            }
+            catch (Exception)
+            {
+                // 策略与目标已在事务内提交，摘要读取失败只降级展示，不能把成功保存误报为失败。
+                _logger.LogWarning(
+                    "WPF 定向更新策略已保存，但目标摘要查询失败；策略 ID：{PolicyId}",
+                    savedPolicy.Id
+                );
+            }
+
+            return policyResult;
+        }
+
+        /// <summary>
+        /// 按严格认证出的设备身份执行定向检查；定向策略在身份缺失、无效或不匹配时安全地返回无更新。
+        /// </summary>
+        public async Task<ApiResponse<WpfUpdateCheckResponse>> CheckTargetedUpdateAsync(
+            string? channel,
+            string? currentVersion,
+            WpfUpdateCheckDeviceIdentity? deviceIdentity
+        )
+        {
+            var normalizedChannel = NormalizeChannel(channel);
+            if (
+                !TryNormalizeVersion(currentVersion, out var normalizedCurrent)
+                || !TryParseVersion(normalizedCurrent, out _)
+            )
+            {
+                return await CheckUpdateAsync(channel, currentVersion);
+            }
+
+            var policy = await _db
+                .Queryable<WpfUpdatePolicy>()
+                .FirstAsync(x => x.Channel == normalizedChannel && !x.IsDeleted);
+            if (policy == null || IsAllTargetScope(policy.TargetScope))
+            {
+                return await CheckUpdateAsync(channel, currentVersion);
+            }
+
+            if (deviceIdentity == null || !await DoesPolicyTargetMatchAsync(policy, deviceIdentity))
+            {
+                return ApiResponse<WpfUpdateCheckResponse>.OK(
+                    new WpfUpdateCheckResponse { CurrentVersion = normalizedCurrent }
+                );
+            }
+
+            return await CheckUpdateAsync(channel, currentVersion);
+        }
+
         public async Task<ApiResponse<WpfUpdateCheckResponse>> CheckUpdateAsync(
             string? channel,
             string? currentVersion
@@ -794,7 +950,9 @@ namespace BlazorApp.Api.Services
 
         private static WpfAppReleaseDto MapRelease(
             WpfAppRelease release,
-            WpfUpdatePolicy? policy = null
+            WpfUpdatePolicy? policy = null,
+            IReadOnlyCollection<WpfUpdatePolicyTarget>? targets = null,
+            PolicyTargetSummaries? targetSummaries = null
         )
         {
             var isCurrent = VersionsEqual(release.Version, policy?.TargetVersion);
@@ -827,13 +985,24 @@ namespace BlazorApp.Api.Services
                     policy?.MinimumSupportedVersion
                 ),
                 TargetVersion = NormalizeOptionalVersionOrOriginal(policy?.TargetVersion),
+                TargetScope = NormalizeTargetScopeOrAll(policy?.TargetScope),
+                TargetStoreGuids = GetStoreTargetGuids(policy?.TargetScope, targets),
+                TargetDeviceRegistrationIds = GetDeviceTargetIds(policy?.TargetScope, targets),
+                TargetStoreSummaries = CloneStoreSummaries(targetSummaries?.Stores),
+                TargetDeviceSummaries = CloneDeviceSummaries(targetSummaries?.Devices),
+                PolicyUpdatedAt = policy == null ? null : policy.UpdatedAt ?? policy.CreatedAt,
+                PolicyUpdatedBy = policy?.UpdatedBy ?? policy?.CreatedBy,
                 PublishedAt = release.PublishedAt,
                 CreatedAt = release.CreatedAt,
                 UpdatedAt = release.UpdatedAt,
             };
         }
 
-        private static WpfUpdatePolicyDto MapPolicy(WpfUpdatePolicy policy)
+        private static WpfUpdatePolicyDto MapPolicy(
+            WpfUpdatePolicy policy,
+            IReadOnlyCollection<WpfUpdatePolicyTarget>? targets = null,
+            PolicyTargetSummaries? targetSummaries = null
+        )
         {
             return new WpfUpdatePolicyDto
             {
@@ -846,7 +1015,300 @@ namespace BlazorApp.Api.Services
                 ForceUpdate = policy.ForceUpdate,
                 CreatedAt = policy.CreatedAt,
                 UpdatedAt = policy.UpdatedAt,
+                TargetScope = NormalizeTargetScopeOrAll(policy.TargetScope),
+                TargetStoreGuids = GetStoreTargetGuids(policy.TargetScope, targets),
+                TargetDeviceRegistrationIds = GetDeviceTargetIds(policy.TargetScope, targets),
+                TargetStoreSummaries = CloneStoreSummaries(targetSummaries?.Stores),
+                TargetDeviceSummaries = CloneDeviceSummaries(targetSummaries?.Devices),
+                PolicyUpdatedAt = policy.UpdatedAt ?? policy.CreatedAt,
+                PolicyUpdatedBy = policy.UpdatedBy ?? policy.CreatedBy,
             };
+        }
+
+        private async Task<PolicyTargetSummaries> GetTargetSummariesAsync(
+            string? targetScope,
+            IReadOnlyCollection<WpfUpdatePolicyTarget>? targets
+        )
+        {
+            var normalizedScope = NormalizeTargetScopeOrAll(targetScope);
+            if (normalizedScope == "stores")
+            {
+                var storeGuids = GetStoreTargetGuids(normalizedScope, targets);
+                if (storeGuids.Count == 0)
+                {
+                    return new PolicyTargetSummaries();
+                }
+
+                // 摘要读取不按启用或删除状态过滤：历史定向目标仍应保留可识别的安全展示信息。
+                var matchingStores = await _db.Queryable<Store>()
+                    .Where(store => storeGuids.Contains(store.StoreGUID))
+                    .ToListAsync();
+                var storesByGuid = matchingStores
+                    .Where(store => !string.IsNullOrWhiteSpace(store.StoreGUID))
+                    .GroupBy(store => store.StoreGUID, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+                return new PolicyTargetSummaries
+                {
+                    Stores = storeGuids.Select(storeGuid =>
+                    {
+                        storesByGuid.TryGetValue(storeGuid, out var store);
+                        return new WpfUpdateTargetStoreSummaryDto
+                        {
+                            StoreGuid = storeGuid,
+                            StoreCode = store?.StoreCode,
+                            StoreName = store?.StoreName,
+                        };
+                    }).ToList(),
+                };
+            }
+
+            if (normalizedScope != "devices")
+            {
+                return new PolicyTargetSummaries();
+            }
+
+            var deviceIds = GetDeviceTargetIds(normalizedScope, targets);
+            if (deviceIds.Count == 0 || _posmDb == null)
+            {
+                // POSM 连接不可用时仍必须保留目标注册 ID，不能把已选目标悄悄丢失。
+                return new PolicyTargetSummaries
+                {
+                    Devices = deviceIds
+                        .Select(id => new WpfUpdateTargetDeviceSummaryDto { DeviceRegistrationId = id })
+                        .ToList(),
+                };
+            }
+
+            // 不加 status/type/system 过滤，已禁用或历史设备也应能在策略只读摘要中被识别。
+            var devices = await _posmDb.Queryable<POSM_设备注册信息表>()
+                .Where(device => deviceIds.Contains(device.ID))
+                .ToListAsync();
+            var storeCodes = devices
+                .Select(device => NormalizeOptional(device.分店代码))
+                .Where(code => code is not null)
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var stores = storeCodes.Count == 0
+                ? new List<Store>()
+                : await _db.Queryable<Store>()
+                    .Where(store => storeCodes.Contains(store.StoreCode))
+                    .ToListAsync();
+            var devicesById = devices
+                .GroupBy(device => device.ID)
+                .ToDictionary(group => group.Key, group => group.First());
+            var storeNamesByCode = stores
+                .Where(store => !string.IsNullOrWhiteSpace(store.StoreCode))
+                .GroupBy(store => store.StoreCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().StoreName, StringComparer.OrdinalIgnoreCase);
+
+            return new PolicyTargetSummaries
+            {
+                Devices = deviceIds.Select(deviceId =>
+                {
+                    devicesById.TryGetValue(deviceId, out var device);
+                    var storeCode = NormalizeOptional(device?.分店代码);
+                    return new WpfUpdateTargetDeviceSummaryDto
+                    {
+                        DeviceRegistrationId = deviceId,
+                        SystemDeviceNumber = device?.系统设备编号,
+                        StoreCode = storeCode,
+                        StoreName = storeCode is not null
+                            && storeNamesByCode.TryGetValue(storeCode, out var storeName)
+                                ? storeName
+                                : null,
+                        Remarks = device?.备注,
+                    };
+                }).ToList(),
+            };
+        }
+
+        private static void ApplyTargetSummaries(
+            WpfUpdatePolicyDto policy,
+            PolicyTargetSummaries targetSummaries
+        )
+        {
+            policy.TargetStoreSummaries = CloneStoreSummaries(targetSummaries.Stores);
+            policy.TargetDeviceSummaries = CloneDeviceSummaries(targetSummaries.Devices);
+        }
+
+        private static List<WpfUpdateTargetStoreSummaryDto> CloneStoreSummaries(
+            IReadOnlyCollection<WpfUpdateTargetStoreSummaryDto>? source
+        )
+        {
+            return (source ?? Array.Empty<WpfUpdateTargetStoreSummaryDto>())
+                .Select(item => new WpfUpdateTargetStoreSummaryDto
+                {
+                    StoreGuid = item.StoreGuid,
+                    StoreCode = item.StoreCode,
+                    StoreName = item.StoreName,
+                })
+                .ToList();
+        }
+
+        private static List<WpfUpdateTargetDeviceSummaryDto> CloneDeviceSummaries(
+            IReadOnlyCollection<WpfUpdateTargetDeviceSummaryDto>? source
+        )
+        {
+            return (source ?? Array.Empty<WpfUpdateTargetDeviceSummaryDto>())
+                .Select(item => new WpfUpdateTargetDeviceSummaryDto
+                {
+                    DeviceRegistrationId = item.DeviceRegistrationId,
+                    SystemDeviceNumber = item.SystemDeviceNumber,
+                    StoreCode = item.StoreCode,
+                    StoreName = item.StoreName,
+                    Remarks = item.Remarks,
+                })
+                .ToList();
+        }
+
+        private sealed class PolicyTargetSummaries
+        {
+            public List<WpfUpdateTargetStoreSummaryDto> Stores { get; init; } = new();
+            public List<WpfUpdateTargetDeviceSummaryDto> Devices { get; init; } = new();
+        }
+
+        private async Task<bool> DoesPolicyTargetMatchAsync(
+            WpfUpdatePolicy policy,
+            WpfUpdateCheckDeviceIdentity deviceIdentity
+        )
+        {
+            var targetScope = NormalizeTargetScopeOrAll(policy.TargetScope);
+            var targets = await _db
+                .Queryable<WpfUpdatePolicyTarget>()
+                .Where(x => x.PolicyId == policy.Id && !x.IsDeleted)
+                .ToListAsync();
+            if (targetScope == "devices")
+            {
+                return targets.Any(
+                    target =>
+                        target.DeviceRegistrationId == deviceIdentity.DeviceRegistrationId
+                );
+            }
+
+            if (targetScope != "stores" || string.IsNullOrWhiteSpace(deviceIdentity.StoreCode))
+            {
+                return false;
+            }
+
+            // 分店归属以设备本次严格认证时的当前分店代码为准，并在检查时动态解析 StoreGUID。
+            var store = await _db.Queryable<Store>().FirstAsync(store =>
+                store.StoreCode == deviceIdentity.StoreCode && store.IsActive && !store.IsDeleted
+            );
+            return store != null
+                && targets.Any(target =>
+                    string.Equals(target.StoreGuid, store.StoreGUID, StringComparison.OrdinalIgnoreCase)
+                );
+        }
+
+        private static bool TryBuildPolicyTargets(
+            WpfUpdatePolicyRequest request,
+            out string targetScope,
+            out List<WpfUpdatePolicyTarget> targets,
+            out string errorCode
+        )
+        {
+            targetScope = NormalizeTargetScopeOrAll(request.TargetScope);
+            targets = new List<WpfUpdatePolicyTarget>();
+            errorCode = string.Empty;
+            var requestedScope = NormalizeOptional(request.TargetScope)?.ToLowerInvariant() ?? "all";
+            if (requestedScope is not ("all" or "stores" or "devices"))
+            {
+                errorCode = "TARGET_SCOPE_INVALID";
+                return false;
+            }
+
+            if (targetScope == "stores")
+            {
+                var storeGuids = request.TargetStoreGuids
+                    .Select(NormalizeOptional)
+                    .Where(value => value is not null)
+                    .Select(value => value!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (storeGuids.Count == 0)
+                {
+                    errorCode = "TARGET_STORES_REQUIRED";
+                    return false;
+                }
+
+                targets.AddRange(storeGuids.Select(value => new WpfUpdatePolicyTarget
+                {
+                    Id = Guid.NewGuid(),
+                    StoreGuid = value,
+                }));
+            }
+            else if (targetScope == "devices")
+            {
+                var deviceIds = request.TargetDeviceRegistrationIds
+                    .Where(value => value > 0)
+                    .Distinct()
+                    .ToList();
+                if (deviceIds.Count == 0)
+                {
+                    errorCode = "TARGET_DEVICES_REQUIRED";
+                    return false;
+                }
+
+                targets.AddRange(deviceIds.Select(value => new WpfUpdatePolicyTarget
+                {
+                    Id = Guid.NewGuid(),
+                    DeviceRegistrationId = value,
+                }));
+            }
+
+            return true;
+        }
+
+        private static bool IsAllTargetScope(string? targetScope)
+        {
+            return NormalizeTargetScopeOrAll(targetScope) == "all";
+        }
+
+        private static string NormalizeTargetScopeOrAll(string? targetScope)
+        {
+            return NormalizeOptional(targetScope)?.ToLowerInvariant() switch
+            {
+                "stores" => "stores",
+                "devices" => "devices",
+                _ => "all",
+            };
+        }
+
+        private static List<string> GetStoreTargetGuids(
+            string? targetScope,
+            IReadOnlyCollection<WpfUpdatePolicyTarget>? targets
+        )
+        {
+            if (NormalizeTargetScopeOrAll(targetScope) != "stores")
+            {
+                return new List<string>();
+            }
+
+            return (targets ?? Array.Empty<WpfUpdatePolicyTarget>())
+                .Select(target => NormalizeOptional(target.StoreGuid))
+                .Where(value => value is not null)
+                .Select(value => value!)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static List<int> GetDeviceTargetIds(
+            string? targetScope,
+            IReadOnlyCollection<WpfUpdatePolicyTarget>? targets
+        )
+        {
+            if (NormalizeTargetScopeOrAll(targetScope) != "devices")
+            {
+                return new List<int>();
+            }
+
+            return (targets ?? Array.Empty<WpfUpdatePolicyTarget>())
+                .Select(target => target.DeviceRegistrationId ?? 0)
+                .Where(id => id > 0)
+                .OrderBy(id => id)
+                .ToList();
         }
 
         private static bool TryNormalizeVersion(string? version, out string normalizedVersion)

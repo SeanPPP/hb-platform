@@ -39,6 +39,7 @@ public static class ServiceRegistration
         services.AddSingleton(new LocalSqliteStore(Path.Combine(localDataDirectory, "hbpos_client.db")));
         services.AddSingleton<ILocalSqliteCheckpointService>(sp => sp.GetRequiredService<LocalSqliteStore>());
         services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
+        services.AddSingleton<IAppUpdateDeviceCacheInitializer, AppUpdateDeviceCacheInitializer>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
@@ -246,6 +247,7 @@ public static class ServiceRegistration
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IDeviceFingerprintService, DeviceFingerprintService>();
+        services.AddSingleton<IAppUpdateDeviceCredentialProvider, AppUpdateDeviceCredentialProvider>();
         services.AddSingleton<IUiPriorityCoordinator, UiPriorityCoordinator>();
         services.AddSingleton<ILocalCatalogSyncService, LocalCatalogSyncService>();
         services.AddSingleton<IRemoteLookupRefreshService, RemoteLookupRefreshService>();

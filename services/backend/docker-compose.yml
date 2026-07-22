@@ -24,6 +24,8 @@ services:
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
       - Cookie__Secure=${COOKIE_SECURE:-true}
       - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
+      # WPF 更新检查密钥只从服务器 .env 注入，禁止写入仓库。
+      - WpfAppUpdate__CheckApiKey=${WPF_APP_UPDATE_CHECK_API_KEY:?required}
       # 中心日志状态与保留策略显式写入生产 compose，外部项目摘要只从 .env 注入。
       - ApplicationLogging__Enabled=true
       - ApplicationLogging__DefaultProjectCode=HBBBackend

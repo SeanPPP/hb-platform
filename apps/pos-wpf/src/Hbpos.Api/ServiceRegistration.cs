@@ -72,6 +72,7 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+        services.AddScoped<IAppUpdateDeviceIdentityValidator, AppUpdateDeviceIdentityValidator>();
         services.AddScoped<IAttendanceSigningKeyRegistrationService, AttendanceSigningKeyRegistrationService>();
         services.AddScoped<IAttendanceQrKeySchemaSqlExecutor, SqlSugarAttendanceQrKeySchemaSqlExecutor>();
         services.AddScoped<IAttendanceQrKeySchemaInitializer, SqlSugarAttendanceQrKeySchemaInitializer>();

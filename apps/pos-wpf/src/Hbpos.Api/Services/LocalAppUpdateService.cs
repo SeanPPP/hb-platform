@@ -12,7 +12,15 @@ public interface ILocalAppUpdateService
     Task<AppUpdateCheckResponse> CheckAsync(
         AppUpdateCheckRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<AppUpdateCheckResponse> CheckAsync(
+        AppUpdateCheckRequest request,
+        AppUpdateDeviceIdentity? deviceIdentity,
+        CancellationToken cancellationToken = default) =>
+        CheckAsync(request, cancellationToken);
 }
+
+public sealed record AppUpdateDeviceIdentity(string HardwareId, string AuthorizationCode);
 
 public sealed class LocalAppUpdateService(
     HttpClient httpClient,
@@ -54,6 +62,12 @@ public sealed class LocalAppUpdateService(
 
     public async Task<AppUpdateCheckResponse> CheckAsync(
         AppUpdateCheckRequest request,
+        CancellationToken cancellationToken = default) =>
+        await CheckAsync(request, deviceIdentity: null, cancellationToken);
+
+    public async Task<AppUpdateCheckResponse> CheckAsync(
+        AppUpdateCheckRequest request,
+        AppUpdateDeviceIdentity? deviceIdentity,
         CancellationToken cancellationToken = default)
     {
         var currentVersion = string.IsNullOrWhiteSpace(request.CurrentVersion)
@@ -89,6 +103,7 @@ public sealed class LocalAppUpdateService(
         {
             using var checkRequest = new HttpRequestMessage(HttpMethod.Get, checkUri);
             AddCenterApiKeyHeader(checkRequest, ResolvePreferredCenterApiKey(options.Value));
+            AddAuthenticatedDeviceHeaders(checkRequest, deviceIdentity);
             using var response = await httpClient.SendAsync(checkRequest, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -196,6 +211,22 @@ public sealed class LocalAppUpdateService(
 
         // 中文注释：终端只把密钥发给已校验过的更新中心地址，避免 check 接口匿名暴露发布元数据。
         request.Headers.TryAddWithoutValidation(AppUpdateOptions.CenterApiKeyHeaderName, apiKey.Trim());
+    }
+
+    private static void AddAuthenticatedDeviceHeaders(
+        HttpRequestMessage request,
+        AppUpdateDeviceIdentity? deviceIdentity)
+    {
+        if (deviceIdentity is null ||
+            string.IsNullOrWhiteSpace(deviceIdentity.HardwareId) ||
+            string.IsNullOrWhiteSpace(deviceIdentity.AuthorizationCode))
+        {
+            return;
+        }
+
+        // 中文注释：身份仅在本地 API 已认证后由控制器传入；一律走中心请求头，绝不进入 URL 或日志。
+        request.Headers.TryAddWithoutValidation("X-Device-Id", deviceIdentity.HardwareId.Trim());
+        request.Headers.TryAddWithoutValidation("X-Auth-Code", deviceIdentity.AuthorizationCode.Trim());
     }
 
     private static string? ResolvePreferredCenterApiKey(AppUpdateOptions options)
