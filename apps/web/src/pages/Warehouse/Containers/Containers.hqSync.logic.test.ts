@@ -36,7 +36,7 @@ async function main() {
     assert(
       pageSource.includes('if (success) {') &&
       pageSource.includes('message.success(msg)') &&
-      pageSource.includes('await loadData(1, pageSize)'),
+      pageSource.includes('await latestRequestFirstPageRef.current()'),
       '页面应显式区分成功分支，并在成功后提示成功且刷新第一页',
     )
 
@@ -54,8 +54,8 @@ async function main() {
       '页面失败分支应优先展示 error.message，并为非 Error 异常保留兜底文案',
     )
 
-    const loadDataCount = pageSource.split('await loadData(1, pageSize)').length - 1
-    assertEqual(loadDataCount, 2, '页面源码中刷新第一页的调用次数应保持为创建成功一次、同步成功一次')
+    const firstPageRequestCount = pageSource.split('await latestRequestFirstPageRef.current()').length - 1
+    assertEqual(firstPageRequestCount, 2, '创建成功和同步成功应分别通过当前单一入口刷新第一页一次')
   })
   if (errorHandlingFailure) failures.push(errorHandlingFailure)
 

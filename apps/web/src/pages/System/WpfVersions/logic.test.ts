@@ -15,6 +15,10 @@ import {
   isSupportedWpfInstallerFile,
   normalizeWpfReleaseChannel,
 } from './logic'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -44,6 +48,152 @@ function getNestedValue(source: Record<string, unknown>, path: string) {
     }
     return (current as Record<string, unknown>)[segment]
   }, source)
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+
+  return { promise, reject, resolve }
+}
+
+interface WpfReleaseQuery {
+  page: number
+  pageSize: number
+  channel: string
+  includeDisabled: boolean
+  scopeRevision: number
+}
+
+async function verifyWpfScopeChangeUsesOneFirstPageRequest() {
+  const requestGuard = createLatestRequestGuard()
+  let desiredQuery: WpfReleaseQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: 'production',
+    includeDisabled: false,
+    scopeRevision: 0,
+  }
+  const state = { channel: '', page: 0 }
+  const startedQueries: string[] = []
+
+  const load = (query: WpfReleaseQuery, request: Promise<WpfReleaseQuery>) => {
+    startedQueries.push(`${query.channel}:${query.page}`)
+    return runLatestGuardedRequest(requestGuard, () => request, {
+      onSuccess: (result) => {
+        state.channel = result.channel
+        state.page = result.page
+      },
+    })
+  }
+
+  const resetScope = (channel: string, includeDisabled: boolean) => {
+    desiredQuery = {
+      page: 1,
+      pageSize: desiredQuery.pageSize,
+      channel,
+      includeDisabled,
+      scopeRevision: desiredQuery.scopeRevision + 1,
+    }
+    requestGuard.invalidate()
+  }
+
+  const refreshAfterMutation = (expectedQuery: WpfReleaseQuery, targetChannel?: string) => {
+    const scopeChanged = expectedQuery.scopeRevision !== desiredQuery.scopeRevision
+    if (scopeChanged) {
+      if (!targetChannel || targetChannel !== desiredQuery.channel) {
+        return false
+      }
+    }
+    if (targetChannel && targetChannel !== desiredQuery.channel) {
+      resetScope(targetChannel, desiredQuery.includeDisabled)
+      return false
+    }
+    return true
+  }
+
+  const staleList = createDeferred<WpfReleaseQuery>()
+  const staleListTask = load(desiredQuery, staleList.promise)
+  const mutation = createDeferred<void>()
+  const mutationTask = mutation.promise.then(() => refreshAfterMutation({
+    page: 3,
+    pageSize: 10,
+    channel: 'production',
+    includeDisabled: false,
+    scopeRevision: 0,
+  }))
+
+  resetScope('preview', false)
+  const scopeList = createDeferred<WpfReleaseQuery>()
+  const scopeListTask = load(desiredQuery, scopeList.promise)
+  mutation.resolve()
+  assertEqual(await mutationTask, false, '旧 mutation 不得在通道切换后重新开始列表请求')
+  assertDeepEqual(startedQueries, ['production:3', 'preview:1'], '通道切换只应补发一次第一页请求')
+
+  scopeList.resolve({ ...desiredQuery })
+  await scopeListTask
+  staleList.resolve({ page: 3, pageSize: 10, channel: 'production', includeDisabled: false, scopeRevision: 0 })
+  await staleListTask
+  assertEqual(state.channel, 'preview', '旧列表响应不得覆盖新通道')
+  assertEqual(state.page, 1, '旧列表响应不得覆盖新通道的第一页')
+
+  desiredQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: 'production',
+    includeDisabled: false,
+    scopeRevision: 0,
+  }
+  startedQueries.length = 0
+  const targetMutation = createDeferred<void>()
+  const targetMutationTask = targetMutation.promise.then(() => refreshAfterMutation({
+    page: 3,
+    pageSize: 10,
+    channel: 'production',
+    includeDisabled: false,
+    scopeRevision: 0,
+  }, 'preview'))
+
+  targetMutation.resolve()
+  assertEqual(await targetMutationTask, false, '目标通道变化应交由 scope effect 单次加载')
+  assertEqual(desiredQuery.channel, 'preview', '目标通道变化应同步更新 desired query')
+  assertEqual(desiredQuery.page, 1, '目标通道变化必须原子重置为第一页')
+
+  const targetScopeList = createDeferred<WpfReleaseQuery>()
+  const targetScopeTask = load(desiredQuery, targetScopeList.promise)
+  assertDeepEqual(startedQueries, ['preview:1'], '目标通道变化不得再额外请求旧页码')
+  targetScopeList.resolve({ ...desiredQuery })
+  await targetScopeTask
+
+  desiredQuery = {
+    page: 3,
+    pageSize: 10,
+    channel: 'production',
+    includeDisabled: false,
+    scopeRevision: 10,
+  }
+  startedQueries.length = 0
+  const conflictingMutation = createDeferred<void>()
+  const mutationStartQuery = { ...desiredQuery }
+  const conflictingMutationTask = conflictingMutation.promise.then(() => (
+    refreshAfterMutation(mutationStartQuery, 'preview')
+  ))
+
+  resetScope('beta', false)
+  const betaScopeList = createDeferred<WpfReleaseQuery>()
+  const betaScopeTask = load(desiredQuery, betaScopeList.promise)
+  conflictingMutation.resolve()
+
+  assertEqual(await conflictingMutationTask, false, '旧 mutation 不得覆盖用户后来选择的其他通道')
+  assertEqual(desiredQuery.channel, 'beta', '用户已切到 beta 时不得被旧 mutation 切回 preview')
+  assertEqual(desiredQuery.page, 1, '用户切换 beta 后仍应停留第一页')
+  assertDeepEqual(startedQueries, ['beta:1'], '旧 mutation 不得额外发出 preview 请求')
+  betaScopeList.resolve({ ...desiredQuery })
+  await betaScopeTask
 }
 
 function collectWpfVersionLocaleKeys() {
@@ -254,6 +404,37 @@ assertEqual(
   getWpfVersionErrorMessage('plain failure', 'fallback'),
   'fallback',
   'WPF versions page should keep fallback text when the thrown value is not an Error',
+)
+
+await verifyWpfScopeChangeUsesOneFirstPageRequest()
+
+const wpfVersionsPageSource = readFileSync(resolve(process.cwd(), 'src/pages/System/WpfVersions/index.tsx'), 'utf8')
+assertTruthy(
+  wpfVersionsPageSource.includes('const resetReleaseScope = useCallback((nextChannel: string, nextIncludeDisabled: boolean) =>')
+    && wpfVersionsPageSource.includes('page: 1,')
+    && wpfVersionsPageSource.includes('latestReleaseQueryRef.current = nextQuery')
+    && wpfVersionsPageSource.includes('releasesRequestGuardRef.current.invalidate()')
+    && wpfVersionsPageSource.includes('scopeRevision: currentQuery.scopeRevision + 1'),
+  'WPF 通道或筛选变更必须同步发布第一页 desired query 并使旧请求失效',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('onChange={handleChannelChange}')
+    && wpfVersionsPageSource.includes('onChange={handleIncludeDisabledChange}')
+    && wpfVersionsPageSource.includes('onChange: handlePageChange,')
+    && !wpfVersionsPageSource.includes('onChange={setChannel}')
+    && !wpfVersionsPageSource.includes('onChange={setIncludeDisabled}'),
+  'WPF 通道、筛选和分页必须通过原子 desired query handler 更新',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('await refreshLatestReleaseQuery(payload.channel, refreshQuery)')
+    && wpfVersionsPageSource.includes('await refreshLatestReleaseQuery(undefined, refreshQuery)')
+    && wpfVersionsPageSource.includes('await refreshLatestReleaseQuery(uploadedChannel, refreshQuery)'),
+  'WPF mutation 刷新必须携带启动时 query，避免晚完成覆盖新 scope',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes('expectedQuery.scopeRevision !== currentQuery.scopeRevision')
+    && wpfVersionsPageSource.includes('if (!targetChannel || targetChannel !== currentQuery.channel) {'),
+  'WPF 旧 mutation 的目标通道与当前 scope 不同时必须直接放弃刷新',
 )
 
 const localeKeys = collectWpfVersionLocaleKeys()

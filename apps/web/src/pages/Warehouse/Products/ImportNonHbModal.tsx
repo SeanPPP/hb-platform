@@ -1,6 +1,6 @@
 import { Image, Input, Modal, Select, Space, Table, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   getActiveLocalSuppliers,
@@ -10,6 +10,7 @@ import {
   type NonHotbargainProductNotInWarehouseItem,
 } from '../../../services/warehouseProductService'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 
 function formatPrice(value?: number) {
   if (value === undefined || value === null) {
@@ -43,62 +44,76 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
   const [total, setTotal] = useState(0)
   const [searchText, setSearchText] = useState('')
   const [supplierCode, setSupplierCode] = useState<string>()
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  // 会话标识同时约束商品与供应商请求，列表 guard 只处理当前会话内的查询竞态。
+  const nextSessionIdRef = useRef(0)
+  const activeSessionIdRef = useRef<number | null>(null)
 
-  const loadItems = async (overrides?: {
-    page?: number
-    pageSize?: number
-    searchText?: string
-    supplierCode?: string
-  }) => {
+  const loadItems = async (
+    overrides?: {
+      page?: number
+      pageSize?: number
+      searchText?: string
+      supplierCode?: string
+    },
+    sessionId = activeSessionIdRef.current,
+  ) => {
+    if (sessionId === null || activeSessionIdRef.current !== sessionId) {
+      return
+    }
+
     const nextPage = overrides?.page ?? page
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSearchText = overrides?.searchText ?? searchText
     const nextSupplierCode = overrides?.supplierCode ?? supplierCode
 
-    setLoading(true)
-    try {
-      const result = await getNonHotbargainProductsNotInWarehouse({
-        page: nextPage,
-        pageSize: nextPageSize,
-        globalSearch: nextSearchText.trim() || undefined,
-        filters: nextSupplierCode ? { localSupplierCode: [nextSupplierCode] } : undefined,
-      })
+    await runLatestGuardedRequest(
+      listRequestGuardRef.current,
+      () =>
+        getNonHotbargainProductsNotInWarehouse({
+          page: nextPage,
+          pageSize: nextPageSize,
+          globalSearch: nextSearchText.trim() || undefined,
+          filters: nextSupplierCode ? { localSupplierCode: [nextSupplierCode] } : undefined,
+        }),
+      {
+        onStart: () => {
+          if (activeSessionIdRef.current === sessionId) setLoading(true)
+        },
+        onSuccess: (result) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          setItems(sortByItemNumber(result.data || []))
+          setTotal(result.total || 0)
+          setPage(nextPage)
+          setPageSize(nextPageSize)
+        },
+        onError: (error) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('warehouse.importNonHb.loadFailed', '加载非国内商品失败'))
+        },
+        onSettled: () => {
+          if (activeSessionIdRef.current === sessionId) setLoading(false)
+        },
+      },
+    )
+  }
 
-      setItems(sortByItemNumber(result.data || []))
-      setTotal(result.total || 0)
-      setPage(nextPage)
-      setPageSize(nextPageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('warehouse.importNonHb.loadFailed', '加载非国内商品失败'))
-    } finally {
-      setLoading(false)
-    }
+  const invalidateListSession = () => {
+    activeSessionIdRef.current = null
+    listRequestGuardRef.current.invalidate()
+    setLoading(false)
+    setImporting(false)
+  }
+
+  const handleCancel = () => {
+    invalidateListSession()
+    onCancel()
   }
 
   useEffect(() => {
     if (!open) {
-      return
-    }
-
-    void Promise.all([
-      loadItems({ page: 1 }),
-      getActiveLocalSuppliers()
-        .then((result) => {
-          setSupplierOptions(
-            result
-              .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
-          )
-        })
-        .catch((error) => {
-          console.error(error)
-          message.error(t('warehouse.importNonHb.loadSupplierFailed', '加载本地供应商失败'))
-        }),
-    ])
-  }, [open])
-
-  useEffect(() => {
-    if (!open) {
+      invalidateListSession()
       setSelectedRowKeys([])
       setItems([])
       setSupplierOptions([])
@@ -107,6 +122,35 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       setPage(1)
       setPageSize(20)
       setTotal(0)
+      return
+    }
+
+    const sessionId = ++nextSessionIdRef.current
+    activeSessionIdRef.current = sessionId
+    listRequestGuardRef.current.invalidate()
+
+    void Promise.all([
+      loadItems({ page: 1 }, sessionId),
+      getActiveLocalSuppliers()
+        .then((result) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          setSupplierOptions(
+            result
+              .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+          )
+        })
+        .catch((error) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          console.error(error)
+          message.error(t('warehouse.importNonHb.loadSupplierFailed', '加载本地供应商失败'))
+        }),
+    ])
+
+    return () => {
+      if (activeSessionIdRef.current === sessionId) {
+        activeSessionIdRef.current = null
+        listRequestGuardRef.current.invalidate()
+      }
     }
   }, [open])
 
@@ -174,6 +218,11 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
   )
 
   const handleImport = async () => {
+    const sessionId = activeSessionIdRef.current
+    if (sessionId === null) {
+      return
+    }
+
     if (!selectedRowKeys.length) {
       message.warning(t('warehouse.importNonHb.selectFirst', '请先选择要导入的商品'))
       return
@@ -183,6 +232,10 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       setImporting(true)
       const result = await importNonHotbargainProducts(selectedRowKeys.map(String))
 
+      if (activeSessionIdRef.current !== sessionId) {
+        return
+      }
+
       if (!result.success) {
         message.error(result.message || t('warehouse.importFailed', '导入失败'))
         return
@@ -190,12 +243,18 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
 
       message.success(t('warehouse.importNonHb.importSuccess', '成功导入 {{count}} 个商品', { count: result.successCount ?? selectedRowKeys.length }))
       onSuccess()
-      onCancel()
+      handleCancel()
     } catch (error) {
+      if (activeSessionIdRef.current !== sessionId) {
+        return
+      }
+
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.importFailed', '导入失败'))
     } finally {
-      setImporting(false)
+      if (activeSessionIdRef.current === sessionId) {
+        setImporting(false)
+      }
     }
   }
 
@@ -208,7 +267,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       okText={t('warehouse.importNonHb.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       onOk={() => void handleImport()}
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>

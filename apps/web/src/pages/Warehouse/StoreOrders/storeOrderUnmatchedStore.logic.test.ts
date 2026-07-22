@@ -11,6 +11,14 @@ const pageSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Wareho
 const serviceSource = fs.readFileSync(path.resolve(process.cwd(), 'src/services/storeOrderService.ts'), 'utf8')
 const compactCssSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/compact.css'), 'utf8')
 
+function extractSection(source: string, startMarker: string, endMarker: string, label: string) {
+  const startIndex = source.indexOf(startMarker)
+  assert(startIndex >= 0, `${label}未找到起始标记`)
+  const endIndex = source.indexOf(endMarker, startIndex + startMarker.length)
+  assert(endIndex > startIndex, `${label}未找到结束标记`)
+  return source.slice(startIndex, endIndex)
+}
+
 assert(
   pageSource.includes("t('storeOrders.fixStoreGuid'") &&
     pageSource.includes('openUnmatchedStoreModal'),
@@ -84,9 +92,23 @@ assert(
   '目标本地分店选项应保留中文注释说明展示信息和保存值的边界',
 )
 
+const refreshSection = extractSection(
+  pageSource,
+  'const refreshCurrentList',
+  'const loadUnmatchedStoreGroups',
+  '当前列表刷新 helper',
+)
+const saveMappingsSection = extractSection(
+  pageSource,
+  'const handleSaveUnmatchedStoreMappings',
+  'const updateColumnFilters',
+  '保存未匹配分店映射',
+)
 assert(
-  pageSource.includes('await Promise.all([loadData(), loadBranches(), loadUnmatchedStoreGroups()])'),
-  '修复成功后应刷新主列表、分店筛选和未匹配聚合',
+  saveMappingsSection.includes('await Promise.all([refreshCurrentList(), loadBranches(), loadUnmatchedStoreGroups()])') &&
+    refreshSection.includes('if (!isMountedRef.current) {') &&
+    refreshSection.includes('loadDataRef.current?.(overrides)'),
+  '修复成功后应在 mounted gate 后通过 current loader 刷新主列表，并保留分店筛选和未匹配聚合刷新',
 )
 
 assert(

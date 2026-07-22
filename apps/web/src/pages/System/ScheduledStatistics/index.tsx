@@ -25,7 +25,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import PageContainer from '../../../components/PageContainer'
 import ProductStatisticsPage from '../../ExecutiveSalesIntelligence/ProductStatistics'
 import {
@@ -66,7 +66,11 @@ import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { useAuthStore } from '../../../store/auth'
 import type { ScheduledTaskRuntimeControlStatus } from '../../../types/scheduledTaskRuntimeControl'
-import type { ScheduledTaskLogItem } from '../../../types/scheduledTaskRetry'
+import type { ScheduledTaskListQuery, ScheduledTaskLogItem } from '../../../types/scheduledTaskRetry'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 const { RangePicker } = DatePicker
 
@@ -92,6 +96,11 @@ interface TaskLogQueryValues {
   taskType?: string
   status?: string
   dateRange?: DateRangeValue
+}
+
+type DesiredTaskLogQuery = ScheduledTaskListQuery & {
+  pageNumber: number
+  pageSize: number
 }
 
 const taskTypeOptions = [
@@ -578,6 +587,14 @@ export default function ScheduledStatisticsPage() {
   const [taskPage, setTaskPage] = useState(1)
   const [taskPageSize, setTaskPageSize] = useState(20)
   const [taskTotal, setTaskTotal] = useState(0)
+  const taskLogsRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const desiredTaskLogQueryRef = useRef<DesiredTaskLogQuery>({
+    pageNumber: taskPage,
+    pageSize: taskPageSize,
+    sortBy: 'startedAt',
+    sortDirection: 'desc',
+  })
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailTask, setDetailTask] = useState<ScheduledTaskLogItem | null>(null)
@@ -629,32 +646,59 @@ export default function ScheduledStatisticsPage() {
     }
   }
 
-  const loadTaskLogs = async (nextPage = taskPage, nextPageSize = taskPageSize) => {
-    setTaskLogLoading(true)
-    try {
-      const values = taskLogForm.getFieldsValue()
-      const dateRange = getDateRangePayload(values.dateRange)
-      const result = await getScheduledTaskList({
-        taskType: values.taskType || undefined,
-        status: values.status || undefined,
-        startDate: dateRange?.startDate,
-        endDate: dateRange?.endDate,
-        pageNumber: nextPage,
-        pageSize: nextPageSize,
-        sortBy: 'startedAt',
-        sortDirection: 'desc',
-      })
-      setTaskRows(result.items)
-      setTaskTotal(result.total)
-      setTaskPage(result.page)
-      setTaskPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error('加载任务日志失败')
-    } finally {
-      setTaskLogLoading(false)
+  const loadTaskLogs = async (overrides: Partial<DesiredTaskLogQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const values = taskLogForm.getFieldsValue()
+    const dateRange = getDateRangePayload(values.dateRange)
+    const query: DesiredTaskLogQuery = {
+      taskType: values.taskType || undefined,
+      status: values.status || undefined,
+      startDate: dateRange?.startDate,
+      endDate: dateRange?.endDate,
+      pageNumber: taskPage,
+      pageSize: taskPageSize,
+      sortBy: 'startedAt',
+      sortDirection: 'desc',
+      ...overrides,
+    }
+    // 任务执行晚完成时刷新已开始的目标页和筛选，而不是最后成功页。
+    desiredTaskLogQueryRef.current = query
+
+    await runLatestGuardedRequest(taskLogsRequestGuardRef.current, () => getScheduledTaskList(query), {
+      onStart: () => setTaskLogLoading(true),
+      onSuccess: (result) => {
+        setTaskRows(result.items)
+        setTaskTotal(result.total)
+        setTaskPage(result.page)
+        setTaskPageSize(result.pageSize)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error('加载任务日志失败')
+      },
+      onSettled: () => setTaskLogLoading(false),
+    })
   }
+
+  const latestLoadTaskLogsRef = useRef(loadTaskLogs)
+
+  useLayoutEffect(() => {
+    latestLoadTaskLogsRef.current = loadTaskLogs
+  })
+
+  const refreshDesiredTaskLogs = (overrides: Partial<DesiredTaskLogQuery> = {}) =>
+    latestLoadTaskLogsRef.current({ ...desiredTaskLogQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      taskLogsRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   useEffect(() => {
     const defaultRange: DateRangeValue = [dayjs().subtract(6, 'day'), dayjs()]
@@ -665,7 +709,7 @@ export default function ScheduledStatisticsPage() {
     taskLogForm.setFieldsValue({ dateRange: defaultRange, status: '' })
     void loadSchedulerStatus()
     void loadOptions()
-    void loadTaskLogs(1, taskPageSize)
+    void loadTaskLogs({ pageNumber: 1, pageSize: taskPageSize })
   }, [])
 
   const handleUpdateScheduler = async (next: {
@@ -711,11 +755,11 @@ export default function ScheduledStatisticsPage() {
       const result = await action()
       if (isScheduledStatisticsJobFailure(result)) {
         message.error(buildSubmitMessage(result, fallbackMessage))
-        await loadTaskLogs(1, taskPageSize)
+        await refreshDesiredTaskLogs({ pageNumber: 1 })
         return
       }
       message.success(buildSubmitMessage(result, fallbackMessage))
-      await loadTaskLogs(1, taskPageSize)
+      await refreshDesiredTaskLogs({ pageNumber: 1 })
     } catch (error) {
       console.error(error)
       message.error(getScheduledStatisticsActionErrorMessage(error))
@@ -892,7 +936,7 @@ export default function ScheduledStatisticsPage() {
     try {
       await retryScheduledTask(record.id)
       message.success('任务重试已启动')
-      await loadTaskLogs(taskPage, taskPageSize)
+      await refreshDesiredTaskLogs()
     } catch (error) {
       console.error(error)
       message.error('任务重试失败')
@@ -1014,7 +1058,7 @@ export default function ScheduledStatisticsPage() {
       title="定时统计任务"
       subtitle="集中管理后台统计任务、调度实例和执行日志。"
       extra={
-        <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([loadSchedulerStatus(), loadTaskLogs()])}>
+        <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([loadSchedulerStatus(), refreshDesiredTaskLogs()])}>
           刷新
         </Button>
       }
@@ -1132,7 +1176,7 @@ export default function ScheduledStatisticsPage() {
                     canRecalculate={canTriggerStatisticsTasks}
                     onAfterRecalculate={() => {
                       void loadSchedulerStatus()
-                      void loadTaskLogs(1, taskPageSize)
+                      void refreshDesiredTaskLogs({ pageNumber: 1 })
                     }}
                   />
                 ),
@@ -1254,7 +1298,11 @@ export default function ScheduledStatisticsPage() {
         </Card>
 
         <Card title="任务日志">
-          <Form form={taskLogForm} layout="vertical" onFinish={() => void loadTaskLogs(1, taskPageSize)}>
+          <Form
+            form={taskLogForm}
+            layout="vertical"
+            onFinish={() => void loadTaskLogs({ pageNumber: 1, pageSize: taskPageSize })}
+          >
             <Row gutter={16}>
               <Col xs={24} md={7}>
                 <Form.Item label="任务类型" name="taskType">
@@ -1280,7 +1328,7 @@ export default function ScheduledStatisticsPage() {
                     <Button onClick={() => {
                       taskLogForm.resetFields()
                       taskLogForm.setFieldsValue({ status: '', dateRange: [dayjs().subtract(6, 'day'), dayjs()] })
-                      void loadTaskLogs(1, taskPageSize)
+                      void loadTaskLogs({ pageNumber: 1, pageSize: taskPageSize })
                     }}
                     >
                       重置
@@ -1302,7 +1350,8 @@ export default function ScheduledStatisticsPage() {
               total: taskTotal,
               showSizeChanger: true,
               showTotal: (value) => `共 ${value} 条`,
-              onChange: (nextPage, nextPageSize) => void loadTaskLogs(nextPage, nextPageSize),
+              onChange: (nextPage, nextPageSize) =>
+                void loadTaskLogs({ pageNumber: nextPage, pageSize: nextPageSize }),
             }}
           />
         </Card>

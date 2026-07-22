@@ -1,7 +1,7 @@
 import { CheckCircleOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Image, Input, InputNumber, Modal, Result, Space, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   getDomesticProductsNotInWarehouse,
@@ -10,6 +10,7 @@ import {
   type ImportFromDomesticItem,
 } from '../../../services/warehouseProductService'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import './compact.css'
 
 function formatPrice(value?: number) {
@@ -82,42 +83,69 @@ export default function ImportFromDomesticModal({
   const [syncStorePrices, setSyncStorePrices] = useState(true)
   const [syncMultiCodes, setSyncMultiCodes] = useState(true)
   const [editablePrices, setEditablePrices] = useState<Record<string, EditablePriceData>>({})
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  // 打开会话与列表请求分别隔离，关闭再打开后旧响应不能写入新弹窗。
+  const nextSessionIdRef = useRef(0)
+  const activeSessionIdRef = useRef<number | null>(null)
 
-  const loadItems = async (overrides?: { page?: number; pageSize?: number; searchText?: string }) => {
+  const loadItems = async (
+    overrides?: { page?: number; pageSize?: number; searchText?: string },
+    sessionId = activeSessionIdRef.current,
+  ) => {
+    if (sessionId === null || activeSessionIdRef.current !== sessionId) {
+      return
+    }
+
     const nextPage = overrides?.page ?? page
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSearchText = overrides?.searchText ?? searchText
 
-    setLoading(true)
-    try {
-      const result = await getDomesticProductsNotInWarehouse({
-        page: nextPage,
-        pageSize: nextPageSize,
-        globalSearch: nextSearchText.trim() || undefined,
-      })
+    await runLatestGuardedRequest(
+      listRequestGuardRef.current,
+      () =>
+        getDomesticProductsNotInWarehouse({
+          page: nextPage,
+          pageSize: nextPageSize,
+          globalSearch: nextSearchText.trim() || undefined,
+        }),
+      {
+        onStart: () => {
+          if (activeSessionIdRef.current === sessionId) setLoading(true)
+        },
+        onSuccess: (result) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          setItems(sortByItemNumber(result.data || []))
+          setTotal(result.total || 0)
+          setPage(nextPage)
+          setPageSize(nextPageSize)
+        },
+        onError: (error) => {
+          if (activeSessionIdRef.current !== sessionId) return
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('warehouse.loadDomesticFailed', '加载国内商品失败'))
+        },
+        onSettled: () => {
+          if (activeSessionIdRef.current === sessionId) setLoading(false)
+        },
+      },
+    )
+  }
 
-      setItems(sortByItemNumber(result.data || []))
-      setTotal(result.total || 0)
-      setPage(nextPage)
-      setPageSize(nextPageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('warehouse.loadDomesticFailed', '加载国内商品失败'))
-    } finally {
-      setLoading(false)
-    }
+  const invalidateListSession = () => {
+    activeSessionIdRef.current = null
+    listRequestGuardRef.current.invalidate()
+    setLoading(false)
+    setImporting(false)
+  }
+
+  const handleCancel = () => {
+    invalidateListSession()
+    onCancel()
   }
 
   useEffect(() => {
     if (!open) {
-      return
-    }
-
-    void loadItems({ page: 1 })
-  }, [open])
-
-  useEffect(() => {
-    if (!open) {
+      invalidateListSession()
       setSelectedRowKeys([])
       setEditablePrices({})
       setSearchText('')
@@ -126,6 +154,19 @@ export default function ImportFromDomesticModal({
       setTotal(0)
       setSyncStorePrices(true)
       setSyncMultiCodes(true)
+      return
+    }
+
+    const sessionId = ++nextSessionIdRef.current
+    activeSessionIdRef.current = sessionId
+    listRequestGuardRef.current.invalidate()
+    void loadItems({ page: 1 }, sessionId)
+
+    return () => {
+      if (activeSessionIdRef.current === sessionId) {
+        activeSessionIdRef.current = null
+        listRequestGuardRef.current.invalidate()
+      }
     }
   }, [open])
 
@@ -286,6 +327,11 @@ export default function ImportFromDomesticModal({
   )
 
   const handleImport = async () => {
+    const sessionId = activeSessionIdRef.current
+    if (sessionId === null) {
+      return
+    }
+
     if (!selectedRowKeys.length) {
       message.warning(t('warehouse.selectAtLeastOne', '请至少选择一个商品'))
       return
@@ -328,6 +374,10 @@ export default function ImportFromDomesticModal({
         syncMultiCodePrice: syncMultiCodes,
       })
 
+      if (activeSessionIdRef.current !== sessionId) {
+        return
+      }
+
       if (!result.success) {
         message.error(result.message || t('warehouse.importFailed', '导入失败'))
         return
@@ -359,15 +409,25 @@ export default function ImportFromDomesticModal({
           />
         ),
         onOk: () => {
+          if (activeSessionIdRef.current !== sessionId) {
+            return
+          }
+
           onSuccess()
-          onCancel()
+          handleCancel()
         },
       })
     } catch (error) {
+      if (activeSessionIdRef.current !== sessionId) {
+        return
+      }
+
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.importFailed', '导入失败'))
     } finally {
-      setImporting(false)
+      if (activeSessionIdRef.current === sessionId) {
+        setImporting(false)
+      }
     }
   }
 
@@ -381,7 +441,7 @@ export default function ImportFromDomesticModal({
       okText={t('warehouse.importDomestic.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       onOk={() => void handleImport()}
     >
       <Space direction="vertical" size={8} style={{ width: '100%' }}>

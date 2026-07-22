@@ -16,7 +16,7 @@ import {
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { FilterValue, SorterResult } from 'antd/es/table/interface'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
@@ -25,6 +25,12 @@ import { createStore, getNextStoreCode, getStoreByGuid, getStores, syncStoreToHq
 import type { CreateStoreDto, StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import { RequestError } from '../../../utils/request'
 import StoreUserManagement from './StoreUserManagement'
+import {
+  DEFAULT_SYSTEM_LIST_PAGE_SIZE,
+  createLatestRequestGuard,
+  resolveSystemListPagination,
+  runLatestGuardedRequest,
+} from '../listPagination'
 
 const brandTagPalette = [
   { background: '#e6f4ff', borderColor: '#91caff', color: '#0958d9' },
@@ -86,8 +92,9 @@ export default function SystemStoresPage() {
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<StoreDto[]>([])
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(DEFAULT_SYSTEM_LIST_PAGE_SIZE)
   const [total, setTotal] = useState(0)
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
   const [brandFilter, setBrandFilter] = useState<string | undefined>()
   const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>()
   const [sortBy, setSortBy] = useState<string | undefined>()
@@ -115,9 +122,7 @@ export default function SystemStoresPage() {
     nextSortBy = sortBy,
     nextSortOrder = sortOrder,
   ) => {
-    setLoading(true)
-    try {
-      const result = await getStores({
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getStores({
         page: nextPage,
         pageSize: nextPageSize,
         search: keyword || undefined,
@@ -125,25 +130,32 @@ export default function SystemStoresPage() {
         isActive: nextIsActiveFilter,
         sortField: nextSortBy,
         sortOrder: nextSortOrder === 'ascend' ? 'asc' : nextSortOrder === 'descend' ? 'desc' : undefined,
-      })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-      setBrandFilter(nextBrandFilter)
-      setIsActiveFilter(nextIsActiveFilter)
-      setSortBy(nextSortBy)
-      setSortOrder(nextSortOrder ?? null)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.stores.loadListFailed'))
-    } finally {
-      setLoading(false)
-    }
+      }), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+        setBrandFilter(nextBrandFilter)
+        setIsActiveFilter(nextIsActiveFilter)
+        setSortBy(nextSortBy)
+        setSortOrder(nextSortOrder ?? null)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(t('system.stores.loadListFailed'))
+      },
+      // 旧请求结束时不能关闭较新请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
 
   useEffect(() => {
     void loadData(1, pageSize)
+    return () => {
+      mainListRequestGuardRef.current.invalidate()
+    }
   }, [])
 
   const reloadStoreDetail = async (storeGuid: string) => {
@@ -336,10 +348,10 @@ export default function SystemStoresPage() {
       nextIsActiveValue === 'true' ? true : nextIsActiveValue === 'false' ? false : undefined
 
     // 表格筛选和排序都走服务端查询，避免分页后只在当前页内处理数据。
-    const nextPage = extra.action === 'paginate' ? pagination.current ?? 1 : 1
+    const nextPagination = resolveSystemListPagination(extra.action, pagination, pageSize)
     void loadData(
-      nextPage,
-      pagination.pageSize ?? pageSize,
+      nextPagination.page,
+      nextPagination.pageSize,
       nextBrandFilter,
       nextIsActiveFilter,
       nextSortBy,

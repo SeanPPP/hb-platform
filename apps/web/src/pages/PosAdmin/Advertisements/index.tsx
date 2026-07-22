@@ -29,7 +29,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -52,6 +52,10 @@ import type {
   AdvertisementListDto,
   AdvertisementMediaType,
 } from '../../../types/advertisement'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 type AdvertisementRow = AdvertisementListDto & { key: string }
 
@@ -168,6 +172,8 @@ export default function AdvertisementsPage() {
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewRecord, setPreviewRecord] = useState<AdvertisementListDto | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const selectedStores = Form.useWatch('stores', editorForm) ?? []
@@ -198,19 +204,21 @@ export default function AdvertisementsPage() {
   }
 
   const loadData = async () => {
-    try {
-      setLoading(true)
-      const values = queryForm.getFieldsValue()
-      const sortModel: Record<string, string>[] = []
+    if (!mountedRef.current) {
+      return
+    }
 
-      if (sortField && sortOrder) {
-        sortModel.push({
-          ColId: sortField,
-          Sort: sortOrder === 'ascend' ? 'asc' : 'desc',
-        })
-      }
+    const values = queryForm.getFieldsValue()
+    const sortModel: Record<string, string>[] = []
 
-      const result = await getAdvertisementGrid({
+    if (sortField && sortOrder) {
+      sortModel.push({
+        ColId: sortField,
+        Sort: sortOrder === 'ascend' ? 'asc' : 'desc',
+      })
+    }
+
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getAdvertisementGrid({
         StartRow: (page - 1) * pageSize,
         EndRow: page * pageSize - 1,
         PageSize: pageSize,
@@ -222,18 +230,35 @@ export default function AdvertisementsPage() {
         effectiveStart: values.effectiveRange?.[0]?.startOf('day').toISOString(),
         effectiveEnd: values.effectiveRange?.[1]?.endOf('day').toISOString(),
         SortModel: sortModel.length ? sortModel : undefined,
-      })
-
-      const items = result?.items ?? []
-      setData(items.map((item) => ({ ...item, key: String(item.id) })))
-      setTotal(result?.total ?? 0)
-    } catch (error) {
-      console.error(t('posAdmin.advertisements.loadFailed'), error)
-      messageApi.error(t('posAdmin.advertisements.loadFailed'))
-    } finally {
-      setLoading(false)
-    }
+      }), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        const items = result?.items ?? []
+        setData(items.map((item) => ({ ...item, key: String(item.id) })))
+        setTotal(result?.total ?? 0)
+      },
+      onError: (error) => {
+        console.error(t('posAdmin.advertisements.loadFailed'), error)
+        messageApi.error(t('posAdmin.advertisements.loadFailed'))
+      },
+      // 旧请求完成时不能关闭后续请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
+
+  // mutation 等待期间可能发生翻页或排序，完成后始终使用当前 render 的查询条件刷新。
+  const latestLoadDataRef = useRef(loadData)
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      mainListRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   useEffect(() => {
     void loadStoreOptions()
@@ -382,7 +407,9 @@ export default function AdvertisementsPage() {
 
       messageApi.success(t('message.saveSuccess'))
       closeEditor()
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch (error) {
       if (
         typeof error === 'object' &&
@@ -403,7 +430,9 @@ export default function AdvertisementsPage() {
     try {
       await deleteAdvertisement(id)
       messageApi.success(t('message.deleteSuccess'))
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch (error) {
       console.error(t('posAdmin.advertisements.deleteFailed'), error)
       messageApi.error(t('posAdmin.advertisements.deleteFailed'))
@@ -415,7 +444,9 @@ export default function AdvertisementsPage() {
       setTogglingId(record.id)
       await enableAdvertisement(record.id, enable)
       messageApi.success(t('posAdmin.advertisements.toggleSuccess'))
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch (error) {
       console.error(t('posAdmin.advertisements.toggleFailed'), error)
       messageApi.error(t('posAdmin.advertisements.toggleFailed'))

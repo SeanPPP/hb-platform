@@ -31,7 +31,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission, usePermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
@@ -53,6 +53,10 @@ import {
   type WebMenuVisibilityFilter,
 } from '../../../utils/webMenuPreview'
 import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
+import {
   assignPermissionsToRole,
   createRole,
   getRoleByGuid,
@@ -60,9 +64,14 @@ import {
   getRoles,
   updateRole,
 } from '../../../services/roleService'
-import type { CreateRoleDto, RoleDetailDto, RoleDto, RolePermissionStateDto, UpdateRoleDto } from '../../../types/role'
+import type { CreateRoleDto, RoleDetailDto, RoleDto, RolePermissionStateDto, RoleQueryDto, UpdateRoleDto } from '../../../types/role'
 import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
+
+type DesiredRoleListQuery = RoleQueryDto & {
+  page: number
+  pageSize: number
+}
 
 type ExpoDirectTabPreviewItem =
   | {
@@ -103,6 +112,13 @@ export default function SystemRolesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const desiredListQueryRef = useRef<DesiredRoleListQuery>({
+    page,
+    pageSize,
+    searchKeyword: keyword || undefined,
+  })
 
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -130,28 +146,55 @@ export default function SystemRolesPage() {
   const [expoMenuVisibilityFilter, setExpoMenuVisibilityFilter] = useState<ExpoMenuVisibilityFilter>('all')
   const refreshCurrentUserSilently = useAuthStore((state) => state.refreshCurrentUserSilently)
 
-  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
-    setLoading(true)
-    try {
-      const result = await getRoles({
-        page: nextPage,
-        pageSize: nextPageSize,
-        searchKeyword: keyword || undefined,
-      })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.roles.loadListFailed'))
-    } finally {
-      setLoading(false)
+  const loadData = async (overrides: Partial<DesiredRoleListQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const query: DesiredRoleListQuery = {
+      page,
+      pageSize,
+      searchKeyword: keyword || undefined,
+      ...overrides,
+    }
+    // 角色 mutation 晚完成时刷新已开始的目标页，而不是最后成功页。
+    desiredListQueryRef.current = query
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, () => getRoles(query), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(t('system.roles.loadListFailed'))
+      },
+      onSettled: () => setLoading(false),
+    })
   }
 
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  const refreshDesiredList = (overrides: Partial<DesiredRoleListQuery> = {}) =>
+    latestLoadDataRef.current({ ...desiredListQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
+
   useEffect(() => {
-    void loadData(1, pageSize)
+    void loadData({ page: 1, pageSize })
   }, [])
 
   const reloadRoleDetail = async (roleGuid: string) => {
@@ -187,8 +230,8 @@ export default function SystemRolesPage() {
       message.success(t('system.roles.createSuccess'))
       setCreateOpen(false)
       createForm.resetFields()
-      await loadData(1, pageSize)
-      if (canManageRolePermissions) {
+      await refreshDesiredList({ page: 1 })
+      if (mountedRef.current && canManageRolePermissions) {
         void handleEdit(created)
       }
     } catch (error) {
@@ -252,7 +295,7 @@ export default function SystemRolesPage() {
       if (detailRole?.roleGUID === updated.roleGUID) {
         setDetailRole((current) => (current ? { ...current, ...updated } : updated))
       }
-      void loadData(page, pageSize)
+      void refreshDesiredList()
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
@@ -627,10 +670,10 @@ export default function SystemRolesPage() {
             style={{ width: 260 }}
             allowClear
           />
-          <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+          <Button type="primary" onClick={() => void loadData({ page: 1, pageSize })}>
             {t('common.query')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+          <Button icon={<ReloadOutlined />} onClick={() => void refreshDesiredList()}>
             {t('common.refresh')}
           </Button>
           <HasPermission code={P.Roles.Create}>
@@ -651,7 +694,7 @@ export default function SystemRolesPage() {
             total,
             showSizeChanger: true,
             onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
+              void loadData({ page: nextPage, pageSize: nextPageSize })
             },
           }}
         />
@@ -942,7 +985,7 @@ export default function SystemRolesPage() {
               <RolePermissionManager
                 roleGuid={editRoleGuid}
                 roleName={editingRole?.roleName ?? ''}
-                onChanged={() => void loadData(page, pageSize)}
+                onChanged={() => void refreshDesiredList()}
               />
             </HasPermission>
           </div>
@@ -956,7 +999,7 @@ export default function SystemRolesPage() {
         onChanged={() => {
           if (!detailRole) return
           void reloadRoleDetail(detailRole.roleGUID)
-          void loadData(page, pageSize)
+          void refreshDesiredList()
         }}
       />
     </PageContainer>

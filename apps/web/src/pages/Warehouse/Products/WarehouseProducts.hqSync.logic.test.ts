@@ -817,14 +817,21 @@ async function main() {
       'const showHqSyncJobResult',
       'const startHqSyncJobPolling',
     )
+    const refreshSection = extractSection(
+      pageSource,
+      'const refreshCurrentList',
+      'const stopHqSyncJobPolling',
+    )
 
     assert(
       resultSection.includes('notification.success') &&
       descriptionSection.includes('addedCount') &&
       descriptionSection.includes('updatedCount') &&
       descriptionSection.includes('errorCount') &&
-      resultSection.includes('void loadDataRef.current?.({ page: 1 })'),
-      '后台同步成功应通过 notification 展示新增/更新/错误统计并刷新第一页',
+      resultSection.includes('void refreshCurrentList({ page: 1 })') &&
+      refreshSection.includes('if (!isMountedRef.current) {') &&
+      refreshSection.includes('loadDataRef.current?.(overrides)'),
+      '后台同步成功应展示结果，并在 mounted gate 后通过 current loader 刷新第一页',
     )
   })
   if (successRefreshFailure) failures.push(successRefreshFailure)
@@ -842,7 +849,7 @@ async function main() {
     )
 
     assert(
-      !extractSection(resultSection, 'if (!success) {', 'const errorCount').includes("loadDataRef.current?.({ page: 1 })"),
+      !extractSection(resultSection, 'if (!success) {', 'const errorCount').includes('refreshCurrentList('),
       '后台同步失败分支不应刷新第一页',
     )
   })

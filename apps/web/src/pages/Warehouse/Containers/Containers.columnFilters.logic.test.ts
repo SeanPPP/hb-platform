@@ -41,7 +41,7 @@ async function main() {
     assert(
       pageSource.includes('const activeColumnFilters = options.columnFilters ?? columnFilters') &&
         pageSource.includes('...activeColumnFilters') &&
-        pageSource.includes('void loadData(1, pageSize, { columnFilters: nextFilters })'),
+        pageSource.includes('void requestFirstPage({ columnFilters: nextFilters })'),
       '列头过滤应随 getContainerList 请求发送到服务端，而不是只过滤当前页 dataSource',
     )
   })

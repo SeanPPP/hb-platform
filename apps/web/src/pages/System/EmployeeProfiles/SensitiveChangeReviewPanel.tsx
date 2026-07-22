@@ -20,7 +20,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   approveAdminSensitiveChangeRequest,
@@ -32,14 +32,19 @@ import {
 import type {
   EmployeeProfileDetailDto,
   EmployeeProfileSensitiveChangeDetailDto,
+  EmployeeProfileSensitiveChangeQueryDto,
   EmployeeProfileSensitiveChangeStatus,
   EmployeeProfileSensitiveChangeSummaryDto,
 } from '../../../types/employeeProfile'
 import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
+import {
   getReviewChangedFields,
   handleSensitiveReviewFailure,
   isRejectReasonValid,
-  createLatestRequestGuard,
+  createLatestRequestGuard as createDetailRequestGuard,
   isSensitiveRequestReviewable,
   type SensitiveProfileField,
 } from './logic'
@@ -49,6 +54,10 @@ interface SensitiveChangeReviewPanelProps {
 }
 
 type ReviewListRow = EmployeeProfileSensitiveChangeSummaryDto
+type DesiredSensitiveChangeQuery = EmployeeProfileSensitiveChangeQueryDto & {
+  page: number
+  pageSize: number
+}
 
 interface ReviewFormValues {
   reason?: string
@@ -82,8 +91,16 @@ export default function SensitiveChangeReviewPanel({
   const [detailError, setDetailError] = useState(false)
   const [reviewDetail, setReviewDetail] = useState<EmployeeProfileSensitiveChangeDetailDto | null>(null)
   const [currentProfile, setCurrentProfile] = useState<EmployeeProfileDetailDto | null>(null)
-  const detailRequestGuardRef = useRef(createLatestRequestGuard())
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const detailRequestGuardRef = useRef(createDetailRequestGuard())
   const activeRequestIdRef = useRef<number | null>(null)
+  const mountedRef = useRef(false)
+  const desiredListQueryRef = useRef<DesiredSensitiveChangeQuery>({
+    page,
+    pageSize,
+    status: 'Pending',
+    keyword: keyword || undefined,
+  })
   const [reviewForm] = Form.useForm<ReviewFormValues>()
 
   const formatDateTime = (value?: string) => {
@@ -100,31 +117,62 @@ export default function SensitiveChangeReviewPanel({
   const fieldLabel = (field: SensitiveProfileField) =>
     t(`system.employeeProfiles.review.fields.${field}`)
 
-  const loadList = async (nextPage = page, nextPageSize = pageSize) => {
-    setLoading(true)
-    setListError(false)
-    try {
-      const result = await getAdminSensitiveChangeRequests({
-        page: nextPage,
-        pageSize: nextPageSize,
-        status: 'Pending',
-        keyword: keyword || undefined,
-      })
-      // 列表仅消费服务端安全字段标识，禁止在打开审核抽屉前请求任何完整敏感详情。
-      setRows(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-    } catch {
-      setListError(true)
-      message.error(t('system.employeeProfiles.review.loadListFailed'))
-    } finally {
-      setLoading(false)
+  const loadList = async (overrides: Partial<DesiredSensitiveChangeQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const query: DesiredSensitiveChangeQuery = {
+      page,
+      pageSize,
+      status: 'Pending',
+      keyword: keyword || undefined,
+      ...overrides,
+    }
+    // 审核 mutation 完成时始终复用已经 begin 的目标页和搜索条件。
+    desiredListQueryRef.current = query
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, () => getAdminSensitiveChangeRequests(query), {
+      onStart: () => {
+        setLoading(true)
+        setListError(false)
+      },
+      onSuccess: (result) => {
+        // 列表仅消费服务端安全字段标识，禁止在打开审核抽屉前请求任何完整敏感详情。
+        setRows(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+      },
+      onError: () => {
+        setListError(true)
+        message.error(t('system.employeeProfiles.review.loadListFailed'))
+      },
+      onSettled: () => setLoading(false),
+    })
   }
 
+  const latestLoadListRef = useRef(loadList)
+
+  useLayoutEffect(() => {
+    latestLoadListRef.current = loadList
+  })
+
+  const refreshDesiredList = (overrides: Partial<DesiredSensitiveChangeQuery> = {}) =>
+    latestLoadListRef.current({ ...desiredListQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+      detailRequestGuardRef.current.invalidate()
+      activeRequestIdRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
-    void loadList(1, pageSize)
+    void loadList({ page: 1, pageSize })
   }, [])
 
   const loadReviewDetail = async (requestId: number) => {
@@ -197,12 +245,12 @@ export default function SensitiveChangeReviewPanel({
       }
       message.success(t(`system.employeeProfiles.review.${action}Success`))
       closeReview()
-      await Promise.all([loadList(page, pageSize), refreshPendingCount()])
+      await Promise.all([refreshDesiredList(), refreshPendingCount()])
     } catch (error) {
       const conflictKind = await handleSensitiveReviewFailure(
         error,
         () => loadReviewDetail(requestId),
-        () => loadList(page, pageSize),
+        () => refreshDesiredList(),
         refreshPendingCount,
       )
       message[conflictKind ? 'warning' : 'error'](
@@ -292,10 +340,10 @@ export default function SensitiveChangeReviewPanel({
           style={{ width: 300 }}
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
-          onPressEnter={() => void loadList(1, pageSize)}
+          onPressEnter={() => void loadList({ page: 1, pageSize })}
         />
-        <Button type="primary" onClick={() => void loadList(1, pageSize)}>{t('common.query')}</Button>
-        <Button icon={<ReloadOutlined />} onClick={() => void loadList(page, pageSize)}>{t('common.refresh')}</Button>
+        <Button type="primary" onClick={() => void loadList({ page: 1, pageSize })}>{t('common.query')}</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => void refreshDesiredList()}>{t('common.refresh')}</Button>
       </Space>
 
       {listError ? (
@@ -303,7 +351,7 @@ export default function SensitiveChangeReviewPanel({
           type="error"
           showIcon
           message={t('system.employeeProfiles.review.loadListFailed')}
-          action={<Button size="small" onClick={() => void loadList(page, pageSize)}>{t('common.retry')}</Button>}
+          action={<Button size="small" onClick={() => void refreshDesiredList()}>{t('common.retry')}</Button>}
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -319,7 +367,7 @@ export default function SensitiveChangeReviewPanel({
           current: page,
           pageSize,
           total,
-          onChange: (nextPage, nextPageSize) => void loadList(nextPage, nextPageSize),
+          onChange: (nextPage, nextPageSize) => void loadList({ page: nextPage, pageSize: nextPageSize }),
         }}
       />
 

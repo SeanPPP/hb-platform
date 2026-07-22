@@ -7,7 +7,7 @@ import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
 import type { CSSProperties, HTMLAttributes, ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
@@ -22,6 +22,7 @@ import type { SupplierOption, } from '../../../types/domesticProduct';
 import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
 import type { MulticodeSetItem } from '../../../types/multiCodeSet';
 import { copyTextToClipboard } from '../../../utils/clipboard';
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import CategoryTreePicker from './CategoryTreePicker';
@@ -632,6 +633,7 @@ export default function WarehouseProductsPage() {
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
     const isMountedRef = useRef(true);
     const loadDataRef = useRef<((overrides?: Partial<WarehouseProductsTableQuery>) => Promise<void>) | null>(null);
+    const listRequestGuardRef = useRef(createLatestRequestGuard());
     const columnDragSensors = useSensors(useSensor(PointerSensor, {
         activationConstraint: {
             distance: 6,
@@ -811,25 +813,38 @@ export default function WarehouseProductsPage() {
         filterMultiple: true,
     });
     const loadData = async (overrides: Partial<WarehouseProductsTableQuery> = {}) => {
+        if (!isMountedRef.current) {
+            return;
+        }
         const query = buildGridQuery(overrides);
-        setLoading(true);
-        try {
+        await runLatestGuardedRequest(listRequestGuardRef.current, async () => {
             const result = await getWarehouseProductsTable(query);
-            setData(result.items);
-            setTotal(result.total);
-            setPage(result.page);
-            setPageSize(result.pageSize);
-            setSelectedRowKeys([]);
-        }
-        catch (error) {
-            console.error(error);
-            message.error(error instanceof Error ? error.message : t('warehouse.loadProductsFailed'));
-        }
-        finally {
-            setLoading(false);
-        }
+            return result;
+        }, {
+            onStart: () => setLoading(true),
+            onSuccess: (result) => {
+                setData(result.items);
+                setTotal(result.total);
+                setPage(result.page);
+                setPageSize(result.pageSize);
+                setSelectedRowKeys([]);
+            },
+            onError: (error) => {
+                console.error(error);
+                message.error(error instanceof Error ? error.message : t('warehouse.loadProductsFailed'));
+            },
+            onSettled: () => setLoading(false),
+        });
     };
-    loadDataRef.current = loadData;
+    useLayoutEffect(() => {
+        loadDataRef.current = loadData;
+    });
+    const refreshCurrentList = useCallback((overrides: Partial<WarehouseProductsTableQuery> = {}) => {
+        if (!isMountedRef.current) {
+            return Promise.resolve();
+        }
+        return loadDataRef.current?.(overrides) ?? Promise.resolve();
+    }, []);
     const stopHqSyncJobPolling = useCallback(() => {
         stopHqSyncJobPollingRef.current?.();
         stopHqSyncJobPollingRef.current = null;
@@ -886,8 +901,8 @@ export default function WarehouseProductsPage() {
                 placement: 'topRight',
             });
         }
-        void loadDataRef.current?.({ page: 1 });
-    }, [buildHqSyncResultDescription, t]);
+        void refreshCurrentList({ page: 1 });
+    }, [buildHqSyncResultDescription, refreshCurrentList, t]);
     const startHqSyncJobPolling = useCallback((job: ActiveWarehouseProductHqSyncJob) => {
         stopHqSyncJobPolling();
         saveActiveHqSyncJob(job);
@@ -995,14 +1010,19 @@ export default function WarehouseProductsPage() {
                 .finally(() => setCategoryLoading(false)),
         ]);
     }, []);
-    useEffect(() => {
+    useLayoutEffect(() => {
         isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+            listRequestGuardRef.current.invalidate();
+        };
+    }, []);
+    useEffect(() => {
         const restoredJob = readActiveWarehouseProductHqSyncJob();
         if (restoredJob?.jobId) {
             startHqSyncJobPolling(restoredJob);
         }
         return () => {
-            isMountedRef.current = false;
             stopHqSyncJobPolling();
         };
     }, [startHqSyncJobPolling, stopHqSyncJobPolling]);
@@ -1061,7 +1081,7 @@ export default function WarehouseProductsPage() {
             });
             message.success(t('warehouse.updateProductSuccess'));
             handleCloseModal();
-            void loadData({ page });
+            void refreshCurrentList();
         }
         catch (error) {
             if (typeof error === 'object' && error !== null && 'errorFields' in error) {
@@ -1089,7 +1109,7 @@ export default function WarehouseProductsPage() {
                 return;
             }
             message.success(result.message || t('warehouse.batchStatusUpdated', { status: getShelfStatusLabel(nextIsActive, t), count: selectedRowKeys.length }));
-            void loadData({ page });
+            void refreshCurrentList();
         }
         catch (error) {
             console.error(error);
@@ -1194,7 +1214,7 @@ export default function WarehouseProductsPage() {
             setBatchEditOpen(false);
             batchEditForm.resetFields();
             setSelectedRowKeys([]);
-            void loadData({ page });
+            void refreshCurrentList();
         }
         catch (error) {
             if (typeof error === 'object' && error !== null && 'errorFields' in error) {
@@ -1308,7 +1328,7 @@ export default function WarehouseProductsPage() {
             setCurrentSetProduct(null);
             setSetItemsDraft([]);
             setDeletedSetCodeIds([]);
-            void loadData();
+            void refreshCurrentList();
         }
         catch (error) {
             console.error(error);
@@ -1892,7 +1912,7 @@ export default function WarehouseProductsPage() {
 
       <CreateProductModal open={createModalOpen} suppliers={suppliers} onCancel={() => setCreateModalOpen(false)} onSuccess={() => {
             setCreateModalOpen(false);
-            void loadData({ page: 1 });
+            void refreshCurrentList({ page: 1 });
         }}/>
 
       <SetItemsModal open={setItemsOpen} loading={setItemsLoading} saving={setItemsSaving} product={currentSetProduct} items={setItemsDraft} canEdit={access.canWriteProduct} onCancel={() => {
@@ -1976,9 +1996,9 @@ export default function WarehouseProductsPage() {
         </Space>
       </Modal>
 
-      <ImportFromDomesticModal open={importFromDomesticOpen} onCancel={() => setImportFromDomesticOpen(false)} onSuccess={() => void loadData({ page: 1 })}/>
+      <ImportFromDomesticModal open={importFromDomesticOpen} onCancel={() => setImportFromDomesticOpen(false)} onSuccess={() => void refreshCurrentList({ page: 1 })}/>
 
-      <ImportNonHbModal open={importNonHbOpen} onCancel={() => setImportNonHbOpen(false)} onSuccess={() => void loadData({ page: 1 })}/>
+      <ImportNonHbModal open={importNonHbOpen} onCancel={() => setImportNonHbOpen(false)} onSuccess={() => void refreshCurrentList({ page: 1 })}/>
 
       <Modal title={t('warehouse.exportExcel')} open={exportConfigOpen} okText={t('warehouse.startExport')} cancelText={t('common.cancel')} confirmLoading={exporting} onCancel={() => {
             if (!exporting) {

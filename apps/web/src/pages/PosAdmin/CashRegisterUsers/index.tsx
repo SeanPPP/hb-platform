@@ -15,7 +15,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import { useAuthStore } from '../../../store/auth'
@@ -37,6 +37,10 @@ import {
   isStoreCodeInManagedScope,
   shouldSkipScopedStoreQuery,
 } from '../../../utils/managedStoreScope'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 function getColorFromString(str: string): string {
   if (!str) return '#8c8c8c'
@@ -75,41 +79,54 @@ export default function CashRegisterUsersPage() {
   const [editingRecord, setEditingRecord] = useState<CashRegisterUserListDto | null>(null)
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [selectedRows, setSelectedRows] = useState<CashRegisterUserListDto[]>([])
-  const inFlightRef = useRef(false)
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
 
   const loadData = async () => {
-    if (inFlightRef.current) return
+    if (!mountedRef.current) {
+      return
+    }
+
     if (shouldSkipScopedStoreQuery(managedStoreCodes)) {
+      mainListRequestGuardRef.current.invalidate()
       setData([])
       setTotal(0)
       setSelectedRowKeys([])
       setSelectedRows([])
+      setLoading(false)
       return
     }
 
-    inFlightRef.current = true
-    setLoading(true)
-    try {
-      const filterModel: Record<string, any> = {}
-      const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
-      if (scopedStoreFilter) filterModel.storeCode = scopedStoreFilter
-      if (status !== undefined) filterModel.status = { filterType: 'text', type: 'equals', filter: String(status) }
-      const result = await getCashRegisterUserGrid({
+    const filterModel: Record<string, any> = {}
+    const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
+    if (scopedStoreFilter) filterModel.storeCode = scopedStoreFilter
+    if (status !== undefined) filterModel.status = { filterType: 'text', type: 'equals', filter: String(status) }
+
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getCashRegisterUserGrid({
         startRow: (page - 1) * pageSize,
         endRow: page * pageSize - 1,
         pageSize,
         globalSearch: keyword || '',
         filterModel: Object.keys(filterModel).length ? filterModel : {},
-      })
-      setData(result?.items ?? [])
-      setTotal(result?.total ?? 0)
-    } catch {
-      message.error(t('message.loadFailed'))
-    } finally {
-      setLoading(false)
-      inFlightRef.current = false
-    }
+      }), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result?.items ?? [])
+        setTotal(result?.total ?? 0)
+      },
+      onError: () => {
+        message.error(t('message.loadFailed'))
+      },
+      // 旧请求完成时不能关闭后续请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
+
+  // mutation 等待期间权限范围或分页可能变化，刷新必须读取当前 render 的 loader。
+  const latestLoadDataRef = useRef(loadData)
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
 
   useEffect(() => {
     ;(async () => {
@@ -139,7 +156,15 @@ export default function CashRegisterUsersPage() {
     })()
   }, [])
 
-  useEffect(() => { loadData() }, [keyword, storeCode, status, page, pageSize, managedStoreCodeKey])
+  useEffect(() => { void loadData() }, [keyword, storeCode, status, page, pageSize, managedStoreCodeKey])
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      mainListRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   const handleCreate = async () => {
     try {
@@ -157,7 +182,9 @@ export default function CashRegisterUsersPage() {
       message.success(t('message.createSuccess'))
       setCreateVisible(false)
       createForm.resetFields()
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch { message.error(t('message.createFailed')) }
   }
 
@@ -190,7 +217,9 @@ export default function CashRegisterUsersPage() {
       setEditVisible(false)
       editForm.resetFields()
       setEditingRecord(null)
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch { message.error(t('message.updateFailed')) }
   }
 
@@ -203,7 +232,9 @@ export default function CashRegisterUsersPage() {
         try {
           await deleteCashRegisterUser(record.hGuid)
           message.success(t('message.deleteSuccess'))
-          await loadData()
+          if (mountedRef.current) {
+            await latestLoadDataRef.current()
+          }
         } catch { message.error(t('message.deleteFailed')) }
       },
     })
@@ -221,7 +252,9 @@ export default function CashRegisterUsersPage() {
           message.success(t('message.deleteSuccess'))
           setSelectedRowKeys([])
           setSelectedRows([])
-          await loadData()
+          if (mountedRef.current) {
+            await latestLoadDataRef.current()
+          }
         } catch { message.error(t('message.deleteFailed')) }
       },
     })

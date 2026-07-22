@@ -16,7 +16,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import {
@@ -36,6 +36,10 @@ import type {
   PricingStrategyTargetDto,
   UpdatePricingStrategyDto,
 } from '../../../types/pricingStrategy'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 type DataType = PricingStrategyListDto & { key: string }
 
@@ -54,7 +58,8 @@ export default function PricingStrategiesPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editorForm] = Form.useForm()
-  const inFlightRef = useRef(false)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
 
   const storeNameMap = useMemo(() => new Map(storeOptions.map((o) => [o.value, o.label])), [storeOptions])
   const supplierNameMap = useMemo(() => new Map(supplierOptions.map((o) => [o.value, o.label])), [supplierOptions])
@@ -174,33 +179,48 @@ export default function PricingStrategiesPage() {
   const [testResult, setTestResult] = useState<{ rate?: number; retailPrice?: number } | null>(null)
 
   const loadData = async () => {
-    if (inFlightRef.current) return
-    inFlightRef.current = true
-    try {
-      setLoading(true)
+    if (!mountedRef.current) {
+      return
+    }
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, async () => {
       const values = form.getFieldsValue()
       const sortModel: Record<string, string> = {}
       if (sortField && sortOrder) {
         sortModel[sortField] = sortOrder === 'ascend' ? 'asc' : 'desc'
       }
-      const result = await getStrategyGrid({
+      return getStrategyGrid({
         StartRow: (page - 1) * pageSize,
         EndRow: page * pageSize - 1,
         PageSize: pageSize,
         GlobalSearch: values.keyword || undefined,
         SortModel: Object.keys(sortModel).length && sortField ? [{ ColId: sortField, Sort: sortModel[sortField] }] : undefined,
       } as Record<string, unknown>)
-      const items = result?.items ?? []
-      const totalVal = result?.total ?? 0
-      setTotal(totalVal)
-      setData(items.map((it) => ({ ...it, key: String(it.id) })))
-    } catch {
-      message.error(t('message.loadFailed', '加载失败'))
-    } finally {
-      setLoading(false)
-      inFlightRef.current = false
-    }
+    }, {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        const items = result?.items ?? []
+        setTotal(result?.total ?? 0)
+        setData(items.map((it) => ({ ...it, key: String(it.id) })))
+      },
+      onError: () => message.error(t('message.loadFailed', '加载失败')),
+      onSettled: () => setLoading(false),
+    })
   }
+
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   const openCreate = () => {
     setEditingId(null)
@@ -280,7 +300,9 @@ export default function PricingStrategiesPage() {
       }
       message.success(t('message.saveSuccess', '保存成功'))
       setEditorOpen(false)
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('message.saveFailed', '保存失败'))
     }
@@ -290,7 +312,9 @@ export default function PricingStrategiesPage() {
     try {
       await deleteStrategy(id)
       message.success(t('message.deleteSuccess', '删除成功'))
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('message.deleteFailed', '删除失败'))
     }
@@ -355,11 +379,13 @@ export default function PricingStrategiesPage() {
         const suppliers = await getActiveLocalSuppliers()
         setSupplierOptions(suppliers.map((s) => ({ label: s.name || s.localSupplierCode, value: s.localSupplierCode })))
       } catch { /* ignore */ }
-      await loadData()
     })()
   }, [])
 
-  useEffect(() => { loadData() }, [page, pageSize, sortField, sortOrder])
+  useEffect(() => {
+    void loadData()
+    return () => listRequestGuardRef.current.invalidate()
+  }, [page, pageSize, sortField, sortOrder])
 
   return (
     <Card title={t('posAdmin.pricing.title', '自动价格策略管理')} extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('posAdmin.pricing.createStrategy', '新建策略')}</Button>}>

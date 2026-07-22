@@ -44,7 +44,7 @@ import {
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -86,6 +86,7 @@ import { getDateTagColor } from '../../../utils/tagColors'
 import { getStoreColor } from '../../../utils/userTableColors'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import {
   ensureStoreOrderSyncSession,
   STORE_ORDER_SYNC_AUTH_EXPIRED_MESSAGE,
@@ -854,6 +855,10 @@ export default function StoreOrdersPage() {
   const stopSyncPollingRef = useRef<(() => void) | null>(null)
   // 避免卸载后继续 setState，防止轮询尾声触发无效更新。
   const isMountedRef = useRef(true)
+  const loadDataRef = useRef<((
+    overrides?: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }>,
+  ) => Promise<void>) | null>(null)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
 
   const branchMap = useMemo(
     () => Object.fromEntries(branches.map((item) => [item.code, item.name])) as Record<string, string>,
@@ -956,21 +961,40 @@ export default function StoreOrdersPage() {
   const loadData = async (
     overrides: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }> = {},
   ) => {
-    setLoading(true)
-    try {
-      const result = await getStoreOrderList(buildQuery(overrides))
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-      setSelectedRowKeys([])
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('storeOrders.loadListFailed'))
-    } finally {
-      setLoading(false)
+    if (!isMountedRef.current) {
+      return
     }
+    const query = buildQuery(overrides)
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, () => getStoreOrderList(query), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+        setSelectedRowKeys([])
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(error instanceof Error ? error.message : t('storeOrders.loadListFailed'))
+      },
+      onSettled: () => setLoading(false),
+    })
   }
+
+  useLayoutEffect(() => {
+    loadDataRef.current = loadData
+  })
+
+  const refreshCurrentList = useCallback((
+    overrides: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }> = {},
+  ) => {
+    if (!isMountedRef.current) {
+      return Promise.resolve()
+    }
+    return loadDataRef.current?.(overrides) ?? Promise.resolve()
+  }, [])
 
   const loadUnmatchedStoreGroups = async () => {
     setUnmatchedStoreLoading(true)
@@ -1027,7 +1051,7 @@ export default function StoreOrdersPage() {
           skipped: result.skippedCount ?? 0,
         }),
       )
-      await Promise.all([loadData(), loadBranches(), loadUnmatchedStoreGroups()])
+      await Promise.all([refreshCurrentList(), loadBranches(), loadUnmatchedStoreGroups()])
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.fixStoreGuidFailed', '修复分店 GUID 失败'))
@@ -1231,9 +1255,11 @@ export default function StoreOrdersPage() {
     void Promise.all([loadData({ pageNumber: 1 }), loadBranches()])
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    isMountedRef.current = true
     return () => {
       isMountedRef.current = false
+      listRequestGuardRef.current.invalidate()
       stopSyncPollingRef.current?.()
       stopSyncPollingRef.current = null
     }
@@ -1329,7 +1355,7 @@ export default function StoreOrdersPage() {
         message.info(result.message || t('storeOrders.alreadyLatest'))
       }
 
-      void loadData()
+      void refreshCurrentList()
     } catch (error) {
       if (isUnauthorizedError(error)) {
         message.warning(STORE_ORDER_SYNC_AUTH_EXPIRED_MESSAGE)
@@ -1416,7 +1442,7 @@ export default function StoreOrdersPage() {
             newStatus: nextStatus,
           })
           message.success(t('storeOrders.updateStatusSuccess'))
-          void loadData()
+          void refreshCurrentList()
         } catch (error) {
           console.error(error)
           message.error(error instanceof Error ? error.message : t('storeOrders.updateStatusFailed'))
@@ -1446,7 +1472,7 @@ export default function StoreOrdersPage() {
             newStatus,
           })
           message.success(t('storeOrders.batchUpdateStatusSuccess'))
-          void loadData()
+          void refreshCurrentList()
         } catch (error) {
           console.error(error)
           message.error(
@@ -1488,7 +1514,7 @@ export default function StoreOrdersPage() {
       })
       message.success(t('storeOrders.shipOrderSuccess'))
       closeShippingModal()
-      void loadData()
+      void refreshCurrentList()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.shipOrderFailed'))
@@ -1723,7 +1749,7 @@ export default function StoreOrdersPage() {
                   try {
                     await deleteStoreOrder(record.orderGUID)
                     message.success(t('common.deleteSuccess'))
-                    void loadData({ pageNumber: 1 })
+                    void refreshCurrentList({ pageNumber: 1 })
                   } catch (error) {
                     console.error(error)
                     message.error(
@@ -1750,6 +1776,7 @@ export default function StoreOrdersPage() {
       i18n.language,
       page,
       pageSize,
+      refreshCurrentList,
       selectedStoreCodes,
       statusLabelMap,
       statusList,
@@ -2024,7 +2051,7 @@ export default function StoreOrdersPage() {
             )
             setStorePickerOpen(false)
             navigate(`/warehouse/store-order/detail/${orderGuid}`)
-            void loadData({ pageNumber: 1 })
+            void refreshCurrentList({ pageNumber: 1 })
           } catch (error) {
             console.error(error)
             message.error(error instanceof Error ? error.message : t('storeOrders.createOrderFailed'))
@@ -2067,7 +2094,7 @@ export default function StoreOrdersPage() {
                 orderNo: orderNo || undefined,
               },
             })
-            void loadData({ pageNumber: 1 })
+            void refreshCurrentList({ pageNumber: 1 })
           } catch (error) {
             console.error(error)
             message.error(error instanceof Error ? error.message : t('storeOrders.copyOrderFailed'))

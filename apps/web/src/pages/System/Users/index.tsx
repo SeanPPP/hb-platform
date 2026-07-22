@@ -88,6 +88,12 @@ import {
 } from './userPermissions'
 import type { PosPermissionRequestTarget } from './userPermissions'
 import { formatUserLocalDateTime } from './time'
+import {
+  DEFAULT_SYSTEM_LIST_PAGE_SIZE,
+  createLatestRequestGuard,
+  resolveSystemListPagination,
+  runLatestGuardedRequest,
+} from '../listPagination'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -97,8 +103,10 @@ export default function SystemUsersPage() {
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<UserDto[]>([])
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(DEFAULT_SYSTEM_LIST_PAGE_SIZE)
   const [total, setTotal] = useState(0)
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
+  const loginRecordsRequestGuardRef = useRef(createLatestRequestGuard())
 
   const [selectedStoreGuid, setSelectedStoreGuid] = useState<string | undefined>(undefined)
   const [selectedRoleGuid, setSelectedRoleGuid] = useState<string | undefined>(undefined)
@@ -314,17 +322,12 @@ export default function SystemUsersPage() {
   }
 
   const loadData = async (nextPage = page, nextPageSize = pageSize, currentSortBy?: string, currentSortOrder?: 'ascend' | 'descend' | null) => {
-    setLoading(true)
-    try {
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, async () => {
       if (isCurrentUserScoped) {
         const scopedStoreGuids = getScopedStoreGuidsForQuery(selectedStoreGuid, managedStores)
 
         if (!scopedStoreGuids.length) {
-          setData([])
-          setTotal(0)
-          setPage(nextPage)
-          setPageSize(nextPageSize)
-          return
+          return { items: [], total: 0, page: nextPage, pageSize: nextPageSize }
         }
 
         const queryBase = {
@@ -368,14 +371,15 @@ export default function SystemUsersPage() {
           currentSortOrder,
         )
         const startIndex = (nextPage - 1) * nextPageSize
-        setData(mergedUsers.slice(startIndex, startIndex + nextPageSize))
-        setTotal(mergedUsers.length)
-        setPage(nextPage)
-        setPageSize(nextPageSize)
-        return
+        return {
+          items: mergedUsers.slice(startIndex, startIndex + nextPageSize),
+          total: mergedUsers.length,
+          page: nextPage,
+          pageSize: nextPageSize,
+        }
       }
 
-      const result = await getUsers({
+      return getUsers({
         page: nextPage,
         pageSize: nextPageSize,
         search: keyword || undefined,
@@ -384,39 +388,50 @@ export default function SystemUsersPage() {
         sortBy: currentSortBy || undefined,
         sortDirection: currentSortOrder === 'ascend' ? 'asc' : currentSortOrder === 'descend' ? 'desc' : undefined,
       })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadListFailed', '加载用户列表失败'))
-    } finally {
-      setLoading(false)
-    }
+    }, {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(t('system.users.loadListFailed', '加载用户列表失败'))
+      },
+      // 旧请求结束时不能关闭较新请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
+
+  useEffect(() => () => {
+    mainListRequestGuardRef.current.invalidate()
+    loginRecordsRequestGuardRef.current.invalidate()
+  }, [])
 
   const loadLoginRecords = async (
     user: UserDto,
     nextPage = loginRecordsPage,
     nextPageSize = loginRecordsPageSize,
   ) => {
-    setLoginRecordsLoading(true)
-    try {
-      const result = await getUserLoginRecords(user.userGUID, {
+    await runLatestGuardedRequest(loginRecordsRequestGuardRef.current, () => getUserLoginRecords(user.userGUID, {
         page: nextPage,
         pageSize: nextPageSize,
-      })
-      setLoginRecords(result.items)
-      setLoginRecordsTotal(result.total)
-      setLoginRecordsPage(result.page)
-      setLoginRecordsPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadLoginRecordsFailed', '加载登录记录失败'))
-    } finally {
-      setLoginRecordsLoading(false)
-    }
+      }), {
+      onStart: () => setLoginRecordsLoading(true),
+      onSuccess: (result) => {
+        setLoginRecords(result.items)
+        setLoginRecordsTotal(result.total)
+        setLoginRecordsPage(result.page)
+        setLoginRecordsPageSize(result.pageSize)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(t('system.users.loadLoginRecordsFailed', '加载登录记录失败'))
+      },
+      onSettled: () => setLoginRecordsLoading(false),
+    })
   }
 
   const handleOpenLoginRecords = async (record: UserDto) => {
@@ -427,6 +442,17 @@ export default function SystemUsersPage() {
     setLoginRecordsPage(1)
     setLoginRecordsPageSize(10)
     await loadLoginRecords(record, 1, 10)
+  }
+
+  const closeLoginRecords = () => {
+    loginRecordsRequestGuardRef.current.invalidate()
+    setLoginRecordsOpen(false)
+    setLoginRecordsLoading(false)
+    setLoginRecordsUser(null)
+    setLoginRecords([])
+    setLoginRecordsTotal(0)
+    setLoginRecordsPage(1)
+    setLoginRecordsPageSize(10)
   }
 
   useEffect(() => {
@@ -1473,7 +1499,13 @@ export default function SystemUsersPage() {
           columns={columns}
           dataSource={data}
           scroll={{ x: 1360 }}
-          onChange={(_pagination, _filters, sorter) => {
+          onChange={(pagination, _filters, sorter, extra) => {
+            const nextPagination = resolveSystemListPagination(extra.action, pagination, pageSize)
+            if (extra.action === 'paginate') {
+              void loadData(nextPagination.page, nextPagination.pageSize, sortBy, sortOrder)
+              return
+            }
+
             const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
             const field = currentSorter?.field || currentSorter?.column?.dataIndex
             const order = currentSorter?.order as 'ascend' | 'descend' | undefined
@@ -1481,11 +1513,11 @@ export default function SystemUsersPage() {
             if (field && order) {
               setSortBy(String(field))
               setSortOrder(order)
-              void loadData(1, pageSize, String(field), order)
+              void loadData(nextPagination.page, nextPagination.pageSize, String(field), order)
             } else {
               setSortBy(undefined)
               setSortOrder(null)
-              void loadData(1, pageSize, undefined, undefined)
+              void loadData(nextPagination.page, nextPagination.pageSize, undefined, undefined)
             }
           }}
           pagination={{
@@ -1493,9 +1525,6 @@ export default function SystemUsersPage() {
             pageSize,
             total,
             showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize, sortBy, sortOrder)
-            },
           }}
         />
       </Card>
@@ -1797,20 +1826,12 @@ export default function SystemUsersPage() {
           </Button>,
           <Button
             key="close"
-            onClick={() => {
-              setLoginRecordsOpen(false)
-              setLoginRecordsUser(null)
-              setLoginRecords([])
-            }}
+            onClick={closeLoginRecords}
           >
             {t('common.close', '关闭')}
           </Button>,
         ]}
-        onCancel={() => {
-          setLoginRecordsOpen(false)
-          setLoginRecordsUser(null)
-          setLoginRecords([])
-        }}
+        onCancel={closeLoginRecords}
         destroyOnHidden
       >
         <Table<UserLoginRecordDto>

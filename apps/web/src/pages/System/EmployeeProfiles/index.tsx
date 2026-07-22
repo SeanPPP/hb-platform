@@ -22,7 +22,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -35,8 +35,13 @@ import type {
   EmployeeEmploymentType,
   EmployeeProfileDetailDto,
   EmployeeProfileGender,
+  EmployeeProfileQueryDto,
   EmployeeProfileSummaryDto,
 } from '../../../types/employeeProfile'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 import SensitiveChangeReviewPanel from './SensitiveChangeReviewPanel'
 import {
   getExpectedSensitiveRevision,
@@ -62,6 +67,11 @@ interface EmployeeProfileFormValues {
   identityType?: string
   identityPhotoUrl?: string
   address?: string
+}
+
+type DesiredEmployeeProfileQuery = EmployeeProfileQueryDto & {
+  page: number
+  pageSize: number
 }
 
 function formatDateTime(value?: string, language?: string) {
@@ -125,6 +135,13 @@ export default function SystemEmployeeProfilesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const desiredListQueryRef = useRef<DesiredEmployeeProfileQuery>({
+    keyword: keyword || undefined,
+    page,
+    pageSize,
+  })
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingProfile, setEditingProfile] = useState<EmployeeProfileDetailDto | null>(null)
@@ -171,25 +188,52 @@ export default function SystemEmployeeProfilesPage() {
     [genderOptions],
   )
 
-  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
-    setLoading(true)
-    try {
-      const result = await getAdminEmployeeProfiles({
-        keyword: keyword || undefined,
-        page: nextPage,
-        pageSize: nextPageSize,
-      })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.employeeProfiles.loadListFailed'))
-    } finally {
-      setLoading(false)
+  const loadData = async (overrides: Partial<DesiredEmployeeProfileQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const query: DesiredEmployeeProfileQuery = {
+      keyword: keyword || undefined,
+      page,
+      pageSize,
+      ...overrides,
+    }
+    // 分页请求 begin 前保存目标查询，避免保存操作晚完成后退回旧页。
+    desiredListQueryRef.current = query
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, () => getAdminEmployeeProfiles(query), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(t('system.employeeProfiles.loadListFailed'))
+      },
+      onSettled: () => setLoading(false),
+    })
   }
+
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  const refreshDesiredList = (overrides: Partial<DesiredEmployeeProfileQuery> = {}) =>
+    latestLoadDataRef.current({ ...desiredListQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   const loadPendingCount = async () => {
     try {
@@ -201,7 +245,7 @@ export default function SystemEmployeeProfilesPage() {
   }
 
   useEffect(() => {
-    void loadData(1, pageSize)
+    void loadData({ page: 1, pageSize })
     void loadPendingCount()
   }, [])
 
@@ -283,7 +327,7 @@ export default function SystemEmployeeProfilesPage() {
       setEditOpen(false)
       setEditingProfile(null)
       form.resetFields()
-      void loadData(page, pageSize)
+      void refreshDesiredList()
       void loadPendingCount()
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
@@ -377,12 +421,12 @@ export default function SystemEmployeeProfilesPage() {
                       style={{ width: 300 }}
                       value={keyword}
                       onChange={(event) => setKeyword(event.target.value)}
-                      onPressEnter={() => void loadData(1, pageSize)}
+                      onPressEnter={() => void loadData({ page: 1, pageSize })}
                     />
-                    <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+                    <Button type="primary" onClick={() => void loadData({ page: 1, pageSize })}>
                       {t('common.query')}
                     </Button>
-                    <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+                    <Button icon={<ReloadOutlined />} onClick={() => void refreshDesiredList()}>
                       {t('common.refresh')}
                     </Button>
                   </Space>
@@ -398,7 +442,7 @@ export default function SystemEmployeeProfilesPage() {
                       pageSize,
                       total,
                       onChange: (nextPage, nextPageSize) => {
-                        void loadData(nextPage, nextPageSize)
+                        void loadData({ page: nextPage, pageSize: nextPageSize })
                       },
                     }}
                   />

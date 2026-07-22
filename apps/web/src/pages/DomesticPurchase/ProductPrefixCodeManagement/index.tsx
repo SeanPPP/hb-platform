@@ -22,8 +22,8 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
-import type { SorterResult } from 'antd/es/table/interface'
-import { useEffect, useMemo, useState } from 'react'
+import type { SorterResult, TableCurrentDataSource } from 'antd/es/table/interface'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
@@ -36,14 +36,25 @@ import {
 } from '../../../services/productPrefixCodeService'
 import { ProductTypeLabels, type ProductType } from '../../../types/domesticProduct'
 import type {
+  PrefixCodeListParams,
   PrefixCodeProductItem,
   ProductPrefixCodeItem,
   SavePrefixCodePayload,
 } from '../../../types/productPrefixCode'
+import type { LatestRequestGuard } from '../../../utils/latestRequestGuard'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 interface SupplierOption {
   label: string
   value: string
+}
+
+type DesiredPrefixListQuery = PrefixCodeListParams & {
+  page: number
+  pageSize: number
 }
 
 interface ExpandedProductState {
@@ -101,7 +112,40 @@ export default function ProductPrefixCodeManagementPage() {
   const [editingKey, setEditingKey] = useState('')
   const [sortField, setSortField] = useState<string | undefined>(undefined)
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | undefined>(undefined)
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
+  const productRequestGuardsRef = useRef(new Map<string, LatestRequestGuard>())
+  const mountedRef = useRef(false)
+  const desiredListQueryRef = useRef<DesiredPrefixListQuery>({
+    page,
+    pageSize,
+    search: search || undefined,
+    supplierCode,
+    isActive: statusFilter === 'all' ? undefined : statusFilter === 'true',
+    sortField,
+    sortDirection,
+  })
   const statusFilterOptions = getStatusFilterOptions(t)
+
+  const invalidateAllProductRequests = () => {
+    productRequestGuardsRef.current.forEach((guard) => guard.invalidate())
+    productRequestGuardsRef.current.clear()
+  }
+
+  const finishAllProductLoading = () => {
+    setExpandedProducts((current) => {
+      let changed = false
+      const next = Object.fromEntries(
+        Object.entries(current).map(([prefixCode, value]) => {
+          if (!value.loading) {
+            return [prefixCode, value]
+          }
+          changed = true
+          return [prefixCode, { ...value, loading: false }]
+        }),
+      )
+      return changed ? next : current
+    })
+  }
 
   const loadSuppliers = async () => {
     setSupplierLoading(true)
@@ -121,89 +165,124 @@ export default function ProductPrefixCodeManagementPage() {
     }
   }
 
-  const loadList = async (
-    nextPage = page,
-    nextPageSize = pageSize,
-    nextSortField = sortField,
-    nextSortDirection = sortDirection,
-  ) => {
-    setLoading(true)
-    try {
-      const result = await getPrefixCodeList({
-        page: nextPage,
-        pageSize: nextPageSize,
-        search: search || undefined,
-        supplierCode,
-        isActive:
-          statusFilter === 'all' ? undefined : statusFilter === 'true',
-        sortField: nextSortField,
-        sortDirection: nextSortDirection,
-      })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-      setSortField(nextSortField)
-      setSortDirection(nextSortDirection)
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('productCreation.loadPrefixListFailed', '加载前缀列表失败'))
-    } finally {
-      setLoading(false)
+  const loadList = async (overrides: Partial<DesiredPrefixListQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const query: DesiredPrefixListQuery = {
+      page,
+      pageSize,
+      search: search || undefined,
+      supplierCode,
+      isActive: statusFilter === 'all' ? undefined : statusFilter === 'true',
+      sortField,
+      sortDirection,
+      ...overrides,
+    }
+    // 主列表请求开始即发布目标查询，mutation 晚完成时继续刷新在途分页。
+    desiredListQueryRef.current = query
+    invalidateAllProductRequests()
+    finishAllProductLoading()
+
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getPrefixCodeList(query), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+        setSortField(query.sortField)
+        setSortDirection(query.sortDirection)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(error instanceof Error ? error.message : t('productCreation.loadPrefixListFailed', '加载前缀列表失败'))
+      },
+      // 旧请求结束时不能关闭较新请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
+
+  const latestLoadListRef = useRef(loadList)
+
+  useLayoutEffect(() => {
+    latestLoadListRef.current = loadList
+  })
+
+  const refreshDesiredList = (overrides: Partial<DesiredPrefixListQuery> = {}) =>
+    latestLoadListRef.current({ ...desiredListQueryRef.current, ...overrides })
 
   const loadProducts = async (prefixCode: string, nextPage = 1, nextPageSize = 10) => {
-    setExpandedProducts((current) => ({
-      ...current,
-      [prefixCode]: {
-        ...current[prefixCode],
-        loading: true,
-        expanded: true,
-        products: current[prefixCode]?.products ?? [],
-        total: current[prefixCode]?.total ?? 0,
-        page: nextPage,
-        pageSize: nextPageSize,
-      },
-    }))
-
-    try {
-      const result = await getProductsByPrefix(prefixCode, {
-        page: nextPage,
-        pageSize: nextPageSize,
-      })
-      setExpandedProducts((current) => ({
-        ...current,
-        [prefixCode]: {
-          products: result.items,
-          loading: false,
-          expanded: true,
-          total: result.total,
-          page: result.page,
-          pageSize: result.pageSize,
-        },
-      }))
-    } catch (error) {
-      console.error(error)
-      setExpandedProducts((current) => ({
-        ...current,
-        [prefixCode]: {
-          ...current[prefixCode],
-          loading: false,
-          expanded: true,
-          products: current[prefixCode]?.products ?? [],
-          total: current[prefixCode]?.total ?? 0,
-          page: current[prefixCode]?.page ?? nextPage,
-          pageSize: current[prefixCode]?.pageSize ?? nextPageSize,
-        },
-      }))
-      message.error(error instanceof Error ? error.message : t('productCreation.loadRelatedProductsFailed', '加载关联商品失败'))
+    if (!mountedRef.current) {
+      return
     }
+
+    let requestGuard = productRequestGuardsRef.current.get(prefixCode)
+    if (!requestGuard) {
+      requestGuard = createLatestRequestGuard()
+      productRequestGuardsRef.current.set(prefixCode, requestGuard)
+    }
+
+    await runLatestGuardedRequest(requestGuard, () => getProductsByPrefix(prefixCode, {
+        page: nextPage,
+        pageSize: nextPageSize,
+      }), {
+      onStart: () => {
+        setExpandedProducts((current) => ({
+          ...current,
+          [prefixCode]: {
+            ...current[prefixCode],
+            loading: true,
+            expanded: true,
+            products: current[prefixCode]?.products ?? [],
+            total: current[prefixCode]?.total ?? 0,
+            page: nextPage,
+            pageSize: nextPageSize,
+          },
+        }))
+      },
+      onSuccess: (result) => {
+        setExpandedProducts((current) => ({
+          ...current,
+          [prefixCode]: {
+            products: result.items,
+            loading: false,
+            expanded: true,
+            total: result.total,
+            page: result.page,
+            pageSize: result.pageSize,
+          },
+        }))
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(error instanceof Error ? error.message : t('productCreation.loadRelatedProductsFailed', '加载关联商品失败'))
+      },
+      onSettled: () => {
+        setExpandedProducts((current) => ({
+          ...current,
+          [prefixCode]: {
+            ...current[prefixCode],
+            loading: false,
+          },
+        }))
+      },
+    })
   }
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      mainListRequestGuardRef.current.invalidate()
+      invalidateAllProductRequests()
+    }
+  }, [])
 
   useEffect(() => {
     void loadSuppliers()
-    void loadList(1, pageSize)
+    void loadList({ page: 1, pageSize })
   }, [])
 
   const handleAdd = async () => {
@@ -214,7 +293,7 @@ export default function ProductPrefixCodeManagementPage() {
       message.success(t('productCreation.addPrefixSuccess', '新增前缀成功'))
       createForm.resetFields()
       createForm.setFieldValue('isActive', true)
-      void loadList(1, pageSize)
+      void refreshDesiredList({ page: 1 })
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -253,7 +332,7 @@ export default function ProductPrefixCodeManagementPage() {
       message.success(t('productCreation.updatePrefixSuccess', '更新前缀成功'))
       setEditingKey('')
       editForm.resetFields()
-      void loadList(page, pageSize)
+      void refreshDesiredList()
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -269,7 +348,7 @@ export default function ProductPrefixCodeManagementPage() {
     try {
       await deletePrefixCode(prefixCode)
       message.success(t('productCreation.deletePrefixSuccess', '删除前缀成功'))
-      void loadList(page, pageSize)
+      void refreshDesiredList()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('productCreation.deletePrefixFailed', '删除前缀失败'))
@@ -282,6 +361,8 @@ export default function ProductPrefixCodeManagementPage() {
       return
     }
 
+    productRequestGuardsRef.current.get(prefixCode)?.invalidate()
+    productRequestGuardsRef.current.delete(prefixCode)
     setExpandedProducts((current) => ({
       ...current,
       [prefixCode]: {
@@ -294,6 +375,31 @@ export default function ProductPrefixCodeManagementPage() {
         pageSize: current[prefixCode]?.pageSize ?? 10,
       },
     }))
+  }
+
+  const handleTableChange = (
+    pagination: TablePaginationConfig,
+    _filters: Record<string, unknown>,
+    sorter: SorterResult<ProductPrefixCodeItem> | SorterResult<ProductPrefixCodeItem>[],
+    extra: TableCurrentDataSource<ProductPrefixCodeItem>,
+  ) => {
+    const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    const nextSortField =
+      typeof nextSorter?.field === 'string' ? nextSorter.field : undefined
+    const nextSortDirection =
+      nextSorter?.order === 'ascend'
+        ? 'asc'
+        : nextSorter?.order === 'descend'
+          ? 'desc'
+          : undefined
+    const nextPage = extra.action === 'paginate' ? pagination.current ?? 1 : 1
+
+    void loadList({
+      page: nextPage,
+      pageSize: pagination.pageSize ?? pageSize,
+      sortField: nextSortField,
+      sortDirection: nextSortDirection,
+    })
   }
 
   const productColumns: ColumnsType<PrefixCodeProductItem> = [
@@ -604,10 +710,10 @@ export default function ProductPrefixCodeManagementPage() {
             allowClear
             style={{ width: 240 }}
           />
-          <Button type="primary" onClick={() => void loadList(1, pageSize)}>
+          <Button type="primary" onClick={() => void loadList({ page: 1, pageSize })}>
             {t('common.query', '查询')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadList(page, pageSize)}>
+          <Button icon={<ReloadOutlined />} onClick={() => void refreshDesiredList()}>
             {t('common.refresh', '刷新')}
           </Button>
         </Space>
@@ -629,32 +735,8 @@ export default function ProductPrefixCodeManagementPage() {
               total,
               showSizeChanger: true,
               showQuickJumper: true,
-              onChange: (nextPage, nextPageSize) => {
-                void loadList(nextPage, nextPageSize)
-              },
             }}
-            onChange={(
-              pagination: TablePaginationConfig,
-              _filters,
-              sorter: SorterResult<ProductPrefixCodeItem> | SorterResult<ProductPrefixCodeItem>[],
-            ) => {
-              const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
-              const nextSortField =
-                typeof nextSorter?.field === 'string' ? nextSorter.field : undefined
-              const nextSortDirection =
-                nextSorter?.order === 'ascend'
-                  ? 'asc'
-                  : nextSorter?.order === 'descend'
-                    ? 'desc'
-                    : undefined
-
-              void loadList(
-                pagination.current ?? 1,
-                pagination.pageSize ?? pageSize,
-                nextSortField,
-                nextSortDirection,
-              )
-            }}
+            onChange={handleTableChange}
             scroll={{ x: 1100 }}
           />
         </Form>

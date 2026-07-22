@@ -30,7 +30,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
-import { useEffect, useMemo, useState, type Key } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Key } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -44,6 +44,7 @@ import {
 } from '../../../services/containerService'
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerMain, CreateContainerRequest, DateFilterOption } from '../../../types/container'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 type ContainerColumnTextFilterKey = 'containerNumberFilter'
@@ -79,6 +80,11 @@ interface LoadDataOptions {
   dateRange?: RangeValue
   itemNumberFilter?: string
   columnFilters?: ContainerColumnFilters
+}
+
+interface PendingFirstPageRequest {
+  options: LoadDataOptions
+  resolve: () => void
 }
 
 dayjs.extend(isoWeek)
@@ -286,6 +292,16 @@ export default function ContainersPage() {
   const [syncing, setSyncing] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [statusUpdatingKeys, setStatusUpdatingKeys] = useState<string[]>([])
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const latestLoadDataRef = useRef<(
+    nextPage?: number,
+    nextPageSize?: number,
+    options?: LoadDataOptions,
+  ) => Promise<void>>(async () => undefined)
+  const pendingFirstPageRequestRef = useRef<PendingFirstPageRequest | null>(null)
+  const activeFirstPageResolverRef = useRef<(() => void) | null>(null)
+  const latestRequestFirstPageRef = useRef<(options?: LoadDataOptions) => Promise<void>>(async () => undefined)
 
   const containerStatusOptions = useMemo(
     () =>
@@ -314,39 +330,114 @@ export default function ContainersPage() {
   )
 
   const loadData = async (nextPage = page, nextPageSize = pageSize, options: LoadDataOptions = {}) => {
-    setLoading(true)
-    try {
-      const activeDateType = options.dateType ?? dateType
-      const activeDateRange = Object.prototype.hasOwnProperty.call(options, 'dateRange') ? options.dateRange : dateRange
-      const activeItemNumberFilter = options.itemNumberFilter ?? itemNumberFilter
-      const activeColumnFilters = options.columnFilters ?? columnFilters
-      const result = await getContainerList({
-        dateType: activeDateType,
-        startDate: activeDateRange?.[0]?.format('YYYY-MM-DD'),
-        endDate: activeDateRange?.[1]?.format('YYYY-MM-DD'),
-        page: nextPage,
-        pageSize: nextPageSize,
-        itemNumberFilter: activeItemNumberFilter || undefined,
-        ...activeColumnFilters,
-      })
-      setContainers(result.containers)
-      setTotal(result.totalCount)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('containers.messages.loadListFailed'))
-    } finally {
-      setLoading(false)
-    }
+    if (!mountedRef.current) return
+
+    const activeDateType = options.dateType ?? dateType
+    const activeDateRange = Object.prototype.hasOwnProperty.call(options, 'dateRange') ? options.dateRange : dateRange
+    const activeItemNumberFilter = options.itemNumberFilter ?? itemNumberFilter
+    const activeColumnFilters = options.columnFilters ?? columnFilters
+
+    await runLatestGuardedRequest(
+      listRequestGuardRef.current,
+      () =>
+        getContainerList({
+          dateType: activeDateType,
+          startDate: activeDateRange?.[0]?.format('YYYY-MM-DD'),
+          endDate: activeDateRange?.[1]?.format('YYYY-MM-DD'),
+          page: nextPage,
+          pageSize: nextPageSize,
+          itemNumberFilter: activeItemNumberFilter || undefined,
+          ...activeColumnFilters,
+        }),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: (result) => {
+          setContainers(result.containers)
+          setTotal(result.totalCount)
+          setPage(result.page)
+          setPageSize(result.pageSize)
+        },
+        onError: (error) => {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('containers.messages.loadListFailed'))
+        },
+        onSettled: () => setLoading(false),
+      },
+    )
   }
+
+  const resolvePendingFirstPageRequest = () => {
+    const pendingRequest = pendingFirstPageRequestRef.current
+    pendingFirstPageRequestRef.current = null
+    pendingRequest?.resolve()
+  }
+
+  const resolveActiveFirstPageRequest = (expectedResolver?: () => void) => {
+    const activeResolver = activeFirstPageResolverRef.current
+    if (!activeResolver || (expectedResolver && activeResolver !== expectedResolver)) return
+
+    activeFirstPageResolverRef.current = null
+    activeResolver()
+  }
+
+  const startFirstPageRequest = (options: LoadDataOptions, resolve: () => void) => {
+    activeFirstPageResolverRef.current = resolve
+    void latestLoadDataRef.current(1, pageSize, options).finally(() => {
+      resolveActiveFirstPageRequest(resolve)
+    })
+  }
+
+  const requestFirstPage = (options: LoadDataOptions = {}): Promise<void> => {
+    if (!mountedRef.current) return Promise.resolve()
+
+    // 新的第一页请求会同步结束被替代调用者的等待，但旧网络响应仍由 guard 丢弃。
+    resolvePendingFirstPageRequest()
+    resolveActiveFirstPageRequest()
+
+    if (page === 1) {
+      return new Promise((resolve) => {
+        startFirstPageRequest(options, resolve)
+      })
+    }
+
+    listRequestGuardRef.current.invalidate()
+    return new Promise((resolve) => {
+      pendingFirstPageRequestRef.current = { options, resolve }
+      setPage(1)
+    })
+  }
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      resolvePendingFirstPageRequest()
+      resolveActiveFirstPageRequest()
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+    latestRequestFirstPageRef.current = requestFirstPage
+  })
 
   useEffect(() => {
     getDateFilterOptions().then(setDateOptions).catch(() => undefined)
   }, [])
 
   useEffect(() => {
-    void loadData()
+    const pendingRequest = pendingFirstPageRequestRef.current
+    if (page === 1 && pendingRequest) {
+      pendingFirstPageRequestRef.current = null
+      startFirstPageRequest(pendingRequest.options, pendingRequest.resolve)
+      return
+    }
+
+    resolvePendingFirstPageRequest()
+    resolveActiveFirstPageRequest()
+    void latestLoadDataRef.current()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize])
 
@@ -356,7 +447,7 @@ export default function ContainersPage() {
       await createContainer(values)
       message.success(t('containers.messages.createSuccess'))
       setCreateOpen(false)
-      await loadData(1, pageSize)
+      await latestRequestFirstPageRef.current()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('containers.messages.createFailed'))
@@ -380,7 +471,7 @@ export default function ContainersPage() {
           // 只有同步真正成功时才提示成功并刷新第一页，失败分支只展示后端消息。
           if (success) {
             message.success(msg)
-            await loadData(1, pageSize)
+            await latestRequestFirstPageRef.current()
           } else {
             message.error(msg)
           }
@@ -468,7 +559,7 @@ export default function ContainersPage() {
     nextFilters: ContainerColumnFilters = columnFilters,
   ) => {
     confirm()
-    void loadData(1, pageSize, { columnFilters: nextFilters })
+    void requestFirstPage({ columnFilters: nextFilters })
   }
 
   const clearColumnFilter = (
@@ -772,9 +863,9 @@ export default function ContainersPage() {
                 prefix={<SearchOutlined />}
                 style={{ width: 220 }}
                 onChange={(event) => setItemNumberFilter(event.target.value)}
-                onPressEnter={() => void loadData(1, pageSize)}
+                onPressEnter={() => void requestFirstPage()}
               />
-              <Button type="primary" icon={<SearchOutlined />} onClick={() => void loadData(1, pageSize)}>
+              <Button type="primary" icon={<SearchOutlined />} onClick={() => void requestFirstPage()}>
                 {t('common.query')}
               </Button>
               <Button
@@ -785,7 +876,7 @@ export default function ContainersPage() {
                   setItemNumberFilter('')
                   setColumnFilters({})
                   // 顶部重置同时清空列头过滤，避免界面已清空但请求仍带旧条件。
-                  void loadData(1, pageSize, {
+                  void requestFirstPage({
                     dateType: '预计到岸日期',
                     dateRange: null,
                     itemNumberFilter: '',

@@ -30,7 +30,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   createWpfAppRelease,
@@ -42,6 +42,10 @@ import {
 } from '../../../services/wpfVersionService'
 import { useAuthStore } from '../../../store/auth'
 import type { WpfAppRelease, WpfReleasePolicyRequest } from '../../../types/wpfVersion'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 import {
   WPF_RELEASE_CHANNELS,
   buildWpfPolicyPayload,
@@ -76,6 +80,14 @@ interface PolicyFormValues {
   targetVersion: string
   minimumSupportedVersion: string
   forceUpdate: boolean
+}
+
+interface WpfReleaseQuery {
+  page: number
+  pageSize: number
+  channel: string
+  includeDisabled: boolean
+  scopeRevision: number
 }
 
 function formatFileSize(size?: number | null) {
@@ -128,6 +140,15 @@ export default function WpfVersionsPage() {
   const [releases, setReleases] = useState<WpfAppRelease[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const releasesRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const latestReleaseQueryRef = useRef<WpfReleaseQuery>({
+    page,
+    pageSize,
+    channel,
+    includeDisabled,
+    scopeRevision: 0,
+  })
   const [uploading, setUploading] = useState(false)
   const [policySaving, setPolicySaving] = useState(false)
   const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null)
@@ -140,51 +161,171 @@ export default function WpfVersionsPage() {
   const uploadHashRequestId = useRef(0)
 
   const loadReleases = useCallback(async (
-    nextPage = page,
-    nextPageSize = pageSize,
-    nextChannel = channel,
-    nextIncludeDisabled = includeDisabled,
+    nextPage: number,
+    nextPageSize: number,
+    nextChannel: string,
+    nextIncludeDisabled: boolean,
   ) => {
-    setLoading(true)
-    try {
-      const result = await getWpfAppReleases({
+    if (!mountedRef.current) {
+      return
+    }
+
+    await runLatestGuardedRequest(releasesRequestGuardRef.current, () => getWpfAppReleases({
         page: nextPage,
         pageSize: nextPageSize,
         channel: nextChannel,
         includeDisabled: nextIncludeDisabled,
-      })
-      setReleases(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
+      }), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setReleases(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
 
-      const policySummary = getWpfPolicySummary(result.items)
-      if (policySummary) {
-        policyForm.setFieldsValue({
-          channel: policySummary.channel,
-          targetVersion: policySummary.targetVersion,
-          minimumSupportedVersion: policySummary.minimumSupportedVersion,
-          forceUpdate: policySummary.forceUpdate,
-        })
-      } else {
-        policyForm.setFieldsValue({
-          channel: nextChannel,
-          targetVersion: undefined,
-          minimumSupportedVersion: undefined,
-          forceUpdate: false,
-        })
-      }
-    } catch (error) {
-      console.error('Failed to load WPF releases', error)
-      message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.loadFailed', '加载 WPF 版本失败')))
-    } finally {
-      setLoading(false)
+        const policySummary = getWpfPolicySummary(result.items)
+        if (policySummary) {
+          policyForm.setFieldsValue({
+            channel: policySummary.channel,
+            targetVersion: policySummary.targetVersion,
+            minimumSupportedVersion: policySummary.minimumSupportedVersion,
+            forceUpdate: policySummary.forceUpdate,
+          })
+        } else {
+          policyForm.setFieldsValue({
+            channel: nextChannel,
+            targetVersion: undefined,
+            minimumSupportedVersion: undefined,
+            forceUpdate: false,
+          })
+        }
+      },
+      onError: (error) => {
+        console.error('Failed to load WPF releases', error)
+        message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.loadFailed', '加载 WPF 版本失败')))
+      },
+      onSettled: () => setLoading(false),
+    })
+  }, [policyForm, t])
+
+  const latestLoadReleasesRef = useRef(loadReleases)
+
+  useLayoutEffect(() => {
+    latestReleaseQueryRef.current = {
+      ...latestReleaseQueryRef.current,
+      page,
+      pageSize,
+      channel,
+      includeDisabled,
     }
-  }, [channel, includeDisabled, page, pageSize, policyForm, t])
+    latestLoadReleasesRef.current = loadReleases
+  }, [page, pageSize, channel, includeDisabled, loadReleases])
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      releasesRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   useEffect(() => {
-    void loadReleases(1, pageSize, channel, includeDisabled)
-  }, [channel, includeDisabled, loadReleases, pageSize])
+    const currentQuery = latestReleaseQueryRef.current
+    void loadReleases(
+      currentQuery.page,
+      currentQuery.pageSize,
+      currentQuery.channel,
+      currentQuery.includeDisabled,
+    )
+    return () => releasesRequestGuardRef.current.invalidate()
+  }, [channel, includeDisabled, loadReleases])
+
+  const resetReleaseScope = useCallback((nextChannel: string, nextIncludeDisabled: boolean) => {
+    const currentQuery = latestReleaseQueryRef.current
+    const nextQuery: WpfReleaseQuery = {
+      page: 1,
+      pageSize: currentQuery.pageSize,
+      channel: nextChannel,
+      includeDisabled: nextIncludeDisabled,
+      scopeRevision: currentQuery.scopeRevision + 1,
+    }
+
+    // 先同步发布目标查询，再提交状态更新；mutation 晚完成时不会拼出“新通道 + 旧页码”。
+    latestReleaseQueryRef.current = nextQuery
+    releasesRequestGuardRef.current.invalidate()
+    setPage(nextQuery.page)
+    setChannel(nextQuery.channel)
+    setIncludeDisabled(nextQuery.includeDisabled)
+  }, [])
+
+  const handleChannelChange = useCallback((nextChannel: string) => {
+    const currentQuery = latestReleaseQueryRef.current
+    if (nextChannel === currentQuery.channel) {
+      return
+    }
+
+    resetReleaseScope(nextChannel, currentQuery.includeDisabled)
+  }, [resetReleaseScope])
+
+  const handleIncludeDisabledChange = useCallback((nextIncludeDisabled: boolean) => {
+    const currentQuery = latestReleaseQueryRef.current
+    if (nextIncludeDisabled === currentQuery.includeDisabled) {
+      return
+    }
+
+    resetReleaseScope(currentQuery.channel, nextIncludeDisabled)
+  }, [resetReleaseScope])
+
+  const handlePageChange = useCallback((nextPage: number, nextPageSize: number) => {
+    const currentQuery = latestReleaseQueryRef.current
+    const nextQuery: WpfReleaseQuery = {
+      ...currentQuery,
+      page: nextPage,
+      pageSize: nextPageSize,
+    }
+
+    latestReleaseQueryRef.current = nextQuery
+    void latestLoadReleasesRef.current(
+      nextQuery.page,
+      nextQuery.pageSize,
+      nextQuery.channel,
+      nextQuery.includeDisabled,
+    )
+  }, [])
+
+  const refreshLatestReleaseQuery = useCallback(async (
+    targetChannel?: string,
+    expectedQuery?: WpfReleaseQuery,
+  ) => {
+    if (!mountedRef.current) {
+      return
+    }
+
+    const currentQuery = latestReleaseQueryRef.current
+    const scopeChangedSinceMutationStarted = Boolean(
+      expectedQuery && expectedQuery.scopeRevision !== currentQuery.scopeRevision,
+    )
+
+    if (scopeChangedSinceMutationStarted) {
+      // 用户已切换 scope 时，旧 mutation 只能刷新当前同一目标；绝不能把页面切回旧目标通道。
+      if (!targetChannel || targetChannel !== currentQuery.channel) {
+        return
+      }
+    }
+
+    if (targetChannel && targetChannel !== currentQuery.channel) {
+      // 目标通道变化交给列表 effect 单次加载，且以第一页作为原子目标查询。
+      resetReleaseScope(targetChannel, currentQuery.includeDisabled)
+      return
+    }
+
+    await latestLoadReleasesRef.current(
+      currentQuery.page,
+      currentQuery.pageSize,
+      currentQuery.channel,
+      currentQuery.includeDisabled,
+    )
+  }, [resetReleaseScope])
 
   const activeVersionOptions = useMemo(
     () => releases
@@ -219,6 +360,7 @@ export default function WpfVersionsPage() {
       return
     }
 
+    const refreshQuery = latestReleaseQueryRef.current
     setPolicySaving(true)
     try {
       await saveWpfReleasePolicy(payload)
@@ -227,8 +369,7 @@ export default function WpfVersionsPage() {
           ? t('system.wpfVersions.rollbackSuccess', '回退策略已保存')
           : t('system.wpfVersions.policySaved', '版本策略已保存'),
       )
-      await loadReleases(1, pageSize, payload.channel, includeDisabled)
-      setChannel(payload.channel)
+      await refreshLatestReleaseQuery(payload.channel, refreshQuery)
     } catch (error) {
       console.error('Failed to save WPF release policy', error)
       message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.policySaveFailed', '保存版本策略失败')))
@@ -311,6 +452,7 @@ export default function WpfVersionsPage() {
   }
 
   const handleToggleReleaseActive = async (record: WpfAppRelease, nextIsActive: boolean) => {
+    const refreshQuery = latestReleaseQueryRef.current
     setStatusUpdatingId(record.id)
     try {
       await updateWpfAppRelease(record.id, { isActive: nextIsActive })
@@ -319,7 +461,7 @@ export default function WpfVersionsPage() {
           ? t('system.wpfVersions.restoreSuccess', 'WPF 版本已恢复')
           : t('system.wpfVersions.disableSuccess', 'WPF 版本已禁用'),
       )
-      await loadReleases(page, pageSize, channel, includeDisabled)
+      await refreshLatestReleaseQuery(undefined, refreshQuery)
     } catch (error) {
       console.error('Failed to update WPF release status', error)
       message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.statusUpdateFailed', '更新 WPF 版本状态失败')))
@@ -416,6 +558,7 @@ export default function WpfVersionsPage() {
       return
     }
 
+    const refreshQuery = latestReleaseQueryRef.current
     setUploading(true)
     try {
       // 中文注释：先拿固定版本路径的上传初始化，再直传文件，最后登记版本元数据，确保上传对象和发布记录同源。
@@ -444,8 +587,8 @@ export default function WpfVersionsPage() {
       message.success(t('system.wpfVersions.uploadSuccess', 'WPF 版本已上传并登记'))
       closeUploadDrawer()
       uploadForm.resetFields()
-      setChannel(normalizeWpfReleaseChannel(values.channel))
-      await loadReleases(1, pageSize, normalizeWpfReleaseChannel(values.channel), includeDisabled)
+      const uploadedChannel = normalizeWpfReleaseChannel(values.channel)
+      await refreshLatestReleaseQuery(uploadedChannel, refreshQuery)
     } catch (error) {
       console.error('Failed to upload WPF release', error)
       message.error(getWpfVersionErrorMessage(error, t('system.wpfVersions.uploadFailed', '上传或登记 WPF 版本失败')))
@@ -610,13 +753,17 @@ export default function WpfVersionsPage() {
               style={{ width: 140 }}
               value={channel}
               options={WPF_RELEASE_CHANNELS.map((item) => ({ label: item, value: item }))}
-              onChange={setChannel}
+              onChange={handleChannelChange}
             />
             <Space size={8}>
               <Text type="secondary">{t('system.wpfVersions.includeDisabled', '显示已禁用')}</Text>
-              <Switch checked={includeDisabled} onChange={setIncludeDisabled} />
+              <Switch checked={includeDisabled} onChange={handleIncludeDisabledChange} />
             </Space>
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadReleases()}>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={() => void refreshLatestReleaseQuery()}
+            >
               {t('common.refresh', '刷新')}
             </Button>
             <Button
@@ -710,7 +857,7 @@ export default function WpfVersionsPage() {
             pageSize,
             total,
             showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) => void loadReleases(nextPage, nextPageSize, channel, includeDisabled),
+            onChange: handlePageChange,
           }}
           expandable={{
             expandedRowRender: (record) => (

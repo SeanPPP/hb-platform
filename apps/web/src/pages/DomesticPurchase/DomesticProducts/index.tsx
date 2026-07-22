@@ -31,7 +31,7 @@ import type { DefaultOptionType } from 'antd/es/select'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import type { ClipboardEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -56,6 +56,7 @@ import type {
 } from '../../../types/domesticProduct'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import { useTranslation } from 'react-i18next'
 import {
   applySetItemColumnPaste,
@@ -497,6 +498,18 @@ export default function DomesticProductsPage() {
   const [setItemsSaving, setSetItemsSaving] = useState(false)
   const [currentSetProduct, setCurrentSetProduct] = useState<DomesticProductItem | null>(null)
   const [setItemsDraft, setSetItemsDraft] = useState<DomesticProductSetItem[]>([])
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const desiredGridQueryRef = useRef<DomesticProductGridQuery>({
+    page,
+    pageSize,
+    searchText,
+    supplierCode,
+    productType,
+    isActive,
+    sortField,
+    sortOrder,
+  })
   const { access } = useAuthStore()
 
   const buildGridQuery = (overrides: Partial<DomesticProductGridQuery> = {}): DomesticProductGridQuery => ({
@@ -512,23 +525,51 @@ export default function DomesticProductsPage() {
   })
 
   const loadData = async (overrides: Partial<DomesticProductGridQuery> = {}) => {
-    const query = buildGridQuery(overrides)
-
-    setLoading(true)
-    try {
-      const result = await getDomesticProductsGrid(query)
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-      setSelectedRowKeys([])
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('domesticProducts.loadFailed', '加载国内商品失败'))
-    } finally {
-      setLoading(false)
+    if (!mountedRef.current) {
+      return
     }
+
+    const query = buildGridQuery(overrides)
+    // 请求一开始就发布目标查询，mutation 晚完成时不依赖旧的成功页码。
+    desiredGridQueryRef.current = query
+
+    await runLatestGuardedRequest(
+      listRequestGuardRef.current,
+      () => getDomesticProductsGrid(query),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: (result) => {
+          setData(result.items)
+          setTotal(result.total)
+          setPage(result.page)
+          setPageSize(result.pageSize)
+          setSelectedRowKeys([])
+        },
+        onError: (error) => {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('domesticProducts.loadFailed', '加载国内商品失败'))
+        },
+        onSettled: () => setLoading(false),
+      },
+    )
   }
+
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  const refreshDesiredGrid = (overrides: Partial<DomesticProductGridQuery> = {}) =>
+    latestLoadDataRef.current({ ...desiredGridQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   useEffect(() => {
     void Promise.all([
@@ -540,6 +581,7 @@ export default function DomesticProductsPage() {
           message.error(t('domesticProducts.loadSuppliersFailed', '加载供应商列表失败'))
         }),
     ])
+
   }, [])
 
   const handleOpenCreate = () => {
@@ -597,7 +639,11 @@ export default function DomesticProductsPage() {
       }
 
       handleCloseModal()
-      void loadData({ page: editingItem ? page : 1 })
+      if (editingItem) {
+        void refreshDesiredGrid()
+      } else {
+        void refreshDesiredGrid({ page: 1 })
+      }
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -613,7 +659,7 @@ export default function DomesticProductsPage() {
     try {
       await batchDeleteDomesticProducts(selectedRowKeys.map(String))
       message.success(t('domesticProducts.batchDeleteSuccess', '已删除 {{count}} 个国内商品', { count: selectedRowKeys.length }))
-      void loadData({ page: 1 })
+      void refreshDesiredGrid({ page: 1 })
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('domesticProducts.batchDeleteFailed', '批量删除国内商品失败'))
@@ -684,7 +730,7 @@ export default function DomesticProductsPage() {
       setSetItemsOpen(false)
       setCurrentSetProduct(null)
       setSetItemsDraft([])
-      void loadData({ page })
+      void refreshDesiredGrid()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('domesticProducts.saveSetItemsFailed', '保存套装子项失败'))

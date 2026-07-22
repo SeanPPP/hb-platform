@@ -36,8 +36,12 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 import ProductPicker from './ProductPicker'
 import { getPromotionEditorStoreCodes } from './promotionStoreScope'
 
@@ -58,38 +62,55 @@ export default function PromotionsPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editorForm] = Form.useForm()
   const selectedEditorStores = Form.useWatch('stores', editorForm) as string[] | undefined
-  const inFlightRef = useRef(false)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [productInfoMap, setProductInfoMap] = useState<Record<string, PosProductDto>>({})
   const [supplierNameMap, setSupplierNameMap] = useState<Record<string, string>>({})
 
   const loadData = async () => {
-    if (inFlightRef.current) return
-    inFlightRef.current = true
-    try {
-      setLoading(true)
+    if (!mountedRef.current) {
+      return
+    }
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, async () => {
       const values = form.getFieldsValue()
       const sortModel: Record<string, string>[] = []
       if (sortField && sortOrder) {
         sortModel.push({ ColId: sortField, Sort: sortOrder === 'ascend' ? 'asc' : 'desc' })
       }
-      const result = await getPromotionGrid({
+      return getPromotionGrid({
         StartRow: (page - 1) * pageSize,
         EndRow: page * pageSize - 1,
         PageSize: pageSize,
         GlobalSearch: values.keyword || undefined,
         SortModel: sortModel.length ? sortModel : undefined,
       } as Record<string, unknown>)
-      const items = result?.items ?? []
-      setTotal(result?.total ?? 0)
-      setData(items.map((it) => ({ ...it, key: String(it.id) })))
-    } catch {
-      message.error(t('message.loadFailed'))
-    } finally {
-      setLoading(false)
-      inFlightRef.current = false
-    }
+    }, {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        const items = result?.items ?? []
+        setTotal(result?.total ?? 0)
+        setData(items.map((it) => ({ ...it, key: String(it.id) })))
+      },
+      onError: () => message.error(t('message.loadFailed')),
+      onSettled: () => setLoading(false),
+    })
   }
+
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
 
   const loadSupplierNames = async () => {
     try {
@@ -166,7 +187,9 @@ export default function PromotionsPage() {
       }
       message.success(t('message.saveSuccess'))
       setEditorOpen(false)
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('message.saveFailed'))
     }
@@ -176,7 +199,9 @@ export default function PromotionsPage() {
     try {
       await deletePromotion(id)
       message.success(t('message.deleteSuccess'))
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch { message.error(t('message.deleteFailed')) }
   }
 
@@ -184,7 +209,9 @@ export default function PromotionsPage() {
     try {
       await enablePromotion(String(record.id), enable)
       message.success(t('posAdmin.promotions.updateEnableSuccess', '已更新启用状态'))
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch { message.error(t('message.updateFailed')) }
   }
 
@@ -222,11 +249,13 @@ export default function PromotionsPage() {
   useEffect(() => {
     ;(async () => {
       try { setStoreOptions(await getActiveStores()) } catch { /* ignore */ }
-      await loadData()
     })()
   }, [])
 
-  useEffect(() => { loadData() }, [page, pageSize, sortField, sortOrder])
+  useEffect(() => {
+    void loadData()
+    return () => listRequestGuardRef.current.invalidate()
+  }, [page, pageSize, sortField, sortOrder])
 
   const editorUsesAllStoresScope = !selectedEditorStores?.length
 

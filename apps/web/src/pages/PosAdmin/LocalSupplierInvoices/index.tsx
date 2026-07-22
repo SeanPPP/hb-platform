@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../../store/auth'
 import { RequestError } from '../../../utils/request'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import { getStableTagColor } from '../../../utils/tagColors'
 import {
   checkInvoiceNoExists,
@@ -158,52 +159,77 @@ export default function LocalSupplierInvoicesPage() {
   const invoiceTableRef = useRef<TableRef | null>(null)
   const lastInvoiceTableScrollTopRef = useRef(0)
   const wasInvoiceListTabActiveRef = useRef(active)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const latestLoadDataRef = useRef<() => Promise<void>>(async () => undefined)
 
   const loadData = async () => {
+    if (!mountedRef.current) return
+
     if (shouldSkipScopedStoreQuery(managedStoreCodes)) {
+      listRequestGuardRef.current.invalidate()
       setData([])
       setTotal(0)
       setSelectedRowKeys([])
+      setLoading(false)
       return
     }
 
-    setLoading(true)
-    try {
-      const startRow = (page - 1) * pageSize
-      const filterModel: Record<string, unknown> = {}
-      const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
-      if (scopedStoreFilter) {
-        filterModel.storeCode = scopedStoreFilter
-      }
-      if (supplierCode) {
-        filterModel.supplierCode = { filterType: 'text', type: 'equals', filter: supplierCode }
-      }
-      if (invoiceNo) {
-        filterModel.invoiceNo = { filterType: 'text', type: 'contains', filter: invoiceNo }
-      }
-      if (keyword) {
-        filterModel.productKeyword = { filterType: 'text', filter: keyword }
-      }
-      const sortField = SORT_FIELD_MAP[sortBy] || sortBy
-      const sortModel = [{ colId: sortField, sort: sortOrder === 'ascend' ? 'asc' : 'desc' }]
-      const result = await getInvoiceGrid({
-        startRow,
-        endRow: startRow + pageSize,
-        pageSize,
-        filterModel: Object.keys(filterModel).length ? filterModel : undefined,
-        sortModel,
-      } as Record<string, unknown>)
-      setData(result?.items ?? [])
-      setTotal(result?.total ?? 0)
-    } catch {
-      message.error(t('posAdmin.invoices.loadFailed', '加载进货单列表失败'))
-    } finally {
-      setLoading(false)
+    const startRow = (page - 1) * pageSize
+    const filterModel: Record<string, unknown> = {}
+    const scopedStoreFilter = buildScopedStoreCodeFilter(storeCode, managedStoreCodes)
+    if (scopedStoreFilter) {
+      filterModel.storeCode = scopedStoreFilter
     }
+    if (supplierCode) {
+      filterModel.supplierCode = { filterType: 'text', type: 'equals', filter: supplierCode }
+    }
+    if (invoiceNo) {
+      filterModel.invoiceNo = { filterType: 'text', type: 'contains', filter: invoiceNo }
+    }
+    if (keyword) {
+      filterModel.productKeyword = { filterType: 'text', filter: keyword }
+    }
+    const sortField = SORT_FIELD_MAP[sortBy] || sortBy
+    const sortModel = [{ colId: sortField, sort: sortOrder === 'ascend' ? 'asc' : 'desc' }]
+
+    await runLatestGuardedRequest(
+      listRequestGuardRef.current,
+      () =>
+        getInvoiceGrid({
+          startRow,
+          endRow: startRow + pageSize,
+          pageSize,
+          filterModel: Object.keys(filterModel).length ? filterModel : undefined,
+          sortModel,
+        } as Record<string, unknown>),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: (result) => {
+          setData(result?.items ?? [])
+          setTotal(result?.total ?? 0)
+        },
+        onError: () => message.error(t('posAdmin.invoices.loadFailed', '加载进货单列表失败')),
+        onSettled: () => setLoading(false),
+      },
+    )
   }
 
+  useLayoutEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
   useEffect(() => {
-    loadData()
+    void latestLoadDataRef.current()
   }, [page, pageSize, sortBy, sortOrder, managedStoreCodeKey])
 
   useLayoutEffect(() => {
@@ -328,27 +354,43 @@ export default function LocalSupplierInvoicesPage() {
     loadOptions()
   }, [currentUser?.stores, managedStoreCodeKey, storeCode])
 
+  const requestFirstPage = (deferUntilCommitted = false, reloadFromDependencies = page !== 1) => {
+    if (!mountedRef.current) return
+
+    if (reloadFromDependencies) {
+      listRequestGuardRef.current.invalidate()
+      if (page !== 1) setPage(1)
+      return
+    }
+
+    if (deferUntilCommitted) {
+      setTimeout(() => void latestLoadDataRef.current(), 0)
+      return
+    }
+
+    void latestLoadDataRef.current()
+  }
+
   const handleSearch = () => {
-    setPage(1)
-    loadData()
+    requestFirstPage()
   }
 
   const handleReset = () => {
+    const reloadFromDependencies = page !== 1 || sortBy !== 'createdAt' || sortOrder !== 'descend'
     setStoreCode(undefined)
     setSupplierCode(undefined)
     setInvoiceNo('')
     setKeyword('')
     setSortBy('createdAt')
     setSortOrder('descend')
-    setPage(1)
-    setTimeout(() => loadData(), 0)
+    requestFirstPage(true, reloadFromDependencies)
   }
 
   const handleDelete = async (invoiceGuid: string) => {
     try {
       await deleteInvoice(invoiceGuid)
       message.success(t('message.deleteSuccess'))
-      loadData()
+      void latestLoadDataRef.current()
     } catch {
       message.error(t('message.deleteFailed'))
     }
@@ -405,7 +447,7 @@ export default function LocalSupplierInvoicesPage() {
 
   const handleImportedInvoiceCreated = async (invoiceGuid: string) => {
     setImportVisible(false)
-    await loadData()
+    await latestLoadDataRef.current()
     navigate(`/pos-admin/local-supplier-invoices/${invoiceGuid}`)
   }
 
@@ -472,7 +514,7 @@ export default function LocalSupplierInvoicesPage() {
       setHqSyncModalOpen(false)
       showHqSyncResult(result)
       setSelectedRowKeys([])
-      await loadData()
+      await latestLoadDataRef.current()
     } catch (error) {
       const result = getHqSyncResultFromError(error)
       if (result) {

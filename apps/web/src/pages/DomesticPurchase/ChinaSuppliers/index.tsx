@@ -24,8 +24,8 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
-import type { SorterResult } from 'antd/es/table/interface'
-import { useEffect, useState } from 'react'
+import type { SorterResult, TableCurrentDataSource } from 'antd/es/table/interface'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
@@ -40,11 +40,22 @@ import {
 } from '../../../services/chinaSupplierService'
 import type {
   ChinaSupplierItem,
+  ChinaSupplierListParams,
   SaveChinaSupplierPayload,
 } from '../../../types/chinaSupplier'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 type SupplierFormValues = SaveChinaSupplierPayload
+type DesiredChinaSupplierQuery = ChinaSupplierListParams & {
+  page: number
+  pageSize: number
+  sortField: string
+  sortDirection: 'asc' | 'desc'
+}
 
 const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
   { label: t('chinaSuppliers.allStatus', '全部状态'), value: 'all' },
@@ -83,39 +94,72 @@ export default function DomesticChinaSuppliersPage() {
   const [total, setTotal] = useState(0)
   const [sortField, setSortField] = useState('fgC_CreateDate')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const mainListRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
+  const desiredListQueryRef = useRef<DesiredChinaSupplierQuery>({
+    page,
+    pageSize,
+    search: keyword || undefined,
+    status: status === 'all' ? undefined : status,
+    sortField,
+    sortDirection,
+  })
 
-  const loadData = async (
-    nextPage = page,
-    nextPageSize = pageSize,
-    nextSortField = sortField,
-    nextSortDirection = sortDirection,
-  ) => {
-    setLoading(true)
-    try {
-      const result = await getChinaSuppliers({
-        page: nextPage,
-        pageSize: nextPageSize,
-        search: keyword || undefined,
-        status: status === 'all' ? undefined : status,
-        sortField: nextSortField,
-        sortDirection: nextSortDirection,
-      })
-      setData(result.items)
-      setTotal(result.total)
-      setPage(result.page)
-      setPageSize(result.pageSize)
-      setSortField(nextSortField)
-      setSortDirection(nextSortDirection)
-    } catch (error) {
-      console.error(error)
-      message.error(error instanceof Error ? error.message : t('chinaSuppliers.loadFailed', '加载国内供应商列表失败'))
-    } finally {
-      setLoading(false)
+  const loadData = async (overrides: Partial<DesiredChinaSupplierQuery> = {}) => {
+    if (!mountedRef.current) {
+      return
     }
+
+    const query: DesiredChinaSupplierQuery = {
+      page,
+      pageSize,
+      search: keyword || undefined,
+      status: status === 'all' ? undefined : status,
+      sortField,
+      sortDirection,
+      ...overrides,
+    }
+    // 请求 begin 前同步目标分页和排序，避免 mutation 用最后成功页覆盖在途查询。
+    desiredListQueryRef.current = query
+
+    await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getChinaSuppliers(query), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result.items)
+        setTotal(result.total)
+        setPage(result.page)
+        setPageSize(result.pageSize)
+        setSortField(query.sortField)
+        setSortDirection(query.sortDirection)
+      },
+      onError: (error) => {
+        console.error(error)
+        message.error(error instanceof Error ? error.message : t('chinaSuppliers.loadFailed', '加载国内供应商列表失败'))
+      },
+      // 旧请求结束时不能关闭较新请求的 loading。
+      onSettled: () => setLoading(false),
+    })
   }
 
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  const refreshDesiredList = (overrides: Partial<DesiredChinaSupplierQuery> = {}) =>
+    latestLoadDataRef.current({ ...desiredListQueryRef.current, ...overrides })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      mainListRequestGuardRef.current.invalidate()
+    }
+  }, [])
+
   useEffect(() => {
-    void loadData(1, pageSize)
+    void loadData({ page: 1, pageSize })
   }, [])
 
   const handleCreate = async () => {
@@ -169,7 +213,11 @@ export default function DomesticChinaSuppliersPage() {
 
       handleCloseModal()
       setSelectedRowKeys([])
-      void loadData(editingItem ? page : 1, pageSize)
+      if (editingItem) {
+        void refreshDesiredList()
+      } else {
+        void refreshDesiredList({ page: 1 })
+      }
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return
@@ -186,7 +234,7 @@ export default function DomesticChinaSuppliersPage() {
       await deleteChinaSupplier(record.guid)
       message.success(t('chinaSuppliers.deleteSuccess', '删除国内供应商成功'))
       setSelectedRowKeys((current) => current.filter((item) => item !== record.guid))
-      void loadData(page, pageSize)
+      void refreshDesiredList()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('chinaSuppliers.deleteFailed', '删除国内供应商失败'))
@@ -198,7 +246,7 @@ export default function DomesticChinaSuppliersPage() {
     try {
       await toggleChinaSupplierStatus(record.guid, nextStatus)
       message.success(nextStatus === 1 ? t('chinaSuppliers.enabled', '已启用供应商') : t('chinaSuppliers.disabled', '已禁用供应商'))
-      void loadData(page, pageSize)
+      void refreshDesiredList()
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('chinaSuppliers.toggleStatusFailed', '切换供应商状态失败'))
@@ -238,17 +286,23 @@ export default function DomesticChinaSuppliersPage() {
     pagination: TablePaginationConfig,
     _filters: Record<string, unknown>,
     sorter: SorterResult<ChinaSupplierItem> | SorterResult<ChinaSupplierItem>[],
+    extra: TableCurrentDataSource<ChinaSupplierItem>,
   ) => {
-    const nextPage = pagination.current ?? 1
+    const nextPage = extra.action === 'paginate' ? pagination.current ?? 1 : 1
     const nextPageSize = pagination.pageSize ?? pageSize
 
     if (!Array.isArray(sorter) && sorter.field) {
       const nextSortDirection = sorter.order === 'ascend' ? 'asc' : 'desc'
-      void loadData(nextPage, nextPageSize, String(sorter.field), nextSortDirection)
+      void loadData({
+        page: nextPage,
+        pageSize: nextPageSize,
+        sortField: String(sorter.field),
+        sortDirection: nextSortDirection,
+      })
       return
     }
 
-    void loadData(nextPage, nextPageSize)
+    void loadData({ page: nextPage, pageSize: nextPageSize })
   }
 
   const columns: ColumnsType<ChinaSupplierItem> = [
@@ -399,10 +453,10 @@ export default function DomesticChinaSuppliersPage() {
             onChange={setStatus}
             style={{ width: 140 }}
           />
-          <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+          <Button type="primary" onClick={() => void loadData({ page: 1, pageSize })}>
             {t('common.query', '查询')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+          <Button icon={<ReloadOutlined />} onClick={() => void refreshDesiredList()}>
             {t('common.refresh', '刷新')}
           </Button>
           <Button
@@ -433,9 +487,6 @@ export default function DomesticChinaSuppliersPage() {
             total,
             showSizeChanger: true,
             showQuickJumper: true,
-            onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
-            },
           }}
         />
       </Card>

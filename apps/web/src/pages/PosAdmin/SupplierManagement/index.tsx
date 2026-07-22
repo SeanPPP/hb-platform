@@ -17,6 +17,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createLocalSupplier, getLocalSuppliers, syncLocalSuppliers, updateLocalSupplier } from '../../../services/localSupplierService'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
+import {
+  createLatestRequestGuard,
+  runLatestGuardedRequest,
+} from '../../../utils/latestRequestGuard'
 
 const SORT_FIELD_MAP: Record<string, string> = {
   localSupplierCode: 'localsuppliercode',
@@ -48,30 +52,50 @@ export default function SupplierManagementPage() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
+  const listRequestGuardRef = useRef(createLatestRequestGuard())
+  const mountedRef = useRef(false)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
 
   const loadData = async () => {
-    setLoading(true)
-    try {
-      const result = await getLocalSuppliers({
+    if (!mountedRef.current) {
+      return
+    }
+
+    await runLatestGuardedRequest(listRequestGuardRef.current, () => getLocalSuppliers({
         pageIndex: page,
         pageSize,
         keyword,
         status,
         sortBy: SORT_FIELD_MAP[sortBy] || sortBy,
         sortOrder,
-      })
-      setData(result?.items ?? [])
-      setTotal(result?.total ?? 0)
-    } catch {
-      message.error(t('message.loadFailed'))
-    } finally {
-      setLoading(false)
-    }
+      }), {
+      onStart: () => setLoading(true),
+      onSuccess: (result) => {
+        setData(result?.items ?? [])
+        setTotal(result?.total ?? 0)
+      },
+      onError: () => message.error(t('message.loadFailed')),
+      onSettled: () => setLoading(false),
+    })
   }
 
+  const latestLoadDataRef = useRef(loadData)
+
+  useLayoutEffect(() => {
+    latestLoadDataRef.current = loadData
+  })
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      listRequestGuardRef.current.invalidate()
+    }
+  }, [])
+
   useEffect(() => {
-    loadData()
+    void loadData()
+    return () => listRequestGuardRef.current.invalidate()
   }, [page, pageSize, keyword, status, sortBy, sortOrder])
 
   useLayoutEffect(() => {
@@ -97,7 +121,9 @@ export default function SupplierManagementPage() {
           deactivated: result.deactivatedCount ?? 0,
         }),
       )
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('posAdmin.suppliers.syncFailed', '同步失败'))
     }
@@ -118,7 +144,9 @@ export default function SupplierManagementPage() {
       message.success(t('message.createSuccess'))
       setCreateVisible(false)
       createForm.resetFields()
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('message.createFailed'))
     }
@@ -155,7 +183,9 @@ export default function SupplierManagementPage() {
       setEditVisible(false)
       setEditingSupplier(null)
       editForm.resetFields()
-      await loadData()
+      if (mountedRef.current) {
+        await latestLoadDataRef.current()
+      }
     } catch {
       message.error(t('message.saveFailed', '保存失败'))
     }
