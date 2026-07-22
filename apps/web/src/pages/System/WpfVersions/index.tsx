@@ -698,12 +698,12 @@ export default function WpfVersionsPage() {
               </>
             ) : null}
             <Popconfirm
-              title={t('system.wpfVersions.setCurrentConfirm', '设为当前发布版本？')}
+              title={t('system.wpfVersions.setCurrentConfirm', '将此版本设为发布目标？客户端将在下次检查更新时获取该版本。')}
               disabled={!canManageAppDownloads || cannotPromote}
               onConfirm={() => void handleSetCurrent(record)}
             >
               <Button size="small" disabled={!canManageAppDownloads || cannotPromote}>
-                {t('system.wpfVersions.setCurrent', '设为当前')}
+                {t('system.wpfVersions.setCurrent', '设为发布目标')}
               </Button>
             </Popconfirm>
             <Popconfirm

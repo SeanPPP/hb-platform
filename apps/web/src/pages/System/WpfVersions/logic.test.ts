@@ -472,4 +472,30 @@ for (const localeKey of localeKeys) {
   )
 }
 
+assertEqual(
+  getNestedValue(zhLocale, 'system.wpfVersions.setCurrent'),
+  '设为发布目标',
+  'WPF 中文操作文案应明确表示修改发布目标',
+)
+assertEqual(
+  getNestedValue(enLocale, 'system.wpfVersions.setCurrent'),
+  'Set as Release Target',
+  'WPF English action copy should identify the release target',
+)
+assertEqual(
+  getNestedValue(zhLocale, 'system.wpfVersions.setCurrentConfirm'),
+  '将此版本设为发布目标？客户端将在下次检查更新时获取该版本。',
+  'WPF 中文确认文案应说明客户端获取版本的时机',
+)
+assertEqual(
+  getNestedValue(enLocale, 'system.wpfVersions.setCurrentConfirm'),
+  'Set this version as the release target? Clients will receive it the next time they check for updates.',
+  'WPF English confirmation copy should explain when clients receive the target',
+)
+assertTruthy(
+  wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrent', '设为发布目标')")
+    && wpfVersionsPageSource.includes("t('system.wpfVersions.setCurrentConfirm', '将此版本设为发布目标？客户端将在下次检查更新时获取该版本。')"),
+  'WPF 发布目标按钮的页面 fallback 文案必须与 locale 语义一致',
+)
+
 console.log('WpfVersions logic.test: ok')
