@@ -483,6 +483,35 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_PureOrderRolesDoNotReceiveWebNavigation()
+    {
+        var user = CreateUser(
+            new Claim(ClaimTypes.Role, "Order"),
+            new Claim(ClaimTypes.Role, "订货员"),
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.LocalPurchase.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        Assert.Empty(menu);
+    }
+
+    [Fact]
+    public void BuildMenu_OrderRoleWithAnotherRoleKeepsItsNormalAuthorizedNavigation()
+    {
+        var user = CreateUser(
+            new Claim(ClaimTypes.Role, "Order"),
+            new Claim(ClaimTypes.Role, "StoreManager"),
+            new Claim("permission", Permissions.Dashboard.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        Assert.Contains(menu, item => item.Path == "/dashboard");
+    }
+
+    [Fact]
     public void BuildAppMenu_HidesEmployeeProfileWithoutEmployeeProfilePermission()
     {
         var user = CreateUser(new Claim("permission", Permissions.Orders.View));
@@ -640,6 +669,35 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.DoesNotContain(menu, item => item.RouteName == "local-supplier-invoices");
+    }
+
+    [Theory]
+    [InlineData(Permissions.OrderFront.View)]
+    [InlineData(Permissions.Orders.View)]
+    [InlineData(Permissions.Warehouse.ManageOrders)]
+    [InlineData(Permissions.Warehouse.Manage)]
+    public void BuildAppMenu_PdaOrdersAcceptsEveryOrderReadPermission(string permission)
+    {
+        var user = CreateUser(new Claim("permission", permission));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "orders");
+    }
+
+    [Theory]
+    [InlineData("LocalPurchase.MobileView")]
+    [InlineData(Permissions.LocalPurchase.View)]
+    [InlineData("LocalInvocie.View")]
+    public void BuildAppMenu_PdaLocalSupplierInvoicesAcceptsMobileAndExistingReadPermissions(
+        string permission
+    )
+    {
+        var user = CreateUser(new Claim("permission", permission));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
     }
 
     [Fact]
@@ -1015,16 +1073,18 @@ public class NavigationServiceTests
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
-    public void LocalSupplierInvoiceReadEndpoints_RequireLocalPurchaseViewPermission(
+    public void LocalSupplierInvoiceReadEndpoints_UseManualMobileOrExistingReadAuthorization(
         string methodName
     )
     {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            typeof(ReactLocalSupplierInvoicesController),
-            methodName
-        );
+        var method = typeof(ReactLocalSupplierInvoicesController).GetMethod(methodName)
+            ?? throw new InvalidOperationException($"Method {methodName} was not found.");
 
-        Assert.Equal(Permissions.LocalPurchase.View, authorizeAttribute.Policy);
+        Assert.DoesNotContain(
+            method.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+                .OfType<AuthorizeAttribute>(),
+            attribute => !string.IsNullOrWhiteSpace(attribute.Policy)
+        );
     }
 
     [Theory]

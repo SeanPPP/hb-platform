@@ -4,6 +4,7 @@ import { P } from '../types/permissions'
 type WebPortalAccess = Pick<
   AccessControl,
   | 'isAdmin'
+  | 'onlyOrder'
   | 'canAccessDashboard'
   | 'canAccessOrderFront'
   | 'canManageWarehouse'
@@ -27,7 +28,7 @@ type AdminEntryRule = {
   canAccess: (access: BackendNavigationAccess) => boolean
 }
 
-export type BackendNavigationAccess = Omit<WebPortalAccess, 'canAccessOrderFront'>
+export type BackendNavigationAccess = Omit<WebPortalAccess, 'canAccessOrderFront' | 'onlyOrder'>
 
 // 与后端 NavigationService.HasBackendNavigationAccess 的权限集合保持同一入口语义。
 const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
@@ -121,6 +122,9 @@ export function hasBackendNavigationAccess(access: BackendNavigationAccess) {
 }
 
 export function getDefaultWebPath(access: WebPortalAccess) {
+  if (access.onlyOrder) {
+    return '/shop'
+  }
   const adminEntry = ADMIN_ENTRY_RULES.find((rule) => rule.canAccess(access))
   if (adminEntry) {
     return adminEntry.defaultPath
@@ -134,6 +138,10 @@ export function getDefaultWebPath(access: WebPortalAccess) {
 export function resolveAuthorizedWebTarget(target: string | null | undefined, access: WebPortalAccess) {
   if (!target || !target.startsWith('/') || target.startsWith('//') || target === '/login') {
     return undefined
+  }
+  // 纯订货角色不保留任何后台历史地址，只允许回到订货前台及其现有子路由。
+  if (access.onlyOrder) {
+    return /^\/shop(?:\/|[?#]|$)/.test(target) ? target : '/shop'
   }
   if (target === '/') {
     return target

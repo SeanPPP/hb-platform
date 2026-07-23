@@ -172,7 +172,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     (hasRole('WarehouseStaff') || hasRole('仓库员工'))
   const isStoreStaff = hasRole('StoreStaff') || hasRole('店铺员工')
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager
-  const onlyOrder = onlyRole('Order') || hasRole('订货员')
+  // 仅当全部角色都是订货角色别名时才限制到订货前台，避免影响兼任其他岗位的用户。
+  const orderRoleNames = currentUser.roleNames ?? []
+  const onlyOrder =
+    orderRoleNames.length > 0 &&
+    orderRoleNames.every((roleName) => ['order', '订货员'].includes(roleName.toLowerCase()))
 
   const managedStoreCodes = () => {
     if (isAdmin || isWarehouseManager) {
@@ -327,21 +331,23 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage)
 
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View)
-  const canAccessAdminShell = hasBackendNavigationAccess({
-    isAdmin,
-    canAccessDashboard,
-    canManageWarehouse,
-    canManageWarehouseOrders,
-    canManageStoreOrderImportPriceVariance,
-    canViewContainers,
-    canViewProductMovementReport,
-    canManageLocalPurchase,
-    canEditLocalPurchase,
-    canManageSystemSettings,
-    canViewAppDownloads,
-    canViewOperationAudits,
-    hasPermission,
-  })
+  const canAccessAdminShell =
+    !onlyOrder &&
+    hasBackendNavigationAccess({
+      isAdmin,
+      canAccessDashboard,
+      canManageWarehouse,
+      canManageWarehouseOrders,
+      canManageStoreOrderImportPriceVariance,
+      canViewContainers,
+      canViewProductMovementReport,
+      canManageLocalPurchase,
+      canEditLocalPurchase,
+      canManageSystemSettings,
+      canViewAppDownloads,
+      canViewOperationAudits,
+      hasPermission,
+    })
   const canAccessOrderFront =
     isAdmin ||
     hasPermission(P.OrderFront.View) ||

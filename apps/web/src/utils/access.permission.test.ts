@@ -293,6 +293,72 @@ assertEqual(
   'Users without Web portal permissions should keep the access denied landing page',
 )
 
+const pureOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['Order'],
+    permissions: [P.OrderFront.View, P.Dashboard.View],
+  }),
+)
+
+assertEqual(pureOrderAccess.onlyOrder, true, 'Only the Order role should be treated as a pure order role')
+assertEqual(
+  pureOrderAccess.canAccessOrderFront,
+  true,
+  'A pure Order role should retain OrderFront access',
+)
+assertEqual(
+  pureOrderAccess.canAccessAdminShell,
+  false,
+  'A pure Order role must not enter the admin shell even with a backend permission',
+)
+assertEqual(
+  getDefaultWebPath(pureOrderAccess),
+  '/shop',
+  'A pure Order role should always default to the shop',
+)
+assertEqual(
+  resolveAuthorizedWebTarget('/dashboard', pureOrderAccess),
+  '/shop',
+  'A pure Order role should send a historical admin redirect to the shop',
+)
+assertEqual(
+  resolveAuthorizedWebTarget('/warehouse/store-orders', pureOrderAccess),
+  '/shop',
+  'A pure Order role must not bypass the shop boundary with a direct admin address',
+)
+assertEqual(
+  resolveAuthorizedWebTarget('/shop/orders', pureOrderAccess),
+  '/shop/orders',
+  'A pure Order role should retain authorized shop subpaths',
+)
+
+const pureChineseOrderAccess = buildAccess(createCurrentUser({ roleNames: ['订货员'] }))
+assertEqual(pureChineseOrderAccess.onlyOrder, true, 'Only the 订货员 alias should be treated as a pure order role')
+
+const pureOrderAliasAccess = buildAccess(createCurrentUser({ roleNames: ['Order', '订货员'] }))
+assertEqual(
+  pureOrderAliasAccess.onlyOrder,
+  true,
+  'Both Order aliases together should still be treated as a pure order role',
+)
+
+const multiRoleOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['Order', 'WarehouseStaff'],
+    permissions: [P.Dashboard.View],
+  }),
+)
+assertEqual(
+  multiRoleOrderAccess.onlyOrder,
+  false,
+  'Order plus any non-order role must not be treated as a pure order role',
+)
+assertEqual(
+  multiRoleOrderAccess.canAccessAdminShell,
+  true,
+  'A multi-role Order user should retain the normal backend permission behavior',
+)
+
 const backendNavigationEntryCases: Array<[string, string]> = [
   [P.Dashboard.View, '/dashboard'],
   [P.Warehouse.ManageOrders, '/warehouse/store-orders'],
@@ -699,6 +765,121 @@ assertEqual(
   filterExpoRoutesByVisibility(orderCreatorExpoPreview.allRoutes, 'all').length,
   orderCreatorExpoPreview.allRoutes.length,
   'All HbwebExpo filter should keep the complete route permission list',
+)
+
+for (const permissionCode of [
+  P.OrderFront.View,
+  P.Orders.View,
+  P.Warehouse.ManageOrders,
+  P.Warehouse.Manage,
+]) {
+  const preview = buildExpoRoleMenuPreview(
+    buildRolePreviewAccess({
+      roleGuid: `expo-orders-${permissionCode}`,
+      roleName: 'PdaOrdersRole',
+      isSuperAdmin: false,
+      implicitAllPermissions: false,
+      explicitPermissionCodes: [permissionCode],
+      effectivePermissionCodes: [permissionCode],
+    }),
+    translate,
+    { explicitPermissionCodes: [permissionCode] },
+  )
+  assertEqual(
+    preview.visibleRoutes.some((route) => route.routeName === 'orders'),
+    true,
+    `${permissionCode} should show the PDA orders tab`,
+  )
+}
+
+const mobileLocalPurchaseAccess = buildAccess(
+  createCurrentUser({ permissions: [P.LocalPurchase.MobileView] }),
+)
+assertEqual(
+  mobileLocalPurchaseAccess.canManageLocalPurchase,
+  false,
+  'LocalPurchase.MobileView must not unlock desktop local purchase pages',
+)
+assertEqual(
+  mobileLocalPurchaseAccess.canViewSalesIntelligence,
+  false,
+  'LocalPurchase.MobileView must not unlock the desktop purchase dashboard',
+)
+assertEqual(
+  mobileLocalPurchaseAccess.canReadOrder,
+  false,
+  'LocalPurchase.MobileView must not unlock desktop cashier records',
+)
+
+const mobileLocalPurchaseExpoPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'mobile-local-purchase-role',
+    roleName: 'MobileLocalPurchaseRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.LocalPurchase.MobileView],
+    effectivePermissionCodes: [P.LocalPurchase.MobileView],
+  }),
+  translate,
+  { explicitPermissionCodes: [P.LocalPurchase.MobileView] },
+)
+assertEqual(
+  mobileLocalPurchaseExpoPreview.visibleRoutes.some((route) => route.routeName === 'local-supplier-invoices'),
+  true,
+  'LocalPurchase.MobileView should show 澳洲进货 in the PDA menu',
+)
+
+const missingLocalPurchaseExpoPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'missing-local-purchase-role',
+    roleName: 'MissingLocalPurchaseRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [],
+    effectivePermissionCodes: [],
+  }),
+  translate,
+)
+const missingLocalPurchaseExpoRoute = missingLocalPurchaseExpoPreview.allRoutes.find(
+  (route) => route.routeName === 'local-supplier-invoices',
+)
+assertEqual(
+  missingLocalPurchaseExpoRoute?.addPermissionCodes.join(','),
+  P.LocalPurchase.MobileView,
+  'Adding 澳洲进货 should grant the dedicated PDA permission first',
+)
+
+const mobileLocalPurchaseWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'mobile-local-purchase-web-role',
+    roleName: 'MobileLocalPurchaseWebRole',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.LocalPurchase.MobileView],
+    effectivePermissionCodes: [P.LocalPurchase.MobileView],
+  }),
+  translate,
+  { includeHidden: true },
+)
+assertEqual(
+  filterWebMenuNodesByVisibility(mobileLocalPurchaseWebPreview, 'visible').length,
+  0,
+  'LocalPurchase.MobileView should leave the desktop menu empty',
+)
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, '/pos-admin/local-supplier-invoices')?.visible,
+  false,
+  'LocalPurchase.MobileView must not show the desktop 澳洲进货 page',
+)
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, '/executive-sales-intelligence/purchase-amount-dashboard')?.visible,
+  false,
+  'LocalPurchase.MobileView must not show the desktop purchase dashboard',
+)
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, '/pos-admin/sales-orders')?.visible,
+  false,
+  'LocalPurchase.MobileView must not show desktop cashier records',
 )
 
 const attendanceExpoPreview = buildExpoRoleMenuPreview(

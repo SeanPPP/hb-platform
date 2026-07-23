@@ -21,6 +21,13 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILocalSupplierInvoiceBatchUpdateJobService? _batchUpdateJobService;
         private readonly ILocalSupplierInvoiceImportService _importService;
         private readonly SqlSugarContext _dbContext;
+        private readonly IAuthorizationService? _authorizationService;
+
+        private static readonly string[] LocalSupplierInvoiceReadPermissions =
+        {
+            Permissions.LocalPurchase.MobileView,
+            Permissions.LocalPurchase.View,
+        };
 
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
@@ -28,7 +35,8 @@ namespace BlazorApp.Api.Controllers.React
             ILocalSupplierInvoiceHqSyncService hqSyncService,
             ILocalSupplierInvoiceImportService importService,
             ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null,
-            ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService = null
+            ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService = null,
+            IAuthorizationService? authorizationService = null
         )
         {
             _service = service;
@@ -37,6 +45,25 @@ namespace BlazorApp.Api.Controllers.React
             _importService = importService;
             _hqProductSyncService = hqProductSyncService;
             _batchUpdateJobService = batchUpdateJobService;
+            _authorizationService = authorizationService;
+        }
+
+        private async Task<bool> HasLocalSupplierInvoiceReadPermissionAsync()
+        {
+            if (_authorizationService == null)
+            {
+                return false;
+            }
+
+            foreach (var permission in LocalSupplierInvoiceReadPermissions)
+            {
+                if ((await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private bool IsFullStoreAccessUser()
@@ -284,9 +311,11 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("grid")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             var allowedStoreCodes = IsFullStoreAccessUser()
                 ? null
                 : await GetCurrentUserStoreCodesAsync();
@@ -315,9 +344,11 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetInvoice(string invoiceGuid)
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 
@@ -335,9 +366,11 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/details")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetDetails(string invoiceGuid)
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 
@@ -355,12 +388,14 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("{invoiceGuid}/details/grid")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetDetailsGrid(
             string invoiceGuid,
             [FromBody] GridRequestDto request
         )
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 
@@ -1076,9 +1111,11 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/barcode-abnormal-details")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetBarcodeAbnormalDetails([FromRoute] string invoiceGuid)
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 
@@ -1096,12 +1133,14 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/products-by-barcode")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetProductsByBarcode(
             [FromRoute] string invoiceGuid,
             [FromQuery] string barcode
         )
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 
@@ -1119,12 +1158,14 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{invoiceGuid}/products-by-product-code")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
         public async Task<IActionResult> GetProductsByProductCode(
             [FromRoute] string invoiceGuid,
             [FromQuery] string productCode
         )
         {
+            if (!await HasLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
             if (!await CanAccessInvoiceAsync(invoiceGuid))
                 return Forbid();
 

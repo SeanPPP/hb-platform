@@ -167,6 +167,13 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.orders",
                 Icon = "clipboard-list",
                 Permission = Permissions.Orders.View,
+                AnyPermissions = new[]
+                {
+                    Permissions.OrderFront.View,
+                    Permissions.Orders.View,
+                    Permissions.Warehouse.ManageOrders,
+                    Permissions.Warehouse.Manage,
+                },
                 Order = 20,
             },
             new()
@@ -204,6 +211,11 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.localSupplierInvoices",
                 Icon = "receipt-text-outline",
                 Permission = Permissions.LocalPurchase.View,
+                AnyPermissions = new[]
+                {
+                    Permissions.LocalPurchase.MobileView,
+                    Permissions.LocalPurchase.View,
+                },
                 Order = 46,
             },
             new()
@@ -352,6 +364,11 @@ namespace BlazorApp.Api.Services
             if (context.IsAdmin)
             {
                 return FullMenu;
+            }
+
+            if (IsOrderNavigationLimited(context))
+            {
+                return new List<NavigationMenuDto>();
             }
 
             if (IsWarehouseStaffNavigationLimited(context))
@@ -633,6 +650,20 @@ namespace BlazorApp.Api.Services
                 context.RoleNames.Contains("WarehouseManager") || context.RoleNames.Contains("仓库经理");
 
             return isWarehouseStaff && !isWarehouseManager;
+        }
+
+        private static bool IsOrderNavigationLimited(NavigationPermissionContext context)
+        {
+            if (context.IsAdmin || context.RoleNames.Count == 0)
+            {
+                return false;
+            }
+
+            // 订货员仅使用 PDA；只要兼任任何其他角色，仍按该角色拥有的权限生成后台菜单。
+            return context.RoleNames.All(roleName =>
+                roleName.Equals("Order", StringComparison.OrdinalIgnoreCase)
+                || roleName.Equals("订货员", StringComparison.OrdinalIgnoreCase)
+            );
         }
 
         private static string? GetUserId(ClaimsPrincipal user)

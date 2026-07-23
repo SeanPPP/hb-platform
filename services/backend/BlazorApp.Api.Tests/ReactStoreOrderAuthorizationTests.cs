@@ -1801,6 +1801,52 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderList_AllowsAssignedStoreForOrderFrontUser()
+    {
+        var expected = new PagedListReactDto<StoreOrderListItemDto>
+        {
+            Items = new List<StoreOrderListItemDto>(),
+            Total = 0,
+            PageNumber = 1,
+            PageSize = 20,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetOrderListAsync(
+                    It.Is<StoreOrderListFilterDto>(filter => filter.StoreCode == "1024")
+                )
+            )
+            .ReturnsAsync(expected);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "1024", IsPrimary = false } }
+                )
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View),
+            scopeService,
+            userService: userService
+        );
+
+        var result = await controller.GetOrderList(
+            new StoreOrderListFilterDto { StoreCode = "1024" }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(expected, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
     public async Task GetOrderList_AllowsLegacyWarehouseManagePermissionForAllStores()
     {
         var expected = new PagedListReactDto<StoreOrderListItemDto>

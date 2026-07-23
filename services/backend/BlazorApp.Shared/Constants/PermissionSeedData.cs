@@ -156,6 +156,7 @@ namespace BlazorApp.Shared.Constants
             {
                 Permissions.OrderFront.View,
                 Permissions.Orders.Create,
+                Permissions.LocalPurchase.MobileView,
             };
 
         public static IReadOnlySet<string> DeprecatedPermissionCodes { get; } =
@@ -306,6 +307,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.DeviceRegistration.View, "查看设备注册", "系统管理", "页面 /system/device-registration - 查看 POS 设备注册列表与状态"),
                 new(Permissions.DeviceRegistration.Manage, "管理设备注册", "系统管理", "页面 /system/device-registration - 审核、维护或管理设备注册"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"),
+                new(Permissions.LocalPurchase.MobileView, "移动端查看澳洲进货", "本地进货管理", "移动端 - 查看已授权分店的澳洲进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),
                 new(Permissions.LocalPurchase.PushToHq, "推送本地进货到 HQ", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"),
                 new(Permissions.AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商", "页面 /pos-admin/suppliers - 查看供应商列表与详情"),

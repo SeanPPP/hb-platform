@@ -16,6 +16,13 @@ namespace BlazorApp.Api.Services
         private readonly ILogger<SeedDataService> _logger;
         private static readonly string[] AdminRoleNames = Permissions.SuperAdminRoleNames;
         private static readonly string[] OrderRoleNames = { "Order", "订货员" };
+        private static readonly string[] OrderRoleTemplateRevokedPermissionCodes =
+        {
+            Permissions.Orders.View,
+            Permissions.Orders.Edit,
+            Permissions.LocalPurchase.View,
+            "LocalInvocie.View",
+        };
 
         public SeedDataService(SqlSugarContext dbContext, ILogger<SeedDataService> logger)
         {
@@ -734,31 +741,33 @@ namespace BlazorApp.Api.Services
                 .Where(role => OrderRoleNames.Contains(role.RoleName, StringComparer.OrdinalIgnoreCase))
                 .Select(role => role.RoleGUID)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var normalizedOrdersViewCode = Permissions.Orders.View.ToLowerInvariant();
+            var normalizedOrderRoleRevokedPermissionCodes = OrderRoleTemplateRevokedPermissionCodes
+                .Select(code => code.ToLowerInvariant())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            // 收银记录权限必须按角色和权限码直接删除，不能依赖历史关联主键完整性。
-            var removedOrderViewLinks = await db.Deleteable<SysRolePermission>()
+            // 订货员入口模板改版后的历史权限必须按角色和权限码直接删除，不能依赖历史关联主键完整性。
+            var removedOrderRoleTemplateLinks = await db.Deleteable<SysRolePermission>()
                 .Where(permission =>
                     orderRoleGuids.Contains(permission.RoleGuid)
                     && !permission.IsDeleted
-                    && permission.PermissionCode.ToLower() == normalizedOrdersViewCode
+                    && normalizedOrderRoleRevokedPermissionCodes.Contains(
+                        permission.PermissionCode.ToLower()
+                    )
                 )
                 .ExecuteCommandAsync();
-            if (removedOrderViewLinks > 0)
+            if (removedOrderRoleTemplateLinks > 0)
             {
                 existingRolePermissions = existingRolePermissions
                     .Where(permission =>
                         !orderRoleGuids.Contains(permission.RoleGuid)
-                        || !string.Equals(
-                            permission.PermissionCode,
-                            Permissions.Orders.View,
-                            StringComparison.OrdinalIgnoreCase
+                        || !normalizedOrderRoleRevokedPermissionCodes.Contains(
+                            permission.PermissionCode.ToLower()
                         )
                     )
                     .ToList();
                 _logger.LogInformation(
-                    "已清理 Order/订货员 角色的 {Count} 条历史收银记录权限关联",
-                    removedOrderViewLinks
+                    "已清理 Order/订货员 角色的 {Count} 条历史入口模板权限关联",
+                    removedOrderRoleTemplateLinks
                 );
             }
 

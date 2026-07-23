@@ -113,6 +113,7 @@ export const P = {
   },
   LocalPurchase: {
     View: 'LocalPurchase.View',
+    MobileView: 'LocalPurchase.MobileView',
     Edit: 'LocalPurchase.Edit',
     PushToHq: 'LocalPurchase.PushToHq',
   },

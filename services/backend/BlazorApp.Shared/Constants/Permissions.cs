@@ -300,6 +300,7 @@ namespace BlazorApp.Shared.Constants
         public static class LocalPurchase
         {
             public const string View = "LocalPurchase.View";
+            public const string MobileView = "LocalPurchase.MobileView";
             public const string Edit = "LocalPurchase.Edit";
             public const string PushToHq = "LocalPurchase.PushToHq";
         }

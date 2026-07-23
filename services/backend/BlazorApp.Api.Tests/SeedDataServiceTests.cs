@@ -347,6 +347,13 @@ namespace BlazorApp.Api.Tests
         [Fact]
         public void RolePermissionTemplates_OrderRoles_UseOrderPermissionsWithoutAttendance()
         {
+            var expectedPermissionCodes = new[]
+            {
+                Permissions.OrderFront.View,
+                Permissions.Orders.Create,
+                "LocalPurchase.MobileView",
+            };
+
             foreach (var roleName in new[] { "Order", "订货员" })
             {
                 var template = Assert.Single(
@@ -357,6 +364,10 @@ namespace BlazorApp.Api.Tests
                 Assert.Contains(Permissions.OrderFront.View, template.PermissionCodes);
                 Assert.DoesNotContain(Permissions.Orders.View, template.PermissionCodes);
                 Assert.Contains(Permissions.Orders.Create, template.PermissionCodes);
+                Assert.Equal(
+                    expectedPermissionCodes.OrderBy(code => code),
+                    template.PermissionCodes.OrderBy(code => code)
+                );
                 Assert.DoesNotContain(
                     template.PermissionCodes,
                     code => code.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
@@ -630,6 +641,24 @@ namespace BlazorApp.Api.Tests
                     },
                     new SysRolePermission
                     {
+                        Id = "order-existing-edit",
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = Permissions.Orders.Edit,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-existing-local-purchase-view",
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = Permissions.LocalPurchase.View,
+                    },
+                    new SysRolePermission
+                    {
+                        Id = "order-existing-legacy-local-invoice-view",
+                        RoleGuid = orderRole.RoleGUID,
+                        PermissionCode = "LocalInvocie.View",
+                    },
+                    new SysRolePermission
+                    {
                         Id = "order-cn-existing-attendance",
                         RoleGuid = chineseOrderRole.RoleGUID,
                         PermissionCode = Permissions.Attendance.Schedule.ViewSelf,
@@ -777,6 +806,18 @@ namespace BlazorApp.Api.Tests
                         item.PermissionCode.StartsWith("Attendance.", StringComparison.OrdinalIgnoreCase)
                         || item.PermissionCode.Equals(
                             Permissions.Orders.View,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                        || item.PermissionCode.Equals(
+                            Permissions.Orders.Edit,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                        || item.PermissionCode.Equals(
+                            Permissions.LocalPurchase.View,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                        || item.PermissionCode.Equals(
+                            "LocalInvocie.View",
                             StringComparison.OrdinalIgnoreCase
                         )
                     )
