@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
@@ -55,7 +56,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task Program启动_不自动执行权限种子更新()
+        public async Task Program启动_角色和权限初始化代码仅保留为注释()
         {
             var programSource = await File.ReadAllTextAsync(
                 Path.Combine(
@@ -64,9 +65,95 @@ namespace BlazorApp.Api.Tests
                 )
             );
 
-            Assert.DoesNotContain(
-                "InitializePermissionSeedsAsync",
+            var disabledStatements = new[]
+            {
+                "Console.WriteLine(\"🌱 开始初始化种子数据...\");",
+                "var seedDataService = services.GetRequiredService<SeedDataService>();",
+                "await seedDataService.InitializePermissionSeedsAsync();",
+                "await seedDataService.InitializeAsync();",
+                "Console.WriteLine(\"🔍 检查角色数据...\");",
+                "var dataInitService = services.GetRequiredService<IDataInitializationService>();",
+                "await dataInitService.CheckAndInitializeDataAsync();",
+            };
+
+            foreach (var statement in disabledStatements)
+            {
+                AssertStatementOnlyAppearsAsLineComment(programSource, statement);
+            }
+
+            Assert.Contains(
+                "角色、权限及用户角色自动初始化已禁用，保留数据库现有配置",
                 programSource,
+                StringComparison.Ordinal
+            );
+        }
+
+        [Fact]
+        public async Task 已注册后台服务_不调用角色或权限初始化()
+        {
+            var repositoryRoot = FindRepositoryRoot();
+            var apiRoot = Path.Combine(repositoryRoot, "services/backend/BlazorApp.Api");
+            var programSource = await File.ReadAllTextAsync(Path.Combine(apiRoot, "Program.cs"));
+            var hostedServiceNames = Regex
+                .Matches(programSource, @"AddHostedService<(?<name>[A-Za-z0-9_]+)>")
+                .Select(match => match.Groups["name"].Value)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var productionSources = Directory
+                .EnumerateFiles(apiRoot, "*.cs", SearchOption.AllDirectories)
+                .Select(path => new
+                {
+                    Path = path,
+                    Source = File.ReadAllText(path),
+                })
+                .ToList();
+            var forbiddenTokens = new[]
+            {
+                "SeedDataService",
+                "IDataInitializationService",
+                "InitializePermissionSeedsAsync",
+                "CheckAndInitializeDataAsync",
+                "InitializeRolesAsync",
+                "AssignUserRolesAsync",
+            };
+
+            Assert.NotEmpty(hostedServiceNames);
+            foreach (var hostedServiceName in hostedServiceNames)
+            {
+                var hostedServiceSource = Assert.Single(
+                    productionSources,
+                    item =>
+                        Regex.IsMatch(
+                            item.Source,
+                            $@"\bclass\s+{Regex.Escape(hostedServiceName)}\b"
+                        )
+                );
+
+                foreach (var token in forbiddenTokens)
+                {
+                    Assert.DoesNotContain(
+                        token,
+                        hostedServiceSource.Source,
+                        StringComparison.Ordinal
+                    );
+                }
+            }
+        }
+
+        [Fact]
+        public async Task Debug数据初始化入口_仅允许开发环境显式调用()
+        {
+            var debugControllerSource = await File.ReadAllTextAsync(
+                Path.Combine(
+                    FindRepositoryRoot(),
+                    "services/backend/BlazorApp.Api/Controllers/DebugController.cs"
+                )
+            );
+
+            Assert.Contains("[DevelopmentOnly]", debugControllerSource, StringComparison.Ordinal);
+            Assert.Contains(
+                "await _dataInitService.CheckAndInitializeDataAsync();",
+                debugControllerSource,
                 StringComparison.Ordinal
             );
         }
@@ -1013,6 +1100,23 @@ namespace BlazorApp.Api.Tests
             }
 
             throw new DirectoryNotFoundException("无法定位 hb-platform 仓库根目录");
+        }
+
+        private static void AssertStatementOnlyAppearsAsLineComment(
+            string source,
+            string statement
+        )
+        {
+            var matchingLines = source
+                .Split('\n')
+                .Where(line => line.Contains(statement, StringComparison.Ordinal))
+                .ToList();
+
+            Assert.NotEmpty(matchingLines);
+            Assert.All(
+                matchingLines,
+                line => Assert.StartsWith("//", line.TrimStart(), StringComparison.Ordinal)
+            );
         }
 
         private static Role CreateRole(

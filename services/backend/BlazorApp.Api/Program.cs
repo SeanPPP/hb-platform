@@ -859,13 +859,18 @@ try
         Console.WriteLine("✅ HQ数据库连接检查完成");
 
         // 权限定义和角色权限由后台维护；Web 后端重启时不得再次按代码种子覆盖。
-        // 如需初始化或迁移权限，必须通过明确的一次性维护流程显式调用 SeedDataService。
-        Console.WriteLine("⏭️ 已跳过权限种子自动更新");
+        // 如需初始化或迁移权限，必须通过明确的一次性维护流程手工取消以下注释。
+        // Console.WriteLine("🌱 开始初始化种子数据...");
+        // var seedDataService = services.GetRequiredService<SeedDataService>();
+        // await seedDataService.InitializePermissionSeedsAsync();
+        // await seedDataService.InitializeAsync();
 
-        // 🔍 检查并初始化角色数据
-        Console.WriteLine("🔍 检查角色数据...");
-        var dataInitService = services.GetRequiredService<IDataInitializationService>();
-        //  await dataInitService.CheckAndInitializeDataAsync();
+        // 角色和用户角色关联同样只允许通过明确的一次性维护流程初始化。
+        // Console.WriteLine("🔍 检查角色数据...");
+        // var dataInitService = services.GetRequiredService<IDataInitializationService>();
+        // await dataInitService.CheckAndInitializeDataAsync();
+
+        Console.WriteLine("⏭️ 角色、权限及用户角色自动初始化已禁用，保留数据库现有配置");
 
         Console.WriteLine("🎉 数据库初始化完成！");
         Console.WriteLine("📊 后台定时任务服务已启动");
