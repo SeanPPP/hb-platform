@@ -795,23 +795,32 @@ function StorePickerModal({
   return (
     <Portal>
       <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={styles.modal}>
-        <Button
-          mode={!selectedStoreCode ? "contained" : "outlined"}
-          onPress={() => onSelect(undefined)}
-          style={styles.modalOption}
+        <ScrollView
+          bounces={false}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+          keyboardShouldPersistTaps="handled"
+          style={styles.storeModalList}
+          contentContainerStyle={styles.storeModalListContent}
         >
-          {labelAll}
-        </Button>
-        {options.map((option) => (
           <Button
-            key={option.value}
-            mode={selectedStoreCode === option.value ? "contained" : "outlined"}
-            onPress={() => onSelect(option.value)}
+            mode={!selectedStoreCode ? "contained" : "outlined"}
+            onPress={() => onSelect(undefined)}
             style={styles.modalOption}
           >
-            {option.label}
+            {labelAll}
           </Button>
-        ))}
+          {options.map((option) => (
+            <Button
+              key={option.value}
+              mode={selectedStoreCode === option.value ? "contained" : "outlined"}
+              onPress={() => onSelect(option.value)}
+              style={styles.modalOption}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </ScrollView>
       </Modal>
     </Portal>
   );
@@ -1352,6 +1361,12 @@ const styles = StyleSheet.create({
   },
   modalOption: {
     alignSelf: "stretch",
+  },
+  storeModalList: {
+    flexShrink: 1,
+  },
+  storeModalListContent: {
+    gap: 10,
   },
   modalList: {
     maxHeight: 420,
