@@ -175,7 +175,14 @@ export default function ProductImportPage() {
       }))
       return
     }
-    setState((prev) => ({ ...prev, detecting: true }))
+    setDuplicateGroups([])
+    setDuplicateDialogOpen(false)
+    setState((prev) => {
+      const products = prev.products.map((product) => product.isDuplicate || product.status === 'duplicate'
+        ? { ...product, isDuplicate: false, duplicateGroup: undefined, status: product.status === 'duplicate' ? 'unchanged' as const : product.status }
+        : product)
+      return { ...prev, products, detecting: true, statistics: calculateStatistics(products, prev.selectedIds) }
+    })
     try {
       const detectionData = state.products.filter((p) => p.newProduct.productCode).map((p) => ({
         HBProductNo: p.newProduct.productCode,
@@ -232,10 +239,25 @@ export default function ProductImportPage() {
   }, [state.supplier, state.products])
 
   const handleMergeDuplicates = useCallback(() => {
-    const mergedProducts = mergeDuplicateProducts(state.products)
-    setState((prev) => ({ ...prev, products: mergedProducts, selectedIds: [], needsDetection: true, statistics: calculateStatistics(mergedProducts, []) }))
-    message.success(t('productImport.mergeSuccess', '成功合并重复数据，共 {{count}} 组', { count: duplicateGroups.length }))
-  }, [state.products, duplicateGroups])
+    const result = mergeDuplicateProducts(state.products)
+    if (result.invalidGroups.length > 0) {
+      const details = result.invalidGroups.map((group) => group.productCode).join('、')
+      message.error(t('productImport.mergeBlockedDetails', '无法合并以下货号，请修正件数、装箱数和体积：{{details}}', { details }))
+      return
+    }
+
+    setState((prev) => ({
+      ...prev,
+      products: result.products,
+      selectedIds: [],
+      needsDetection: true,
+      statistics: calculateStatistics(result.products, []),
+    }))
+    setDuplicateDialogOpen(false)
+    setDuplicateGroups([])
+    setShowStatistics(false)
+    message.success(t('productImport.mergeSuccess', '成功合并重复数据，共 {{count}} 组', { count: result.mergedGroupCount }))
+  }, [state.products, t])
 
   const handleBatchTranslate = useCallback(async () => {
     const selectedIdSet = new Set(state.selectedIds)

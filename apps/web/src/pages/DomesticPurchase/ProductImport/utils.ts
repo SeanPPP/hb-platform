@@ -1,4 +1,4 @@
-import type { ProductImportItem, Statistics, DuplicateGroup } from './types'
+import type { ProductImportItem, Statistics, DuplicateGroup, MergeDuplicateProductsResult } from './types'
 import type { AssignContainerItem } from '../../../services/containerService'
 
 interface AssignProductsFailedItem {
@@ -236,6 +236,10 @@ export function createEmptyProduct(): ProductImportItem {
   }
 }
 
+function isPositiveInteger(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0 && Number.isSafeInteger(value)
+}
+
 export function detectDuplicates(products: ProductImportItem[]): DuplicateGroup[] {
   const codeMap = new Map<string, ProductImportItem[]>()
   products.forEach((p) => {
@@ -248,38 +252,90 @@ export function detectDuplicates(products: ProductImportItem[]): DuplicateGroup[
   const groups: DuplicateGroup[] = []
   codeMap.forEach((items, productCode) => {
     if (items.length > 1) {
+      const invalidFields = new Set<DuplicateGroup['invalidFields'][number]>()
+      let casePackQuantity = 0
+      let volume = 0
+
+      items.forEach((item) => {
+        const { quantity, casePackQuantity: itemCasePackQuantity, volume: itemVolume } = item.newProduct
+        if (!isPositiveInteger(quantity)) invalidFields.add('quantity')
+        if (!isPositiveInteger(itemCasePackQuantity)) invalidFields.add('casePackQuantity')
+        if (!isPositiveNumber(itemVolume)) invalidFields.add('volume')
+
+        if (isPositiveInteger(quantity) && isPositiveInteger(itemCasePackQuantity)) {
+          casePackQuantity += quantity * itemCasePackQuantity
+        }
+        if (isPositiveInteger(quantity) && isPositiveNumber(itemVolume)) {
+          volume += quantity * itemVolume
+        }
+      })
+
+      const roundedVolume = Math.round((volume + Number.EPSILON) * 1000) / 1000
+      if (!Number.isSafeInteger(casePackQuantity)) invalidFields.add('casePackQuantity')
+      // 最终业务值保留三位；舍入后为 0 同样不能进入检测、更新或货柜请求。
+      if (!isPositiveNumber(roundedVolume)) invalidFields.add('volume')
+
       groups.push({
         productCode,
         count: items.length,
         rows: items.map((_, i) => i),
         items,
         merged: {
-          quantity: items.reduce((sum, item) => sum + (item.newProduct.quantity || 0), 0),
-          casePackQuantity: items[0]?.newProduct.casePackQuantity || 0,
-          volume: items.reduce((sum, item) => sum + ((item.newProduct.volume || 0) * (item.newProduct.quantity || 0)), 0),
+          quantity: 1,
+          casePackQuantity,
+          volume: roundedVolume,
         },
+        invalidFields: Array.from(invalidFields),
+        isMergeable: invalidFields.size === 0,
       })
     }
   })
   return groups
 }
 
-export function mergeDuplicateProducts(products: ProductImportItem[]): ProductImportItem[] {
-  const seen = new Map<string, ProductImportItem>()
+export function mergeDuplicateProducts(products: ProductImportItem[]): MergeDuplicateProductsResult {
+  const duplicateGroups = detectDuplicates(products)
+  const invalidGroups = duplicateGroups.filter((group) => !group.isMergeable)
+  if (invalidGroups.length > 0) {
+    return { products, invalidGroups, mergedGroupCount: 0 }
+  }
+
+  const groupsByCode = new Map(duplicateGroups.map((group) => [group.productCode, group]))
+  const mergedCodes = new Set<string>()
   const result: ProductImportItem[] = []
+
   products.forEach((p) => {
     const code = p.newProduct.productCode?.trim()
-    if (!code) { result.push(p); return }
-    const existing = seen.get(code)
-    if (existing) {
-      existing.newProduct.quantity += p.newProduct.quantity || 0
-      existing.mergedFrom = (existing.mergedFrom || 1) + 1
-    } else {
-      seen.set(code, { ...p })
-      result.push(seen.get(code)!)
+    const group = code ? groupsByCode.get(code) : undefined
+    if (!group) {
+      result.push(p)
+      return
     }
+
+    if (mergedCodes.has(code!)) return
+    mergedCodes.add(code!)
+
+    // 合并只生成新的业务对象，避免修改粘贴进来的原始行或第一行的嵌套字段。
+    result.push(updateCalculatedFields({
+      ...p,
+      newProduct: {
+        ...p.newProduct,
+        quantity: group.merged.quantity,
+        casePackQuantity: group.merged.casePackQuantity,
+        volume: group.merged.volume,
+      },
+      matchedProduct: p.matchedProduct ? { ...p.matchedProduct } : undefined,
+      status: 'unchanged',
+      isDuplicate: false,
+      duplicateGroup: undefined,
+      mergedFrom: group.count,
+      diffFields: [],
+      errors: undefined,
+      calculated: { ...p.calculated },
+    }))
   })
-  return result
+
+  return { products: result, invalidGroups: [], mergedGroupCount: duplicateGroups.length }
 }
 
 export function calculateStatistics(products: ProductImportItem[], selectedIds: string[]): Statistics {
@@ -364,7 +420,7 @@ function firstPositiveNumber(...values: Array<number | undefined>) {
   return values.find((value) => value !== undefined && value > 0)
 }
 
-function isPositiveNumber(value: number | undefined) {
+function isPositiveNumber(value: number | undefined): value is number {
   return value !== undefined && Number.isFinite(value) && value > 0
 }
 

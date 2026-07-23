@@ -81,4 +81,12 @@ export interface DuplicateGroup {
     casePackQuantity: number
     volume: number
   }
+  invalidFields: Array<'quantity' | 'casePackQuantity' | 'volume'>
+  isMergeable: boolean
+}
+
+export interface MergeDuplicateProductsResult {
+  products: ProductImportItem[]
+  invalidGroups: DuplicateGroup[]
+  mergedGroupCount: number
 }
