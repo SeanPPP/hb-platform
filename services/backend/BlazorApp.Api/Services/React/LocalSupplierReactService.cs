@@ -260,6 +260,163 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<LocalSupplierSyncResultDto>> SyncToHqAsync(
+            IReadOnlyCollection<string> supplierCodes
+        )
+        {
+            var result = new LocalSupplierSyncResultDto();
+            var normalizedCodes = supplierCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (normalizedCodes.Count == 0)
+            {
+                return ApiResponse<LocalSupplierSyncResultDto>.Error(
+                    "请选择要同步的澳洲供应商",
+                    "SUPPLIER_REQUIRED",
+                    result
+                );
+            }
+
+            const int maxSupplierCount = 500;
+            if (normalizedCodes.Count > maxSupplierCount)
+            {
+                return ApiResponse<LocalSupplierSyncResultDto>.Error(
+                    $"单次最多同步 {maxSupplierCount} 个供应商",
+                    "SUPPLIER_LIMIT_EXCEEDED",
+                    result
+                );
+            }
+
+            var localSuppliers = await _context.Db.Queryable<HBLocalSupplier>()
+                .Where(x => !x.IsDeleted && normalizedCodes.Contains(x.LocalSupplierCode))
+                .ToListAsync();
+            result.SkippedCount += normalizedCodes.Count - localSuppliers.Count;
+
+            var validSuppliers = localSuppliers
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(x.LocalSupplierCode)
+                    && !string.IsNullOrWhiteSpace(x.Name)
+                )
+                .ToList();
+            result.SkippedCount += localSuppliers.Count - validSuppliers.Count;
+
+            if (validSuppliers.Count == 0)
+            {
+                return ApiResponse<LocalSupplierSyncResultDto>.Error(
+                    "没有可同步的澳洲供应商",
+                    "SUPPLIER_NOT_FOUND",
+                    result
+                );
+            }
+
+            var hqDb = _hQSales.Db;
+            var now = DateTime.UtcNow;
+            await hqDb.Ado.BeginTranAsync();
+            try
+            {
+                var validCodes = validSuppliers
+                    .Select(x => x.LocalSupplierCode)
+                    .ToList();
+                var existingRows = await hqDb.Queryable<DIC_供应商信息表>()
+                    .Where(x =>
+                        x.H供应商编码 != null && validCodes.Contains(x.H供应商编码)
+                    )
+                    .ToListAsync();
+                var existingGroups = existingRows
+                    .Where(x => !string.IsNullOrWhiteSpace(x.H供应商编码))
+                    .GroupBy(x => x.H供应商编码!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+                var toInsert = new List<DIC_供应商信息表>();
+                var toUpdate = new List<DIC_供应商信息表>();
+                foreach (var supplier in validSuppliers)
+                {
+                    if (!existingGroups.TryGetValue(supplier.LocalSupplierCode, out var matches))
+                    {
+                        var hGuid =
+                            !string.IsNullOrWhiteSpace(supplier.Guid)
+                            && supplier.Guid.Length <= 50
+                                ? supplier.Guid
+                                : Guid.NewGuid().ToString();
+                        toInsert.Add(new DIC_供应商信息表
+                        {
+                            HGUID = hGuid,
+                            H供应商编码 = supplier.LocalSupplierCode,
+                            H供应商名称 = supplier.Name,
+                            H供应商全称 = supplier.Name,
+                            H联系人 = supplier.ContactPerson,
+                            HEMAIL地址 = supplier.Email,
+                            FGC_CreateDate =
+                                supplier.CreatedAt == default ? now : supplier.CreatedAt,
+                            FGC_LastModifyDate = now,
+                        });
+                        continue;
+                    }
+
+                    // HQ 中代码不唯一时不猜测目标记录，避免一次选择覆盖多条历史数据。
+                    if (matches.Count != 1)
+                    {
+                        result.SkippedCount++;
+                        result.Errors.Add(
+                            $"供应商 {supplier.LocalSupplierCode} 在 HQ 中存在 {matches.Count} 条记录，已跳过"
+                        );
+                        continue;
+                    }
+
+                    var existing = matches[0];
+                    existing.H供应商名称 = supplier.Name;
+                    existing.H联系人 = supplier.ContactPerson;
+                    existing.HEMAIL地址 = supplier.Email;
+                    existing.FGC_LastModifyDate = now;
+                    toUpdate.Add(existing);
+                }
+
+                if (toInsert.Count > 0)
+                {
+                    await hqDb.Insertable(toInsert).ExecuteCommandAsync();
+                }
+
+                if (toUpdate.Count > 0)
+                {
+                    await hqDb.Updateable(toUpdate)
+                        .UpdateColumns(x => new
+                        {
+                            x.H供应商名称,
+                            x.H联系人,
+                            x.HEMAIL地址,
+                            x.FGC_LastModifyDate,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                result.CreatedCount = toInsert.Count;
+                result.UpdatedCount = toUpdate.Count;
+                await hqDb.Ado.CommitTranAsync();
+                _logger.LogInformation(
+                    "澳洲供应商同步到 HQ 完成: requested={Requested}, insert={Insert}, update={Update}, skipped={Skipped}",
+                    normalizedCodes.Count,
+                    result.CreatedCount,
+                    result.UpdatedCount,
+                    result.SkippedCount
+                );
+                return ApiResponse<LocalSupplierSyncResultDto>.OK(result, "同步到 HQ 完成");
+            }
+            catch (Exception ex)
+            {
+                await hqDb.Ado.RollbackTranAsync();
+                _logger.LogError(ex, "澳洲供应商同步到 HQ 失败");
+                result.Errors.Add(ex.Message);
+                return ApiResponse<LocalSupplierSyncResultDto>.Error(
+                    "同步到 HQ 失败",
+                    "HQ_SYNC_ERROR",
+                    result
+                );
+            }
+        }
+
         public async Task<ApiResponse<LocalSupplierDto>> CreateAsync(CreateLocalSupplierDto dto)
         {
             var db = _context.Db;

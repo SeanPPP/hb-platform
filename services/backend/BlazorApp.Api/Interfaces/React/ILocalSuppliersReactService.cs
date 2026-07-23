@@ -7,6 +7,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<PagedResult<LocalSupplierDto>> GetSuppliersAsync(int pageIndex, int pageSize, string? keyword, int? status, string? sortBy, string? sortOrder);
         Task<List<LocalSupplierDto>> GetActiveSuppliersAsync();
         Task<ApiResponse<LocalSupplierSyncResultDto>> SyncFromDicAsync(DateTime? since, bool overwrite);
+        Task<ApiResponse<LocalSupplierSyncResultDto>> SyncToHqAsync(IReadOnlyCollection<string> supplierCodes);
         Task<ApiResponse<LocalSupplierDto>> CreateAsync(CreateLocalSupplierDto dto);
         Task<ApiResponse<LocalSupplierDto>> UpdateAsync(string code, UpdateLocalSupplierDto dto);
         Task<ApiResponse<bool>> DeleteAsync(string code);

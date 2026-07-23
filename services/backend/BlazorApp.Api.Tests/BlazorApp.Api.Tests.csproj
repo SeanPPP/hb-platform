@@ -102,6 +102,7 @@
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
     <Compile Include="ProductSupplierImageBatchUpdateTests.cs" />
+    <Compile Include="LocalSupplierHqSyncTests.cs" />
     <Compile Include="ProductIntegrityServiceTests.cs" />
     <Compile Include="ProductStoreSyncJobServiceTests.cs" />
     <Compile Include="ReactProductStoreSyncJobContractTests.cs" />

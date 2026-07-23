@@ -34,6 +34,16 @@ export async function syncLocalSuppliers(params?: {
   return unwrapApiData(response)
 }
 
+export async function syncLocalSuppliersToHq(
+  supplierCodes: string[],
+): Promise<SyncLocalSupplierResult> {
+  const response = await request.post<ApiResponse<SyncLocalSupplierResult>>(
+    '/api/react/v1/local-suppliers/sync-to-hq',
+    { supplierCodes },
+  )
+  return unwrapApiData(response)
+}
+
 export async function createLocalSupplier(data: CreateLocalSupplierDto): Promise<LocalSupplierDto> {
   const response = await request.post<ApiResponse<LocalSupplierDto>>('/api/react/v1/local-suppliers', data)
   return unwrapApiData(response)

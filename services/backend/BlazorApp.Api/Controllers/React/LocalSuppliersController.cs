@@ -73,6 +73,29 @@ namespace BlazorApp.Api.Controllers.React
             public bool Overwrite { get; set; } = true;
         }
 
+        [HttpPost("sync-to-hq")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> SyncToHq([FromBody] SyncToHqRequest? body)
+        {
+            try
+            {
+                var res = await _service.SyncToHqAsync(
+                    body?.SupplierCodes ?? new List<string>()
+                );
+                return Ok(new { success = res.Success, data = res.Data, message = res.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步澳洲供应商到 HQ 失败");
+                return StatusCode(500, new { success = false, message = "同步到 HQ 失败" });
+            }
+        }
+
+        public class SyncToHqRequest
+        {
+            public List<string> SupplierCodes { get; set; } = new();
+        }
+
         [HttpPost]
         [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> Create([FromBody] CreateLocalSupplierDto dto)

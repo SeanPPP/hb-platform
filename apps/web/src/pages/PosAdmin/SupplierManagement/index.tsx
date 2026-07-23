@@ -1,4 +1,4 @@
-import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { CloudUploadOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -13,9 +13,15 @@ import {
   Tag,
   message,
 } from 'antd'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type Key } from 'react'
 import { useTranslation } from 'react-i18next'
-import { createLocalSupplier, getLocalSuppliers, syncLocalSuppliers, updateLocalSupplier } from '../../../services/localSupplierService'
+import {
+  createLocalSupplier,
+  getLocalSuppliers,
+  syncLocalSuppliers,
+  syncLocalSuppliersToHq,
+  updateLocalSupplier,
+} from '../../../services/localSupplierService'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
 import {
   createLatestRequestGuard,
@@ -44,6 +50,9 @@ export default function SupplierManagementPage() {
   const [status, setStatus] = useState<string | undefined>(undefined)
   const [sortBy, setSortBy] = useState('name')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend')
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [syncingFromHq, setSyncingFromHq] = useState(false)
+  const [syncingToHq, setSyncingToHq] = useState(false)
   const [createVisible, setCreateVisible] = useState(false)
   const [createForm] = Form.useForm()
   const [editVisible, setEditVisible] = useState(false)
@@ -111,7 +120,8 @@ export default function SupplierManagementPage() {
     return () => window.removeEventListener('resize', calc)
   }, [pageSize, total])
 
-  const handleSync = async () => {
+  const handleSyncFromHq = async () => {
+    setSyncingFromHq(true)
     try {
       const result = await syncLocalSuppliers()
       message.success(
@@ -121,12 +131,51 @@ export default function SupplierManagementPage() {
           deactivated: result.deactivatedCount ?? 0,
         }),
       )
+      setSelectedRowKeys([])
       if (mountedRef.current) {
         await latestLoadDataRef.current()
       }
     } catch {
       message.error(t('posAdmin.suppliers.syncFailed', '同步失败'))
+    } finally {
+      setSyncingFromHq(false)
     }
+  }
+
+  const handleSyncToHq = () => {
+    if (!selectedRowKeys.length) {
+      message.warning(t('posAdmin.suppliers.selectSyncFirst', '请先选择要同步的澳洲供应商'))
+      return
+    }
+
+    Modal.confirm({
+      title: t('posAdmin.suppliers.syncToHqTitle', '同步澳洲供应商到 HQ'),
+      content: t(
+        'posAdmin.suppliers.syncToHqConfirm',
+        '确认将选中的 {{count}} 个澳洲供应商同步到 HQ？将写入代码、名称、联系人和 Email。',
+        { count: selectedRowKeys.length },
+      ),
+      okText: t('posAdmin.suppliers.confirmSync', '确认同步'),
+      cancelText: t('common.cancel', '取消'),
+      onOk: async () => {
+        try {
+          setSyncingToHq(true)
+          const result = await syncLocalSuppliersToHq(selectedRowKeys.map(String))
+          message.success(
+            t('posAdmin.suppliers.syncToHqComplete', {
+              created: result.createdCount ?? 0,
+              updated: result.updatedCount ?? 0,
+              skipped: result.skippedCount ?? 0,
+            }),
+          )
+          setSelectedRowKeys([])
+        } catch {
+          message.error(t('posAdmin.suppliers.syncToHqFailed', '同步到 HQ 失败'))
+        } finally {
+          setSyncingToHq(false)
+        }
+      },
+    })
   }
 
   const handleCreate = async () => {
@@ -195,7 +244,7 @@ export default function SupplierManagementPage() {
     <Card
       title={t('posAdmin.suppliers.title')}
       extra={
-        <Space>
+        <Space wrap>
           <Input.Search
             allowClear
             placeholder={t('posAdmin.suppliers.codeNamePlaceholder', '代码/名称')}
@@ -219,8 +268,21 @@ export default function SupplierManagementPage() {
               { label: t('common.inactive'), value: '0' },
             ]}
           />
-          <Button icon={<ReloadOutlined />} onClick={handleSync}>
-            {t('posAdmin.suppliers.sync')}
+          <Button
+            icon={<ReloadOutlined />}
+            loading={syncingFromHq}
+            disabled={syncingToHq}
+            onClick={handleSyncFromHq}
+          >
+            {t('posAdmin.suppliers.syncFromHq', '从 HQ 同步')}
+          </Button>
+          <Button
+            icon={<CloudUploadOutlined />}
+            loading={syncingToHq}
+            disabled={!selectedRowKeys.length || syncingFromHq}
+            onClick={handleSyncToHq}
+          >
+            {t('posAdmin.suppliers.syncToHq', '同步所选到 HQ')}
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateVisible(true)}>
             {t('posAdmin.suppliers.createSupplier')}
@@ -241,12 +303,17 @@ export default function SupplierManagementPage() {
         <div ref={toolbarRef} style={{ padding: 16 }} />
         <div style={{ flex: 1, minHeight: 0 }}>
           <Table
-            rowKey={(r) => r.guid || r.localSupplierCode}
+            rowKey="localSupplierCode"
             loading={loading}
             dataSource={data}
             pagination={false}
             scroll={tableScrollY ? { y: tableScrollY } : undefined}
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
+            rowSelection={{
+              selectedRowKeys,
+              onChange: setSelectedRowKeys,
+              preserveSelectedRowKeys: true,
+            }}
             columns={[
               {
                 title: t('column.index'),
