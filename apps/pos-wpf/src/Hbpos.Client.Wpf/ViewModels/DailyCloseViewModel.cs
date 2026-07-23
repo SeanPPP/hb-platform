@@ -39,6 +39,9 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private string _statusMessage = string.Empty;
 
     [ObservableProperty]
+    private int _selectedTabIndex;
+
+    [ObservableProperty]
     private decimal _expectedCashAmount;
 
     [ObservableProperty]
@@ -170,9 +173,10 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
     }
 
-    public Task LoadAsync(CancellationToken cancellationToken = default)
+    public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        return RefreshSummaryAsync(cancellationToken);
+        SelectedTabIndex = 0;
+        await RefreshSummaryAsync(cancellationToken);
     }
 
     public async Task RefreshSummaryAsync(CancellationToken cancellationToken = default)
@@ -242,14 +246,44 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
                 traceId: correlation.TraceId);
             auditRecorded = true;
             _currentReport = archive.Report;
-            var printResult = await _dailyClosePrintService.PrintAsync(archive, ReceiptPrintReason.Manual, cancellationToken);
-            await RefreshArchivesAsync(cancellationToken);
-            StatusMessage = printResult.Succeeded
-                ? T("dailyClose.status.savedPrinted", "Daily close saved and sent to printer.")
-                : Format(
-                    "dailyClose.status.savedPrintFailed",
-                    "Daily close saved, but printing failed: {0}",
-                    printResult.Message);
+            ClearCashCounts();
+
+            ReceiptPrintResult printResult;
+            try
+            {
+                printResult = await _dailyClosePrintService.PrintAsync(archive, ReceiptPrintReason.Manual, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ConsoleLog.WriteError(
+                    "DailyCloseAudit",
+                    $"daily close printing failed error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+                printResult = new ReceiptPrintResult(false, ex.Message);
+            }
+
+            if (printResult.Succeeded)
+            {
+                StatusMessage = T("dailyClose.status.savedPrinted", "Daily close saved and sent to printer.");
+                if (_returnToPos is null)
+                {
+                    await RefreshArchivesAsync(cancellationToken, archive.DailyCloseGuid);
+                }
+                else
+                {
+                    _returnToPos.Invoke();
+                }
+
+                return;
+            }
+
+            SelectedTabIndex = 1;
+            await RefreshArchivesAsync(cancellationToken, archive.DailyCloseGuid);
+            StatusMessage = Format(
+                "dailyClose.status.savedPrintFailed",
+                "Daily close saved, but printing failed: {0}",
+                printResult.Message);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -457,9 +491,11 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         RaiseCashTotalsChanged();
     }
 
-    private async Task RefreshArchivesAsync(CancellationToken cancellationToken)
+    private async Task RefreshArchivesAsync(
+        CancellationToken cancellationToken,
+        Guid? preferredArchiveGuid = null)
     {
-        var selectedArchiveGuid = SelectedArchive?.DailyCloseGuid;
+        var selectedArchiveGuid = preferredArchiveGuid ?? SelectedArchive?.DailyCloseGuid;
         var archives = await _dailyCloseService.GetArchivesAsync(Session, BusinessDate, cancellationToken);
         var items = archives.Select(archive => new DailyCloseArchiveListItemViewModel(archive)).ToList();
         Archives.ReplaceWith(items);

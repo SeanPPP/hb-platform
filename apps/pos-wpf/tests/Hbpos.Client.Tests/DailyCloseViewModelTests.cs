@@ -75,11 +75,16 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
-    public async Task SaveAndPrintCommand_saves_prints_and_refreshes_archive_list()
+    public async Task SaveAndPrintCommand_saves_prints_clears_cash_and_returns_to_pos()
     {
         var service = new FakeDailyCloseService();
         var printService = new FakeDailyClosePrintService();
-        var viewModel = new DailyCloseViewModel(service, printService, CreateSession());
+        var returnedToPos = false;
+        var viewModel = new DailyCloseViewModel(
+            service,
+            printService,
+            CreateSession(),
+            returnToPos: () => returnedToPos = true);
         var note = viewModel.Denominations.Single(item => item.Label == "$20");
 
         await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
@@ -92,8 +97,112 @@ public sealed class DailyCloseViewModelTests
         Assert.NotNull(service.LastSavedCashCounts);
         Assert.Contains(service.LastSavedCashCounts!, item => item.Label == "$20" && item.Quantity == 3);
         Assert.Equal(1, printService.PrintCallCount);
-        Assert.Equal(2, viewModel.Archives.Count);
+        Assert.True(returnedToPos);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.Equal(0m, viewModel.CountedCashAmount);
         Assert.Equal("Daily close saved and sent to printer.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveAndPrintCommand_print_failure_clears_cash_and_opens_saved_archive_history()
+    {
+        var service = new FakeDailyCloseService();
+        var printService = new FakeDailyClosePrintService
+        {
+            PrintResult = new ReceiptPrintResult(false, "paper out")
+        };
+        var returnedToPos = false;
+        var viewModel = new DailyCloseViewModel(
+            service,
+            printService,
+            CreateSession(),
+            returnToPos: () => returnedToPos = true);
+        var note = viewModel.Denominations.Single(item => item.Label == "$50");
+
+        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.ApplyDenominationCommand.Execute(note);
+
+        await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
+
+        Assert.False(returnedToPos);
+        Assert.Equal(1, viewModel.SelectedTabIndex);
+        Assert.Equal(service.LastSavedArchive?.DailyCloseGuid, viewModel.SelectedArchive?.DailyCloseGuid);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.Equal("Daily close saved, but printing failed: paper out", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveAndPrintCommand_print_exception_uses_print_failure_flow()
+    {
+        var service = new FakeDailyCloseService();
+        var printService = new FakeDailyClosePrintService
+        {
+            PrintException = new InvalidOperationException("printer offline")
+        };
+        var returnedToPos = false;
+        var viewModel = new DailyCloseViewModel(
+            service,
+            printService,
+            CreateSession(),
+            returnToPos: () => returnedToPos = true);
+
+        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.KeypadInputCommand.Execute("4");
+        viewModel.ApplyDenominationCommand.Execute(viewModel.Denominations.First());
+
+        await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
+
+        Assert.False(returnedToPos);
+        Assert.Equal(1, viewModel.SelectedTabIndex);
+        Assert.Equal(service.LastSavedArchive?.DailyCloseGuid, viewModel.SelectedArchive?.DailyCloseGuid);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal("Daily close saved, but printing failed: printer offline", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task SaveAndPrintCommand_save_failure_preserves_cash_and_stays_on_count_tab()
+    {
+        var service = new FakeDailyCloseService
+        {
+            SaveException = new InvalidOperationException("save failed")
+        };
+        var printService = new FakeDailyClosePrintService();
+        var returnedToPos = false;
+        var viewModel = new DailyCloseViewModel(
+            service,
+            printService,
+            CreateSession(),
+            returnToPos: () => returnedToPos = true);
+        var note = viewModel.Denominations.Single(item => item.Label == "$10");
+
+        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.ApplyDenominationCommand.Execute(note);
+
+        await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
+
+        Assert.False(returnedToPos);
+        Assert.Equal(0, printService.PrintCallCount);
+        Assert.Equal(0, viewModel.SelectedTabIndex);
+        Assert.Equal(2, note.Count);
+        Assert.Equal(20m, viewModel.CountedCashAmount);
+        Assert.Equal("save failed", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task LoadAsync_resets_history_tab_to_cash_count_tab()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession())
+        {
+            SelectedTabIndex = 1
+        };
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(0, viewModel.SelectedTabIndex);
     }
 
     [Fact]
@@ -180,6 +289,10 @@ public sealed class DailyCloseViewModelTests
 
         public IReadOnlyList<CashDenominationCount>? LastSavedCashCounts { get; private set; }
 
+        public DailyCloseArchive? LastSavedArchive { get; private set; }
+
+        public Exception? SaveException { get; init; }
+
         public Task<DailyCloseReport> LoadReportAsync(
             PosSessionState session,
             DateTime businessDate,
@@ -195,10 +308,16 @@ public sealed class DailyCloseViewModelTests
             IReadOnlyList<CashDenominationCount> cashCounts,
             CancellationToken cancellationToken = default)
         {
+            if (SaveException is not null)
+            {
+                throw SaveException;
+            }
+
             LastSavedDate = businessDate;
             LastSavedCashCounts = cashCounts;
             var counted = cashCounts.Sum(count => count.Amount);
             var archive = CreateArchive(counted, counted - CreateReport().SystemCashAmount, new DateTimeOffset(2026, 5, 28, 18, 0, 0, TimeSpan.Zero));
+            LastSavedArchive = archive;
             _archives.Insert(0, archive);
             return Task.FromResult(archive);
         }
@@ -257,6 +376,10 @@ public sealed class DailyCloseViewModelTests
 
         public ReceiptPrintReason? LastPrintReason { get; private set; }
 
+        public ReceiptPrintResult PrintResult { get; init; } = new(true, "printed");
+
+        public Exception? PrintException { get; init; }
+
         public Task<ReceiptPrintDocument> BuildDocumentAsync(
             DailyCloseArchive archive,
             ReceiptPrintReason reason = ReceiptPrintReason.Manual,
@@ -274,7 +397,9 @@ public sealed class DailyCloseViewModelTests
             PrintCallCount++;
             LastPrintedArchive = archive;
             LastPrintReason = reason;
-            return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+            return PrintException is not null
+                ? Task.FromException<ReceiptPrintResult>(PrintException)
+                : Task.FromResult(PrintResult);
         }
     }
 

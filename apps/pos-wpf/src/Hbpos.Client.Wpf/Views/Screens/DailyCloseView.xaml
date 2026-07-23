@@ -327,6 +327,7 @@
     </UserControl.Resources>
 
     <TabControl Margin="20"
+                SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}"
                 Style="{StaticResource DailyCloseTabControlStyle}">
             <TabItem Header="{loc:Loc dailyClose.tab.count}">
                 <Grid>
