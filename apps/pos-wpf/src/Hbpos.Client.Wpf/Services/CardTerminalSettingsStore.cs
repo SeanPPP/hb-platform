@@ -346,9 +346,7 @@ public sealed class CardTerminalSettingsStore(
             CardTerminalSettings.ResolveLinklyCloudRestBaseUrl(configuration.Environment),
             environmentSettings.LinklyPosName,
             environmentSettings.LinklyPosVersion,
-            CardTerminalSettings.ResolveLinklyPosVendorId(
-                configuration.Environment,
-                environmentSettings.LinklyPosVendorId),
+            CardTerminalSettings.ResolveLinklyPosVendorId(configuration.Environment),
             CardTerminalSettings.NormalizeLinklyConnectionModePriority(
                 configuration.LinklyConnectionModePriority,
                 configuration.LinklyConnectionMode));

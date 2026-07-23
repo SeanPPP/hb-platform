@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -46,7 +47,10 @@ public sealed class LinklyCloudTerminalClient(
         string deviceCode,
         CancellationToken cancellationToken = default)
     {
-        Log($"test start environment={settings.Environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} hasSecret={!string.IsNullOrWhiteSpace(settings.LinklyCloudSecret)} hasVendorId={!string.IsNullOrWhiteSpace(settings.LinklyPosVendorId)}");
+        var posVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(
+            settings.Environment,
+            settings.LinklyPosVendorId);
+        Log($"test start environment={settings.Environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} hasSecret={!string.IsNullOrWhiteSpace(settings.LinklyCloudSecret)} hasVendorId={!string.IsNullOrWhiteSpace(posVendorId)}");
         try
         {
             var endpointValidationMessage = ValidateEndpointSettings(settings);
@@ -130,7 +134,10 @@ public sealed class LinklyCloudTerminalClient(
             return FallbackAllowed("linkly.cloud.notPaired", T("linkly.cloud.notPaired", "Linkly Cloud terminal is not paired."));
         }
 
-        if (string.IsNullOrWhiteSpace(settings.LinklyPosVendorId))
+        var posVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(
+            settings.Environment,
+            settings.LinklyPosVendorId);
+        if (string.IsNullOrWhiteSpace(posVendorId))
         {
             Log($"transaction blocked txnType={txnType} store={LogValue(session.StoreCode)} device={LogValue(session.DeviceCode)} reason=missing-pos-vendor-id");
             return FallbackAllowed("linkly.cloud.vendorIdMissing", T("linkly.cloud.vendorIdMissing", "Linkly POS vendor id is not configured."));

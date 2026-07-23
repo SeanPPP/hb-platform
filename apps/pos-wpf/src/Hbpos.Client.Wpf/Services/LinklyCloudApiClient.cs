@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -143,7 +144,10 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             throw new LinklyCloudApiException("Linkly Cloud secret is missing.");
         }
 
-        if (string.IsNullOrWhiteSpace(settings.LinklyPosVendorId))
+        var posVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(
+            settings.Environment,
+            settings.LinklyPosVendorId);
+        if (string.IsNullOrWhiteSpace(posVendorId))
         {
             LogEvent("token", "blocked", environment: settings.Environment, success: false, reason: "missing-pos-vendor-id");
             throw new LinklyCloudApiException("Linkly POS vendor id is not configured.");
@@ -155,9 +159,9 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             throw new LinklyCloudApiException("Linkly POS id must be a UUID v4.");
         }
 
-        if (!IsUuidV4(settings.LinklyPosVendorId))
+        if (!IsUuidV4(posVendorId))
         {
-            LogEvent("token", "blocked", environment: settings.Environment, success: false, reason: "invalid-pos-vendor-id", details: new { settings.LinklyPosVendorId });
+            LogEvent("token", "blocked", environment: settings.Environment, success: false, reason: "invalid-pos-vendor-id", details: new { posVendorId });
             throw new LinklyCloudApiException("Linkly POS vendor id must be a UUID v4.");
         }
 
@@ -166,7 +170,7 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             settings.LinklyPosName,
             settings.LinklyPosVersion,
             posId,
-            settings.LinklyPosVendorId.Trim());
+            posVendorId.Trim());
         LogEvent(
             "token",
             "request",

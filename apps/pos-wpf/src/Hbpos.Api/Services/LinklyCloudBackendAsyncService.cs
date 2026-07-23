@@ -126,8 +126,6 @@ public sealed class LinklyCloudBackendAsyncOptions
 
     public string PosVersion { get; set; } = "2026.5.1";
 
-    public string? ProductionPosVendorId { get; set; }
-
     public string? SandboxPosVendorId { get; set; } = "11111111-1111-4111-8111-111111111111";
 }
 
@@ -2718,7 +2716,7 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
     {
         return string.Equals(environment, "Sandbox", StringComparison.Ordinal)
             ? options.Value.SandboxPosVendorId
-            : options.Value.ProductionPosVendorId;
+            : LinklyCloudIdentityConstants.ProductionPosVendorId;
     }
 
     private static string NormalizeEnvironment(string? environment)

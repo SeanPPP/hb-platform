@@ -209,10 +209,6 @@ public static class ServiceRegistration
             value => options.PosVersion = value);
         AssignNonEmpty(
             section,
-            nameof(LinklyCloudBackendAsyncOptions.ProductionPosVendorId),
-            value => options.ProductionPosVendorId = value);
-        AssignNonEmpty(
-            section,
             nameof(LinklyCloudBackendAsyncOptions.SandboxPosVendorId),
             value => options.SandboxPosVendorId = value);
     }

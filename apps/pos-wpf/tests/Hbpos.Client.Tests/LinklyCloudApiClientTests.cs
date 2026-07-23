@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Tests;
 
@@ -76,7 +77,13 @@ public sealed class LinklyCloudApiClientTests
             return JsonResponse("""{ "token": "bearer-token", "expirySeconds": 60 }""");
         })));
 
-        var token = await client.GetTokenAsync(CreateCloudSettings(), "3e7f5001-58a3-43fa-9129-6e84a7b4f2a0");
+        var token = await client.GetTokenAsync(
+            CreateCloudSettings() with
+            {
+                Environment = CardTerminalEnvironment.Production,
+                LinklyPosVendorId = "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22"
+            },
+            "3e7f5001-58a3-43fa-9129-6e84a7b4f2a0");
 
         Assert.Equal("bearer-token", token.Token);
         Assert.True(token.ExpiresAt > DateTimeOffset.UtcNow);
@@ -87,7 +94,7 @@ public sealed class LinklyCloudApiClientTests
         Assert.Equal("HotBargainPOS", ReadJsonString(body, "posName"));
         Assert.Equal("2026.5.1", ReadJsonString(body, "posVersion"));
         Assert.Equal("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", ReadJsonString(body, "posId"));
-        Assert.Equal("a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22", ReadJsonString(body, "posVendorId"));
+        Assert.Equal(LinklyCloudIdentityConstants.ProductionPosVendorId, ReadJsonString(body, "posVendorId"));
         using var requestLog = FindLinklyLog(logs.Lines, "token", "request");
         Assert.Equal("paired-secret", requestLog.RootElement.GetProperty("request").GetProperty("secret").GetString());
         Assert.Equal("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", requestLog.RootElement.GetProperty("request").GetProperty("posId").GetString());
@@ -96,23 +103,49 @@ public sealed class LinklyCloudApiClientTests
     }
 
     [Theory]
-    [InlineData("not-a-uuid", "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22", "Linkly POS id must be a UUID v4.")]
-    [InlineData("3e7f5001-58a3-33fa-9129-6e84a7b4f2a0", "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22", "Linkly POS id must be a UUID v4.")]
-    [InlineData("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", "not-a-uuid", "Linkly POS vendor id must be a UUID v4.")]
-    [InlineData("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", "a256b7ec-709d-3c7d-8ffe-57cc7ca1fd22", "Linkly POS vendor id must be a UUID v4.")]
+    [InlineData("not-a-uuid", "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22", false, "Linkly POS id must be a UUID v4.")]
+    [InlineData("3e7f5001-58a3-33fa-9129-6e84a7b4f2a0", "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22", false, "Linkly POS id must be a UUID v4.")]
+    [InlineData("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", "not-a-uuid", true, "Linkly POS vendor id must be a UUID v4.")]
+    [InlineData("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", "a256b7ec-709d-3c7d-8ffe-57cc7ca1fd22", true, "Linkly POS vendor id must be a UUID v4.")]
     public async Task GetTokenAsync_requires_pos_identity_uuid_v4(
         string posId,
         string posVendorId,
+        bool sandbox,
         string expectedMessage)
     {
         var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(_ =>
             JsonResponse("""{ "token": "bearer-token", "expirySeconds": 60 }"""))));
-        var settings = CreateCloudSettings() with { LinklyPosVendorId = posVendorId };
+        var settings = CreateCloudSettings() with
+        {
+            Environment = sandbox ? CardTerminalEnvironment.Sandbox : CardTerminalEnvironment.Production,
+            LinklyPosVendorId = posVendorId
+        };
 
         var exception = await Assert.ThrowsAsync<LinklyCloudApiException>(() =>
             client.GetTokenAsync(settings, posId));
 
         Assert.Equal(expectedMessage, exception.Message);
+    }
+
+    [Fact]
+    public async Task GetTokenAsync_preserves_configured_sandbox_vendor_id()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            capturedRequest = CloneRequestWithBody(request);
+            return JsonResponse("""{ "token": "bearer-token", "expirySeconds": 60 }""");
+        })));
+        var settings = CreateCloudSettings() with
+        {
+            Environment = CardTerminalEnvironment.Sandbox,
+            LinklyPosVendorId = "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22"
+        };
+
+        await client.GetTokenAsync(settings, "3e7f5001-58a3-43fa-9129-6e84a7b4f2a0");
+
+        var body = await capturedRequest!.Content!.ReadAsStringAsync();
+        Assert.Equal(settings.LinklyPosVendorId, ReadJsonString(body, "posVendorId"));
     }
 
     [Fact]

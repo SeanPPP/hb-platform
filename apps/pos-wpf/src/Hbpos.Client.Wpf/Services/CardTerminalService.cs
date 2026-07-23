@@ -6,6 +6,7 @@ using System.Text.Json;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Square;
 
@@ -318,6 +319,11 @@ public sealed record CardTerminalSettings(
         CardTerminalEnvironment environment,
         string? configuredVendorId = null)
     {
+        if (environment == CardTerminalEnvironment.Production)
+        {
+            return LinklyCloudIdentityConstants.ProductionPosVendorId;
+        }
+
         var configured = NormalizeOptional(configuredVendorId)
             ?? NormalizeOptional(System.Environment.GetEnvironmentVariable("HBPOS_LINKLY_POS_VENDOR_ID"));
         if (!string.IsNullOrWhiteSpace(configured))
@@ -325,9 +331,7 @@ public sealed record CardTerminalSettings(
             return configured;
         }
 
-        return environment == CardTerminalEnvironment.Sandbox
-            ? SandboxPlaceholderLinklyPosVendorId
-            : null;
+        return SandboxPlaceholderLinklyPosVendorId;
     }
 
     private static string NormalizeBaseUrl(string baseUrl)

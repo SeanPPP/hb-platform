@@ -30,7 +30,10 @@ public sealed class LinklyCloudTerminalClientTests
         var store = new FakeLinklyCloudSecretStore();
         var client = new LinklyCloudTerminalClient(apiClient, store);
 
-        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+        var result = await client.PurchaseAsync(
+            10m,
+            CreateSession(),
+            CreateSettings() with { LinklyPosVendorId = null });
 
         Assert.True(result.Approved);
         Assert.Equal("ANZCLOUD:TXN-1:RFN-1", result.Reference);

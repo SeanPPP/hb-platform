@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Tests;
@@ -65,11 +66,11 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
-    public void FromEnvironment_reads_linkly_cloud_identity_defaults_and_vendor_id()
+    public void FromEnvironment_reads_linkly_cloud_identity_defaults_and_sandbox_vendor_id()
     {
         using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
-            ["HBPOS_CARD_TERMINAL_ENVIRONMENT"] = null,
+            ["HBPOS_CARD_TERMINAL_ENVIRONMENT"] = "Sandbox",
             ["HBPOS_LINKLY_POS_NAME"] = null,
             ["HBPOS_LINKLY_POS_VERSION"] = null,
             ["HBPOS_LINKLY_POS_VENDOR_ID"] = "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22"
@@ -98,18 +99,18 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
-    public void FromEnvironment_keeps_production_vendor_id_missing_when_not_configured()
+    public void FromEnvironment_uses_fixed_production_vendor_id()
     {
         using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
             ["HBPOS_CARD_TERMINAL_ENVIRONMENT"] = "Production",
-            ["HBPOS_LINKLY_POS_VENDOR_ID"] = null
+            ["HBPOS_LINKLY_POS_VENDOR_ID"] = "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22"
         });
 
         var settings = CardTerminalSettings.FromEnvironment();
 
         Assert.Equal(CardTerminalEnvironment.Production, settings.Environment);
-        Assert.Null(settings.LinklyPosVendorId);
+        Assert.Equal(LinklyCloudIdentityConstants.ProductionPosVendorId, settings.LinklyPosVendorId);
     }
 
     [Fact]

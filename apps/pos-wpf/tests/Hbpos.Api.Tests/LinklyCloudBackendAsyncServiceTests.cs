@@ -1254,9 +1254,53 @@ namespace Hbpos.Api.Tests;
             terminalRepository.Calls);
         Assert.Equal("secret-pos-01", handler.RequestBodies[0].RootElement.GetProperty("secret").GetString());
         Assert.Equal("11111111-1111-4111-8111-111111111111", handler.RequestBodies[0].RootElement.GetProperty("posId").GetString());
+        Assert.Equal("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", handler.RequestBodies[0].RootElement.GetProperty("posVendorId").GetString());
         Assert.Equal("secret-pos-02", handler.RequestBodies[1].RootElement.GetProperty("secret").GetString());
         Assert.Equal("22222222-2222-4222-8222-222222222222", handler.RequestBodies[1].RootElement.GetProperty("posId").GetString());
         Assert.Equal(new bool?[] { null, null }, handler.ConnectionCloseHeaders);
+    }
+
+    [Fact]
+    public async Task TokenProvider_uses_fixed_production_pos_vendor_id()
+    {
+        var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
+        {
+            StoreCode = "S01",
+            Environment = "Production",
+            Username = "merchant-user",
+            Password = "merchant-password",
+            UpdatedAt = DateTime.UtcNow
+        });
+        var terminalRepository = new CapturingTerminalCredentialRepository(
+            new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = "Production",
+                StoreCode = "S01",
+                DeviceCode = "POS-01",
+                Secret = "secret-pos-01",
+                PosId = "11111111-1111-4111-8111-111111111111"
+            });
+        var handler = new CapturingTokenHttpMessageHandler();
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            terminalRepository,
+            new HttpClient(handler),
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                ProductionAuthBaseUrl = "https://auth.example/v1/",
+                ProductionRestBaseUrl = "https://rest.example/v1/",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }));
+
+        await provider.GetTokenAsync("Production", "S01", "POS-01", CancellationToken.None);
+
+        var body = Assert.Single(handler.RequestBodies).RootElement;
+        Assert.Equal("secret-pos-01", body.GetProperty("secret").GetString());
+        Assert.Equal("HBPOS", body.GetProperty("posName").GetString());
+        Assert.Equal("2026.5.1", body.GetProperty("posVersion").GetString());
+        Assert.Equal("11111111-1111-4111-8111-111111111111", body.GetProperty("posId").GetString());
+        Assert.Equal(LinklyCloudIdentityConstants.ProductionPosVendorId, body.GetProperty("posVendorId").GetString());
     }
 
     [Fact]
