@@ -4834,6 +4834,7 @@
     "amount": "Amount",
     "viewDetail": "View Order Detail",
     "noMatchOrders": "No matching orders were found. Try adjusting the search filters.",
+    "loadFailed": "Failed to load order history. Please try again.",
     "noHistoryOrders": "No historical orders were found for the current filters."
   },
   "shopOrderDetail": {

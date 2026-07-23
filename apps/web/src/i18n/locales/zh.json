@@ -4834,6 +4834,7 @@
     "amount": "金额",
     "viewDetail": "查看订单明细",
     "noMatchOrders": "没有匹配到订单，请调整搜索条件。",
+    "loadFailed": "历史订单加载失败，请重试。",
     "noHistoryOrders": "当前筛选条件下暂无历史订单。"
   },
   "shopOrderDetail": {

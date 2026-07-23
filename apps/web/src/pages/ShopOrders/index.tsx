@@ -99,6 +99,8 @@ export default function ShopOrdersPage() {
   const [keyword, setKeyword] = useState('')
   const [orders, setOrders] = useState<StoreOrderListItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const [reloadVersion, setReloadVersion] = useState(0)
   const [total, setTotal] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(12)
@@ -110,13 +112,14 @@ export default function ShopOrdersPage() {
 
     const fetchOrders = async () => {
       setLoading(true)
+      setLoadError(false)
 
       try {
         const result = await getStoreOrderList({
           pageNumber: currentPage,
           pageSize,
           keyword: keyword || undefined,
-          storeCodes: selectedStore?.storeCode ? [selectedStore.storeCode] : undefined,
+          storeCode: selectedStore?.storeCode || undefined,
           startDate: dateRange[0].format('YYYY-MM-DD'),
           endDate: dateRange[1].format('YYYY-MM-DD'),
           statusList: statusQueryMap[statusFilter],
@@ -130,10 +133,11 @@ export default function ShopOrdersPage() {
 
         setOrders(result.items)
         setTotal(result.total)
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setOrders([])
           setTotal(0)
+          setLoadError(true)
         }
       } finally {
         if (!cancelled) {
@@ -147,7 +151,7 @@ export default function ShopOrdersPage() {
     return () => {
       cancelled = true
     }
-  }, [currentPage, dateRange, keyword, pageSize, selectedStore?.storeCode, statusFilter])
+  }, [currentPage, dateRange, keyword, pageSize, reloadVersion, selectedStore?.storeCode, statusFilter])
 
   const stats = useMemo(() => {
     const activeCount = orders.filter((item) =>
@@ -190,19 +194,19 @@ export default function ShopOrdersPage() {
       <div className="shop-orders-stats">
         <div className="shop-orders-stat-card">
           <span className="shop-orders-stat-label">{t('shopOrders.orderCount')}</span>
-          <strong>{stats.totalOrders}</strong>
+          <strong>{loadError ? '--' : stats.totalOrders}</strong>
         </div>
         <div className="shop-orders-stat-card">
           <span className="shop-orders-stat-label">{t('shopOrders.inProgress')}</span>
-          <strong>{stats.activeCount}</strong>
+          <strong>{loadError ? '--' : stats.activeCount}</strong>
         </div>
         <div className="shop-orders-stat-card">
           <span className="shop-orders-stat-label">{t('shopOrders.completed')}</span>
-          <strong>{stats.completedCount}</strong>
+          <strong>{loadError ? '--' : stats.completedCount}</strong>
         </div>
         <div className="shop-orders-stat-card accent">
           <span className="shop-orders-stat-label">{t('shopOrders.currentPageAmount')}</span>
-          <strong>${stats.visibleAmount.toFixed(2)}</strong>
+          <strong>{loadError ? '--' : `$${stats.visibleAmount.toFixed(2)}`}</strong>
         </div>
       </div>
 
@@ -285,6 +289,7 @@ export default function ShopOrdersPage() {
               setKeyword('')
               setDateRange(createDefaultDateRange())
               setQuickRange('custom')
+              setReloadVersion((current) => current + 1)
             }}
           >
             {t('common.reset')}
@@ -304,6 +309,18 @@ export default function ShopOrdersPage() {
       {loading ? (
         <div className="shop-orders-loading">
           <Spin size="large" />
+        </div>
+      ) : loadError ? (
+        <div className="shop-orders-empty">
+          <Empty description={t('shopOrders.loadFailed')}>
+            <Button
+              type="primary"
+              icon={<ReloadOutlined />}
+              onClick={() => setReloadVersion((current) => current + 1)}
+            >
+              {t('common.retry')}
+            </Button>
+          </Empty>
         </div>
       ) : orders.length ? (
         <>

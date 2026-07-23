@@ -34,6 +34,7 @@ export interface StoreOrderBranchOption {
 
 export interface StoreOrderListQuery {
   keyword?: string
+  storeCode?: string
   storeCodes?: string[]
   startDate?: string
   endDate?: string
