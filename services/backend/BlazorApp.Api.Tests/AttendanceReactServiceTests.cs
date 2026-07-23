@@ -552,6 +552,38 @@ namespace BlazorApp.Api.Tests
             Assert.Contains("BeginTranAsync(IsolationLevel.Serializable)", methodSource);
         }
 
+        [Theory]
+        [InlineData("Punch", false)]
+        [InlineData("Leave", false)]
+        [InlineData("PunchAdjustment", false)]
+        [InlineData("MissingClockOut", true)]
+        [InlineData("Overtime", true)]
+        public void BuildPendingApprovalExistenceQuery_SqlServer方言_不生成布尔Or条件(
+            string sourceType,
+            bool expectsPendingFilter)
+        {
+            using var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString =
+                    "Server=127.0.0.1;Database=HBweb;User Id=test;Password=test;TrustServerCertificate=True;",
+                DbType = DbType.SqlServer,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+            });
+
+            var query = AttendanceReactService.BuildPendingApprovalExistenceQuery(
+                sqlServerDb,
+                sourceType,
+                "source-1");
+            var sql = query.ToSql();
+
+            Assert.Equal(
+                expectsPendingFilter,
+                sql.Value.Any(parameter => Equals(parameter.Value, "Pending")));
+            Assert.DoesNotContain(" OR ", sql.Key, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(sql.Value, parameter => parameter.Value is bool);
+        }
+
         [Fact]
         public async Task GetSchedulesAsync_WhenStoreManagerRequestsUnmanagedStore_ReturnsForbidden()
         {

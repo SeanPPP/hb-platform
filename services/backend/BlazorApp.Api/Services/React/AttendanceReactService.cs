@@ -2147,13 +2147,10 @@ namespace BlazorApp.Api.Services.React
             int? candidateOvertimeMinutes = null
         )
         {
-            var allowAfterTerminalReview = sourceType is "MissingClockOut" or "Overtime";
-            var exists = await _db.Queryable<AttendanceApproval>().AnyAsync(item =>
-                !item.IsDeleted
-                && item.SourceType == sourceType
-                && item.SourceGuid == sourceGuid
-                && (!allowAfterTerminalReview || item.ReviewStatus == "Pending")
-            );
+            var exists = await BuildPendingApprovalExistenceQuery(
+                _db,
+                sourceType,
+                sourceGuid).AnyAsync();
             if (exists)
             {
                 return;
@@ -2165,6 +2162,25 @@ namespace BlazorApp.Api.Services.React
                 storeCode,
                 applicantUserGuid,
                 candidateOvertimeMinutes);
+        }
+
+        internal static ISugarQueryable<AttendanceApproval> BuildPendingApprovalExistenceQuery(
+            ISqlSugarClient db,
+            string sourceType,
+            string sourceGuid)
+        {
+            var query = db.Queryable<AttendanceApproval>().Where(item =>
+                !item.IsDeleted
+                && item.SourceType == sourceType
+                && item.SourceGuid == sourceGuid);
+
+            // 漏下班和加班允许终态后重新生成待审记录，其他来源继续按任意历史记录去重。
+            if (sourceType is "MissingClockOut" or "Overtime")
+            {
+                query = query.Where(item => item.ReviewStatus == "Pending");
+            }
+
+            return query;
         }
 
         private async Task InsertPendingApprovalWithConflictGuardAsync(
