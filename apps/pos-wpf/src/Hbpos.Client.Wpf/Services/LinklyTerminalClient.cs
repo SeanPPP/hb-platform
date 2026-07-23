@@ -146,6 +146,7 @@ public sealed class LinklyTerminalClient(
     {
         using var timeoutCts = CreateConfiguredTimeoutToken(timeout, cancellationToken);
         using var client = clientFactory.Create();
+        var operation = "connect";
         try
         {
             var connectRequest = CreateConnectRequest(host, port);
@@ -166,24 +167,138 @@ public sealed class LinklyTerminalClient(
                 {
                     connected
                 });
-            return connected
-                ? new LinklyConnectionTestResult(true, T("linkly.local.test.success", "Linkly EFT-Client connection succeeded."))
-                : new LinklyConnectionTestResult(false, T("linkly.local.test.failed", "Linkly EFT-Client connection failed."));
+            if (!connected)
+            {
+                return new LinklyConnectionTestResult(false, T("linkly.local.test.failed", "Linkly EFT-Client connection failed."));
+            }
+
+            operation = "status";
+            var statusRequest = new EFTStatusRequest
+            {
+                Application = TerminalApplication.EFTPOS,
+                Merchant = Merchant,
+                StatusType = StatusType.Standard
+            };
+            var statusRequestLog = new
+            {
+                statusRequest.Application,
+                statusRequest.Merchant,
+                statusRequest.StatusType
+            };
+            LogJson(
+                operation,
+                "sent",
+                "request",
+                request: statusRequestLog);
+            if (!await client.WriteRequestAsync(statusRequest).WaitAsync(timeoutCts.Token))
+            {
+                LogJson(
+                    operation,
+                    "failed",
+                    "response",
+                    success: false,
+                    reason: "write-request-failed",
+                    request: statusRequestLog);
+                return new LinklyConnectionTestResult(
+                    false,
+                    T("linkly.local.test.statusRequestFailed", "Linkly PINpad status request could not be sent."));
+            }
+
+            while (true)
+            {
+                var response = await client.ReadResponseAsync(timeoutCts.Token);
+                if (response is null)
+                {
+                    LogJson(
+                        operation,
+                        "failed",
+                        "response",
+                        success: false,
+                        reason: "empty-response",
+                        request: statusRequestLog);
+                    return new LinklyConnectionTestResult(
+                        false,
+                        T("linkly.local.test.emptyStatusResponse", "Linkly PINpad returned no status response."));
+                }
+
+                if (response is not EFTStatusResponse status)
+                {
+                    LogJson(
+                        operation,
+                        "ignored",
+                        "response",
+                        reason: "unexpected-response",
+                        details: new
+                        {
+                            responseType = response.GetType().Name
+                        });
+                    continue;
+                }
+
+                var ready = status.Success && status.LoggedOn;
+                LogJson(
+                    operation,
+                    "received",
+                    "response",
+                    success: ready,
+                    request: statusRequestLog,
+                    response: new
+                    {
+                        status.Success,
+                        status.ResponseCode,
+                        status.ResponseText,
+                        status.LoggedOn,
+                        status.PinPadVersion,
+                        status.StatusType,
+                        status.TerminalCommsType
+                    });
+                if (ready)
+                {
+                    return new LinklyConnectionTestResult(
+                        true,
+                        T("linkly.local.test.success", "Linkly PINpad is online and logged on."));
+                }
+
+                if (string.Equals(status.ResponseCode, "PF", StringComparison.OrdinalIgnoreCase) ||
+                    status.ResponseText?.Contains("PINpad Offline", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    return new LinklyConnectionTestResult(
+                        false,
+                        T("linkly.local.test.pinpadOffline", "Linkly PINpad is offline (PF). Check the terminal connection in Linkly Client."));
+                }
+
+                if (status.Success && !status.LoggedOn)
+                {
+                    return new LinklyConnectionTestResult(
+                        false,
+                        T("linkly.local.test.notLoggedOn", "Linkly PINpad is online but not logged on to the bank network."));
+                }
+
+                return new LinklyConnectionTestResult(
+                    false,
+                    string.Format(
+                        CultureInfo.CurrentCulture,
+                        T("linkly.local.test.pinpadNotReady", "Linkly PINpad is not ready: {0} ({1})."),
+                        NormalizeOptional(status.ResponseText) ?? T("linkly.local.test.unknownResponse", "Unknown response"),
+                        NormalizeOptional(status.ResponseCode) ?? "--"));
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             LogJson(
-                "connect",
+                operation,
                 "failed",
                 "response",
                 success: false,
                 reason: "timeout");
-            return new LinklyConnectionTestResult(false, T("linkly.local.test.timeout", "Linkly EFT-Client connection timed out."));
+            return operation == "connect"
+                ? new LinklyConnectionTestResult(false, T("linkly.local.test.timeout", "Linkly EFT-Client connection timed out."))
+                : new LinklyConnectionTestResult(false, T("linkly.local.test.statusTimeout", "Linkly PINpad readiness check timed out."));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogJson(
-                "connect",
+                operation,
                 "failed",
                 "response",
                 success: false,

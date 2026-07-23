@@ -407,6 +407,130 @@ public sealed class LinklyTerminalClientTests
         Assert.Contains("timed out", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task TestConnectionAsync_succeeds_only_when_pinpad_is_online_and_logged_on()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
+        {
+            Success = true,
+            LoggedOn = true,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            PinPadVersion = "1.2.3"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.True(result.Succeeded);
+        var request = Assert.IsType<EFTStatusRequest>(eftClient.LastRequest);
+        Assert.Equal(TerminalApplication.EFTPOS, request.Application);
+        Assert.Equal("00", request.Merchant);
+        Assert.Equal(StatusType.Standard, request.StatusType);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_fails_when_pinpad_is_offline()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
+        {
+            Success = false,
+            LoggedOn = false,
+            ResponseCode = "PF",
+            ResponseText = "PINpad Offline"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("offline (PF)", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_fails_when_pinpad_is_not_logged_on()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
+        {
+            Success = true,
+            LoggedOn = false,
+            ResponseCode = "00",
+            ResponseText = "APPROVED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("not logged on", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_reports_status_failure_response()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
+        {
+            Success = false,
+            ResponseCode = "XX",
+            ResponseText = "NOT READY"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("NOT READY (XX)", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_fails_when_status_request_cannot_be_sent()
+    {
+        var eftClient = new FakeLinklyEftClient { WriteResult = false };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("could not be sent", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_fails_when_status_response_is_empty()
+    {
+        var eftClient = new FakeLinklyEftClient { ReturnNullOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("no status response", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_uses_supplied_timeout_while_waiting_for_pinpad_status()
+    {
+        var eftClient = new FakeLinklyEftClient { WaitForCancellationOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync(
+            "127.0.0.1",
+            2011,
+            TimeSpan.FromMilliseconds(30));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("readiness check timed out", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState(
@@ -481,6 +605,8 @@ public sealed class LinklyTerminalClientTests
 
         public bool WaitForCancellationOnRead { get; init; }
 
+        public bool ReturnNullOnRead { get; init; }
+
         public int DisconnectCallCount { get; private set; }
 
         public int DisposeCallCount { get; private set; }
@@ -523,6 +649,11 @@ public sealed class LinklyTerminalClientTests
             if (WaitForCancellationOnRead)
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            if (ReturnNullOnRead)
+            {
+                return null;
             }
 
             if (ReadExceptions.Count > 0)

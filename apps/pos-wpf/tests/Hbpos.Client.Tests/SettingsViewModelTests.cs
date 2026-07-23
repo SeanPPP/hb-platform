@@ -799,6 +799,7 @@ public sealed class SettingsViewModelTests
         await viewModel.TestLinklyCommand.ExecuteAsync(null);
 
         Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
         Assert.Equal("connection failed", viewModel.LinklyTestStatusMessage);
         Assert.Equal("connection failed", viewModel.StatusMessage);
     }

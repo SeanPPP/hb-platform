@@ -677,9 +677,16 @@
   <data name="dailyClose.refundAmount" xml:space="preserve"><value>Refund Amount</value></data>
   <data name="dailyClose.returnQty" xml:space="preserve"><value>Return Qty</value></data>
   <data name="dailyClose.orders" xml:space="preserve"><value>Orders</value></data>
-  <data name="linkly.local.test.success" xml:space="preserve"><value>Linkly EFT-Client connection succeeded.</value></data>
+  <data name="linkly.local.test.success" xml:space="preserve"><value>Linkly PINpad is online and logged on.</value></data>
   <data name="linkly.local.test.failed" xml:space="preserve"><value>Linkly EFT-Client connection failed.</value></data>
   <data name="linkly.local.test.timeout" xml:space="preserve"><value>Linkly EFT-Client connection timed out.</value></data>
+  <data name="linkly.local.test.statusRequestFailed" xml:space="preserve"><value>Linkly PINpad status request could not be sent.</value></data>
+  <data name="linkly.local.test.emptyStatusResponse" xml:space="preserve"><value>Linkly PINpad returned no status response.</value></data>
+  <data name="linkly.local.test.pinpadOffline" xml:space="preserve"><value>Linkly PINpad is offline (PF). Check the terminal connection in Linkly Client.</value></data>
+  <data name="linkly.local.test.notLoggedOn" xml:space="preserve"><value>Linkly PINpad is online but not logged on to the bank network.</value></data>
+  <data name="linkly.local.test.pinpadNotReady" xml:space="preserve"><value>Linkly PINpad is not ready: {0} ({1}).</value></data>
+  <data name="linkly.local.test.unknownResponse" xml:space="preserve"><value>Unknown response</value></data>
+  <data name="linkly.local.test.statusTimeout" xml:space="preserve"><value>Linkly PINpad readiness check timed out.</value></data>
   <data name="linkly.local.test.exception" xml:space="preserve"><value>Linkly connection failed: {0}</value></data>
   <data name="linkly.local.amountMustBePositive" xml:space="preserve"><value>Card amount must be greater than zero.</value></data>
   <data name="linkly.local.cancelled" xml:space="preserve"><value>ANZ Linkly transaction was cancelled.</value></data>

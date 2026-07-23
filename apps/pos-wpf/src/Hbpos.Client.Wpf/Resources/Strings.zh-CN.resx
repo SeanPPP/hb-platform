@@ -1952,13 +1952,34 @@
     <value>请先移除已添加支付，或补齐剩余金额并完成支付后再返回收银。</value>
   </data>
   <data name="linkly.local.test.success" xml:space="preserve">
-    <value>Linkly EFT-Client 连接成功。</value>
+    <value>Linkly 刷卡机已在线并登录银行网络。</value>
   </data>
   <data name="linkly.local.test.failed" xml:space="preserve">
     <value>Linkly EFT-Client 连接失败。</value>
   </data>
   <data name="linkly.local.test.timeout" xml:space="preserve">
     <value>Linkly EFT-Client 连接超时。</value>
+  </data>
+  <data name="linkly.local.test.statusRequestFailed" xml:space="preserve">
+    <value>无法发送 Linkly 刷卡机状态请求。</value>
+  </data>
+  <data name="linkly.local.test.emptyStatusResponse" xml:space="preserve">
+    <value>Linkly 刷卡机未返回状态。</value>
+  </data>
+  <data name="linkly.local.test.pinpadOffline" xml:space="preserve">
+    <value>Linkly 刷卡机离线（PF）。请检查 Linkly Client 中的终端连接。</value>
+  </data>
+  <data name="linkly.local.test.notLoggedOn" xml:space="preserve">
+    <value>Linkly 刷卡机已在线，但尚未登录银行网络。</value>
+  </data>
+  <data name="linkly.local.test.pinpadNotReady" xml:space="preserve">
+    <value>Linkly 刷卡机尚未就绪：{0}（{1}）。</value>
+  </data>
+  <data name="linkly.local.test.unknownResponse" xml:space="preserve">
+    <value>未知响应</value>
+  </data>
+  <data name="linkly.local.test.statusTimeout" xml:space="preserve">
+    <value>Linkly 刷卡机就绪检查超时。</value>
   </data>
   <data name="linkly.local.test.exception" xml:space="preserve">
     <value>Linkly 连接失败：{0}</value>
