@@ -1313,7 +1313,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
             {isPunchRecordsTab ? (
               <>
                 <TodayPunchCard
-                title={t("sections.selectedDay")}
+                title={
+                  selectedDate === todayDate
+                    ? t("sections.today")
+                    : t("sections.selectedDay")
+                }
                 selectedDate={selectedDate}
                 storeName={selectedStoreName}
                 allowPunch={selectedDate === todayDate}

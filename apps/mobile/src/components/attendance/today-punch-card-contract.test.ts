@@ -5,9 +5,15 @@ import { fileURLToPath } from "node:url";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(directory, "TodayPunchCard.tsx"), "utf8");
+const screenSource = readFileSync(join(directory, "AttendanceScreen.tsx"), "utf8");
 
 assert.match(source, /buildAttendanceTodayDisplay\(today\)/,
   "今日考勤卡必须使用统一的分店/排班/班段展示模型");
+assert.match(
+  screenSource,
+  /title=\{\s*selectedDate === todayDate\s*\?\s*t\("sections\.today"\)\s*:\s*t\("sections\.selectedDay"\)\s*\}/,
+  "当天必须显示“今日打卡”，只有其他日期才显示“某日打卡”",
+);
 assert.match(source, /display\.stores\.map/,
   "今日考勤卡必须按分店渲染，而不是只取第一条排班");
 assert.match(source, /session\.segments\.map/,
