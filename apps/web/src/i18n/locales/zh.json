@@ -2580,7 +2580,8 @@
         "rejectOvertime": "拒绝加班",
         "viewMap": "地图",
         "viewSamples": "样本",
-        "openExternalMap": "打开外部地图"
+        "openExternalMap": "打开外部地图",
+        "loadTrajectoryMap": "加载轨迹地图"
       },
       "drawer": {
         "createSchedule": "新建排班",
@@ -2591,7 +2592,8 @@
         "approve": "通过审核",
         "reject": "拒绝审核",
         "locationMap": "位置地图",
-        "locationSamples": "班中定位样本"
+        "locationSamples": "班中定位样本",
+        "locationTrajectory": "班中位置轨迹"
       },
       "fields": {
         "store": "分店",
@@ -2611,6 +2613,9 @@
         "locationAccuracy": "定位精度",
         "locationCapturedAt": "采集时间",
         "deviceSystem": "设备系统",
+        "segment": "班段",
+        "trajectoryRange": "轨迹时段",
+        "sampleCount": "班中样本",
         "applicant": "申请人",
         "sourceType": "来源",
         "approvalDetail": "申请明细 / 审计",
@@ -2753,7 +2758,28 @@
         "locationNotRecorded": "未记录位置",
         "externalMapNotice": "默认不加载第三方地图。点击下方按钮会把该坐标发送给外部地图服务。",
         "loadLocationSamplesFailed": "加载班中定位样本失败",
-        "locationSamplesEmpty": "暂无班中定位样本"
+        "locationSamplesEmpty": "暂无班中定位样本",
+        "trajectoryInProgress": "进行中",
+        "trajectoryOpen": "进行中：当前仅展示上班打卡至最新查询时间的部分轨迹。",
+        "trajectoryNoSamples": "该班段暂无班中定位样本，仍保留上下班打卡端点。",
+        "trajectoryMapNeedsTwoPoints": "至少需要两个有效坐标才能绘制轨迹地图。",
+        "trajectoryMapPrivacy": "地图默认不加载。点击后会向 OpenStreetMap 请求轨迹范围内的地图图块。",
+        "trajectoryMapDisclaimer": "折线仅按时间连接实际采集点，不代表实际行走道路或导航路线。",
+        "trajectoryMapAria": "班中位置轨迹地图",
+        "trajectoryMapLoadFailed": "轨迹地图初始化失败，时间轴仍可正常查看。",
+        "trajectoryTileLoadFailed": "部分地图图块加载失败，轨迹点和时间轴不受影响。",
+        "trajectorySamplesTooDense": "单日定位样本过多，无法安全加载完整轨迹。",
+        "trajectoryPointClockIn": "上班打卡",
+        "trajectoryPointSample": "班中样本",
+        "trajectoryPointClockOut": "下班打卡",
+        "trajectoryReason": {
+          "INVALID_SELECTED_TIME": "所选打卡缺少有效 UTC 时间，无法生成轨迹。",
+          "SUPERSEDE_CYCLE": "打卡替代关系异常，无法确定最终有效打卡。",
+          "SUPERSEDE_TARGET_MISSING": "打卡替代关系缺少原始记录，无法确定最终有效打卡。",
+          "EFFECTIVE_PUNCH_NOT_FOUND": "无法找到所选记录对应的最终有效打卡。",
+          "SEGMENT_NOT_FOUND": "无法唯一识别所选打卡所属班段。",
+          "INVALID_DATE_RANGE": "班段日期范围异常，无法查询定位样本。"
+        }
       }
     },
     "devices": {
@@ -3740,6 +3766,7 @@
       "storeCode": "分店编码",
       "brandName": "品牌名称",
       "abn": "ABN",
+      "timeZone": "时区",
       "contactPhone": "联系电话",
       "contactEmail": "联系邮箱",
       "cashRegisterEnabled": "是否启用收银系统",
@@ -3748,6 +3775,7 @@
       "address": "地址",
       "storeNameRequired": "请输入分店名称",
       "storeCodeRequired": "请输入分店编码",
+      "timeZoneRequired": "请选择时区",
       "storeNameMaxLength": "分店名称不能超过 100 个字符",
       "storeCodeMaxLength": "分店编码不能超过 20 个字符",
       "brandNameMaxLength": "品牌名称不能超过 100 个字符",

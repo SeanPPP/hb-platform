@@ -1,5 +1,6 @@
 import type {
   AttendancePunch,
+  AttendancePunchMutationResult,
   AttendancePunchPayload,
   AttendancePunchVerificationPayload,
   AttendancePunchVerificationState,
@@ -19,6 +20,23 @@ function getBase64UrlDecodedLength(value: string) {
     return -1;
   }
   return Math.floor(value.length * 6 / 8);
+}
+
+function normalizeAttendanceMutationWorkDate(value: string) {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.\d{1,7})?)?$/,
+  );
+  if (!match) return "";
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day
+    ? `${match[1]}-${match[2]}-${match[3]}`
+    : "";
 }
 
 export function validateAttendanceQrToken(token: string) {
@@ -113,7 +131,7 @@ export function normalizeAttendanceQrResolveResult(
 export function normalizeAttendancePunchMutationResult(
   payload: unknown,
   normalized: AttendancePunch,
-): AttendancePunch {
+): AttendancePunchMutationResult {
   const raw = payload && typeof payload === "object" && !Array.isArray(payload)
     ? payload as Record<string, unknown>
     : {};
@@ -121,11 +139,17 @@ export function normalizeAttendancePunchMutationResult(
   const punchType = readResolveString(raw, "punchType", "PunchType");
   const storeCode = readResolveString(raw, "storeCode", "StoreCode");
   const serverTimeUtc = readResolveString(raw, "serverTimeUtc", "ServerTimeUtc");
+  const workDate = normalizeAttendanceMutationWorkDate(
+    readResolveString(raw, "workDate", "WorkDate"),
+  );
+  const storeTimeZone = readResolveString(raw, "storeTimeZone", "StoreTimeZone");
   if (
     !punchGuid
     || (punchType !== "ClockIn" && punchType !== "ClockOut")
     || !storeCode
     || !serverTimeUtc
+    || !workDate
+    || !storeTimeZone
   ) {
     throw Object.assign(new Error("ATTENDANCE_PUNCH_RESPONSE_INVALID"), {
       code: "ATTENDANCE_PUNCH_RESPONSE_INVALID",
@@ -138,6 +162,8 @@ export function normalizeAttendancePunchMutationResult(
     punchType,
     storeCode,
     serverTimeUtc,
+    workDate,
+    storeTimeZone,
   };
 }
 

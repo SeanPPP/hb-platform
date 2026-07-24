@@ -4,6 +4,10 @@ import { createAttendanceLocationSample } from "@/modules/attendance/api";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import type { AttendanceLocationSamplePayload } from "@/modules/attendance/types";
 import {
+  evaluateAttendanceLocationBatch,
+  type AttendanceLocationTrackingWindow,
+} from "@/modules/attendance/location-tracking-window";
+import {
   ATTENDANCE_LOCATION_TASK,
   LOCATION_SAMPLE_INTERVAL_MS,
   type ActiveShiftLocationContext,
@@ -36,14 +40,32 @@ if (!TaskManager.isTaskDefined(ATTENDANCE_LOCATION_TASK)) {
     }
 
     const context = await readActiveShiftContext();
-    if (!context?.storeCode || !shouldUpload(context.lastUploadedAtUtc)) {
+    if (!context?.storeCode) {
       return;
     }
 
     const locations = (data as { locations?: Location.LocationObject[] } | undefined)
       ?.locations;
-    const latestLocation = locations?.at(-1);
-    if (!latestLocation) {
+    const locationEntries = (locations ?? []).flatMap((location) => {
+      const capturedAt = new Date(location.timestamp);
+      return Number.isFinite(capturedAt.getTime())
+        ? [{ location, capturedAtUtc: capturedAt.toISOString() }]
+        : [];
+    });
+    const decision = evaluateAttendanceLocationBatch(
+      context as ActiveShiftLocationContext & AttendanceLocationTrackingWindow,
+      locationEntries.map((entry) => entry.capturedAtUtc),
+      new Date().toISOString(),
+    );
+    if (decision.shouldStop) {
+      // 系统回调可能晚于截止点；先清理原生任务，截止点之后的坐标不得上传。
+      await stopAttendanceLocationTracking();
+    }
+
+    const latestLocation = locationEntries.slice().reverse().find(
+      (entry) => entry.capturedAtUtc === decision.capturedAtUtc,
+    )?.location;
+    if (!latestLocation || !shouldUpload(context.lastUploadedAtUtc)) {
       return;
     }
 
@@ -57,16 +79,18 @@ if (!TaskManager.isTaskDefined(ATTENDANCE_LOCATION_TASK)) {
       locationLongitude: latestLocation.coords.longitude,
       locationAccuracy: latestLocation.coords.accuracy ?? undefined,
       locationPermissionStatus: "granted",
-      locationCapturedAtUtc: new Date(latestLocation.timestamp).toISOString(),
+      locationCapturedAtUtc: decision.capturedAtUtc,
     };
 
     try {
       // 班中定位是审计样本，成功上传后再记录节流时间，避免静默丢样本。
       await createAttendanceLocationSample(sample, { skipAuthRedirect: true });
-      await writeActiveShiftContext({
-        ...context,
-        lastUploadedAtUtc: new Date().toISOString(),
-      });
+      if (!decision.shouldStop) {
+        await writeActiveShiftContext({
+          ...context,
+          lastUploadedAtUtc: new Date().toISOString(),
+        });
+      }
     } catch (uploadError) {
       console.warn("[attendance-location] 上传班中定位失败", uploadError);
     }
@@ -101,7 +125,8 @@ export async function hasAttendanceBackgroundLocationPermission() {
 }
 
 export async function startAttendanceLocationTracking(
-  context: Omit<ActiveShiftLocationContext, "lastUploadedAtUtc">,
+  context: Omit<ActiveShiftLocationContext, "lastUploadedAtUtc">
+    & AttendanceLocationTrackingWindow,
 ) {
   if (isIosReviewSessionActive()) {
     // 审核模式仅模拟班中定位状态，不写本地任务上下文或启动后台定位。

@@ -8,6 +8,7 @@ export interface StoreDto {
   contactEmail?: string
   abn?: string
   brandName?: string
+  timeZoneId?: string
   isActive: boolean
   createdAt: string
   updatedAt: string
@@ -35,6 +36,7 @@ export interface CreateStoreDto {
   contactEmail?: string
   abn?: string
   brandName?: string
+  timeZoneId?: string
   isActive?: boolean
 }
 
@@ -47,6 +49,7 @@ export interface UpdateStoreDto {
   contactEmail?: string
   abn?: string
   brandName?: string
+  timeZoneId?: string
   isActive?: boolean
 }
 

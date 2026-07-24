@@ -221,12 +221,25 @@ namespace BlazorApp.Api.Services
             var existingSetItemNumbersTask = Task.Run(async () =>
             {
                 using var conn = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                return await conn.Queryable<DomesticProduct>()
+                var productItemNumbers = await conn.Queryable<DomesticProduct>()
                     .Where(dp =>
-                        !dp.IsDeleted && dp.HBProductNo != null && dp.HBProductNo.StartsWith(baseItemNumber)
+                        !dp.IsDeleted
+                        && dp.HBProductNo != null
+                        && dp.HBProductNo.StartsWith(baseItemNumber)
                     )
                     .Select(dp => dp.HBProductNo!)
                     .ToListAsync();
+                var relationItemNumbers = await conn.Queryable<DomesticSetProduct>()
+                    .Where(relation =>
+                        !relation.IsDeleted && relation.SetProductNo.StartsWith(baseItemNumber)
+                    )
+                    .Select(relation => relation.SetProductNo)
+                    .ToListAsync();
+
+                return productItemNumbers
+                    .Concat(relationItemNumbers)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             });
 
             var supplierCode = ExtractSupplierCodeFromItemNumber(baseItemNumber);
@@ -237,12 +250,25 @@ namespace BlazorApp.Api.Services
             var existingBarcodesTask = Task.Run(async () =>
             {
                 using var conn = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                return await conn.Queryable<DomesticProduct>()
+                var productBarcodes = await conn.Queryable<DomesticProduct>()
                     .Where(dp =>
                         dp.Barcode != null && !dp.IsDeleted && dp.Barcode.StartsWith(barcodePrefix)
                     )
                     .Select(dp => dp.Barcode!)
                     .ToListAsync();
+                var relationBarcodes = await conn.Queryable<DomesticSetProduct>()
+                    .Where(relation =>
+                        !relation.IsDeleted
+                        && relation.SetBarcode != null
+                        && relation.SetBarcode.StartsWith(barcodePrefix)
+                    )
+                    .Select(relation => relation.SetBarcode!)
+                    .ToListAsync();
+
+                return productBarcodes
+                    .Concat(relationBarcodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             });
 
             await Task.WhenAll(existingSetItemNumbersTask, existingBarcodesTask);
@@ -289,12 +315,25 @@ namespace BlazorApp.Api.Services
             var existingSetItemNumbersTask = Task.Run(async () =>
             {
                 using var conn = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                return await conn.Queryable<DomesticProduct>()
+                var productItemNumbers = await conn.Queryable<DomesticProduct>()
                     .Where(dp =>
-                        !dp.IsDeleted && dp.HBProductNo != null && dp.HBProductNo.StartsWith(baseItemNumber)
+                        !dp.IsDeleted
+                        && dp.HBProductNo != null
+                        && dp.HBProductNo.StartsWith(baseItemNumber)
                     )
                     .Select(dp => dp.HBProductNo!)
                     .ToListAsync();
+                var relationItemNumbers = await conn.Queryable<DomesticSetProduct>()
+                    .Where(relation =>
+                        !relation.IsDeleted && relation.SetProductNo.StartsWith(baseItemNumber)
+                    )
+                    .Select(relation => relation.SetProductNo)
+                    .ToListAsync();
+
+                return productItemNumbers
+                    .Concat(relationItemNumbers)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             });
 
             var supplierCode = ExtractSupplierCodeFromItemNumber(baseItemNumber);
@@ -305,12 +344,25 @@ namespace BlazorApp.Api.Services
             var existingBarcodesTask = Task.Run(async () =>
             {
                 using var conn = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                return await conn.Queryable<DomesticProduct>()
+                var productBarcodes = await conn.Queryable<DomesticProduct>()
                     .Where(dp =>
                         dp.Barcode != null && !dp.IsDeleted && dp.Barcode.StartsWith(barcodePrefix)
                     )
                     .Select(dp => dp.Barcode!)
                     .ToListAsync();
+                var relationBarcodes = await conn.Queryable<DomesticSetProduct>()
+                    .Where(relation =>
+                        !relation.IsDeleted
+                        && relation.SetBarcode != null
+                        && relation.SetBarcode.StartsWith(barcodePrefix)
+                    )
+                    .Select(relation => relation.SetBarcode!)
+                    .ToListAsync();
+
+                return productBarcodes
+                    .Concat(relationBarcodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             });
 
             await Task.WhenAll(existingSetItemNumbersTask, existingBarcodesTask);

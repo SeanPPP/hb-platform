@@ -20,11 +20,7 @@ namespace BlazorApp.Api.Services.React
 {
     public class AttendanceReactService : IAttendanceReactService
     {
-        private const string DefaultStoreTimeZone = "Australia/Sydney";
-        private static readonly HashSet<string> SupportedStoreTimeZones = new(
-            new[] { "Australia/Brisbane", "Australia/Melbourne", DefaultStoreTimeZone },
-            StringComparer.OrdinalIgnoreCase
-        );
+        private const string DefaultStoreTimeZone = StoreTimeZonePolicy.Sydney;
 
         private readonly ISqlSugarClient _db;
         private readonly ICurrentUserService _currentUserService;
@@ -1248,9 +1244,17 @@ namespace BlazorApp.Api.Services.React
             }
 
             var capturedAt = NormalizeUtc(request.LocationCapturedAtUtc)!.Value;
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            if (!await HasActiveLocationSampleShiftAsync(userGuid, storeCode, capturedAt))
+            {
+                return ApiResponse<AttendanceLocationSampleDto>.Error(
+                    "当前没有有效的班中打卡，无法上传定位",
+                    "ACTIVE_SHIFT_REQUIRED"
+                );
+            }
+
             var locationLatitude = request.LocationLatitude!.Value;
             var locationLongitude = request.LocationLongitude!.Value;
-            var now = DateTime.UtcNow;
             var sample = new AttendanceLocationSample
             {
                 SampleGuid = Guid.NewGuid().ToString(),
@@ -1272,6 +1276,69 @@ namespace BlazorApp.Api.Services.React
             // 关键位置：班中定位样本按追加写入，不反向修改打卡记录，避免轨迹和打卡状态耦合。
             await _db.Insertable(sample).ExecuteCommandAsync();
             return ApiResponse<AttendanceLocationSampleDto>.OK(ToDto(sample), "定位已保存");
+        }
+
+        private async Task<bool> HasActiveLocationSampleShiftAsync(
+            string userGuid,
+            string storeCode,
+            DateTime capturedAt
+        )
+        {
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, null);
+            var capturedAtUtc = DateTime.SpecifyKind(capturedAt, DateTimeKind.Utc);
+            var localDayStartUtc = ConvertStoreLocalToUtc(
+                ConvertUtcToStoreLocal(capturedAtUtc, storeTimeZone).Date,
+                storeTimeZone
+            );
+            var maximumShiftStartUtc = capturedAtUtc.Subtract(TimeSpan.FromHours(10));
+            var validWindowStartUtc = localDayStartUtc > maximumShiftStartUtc
+                ? localDayStartUtc
+                : maximumShiftStartUtc;
+
+            var candidatePunches = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.UserGuid == userGuid
+                    && item.StoreCode == storeCode
+                    && item.PunchTimeUtc > validWindowStartUtc
+                    && item.PunchTimeUtc <= capturedAtUtc
+                )
+                .ToListAsync();
+            if (candidatePunches.Count == 0)
+            {
+                return false;
+            }
+            candidatePunches = candidatePunches
+                .OrderByDescending(item => item.PunchTimeUtc)
+                .ThenByDescending(item => item.Id)
+                .ToList();
+
+            var candidatePunchGuids = candidatePunches
+                .Select(item => item.PunchGuid)
+                .ToList();
+            var supersededPunchGuids = await _db.Queryable<AttendancePunch>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.SupersedesPunchGuid != null
+                    && candidatePunchGuids.Contains(item.SupersedesPunchGuid)
+                )
+                .Select(item => item.SupersedesPunchGuid!)
+                .ToListAsync();
+            var supersededPunchGuidSet = supersededPunchGuids.ToHashSet(
+                StringComparer.Ordinal
+            );
+            var latestEffectivePunch = candidatePunches.FirstOrDefault(item =>
+                !supersededPunchGuidSet.Contains(item.PunchGuid)
+            );
+
+            // 只允许门店本地当日、10 小时以内的最后一条有效上班卡，且样本必须在该卡之后采集。
+            return string.Equals(
+                latestEffectivePunch?.PunchType,
+                "ClockIn",
+                StringComparison.OrdinalIgnoreCase
+            )
+                && latestEffectivePunch!.PunchTimeUtc
+                    <= capturedAtUtc;
         }
 
         public async Task<ApiResponse<List<AttendanceLeaveRequestDto>>> GetMyLeaveRequestsAsync()
@@ -3976,24 +4043,16 @@ namespace BlazorApp.Api.Services.React
             model.UpdatedBy = updatedBy;
         }
 
-        private static string NormalizeStoreTimeZone(string? storeTimeZone)
-        {
-            var normalized = storeTimeZone?.Trim();
-            return !string.IsNullOrWhiteSpace(normalized) && SupportedStoreTimeZones.Contains(normalized)
-                ? normalized
-                : DefaultStoreTimeZone;
-        }
-
         private async Task<string> ResolveStoreTimeZoneAsync(string? storeCode, string? fallbackTimeZone)
         {
-            // 关键位置：优先用门店信息推导时区，避免 Brisbane 在夏令时被默认当成 Sydney。
+            // 客户端请求字段只为兼容旧 API 保留，考勤日界必须以门店配置或门店资料为准。
             var resolved = await ResolveStoreTimeZoneFromStoreAsync(storeCode);
             if (!string.IsNullOrWhiteSpace(resolved))
             {
                 return resolved;
             }
 
-            return NormalizeStoreTimeZone(fallbackTimeZone);
+            return DefaultStoreTimeZone;
         }
 
         private async Task<string?> ResolveStoreTimeZoneFromStoreAsync(string? storeCode)
@@ -4009,8 +4068,22 @@ namespace BlazorApp.Api.Services.React
             return store == null ? null : ResolveStoreTimeZoneFromStore(store);
         }
 
-        private static string? ResolveStoreTimeZoneFromStore(Store store)
+        private string? ResolveStoreTimeZoneFromStore(Store store)
         {
+            if (!string.IsNullOrWhiteSpace(store.TimeZoneId))
+            {
+                if (StoreTimeZonePolicy.TryNormalize(store.TimeZoneId, out var configuredTimeZone))
+                {
+                    return configuredTimeZone;
+                }
+
+                // 历史数据可能绕过 CRUD 写入；不能让无效配置覆盖既有的地址推导和 Sydney 默认值。
+                _logger.LogWarning(
+                    "门店 {StoreCode} 配置了不支持的考勤时区 {TimeZoneId}，将按门店资料回退推导",
+                    store.StoreCode,
+                    store.TimeZoneId);
+            }
+
             var postcode = PublicHolidaySyncHelper.ExtractPostcodeFromAddress(store.Address);
             var jurisdiction = PublicHolidaySyncHelper.ResolveJurisdictionFromPostcode(postcode);
             if (jurisdiction == "QLD")

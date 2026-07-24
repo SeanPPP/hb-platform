@@ -107,6 +107,14 @@ export interface AttendancePunch {
   lateDepartureMinutes?: number;
 }
 
+export interface AttendancePunchMutationResult extends AttendancePunch {
+  storeCode: string;
+  workDate: string;
+  punchType: "ClockIn" | "ClockOut";
+  serverTimeUtc: string;
+  storeTimeZone: string;
+}
+
 export interface AttendancePunchSegment {
   segmentIndex: number;
   segmentNumber: number;

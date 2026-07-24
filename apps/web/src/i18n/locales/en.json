@@ -2580,7 +2580,8 @@
         "rejectOvertime": "Reject overtime",
         "viewMap": "Map",
         "viewSamples": "Samples",
-        "openExternalMap": "Open external map"
+        "openExternalMap": "Open external map",
+        "loadTrajectoryMap": "Load trajectory map"
       },
       "drawer": {
         "createSchedule": "New Schedule",
@@ -2591,7 +2592,8 @@
         "approve": "Approve Review",
         "reject": "Reject Review",
         "locationMap": "Location Map",
-        "locationSamples": "Shift Location Samples"
+        "locationSamples": "Shift Location Samples",
+        "locationTrajectory": "Shift Location Trajectory"
       },
       "fields": {
         "store": "Store",
@@ -2611,6 +2613,9 @@
         "locationAccuracy": "Accuracy",
         "locationCapturedAt": "Captured At",
         "deviceSystem": "Device System",
+        "segment": "Segment",
+        "trajectoryRange": "Trajectory period",
+        "sampleCount": "Shift samples",
         "applicant": "Applicant",
         "sourceType": "Source",
         "approvalDetail": "Request details / audit",
@@ -2753,7 +2758,28 @@
         "locationNotRecorded": "Location not recorded",
         "externalMapNotice": "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",
         "loadLocationSamplesFailed": "Failed to load shift location samples",
-        "locationSamplesEmpty": "No shift location samples"
+        "locationSamplesEmpty": "No shift location samples",
+        "trajectoryInProgress": "In progress",
+        "trajectoryOpen": "In progress: this is a partial trajectory from clock-in to the latest query time.",
+        "trajectoryNoSamples": "No shift location samples were recorded for this segment; punch endpoints are still shown.",
+        "trajectoryMapNeedsTwoPoints": "At least two valid coordinates are required to draw a trajectory map.",
+        "trajectoryMapPrivacy": "The map is not loaded by default. Loading it requests map tiles for the trajectory area from OpenStreetMap.",
+        "trajectoryMapDisclaimer": "The line only connects recorded points in time order; it is not a road or navigation route.",
+        "trajectoryMapAria": "Shift location trajectory map",
+        "trajectoryMapLoadFailed": "The trajectory map could not be initialized. The timeline remains available.",
+        "trajectoryTileLoadFailed": "Some map tiles failed to load. Trajectory points and the timeline are unaffected.",
+        "trajectorySamplesTooDense": "There are too many location samples in a single day to load the complete trajectory safely.",
+        "trajectoryPointClockIn": "Clock in",
+        "trajectoryPointSample": "Shift sample",
+        "trajectoryPointClockOut": "Clock out",
+        "trajectoryReason": {
+          "INVALID_SELECTED_TIME": "The selected punch has no valid UTC time, so a trajectory cannot be generated.",
+          "SUPERSEDE_CYCLE": "The punch replacement chain is invalid, so the effective punch cannot be determined.",
+          "SUPERSEDE_TARGET_MISSING": "The punch replacement chain is missing its original record, so the effective punch cannot be determined.",
+          "EFFECTIVE_PUNCH_NOT_FOUND": "The final effective punch for the selected record could not be found.",
+          "SEGMENT_NOT_FOUND": "The segment containing the selected punch could not be uniquely identified.",
+          "INVALID_DATE_RANGE": "The segment date range is invalid, so location samples cannot be queried."
+        }
       }
     },
     "devices": {
@@ -3740,6 +3766,7 @@
       "storeCode": "Store Code",
       "brandName": "Brand Name",
       "abn": "ABN",
+      "timeZone": "Time Zone",
       "contactPhone": "Contact Phone",
       "contactEmail": "Contact Email",
       "cashRegisterEnabled": "Cash Register Enabled",
@@ -3748,6 +3775,7 @@
       "address": "Address",
       "storeNameRequired": "Please enter store name",
       "storeCodeRequired": "Please enter store code",
+      "timeZoneRequired": "Please select a time zone",
       "storeNameMaxLength": "Store name cannot exceed 100 characters",
       "storeCodeMaxLength": "Store code cannot exceed 20 characters",
       "brandNameMaxLength": "Brand name cannot exceed 100 characters",

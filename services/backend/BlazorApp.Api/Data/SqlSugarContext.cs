@@ -256,6 +256,10 @@ namespace BlazorApp.Api.Data
             new SimpleClient<DomesticSetProduct>(_db);
         public SimpleClient<DomesticProductCreationLog> DomesticProductCreationLogDb =>
             new SimpleClient<DomesticProductCreationLog>(_db);
+        public SimpleClient<DomesticSetTemplate> DomesticSetTemplateDb =>
+            new SimpleClient<DomesticSetTemplate>(_db);
+        public SimpleClient<DomesticSetTemplateItem> DomesticSetTemplateItemDb =>
+            new SimpleClient<DomesticSetTemplateItem>(_db);
 
         // 货柜相关实体
         public SimpleClient<Container> ContainerDb => new SimpleClient<Container>(_db);
@@ -389,6 +393,7 @@ namespace BlazorApp.Api.Data
                 // 智能初始化：只在需要时创建或更新表
                 InitializeTablesIfNeeded();
                 PreorderSchemaBootstrap.EnsureIndexesAsync(_db).GetAwaiter().GetResult();
+                EnsureDomesticSetProductNameColumn();
                 EnsureEmployeeProfilePhoneColumn();
                 EnsureUserLastLoginIpColumn();
                 EnsureLocalSupplierImageBaseUrlColumn();
@@ -396,6 +401,7 @@ namespace BlazorApp.Api.Data
                 EnsureSalesStatisticRefreshStateJobColumns();
                 EnsureInvoiceEmailConfigurationMultiAccountSchema();
                 EnsureContainerDetailSchemaColumns();
+                EnsureDomesticSetTemplateEnabledSupplierNameUniqueIndex();
                 CreateNormalIndexes();
                 EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
 
@@ -460,6 +466,8 @@ namespace BlazorApp.Api.Data
                 typeof(ProductSetCode),
                 typeof(DomesticSetProduct),
                 typeof(DomesticProductCreationLog), // ⭐ 新增：商品创建记录表
+                typeof(DomesticSetTemplate),
+                typeof(DomesticSetTemplateItem),
                 typeof(Location),
                 typeof(ProductLocation),
                 typeof(Container),
@@ -913,6 +921,24 @@ namespace BlazorApp.Api.Data
             // 老库无损补列：上次价格是货柜明细快照，只在新建明细或显式回填时写入。
             EnsureColumn(tableName, "LastImportPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
             EnsureColumn(tableName, "LastOEMPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
+        }
+
+        private void EnsureDomesticSetProductNameColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(DomesticSetProduct));
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            // 旧关系表无损补列；历史数据允许为空，读取时继续回退到日志或旧子主档名称。
+            EnsureColumn(
+                tableName,
+                nameof(DomesticSetProduct.SetProductName),
+                "nvarchar(200)",
+                "varchar(200)",
+                "varchar(200)"
+            );
         }
 
         private void EnsureColumn(
@@ -1586,6 +1612,7 @@ namespace BlazorApp.Api.Data
             try
             {
                 Console.WriteLine("开始创建GUID字段的索引...");
+                EnsureDomesticSetTemplateEnabledSupplierNameUniqueIndex();
 
                 if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                 {
@@ -1696,6 +1723,45 @@ namespace BlazorApp.Api.Data
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️ 创建 StoreLocalSupplierInvoice 业务唯一索引失败: {ex.Message}");
+            }
+        }
+
+        private void EnsureDomesticSetTemplateEnabledSupplierNameUniqueIndex()
+        {
+            const string tableName = "DomesticSetTemplate";
+            const string indexName = "IX_DomesticSetTemplate_EnabledSupplierTemplateName_Unique";
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}')) "
+                    + $"CREATE UNIQUE INDEX [{indexName}] ON [{tableName}]([SupplierCode], [TemplateName]) "
+                    + "WHERE [IsDeleted] = 0 AND [IsEnabled] = 1"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE UNIQUE INDEX IF NOT EXISTS \"{indexName}\" "
+                    + $"ON \"{tableName}\" (\"SupplierCode\", \"TemplateName\") "
+                    + "WHERE \"IsDeleted\" = false AND \"IsEnabled\" = true"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE UNIQUE INDEX IF NOT EXISTS [{indexName}] "
+                    + $"ON [{tableName}]([SupplierCode], [TemplateName]) "
+                    + "WHERE [IsDeleted] = 0 AND [IsEnabled] = 1"
+                );
             }
         }
 

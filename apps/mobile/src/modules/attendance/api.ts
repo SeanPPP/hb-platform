@@ -18,6 +18,7 @@ import type {
   AttendanceLocationSamplePayload,
   AttendancePublishWeekPayload,
   AttendancePunch,
+  AttendancePunchMutationResult,
   AttendancePunchAdjustment,
   AttendancePunchAdjustmentPayload,
   AttendanceAdjustmentPreview,
@@ -544,7 +545,7 @@ export async function cancelAvailability(availabilityGuid: string): Promise<void
 
 export async function punchAttendance(
   payload: AttendancePunchPayload,
-): Promise<AttendancePunch> {
+): Promise<AttendancePunchMutationResult> {
   const response = await apiClient.post(
     `${ATTENDANCE_BASE}/punch`,
     sanitizePayload({ ...payload }),

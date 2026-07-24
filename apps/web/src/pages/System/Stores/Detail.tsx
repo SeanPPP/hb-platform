@@ -6,6 +6,7 @@ import PageContainer from '../../../components/PageContainer'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { getStoreByGuid } from '../../../services/storeService'
 import type { StoreDto } from '../../../types/store'
+import { formatStoreTimeZoneId } from './timeZoneOptions'
 
 export default function StoreDetailPage() {
   const { t } = useTranslation()
@@ -51,6 +52,7 @@ export default function StoreDetailPage() {
           <Descriptions.Item label={t('system.stores.storeCode')}>{store.storeCode}</Descriptions.Item>
           <Descriptions.Item label={t('system.stores.brandName')}>{store.brandName || '--'}</Descriptions.Item>
           <Descriptions.Item label={t('system.stores.abn')}>{store.abn || '--'}</Descriptions.Item>
+          <Descriptions.Item label={t('system.stores.timeZone')}>{formatStoreTimeZoneId(store.timeZoneId)}</Descriptions.Item>
           <Descriptions.Item label={t('system.stores.contactPhone')}>{store.contactPhone || '--'}</Descriptions.Item>
           <Descriptions.Item label={t('system.stores.cashRegisterEnabled')}>
             <Tag color={store.isActive ? 'success' : 'default'}>{store.isActive ? t('common.active') : t('common.inactive')}</Tag>

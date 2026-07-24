@@ -2,6 +2,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
+  SaveOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
@@ -13,19 +14,29 @@ import {
   InputNumber,
   message,
   Modal,
+  Popconfirm,
   Row,
   Select,
   Space,
   Steps,
+  Switch,
   Tag,
   Table,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
-import { createBatch, getActivePrefixes } from '../../../services/domesticProductCreationService'
+import {
+  createBatch,
+  createSetProductTemplate,
+  deactivateSetProductTemplate,
+  getActivePrefixes,
+  getSetProductTemplate,
+  getSetProductTemplates,
+  updateSetProductTemplate,
+} from '../../../services/domesticProductCreationService'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
-import type { BatchInfo, CreateBatchRequest } from '../../../types/domesticProductCreation'
+import type { BatchInfo, CreateBatchRequest, SetProductTemplateDetail, SetProductTemplatePayload, SetProductTemplateSummary } from '../../../types/domesticProductCreation'
 import {
   applyBatchAddProducts,
   buildPreviewItems,
@@ -37,13 +48,25 @@ import {
 } from './batchCreateRules'
 import type { BatchAddMode, DraftPreviewItem, DraftProductItem, DraftSetSubItem } from './batchCreateRules'
 import PrefixCodeManageModal from './PrefixCodeManageModal'
+import { buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
 
 type ProductItem = DraftProductItem
 type SetSubItem = DraftSetSubItem
 type PreviewItem = DraftPreviewItem
 
+interface SetTemplateFormValues {
+  templateName: string
+  setProductName: string
+  isEnabled: boolean
+  subItems: Array<{ productName?: string; privateLabelPrice?: number | null }>
+}
+
 const PRODUCT_TABLE_SCROLL_X = 1080
 const PREVIEW_TABLE_SCROLL_X = 760
+
+function getSetTemplateErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message : fallback
+}
 
 interface BatchCreateModalProps {
   visible: boolean
@@ -54,6 +77,8 @@ interface BatchCreateModalProps {
 export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchCreateModalProps) {
   const { t } = useTranslation()
   const [form] = Form.useForm()
+  const [setTemplateForm] = Form.useForm<SetTemplateFormValues>()
+  const [saveTemplateForm] = Form.useForm<{ templateName: string }>()
   const [currentStep, setCurrentStep] = useState(0)
   const [loading, setLoading] = useState(false)
   const [suppliers, setSuppliers] = useState<Array<{ supplierCode: string; supplierName: string }>>([])
@@ -74,6 +99,15 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [batchEditNameValue, setBatchEditNameValue] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([])
+  const [setTemplates, setSetTemplates] = useState<SetProductTemplateSummary[]>([])
+  const [managedSetTemplates, setManagedSetTemplates] = useState<SetProductTemplateSummary[]>([])
+  const [selectedSetTemplateId, setSelectedSetTemplateId] = useState<string | undefined>()
+  const [setTemplateLoading, setSetTemplateLoading] = useState(false)
+  const [setTemplateManageVisible, setSetTemplateManageVisible] = useState(false)
+  const [setTemplateEditing, setSetTemplateEditing] = useState<SetProductTemplateDetail | null>(null)
+  const [setTemplateSaving, setSetTemplateSaving] = useState(false)
+  const [saveTemplateVisible, setSaveTemplateVisible] = useState(false)
+  const [templateSourceProductKey, setTemplateSourceProductKey] = useState<string | null>(null)
   const watchedPrefixCode = Form.useWatch('prefixCode', form) || ''
 
   const createEmptyProduct = useCallback(
@@ -111,7 +145,17 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setBatchEditNameValue('')
     setSelectedRowKeys([])
     setExpandedRowKeys([])
-  }, [createEmptyProduct, form])
+    setSetTemplates([])
+    setManagedSetTemplates([])
+    setSelectedSetTemplateId(undefined)
+    setSetTemplateManageVisible(false)
+    setSetTemplateEditing(null)
+    setSetTemplateSaving(false)
+    setSaveTemplateVisible(false)
+    setTemplateSourceProductKey(null)
+    setTemplateForm.resetFields()
+    saveTemplateForm.resetFields()
+  }, [createEmptyProduct, form, saveTemplateForm, setTemplateForm])
 
   useEffect(() => {
     if (visible) {
@@ -131,6 +175,215 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     }
   }
 
+  const loadSetTemplates = useCallback(async (supplierCode: string, includeInactive = false) => {
+    if (!supplierCode) {
+      if (includeInactive) setManagedSetTemplates([])
+      else setSetTemplates([])
+      return
+    }
+
+    try {
+      setSetTemplateLoading(true)
+      const response = await getSetProductTemplates(supplierCode, includeInactive)
+      if (!response.success) {
+        message.error(response.message || t('productCreation.loadSetTemplatesFailed', '加载套装模板失败'))
+        return
+      }
+      if (form.getFieldValue('supplierCode') !== supplierCode) return
+      if (includeInactive) setManagedSetTemplates(response.data || [])
+      else setSetTemplates((response.data || []).filter((template) => template.isEnabled))
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.loadSetTemplatesFailed', '加载套装模板失败')))
+    } finally {
+      setSetTemplateLoading(false)
+    }
+  }, [form, t])
+
+  const getSetTemplateValidationMessage = useCallback((validationError: ReturnType<typeof validateSetTemplateProduct>) => {
+    const messages = {
+      missing_set_product_name: t('productCreation.setTemplateSetNameRequired', '请填写套装商品名'),
+      missing_sub_items: t('productCreation.setTemplateSubItemsRequired', '模板至少需要一个子项'),
+      missing_sub_item_name: t('productCreation.setTemplateSubItemNameRequired', '请完整填写模板子项名称'),
+      missing_sub_item_price: t('productCreation.setTemplateSubItemPriceRequired', '请完整填写模板子项零售价'),
+      invalid_sub_item_price: t('productCreation.setTemplateSubItemPriceInvalid', '模板子项零售价不能小于 0'),
+    }
+    return validationError ? messages[validationError] : undefined
+  }, [t])
+
+  const handleApplySetTemplate = useCallback(async (templateId: string) => {
+    const supplierCode = form.getFieldValue('supplierCode')
+    if (!supplierCode) return
+    try {
+      setSetTemplateLoading(true)
+      const response = await getSetProductTemplate(templateId, supplierCode)
+      if (!response.success || !response.data) {
+        message.error(response.message || t('productCreation.loadSetTemplateFailed', '加载套装模板详情失败'))
+        return
+      }
+      if (!response.data.isEnabled || response.data.supplierCode !== form.getFieldValue('supplierCode')) {
+        message.error(t('productCreation.setTemplateUnavailable', '当前供应商不可使用该套装模板'))
+        return
+      }
+      const draft = createSetDraftFromTemplate(response.data, products.length)
+      setProducts((current) => [...current, draft])
+      setExpandedRowKeys((keys) => Array.from(new Set([...keys, draft.key])))
+      setSelectedSetTemplateId(undefined)
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.loadSetTemplateFailed', '加载套装模板详情失败')))
+    } finally {
+      setSetTemplateLoading(false)
+    }
+  }, [form, products.length, t])
+
+  const handleOpenSetTemplateManager = useCallback(() => {
+    if (!selectedSupplier?.code) {
+      message.warning(t('domesticProducts.selectSupplier', '请选择供应商'))
+      return
+    }
+    setSetTemplateManageVisible(true)
+    void loadSetTemplates(selectedSupplier.code, true)
+  }, [loadSetTemplates, selectedSupplier?.code, t])
+
+  const handleEditSetTemplate = useCallback(async (templateId: string) => {
+    if (!selectedSupplier?.code) return
+    try {
+      setSetTemplateLoading(true)
+      const response = await getSetProductTemplate(templateId, selectedSupplier.code)
+      if (!response.success || !response.data) {
+        message.error(response.message || t('productCreation.loadSetTemplateFailed', '加载套装模板详情失败'))
+        return
+      }
+      if (response.data.supplierCode !== form.getFieldValue('supplierCode')) return
+      setSetTemplateEditing(response.data)
+      setTemplateForm.setFieldsValue({
+        templateName: response.data.templateName,
+        setProductName: response.data.setProductName,
+        isEnabled: response.data.isEnabled,
+        subItems: response.data.subItems.map((item) => ({
+          productName: item.productName,
+          privateLabelPrice: item.privateLabelPrice,
+        })),
+      })
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.loadSetTemplateFailed', '加载套装模板详情失败')))
+    } finally {
+      setSetTemplateLoading(false)
+    }
+  }, [form, selectedSupplier?.code, setTemplateForm, t])
+
+  const handleSaveSetTemplateEdit = useCallback(async () => {
+    if (!selectedSupplier?.code || !setTemplateEditing) return
+    try {
+      const values = await setTemplateForm.validateFields()
+      const editingProduct: ProductItem = {
+        key: setTemplateEditing.templateId,
+        productType: ProductCreationType.SET,
+        productName: values.setProductName,
+        subItems: (values.subItems || []).map((item, index) => ({
+          key: `template-edit-${index}`,
+          productName: item.productName,
+          privateLabelPrice: item.privateLabelPrice,
+        })),
+      }
+      const validationError = validateSetTemplateProduct(editingProduct)
+      if (validationError) {
+        message.error(getSetTemplateValidationMessage(validationError))
+        return
+      }
+      const payload: SetProductTemplatePayload = buildSetProductTemplatePayload(
+        selectedSupplier.code,
+        values.templateName,
+        editingProduct,
+        values.isEnabled,
+      )
+      setSetTemplateSaving(true)
+      const response = await updateSetProductTemplate(setTemplateEditing.templateId, selectedSupplier.code, payload)
+      if (!response.success) {
+        message.error(response.message || t('productCreation.saveSetTemplateFailed', '保存套装模板失败'))
+        return
+      }
+      message.success(t('productCreation.saveSetTemplateSuccess', '套装模板已保存'))
+      setSetTemplateEditing(null)
+      setTemplateForm.resetFields()
+      await Promise.all([
+        loadSetTemplates(selectedSupplier.code, true),
+        loadSetTemplates(selectedSupplier.code),
+      ])
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.saveSetTemplateFailed', '保存套装模板失败')))
+    } finally {
+      setSetTemplateSaving(false)
+    }
+  }, [getSetTemplateValidationMessage, loadSetTemplates, selectedSupplier?.code, setTemplateEditing, setTemplateForm, t])
+
+  const handleDeactivateSetTemplate = useCallback(async (templateId: string) => {
+    if (!selectedSupplier?.code) return
+    try {
+      setSetTemplateLoading(true)
+      const response = await deactivateSetProductTemplate(templateId, selectedSupplier.code)
+      if (!response.success) {
+        message.error(response.message || t('productCreation.deactivateSetTemplateFailed', '停用套装模板失败'))
+        return
+      }
+      message.success(t('productCreation.deactivateSetTemplateSuccess', '套装模板已停用'))
+      await Promise.all([
+        loadSetTemplates(selectedSupplier.code, true),
+        loadSetTemplates(selectedSupplier.code),
+      ])
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.deactivateSetTemplateFailed', '停用套装模板失败')))
+    } finally {
+      setSetTemplateLoading(false)
+    }
+  }, [loadSetTemplates, selectedSupplier?.code, t])
+
+  const handleOpenSaveSetTemplate = useCallback((productKey: string) => {
+    const product = products.find((item) => item.key === productKey)
+    if (!selectedSupplier?.code) {
+      message.warning(t('domesticProducts.selectSupplier', '请选择供应商'))
+      return
+    }
+    if (!product || product.productType !== ProductCreationType.SET) return
+    const validationError = validateSetTemplateProduct(product)
+    if (validationError) {
+      message.error(getSetTemplateValidationMessage(validationError))
+      return
+    }
+    setTemplateSourceProductKey(productKey)
+    saveTemplateForm.setFieldsValue({ templateName: product.productName?.trim() || '' })
+    setSaveTemplateVisible(true)
+  }, [getSetTemplateValidationMessage, products, saveTemplateForm, selectedSupplier?.code, t])
+
+  const handleSaveSetTemplateFromDraft = useCallback(async () => {
+    if (!selectedSupplier?.code || !templateSourceProductKey) return
+    const product = products.find((item) => item.key === templateSourceProductKey)
+    if (!product || product.productType !== ProductCreationType.SET) return
+    const validationError = validateSetTemplateProduct(product)
+    if (validationError) {
+      message.error(getSetTemplateValidationMessage(validationError))
+      return
+    }
+    try {
+      const values = await saveTemplateForm.validateFields()
+      const payload = buildSetProductTemplatePayload(selectedSupplier.code, values.templateName, product)
+      setSetTemplateSaving(true)
+      const response = await createSetProductTemplate(payload)
+      if (!response.success) {
+        message.error(response.message || t('productCreation.saveSetTemplateFailed', '保存套装模板失败'))
+        return
+      }
+      message.success(t('productCreation.saveSetTemplateSuccess', '套装模板已保存'))
+      setSaveTemplateVisible(false)
+      setTemplateSourceProductKey(null)
+      saveTemplateForm.resetFields()
+      await loadSetTemplates(selectedSupplier.code)
+    } catch (error) {
+      message.error(getSetTemplateErrorMessage(error, t('productCreation.saveSetTemplateFailed', '保存套装模板失败')))
+    } finally {
+      setSetTemplateSaving(false)
+    }
+  }, [getSetTemplateValidationMessage, loadSetTemplates, products, saveTemplateForm, selectedSupplier?.code, t, templateSourceProductKey])
+
   const handleAddProduct = useCallback(
     (type: ProductCreationType) => {
       const newProduct = createEmptyProduct(type, products.length)
@@ -144,7 +397,11 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
 
   const handleAddSubItem = useCallback((setKey: string) => {
     const newSubItem = createDraftSetSubItem()
-    setProducts((current) => current.map((item) => (item.key === setKey ? { ...item, subItems: [...(item.subItems || []), newSubItem] } : item)))
+    setProducts((current) => current.map((item) => {
+      if (item.key !== setKey) return item
+      const subItems = [...(item.subItems || []), newSubItem]
+      return { ...item, subItems, setQuantity: subItems.length }
+    }))
   }, [])
 
   const handleBatchAdd = useCallback(
@@ -188,7 +445,11 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   )
 
   const handleDeleteSubItem = useCallback((setKey: string, subKey: string) => {
-    setProducts((current) => current.map((item) => (item.key === setKey ? { ...item, subItems: (item.subItems || []).filter((subItem) => subItem.key !== subKey) } : item)))
+    setProducts((current) => current.map((item) => {
+      if (item.key !== setKey) return item
+      const subItems = (item.subItems || []).filter((subItem) => subItem.key !== subKey)
+      return { ...item, subItems, setQuantity: subItems.length }
+    }))
   }, [])
 
   const handleUpdateSubItem = useCallback((setKey: string, subKey: string, field: keyof SetSubItem, value: unknown) => {
@@ -350,11 +611,19 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     (supplierCode: string) => {
       form.setFieldValue('prefixCode', undefined)
       setPrefixCodes([])
+      setSetTemplates([])
+      setManagedSetTemplates([])
+      setSelectedSetTemplateId(undefined)
+      setSetTemplateManageVisible(false)
+      setSetTemplateEditing(null)
       const supplier = suppliers.find((s) => s.supplierCode === supplierCode)
       setSelectedSupplier(supplier ? { code: supplier.supplierCode, name: supplier.supplierName } : null)
-      if (supplierCode) loadPrefixes(supplierCode)
+      if (supplierCode) {
+        loadPrefixes(supplierCode)
+        void loadSetTemplates(supplierCode)
+      }
     },
-    [form, suppliers],
+    [form, loadSetTemplates, suppliers],
   )
 
   const productColumns: ColumnsType<ProductItem> = [
@@ -428,11 +697,12 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     {
       title: t('common.action', '操作'),
       key: 'actions',
-      width: 112,
+      width: 170,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
           {record.productType === ProductCreationType.SET && <Button type="text" size="small" icon={<PlusOutlined />} onClick={() => handleAddSubItem(record.key)}>{t('productCreation.setSubItem', '子项')}</Button>}
+          {record.productType === ProductCreationType.SET && <Button type="text" size="small" icon={<SaveOutlined />} onClick={() => handleOpenSaveSetTemplate(record.key)}>{t('productCreation.saveSetTemplate', '存模板')}</Button>}
           <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDeleteProduct(record.key)} disabled={products.length <= 1} />
         </Space>
       ),
@@ -555,6 +825,24 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
             <Space wrap style={{ marginBottom: 16 }}>
               <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.NORMAL)}>{t('productCreation.normal', '普通')}</Button>
               <Button icon={<PlusOutlined />} onClick={() => handleAddProduct(ProductCreationType.SET)}>{t('productCreation.set', '套装')}</Button>
+              <Select
+                value={selectedSetTemplateId}
+                allowClear
+                loading={setTemplateLoading}
+                placeholder={t('productCreation.selectSetTemplate', '选择套装模板')}
+                style={{ width: 220 }}
+                onChange={(value) => {
+                  setSelectedSetTemplateId(value)
+                  if (value) void handleApplySetTemplate(value)
+                }}
+                options={setTemplates
+                  .filter((template) => template.isEnabled)
+                  .map((template) => ({
+                    value: template.templateId,
+                    label: `${template.templateName} · ${template.setProductName} (${template.setQuantity})`,
+                  }))}
+              />
+              <Button type="dashed" icon={<SettingOutlined />} onClick={handleOpenSetTemplateManager}>{t('productCreation.manageSetTemplates', '管理模板')}</Button>
               <Button type="dashed" onClick={() => setBatchAddVisible(true)}>{t('productCreation.batchAdd', '批量添加')}</Button>
               <Button type="dashed" icon={<EditOutlined />} onClick={() => setBatchEditNameVisible(true)}>{t('productCreation.batchName', '批量命名')}</Button>
             </Space>
@@ -589,6 +877,25 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 </div>
               </Space>
             </Modal>
+            <Modal
+              title={t('productCreation.saveSetTemplate', '保存套装模板')}
+              open={saveTemplateVisible}
+              confirmLoading={setTemplateSaving}
+              onOk={() => void handleSaveSetTemplateFromDraft()}
+              onCancel={() => {
+                setSaveTemplateVisible(false)
+                setTemplateSourceProductKey(null)
+                saveTemplateForm.resetFields()
+              }}
+              okText={t('common.save', '保存')}
+              cancelText={t('common.cancel', '取消')}
+            >
+              <Form form={saveTemplateForm} layout="vertical">
+                <Form.Item name="templateName" label={t('productCreation.setTemplateName', '模板名称')} rules={[{ required: true, whitespace: true, message: t('productCreation.setTemplateNameRequired', '请输入模板名称') }]}>
+                  <Input maxLength={100} placeholder={t('productCreation.setTemplateName', '模板名称')} />
+                </Form.Item>
+              </Form>
+            </Modal>
             <Table
               columns={productColumns}
               dataSource={products}
@@ -614,6 +921,122 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
               }}
               scroll={{ x: PRODUCT_TABLE_SCROLL_X, y: 340 }}
             />
+            <Modal
+              title={t('productCreation.manageSetTemplates', '管理套装模板')}
+              open={setTemplateManageVisible}
+              width={900}
+              footer={null}
+              onCancel={() => {
+                setSetTemplateManageVisible(false)
+                setSetTemplateEditing(null)
+                setTemplateForm.resetFields()
+              }}
+            >
+              <Table<SetProductTemplateSummary>
+                rowKey="templateId"
+                size="small"
+                loading={setTemplateLoading}
+                pagination={false}
+                dataSource={managedSetTemplates}
+                columns={[
+                  { title: t('productCreation.setTemplateName', '模板名称'), dataIndex: 'templateName', key: 'templateName' },
+                  { title: t('domesticProducts.productName', '套装商品名'), dataIndex: 'setProductName', key: 'setProductName' },
+                  { title: t('productCreation.setQuantity', '子项数'), dataIndex: 'setQuantity', key: 'setQuantity', width: 90, align: 'center' },
+                  {
+                    title: t('common.status', '状态'),
+                    dataIndex: 'isEnabled',
+                    key: 'isEnabled',
+                    width: 90,
+                    render: (isEnabled: boolean) => <Tag color={isEnabled ? 'green' : 'default'}>{isEnabled ? t('common.enabled', '启用') : t('common.disabled', '停用')}</Tag>,
+                  },
+                  {
+                    title: t('common.action', '操作'),
+                    key: 'actions',
+                    width: 150,
+                    render: (_, record) => (
+                      <Space size={4}>
+                        <Button type="link" size="small" onClick={() => void handleEditSetTemplate(record.templateId)}>{t('common.edit', '编辑')}</Button>
+                        {record.isEnabled && (
+                          <Popconfirm
+                            title={t('productCreation.confirmDeactivateSetTemplate', '确认停用这个套装模板？')}
+                            okText={t('common.confirm', '确定')}
+                            cancelText={t('common.cancel', '取消')}
+                            onConfirm={() => void handleDeactivateSetTemplate(record.templateId)}
+                          >
+                            <Button type="link" danger size="small">{t('common.disable', '停用')}</Button>
+                          </Popconfirm>
+                        )}
+                      </Space>
+                    ),
+                  },
+                ]}
+                locale={{ emptyText: t('productCreation.noSetTemplates', '暂无套装模板，可从套装草稿保存') }}
+              />
+              <Modal
+                title={setTemplateEditing?.templateName || t('productCreation.editSetTemplate', '编辑套装模板')}
+                open={Boolean(setTemplateEditing)}
+                width={680}
+                confirmLoading={setTemplateSaving}
+                onOk={() => void handleSaveSetTemplateEdit()}
+                onCancel={() => {
+                  setSetTemplateEditing(null)
+                  setTemplateForm.resetFields()
+                }}
+                okText={t('common.save', '保存')}
+                cancelText={t('common.cancel', '取消')}
+              >
+                <Form form={setTemplateForm} layout="vertical">
+                  <Row gutter={12}>
+                    <Col span={12}>
+                      <Form.Item name="templateName" label={t('productCreation.setTemplateName', '模板名称')} rules={[{ required: true, whitespace: true, message: t('productCreation.setTemplateNameRequired', '请输入模板名称') }]}>
+                        <Input maxLength={100} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item name="setProductName" label={t('domesticProducts.productName', '套装商品名')} rules={[{ required: true, whitespace: true, message: t('productCreation.setTemplateSetNameRequired', '请填写套装商品名') }]}>
+                        <Input maxLength={200} />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                  <Form.Item name="isEnabled" label={t('common.status', '状态')} valuePropName="checked">
+                    <Switch checkedChildren={t('common.enabled', '启用')} unCheckedChildren={t('common.disabled', '停用')} />
+                  </Form.Item>
+                  <Form.List name="subItems">
+                    {(fields, { add, remove }) => (
+                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                        <Space align="center">
+                          <span>{t('productCreation.setSubItem', '套装子项')}</span>
+                          <Button type="link" size="small" icon={<PlusOutlined />} onClick={() => add({ productName: '', privateLabelPrice: undefined })}>{t('common.add', '添加')}</Button>
+                        </Space>
+                        {fields.map((field, index) => (
+                          <Row gutter={8} key={field.key} wrap={false}>
+                            <Col flex="auto">
+                              <Form.Item name={[field.name, 'productName']} rules={[{ required: true, whitespace: true, message: t('productCreation.setTemplateSubItemNameRequired', '请完整填写模板子项名称') }]}>
+                                <Input placeholder={`${t('productCreation.setSubItem', '子项')} ${index + 1}`} />
+                              </Form.Item>
+                            </Col>
+                            <Col flex="150px">
+                              <Form.Item name={[field.name, 'privateLabelPrice']} rules={[{ required: true, message: t('productCreation.setTemplateSubItemPriceRequired', '请完整填写模板子项零售价') }]}>
+                                <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('productCreation.privateLabelPrice', '零售价')} />
+                              </Form.Item>
+                            </Col>
+                            <Col flex="32px">
+                              <Button
+                                type="text"
+                                danger
+                                icon={<DeleteOutlined />}
+                                aria-label={t('productCreation.deleteSetTemplateSubItem', '删除模板子项')}
+                                onClick={() => remove(field.name)}
+                              />
+                            </Col>
+                          </Row>
+                        ))}
+                      </Space>
+                    )}
+                  </Form.List>
+                </Form>
+              </Modal>
+            </Modal>
           </div>
         )}
 

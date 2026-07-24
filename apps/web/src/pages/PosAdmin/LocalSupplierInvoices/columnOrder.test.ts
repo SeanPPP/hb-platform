@@ -5,6 +5,8 @@ import {
   MAX_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_LENGTH,
   createLocalSupplierInvoiceDndAccessibility,
   dispatchLocalSupplierInvoiceDragHandleKeyDown,
+  dispatchLocalSupplierInvoiceDragHandlePointerDown,
+  dispatchLocalSupplierInvoiceSortableHeaderKeyDown,
   isLocalSupplierInvoiceColumnOrderCustomized,
   mergeLocalSupplierInvoiceColumnOrder,
   moveLocalSupplierInvoiceColumnOrder,
@@ -162,6 +164,76 @@ dispatchLocalSupplierInvoiceDragHandleKeyDown(keyboardEvent, (event) => {
 assertEqual(dragKeyDownCalled, 1, '键盘拖拽 listener 应调用一次')
 assertEqual(stopPropagationCalled, 1, '键盘拖拽事件应停止冒泡，避免触发表头排序')
 
+let dragPointerDownCalled = 0
+let pointerStopPropagationCalled = 0
+const pointerEvent = {
+  pointerId: 1,
+  stopPropagation: () => {
+    pointerStopPropagationCalled += 1
+  },
+}
+dispatchLocalSupplierInvoiceDragHandlePointerDown(pointerEvent, (event) => {
+  dragPointerDownCalled += 1
+  assertEqual(event, pointerEvent, '应把原指针事件交给 dnd listener')
+})
+assertEqual(dragPointerDownCalled, 1, '指针拖拽 listener 应调用一次')
+assertEqual(
+  pointerStopPropagationCalled,
+  1,
+  '指针拖拽事件应停止冒泡，避免排序表头截获激活事件',
+)
+
+let sortableHeaderDragKeyDownCalled = 0
+let sortableHeaderSortKeyDownCalled = 0
+let sortableHeaderStopPropagationCalled = 0
+const sortableHeaderSpaceEvent = {
+  code: 'Space',
+  stopPropagation: () => {
+    sortableHeaderStopPropagationCalled += 1
+  },
+}
+dispatchLocalSupplierInvoiceSortableHeaderKeyDown(
+  sortableHeaderSpaceEvent,
+  (event) => {
+    sortableHeaderDragKeyDownCalled += 1
+    assertEqual(event, sortableHeaderSpaceEvent, 'Space 应把原事件交给 dnd listener')
+  },
+  () => {
+    sortableHeaderSortKeyDownCalled += 1
+  },
+)
+assertEqual(sortableHeaderDragKeyDownCalled, 1, '排序列头 Space 应启动键盘拖拽')
+assertEqual(sortableHeaderSortKeyDownCalled, 0, '排序列头 Space 不应触发表头排序')
+assertEqual(
+  sortableHeaderStopPropagationCalled,
+  1,
+  '排序列头 Space 应停止冒泡，避免触发其他键盘交互',
+)
+
+const sortableHeaderEnterEvent = {
+  code: 'Enter',
+  stopPropagation: () => {
+    sortableHeaderStopPropagationCalled += 1
+  },
+}
+dispatchLocalSupplierInvoiceSortableHeaderKeyDown(
+  sortableHeaderEnterEvent,
+  () => {
+    sortableHeaderDragKeyDownCalled += 1
+  },
+  (event) => {
+    sortableHeaderSortKeyDownCalled += 1
+    assertEqual(event, sortableHeaderEnterEvent, 'Enter 应把原事件交给排序 listener')
+  },
+)
+assertEqual(sortableHeaderDragKeyDownCalled, 1, '排序列头 Enter 不应启动键盘拖拽')
+assertEqual(sortableHeaderSortKeyDownCalled, 1, '排序列头 Enter 应触发表头排序')
+assertEqual(
+  sortableHeaderStopPropagationCalled,
+  1,
+  '排序列头 Enter 不应被拖拽逻辑停止冒泡',
+)
+
 const dndAccessibility = createLocalSupplierInvoiceDndAccessibility(
   { storeCode: '分店', updatedAt: '更新时间' },
   {
@@ -250,6 +322,26 @@ assertEqual(
   pageSource.includes("'data-drag-label'"),
   true,
   '拖拽手柄应提供本地化无障碍标签',
+)
+assertEqual(
+  pageSource.includes('ref={setActivatorNodeRef}')
+    && pageSource.includes('dispatchLocalSupplierInvoiceDragHandlePointerDown'),
+  true,
+  '拖拽手柄应绑定独立 activator，并隔离排序表头的 pointerdown 事件',
+)
+assertEqual(
+  pageSource.includes("activationConstraint: { distance: 8 }")
+    && pageSource.includes("start: ['Space']")
+    && pageSource.includes("end: ['Space']"),
+  true,
+  '整列头拖拽应使用 8px 指针阈值，并只用 Space 启停键盘拖拽',
+)
+assertEqual(
+  pageSource.includes("'data-sorter-enabled': Boolean(column.sorter)")
+    && pageSource.includes('dispatchLocalSupplierInvoiceSortableHeaderKeyDown')
+    && pageSource.includes('sorterEnabled ? null'),
+  true,
+  '排序列应隐藏手柄并通过整列头处理拖拽，非排序列继续显示手柄',
 )
 assertEqual(
   pageSource.includes('function SortableHeaderCell')

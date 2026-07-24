@@ -5,6 +5,23 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task StartupSchemaMigrator_幂等补齐门店时区列且不回填()
+    {
+        var migrator = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"));
+
+        Assert.Contains("await EnsureStoreTimeZoneSchemaAsync(db, logger);", migrator);
+        Assert.Contains("private static async Task EnsureStoreTimeZoneSchemaAsync", migrator);
+        Assert.Contains("OBJECT_ID(N'[dbo].[Store]', N'U') IS NOT NULL", migrator);
+        Assert.Contains("COL_LENGTH('dbo.Store', 'TimeZoneId') IS NULL", migrator);
+        Assert.Contains("ALTER TABLE [dbo].[Store] ADD [TimeZoneId] nvarchar(80) NULL;", migrator);
+        Assert.Contains("@LockOwner = N'Transaction'", migrator);
+        Assert.Contains("COMMIT TRANSACTION", migrator);
+        Assert.DoesNotContain("UPDATE [dbo].[Store] SET [TimeZoneId]", migrator);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建员工敏感审批表和Pending过滤唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(

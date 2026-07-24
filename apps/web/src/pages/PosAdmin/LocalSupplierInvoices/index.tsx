@@ -41,6 +41,7 @@ import type { ColumnsType, TableRef } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -87,6 +88,8 @@ import {
   DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER,
   createLocalSupplierInvoiceDndAccessibility,
   dispatchLocalSupplierInvoiceDragHandleKeyDown,
+  dispatchLocalSupplierInvoiceDragHandlePointerDown,
+  dispatchLocalSupplierInvoiceSortableHeaderKeyDown,
   isLocalSupplierInvoiceColumnOrderCustomized,
   moveLocalSupplierInvoiceColumnOrder,
   parseLocalSupplierInvoiceColumnOrder,
@@ -99,11 +102,13 @@ const LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY =
 interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
   'data-column-key'?: string
   'data-drag-label'?: string
+  'data-sorter-enabled'?: boolean
 }
 
 interface SortableHeaderCellProps extends DraggableHeaderCellProps {
   columnKey: string
   dragLabel?: string
+  sorterEnabled?: boolean
 }
 
 function SortableHeaderCell({
@@ -111,12 +116,16 @@ function SortableHeaderCell({
   style,
   columnKey,
   dragLabel,
+  sorterEnabled = false,
+  onKeyDown: headerKeyDownListener,
+  onPointerDown: headerPointerDownListener,
   ...props
 }: SortableHeaderCellProps) {
   const {
     attributes,
     listeners,
     setNodeRef,
+    setActivatorNodeRef,
     transform,
     transition,
     isDragging,
@@ -124,48 +133,99 @@ function SortableHeaderCell({
     id: columnKey,
   })
 
+  const setHeaderNodeRef = useCallback(
+    (node: HTMLTableCellElement | null) => {
+      setNodeRef(node)
+      if (sorterEnabled) setActivatorNodeRef(node)
+    },
+    [setActivatorNodeRef, setNodeRef, sorterEnabled],
+  )
   const headerStyle: CSSProperties = {
     ...style,
     transform: CSS.Translate.toString(transform),
     transition,
     zIndex: isDragging ? 3 : style?.zIndex,
     opacity: isDragging ? 0.8 : style?.opacity,
+    cursor: isDragging ? 'grabbing' : style?.cursor,
+    touchAction: sorterEnabled ? 'none' : style?.touchAction,
   }
-  const { onKeyDown: dndKeyDownListener, ...pointerListeners } = listeners ?? {}
+  const {
+    onKeyDown: dndKeyDownListener,
+    onPointerDown: dndPointerDownListener,
+    ...otherListeners
+  } = listeners ?? {}
+  const sortableHeaderDndAttributes = sorterEnabled
+    ? {
+        'aria-describedby': attributes['aria-describedby'],
+        'aria-roledescription': attributes['aria-roledescription'],
+      }
+    : {}
 
   return (
-    <th ref={setNodeRef} style={headerStyle} {...props}>
+    <th
+      ref={setHeaderNodeRef}
+      style={headerStyle}
+      {...props}
+      {...sortableHeaderDndAttributes}
+      onPointerDown={
+        sorterEnabled
+          ? (event) => {
+              headerPointerDownListener?.(event)
+              if (!event.defaultPrevented) dndPointerDownListener?.(event)
+            }
+          : headerPointerDownListener
+      }
+      onKeyDown={(event) => {
+        if (!sorterEnabled) {
+          headerKeyDownListener?.(event)
+          return
+        }
+        dispatchLocalSupplierInvoiceSortableHeaderKeyDown(
+          event,
+          (dragEvent) => dndKeyDownListener?.(dragEvent),
+          (sortEvent) => headerKeyDownListener?.(sortEvent),
+        )
+      }}
+    >
       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%' }}>
-        <button
-          type="button"
-          aria-label={dragLabel}
-          title={dragLabel}
-          style={{
-            display: 'inline-flex',
-            flex: '0 0 auto',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 20,
-            height: 20,
-            padding: 0,
-            color: 'rgba(0, 0, 0, 0.45)',
-            cursor: isDragging ? 'grabbing' : 'grab',
-            touchAction: 'none',
-            background: 'transparent',
-            border: 0,
-            borderRadius: 2,
-          }}
-          {...attributes}
-          {...pointerListeners}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            dispatchLocalSupplierInvoiceDragHandleKeyDown(event, (dragEvent) => {
-              dndKeyDownListener?.(dragEvent)
-            })
-          }}
-        >
-          <HolderOutlined />
-        </button>
+        {sorterEnabled ? null : (
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label={dragLabel}
+            title={dragLabel}
+            style={{
+              display: 'inline-flex',
+              flex: '0 0 auto',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 20,
+              height: 20,
+              padding: 0,
+              color: 'rgba(0, 0, 0, 0.45)',
+              cursor: isDragging ? 'grabbing' : 'grab',
+              touchAction: 'none',
+              background: 'transparent',
+              border: 0,
+              borderRadius: 2,
+            }}
+            {...attributes}
+            {...otherListeners}
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => {
+              dispatchLocalSupplierInvoiceDragHandlePointerDown(event, (dragEvent) => {
+                dndPointerDownListener?.(dragEvent)
+              })
+            }}
+            onKeyDown={(event) => {
+              dispatchLocalSupplierInvoiceDragHandleKeyDown(event, (dragEvent) => {
+                dndKeyDownListener?.(dragEvent)
+              })
+            }}
+          >
+            <HolderOutlined />
+          </button>
+        )}
         <div style={{ minWidth: 0 }}>{children}</div>
       </div>
     </th>
@@ -180,6 +240,7 @@ function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellP
     <SortableHeaderCell
       columnKey={columnKey}
       dragLabel={props['data-drag-label']}
+      sorterEnabled={props['data-sorter-enabled']}
       style={style}
       {...props}
     >
@@ -311,8 +372,15 @@ export default function LocalSupplierInvoicesPage() {
   const latestLoadDataRef = useRef<() => Promise<void>>(async () => undefined)
 
   const columnDragSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+      keyboardCodes: {
+        start: ['Space'],
+        cancel: ['Escape'],
+        end: ['Space'],
+      },
+    }),
   )
   const columnLabels = useMemo<Record<LocalSupplierInvoiceColumnKey, string>>(
     () => ({
@@ -992,6 +1060,7 @@ export default function LocalSupplierInvoicesPage() {
         ...column,
         onHeaderCell: () => ({
           'data-column-key': key,
+          'data-sorter-enabled': Boolean(column.sorter),
           'data-drag-label': t('posAdmin.invoices.dragColumn', {
             column: columnLabels[key],
           }),

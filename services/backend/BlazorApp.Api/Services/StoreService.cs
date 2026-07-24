@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
@@ -73,6 +74,7 @@ namespace BlazorApp.Api.Services
                         ABN = s.ABN,
                         BrandName = s.BrandName,
                         Address = s.Address,
+                        TimeZoneId = s.TimeZoneId,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -114,6 +116,7 @@ namespace BlazorApp.Api.Services
                         ABN = s.ABN,
                         BrandName = s.BrandName,
                         Address = s.Address,
+                        TimeZoneId = s.TimeZoneId,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -264,6 +267,7 @@ namespace BlazorApp.Api.Services
                         BrandName = s.BrandName,
                         Description = null,
                         Address = s.Address,
+                        TimeZoneId = s.TimeZoneId,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -420,6 +424,7 @@ namespace BlazorApp.Api.Services
                     ABN = store.ABN,
                     BrandName = store.BrandName,
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
@@ -490,6 +495,13 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                if (!StoreTimeZonePolicy.TryNormalize(dto.TimeZoneId, out var normalizedTimeZoneId))
+                {
+                    return ApiResponse<StoreDto>.Error(
+                        "门店时区仅支持 Australia/Brisbane、Australia/Sydney 或 Australia/Melbourne",
+                        "INVALID_STORE_TIME_ZONE"
+                    );
+                }
 
                 var store = await db.Queryable<Store>()
                     .Where(s => s.StoreGUID == guid)
@@ -520,6 +532,10 @@ namespace BlazorApp.Api.Services
                 store.ABN = dto.ABN;
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
+                if (!string.IsNullOrWhiteSpace(dto.TimeZoneId))
+                {
+                    store.TimeZoneId = normalizedTimeZoneId;
+                }
                 store.Phone = dto.ContactPhone;
                 store.ContactEmail = dto.ContactEmail;
                 store.IsActive = dto.IsActive;
@@ -536,6 +552,7 @@ namespace BlazorApp.Api.Services
                     BrandName = store.BrandName,
                     Description = null,
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
@@ -1321,6 +1338,7 @@ WHEN NOT MATCHED THEN
                     ABN = store.ABN,
                     BrandName = store.BrandName,
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
@@ -1354,6 +1372,7 @@ WHEN NOT MATCHED THEN
                     BrandName = store.BrandName,
                     Description = string.Empty, // Store实体没有Description属性，使用空字符串
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     // 分店详情必须保留数据库状态，避免 DTO 默认值覆盖停用分店。
@@ -1392,6 +1411,14 @@ WHEN NOT MATCHED THEN
                     );
                 }
 
+                if (!StoreTimeZonePolicy.TryNormalize(dto.TimeZoneId, out var normalizedTimeZoneId))
+                {
+                    return ApiResponse<StoreDto>.Error(
+                        "门店时区仅支持 Australia/Brisbane、Australia/Sydney 或 Australia/Melbourne",
+                        "INVALID_STORE_TIME_ZONE"
+                    );
+                }
+
                 // 检查分店代码是否重复
                 var existingStore = await db.Queryable<Store>()
                     .Where(s => s.StoreCode == normalizedStoreCode)
@@ -1411,6 +1438,7 @@ WHEN NOT MATCHED THEN
                     StoreName = dto.StoreName,
                     StoreCode = normalizedStoreCode,
                     Address = dto.Address,
+                    TimeZoneId = normalizedTimeZoneId,
                     ABN = dto.ABN,
                     BrandName = dto.BrandName,
                     StoreGUID = Guid.NewGuid().ToString(),
@@ -1434,6 +1462,7 @@ WHEN NOT MATCHED THEN
                     Description = string.Empty,
                     ContactPhone = string.Empty,
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
@@ -1457,6 +1486,13 @@ WHEN NOT MATCHED THEN
             try
             {
                 var db = _context.Db;
+                if (!StoreTimeZonePolicy.TryNormalize(dto.TimeZoneId, out var normalizedTimeZoneId))
+                {
+                    return ApiResponse<StoreDto>.Error(
+                        "门店时区仅支持 Australia/Brisbane、Australia/Sydney 或 Australia/Melbourne",
+                        "INVALID_STORE_TIME_ZONE"
+                    );
+                }
 
                 var store = await db.Queryable<Store>()
                     .Where(s => s.StoreGUID == guid)
@@ -1487,6 +1523,10 @@ WHEN NOT MATCHED THEN
                 store.ABN = dto.ABN;
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
+                if (!string.IsNullOrWhiteSpace(dto.TimeZoneId))
+                {
+                    store.TimeZoneId = normalizedTimeZoneId;
+                }
                 store.Phone = dto.ContactPhone;
                 store.ContactEmail = dto.ContactEmail;
                 store.IsActive = dto.IsActive;
@@ -1503,6 +1543,7 @@ WHEN NOT MATCHED THEN
                     BrandName = store.BrandName,
                     Description = string.Empty,
                     Address = store.Address,
+                    TimeZoneId = store.TimeZoneId,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,

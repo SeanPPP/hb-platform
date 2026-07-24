@@ -11,10 +11,13 @@ import {
   SaveOutlined,
 } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   DatePicker,
+  Descriptions,
   Drawer,
+  Empty,
   Form,
   Input,
   InputNumber,
@@ -25,6 +28,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Timeline,
   TimePicker,
   Tooltip,
   Typography,
@@ -100,6 +104,12 @@ import {
   getSupplementalAttendanceApprovalDetail,
 } from './attendanceRecordLogic'
 import type { LocalPunchAdjustmentPreview } from './attendanceRecordLogic'
+import AttendanceLocationTrajectoryMap from './AttendanceLocationTrajectoryMap'
+import {
+  buildAttendanceLocationTrajectory,
+  normalizeAttendanceUtcText,
+  splitAttendanceSampleDateRange,
+} from './attendanceLocationTrajectoryLogic'
 import {
   buildStoreOptionsFromUserStores,
   filterStoreOptionsByManagedCodes,
@@ -118,6 +128,7 @@ interface AttendanceMapPreview {
   longitude: number
   accuracy?: number
   capturedAt?: string
+  timeZone?: string
 }
 
 interface ScheduleRow {
@@ -183,12 +194,67 @@ const initialListState = {
   pageSize: 20,
 }
 
+const ATTENDANCE_LOCATION_SAMPLE_LIMIT = 1000
+const ATTENDANCE_LOCATION_SAMPLES_TRUNCATED = 'ATTENDANCE_LOCATION_SAMPLES_TRUNCATED'
+
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
 }
 
 function formatDateTime(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '--'
+}
+
+function formatDateInTimeZone(value: string, timeZone?: string) {
+  const normalized = normalizeAttendanceUtcText(value)
+  if (!normalized) return ''
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return ''
+  if (!timeZone) return parsed.toISOString().slice(0, 10)
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(parsed)
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ''
+    return `${part('year')}-${part('month')}-${part('day')}`
+  } catch {
+    return parsed.toISOString().slice(0, 10)
+  }
+}
+
+function formatDateTimeInTimeZone(value?: string, timeZone?: string) {
+  if (!value) return '--'
+  const normalized = normalizeAttendanceUtcText(value)
+  if (!normalized) return '--'
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return '--'
+  if (!timeZone) return `${parsed.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(parsed)
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ''
+    return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}`
+  } catch {
+    return `${parsed.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+  }
+}
+
+function formatStoredLocalDateTime(value?: string) {
+  if (!value) return '--'
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
+  return match ? `${match[1]} ${match[2]}` : value
 }
 
 function formatTime(value?: string) {
@@ -267,8 +333,10 @@ export default function ScheduleAttendancePage() {
   const [mapPreview, setMapPreview] = useState<AttendanceMapPreview | null>(null)
   const [sampleDrawerOpen, setSampleDrawerOpen] = useState(false)
   const [sampleLoading, setSampleLoading] = useState(false)
-  const [sampleRows, setSampleRows] = useState<AttendanceLocationSampleDto[]>([])
+  const [trajectoryResult, setTrajectoryResult] = useState<ReturnType<typeof buildAttendanceLocationTrajectory> | null>(null)
+  const [trajectoryMapVisible, setTrajectoryMapVisible] = useState(false)
   const [sampleTitle, setSampleTitle] = useState('')
+  const [sampleTimeZone, setSampleTimeZone] = useState('')
   const [saving, setSaving] = useState(false)
   const [adjustmentPreviewLoading, setAdjustmentPreviewLoading] = useState(false)
   const [publishing, setPublishing] = useState(false)
@@ -280,8 +348,30 @@ export default function ScheduleAttendancePage() {
   const [adjustmentForm] = Form.useForm<PunchAdjustmentFormValues>()
   const [settingsForm] = Form.useForm<SaveAttendanceSettingsPayload>()
   const previewRequestIdRef = useRef(0)
+  const sampleRequestIdRef = useRef(0)
   const selectedAdjustmentPunchType = Form.useWatch('punchType', adjustmentForm)
   const selectedAdjustmentMode = Form.useWatch('adjustmentMode', adjustmentForm)
+  const trajectoryMapPoints = useMemo(
+    () => trajectoryResult?.ok
+      ? trajectoryResult.mapPoints.map((point) => ({
+        key: point.key,
+        kind: point.kind,
+        latitude: point.latitude!,
+        longitude: point.longitude!,
+        accuracy: point.accuracy,
+        label: `${t(`posAdmin.scheduleAttendance.messages.trajectoryPoint${point.kind}`)} · ${
+          point.kind === 'Sample' || !point.displayTimeSource
+            ? formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone)
+            : formatStoredLocalDateTime(point.displayTimeSource)
+        }`,
+      }))
+      : [],
+    [sampleTimeZone, t, trajectoryResult],
+  )
+  const trajectoryMapPointKeys = useMemo(
+    () => new Set(trajectoryMapPoints.map((point) => point.key)),
+    [trajectoryMapPoints],
+  )
   const adjustmentPunchOptions = useMemo(
     () => adjustmentTarget && selectedAdjustmentPunchType
       ? getPunchAdjustmentOptions(adjustmentTarget, selectedAdjustmentPunchType).map((option) => ({
@@ -1420,59 +1510,107 @@ export default function ScheduleAttendancePage() {
       longitude: record.locationLongitude,
       accuracy: record.locationAccuracy,
       capturedAt: record.locationCapturedAtUtc || record.punchTimeUtc || record.punchTimeLocal,
+      timeZone: record.locationCapturedAtUtc || record.punchTimeUtc ? record.storeTimeZone : undefined,
     })
   }
 
   const openLocationSamples = async (record: AttendancePunchDto) => {
+    const requestId = ++sampleRequestIdRef.current
+    const nowUtc = new Date().toISOString()
+    const currentStoreLocalDate = formatDateInTimeZone(nowUtc, record.storeTimeZone)
+      || dayjs(record.workDate).format('YYYY-MM-DD')
     setSampleTitle(`${record.userName || record.userGuid} / ${formatDate(record.workDate)}`)
-    setSampleRows([])
+    setSampleTimeZone(record.storeTimeZone || '')
+    setTrajectoryResult(null)
+    setTrajectoryMapVisible(false)
     setSampleDrawerOpen(true)
     setSampleLoading(true)
+
     try {
-      const rows = await getAttendanceLocationSamples({
+      const punchResult = await getAttendancePunches({
         storeCode: record.storeCode,
         userGuid: record.userGuid,
         fromDate: dayjs(record.workDate).format('YYYY-MM-DD'),
         toDate: dayjs(record.workDate).format('YYYY-MM-DD'),
-        storeTimeZone: record.storeTimeZone,
+        page: 1,
+        pageSize: 1000,
       })
-      setSampleRows(rows)
+      if (sampleRequestIdRef.current !== requestId) return
+
+      const punches = punchResult.items.some((item) => item.punchGuid === record.punchGuid)
+        ? punchResult.items
+        : [...punchResult.items, record]
+      const boundaryResult = buildAttendanceLocationTrajectory({
+        selectedPunch: record,
+        punches,
+        samples: [],
+        nowUtc,
+        currentStoreLocalDate,
+      })
+      if (!boundaryResult.ok) {
+        setTrajectoryResult(boundaryResult)
+        return
+      }
+      const trajectoryTimeZone = boundaryResult.clockIn?.storeTimeZone || record.storeTimeZone || ''
+      setSampleTimeZone(trajectoryTimeZone)
+
+      const samplesByGuid = new Map<string, AttendanceLocationSampleDto>()
+      const dateRanges = splitAttendanceSampleDateRange(boundaryResult.fromDate, boundaryResult.toDate)
+      for (const range of dateRanges) {
+        if (sampleRequestIdRef.current !== requestId) return
+        const rangeSamples = await getAttendanceLocationSamples({
+          storeCode: record.storeCode,
+          userGuid: record.userGuid,
+          fromDate: range.fromDate,
+          toDate: range.toDate,
+          storeTimeZone: trajectoryTimeZone,
+        })
+
+        // 接口最多返回 1000 条；命中上限时拆为单日重查，避免长期开放班段静默丢失早期点位。
+        const batches = rangeSamples.length >= ATTENDANCE_LOCATION_SAMPLE_LIMIT
+          ? await Promise.all(splitAttendanceSampleDateRange(range.fromDate, range.toDate, 1).map(async (dayRange) => {
+            const daySamples = await getAttendanceLocationSamples({
+              storeCode: record.storeCode,
+              userGuid: record.userGuid,
+              fromDate: dayRange.fromDate,
+              toDate: dayRange.toDate,
+              storeTimeZone: trajectoryTimeZone,
+            })
+            if (daySamples.length >= ATTENDANCE_LOCATION_SAMPLE_LIMIT) {
+              throw new Error(ATTENDANCE_LOCATION_SAMPLES_TRUNCATED)
+            }
+            return daySamples
+          }))
+          : [rangeSamples]
+        for (const batch of batches) {
+          for (const sample of batch) samplesByGuid.set(sample.sampleGuid, sample)
+        }
+      }
+      if (sampleRequestIdRef.current !== requestId) return
+
+      setTrajectoryResult(buildAttendanceLocationTrajectory({
+        selectedPunch: record,
+        punches,
+        samples: [...samplesByGuid.values()],
+        nowUtc,
+        currentStoreLocalDate,
+      }))
     } catch (error) {
       console.error(error)
-      message.error(t('posAdmin.scheduleAttendance.messages.loadLocationSamplesFailed'))
-      setSampleRows([])
+      if (sampleRequestIdRef.current === requestId) {
+        message.error(t(
+          error instanceof Error && error.message === ATTENDANCE_LOCATION_SAMPLES_TRUNCATED
+            ? 'posAdmin.scheduleAttendance.messages.trajectorySamplesTooDense'
+            : 'posAdmin.scheduleAttendance.messages.loadLocationSamplesFailed',
+        ))
+        setTrajectoryResult(null)
+      }
     } finally {
-      setSampleLoading(false)
+      if (sampleRequestIdRef.current === requestId) {
+        setSampleLoading(false)
+      }
     }
   }
-
-  const locationSampleColumns: ColumnsType<AttendanceLocationSampleDto> = [
-    { title: t('posAdmin.scheduleAttendance.fields.locationCapturedAt'), dataIndex: 'locationCapturedAtUtc', width: 180, render: formatDateTime },
-    { title: t('posAdmin.scheduleAttendance.fields.location'), key: 'location', width: 190, render: (_, record) => `${record.locationLatitude.toFixed(6)}, ${record.locationLongitude.toFixed(6)}` },
-    { title: t('posAdmin.scheduleAttendance.fields.locationAccuracy'), dataIndex: 'locationAccuracy', width: 120, render: (value?: number) => typeof value === 'number' ? `${Math.round(value)}m` : '--' },
-    { title: t('posAdmin.scheduleAttendance.fields.deviceSystem'), dataIndex: 'deviceSystem', width: 120 },
-    {
-      title: t('column.action'),
-      key: 'action',
-      width: 120,
-      render: (_, record) => (
-        <Button
-          type="link"
-          size="small"
-          icon={<EnvironmentOutlined />}
-          onClick={() => setMapPreview({
-            title: `${sampleTitle} / ${formatDateTime(record.locationCapturedAtUtc)}`,
-            latitude: record.locationLatitude,
-            longitude: record.locationLongitude,
-            accuracy: record.locationAccuracy,
-            capturedAt: record.locationCapturedAtUtc,
-          })}
-        >
-          {t('posAdmin.scheduleAttendance.actions.viewMap')}
-        </Button>
-      ),
-    },
-  ]
 
   const punchColumns: ColumnsType<AttendancePunchDto> = [
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
@@ -2050,21 +2188,192 @@ export default function ScheduleAttendancePage() {
       </Drawer>
 
       <Drawer
-        title={sampleTitle ? `${t('posAdmin.scheduleAttendance.drawer.locationSamples')} - ${sampleTitle}` : t('posAdmin.scheduleAttendance.drawer.locationSamples')}
-        width={720}
+        title={sampleTitle ? `${t('posAdmin.scheduleAttendance.drawer.locationTrajectory')} - ${sampleTitle}` : t('posAdmin.scheduleAttendance.drawer.locationTrajectory')}
+        width="min(960px, 100vw)"
         open={sampleDrawerOpen}
-        onClose={() => setSampleDrawerOpen(false)}
+        onClose={() => {
+          sampleRequestIdRef.current += 1
+          setSampleDrawerOpen(false)
+          setTrajectoryMapVisible(false)
+          setTrajectoryResult(null)
+        }}
       >
-        <Table
-          rowKey="sampleGuid"
-          size="small"
-          loading={sampleLoading}
-          columns={locationSampleColumns}
-          dataSource={sampleRows}
-          pagination={false}
-          locale={{ emptyText: t('posAdmin.scheduleAttendance.messages.locationSamplesEmpty') }}
-          scroll={{ x: 700 }}
-        />
+        {sampleLoading ? (
+          <Card loading style={{ minHeight: 240 }} />
+        ) : trajectoryResult?.ok && trajectoryResult.clockIn ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card size="small">
+              <Descriptions
+                size="small"
+                column={{ xs: 1, sm: 2, md: 4 }}
+                items={[
+                  {
+                    key: 'segment',
+                    label: t('posAdmin.scheduleAttendance.fields.segment'),
+                    children: (
+                      <Space size={6}>
+                        <Typography.Text>#{trajectoryResult.segmentIndex ?? '--'}</Typography.Text>
+                        {trajectoryResult.isOpen ? (
+                          <Tag color="processing">
+                            {t('posAdmin.scheduleAttendance.messages.trajectoryInProgress')}
+                          </Tag>
+                        ) : null}
+                      </Space>
+                    ),
+                  },
+                  {
+                    key: 'timezone',
+                    label: t('posAdmin.scheduleAttendance.fields.timeZone'),
+                    children: sampleTimeZone || '--',
+                  },
+                  {
+                    key: 'range',
+                    label: t('posAdmin.scheduleAttendance.fields.trajectoryRange'),
+                    children: (
+                      <Typography.Text>
+                        {trajectoryResult.clockIn.punchTimeLocal
+                          ? formatStoredLocalDateTime(trajectoryResult.clockIn.punchTimeLocal)
+                          : formatDateTimeInTimeZone(trajectoryResult.clockIn.punchTimeUtc, sampleTimeZone)}
+                        {' → '}
+                        {trajectoryResult.clockOut
+                          ? trajectoryResult.clockOut.punchTimeLocal
+                            ? formatStoredLocalDateTime(trajectoryResult.clockOut.punchTimeLocal)
+                            : formatDateTimeInTimeZone(trajectoryResult.clockOut.punchTimeUtc, sampleTimeZone)
+                          : t('posAdmin.scheduleAttendance.messages.trajectoryInProgress')}
+                      </Typography.Text>
+                    ),
+                  },
+                  {
+                    key: 'samples',
+                    label: t('posAdmin.scheduleAttendance.fields.sampleCount'),
+                    children: trajectoryResult.sampleCount,
+                  },
+                ]}
+              />
+            </Card>
+
+            {trajectoryResult.isOpen ? (
+              <Alert
+                type="info"
+                showIcon
+                message={t('posAdmin.scheduleAttendance.messages.trajectoryOpen')}
+              />
+            ) : null}
+            {trajectoryResult.sampleCount === 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                message={t('posAdmin.scheduleAttendance.messages.trajectoryNoSamples')}
+              />
+            ) : null}
+
+            <Card
+              size="small"
+              title={t('posAdmin.scheduleAttendance.drawer.locationMap')}
+              extra={!trajectoryMapVisible ? (
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<EnvironmentOutlined />}
+                  disabled={trajectoryResult.mapPoints.length < 2}
+                  onClick={() => setTrajectoryMapVisible(true)}
+                >
+                  {t('posAdmin.scheduleAttendance.actions.loadTrajectoryMap')}
+                </Button>
+              ) : null}
+            >
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Typography.Text type="secondary">
+                  {t('posAdmin.scheduleAttendance.messages.trajectoryMapPrivacy')}
+                </Typography.Text>
+                {trajectoryResult.mapPoints.length < 2 ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={t('posAdmin.scheduleAttendance.messages.trajectoryMapNeedsTwoPoints')}
+                  />
+                ) : null}
+                {trajectoryMapVisible ? (
+                  <AttendanceLocationTrajectoryMap
+                    points={trajectoryMapPoints}
+                    ariaLabel={t('posAdmin.scheduleAttendance.messages.trajectoryMapAria')}
+                    loadFailedText={t('posAdmin.scheduleAttendance.messages.trajectoryMapLoadFailed')}
+                    tileLoadFailedText={t('posAdmin.scheduleAttendance.messages.trajectoryTileLoadFailed')}
+                  />
+                ) : null}
+                <Typography.Text type="secondary">
+                  {t('posAdmin.scheduleAttendance.messages.trajectoryMapDisclaimer')}
+                </Typography.Text>
+              </Space>
+            </Card>
+
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              {t('posAdmin.scheduleAttendance.drawer.locationSamples')}
+            </Typography.Title>
+            <Timeline
+              items={trajectoryResult.points.map((point) => {
+                const hasCoordinates = typeof point.latitude === 'number' && typeof point.longitude === 'number'
+                const canOpenMap = trajectoryMapPointKeys.has(point.key)
+                const pointTime = point.kind === 'Sample' || !point.displayTimeSource
+                  ? formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone)
+                  : formatStoredLocalDateTime(point.displayTimeSource)
+                return {
+                  color: point.kind === 'ClockIn' ? 'green' : point.kind === 'ClockOut' ? 'red' : 'blue',
+                  children: (
+                    <Space direction="vertical" size={3} style={{ width: '100%' }}>
+                      <Space size={[8, 4]} wrap>
+                        <Typography.Text strong>
+                          {t(`posAdmin.scheduleAttendance.messages.trajectoryPoint${point.kind}`)}
+                        </Typography.Text>
+                        <Typography.Text>{pointTime}</Typography.Text>
+                        {typeof point.accuracy === 'number' ? (
+                          <Tag>{t('posAdmin.scheduleAttendance.fields.locationAccuracy')}: {Math.round(point.accuracy)}m</Tag>
+                        ) : null}
+                        {point.deviceSystem ? <Tag>{point.deviceSystem}</Tag> : null}
+                      </Space>
+                      <Space size={[8, 4]} wrap>
+                        {hasCoordinates ? (
+                          <Typography.Text type={canOpenMap ? undefined : 'danger'}>
+                            {point.latitude!.toFixed(6)}, {point.longitude!.toFixed(6)}
+                          </Typography.Text>
+                        ) : (
+                          <Typography.Text type="secondary">
+                            {t('posAdmin.scheduleAttendance.messages.locationNotRecorded')}
+                          </Typography.Text>
+                        )}
+                        {canOpenMap ? (
+                          <Button
+                            type="link"
+                            size="small"
+                            icon={<EnvironmentOutlined />}
+                            onClick={() => setMapPreview({
+                              title: `${sampleTitle} / ${pointTime}`,
+                              latitude: point.latitude!,
+                              longitude: point.longitude!,
+                              accuracy: point.accuracy,
+                              capturedAt: point.capturedAtUtc,
+                              timeZone: sampleTimeZone,
+                            })}
+                          >
+                            {t('posAdmin.scheduleAttendance.actions.viewMap')}
+                          </Button>
+                        ) : null}
+                      </Space>
+                    </Space>
+                  ),
+                }
+              })}
+            />
+          </Space>
+        ) : trajectoryResult?.reason ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={t(`posAdmin.scheduleAttendance.messages.trajectoryReason.${trajectoryResult.reason}`)}
+          />
+        ) : (
+          <Empty description={t('posAdmin.scheduleAttendance.messages.locationSamplesEmpty')} />
+        )}
       </Drawer>
 
       <Modal
@@ -2087,7 +2396,11 @@ export default function ScheduleAttendancePage() {
               ) : null}
               {mapPreview.capturedAt ? (
                 <Typography.Text type="secondary">
-                  {t('posAdmin.scheduleAttendance.fields.locationCapturedAt')}: {formatDateTime(mapPreview.capturedAt)}
+                  {t('posAdmin.scheduleAttendance.fields.locationCapturedAt')}: {
+                    mapPreview.timeZone
+                      ? formatDateTimeInTimeZone(mapPreview.capturedAt, mapPreview.timeZone)
+                      : formatDateTime(mapPreview.capturedAt)
+                  }
                 </Typography.Text>
               ) : null}
             </Space>
