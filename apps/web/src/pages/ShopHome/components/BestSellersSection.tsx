@@ -15,6 +15,7 @@ import { useShopStore } from '../../../store/shop'
 import type { BestSellerBranchSale, BestSellerProduct } from '../../../types/salesDashboard'
 import { buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { formatStatisticMessageAmounts } from '../../../utils/statisticMessage'
 
 const { Text, Title } = Typography
 
@@ -203,8 +204,12 @@ export default function BestSellersSection() {
 
   const grossMarginRate = totalSales > 0 && typeof totalGrossProfit === 'number' ? totalGrossProfit / totalSales : undefined
   const isBestSellerStatisticFresh = statisticStatus === 'Fresh' || !statisticStatus
+  const formattedStatisticMessage = useMemo(
+    () => formatStatisticMessageAmounts(statisticMessage),
+    [statisticMessage],
+  )
   const bestSellerStatusNotice = !isBestSellerStatisticFresh
-    ? (statisticMessage || '商品统计未就绪，请先生成商品统计。')
+    ? (formattedStatisticMessage || '商品统计未就绪，请先生成商品统计。')
     : null
 
   const getBestSellerEmptyText = useCallback(() => {
@@ -472,7 +477,7 @@ export default function BestSellersSection() {
 
         <div className="shop-best-sellers-toolbar">
           {statisticStatus ? (
-            <Tooltip title={statisticMessage}>
+            <Tooltip title={formattedStatisticMessage}>
               <Tag color={getStatisticStatusColor(statisticStatus)}>{statisticStatus}</Tag>
             </Tooltip>
           ) : null}

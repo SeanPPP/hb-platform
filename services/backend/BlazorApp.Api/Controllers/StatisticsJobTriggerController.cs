@@ -456,6 +456,17 @@ namespace BlazorApp.Api.Controllers
                     s.TotalAmount,
                 })
                 .ToListAsync();
+            var supplementalReturnAdjustments = await _statisticsJobService
+                .GetProductStoreDailyReturnAdjustmentsAsync(targetDate);
+            var effectiveStoreRows = ProductStoreDailyReconciliationCalculator
+                .ApplyExistingStoreAdjustments(
+                    storeRows.Select(row => new ProductStoreDailyBranchRollup(
+                        row.BranchCode,
+                        row.TotalAmount,
+                        row.TotalQuantity
+                    )),
+                    supplementalReturnAdjustments
+                );
 
             var reconciliation = ProductStoreDailyReconciliationCalculator.Calculate(
                 targetDate,
@@ -464,11 +475,7 @@ namespace BlazorApp.Api.Controllers
                     row.TotalAmount,
                     row.TotalQuantity
                 )),
-                storeRows.Select(row => new ProductStoreDailyBranchRollup(
-                    row.BranchCode,
-                    row.TotalAmount,
-                    row.TotalQuantity
-                ))
+                effectiveStoreRows
             );
 
             var summary = new ProductStoreDailyStatisticSummaryDto

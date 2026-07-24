@@ -19,10 +19,21 @@ namespace BlazorApp.Api.Controllers.React
     [Authorize]
     public class ReactContainerController : ControllerBase
     {
+        // 商城入口接受多种只读或订货权限，三个 Coming Soon 端点必须采用同一 OR 口径。
+        private static readonly string[] ComingSoonReadPermissions =
+        {
+            Permissions.OrderFront.View,
+            Permissions.Orders.View,
+            Permissions.Orders.Create,
+            Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
+        };
+
         private readonly IContainerReactService _containerReactService;
         private readonly IContainerAllocationSalesReportService _allocationSalesReportService;
         private readonly IContainerHqSyncService _containerHqSyncService;
         private readonly ContainerExportService _containerExportService;
+        private readonly IAuthorizationService _authorizationService;
         private readonly IMemoryCache _cache;
         private readonly ILogger<ReactContainerController> _logger;
         private const string ExcelContentType =
@@ -35,6 +46,7 @@ namespace BlazorApp.Api.Controllers.React
             IContainerAllocationSalesReportService allocationSalesReportService,
             IContainerHqSyncService containerHqSyncService,
             ContainerExportService containerExportService,
+            IAuthorizationService authorizationService,
             IMemoryCache cache,
             ILogger<ReactContainerController> logger
         )
@@ -43,6 +55,7 @@ namespace BlazorApp.Api.Controllers.React
             _allocationSalesReportService = allocationSalesReportService;
             _containerHqSyncService = containerHqSyncService;
             _containerExportService = containerExportService;
+            _authorizationService = authorizationService;
             _cache = cache;
             _logger = logger;
         }
@@ -175,6 +188,19 @@ namespace BlazorApp.Api.Controllers.React
             return containerMap.Values
                 .OrderBy(container => container.实际到货日期 ?? container.预计到岸日期 ?? DateTime.MaxValue)
                 .ToList();
+        }
+
+        private async Task<bool> HasAnyPermissionAsync(IEnumerable<string> permissions)
+        {
+            foreach (var permission in permissions)
+            {
+                if ((await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -753,9 +779,10 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取 Coming Soon 货柜摘要（多用户共享 30 分钟缓存）。
         /// </summary>
         [HttpGet("coming-soon/summaries")]
-        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainerSummaries()
         {
+            if (!await HasAnyPermissionAsync(ComingSoonReadPermissions)) return Forbid();
+
             try
             {
                 var cacheKey = $"ComingSoon:Summaries:{DateTime.Today:yyyy-MM-dd}";
@@ -788,9 +815,10 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取 Coming Soon 单货柜商品明细（多用户共享 30 分钟缓存）。
         /// </summary>
         [HttpGet("coming-soon/{containerGuid}/products")]
-        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainerProducts(string containerGuid)
         {
+            if (!await HasAnyPermissionAsync(ComingSoonReadPermissions)) return Forbid();
+
             try
             {
                 if (string.IsNullOrWhiteSpace(containerGuid))
@@ -1259,9 +1287,10 @@ namespace BlazorApp.Api.Controllers.React
         /// 返回：未来8周内预计到港 + 最近一周内实际到港的货柜及其商品
         /// </summary>
         [HttpGet("coming-soon")]
-        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainers()
         {
+            if (!await HasAnyPermissionAsync(ComingSoonReadPermissions)) return Forbid();
+
             try
             {
                 _logger.LogInformation("获取即将到港货柜列表 (Coming Soon)");

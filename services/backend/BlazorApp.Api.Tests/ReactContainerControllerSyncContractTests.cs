@@ -7,6 +7,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using ClosedXML.Excel;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -113,19 +114,74 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Theory]
+    [InlineData(Permissions.OrderFront.View)]
+    [InlineData(Permissions.Orders.View)]
+    [InlineData(Permissions.Orders.Create)]
+    [InlineData(Permissions.Warehouse.ManageOrders)]
+    [InlineData(Permissions.Warehouse.Manage)]
+    public async Task ComingSoonReadEndpoints_任一商城权限可访问(string allowedPermission)
+    {
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainersAsync(It.IsAny<ContainerQueryRequest>()))
+            .ReturnsAsync(new ContainerListResponse());
+        containerService
+            .Setup(service => service.GetContainerProductsAsync("CONTAINER-A"))
+            .ReturnsAsync(new List<ContainerDetailDto>());
+        containerService
+            .Setup(service => service.GetComingSoonContainersAsync())
+            .ReturnsAsync(new List<ComingSoonContainerDto>());
+        var authorizationService = CreateAuthorizationService(allowedPermission);
+        var controller = CreateController(
+            containerService: containerService.Object,
+            authorizationService: authorizationService.Object
+        );
+
+        var summariesResponse = await controller.GetComingSoonContainerSummaries();
+        var productsResponse = await controller.GetComingSoonContainerProducts("CONTAINER-A");
+        var legacyResponse = await controller.GetComingSoonContainers();
+
+        Assert.IsType<OkObjectResult>(summariesResponse);
+        Assert.IsType<OkObjectResult>(productsResponse);
+        Assert.IsType<OkObjectResult>(legacyResponse);
+    }
+
+    [Fact]
+    public async Task ComingSoonReadEndpoints_无商城权限返回403且不调用服务()
+    {
+        var containerService = new Mock<IContainerReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            containerService: containerService.Object,
+            authorizationService: CreateAuthorizationService().Object
+        );
+
+        var summariesResponse = await controller.GetComingSoonContainerSummaries();
+        var productsResponse = await controller.GetComingSoonContainerProducts("CONTAINER-A");
+        var legacyResponse = await controller.GetComingSoonContainers();
+
+        Assert.IsType<ForbidResult>(summariesResponse);
+        Assert.IsType<ForbidResult>(productsResponse);
+        Assert.IsType<ForbidResult>(legacyResponse);
+        containerService.VerifyNoOtherCalls();
+    }
+
+    [Theory]
     [InlineData(nameof(ReactContainerController.GetComingSoonContainerSummaries))]
     [InlineData(nameof(ReactContainerController.GetComingSoonContainerProducts))]
     [InlineData(nameof(ReactContainerController.GetComingSoonContainers))]
-    public void ComingSoonReadEndpoints_允许仓库员工访问(string methodName)
+    public void ComingSoonReadEndpoints_使用类级认证而非方法级角色(string methodName)
     {
         var method = typeof(ReactContainerController).GetMethod(methodName);
 
-        var authorizeAttribute = Assert.IsType<AuthorizeAttribute>(Assert.Single(
-            method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+        Assert.Empty(method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false));
+        var controllerAuthorize = Assert.IsType<AuthorizeAttribute>(Assert.Single(
+            typeof(ReactContainerController).GetCustomAttributes(
+                typeof(AuthorizeAttribute),
+                inherit: false
+            )
         ));
-
-        // 订货前台由仓库员工日常查看到货计划，拆分接口必须和仓库员工账号权限保持一致。
-        Assert.Equal("Admin,WarehouseManager,WarehouseStaff,User", authorizeAttribute.Roles);
+        Assert.Null(controllerAuthorize.Roles);
+        Assert.Null(controllerAuthorize.Policy);
     }
 
     [Fact]
@@ -498,17 +554,55 @@ public class ReactContainerControllerSyncContractTests
         IContainerReactService? containerService = null,
         IContainerAllocationSalesReportService? reportService = null,
         ContainerExportService? exportService = null,
-        IMemoryCache? cache = null
+        IMemoryCache? cache = null,
+        IAuthorizationService? authorizationService = null
     )
     {
-        return new ReactContainerController(
+        var controller = new ReactContainerController(
             containerService ?? Mock.Of<IContainerReactService>(),
             reportService ?? Mock.Of<IContainerAllocationSalesReportService>(),
             syncService ?? Mock.Of<IContainerHqSyncService>(),
             exportService ?? CreateExportService(),
+            authorizationService
+                ?? CreateAuthorizationService(
+                    Permissions.OrderFront.View,
+                    Permissions.Orders.View,
+                    Permissions.Orders.Create,
+                    Permissions.Warehouse.ManageOrders,
+                    Permissions.Warehouse.Manage
+                ).Object,
             cache ?? new MemoryCache(new MemoryCacheOptions()),
             Mock.Of<ILogger<ReactContainerController>>()
         );
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext(),
+        };
+        return controller;
+    }
+
+    private static Mock<IAuthorizationService> CreateAuthorizationService(
+        params string[] allowedPermissions
+    )
+    {
+        var allowed = allowedPermissions.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var authorizationService = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorizationService
+            .Setup(service => service.AuthorizeAsync(
+                It.IsAny<System.Security.Claims.ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()
+            ))
+            .ReturnsAsync(
+                (
+                    System.Security.Claims.ClaimsPrincipal _,
+                    object? _,
+                    string policy
+                ) => allowed.Contains(policy)
+                    ? AuthorizationResult.Success()
+                    : AuthorizationResult.Failed()
+            );
+        return authorizationService;
     }
 
     private static void AssertMethodHasPolicy(string methodName, string policy)
