@@ -10,6 +10,7 @@ import {
   ReloadOutlined,
   SaveOutlined,
   SearchOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import {
   DndContext,
@@ -200,6 +201,12 @@ import {
   pushProductsToHqUpdateFieldOptions,
 } from '../../../types/posProduct'
 import type { PushProductsToHqResult, PushProductsToHqUpdateField } from '../../../types/posProduct'
+import ContainerCategoryManageModal from './ContainerCategoryManageModal'
+import {
+  resolveContainerCategoryTargetAfterMutation,
+  resolveContainerCategorySelectionAfterRefresh,
+  type ContainerCategoryChange,
+} from './containerCategoryManageLogic'
 import ContainerTagFilters from './ContainerTagFilters'
 import useContainerSetCode from './useContainerSetCode'
 import {
@@ -664,6 +671,8 @@ export default function ContainerDetailPage() {
   const [rowCategoryEditingRow, setRowCategoryEditingRow] = useState<ContainerDetail | null>(null)
   const [rowTargetCategoryGuid, setRowTargetCategoryGuid] = useState<string>()
   const [rowCategorySaving, setRowCategorySaving] = useState(false)
+  const [categoryManageOpen, setCategoryManageOpen] = useState(false)
+  const [categoryManageContext, setCategoryManageContext] = useState<'batch' | 'row' | null>(null)
   const [editingProductNameRowKey, setEditingProductNameRowKey] = useState<string | null>(null)
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -823,6 +832,49 @@ export default function ContainerDetailPage() {
     categoryName: selectedRowTargetCategory?.categoryName,
     warehouseCategoryGUID: rowTargetCategoryGuid,
   }, categoryLookup, i18n.language) : undefined
+  const categoryManageActiveTargetGuid = categoryManageContext === 'batch'
+    ? targetCategoryGuid
+    : categoryManageContext === 'row'
+      ? rowTargetCategoryGuid
+      : undefined
+
+  const openCategoryManageModal = (context: 'batch' | 'row') => {
+    setCategoryManageContext(context)
+    setCategoryManageOpen(true)
+  }
+
+  const closeCategoryManageModal = () => {
+    setCategoryManageOpen(false)
+    setCategoryManageContext(null)
+  }
+
+  const handleCategoriesChanged = (
+    tree: WarehouseCategoryNode[],
+    change: ContainerCategoryChange,
+  ) => {
+    const selection = resolveContainerCategorySelectionAfterRefresh(
+      tree,
+      undefined,
+      categoryManageActiveTargetGuid,
+      change,
+    )
+
+    setCategories(tree)
+    setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1))
+    if (categoryManageContext === 'batch') {
+      setTargetCategoryGuid(selection.activeTargetCategoryGuid)
+    } else if (categoryManageContext === 'row') {
+      setRowTargetCategoryGuid(selection.activeTargetCategoryGuid)
+    }
+  }
+
+  const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {
+    if (categoryManageContext === 'batch') {
+      setTargetCategoryGuid((current) => resolveContainerCategoryTargetAfterMutation(current, change))
+    } else if (categoryManageContext === 'row') {
+      setRowTargetCategoryGuid((current) => resolveContainerCategoryTargetAfterMutation(current, change))
+    }
+  }
 
   const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
 
@@ -2138,7 +2190,8 @@ export default function ContainerDetailPage() {
     }
     setBatchModalTargetCount(scopedRows.length)
     setBatchModalScopeRows(scopedRows)
-    setTargetCategoryGuid(undefined)
+    // 从工具栏管理分类后，保留仍存在的目标分类，打开批量分类即可直接使用。
+    setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID)
     // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
     setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
     setBatchCategoryOpen(true)
@@ -2200,6 +2253,7 @@ export default function ContainerDetailPage() {
   }
 
   const closeRowCategoryModal = () => {
+    closeCategoryManageModal()
     setRowCategoryOpen(false)
     setRowCategoryEditingRow(null)
     setRowTargetCategoryGuid(undefined)
@@ -3999,6 +4053,7 @@ export default function ContainerDetailPage() {
         confirmLoading={batchCategorySaving}
         okButtonProps={{ disabled: !targetCategoryGuid || categoryLoading || !categories.length }}
         onCancel={() => {
+          closeCategoryManageModal()
           setBatchCategoryOpen(false)
           setBatchModalTargetCount(0)
           setBatchModalScopeRows([])
@@ -4063,6 +4118,17 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      {access.canManageWarehouseCategories ? (
+        <ContainerCategoryManageModal
+          open={categoryManageOpen}
+          categories={categories}
+          language={i18n.language}
+          activeTargetCategoryGuid={categoryManageActiveTargetGuid}
+          onCancel={closeCategoryManageModal}
+          onMutationCommitted={handleCategoryMutationCommitted}
+          onCategoriesChanged={handleCategoriesChanged}
+        />
+      ) : null}
       <div className={pageClassName}>
       <Spin spinning={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -4248,6 +4314,15 @@ export default function ContainerDetailPage() {
                         >
                           <Button size="small">{t('containers.actions.batchActions')}</Button>
                         </Dropdown>
+                      ) : null}
+                      {access.canManageWarehouseCategories ? (
+                        <Button
+                          size="small"
+                          icon={<SettingOutlined />}
+                          onClick={() => openCategoryManageModal('batch')}
+                        >
+                          {t('containers.actions.manageCategories', '管理分类')}
+                        </Button>
                       ) : null}
                       {access.canDeleteContainer ? <Button size="small" danger icon={<DeleteOutlined />} onClick={deleteSelected}>{t('containers.actions.deleteDetails')}</Button> : null}
                     </Space>

@@ -1,4 +1,4 @@
-import { batchAssignProducts } from './warehouseCategoryService'
+import { batchAssignProducts, deleteWarehouseCategory } from './warehouseCategoryService'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -57,6 +57,33 @@ try {
     () => batchAssignProducts('cat-guid-1', ['product-1']),
     '后端返回 isSuccess 失败',
     '批量分配接口应兼容 isSuccess=false 的业务失败消息',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  assertEqual(
+    await deleteWarehouseCategory('cat-guid-1'),
+    true,
+    '删除接口成功响应没有 data 时也应返回成功',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: false,
+    message: '该分类下存在关联商品',
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  await assertRejects(
+    () => deleteWarehouseCategory('cat-guid-1'),
+    '该分类下存在关联商品',
+    '删除接口应抛出后端业务失败消息',
   )
 } finally {
   globalThis.fetch = originalFetch

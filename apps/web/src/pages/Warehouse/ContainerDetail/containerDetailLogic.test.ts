@@ -1449,6 +1449,7 @@ assertEqual(
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
 const tagFiltersSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerTagFilters.tsx', 'utf8')
 const columnsSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerDetailColumns.tsx', 'utf8')
+const categoryManageSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.tsx', 'utf8')
 const setCodeHookSource = readFileSync('src/pages/Warehouse/ContainerDetail/useContainerSetCode.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
 const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
@@ -3655,6 +3656,63 @@ assertEqual(
     pageSource.includes('setRowCategoryOpen(false)'),
   true,
   '单行目标分类修改弹窗应只提交当前行 ProductCategoryGUID，并在保存后只更新当前已加载行',
+)
+assertEqual(
+  pageSource.includes('access.canManageWarehouseCategories ? (') &&
+    pageSource.includes('<ContainerCategoryManageModal') &&
+    pageSource.includes('onMutationCommitted={handleCategoryMutationCommitted}') &&
+    pageSource.includes('onCategoriesChanged={handleCategoriesChanged}') &&
+    pageSource.includes('resolveContainerCategorySelectionAfterRefresh('),
+  true,
+  '分类管理弹窗应按分类管理权限挂载，并协调刷新后的目标分类',
+)
+const batchActionsButtonIndex = pageSource.indexOf("<Button size=\"small\">{t('containers.actions.batchActions')}</Button>")
+const manageCategoriesButtonIndex = pageSource.indexOf("onClick={() => openCategoryManageModal('batch')}")
+const deleteDetailsButtonIndex = pageSource.indexOf("onClick={deleteSelected}>{t('containers.actions.deleteDetails')")
+const batchCategoryModalSource = pageSource.slice(
+  pageSource.indexOf("title={t('containers.modals.batchCategoryTitle'"),
+  pageSource.indexOf("title={t('containers.modals.rowCategoryTitle'"),
+)
+assertEqual(
+  batchActionsButtonIndex >= 0 &&
+    manageCategoriesButtonIndex > batchActionsButtonIndex &&
+    deleteDetailsButtonIndex > manageCategoriesButtonIndex &&
+    !batchCategoryModalSource.includes('manageCategories') &&
+    !rowCategoryModalSource.includes('manageCategories') &&
+    pageSource.includes('setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID)'),
+  true,
+  '管理分类入口应位于主工具栏批量操作按钮之后，并保留有效的批量目标分类',
+)
+assertEqual(
+  categoryManageSource.includes('createWarehouseCategory') &&
+    categoryManageSource.includes('updateWarehouseCategory') &&
+    categoryManageSource.includes('deleteWarehouseCategory') &&
+    categoryManageSource.includes('getCategoryTree') &&
+    categoryManageSource.includes('<Popconfirm') &&
+    categoryManageSource.includes("formMode === 'create'") &&
+    categoryManageSource.includes('executeContainerCategoryMutation(') &&
+    categoryManageSource.includes('refreshAfterMutationFailed') &&
+    categoryManageSource.includes('handleRetryRefresh') &&
+    categoryManageSource.includes("t('common.retry', '重试')") &&
+    categoryManageSource.includes('buildContainerCategoryParentOptions('),
+  true,
+  '货柜明细分类管理弹窗应复用仓库分类 CRUD，并保护新增状态和删除确认',
+)
+assertEqual(
+  pageStyleSource.includes('.container-category-manage-grid') &&
+    pageStyleSource.includes('grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)') &&
+    pageStyleSource.includes('@media (max-width: 760px)') &&
+    pageStyleSource.includes('grid-template-columns: minmax(0, 1fr)'),
+  true,
+  '分类管理弹窗应在桌面使用紧凑双栏，并在窄屏切换为单栏',
+)
+assertEqual(
+  zhLocale.containers.actions.manageCategories === '管理分类' &&
+    enLocale.containers.actions.manageCategories === 'Manage Categories' &&
+    zhLocale.containers.modals.categoryManageTitle === '管理分类' &&
+    enLocale.containers.modals.categoryManageTitle === 'Manage Categories',
+  true,
+  '分类管理入口和弹窗标题应具备中英文文案',
 )
 assertEqual(
   pageSource.includes("t('common.copyValue'") &&
