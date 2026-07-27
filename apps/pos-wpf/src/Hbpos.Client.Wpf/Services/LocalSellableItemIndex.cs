@@ -20,6 +20,17 @@ public sealed class LocalSellableItemIndex
         }
     }
 
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _items.Count;
+            }
+        }
+    }
+
     public void ReplaceAll(IEnumerable<SellableItemDto> items)
     {
         var orderedItems = items

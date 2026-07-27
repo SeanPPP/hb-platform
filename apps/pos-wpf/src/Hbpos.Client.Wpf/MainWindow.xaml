@@ -20,6 +20,8 @@
         Icon="pack://application:,,,/Resources/AppIcon.ico"
         WindowStyle="None"
         ResizeMode="CanResize"
+        WindowState="Maximized"
+        WindowStartupLocation="CenterScreen"
         FontFamily="{StaticResource PosFontFamily}"
         Background="{StaticResource PosScreenBackgroundBrush}">
     <Window.Resources>
@@ -587,7 +589,6 @@
                                      Minimum="0"
                                      Maximum="100"
                                      Value="{Binding CatalogDownloadProgressValue}"
-                                     IsIndeterminate="{Binding IsCatalogDownloadProgressIndeterminate}"
                                      Foreground="{StaticResource PosSuccessBrush}"
                                      Background="#FFE1F4EA"
                                      BorderThickness="0"

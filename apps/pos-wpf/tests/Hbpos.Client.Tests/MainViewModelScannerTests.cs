@@ -1795,6 +1795,116 @@ public sealed class MainViewModelScannerTests
     public async Task CatalogDownloadProgress_TransitionsFromComparingToDownloadingAndCompleted()
     {
         var syncRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var localItems = Enumerable.Range(1, 200)
+            .Select(index => CreateItem("1042", $"SKU-{index:D3}", $"{1_000 + index}"))
+            .ToArray();
+        var shellCatalog = new RecordingShellCatalogService
+        {
+            SyncRelease = syncRelease,
+            LocalItems = localItems
+        };
+        var viewModel = CreateMainViewModelWithShellCatalog(
+            new FakeCatalogRepository { Items = localItems },
+            shellCatalog,
+            new FakeConnectivityApiClient(true),
+            localItems);
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+        var startupTask = viewModel.ContinueStartupAfterShownAsync(startupOptions);
+        await WaitUntilAsync(() => shellCatalog.LastProgress is not null);
+
+        shellCatalog.LastProgress!.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Comparing,
+            TotalCount: 0,
+            DownloadedCount: 0,
+            Percent: 0,
+            ComparePages: 1,
+            RemotePages: 0,
+            UpsertedCount: 603,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 85_000)
+        {
+            ComparedCount = 100
+        });
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressDetailText.Contains("Checked: 100", StringComparison.Ordinal));
+
+        Assert.Equal(50, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Checking local data 50%", viewModel.CatalogDownloadProgressText);
+        Assert.Contains("Checked: 100", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+        Assert.Contains("603", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+
+        shellCatalog.LastProgress.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Comparing,
+            TotalCount: 0,
+            DownloadedCount: 0,
+            Percent: 0,
+            ComparePages: 2,
+            RemotePages: 0,
+            UpsertedCount: 603,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 85_500)
+        {
+            ComparedCount = 199
+        });
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressDetailText.Contains("Checked: 199", StringComparison.Ordinal));
+
+        Assert.Equal(99, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Checking local data 99%", viewModel.CatalogDownloadProgressText);
+
+        shellCatalog.LastProgress.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Downloading,
+            TotalCount: 1_000,
+            DownloadedCount: 250,
+            Percent: 25,
+            ComparePages: 1,
+            RemotePages: 1,
+            UpsertedCount: 603,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 86_000)
+        {
+            ComparedCount = 4
+        });
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressDetailText.Contains("250/1000", StringComparison.Ordinal));
+
+        Assert.Equal(25, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Data download 25%", viewModel.CatalogDownloadProgressText);
+        Assert.Contains("250/1000", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+
+        shellCatalog.LastProgress.Report(new CatalogSyncProgress(
+            "1042",
+            CatalogSyncProgressStage.Completed,
+            TotalCount: 1_000,
+            DownloadedCount: 1_000,
+            Percent: 100,
+            ComparePages: 1,
+            RemotePages: 2,
+            UpsertedCount: 1_000,
+            DeletedCount: 0,
+            ElapsedMilliseconds: 87_000)
+        {
+            ComparedCount = 4
+        });
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressText == "Data download complete 100%");
+
+        Assert.Equal(100, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Data download complete 100%", viewModel.CatalogDownloadProgressText);
+
+        syncRelease.SetResult();
+        await startupTask;
+    }
+
+    [Fact]
+    public async Task CatalogDownloadProgress_WithEmptyLocalCatalog_KeepsLastValueOnFailure()
+    {
+        var syncRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var shellCatalog = new RecordingShellCatalogService
         {
             SyncRelease = syncRelease
@@ -1815,59 +1925,48 @@ public sealed class MainViewModelScannerTests
             TotalCount: 0,
             DownloadedCount: 0,
             Percent: 0,
-            ComparePages: 1,
+            ComparePages: 0,
             RemotePages: 0,
-            UpsertedCount: 603,
+            UpsertedCount: 0,
             DeletedCount: 0,
-            ElapsedMilliseconds: 85_000)
-        {
-            ComparedCount = 2_000
-        });
-        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressDetailText.Contains("2000", StringComparison.Ordinal));
+            ElapsedMilliseconds: 1_000));
+        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressText.Contains("0%", StringComparison.Ordinal));
 
-        Assert.True(viewModel.IsCatalogDownloadProgressIndeterminate);
-        Assert.Equal("Checking local data", viewModel.CatalogDownloadProgressText);
-        Assert.DoesNotContain('%', viewModel.CatalogDownloadProgressText);
-        Assert.Contains("603", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+        Assert.Equal(0, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Checking local data 0%", viewModel.CatalogDownloadProgressText);
 
         shellCatalog.LastProgress.Report(new CatalogSyncProgress(
             "1042",
             CatalogSyncProgressStage.Downloading,
-            TotalCount: 1_000,
-            DownloadedCount: 500,
-            Percent: 50,
-            ComparePages: 1,
+            TotalCount: 100,
+            DownloadedCount: 40,
+            Percent: 40,
+            ComparePages: 0,
             RemotePages: 1,
-            UpsertedCount: 603,
+            UpsertedCount: 40,
             DeletedCount: 0,
-            ElapsedMilliseconds: 86_000)
-        {
-            ComparedCount = 2_000
-        });
-        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressValue == 50);
-
-        Assert.False(viewModel.IsCatalogDownloadProgressIndeterminate);
-        Assert.Equal("Data download 50%", viewModel.CatalogDownloadProgressText);
-        Assert.Contains("500/1000", viewModel.CatalogDownloadProgressDetailText, StringComparison.Ordinal);
+            ElapsedMilliseconds: 2_000));
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressDetailText.Contains("40/100", StringComparison.Ordinal));
 
         shellCatalog.LastProgress.Report(new CatalogSyncProgress(
             "1042",
-            CatalogSyncProgressStage.Completed,
-            TotalCount: 1_000,
-            DownloadedCount: 1_000,
-            Percent: 100,
-            ComparePages: 1,
-            RemotePages: 2,
-            UpsertedCount: 1_000,
+            CatalogSyncProgressStage.Failed,
+            TotalCount: 100,
+            DownloadedCount: 40,
+            Percent: 0,
+            ComparePages: 0,
+            RemotePages: 1,
+            UpsertedCount: 40,
             DeletedCount: 0,
-            ElapsedMilliseconds: 87_000)
-        {
-            ComparedCount = 2_000
-        });
-        await WaitUntilAsync(() => viewModel.CatalogDownloadProgressValue == 100);
+            ElapsedMilliseconds: 3_000,
+            ErrorMessage: "catalog API unavailable"));
+        await WaitUntilAsync(() =>
+            viewModel.CatalogDownloadProgressDetailText == "catalog API unavailable");
 
-        Assert.False(viewModel.IsCatalogDownloadProgressIndeterminate);
-        Assert.Equal("Data download complete 100%", viewModel.CatalogDownloadProgressText);
+        Assert.Equal(40, viewModel.CatalogDownloadProgressValue);
+        Assert.Equal("Data download failed", viewModel.CatalogDownloadProgressText);
+        Assert.Equal("catalog API unavailable", viewModel.CatalogDownloadProgressDetailText);
 
         syncRelease.SetResult();
         await startupTask;
@@ -4616,10 +4715,12 @@ public sealed class MainViewModelScannerTests
     private static MainViewModel CreateMainViewModelWithShellCatalog(
         FakeCatalogRepository catalogRepository,
         IShellCatalogService shellCatalogService,
-        IConnectivityApiClient connectivityApiClient)
+        IConnectivityApiClient connectivityApiClient,
+        IEnumerable<SellableItemDto>? indexedItems = null)
     {
         var localization = new LocalizationService();
         var priceIndex = new LocalSellableItemIndex();
+        priceIndex.ReplaceAll(indexedItems ?? []);
         var cart = new PosCartService();
         var checkout = new CashCheckoutService();
         var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };

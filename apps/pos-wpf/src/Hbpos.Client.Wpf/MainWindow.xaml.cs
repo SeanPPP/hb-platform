@@ -12,6 +12,11 @@ namespace Hbpos.Client.Wpf;
 public partial class MainWindow : Window
 {
     private const int RawInputMessageId = 0x00FF;
+    private const string MainWindowModeSettingKey = "Shell:MainWindowMode";
+    internal const string FullscreenWindowModeValue = "Fullscreen";
+    internal const string NormalCenteredWindowModeValue = "NormalCentered";
+    private const double NormalWindowWidth = 1366;
+    private const double NormalWindowHeight = 768;
 
     internal delegate IntPtr WindowMessageProcessor(
         IntPtr hwnd,
@@ -26,10 +31,15 @@ public partial class MainWindow : Window
     private readonly IDisplayTopologyService _displayTopologyService;
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
     private readonly IAppUpdateCoordinator _appUpdateCoordinator;
+    private readonly ILocalAppSettingsRepository _localAppSettingsRepository;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
+    private Task _windowModeSaveTask = Task.CompletedTask;
     private readonly KeyboardScannerFallbackBuffer _keyboardScannerFallback = new();
     private bool _postShowStartupStarted;
+    private bool _windowModeRestored;
+    private bool _isApplyingWindowMode;
+    private WindowState _lastNonMinimizedWindowState = WindowState.Maximized;
 
     public bool IsStartupBlockedByAppUpdate { get; private set; }
 
@@ -41,7 +51,8 @@ public partial class MainWindow : Window
         IRawScannerService rawScannerService,
         IDisplayTopologyService displayTopologyService,
         IUiPriorityCoordinator uiPriorityCoordinator,
-        IAppUpdateCoordinator appUpdateCoordinator)
+        IAppUpdateCoordinator appUpdateCoordinator,
+        ILocalAppSettingsRepository localAppSettingsRepository)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
@@ -49,6 +60,7 @@ public partial class MainWindow : Window
         _displayTopologyService = displayTopologyService;
         _uiPriorityCoordinator = uiPriorityCoordinator;
         _appUpdateCoordinator = appUpdateCoordinator;
+        _localAppSettingsRepository = localAppSettingsRepository;
 #if DEBUG
         _viewModel.AppUpdate.ConfigureDebugForceUpdateDismissed(ResumeStartupAfterDebugUpdateDismissalAsync);
 #endif
@@ -61,6 +73,7 @@ public partial class MainWindow : Window
         PreviewMouseMove += MainWindowUserInput;
         PreviewMouseWheel += MainWindowUserInput;
         PreviewTouchDown += MainWindowUserInput;
+        StateChanged += MainWindowStateChanged;
         Closed += MainWindowClosed;
     }
 
@@ -223,6 +236,8 @@ public partial class MainWindow : Window
 
     private async Task InitializeForStartupCoreAsync()
     {
+        await RestoreWindowModeAsync();
+
         var updateResult = await RunStartupAppUpdateCheckAsync();
         IsStartupBlockedByAppUpdate = !ShouldContinueStartupAfterAppUpdateCheck(updateResult);
         if (IsStartupBlockedByAppUpdate)
@@ -274,7 +289,7 @@ public partial class MainWindow : Window
     {
         if (WindowState == WindowState.Minimized)
         {
-            WindowState = WindowState.Normal;
+            ApplyWindowMode(_lastNonMinimizedWindowState, persist: false);
         }
 
         var wasTopmost = Topmost;
@@ -371,6 +386,7 @@ public partial class MainWindow : Window
         PreviewMouseMove -= MainWindowUserInput;
         PreviewMouseWheel -= MainWindowUserInput;
         PreviewTouchDown -= MainWindowUserInput;
+        StateChanged -= MainWindowStateChanged;
         _hwndSource?.RemoveHook(MainWindowMessageHook);
         _rawScannerService.Stop();
         _viewModel.Dispose();
@@ -590,9 +606,148 @@ public partial class MainWindow : Window
 
     private void ToggleWindowState()
     {
-        WindowState = WindowState == WindowState.Maximized
+        var targetState = _lastNonMinimizedWindowState == WindowState.Maximized
             ? WindowState.Normal
             : WindowState.Maximized;
+        ApplyWindowMode(targetState, persist: true);
+    }
+
+    private async Task RestoreWindowModeAsync()
+    {
+        var state = await LoadWindowStateAsync(
+            _localAppSettingsRepository,
+            ex => ConsoleLog.WriteError(
+                "Startup",
+                $"main window mode restore failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex));
+        ApplyWindowMode(state, persist: false);
+        _windowModeRestored = true;
+    }
+
+    private void MainWindowStateChanged(object? sender, EventArgs e)
+    {
+        if (!_windowModeRestored || _isApplyingWindowMode || WindowState == WindowState.Minimized)
+        {
+            return;
+        }
+
+        _lastNonMinimizedWindowState = WindowState;
+        if (WindowState == WindowState.Normal)
+        {
+            CenterNormalWindow();
+        }
+
+        QueueWindowModePersistence(WindowState);
+    }
+
+    private void ApplyWindowMode(WindowState state, bool persist)
+    {
+        _isApplyingWindowMode = true;
+        try
+        {
+            WindowState = state;
+            _lastNonMinimizedWindowState = state;
+            if (state == WindowState.Normal)
+            {
+                CenterNormalWindow();
+            }
+        }
+        finally
+        {
+            _isApplyingWindowMode = false;
+        }
+
+        if (persist && _windowModeRestored)
+        {
+            QueueWindowModePersistence(state);
+        }
+    }
+
+    private void CenterNormalWindow()
+    {
+        Width = Math.Max(MinWidth, Math.Min(NormalWindowWidth, SystemParameters.WorkArea.Width));
+        Height = Math.Max(MinHeight, Math.Min(NormalWindowHeight, SystemParameters.WorkArea.Height));
+
+        var position = StartupSplashWindowPlacement.CenterInWorkArea(
+            SystemParameters.WorkArea,
+            Width,
+            Height);
+        Left = position.X;
+        Top = position.Y;
+    }
+
+    private void QueueWindowModePersistence(WindowState state)
+    {
+        var mode = GetPersistedWindowMode(state);
+        if (mode is null)
+        {
+            return;
+        }
+
+        // 同一 UI 线程按触发顺序排队，避免快速切换时较早的异步写入覆盖最终状态。
+        _windowModeSaveTask = PersistWindowModeAfterAsync(
+            _windowModeSaveTask,
+            _localAppSettingsRepository,
+            mode,
+            ex => ConsoleLog.WriteError(
+                "WindowState",
+                $"main window mode save failed mode={mode} error={ex.GetType().Name} message={ex.Message}",
+                exception: ex));
+    }
+
+    internal static async Task<WindowState> LoadWindowStateAsync(
+        ILocalAppSettingsRepository settingsRepository,
+        Action<Exception> reportException)
+    {
+        try
+        {
+            var savedMode = await settingsRepository
+                .GetValueAsync(MainWindowModeSettingKey)
+                .ConfigureAwait(false);
+            return ResolveWindowState(savedMode);
+        }
+        catch (Exception ex)
+        {
+            // 窗口偏好损坏不应阻断收银启动。
+            reportException(ex);
+            return WindowState.Maximized;
+        }
+    }
+
+    internal static async Task PersistWindowModeAfterAsync(
+        Task previousSave,
+        ILocalAppSettingsRepository settingsRepository,
+        string mode,
+        Action<Exception> reportException)
+    {
+        try
+        {
+            await previousSave.ConfigureAwait(false);
+            await settingsRepository
+                .SetValueAsync(MainWindowModeSettingKey, mode)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            reportException(ex);
+        }
+    }
+
+    internal static WindowState ResolveWindowState(string? savedMode)
+    {
+        return string.Equals(savedMode, NormalCenteredWindowModeValue, StringComparison.OrdinalIgnoreCase)
+            ? WindowState.Normal
+            : WindowState.Maximized;
+    }
+
+    internal static string? GetPersistedWindowMode(WindowState state)
+    {
+        return state switch
+        {
+            WindowState.Maximized => FullscreenWindowModeValue,
+            WindowState.Normal => NormalCenteredWindowModeValue,
+            _ => null
+        };
     }
 }
 
