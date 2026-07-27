@@ -241,6 +241,19 @@ export interface ContainerDetailBatchActionResult {
   totalDeleted?: number;
 }
 
+export interface ContainerDetailSaveValidationError {
+  hguid: string;
+  field: string;
+  code: string;
+  message: string;
+}
+
+export interface ContainerDetailBatchUpdateResult {
+  totalUpdated: number;
+  totalRequested: number;
+  validationErrors: ContainerDetailSaveValidationError[];
+}
+
 export interface CreateContainerRequest {
   货柜编号: string;
   装柜日期?: string;

@@ -52,7 +52,7 @@ namespace BlazorApp.Api.Services.React
                 && !_translationService.ContainsChinese(englishName);
         }
 
-        private async Task<string?> NormalizeEnglishNameForWriteAsync(string? englishName)
+        private string? NormalizeEnglishNameForWrite(string? englishName)
         {
             if (string.IsNullOrWhiteSpace(englishName))
             {
@@ -60,25 +60,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             var normalized = englishName.Trim();
-            if (!_translationService.ContainsChinese(normalized))
-            {
-                return normalized;
-            }
-
-            // 英文名称栏本身可能被中文污染，先翻译后再进入最终英文校验。
-            var translations = await _translationService.BatchTranslateToEnglishAsync(
-                new List<string> { normalized }
-            );
-            if (
-                translations.TryGetValue(normalized, out var translated)
-                && !string.Equals(translated?.Trim(), normalized, StringComparison.Ordinal)
-                && IsValidEnglishName(translated)
-            )
-            {
-                return translated!.Trim();
-            }
-
-            return null;
+            return IsValidEnglishName(normalized) ? normalized : null;
         }
 
         /// <summary>
@@ -1751,13 +1733,37 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         public async Task<int> BatchUpdateDetailsAsync(List<UpdateContainerDetailDto> updates)
         {
+            var result = await BatchUpdateDetailsCoreAsync(updates, countValidNoOps: false);
+            return result.TotalUpdated;
+        }
+
+        /// <summary>
+        /// 批量更新货柜明细，并返回 React 页面所需的部分成功和字段级错误。
+        /// </summary>
+        public Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsDetailedAsync(
+            List<UpdateContainerDetailDto> updates
+        )
+        {
+            return BatchUpdateDetailsCoreAsync(updates, countValidNoOps: true);
+        }
+
+        private async Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsCoreAsync(
+            List<UpdateContainerDetailDto> updates,
+            bool countValidNoOps
+        )
+        {
             try
             {
+                var result = new ContainerDetailBatchUpdateResultDto
+                {
+                    TotalRequested = updates?.Count ?? 0,
+                };
+
                 // 参数校验
                 if (updates == null || !updates.Any())
                 {
                     _logger.LogWarning("批量更新明细列表为空");
-                    return 0;
+                    return result;
                 }
 
                 _logger.LogInformation(
@@ -1769,14 +1775,55 @@ namespace BlazorApp.Api.Services.React
                 var hguids = updates.Select(u => u.HGUID).Distinct().ToList();
                 var details = await _context
                     .Db.Queryable<ContainerDetail>()
-                    .Where(d => hguids.Contains(d.DetailCode))
+                    .Where(d => hguids.Contains(d.DetailCode) && !d.IsDeleted)
                     .ToListAsync();
 
                 // 构建明细编码到明细实体的映射，便于快速查找
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
                 var changedDetails = new List<ContainerDetail>();
                 var updatedRequestGuids = new HashSet<string>();
-                var validatedTargetCategoryGuids = await ValidateTargetCategoryUpdatesAsync(updates);
+                var existingDetailUpdates = updates
+                    .Where(update => detailMap.ContainsKey(update.HGUID))
+                    .ToList();
+                foreach (var update in updates.Where(update => !detailMap.ContainsKey(update.HGUID)))
+                {
+                    result.ValidationErrors.Add(
+                        new ContainerDetailBatchUpdateValidationErrorDto
+                        {
+                            HGUID = update.HGUID,
+                            Field = "*",
+                            Code = "DETAIL_NOT_FOUND",
+                            Message = "货柜明细不存在",
+                        }
+                    );
+                }
+
+                // 不存在的 HGUID 整行阻断，也不能让该行携带的分类值触发后续校验。
+                var validatedTargetCategoryGuids = await ValidateTargetCategoryUpdatesAsync(
+                    existingDetailUpdates
+                );
+
+                foreach (var update in existingDetailUpdates)
+                {
+                    var hasDirectDetailIntent =
+                        update.调整浮率.HasValue
+                        || update.国内价格.HasValue
+                        || update.进口价格.HasValue
+                        || update.运输成本.HasValue
+                        || update.贴牌价格.HasValue
+                        || update.单件装箱数.HasValue
+                        || update.单件体积.HasValue
+                        || update.装柜数量.HasValue
+                        || update.合计装柜体积.HasValue
+                        || update.合计装柜金额.HasValue
+                        || update.IsActive.HasValue
+                        || update.ProductCategoryGUID != null;
+                    if (countValidNoOps && hasDirectDetailIntent)
+                    {
+                        // 有效目标上的同值保存也是成功，避免前端把 no-op 误判为静默跳过。
+                        updatedRequestGuids.Add(update.HGUID);
+                    }
+                }
 
                 // 遍历更新请求，逐个应用变更
                 foreach (var update in updates)
@@ -1864,6 +1911,55 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                foreach (var update in existingDetailUpdates)
+                {
+                    var detail = detailMap[update.HGUID];
+                    if (
+                        !string.IsNullOrWhiteSpace(detail.ProductCode)
+                        || update.SkipRelatedProductSync == true
+                    )
+                    {
+                        continue;
+                    }
+
+                    var clearEnglishName = update.ClearEnglishName == true;
+                    var hasEnglishName = !string.IsNullOrWhiteSpace(update.英文名称);
+                    if (!clearEnglishName && !hasEnglishName)
+                    {
+                        continue;
+                    }
+
+                    if (
+                        hasEnglishName
+                        && _translationService.ContainsChinese(update.英文名称!.Trim())
+                    )
+                    {
+                        result.ValidationErrors.Add(
+                            new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = update.HGUID,
+                                Field = "英文名称",
+                                Code = "CONTAINS_CHINESE",
+                                Message = "英文名称不能包含中文",
+                            }
+                        );
+                        if (!clearEnglishName)
+                        {
+                            continue;
+                        }
+                    }
+
+                    result.ValidationErrors.Add(
+                        new ContainerDetailBatchUpdateValidationErrorDto
+                        {
+                            HGUID = update.HGUID,
+                            Field = "英文名称",
+                            Code = "RELATED_PRODUCT_NOT_FOUND",
+                            Message = "关联国内商品或本地主档商品不存在",
+                        }
+                    );
+                }
+
                 // 提前整理有效明细请求，名称回写不能依赖价格/状态字段是否变化。
                 var validDetailUpdates = updates
                     .Select(u =>
@@ -1931,6 +2027,112 @@ namespace BlazorApp.Api.Services.React
                         .ToHashSet();
                 }
 
+                var acceptedEnglishNameByUpdate =
+                    new Dictionary<UpdateContainerDetailDto, string?>();
+                var englishNameCandidates =
+                    new List<(
+                        UpdateContainerDetailDto Update,
+                        string ProductCode,
+                        string? EnglishName
+                    )>();
+
+                foreach (var item in relatedSyncDetailUpdates)
+                {
+                    var clearEnglishName = item.Update.ClearEnglishName == true;
+                    string? normalizedEnglishName = null;
+
+                    if (!string.IsNullOrWhiteSpace(item.Update.英文名称))
+                    {
+                        normalizedEnglishName = item.Update.英文名称!.Trim();
+                        if (_translationService.ContainsChinese(normalizedEnglishName))
+                        {
+                            result.ValidationErrors.Add(
+                                new ContainerDetailBatchUpdateValidationErrorDto
+                                {
+                                    HGUID = item.Update.HGUID,
+                                    Field = "英文名称",
+                                    Code = "CONTAINS_CHINESE",
+                                    Message = "英文名称不能包含中文",
+                                }
+                            );
+
+                            // 同一行显式清空仍是独立有效意图；否则只拒绝英文名称字段。
+                            if (!clearEnglishName)
+                            {
+                                continue;
+                            }
+                            normalizedEnglishName = null;
+                        }
+                    }
+
+                    if (!clearEnglishName && normalizedEnglishName == null)
+                    {
+                        continue;
+                    }
+
+                    if (
+                        !productMap.ContainsKey(item.ProductCode!)
+                        && !localProductMap.ContainsKey(item.ProductCode!)
+                    )
+                    {
+                        result.ValidationErrors.Add(
+                            new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = item.Update.HGUID,
+                                Field = "英文名称",
+                                Code = "RELATED_PRODUCT_NOT_FOUND",
+                                Message = "关联国内商品或本地主档商品不存在",
+                            }
+                        );
+                        continue;
+                    }
+
+                    englishNameCandidates.Add(
+                        (
+                            item.Update,
+                            item.ProductCode!,
+                            clearEnglishName ? null : normalizedEnglishName
+                        )
+                    );
+                }
+
+                foreach (var group in englishNameCandidates.GroupBy(item => item.ProductCode))
+                {
+                    var distinctIntents = group
+                        .Select(item =>
+                            item.EnglishName == null
+                                ? "\0CLEAR"
+                                : $"NAME:{item.EnglishName}"
+                        )
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList();
+                    if (distinctIntents.Count > 1)
+                    {
+                        foreach (var item in group)
+                        {
+                            result.ValidationErrors.Add(
+                                new ContainerDetailBatchUpdateValidationErrorDto
+                                {
+                                    HGUID = item.Update.HGUID,
+                                    Field = "英文名称",
+                                    Code = "CONFLICTING_PRODUCT_ENGLISH_NAME",
+                                    Message = "同一商品的英文名称更新意图冲突",
+                                }
+                            );
+                        }
+                        continue;
+                    }
+
+                    foreach (var item in group)
+                    {
+                        acceptedEnglishNameByUpdate[item.Update] = item.EnglishName;
+                        if (countValidNoOps)
+                        {
+                            updatedRequestGuids.Add(item.Update.HGUID);
+                        }
+                    }
+                }
+
                 var existingProductUpdates = relatedSyncDetailUpdates
                     .Where(x =>
                         !string.IsNullOrEmpty(x.Detail.ProductCode)
@@ -1953,31 +2155,16 @@ namespace BlazorApp.Api.Services.React
                 var productNameUpdates = relatedSyncDetailUpdates
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.Update.商品名称)
-                        || !string.IsNullOrWhiteSpace(x.Update.英文名称)
-                        || x.Update.ClearEnglishName == true
+                        || acceptedEnglishNameByUpdate.ContainsKey(x.Update)
                     )
                     .GroupBy(x => x.ProductCode!)
                     .Select(group =>
                     {
-                        string? englishName = null;
-                        var hasEnglishNameIntent = false;
-
-                        foreach (var item in group)
-                        {
-                            if (item.Update.ClearEnglishName == true)
-                            {
-                                // 清空是显式意图，必须覆盖前面同商品的英文名称更新。
-                                englishName = null;
-                                hasEnglishNameIntent = true;
-                                continue;
-                            }
-
-                            if (!string.IsNullOrWhiteSpace(item.Update.英文名称))
-                            {
-                                englishName = item.Update.英文名称!.Trim();
-                                hasEnglishNameIntent = true;
-                            }
-                        }
+                        var englishNameUpdates = group
+                            .Where(item =>
+                                acceptedEnglishNameByUpdate.ContainsKey(item.Update)
+                            )
+                            .ToList();
 
                         return new
                         {
@@ -1985,11 +2172,34 @@ namespace BlazorApp.Api.Services.React
                             商品名称 = group
                                 .Select(x => x.Update.商品名称)
                                 .LastOrDefault(value => !string.IsNullOrWhiteSpace(value)),
-                            英文名称 = englishName,
-                            HasEnglishNameIntent = hasEnglishNameIntent,
+                            英文名称 = englishNameUpdates.Count == 0
+                                ? null
+                                : acceptedEnglishNameByUpdate[englishNameUpdates[0].Update],
+                            HasEnglishNameIntent = englishNameUpdates.Count > 0,
                         };
                     })
                     .ToList();
+
+                if (countValidNoOps)
+                {
+                    foreach (var item in relatedSyncDetailUpdates)
+                    {
+                        if (
+                            !string.IsNullOrWhiteSpace(item.Update.商品名称)
+                            && productMap.ContainsKey(item.ProductCode!)
+                        )
+                        {
+                            updatedRequestGuids.Add(item.Update.HGUID);
+                        }
+                        if (
+                            item.Update.中包数.HasValue
+                            && productMap.ContainsKey(item.ProductCode!)
+                        )
+                        {
+                            updatedRequestGuids.Add(item.Update.HGUID);
+                        }
+                    }
+                }
 
                 var changedProducts = new List<DomesticProduct>();
                 var changedProductCodes = new HashSet<string>();
@@ -2102,7 +2312,7 @@ namespace BlazorApp.Api.Services.React
                         && !string.IsNullOrWhiteSpace(productUpdate.英文名称)
                     )
                     {
-                        var normalizedEnglishName = await NormalizeEnglishNameForWriteAsync(
+                        var normalizedEnglishName = NormalizeEnglishNameForWrite(
                             productUpdate.英文名称
                         );
                         if (
@@ -2131,7 +2341,7 @@ namespace BlazorApp.Api.Services.React
                         }
                         else if (normalizedEnglishName == null)
                         {
-                            // 翻译失败或 mock 降级时可能返回中文/中英混合，不能污染英文名称字段。
+                            // 英文名称含中文时跳过，不能污染英文名称字段。
                             _logger.LogWarning(
                                 "跳过仍包含中文的货柜明细英文名称写回: ProductCode={ProductCode}, EnglishName={EnglishName}",
                                 productUpdate.ProductCode,
@@ -2157,8 +2367,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var hasNameUpdate =
                         !string.IsNullOrWhiteSpace(item.Update.商品名称)
-                        || !string.IsNullOrWhiteSpace(item.Update.英文名称)
-                        || item.Update.ClearEnglishName == true;
+                        || acceptedEnglishNameByUpdate.ContainsKey(item.Update);
                     if (hasNameUpdate && changedProductCodes.Contains(item.ProductCode!))
                     {
                         updatedRequestGuids.Add(item.Update.HGUID);
@@ -2445,6 +2654,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var totalUpdated = updatedRequestGuids.Count;
+                result.TotalUpdated = totalUpdated;
 
                 _logger.LogInformation(
                     "[React] 批量更新货柜明细完成，成功更新: {TotalUpdated}/{Total}",
@@ -2452,7 +2662,7 @@ namespace BlazorApp.Api.Services.React
                     updates.Count
                 );
 
-                return totalUpdated;
+                return result;
             }
             catch (Exception ex)
             {

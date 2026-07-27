@@ -874,14 +874,14 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "更新列表不能为空" });
                 }
 
-                var totalUpdated = await _containerReactService.BatchUpdateDetailsAsync(updates);
+                var result = await _containerReactService.BatchUpdateDetailsDetailedAsync(updates);
 
                 return Ok(
                     new
                     {
                         success = true,
-                        message = $"成功更新 {totalUpdated} 条明细",
-                        data = new { totalUpdated, totalRequested = updates.Count },
+                        message = $"成功更新 {result.TotalUpdated} 条明细",
+                        data = result,
                     }
                 );
             }

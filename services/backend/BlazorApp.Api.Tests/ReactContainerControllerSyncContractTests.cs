@@ -320,6 +320,85 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Fact]
+    public async Task BatchUpdateDetails_返回服务层部分成功明细且不修改请求()
+    {
+        List<UpdateContainerDetailDto>? actualUpdates = null;
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service =>
+                service.BatchUpdateDetailsDetailedAsync(
+                    It.IsAny<List<UpdateContainerDetailDto>>()
+                )
+            )
+            .Callback<List<UpdateContainerDetailDto>>(updates => actualUpdates = updates)
+            .ReturnsAsync(
+                new ContainerDetailBatchUpdateResultDto
+                {
+                    TotalUpdated = 1,
+                    TotalRequested = 2,
+                    ValidationErrors =
+                    {
+                        new ContainerDetailBatchUpdateValidationErrorDto
+                        {
+                            HGUID = "DETAIL-CHINESE",
+                            Field = "英文名称",
+                            Code = "CONTAINS_CHINESE",
+                            Message = "英文名称不能包含中文",
+                        },
+                    },
+                }
+            );
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.BatchUpdateDetails(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "DETAIL-CHINESE",
+                    英文名称 = "Large 草莓",
+                    进口价格 = 4.56m,
+                    ClearEnglishName = true,
+                },
+                new() { HGUID = "DETAIL-ENGLISH", 英文名称 = "Large Strawberry" },
+            }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(response);
+        Assert.NotNull(actualUpdates);
+        var chineseUpdate = Assert.Single(actualUpdates!, update => update.HGUID == "DETAIL-CHINESE");
+        var englishUpdate = Assert.Single(actualUpdates!, update => update.HGUID == "DETAIL-ENGLISH");
+        Assert.Equal("Large 草莓", chineseUpdate.英文名称);
+        Assert.Equal(4.56m, chineseUpdate.进口价格);
+        Assert.True(chineseUpdate.ClearEnglishName);
+        Assert.Equal("Large Strawberry", englishUpdate.英文名称);
+        containerService.Verify(
+            service =>
+                service.BatchUpdateDetailsDetailedAsync(
+                    It.IsAny<List<UpdateContainerDetailDto>>()
+                ),
+            Times.Once
+        );
+        containerService.Verify(
+            service => service.BatchUpdateDetailsAsync(It.IsAny<List<UpdateContainerDetailDto>>()),
+            Times.Never
+        );
+
+        Assert.True(GetPropertyValue<bool>(ok.Value!, "success"));
+        var data = GetPropertyValue<object>(ok.Value!, "data");
+        Assert.Equal(1, GetPropertyValue<int>(data, "totalUpdated"));
+        Assert.Equal(2, GetPropertyValue<int>(data, "totalRequested"));
+        var validationErrors = Assert.IsAssignableFrom<IEnumerable<object>>(
+            GetPropertyValue<object>(data, "validationErrors")
+        );
+        var validationError = Assert.Single(validationErrors);
+        Assert.Equal("DETAIL-CHINESE", GetPropertyValue<string>(validationError, "hguid"));
+        Assert.Equal("英文名称", GetPropertyValue<string>(validationError, "field"));
+        Assert.Equal("CONTAINS_CHINESE", GetPropertyValue<string>(validationError, "code"));
+        Assert.Equal("英文名称不能包含中文", GetPropertyValue<string>(validationError, "message"));
+    }
+
+    [Fact]
     public async Task ExportContainerProducts_SelectedHguids_应返回Excel文件()
     {
         var requests = new List<(string ContainerGuid, int PageNumber, int PageSize)>();

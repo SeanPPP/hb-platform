@@ -127,7 +127,19 @@ try {
     capturedUrl = String(input)
     capturedInit = init
 
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        totalUpdated: 1,
+        totalRequested: 1,
+        validationErrors: [{
+          hguid: 'D-CLEAR-EN',
+          field: '英文名称',
+          code: 'CONTAINS_CHINESE',
+          message: '英文名称不能包含中文',
+        }],
+      },
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -142,7 +154,7 @@ try {
       SkipRelatedProductSync: true,
     },
   ]
-  await batchUpdateDetails(detailUpdates)
+  const detailUpdateResult = await batchUpdateDetails(detailUpdates)
 
   assertEqual(
     capturedUrl,
@@ -154,6 +166,16 @@ try {
     JSON.parse(String(capturedInit?.body)),
     [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, SkipRelatedProductSync: true }],
     'batchUpdateDetails should send explicit fields including the related-product sync guard',
+  )
+  assertDeepEqual(
+    detailUpdateResult.validationErrors,
+    [{
+      hguid: 'D-CLEAR-EN',
+      field: '英文名称',
+      code: 'CONTAINS_CHINESE',
+      message: '英文名称不能包含中文',
+    }],
+    'batchUpdateDetails should preserve structured validation errors for field-level retry',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

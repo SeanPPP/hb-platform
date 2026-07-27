@@ -493,7 +493,11 @@ export default function EmployeeProfileScreen() {
           </View>
         </Surface>
 
-        <CashierBarcodeCard employeeName={readonlyDisplayName} userIdentity={userIdentity} />
+        <CashierBarcodeCard
+          employeeName={readonlyDisplayName}
+          username={readonlyUsername}
+          userIdentity={userIdentity}
+        />
 
         <Surface style={styles.card} elevation={1}>
           <Text variant="titleMedium">{t("sections.personal")}</Text>

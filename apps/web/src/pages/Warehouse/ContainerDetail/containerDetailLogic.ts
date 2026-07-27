@@ -13,6 +13,266 @@ export type ContainerDetailSortOrder = 'ascend' | 'descend'
 export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_CATEGORIES__'
 export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
 export const DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3
+export const CONTAINER_DETAIL_ENGLISH_NAME_FIELD = '英文名称'
+
+export type PendingContainerDetailPatch = Pick<UpdateContainerDetailRequest, 'hguid'> &
+  Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格' | '英文名称' | 'ClearEnglishName'>>
+export type PendingContainerDetailPatchMap = Record<string, PendingContainerDetailPatch>
+
+export interface ContainerDetailSaveValidationError {
+  hguid: string
+  field: string
+  code: string
+  message: string
+}
+
+export interface PendingContainerDetailSavePlan {
+  pendingPatches: PendingContainerDetailPatch[]
+  detailUpdates: UpdateContainerDetailRequest[]
+  localValidationErrors: ContainerDetailSaveValidationError[]
+  importPriceCount: number
+  retailPriceCount: number
+  englishNameCount: number
+  clearEnglishNameCount: number
+}
+
+function hasPendingContainerDetailFields(patch: PendingContainerDetailPatch) {
+  return patch.进口价格 != null
+    || patch.贴牌价格 != null
+    || patch.英文名称 !== undefined
+    || patch.ClearEnglishName === true
+}
+
+export function mergePendingContainerDetailPatch(
+  current: PendingContainerDetailPatchMap,
+  patch: PendingContainerDetailPatch,
+): PendingContainerDetailPatchMap {
+  const key = patch.hguid
+  const nextPatch: PendingContainerDetailPatch = {
+    ...(current[key] ?? { hguid: patch.hguid }),
+  }
+
+  if ('进口价格' in patch) {
+    if (patch.进口价格 == null) delete nextPatch.进口价格
+    else nextPatch.进口价格 = patch.进口价格
+  }
+  if ('贴牌价格' in patch) {
+    if (patch.贴牌价格 == null) delete nextPatch.贴牌价格
+    else nextPatch.贴牌价格 = patch.贴牌价格
+  }
+  if ('英文名称' in patch) {
+    nextPatch.英文名称 = patch.英文名称
+    delete nextPatch.ClearEnglishName
+  }
+  if (patch.ClearEnglishName === true) {
+    nextPatch.ClearEnglishName = true
+    delete nextPatch.英文名称
+  }
+
+  const next = { ...current }
+  if (hasPendingContainerDetailFields(nextPatch)) next[key] = nextPatch
+  else delete next[key]
+  return next
+}
+
+export function applyPendingContainerDetailPatches(
+  rows: ContainerDetail[],
+  pendingPatches: PendingContainerDetailPatchMap,
+): ContainerDetail[] {
+  return rows.map((row) => {
+    const pendingPatch = pendingPatches[row.hguid]
+    if (!pendingPatch) return row
+
+    const visiblePatch: Partial<ContainerDetail> = {}
+    if ('进口价格' in pendingPatch) visiblePatch.进口价格 = pendingPatch.进口价格
+    if ('贴牌价格' in pendingPatch) {
+      visiblePatch.贴牌价格 = pendingPatch.贴牌价格
+      if (!row.是否新商品) {
+        // 已有商品的零售价列读取仓库实时价，重载后也要继续显示本地草稿。
+        visiblePatch.warehouseOEMPrice = pendingPatch.贴牌价格
+        visiblePatch.WarehouseOEMPrice = pendingPatch.贴牌价格
+      }
+    }
+    if (pendingPatch.ClearEnglishName === true) {
+      visiblePatch.英文名称 = undefined
+    } else if ('英文名称' in pendingPatch) {
+      visiblePatch.英文名称 = pendingPatch.英文名称
+    }
+
+    return mergeContainerDetailPatch(row, visiblePatch)
+  })
+}
+
+export function buildPendingContainerDetailSavePlan(
+  pendingPatches: PendingContainerDetailPatch[],
+): PendingContainerDetailSavePlan {
+  const localValidationErrors: ContainerDetailSaveValidationError[] = []
+  const detailUpdates = pendingPatches
+    .map((patch) => {
+      const update: UpdateContainerDetailRequest = { hguid: patch.hguid }
+      if (patch.进口价格 != null) update.进口价格 = patch.进口价格
+      if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格
+      if (patch.ClearEnglishName === true) {
+        update.ClearEnglishName = true
+      } else if (patch.英文名称 !== undefined) {
+        const englishName = patch.英文名称.trim()
+        if (englishName) {
+          update.英文名称 = englishName
+        } else {
+          localValidationErrors.push({
+            hguid: patch.hguid,
+            field: CONTAINER_DETAIL_ENGLISH_NAME_FIELD,
+            code: 'EMPTY_ENGLISH_NAME',
+            message: '英文名称为空时不会保存，如需清空请使用“清除英文名称”',
+          })
+        }
+      }
+      return update
+    })
+    .filter((update) => (
+      update.进口价格 != null
+      || update.贴牌价格 != null
+      || update.英文名称 !== undefined
+      || update.ClearEnglishName === true
+    ))
+
+  return {
+    pendingPatches,
+    detailUpdates,
+    localValidationErrors,
+    importPriceCount: pendingPatches.filter((patch) => patch.进口价格 != null).length,
+    retailPriceCount: pendingPatches.filter((patch) => patch.贴牌价格 != null).length,
+    englishNameCount: pendingPatches.filter((patch) => patch.英文名称 !== undefined).length,
+    clearEnglishNameCount: pendingPatches.filter((patch) => patch.ClearEnglishName === true).length,
+  }
+}
+
+function hasValidationError(
+  validationErrors: ContainerDetailSaveValidationError[],
+  hguid: string,
+  field: string,
+) {
+  return validationErrors.some((error) => (
+    error.hguid === hguid
+    && (error.field === field || error.field === '*')
+  ))
+}
+
+function removeSavedPendingField<K extends keyof PendingContainerDetailPatch>(
+  currentPatch: PendingContainerDetailPatch,
+  submittedPatch: UpdateContainerDetailRequest,
+  field: K,
+) {
+  if (!(field in submittedPatch)) return
+  if (field === '英文名称') {
+    if (currentPatch.英文名称?.trim() === submittedPatch.英文名称) delete currentPatch.英文名称
+    return
+  }
+  if (currentPatch[field] === submittedPatch[field]) delete currentPatch[field]
+}
+
+export function clearSavedPendingContainerDetailFields(
+  current: PendingContainerDetailPatchMap,
+  submittedUpdates: UpdateContainerDetailRequest[],
+  validationErrors: ContainerDetailSaveValidationError[],
+): PendingContainerDetailPatchMap {
+  const next = { ...current }
+  submittedUpdates.forEach((submittedPatch) => {
+    const currentPatch = next[submittedPatch.hguid]
+    if (!currentPatch) return
+    const remainingPatch = { ...currentPatch }
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, '进口价格')) {
+      removeSavedPendingField(remainingPatch, submittedPatch, '进口价格')
+    }
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, '贴牌价格')) {
+      removeSavedPendingField(remainingPatch, submittedPatch, '贴牌价格')
+    }
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, CONTAINER_DETAIL_ENGLISH_NAME_FIELD)) {
+      removeSavedPendingField(remainingPatch, submittedPatch, '英文名称')
+      removeSavedPendingField(remainingPatch, submittedPatch, 'ClearEnglishName')
+    }
+    if (hasPendingContainerDetailFields(remainingPatch)) next[submittedPatch.hguid] = remainingPatch
+    else delete next[submittedPatch.hguid]
+  })
+  return next
+}
+
+function getSubmittedContainerDetailFields(update: UpdateContainerDetailRequest) {
+  const fields: string[] = []
+  if ('进口价格' in update) fields.push('进口价格')
+  if ('贴牌价格' in update) fields.push('贴牌价格')
+  if ('英文名称' in update || update.ClearEnglishName === true) {
+    fields.push(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)
+  }
+  return fields
+}
+
+export function countSuccessfullySavedContainerDetailRows(
+  submittedUpdates: UpdateContainerDetailRequest[],
+  validationErrors: ContainerDetailSaveValidationError[],
+) {
+  return new Set(
+    submittedUpdates
+      .filter((update) => getSubmittedContainerDetailFields(update).some((field) => (
+        !hasValidationError(validationErrors, update.hguid, field)
+      )))
+      .map((update) => update.hguid),
+  ).size
+}
+
+export function shouldInvalidateContainerDetailLoadAfterSave({
+  saveContainerGuid,
+  currentContainerGuid,
+  detailRequestIdAtSaveStart,
+  currentDetailRequestId,
+  isSameAbortController,
+}: {
+  saveContainerGuid: string
+  currentContainerGuid: string
+  detailRequestIdAtSaveStart: number
+  currentDetailRequestId: number
+  isSameAbortController: boolean
+}) {
+  return saveContainerGuid === currentContainerGuid
+    && detailRequestIdAtSaveStart === currentDetailRequestId
+    && isSameAbortController
+}
+
+export async function settleScopedContainerDetailSave<T>(
+  request: Promise<T>,
+  snapshot: {
+    saveContainerGuid: string
+    detailRequestIdAtSaveStart: number
+    abortControllerTokenAtSaveStart: unknown
+  },
+  getCurrentContext: () => {
+    containerGuid: string
+    detailRequestId: number
+    abortControllerToken: unknown
+  },
+) {
+  const result = await request
+  const currentContext = getCurrentContext()
+  const isCurrentContainer = snapshot.saveContainerGuid === currentContext.containerGuid
+  const isSameDetailLoad = (
+    snapshot.detailRequestIdAtSaveStart === currentContext.detailRequestId
+    && snapshot.abortControllerTokenAtSaveStart === currentContext.abortControllerToken
+  )
+  return {
+    result,
+    isCurrentContainer,
+    shouldInvalidateDetailLoad: shouldInvalidateContainerDetailLoadAfterSave({
+      saveContainerGuid: snapshot.saveContainerGuid,
+      currentContainerGuid: currentContext.containerGuid,
+      detailRequestIdAtSaveStart: snapshot.detailRequestIdAtSaveStart,
+      currentDetailRequestId: currentContext.detailRequestId,
+      isSameAbortController: (
+        snapshot.abortControllerTokenAtSaveStart === currentContext.abortControllerToken
+      ),
+    }),
+    shouldReloadCurrentDetail: isCurrentContainer && !isSameDetailLoad,
+  }
+}
 
 export interface ContainerDetailTableScrollYOptions {
   viewportHeight: number
@@ -213,6 +473,15 @@ export function containsChineseText(value?: string) {
 
 export function isValidContainerDetailEnglishTranslation(value?: string) {
   return Boolean(value?.trim()) && !containsChineseText(value)
+}
+
+export function getPendingContainerDetailEnglishNameError(
+  patch?: PendingContainerDetailPatch,
+): 'EMPTY_ENGLISH_NAME' | 'CONTAINS_CHINESE' | undefined {
+  if (patch?.ClearEnglishName === true || patch?.英文名称 === undefined) return undefined
+  if (!patch.英文名称.trim()) return 'EMPTY_ENGLISH_NAME'
+  if (containsChineseText(patch.英文名称)) return 'CONTAINS_CHINESE'
+  return undefined
 }
 
 export function isContainerDetailSortField(value: unknown): value is ContainerDetailSortField {
@@ -750,11 +1019,27 @@ export function mergeContainerDetailPatch(row: ContainerDetail, patch: Partial<C
 }
 
 export function buildContainerDetailSaveFailureKeys(rowKey: string, patch: object) {
-  const fields = Object.keys(patch).filter((key) => key !== 'hguid').sort()
+  const fields = Array.from(new Set(
+    Object.keys(patch)
+      .filter((key) => key !== 'hguid')
+      .map((field) => field === 'ClearEnglishName' ? CONTAINER_DETAIL_ENGLISH_NAME_FIELD : field),
+  )).sort()
   if (!fields.length) {
     return [`${rowKey}:__row__`]
   }
   return fields.map((field) => `${rowKey}:${field}`)
+}
+
+export function reconcilePendingContainerDetailSaveFailureKeys(
+  failedKeys: ReadonlySet<string>,
+  pendingPatches: PendingContainerDetailPatchMap,
+) {
+  const currentKeys = new Set(
+    Object.values(pendingPatches).flatMap((patch) => (
+      buildContainerDetailSaveFailureKeys(patch.hguid, patch)
+    )),
+  )
+  return Array.from(failedKeys).filter((key) => currentKeys.has(key)).sort()
 }
 
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {

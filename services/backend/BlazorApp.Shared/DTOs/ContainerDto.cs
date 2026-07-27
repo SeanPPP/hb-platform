@@ -584,6 +584,28 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// React 货柜明细批量更新结果。
+    /// </summary>
+    public class ContainerDetailBatchUpdateResultDto
+    {
+        public int TotalUpdated { get; set; }
+        public int TotalRequested { get; set; }
+        public List<ContainerDetailBatchUpdateValidationErrorDto> ValidationErrors { get; set; } =
+            new();
+    }
+
+    /// <summary>
+    /// React 货柜明细批量更新的字段级校验错误。
+    /// </summary>
+    public class ContainerDetailBatchUpdateValidationErrorDto
+    {
+        public string HGUID { get; set; } = string.Empty;
+        public string Field { get; set; } = string.Empty;
+        public string Code { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 人工确认后，把国内商品编码对齐到本地主档商品编码。
     /// </summary>
     public class AlignDomesticProductCodeRequestDto

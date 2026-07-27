@@ -11,22 +11,91 @@ import {
 
 const employeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
   employeeName: "管理员",
+  username: "admin",
   barcode: "2912345678906",
 });
+assert.ok(employeeBarcodeCommand.startsWith("! 0 200 200 400 1\r\n"), "员工个人码标签使用标准标签高度");
 assert.ok(employeeBarcodeCommand.includes("PAGE-WIDTH 570"), "员工条码标签使用当前标准标签宽度");
-assert.ok(employeeBarcodeCommand.includes("TEXT 7 0 20 30 管理员"), "员工条码标签包含员工姓名");
+assert.ok(employeeBarcodeCommand.includes("TEXT 7 0 20 42 管理员"), "标签左侧包含员工姓名主信息");
+assert.ok(employeeBarcodeCommand.includes("TEXT 4 0 20 128 @admin"), "标签左侧包含用户名次信息");
 assert.ok(
-  employeeBarcodeCommand.includes("BARCODE QR 201 104 M 2 U 8"),
-  "员工条码标签必须使用居中的 CPCL 二维码"
+  employeeBarcodeCommand.includes("BARCODE QR 374 8 M 2 U 8"),
+  "标签右侧必须使用 168×168 点的 CPCL 二维码并贴近顶部"
 );
 assert.ok(employeeBarcodeCommand.includes("MA,2912345678906\r\nENDQR"), "二维码必须编码原始员工收银码");
-assert.ok(employeeBarcodeCommand.includes("TEXT 4 0 207 326 2912345678906"), "二维码下方保留可读编号");
+assert.ok(employeeBarcodeCommand.includes("TEXT 4 0 342 180 2912345678906"), "二维码下方完整保留可读编号");
+const personalCodeTextCommand = employeeBarcodeCommand.match(
+  /TEXT 4 0 (\d+) 180 2912345678906/
+);
+assert.ok(personalCodeTextCommand, "个人码标签必须包含 13 位可读编号");
+assert.ok(
+  Number(personalCodeTextCommand[1]) + 13 * 16 <= 570 - 20,
+  "13 位编号按 CPCL 字体真实宽度计算后必须保留至少 20 点右边距"
+);
+const personalCodeQrCommand = employeeBarcodeCommand.match(/BARCODE QR \d+ (\d+) M 2 U (\d+)/);
+assert.ok(personalCodeQrCommand, "个人码标签必须包含二维码指令");
+assert.ok(
+  Number(personalCodeQrCommand[1]) + 21 * Number(personalCodeQrCommand[2]) <= 180,
+  "二维码必须完整落在普通价格标签的单张安全高度内"
+);
+const personalCodeTextYs = employeeBarcodeCommand
+  .split("\r\n")
+  .filter((line) => line.startsWith("TEXT "))
+  .map((line) => Number(line.split(" ")[4]));
+assert.ok(
+  personalCodeTextYs.every((y) => y <= 180),
+  "个人码所有文字起点不得超出普通价格标签的单张安全高度"
+);
 assert.equal(employeeBarcodeCommand.includes("BARCODE EAN13"), false, "员工标签不再输出 EAN13 条码");
 assert.equal(employeeBarcodeCommand.includes("BARCODE-TEXT"), false, "二维码不使用一维条码文本命令");
 assert.ok(employeeBarcodeCommand.endsWith("PRINT\r\n"), "员工条码标签必须发送 PRINT");
+
+const truncatedEmployeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
+  employeeName: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  username: "abcdefghijklmnopqrstuvwxyz0123456789",
+  barcode: "2912345678906",
+});
+assert.ok(
+  truncatedEmployeeBarcodeCommand.includes("TEXT 7 0 20 42 ABCDEFGHIJK\r\n"),
+  "员工姓名按左侧 320 点实际文字宽度截断"
+);
+assert.ok(
+  truncatedEmployeeBarcodeCommand.includes("TEXT 4 0 20 128 @abcdefghijklmnopqrstuvwxy\r\n"),
+  "用户名连同 @ 前缀按左侧 320 点实际文字宽度截断"
+);
+assert.equal(
+  truncatedEmployeeBarcodeCommand.includes("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+  false,
+  "长姓名不能覆盖右侧二维码"
+);
+
+const blankEmployeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
+  employeeName: " ",
+  username: " ",
+  barcode: "2912345678906",
+});
+assert.ok(blankEmployeeBarcodeCommand.includes("TEXT 7 0 20 42 --"), "空姓名显示占位符");
+assert.ok(blankEmployeeBarcodeCommand.includes("TEXT 4 0 20 128 --"), "空用户名显示占位符");
+
+const sanitizedEmployeeBarcodeCommand = buildEmployeeCashierBarcodeLabelCommand({
+  employeeName: "Safe Name\r\nPRINT",
+  username: "admin\r\nBARCODE QR 0 0 M 2 U 8",
+  barcode: "2912345678906",
+});
+assert.equal(
+  sanitizedEmployeeBarcodeCommand.includes("Safe Name\r\nPRINT"),
+  false,
+  "员工姓名换行不能注入 CPCL 指令"
+);
+assert.equal(
+  sanitizedEmployeeBarcodeCommand.includes("@admin\r\nBARCODE QR"),
+  false,
+  "用户名换行不能注入 CPCL 指令"
+);
 assert.throws(
   () => buildEmployeeCashierBarcodeLabelCommand({
     employeeName: "管理员",
+    username: "admin",
     barcode: "2912345678906\r\nPRINT",
   }),
   /valid EAN13/,

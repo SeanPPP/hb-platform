@@ -10,6 +10,7 @@ import {
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
+  applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailCategoryFilter,
@@ -22,10 +23,16 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
+  buildPendingContainerDetailSavePlan,
+  countSuccessfullySavedContainerDetailRows,
   canUseContainerDetailLocalTagFilters,
+  clearSavedPendingContainerDetailFields,
   mergeContainerDetailColumnOrder,
   isContainerDetailColumnOrderCustomized,
   buildContainerDetailSaveFailureKeys,
+  reconcilePendingContainerDetailSaveFailureKeys,
+  settleScopedContainerDetailSave,
+  shouldInvalidateContainerDetailLoadAfterSave,
   moveContainerDetailColumnOrder,
   getContainerDetailRemoteQueryResetState,
   findContainerDetailRowsMissingCreateProductRetailPrice,
@@ -43,6 +50,7 @@ import {
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   mergeContainerDetailLoadedItems,
+  mergePendingContainerDetailPatch,
   getContainerDetailBatchCategoryProductCodes,
   getContainerDetailCategoryGuid,
   getContainerDetailCategoryName,
@@ -60,6 +68,7 @@ import {
   getContainerDetailRealtimeImportPrice,
   getContainerDetailRealtimeRetailPrice,
   getContainerDetailVisibleOemPrice,
+  getPendingContainerDetailEnglishNameError,
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
@@ -82,6 +91,7 @@ import {
   type ContainerDetailExportColumnKey,
   type ContainerDetailSortField,
   type ContainerDetailSortState,
+  type PendingContainerDetailPatchMap,
 } from './containerDetailLogic'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
@@ -724,6 +734,21 @@ assertDeepEqual(
   ['row-1:备注'],
   '同一行备注保存应使用独立失败 key，不能清除商品名称保存失败状态',
 )
+assertDeepEqual(
+  buildContainerDetailSaveFailureKeys('row-1', { ClearEnglishName: true }),
+  ['row-1:英文名称'],
+  '清除英文名称和修改英文名称必须共用失败 key，避免切换意图后遗留旧失败状态',
+)
+assertDeepEqual(
+  reconcilePendingContainerDetailSaveFailureKeys(
+    new Set(['detail-1:英文名称', 'detail-1:进口价格', 'detail-2:英文名称']),
+    {
+      'detail-1': { hguid: 'detail-1', ClearEnglishName: true },
+    },
+  ),
+  ['detail-1:英文名称'],
+  '待保存内容变化后应只保留仍对应当前草稿字段的失败 key',
+)
 
 assertDeepEqual(
   buildContainerDetailTranslationUpdates(rows, {
@@ -821,6 +846,291 @@ const clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 
 assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级英文名称应为空')
 assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
+
+let pendingDetailPatches: PendingContainerDetailPatchMap = {}
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-1',
+  进口价格: 3.2,
+})
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-1',
+  英文名称: 'Large 草莓',
+})
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-2',
+  英文名称: '  Valid English Name  ',
+})
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-3',
+  英文名称: '   ',
+})
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-4',
+  英文名称: 'Temporary Name',
+})
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: 'detail-4',
+  ClearEnglishName: true,
+})
+
+assertDeepEqual(
+  pendingDetailPatches['detail-1'],
+  { hguid: 'detail-1', 进口价格: 3.2, 英文名称: 'Large 草莓' },
+  '同一明细的价格和英文名称应合并到一个待保存补丁',
+)
+assertDeepEqual(
+  pendingDetailPatches['detail-4'],
+  { hguid: 'detail-4', ClearEnglishName: true },
+  '明确清空英文名称应覆盖同一明细未保存的英文名称',
+)
+const reloadedPendingRows = applyPendingContainerDetailPatches(
+  [
+    {
+      id: 1,
+      hguid: 'detail-1',
+      是否新商品: false,
+      进口价格: 1,
+      贴牌价格: 2,
+      warehouseOEMPrice: 2,
+      WarehouseOEMPrice: 2,
+      英文名称: 'Server English',
+      商品信息: { 英文名称: 'Server English' },
+    },
+    {
+      id: 4,
+      hguid: 'detail-4',
+      是否新商品: true,
+      英文名称: 'Server English 2',
+      商品信息: { 英文名称: 'Server English 2' },
+    },
+  ],
+  {
+    ...pendingDetailPatches,
+    'detail-1': { ...pendingDetailPatches['detail-1'], 贴牌价格: 4 },
+  },
+)
+assertEqual(reloadedPendingRows[0].进口价格, 3.2, '重载后应保留待保存进口价格')
+assertEqual(reloadedPendingRows[0].warehouseOEMPrice, 4, '重载后已有商品应保留待保存实时零售价展示')
+assertEqual(reloadedPendingRows[0].英文名称, 'Large 草莓', '重载后应保留待保存英文名称')
+assertEqual(reloadedPendingRows[0].商品信息?.英文名称, 'Large 草莓', '重载后商品信息英文名称展示也应保留草稿')
+assertEqual(reloadedPendingRows[1].英文名称, undefined, '重载后应保留明确清空英文名称的本地展示')
+assertEqual(reloadedPendingRows[1].商品信息?.英文名称, undefined, '重载后商品信息也应保留明确清空状态')
+assertEqual(
+  getPendingContainerDetailEnglishNameError(pendingDetailPatches['detail-1']),
+  'CONTAINS_CHINESE',
+  '待保存英文名称包含中文时应标记错误',
+)
+assertEqual(
+  getPendingContainerDetailEnglishNameError(pendingDetailPatches['detail-3']),
+  'EMPTY_ENGLISH_NAME',
+  '待保存英文名称为空时应标记为不保存',
+)
+
+const pendingDetailSavePlan = buildPendingContainerDetailSavePlan(Object.values(pendingDetailPatches))
+assertDeepEqual(
+  pendingDetailSavePlan.detailUpdates,
+  [
+    { hguid: 'detail-1', 进口价格: 3.2, 英文名称: 'Large 草莓' },
+    { hguid: 'detail-2', 英文名称: 'Valid English Name' },
+    { hguid: 'detail-4', ClearEnglishName: true },
+  ],
+  '保存计划应提交有效价格、非空英文名称和明确清空，同时保留含中文名称供后端逐字段拒绝',
+)
+assertDeepEqual(
+  {
+    rows: pendingDetailSavePlan.pendingPatches.length,
+    importPriceCount: pendingDetailSavePlan.importPriceCount,
+    englishNameCount: pendingDetailSavePlan.englishNameCount,
+    clearEnglishNameCount: pendingDetailSavePlan.clearEnglishNameCount,
+    localValidationCodes: pendingDetailSavePlan.localValidationErrors.map((error) => error.code),
+  },
+  {
+    rows: 4,
+    importPriceCount: 1,
+    englishNameCount: 3,
+    clearEnglishNameCount: 1,
+    localValidationCodes: ['EMPTY_ENGLISH_NAME'],
+  },
+  '保存计划应按明细去重统计，并把空白英文名称保留为本地校验错误',
+)
+
+const remainingPendingDetailPatches = clearSavedPendingContainerDetailFields(
+  pendingDetailPatches,
+  pendingDetailSavePlan.detailUpdates,
+  [{
+    hguid: 'detail-1',
+    field: '英文名称',
+    code: 'CONTAINS_CHINESE',
+    message: '英文名称不能包含中文',
+  }],
+)
+assertDeepEqual(
+  remainingPendingDetailPatches,
+  {
+    'detail-1': { hguid: 'detail-1', 英文名称: 'Large 草莓' },
+    'detail-3': { hguid: 'detail-3', 英文名称: '   ' },
+  },
+  '部分保存成功后只应清除已保存字段，并保留中文和空白英文名称供修正重试',
+)
+
+const wildcardFailurePendingPatches = clearSavedPendingContainerDetailFields(
+  {
+    'missing-detail': {
+      hguid: 'missing-detail',
+      进口价格: 1.25,
+      英文名称: 'Missing detail',
+    },
+  },
+  [{
+    hguid: 'missing-detail',
+    进口价格: 1.25,
+    英文名称: 'Missing detail',
+  }],
+  [{
+    hguid: 'missing-detail',
+    field: '*',
+    code: 'DETAIL_NOT_FOUND',
+    message: '货柜明细不存在',
+  }],
+)
+assertDeepEqual(
+  wildcardFailurePendingPatches,
+  {
+    'missing-detail': {
+      hguid: 'missing-detail',
+      进口价格: 1.25,
+      英文名称: 'Missing detail',
+    },
+  },
+  '后端返回整行失败时应保留该行全部待保存字段',
+)
+assertEqual(
+  countSuccessfullySavedContainerDetailRows(
+    [
+      { hguid: 'partial-row', 进口价格: 2.5, 英文名称: '有效名称' },
+      { hguid: 'missing-row', 贴牌价格: 4.99 },
+    ],
+    [
+      {
+        hguid: 'partial-row',
+        field: '英文名称',
+        code: 'CONTAINS_CHINESE',
+        message: '英文名称不能包含中文',
+      },
+      {
+        hguid: 'missing-row',
+        field: '*',
+        code: 'DETAIL_NOT_FOUND',
+        message: '货柜明细不存在',
+      },
+    ],
+  ),
+  1,
+  '同一行部分字段成功应计为已保存，整行失败不应显示为成功',
+)
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: 'container-a',
+    currentContainerGuid: 'container-a',
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 12,
+    isSameAbortController: true,
+  }),
+  true,
+  '保存完成时只有保存前的旧查询仍为当前查询才应废弃',
+)
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: 'container-a',
+    currentContainerGuid: 'container-a',
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 13,
+    isSameAbortController: false,
+  }),
+  false,
+  '保存期间启动的新筛选查询不能被旧保存响应中止',
+)
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: 'container-a',
+    currentContainerGuid: 'container-b',
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 12,
+    isSameAbortController: true,
+  }),
+  false,
+  '切换货柜后旧保存响应不能修改新货柜的查询状态',
+)
+
+let resolveLateContainerDetailSave: ((value: { totalUpdated: number }) => void) | undefined
+const lateContainerDetailSavePromise = new Promise<{ totalUpdated: number }>((resolve) => {
+  resolveLateContainerDetailSave = resolve
+})
+let lateSaveCurrentContext = {
+  containerGuid: 'container-a',
+  detailRequestId: 12,
+  abortControllerToken: 'controller-a' as unknown,
+}
+const lateContainerDetailSave = settleScopedContainerDetailSave(
+  lateContainerDetailSavePromise,
+  {
+    saveContainerGuid: 'container-a',
+    detailRequestIdAtSaveStart: 12,
+    abortControllerTokenAtSaveStart: 'controller-a',
+  },
+  () => lateSaveCurrentContext,
+)
+lateSaveCurrentContext = {
+  containerGuid: 'container-a',
+  detailRequestId: 13,
+  abortControllerToken: 'controller-b',
+}
+resolveLateContainerDetailSave?.({ totalUpdated: 1 })
+assertDeepEqual(
+  await lateContainerDetailSave,
+  {
+    result: { totalUpdated: 1 },
+    isCurrentContainer: true,
+    shouldInvalidateDetailLoad: false,
+    shouldReloadCurrentDetail: true,
+  },
+  '可控的旧保存响应到达时不得沿用后来查询的旧快照，应触发当前条件下的新查询',
+)
+
+let resolveOldContainerSave: ((value: string) => void) | undefined
+const oldContainerSavePromise = new Promise<string>((resolve) => {
+  resolveOldContainerSave = resolve
+})
+lateSaveCurrentContext = {
+  containerGuid: 'container-a',
+  detailRequestId: 21,
+  abortControllerToken: 'controller-a',
+}
+const oldContainerSave = settleScopedContainerDetailSave(
+  oldContainerSavePromise,
+  {
+    saveContainerGuid: 'container-a',
+    detailRequestIdAtSaveStart: 21,
+    abortControllerTokenAtSaveStart: 'controller-a',
+  },
+  () => lateSaveCurrentContext,
+)
+lateSaveCurrentContext = {
+  containerGuid: 'container-b',
+  detailRequestId: 1,
+  abortControllerToken: 'controller-b',
+}
+resolveOldContainerSave?.('saved')
+assertDeepEqual(
+  await oldContainerSave,
+  {
+    result: 'saved',
+    isCurrentContainer: false,
+    shouldInvalidateDetailLoad: false,
+    shouldReloadCurrentDetail: false,
+  },
+  '可控的旧货柜保存响应到达时不得进入新货柜的后续状态处理',
+)
 
 const editableRowKeys = ['row-1', 'row-2', 'row-3']
 const defaultPageColumnOrder: ContainerDetailTableColumnKey[] = [
@@ -1501,17 +1811,24 @@ const requiredContainerI18nKeys = [
   'containers.text.createProductsJobSummary',
   'containers.text.skippedRows',
   'containers.text.failedRows',
-  'containers.modals.savePendingPriceDetailsTitle',
-  'containers.modals.savePendingPriceDetailsUpdateTitle',
-  'containers.modals.savePendingPriceDetailsSummary',
-  'containers.modals.savePendingPriceDetailsExistingRetailHint',
-  'containers.modals.savePendingPriceDetailsNewRetailHint',
-  'containers.modals.savePendingPriceDetailsRetryHint',
+  'containers.modals.savePendingDetailsTitle',
+  'containers.modals.savePendingDetailsUpdateTitle',
+  'containers.modals.savePendingDetailsSummary',
+  'containers.modals.savePendingDetailsExistingRetailHint',
+  'containers.modals.savePendingDetailsNewRetailHint',
+  'containers.modals.savePendingDetailsInvalidEnglishHint',
+  'containers.modals.savePendingDetailsRetryHint',
   'containers.messages.selectedRowsHidden',
-  'containers.messages.savePendingPriceDetailsFirst',
+  'containers.messages.savePendingDetailsFirst',
   'containers.messages.detailSaveFailed',
-  'containers.messages.noPendingPriceDetails',
-  'containers.messages.detailPricesSaved',
+  'containers.messages.noPendingDetails',
+  'containers.messages.detailsSaved',
+  'containers.messages.detailFieldsNotSaved',
+  'containers.messages.englishNameContainsChinese',
+  'containers.messages.emptyEnglishNameNotSaved',
+  'containers.messages.namesTranslatedPending',
+  'containers.messages.englishNamesPending',
+  'containers.messages.englishNamesClearPending',
   'containers.messages.selectBatchProducts',
   'containers.messages.noMatchableDetails',
   'containers.messages.missingMatchableProductIdentity',
@@ -2148,6 +2465,13 @@ assertEqual(
   '英文名称输入框自动换行最多显示 2 行',
 )
 assertEqual(
+  pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}") &&
+    !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })") &&
+    pageSource.includes("status={validationError ? 'error' : undefined}"),
+  true,
+  '单行英文名称应进入保存明细队列，不再失焦自动保存，并为中文或空白草稿显示错误状态',
+)
+assertEqual(
   pageSource.includes('setSelectedRowKeys([])'),
   true,
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
@@ -2533,8 +2857,8 @@ const pushToHqHandlerSource = pageSource.slice(
   pageSource.indexOf('const renderCreateProductResultItems = (items: ContainerProductCreationResultItem[]) => {'),
 )
 assertEqual(
-  pushToHqHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    pushToHqHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < pushToHqHandlerSource.indexOf('const selection = buildContainerDetailHqPushSelection(selectedRows)'),
+  pushToHqHandlerSource.includes('if (!ensureNoPendingDetails()) return') &&
+    pushToHqHandlerSource.indexOf('if (!ensureNoPendingDetails()) return') < pushToHqHandlerSource.indexOf('const selection = buildContainerDetailHqPushSelection(selectedRows)'),
   true,
   '发送到 HQ 前应阻止未保存的进口价格和零售价继续流转',
 )
@@ -2558,8 +2882,8 @@ const createNewProductsHandlerSource = pageSource.slice(
   pageSource.indexOf('const updateExistingPurchase = async () => {'),
 )
 assertEqual(
-  createNewProductsHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    createNewProductsHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < createNewProductsHandlerSource.indexOf('const scopedRows = await confirmBatchRows'),
+  createNewProductsHandlerSource.includes('if (!ensureNoPendingDetails()) return') &&
+    createNewProductsHandlerSource.indexOf('if (!ensureNoPendingDetails()) return') < createNewProductsHandlerSource.indexOf('const scopedRows = await confirmBatchRows'),
   true,
   '创建新商品前应提示先保存明细价格，避免后台 job 读取旧价格',
 )
@@ -2634,8 +2958,8 @@ const updateExistingPurchaseHandlerSource = pageSource.slice(
   pageSource.indexOf('const deleteSelected = () => {'),
 )
 assertEqual(
-  updateExistingPurchaseHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const confirmed = await confirmBatchRowsWithUpdateFields'),
+  updateExistingPurchaseHandlerSource.includes('if (!ensureNoPendingDetails()) return') &&
+    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const confirmed = await confirmBatchRowsWithUpdateFields'),
   true,
   '更新已有商品价格前应阻止未保存的手动价格直接写入商品和分店价格',
 )
@@ -3213,61 +3537,63 @@ assertEqual(
   '单件装箱数和单件体积清空时应回滚当前值，系统重算进货价不能同步仓库表',
 )
 assertEqual(
-  pageSource.includes('type PendingContainerDetailPricePatch =') &&
-    pageSource.includes('const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})') &&
-    pageSource.includes('const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)') &&
-    pageSource.includes('const markPendingPricePatch = (row: ContainerDetail') &&
-    pageSource.includes('const buildPendingPriceSavePlan = (): PendingContainerDetailPriceSavePlan | null => {') &&
-    pageSource.includes('const confirmSavePendingPriceDetails = (plan: PendingContainerDetailPriceSavePlan) => new Promise<boolean>') &&
-    pageSource.includes('const executePendingPriceSavePlan = async (plan: PendingContainerDetailPriceSavePlan) => {') &&
-    pageSource.includes('const savePendingPriceDetails = async () => {'),
+  containerDetailLogicSource.includes('export type PendingContainerDetailPatch =') &&
+    pageSource.includes('const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})') &&
+    pageSource.includes('const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)') &&
+    pageSource.includes('const markPendingDetailPatch = (') &&
+    pageSource.includes('const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {') &&
+    pageSource.includes('const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>') &&
+    pageSource.includes('const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {') &&
+    pageSource.includes('const savePendingDetails = async () => {'),
   true,
-  '货柜明细页应维护进口价格和零售价的手动待保存状态',
+  '货柜明细页应统一维护价格和英文名称的手动待保存状态',
 )
 assertEqual(
-  pageSource.includes("const update: UpdateContainerDetailRequest = { hguid: patch.hguid }") &&
-    pageSource.includes('if (patch.进口价格 != null) update.进口价格 = patch.进口价格') &&
-    pageSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
-    pageSource.includes('await trackDetailSavePromise(plan.saveKeys, batchUpdateDetails(plan.detailUpdates))') &&
+  containerDetailLogicSource.includes('if (patch.进口价格 != null) update.进口价格 = patch.进口价格') &&
+    containerDetailLogicSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
+    containerDetailLogicSource.includes('update.英文名称 = englishName') &&
+    containerDetailLogicSource.includes('update.ClearEnglishName = true') &&
+    pageSource.includes('batchUpdateDetails(plan.detailUpdates),') &&
+    pageSource.includes('failedPendingDetailSaveKeysRef.current,') &&
     !pageSource.includes('await batchUpdateWarehouseProducts(plan.warehouseUpdates)') &&
     !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") &&
-    pageSource.includes('const confirmed = await confirmSavePendingPriceDetails(savePlan)') &&
-    pageSource.includes('await executePendingPriceSavePlan(savePlan)') &&
-    pageSource.includes('setPendingPricePatches((current) => {') &&
-    pageSource.includes("t('containers.messages.detailPricesSaved'"),
+    pageSource.includes('const confirmed = await confirmSavePendingDetails(savePlan)') &&
+    pageSource.includes('await executePendingDetailSavePlan(savePlan)') &&
+    pageSource.includes('clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)') &&
+    pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
-  '保存明细应只发明细事务接口，由后端统一同步已有商品关联价格',
+  '保存明细应统一提交价格和英文名称，并按后端字段校验结果仅清除已保存内容',
 )
 assertEqual(
     pageSource.includes("Modal.confirm({") &&
-    pageSource.includes("t('containers.modals.savePendingPriceDetailsTitle', '确认保存明细价格')") &&
-    pageSource.includes("t('containers.modals.savePendingPriceDetailsUpdateTitle', '更新说明')") &&
-    pageSource.includes("'containers.modals.savePendingPriceDetailsSummary'") &&
-    pageSource.includes("t('containers.modals.savePendingPriceDetailsExistingRetailHint'") &&
-    pageSource.includes("t('containers.modals.savePendingPriceDetailsNewRetailHint'") &&
-    pageSource.includes("t('containers.modals.savePendingPriceDetailsRetryHint'"),
+    pageSource.includes("t('containers.modals.savePendingDetailsTitle', '确认保存明细')") &&
+    pageSource.includes("t('containers.modals.savePendingDetailsUpdateTitle', '更新说明')") &&
+    pageSource.includes("'containers.modals.savePendingDetailsSummary'") &&
+    pageSource.includes("t('containers.modals.savePendingDetailsExistingRetailHint'") &&
+    pageSource.includes("'containers.modals.savePendingDetailsInvalidEnglishHint'") &&
+    pageSource.includes("t('containers.modals.savePendingDetailsRetryHint'"),
   true,
-  '保存明细应在落库前弹出二次确认，并展示更新说明',
+  '保存明细应在落库前展示价格、英文名称和无效英文名说明',
 )
 assertEqual(
   pageSource.includes("icon={<SaveOutlined />}") &&
-    pageSource.includes('loading={priceDetailsSaving}') &&
-    pageSource.includes('disabled={!pendingPricePatchCount || priceDetailsSaving}') &&
-    pageSource.includes('onClick={() => void savePendingPriceDetails()}') &&
+    pageSource.includes('loading={detailSaveSubmitting}') &&
+    pageSource.includes('disabled={!pendingDetailPatchCount || detailSaveSubmitting}') &&
+    pageSource.includes('onClick={() => void savePendingDetails()}') &&
     pageSource.includes("t('containers.actions.saveDetails', '保存明细')"),
   true,
-  '批量价格操作区应提供保存明细按钮，且无待保存价格时禁用',
+  '批量操作区应提供保存明细按钮，且无待保存明细时禁用',
 )
-const pendingPriceGuardSource = pageSource.slice(
-  pageSource.indexOf('const ensureNoPendingPriceDetails = () => {'),
+const pendingDetailGuardSource = pageSource.slice(
+  pageSource.indexOf('const ensureNoPendingDetails = () => {'),
   pageSource.indexOf('const patchRow = (key: string, patch: Partial<ContainerDetail>) => {'),
 )
 assertEqual(
-  pendingPriceGuardSource.includes('if (!pendingPricePatchCount) return true') &&
-    pendingPriceGuardSource.includes("t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/零售价')") &&
-    pendingPriceGuardSource.includes('return false'),
+  pendingDetailGuardSource.includes('if (!pendingDetailPatchCount) return true') &&
+    pendingDetailGuardSource.includes("t('containers.messages.savePendingDetailsFirst', '请先点击“保存明细”保存待提交的明细修改')") &&
+    pendingDetailGuardSource.includes('return false'),
   true,
-  '货柜明细页应提供未保存价格拦截提示，要求用户先点保存明细',
+  '货柜明细页应阻止带着未保存价格或英文名称继续跨库操作',
 )
 assertEqual(
   columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
@@ -3285,8 +3611,8 @@ assertEqual(
     columnsSource.includes('getContainerDetailImportPriceTrend(row)') &&
     columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") &&
     columnsSource.includes("return <Icon className={className} />") &&
-    pageSource.includes("onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })") &&
-    pageSource.includes("onChange={(value) => markPendingPricePatch(row, { 贴牌价格: value == null ? undefined : Number(value) })") &&
+    pageSource.includes("onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })") &&
+    pageSource.includes("onChange={(value) => markPendingDetailPatch(row, { 贴牌价格: value == null ? undefined : Number(value) })") &&
     !pageSource.includes("saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })") &&
     !pageSource.includes("saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })") &&
     pageStyleSource.includes('.container-detail-import-price-trend-up') &&
@@ -3388,6 +3714,56 @@ assertDeepEqual(
   ].filter((snippet) => !pageSource.includes(snippet)),
   [],
   '写入类批量操作应统一经过确认弹窗或输入确认弹窗',
+)
+const translateNamesSource = pageSource.slice(
+  pageSource.indexOf('const translateNames = async () => {'),
+  pageSource.indexOf('const openBatchEditEnglishName = async () => {'),
+)
+const batchEnglishNameSource = pageSource.slice(
+  pageSource.indexOf('const submitBatchEditEnglishName = async () => {'),
+  pageSource.indexOf('const clearEnglishNames = async () => {'),
+)
+const clearEnglishNameSource = pageSource.slice(
+  pageSource.indexOf('const clearEnglishNames = async () => {'),
+  pageSource.indexOf('const showHqTranslationResult ='),
+)
+assertEqual(
+  translateNamesSource.includes('queuePendingDetailUpdates(updates)') &&
+    !translateNamesSource.includes('await batchUpdateDetails(updates)') &&
+    batchEnglishNameSource.includes('queuePendingDetailUpdates(updates)') &&
+    !batchEnglishNameSource.includes('await batchUpdateDetails(updates)') &&
+    clearEnglishNameSource.includes('queuePendingDetailUpdates(updates)') &&
+    !clearEnglishNameSource.includes('await batchUpdateDetails(updates)'),
+  true,
+  '本页批量翻译、批量修改和批量清除英文名称都应进入保存明细队列，不能立即落库',
+)
+assertEqual(
+  pageSource.includes('applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)') &&
+    pageSource.includes('pendingDetailContainerGuidRef.current !== containerGuid') &&
+    !pageSource.includes('setPendingDetailPatches({})'),
+  true,
+  '同一货柜刷新或筛选重载应重新覆盖未保存草稿，仅切换货柜时清空旧草稿',
+)
+assertEqual(
+  pageSource.includes('settleScopedContainerDetailSave(') &&
+    pageSource.includes('detailRequestIdAtSaveStart') &&
+    pageSource.includes('abortControllerToken: detailAbortControllerRef.current') &&
+    pageSource.includes('scopedSave.shouldInvalidateDetailLoad') &&
+    pageSource.includes('scopedSave.shouldReloadCurrentDetail') &&
+    pageSource.includes('await reloadCurrentDetailRef.current()') &&
+    pageSource.includes('detailControllerAtSaveStart?.abort()') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current += 1'),
+  true,
+  '保存成功后应废弃保存前的旧查询；若期间启动过新查询，则按当前条件重载避免旧快照覆盖',
+)
+assertEqual(
+  pageSource.includes('failedPendingDetailSaveKeysRef') &&
+    pageSource.includes('reconcilePendingContainerDetailSaveFailureKeys(') &&
+    pageSource.includes('failedPendingDetailSaveKeysRef.current.size > 0') &&
+    pageSource.includes('pendingDetailSavePromisesRef.current.clear()') &&
+    pageSource.includes('currentContainerGuidRef.current === saveContainerGuid'),
+  true,
+  '统一保存失败状态应按当前草稿字段及货柜作用域清理，不能污染后续意图或新货柜',
 )
 assertEqual(
   pageSource.includes('const resolveBatchActionTargetRows = async () => {') &&

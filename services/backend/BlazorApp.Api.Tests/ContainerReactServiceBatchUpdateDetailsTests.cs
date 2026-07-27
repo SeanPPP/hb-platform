@@ -605,7 +605,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_仅英文名称变化_应回写DomesticProduct()
+    public async Task BatchUpdateDetailsAsync_纯英文名称_Trim后应回写DomesticProduct()
     {
         await SeedDetailAndProductAsync("D-EN-ONLY", "P-EN-ONLY", englishName: null);
         await SeedLocalProductAsync("P-EN-ONLY", productName: "旧本地商品名", englishName: "Old Local English");
@@ -614,7 +614,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var totalUpdated = await service.BatchUpdateDetailsAsync(
             new List<UpdateContainerDetailDto>
             {
-                new() { HGUID = "D-EN-ONLY", 英文名称 = "Large Strawberry" },
+                new() { HGUID = "D-EN-ONLY", 英文名称 = "  Large Strawberry  " },
             }
         );
 
@@ -672,19 +672,20 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_同一商品多条明细_应聚合回写名称并统计请求行()
+    public async Task BatchUpdateDetailsAsync_同一商品多条明细相同英文名称意图_应聚合回写并统计请求行()
     {
         await SeedDetailAndProductAsync("D-SAME-1", "P-SAME", englishName: "Old English");
         await SeedDetailAsync("D-SAME-2", "P-SAME");
         await SeedDetailAsync("D-SAME-3", "P-SAME");
+        await SeedLocalProductAsync("P-SAME", "旧本地商品名", "Old Local English");
         var service = CreateService();
 
         var totalUpdated = await service.BatchUpdateDetailsAsync(
             new List<UpdateContainerDetailDto>
             {
                 new() { HGUID = "D-SAME-1", 商品名称 = "聚合中文名" },
-                new() { HGUID = "D-SAME-2", 英文名称 = "First English" },
-                new() { HGUID = "D-SAME-3", 英文名称 = "Last English" },
+                new() { HGUID = "D-SAME-2", 英文名称 = "Same English" },
+                new() { HGUID = "D-SAME-3", 英文名称 = " Same English " },
             }
         );
 
@@ -692,22 +693,27 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             .SingleAsync(x => x.ProductCode == "P-SAME");
         Assert.Equal(3, totalUpdated);
         Assert.Equal("聚合中文名", product.ProductName);
-        Assert.Equal("Last English", product.EnglishProductName);
+        Assert.Equal("Same English", product.EnglishProductName);
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_同一商品多条明细最后清空英文名称_应清空并统计请求行()
+    public async Task BatchUpdateDetailsAsync_同一商品多条明细相同清空意图_应清空并统计请求行()
     {
         await SeedDetailAndProductAsync("D-SAME-CLEAR-1", "P-SAME-CLEAR", englishName: "Old English");
         await SeedDetailAsync("D-SAME-CLEAR-2", "P-SAME-CLEAR");
         await SeedDetailAsync("D-SAME-CLEAR-3", "P-SAME-CLEAR");
+        await SeedLocalProductAsync(
+            "P-SAME-CLEAR",
+            "保留本地商品名",
+            "Old Local English"
+        );
         var service = CreateService();
 
         var totalUpdated = await service.BatchUpdateDetailsAsync(
             new List<UpdateContainerDetailDto>
             {
-                new() { HGUID = "D-SAME-CLEAR-1", 英文名称 = "First English" },
-                new() { HGUID = "D-SAME-CLEAR-2", 英文名称 = "Last English" },
+                new() { HGUID = "D-SAME-CLEAR-1", ClearEnglishName = true },
+                new() { HGUID = "D-SAME-CLEAR-2", ClearEnglishName = true },
                 new() { HGUID = "D-SAME-CLEAR-3", ClearEnglishName = true },
             }
         );
@@ -719,7 +725,229 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_价格和英文名称同时变化_应同时更新明细和DomesticProduct()
+    public async Task BatchUpdateDetailsDetailedAsync_明细不存在_返回校验错误并阻止该行全部字段()
+    {
+        await SeedDetailAsync("D-EXISTING-PARTIAL", "P-EXISTING-PARTIAL");
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-MISSING-DETAILED",
+                    进口价格 = 9.99m,
+                    英文名称 = "Missing Detail",
+                    ProductCategoryGUID = "CAT-SHOULD-NOT-BE-VALIDATED",
+                },
+                new() { HGUID = "D-EXISTING-PARTIAL", 进口价格 = 2.34m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-EXISTING-PARTIAL");
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal(2, result.TotalRequested);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-MISSING-DETAILED", error.HGUID);
+        Assert.Equal("*", error.Field);
+        Assert.Equal("DETAIL_NOT_FOUND", error.Code);
+        Assert.Equal(2.34m, detail.ImportPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_英文名称任一关联目标存在_更新实际目标且两者都缺失才报错()
+    {
+        await SeedDetailAsync("D-DOMESTIC-MISSING", "P-DOMESTIC-MISSING");
+        await SeedLocalProductAsync(
+            "P-DOMESTIC-MISSING",
+            productName: "本地主档旧名",
+            englishName: "Local Old"
+        );
+        await SeedDetailAndProductAsync(
+            "D-LOCAL-MISSING",
+            "P-LOCAL-MISSING",
+            englishName: "Domestic Old"
+        );
+        await SeedDetailAsync("D-PRODUCT-CODE-MISSING", productCode: null);
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-DOMESTIC-MISSING",
+                    进口价格 = 3.45m,
+                    英文名称 = "New English One",
+                },
+                new()
+                {
+                    HGUID = "D-LOCAL-MISSING",
+                    进口价格 = 4.56m,
+                    英文名称 = "New English Two",
+                },
+                new()
+                {
+                    HGUID = "D-PRODUCT-CODE-MISSING",
+                    进口价格 = 5.67m,
+                    英文名称 = "New English Three",
+                },
+            }
+        );
+
+        var domesticMissingDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-DOMESTIC-MISSING");
+        var localMissingDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-LOCAL-MISSING");
+        var productCodeMissingDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-PRODUCT-CODE-MISSING");
+        var localOnlyProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-DOMESTIC-MISSING");
+        var domesticOnlyProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-LOCAL-MISSING");
+
+        Assert.Equal(3, result.TotalUpdated);
+        Assert.Equal(3, result.TotalRequested);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-PRODUCT-CODE-MISSING", error.HGUID);
+        Assert.Equal("英文名称", error.Field);
+        Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code);
+        Assert.Equal(3.45m, domesticMissingDetail.ImportPrice);
+        Assert.Equal(4.56m, localMissingDetail.ImportPrice);
+        Assert.Equal(5.67m, productCodeMissingDetail.ImportPrice);
+        Assert.Equal("New English One", localOnlyProduct.ProductName);
+        Assert.Equal("New English One", localOnlyProduct.EnglishName);
+        Assert.Equal("New English Two", domesticOnlyProduct.EnglishProductName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_同商品英文名称意图冲突_所有冲突项报错且不覆盖名称()
+    {
+        await SeedDetailAndProductAsync(
+            "D-CONFLICT-1",
+            "P-CONFLICT",
+            englishName: "Existing English"
+        );
+        await SeedDetailAsync("D-CONFLICT-2", "P-CONFLICT");
+        await SeedDetailAsync("D-CONFLICT-3", "P-CONFLICT");
+        await SeedLocalProductAsync(
+            "P-CONFLICT",
+            productName: "Existing Local Name",
+            englishName: "Existing Local English"
+        );
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-CONFLICT-1",
+                    进口价格 = 5.67m,
+                    英文名称 = "First English",
+                },
+                new() { HGUID = "D-CONFLICT-2", 英文名称 = "Second English" },
+                new() { HGUID = "D-CONFLICT-3", ClearEnglishName = true },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-CONFLICT-1");
+        var domesticProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-CONFLICT");
+        var localProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-CONFLICT");
+
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal(3, result.TotalRequested);
+        Assert.Equal(3, result.ValidationErrors.Count);
+        Assert.Equal(
+            new[] { "D-CONFLICT-1", "D-CONFLICT-2", "D-CONFLICT-3" },
+            result.ValidationErrors.Select(error => error.HGUID).OrderBy(value => value)
+        );
+        Assert.All(
+            result.ValidationErrors,
+            error =>
+            {
+                Assert.Equal("英文名称", error.Field);
+                Assert.Equal("CONFLICTING_PRODUCT_ENGLISH_NAME", error.Code);
+            }
+        );
+        Assert.Equal(5.67m, detail.ImportPrice);
+        Assert.Equal("Existing English", domesticProduct.EnglishProductName);
+        Assert.Equal("Existing Local Name", localProduct.ProductName);
+        Assert.Equal("Existing Local English", localProduct.EnglishName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_相同英文名称NoOp和相同清空意图_均视为成功()
+    {
+        await SeedDetailAndProductAsync("D-NOOP-NAME-1", "P-NOOP-NAME", "Same English");
+        await SeedDetailAsync("D-NOOP-NAME-2", "P-NOOP-NAME");
+        await SeedLocalProductAsync("P-NOOP-NAME", "Same English", "Same English");
+        await SeedDetailAndProductAsync("D-NOOP-CLEAR-1", "P-NOOP-CLEAR", null);
+        await SeedDetailAsync("D-NOOP-CLEAR-2", "P-NOOP-CLEAR");
+        await SeedLocalProductAsync("P-NOOP-CLEAR", "保留本地商品名", null);
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-NOOP-NAME-1", 英文名称 = "Same English" },
+                new() { HGUID = "D-NOOP-NAME-2", 英文名称 = " Same English " },
+                new() { HGUID = "D-NOOP-CLEAR-1", ClearEnglishName = true },
+                new() { HGUID = "D-NOOP-CLEAR-2", ClearEnglishName = true },
+            }
+        );
+
+        Assert.Equal(4, result.TotalUpdated);
+        Assert.Equal(4, result.TotalRequested);
+        Assert.Empty(result.ValidationErrors);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_英文名称含中文_返回错误且保留同一行价格更新()
+    {
+        await SeedDetailAndProductAsync(
+            "D-CHINESE-DETAILED",
+            "P-CHINESE-DETAILED",
+            englishName: "Existing English"
+        );
+        await SeedLocalProductAsync(
+            "P-CHINESE-DETAILED",
+            productName: "Existing Local Name",
+            englishName: "Existing Local English"
+        );
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-CHINESE-DETAILED",
+                    进口价格 = 6.78m,
+                    英文名称 = "Large 草莓",
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-CHINESE-DETAILED");
+        var domesticProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-CHINESE-DETAILED");
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal("D-CHINESE-DETAILED", error.HGUID);
+        Assert.Equal("英文名称", error.Field);
+        Assert.Equal("CONTAINS_CHINESE", error.Code);
+        Assert.Equal(6.78m, detail.ImportPrice);
+        Assert.Equal("Existing English", domesticProduct.EnglishProductName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_仅有DomesticProduct_保持旧入口英文名称和价格更新兼容()
     {
         await SeedDetailAndProductAsync("D-PRICE-EN", "P-PRICE-EN", englishName: "Old English");
         var service = CreateService();
@@ -763,7 +991,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_英文名称为中文_应翻译后回写DomesticProduct()
+    public async Task BatchUpdateDetailsAsync_英文名称为中文_应跳过且不翻译不覆盖()
     {
         await SeedDetailAndProductAsync("D-ZH-EN", "P-ZH-EN", englishName: "Old English");
         await SeedLocalProductAsync("P-ZH-EN", productName: "旧中文名", englishName: "Old Local English");
@@ -780,10 +1008,10 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             .SingleAsync(x => x.ProductCode == "P-ZH-EN");
         var localProduct = await _localDb.Queryable<Product>()
             .SingleAsync(x => x.ProductCode == "P-ZH-EN");
-        Assert.Equal(1, totalUpdated);
-        Assert.Equal("Strawberry Toy", product.EnglishProductName);
-        Assert.Equal("Strawberry Toy", localProduct.ProductName);
-        Assert.Equal("Strawberry Toy", localProduct.EnglishName);
+        Assert.Equal(0, totalUpdated);
+        Assert.Equal("Old English", product.EnglishProductName);
+        Assert.Equal("旧中文名", localProduct.ProductName);
+        Assert.Equal("Old Local English", localProduct.EnglishName);
     }
 
     [Fact]

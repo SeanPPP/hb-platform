@@ -39,9 +39,11 @@ type CashierPrintAction = "default" | "confirmUncertain" | "reprintUncertain";
 
 export function CashierBarcodeCard({
   employeeName,
+  username,
   userIdentity,
 }: {
   employeeName: string;
+  username: string;
   userIdentity: string;
 }) {
   const { t } = useAppTranslation(["employeeProfile", "common"]);
@@ -113,7 +115,11 @@ export function CashierBarcodeCard({
         barcode,
         createAttemptId: () => Crypto.randomUUID(),
         printLabel: async (value) => {
-          const printed = await printEmployeeCashierBarcodeLabel({ employeeName, barcode: value });
+          const printed = await printEmployeeCashierBarcodeLabel({
+            employeeName,
+            username,
+            barcode: value,
+          });
           if (!printed) {
             throw new Error(t("cashierBarcode.printFailed"));
           }
