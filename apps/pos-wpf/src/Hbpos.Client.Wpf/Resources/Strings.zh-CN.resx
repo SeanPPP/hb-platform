@@ -2415,6 +2415,7 @@
   <data name="appUpdate.optional.ready" xml:space="preserve"><value>新版本已下载完成，可在空闲时安装。</value></data>
   <data name="appUpdate.force.title" xml:space="preserve"><value>必须更新</value></data>
   <data name="appUpdate.force.action" xml:space="preserve"><value>安装更新</value></data>
+  <data name="appUpdate.force.dismissDebug" xml:space="preserve"><value>跳过更新（调试）</value></data>
   <data name="appUpdate.force.downloading" xml:space="preserve"><value>正在下载必须安装的更新，请稍候。</value></data>
   <data name="appUpdate.force.ready" xml:space="preserve"><value>必须安装此更新后才能继续收银。</value></data>
   <data name="appUpdate.force.minimumRequired" xml:space="preserve"><value>当前终端低于最低支持版本（{0}），必须安装更新后才能继续收银。</value></data>

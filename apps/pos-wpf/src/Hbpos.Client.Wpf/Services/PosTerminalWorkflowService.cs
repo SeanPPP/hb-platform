@@ -584,16 +584,22 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 
             if (result.Updated && result.Item is not null)
             {
-                _priceIndex.Upsert(result.Item);
-                // 本地未命中后远端已返回最新商品，这里直接加购，避免加购后再重复排队远端刷新。
-                var addResult = AddItem(
-                    session,
-                    result.Item,
-                    clearScanText: true,
-                    closeMatchesPopup: false,
-                    "scan-auto-add",
-                    traceId,
-                    refreshRemoteAfterAdd: false);
+                PosTerminalWorkflowResult addResult;
+                lock (_remoteLookupGate)
+                {
+                    // ponytail: 复用现有远程查询锁串行化短回写；并发吞吐成为瓶颈时再按 RemoteLookupKey 分锁。
+                    _priceIndex.Upsert(result.Item);
+                    // 本地未命中后远端已返回最新商品，这里直接加购，避免加购后再重复排队远端刷新。
+                    addResult = AddItem(
+                        session,
+                        result.Item,
+                        clearScanText: true,
+                        closeMatchesPopup: false,
+                        "scan-auto-add",
+                        traceId,
+                        refreshRemoteAfterAdd: false);
+                }
+
                 CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
                 ConsoleLog.Write(
                     "PosScan",
@@ -841,7 +847,8 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         ConsoleLog.Write(
             "PosScan",
             $"remote lookup queued storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} referenceCode={snapshot.ReferenceCode ?? "<null>"} cartLines={_cart.Lines.Count}");
-        _ = Task.Run(() => RefreshRemoteLookupAsync(snapshot, key));
+        // 保留 WPF UI 同步上下文，远程结果才能安全回写购物车集合。
+        _ = RefreshRemoteLookupAsync(snapshot, key);
     }
 
     private async Task RefreshRemoteLookupAsync(RemoteLookupCartSnapshot snapshot, RemoteLookupKey key)
@@ -860,11 +867,26 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
                 snapshot.StoreCode,
                 snapshot.LookupCode,
                 timeoutCts.Token);
-            stopwatch.Stop();
+            var remoteResultElapsedMs = stopwatch.ElapsedMilliseconds;
+
+            // 网络返回后再次让扫码输入优先，空闲后再更新索引和界面。
+            await _uiPriorityCoordinator.WaitForUiIdleAsync();
+            var indexUpdateStopwatch = Stopwatch.StartNew();
 
             if (result.Updated && result.Item is not null)
             {
                 _priceIndex.Upsert(result.Item);
+            }
+            else if (result.Deleted)
+            {
+                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
+            }
+
+            indexUpdateStopwatch.Stop();
+            var uiApplyStopwatch = Stopwatch.StartNew();
+
+            if (result.Updated && result.Item is not null)
+            {
                 if (CanApplyRemoteItemToCartLine(snapshot, result.Item))
                 {
                     var updatedCount = UpdateMatchingCartLinesFromRemote(snapshot, result.Item);
@@ -881,13 +903,17 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             }
             else if (result.Deleted)
             {
-                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
                 ConsoleLog.Write(
                     "PosScan",
                     $"remote lookup deleted local cache only storeCode={result.StoreCode} lookupCode={result.LookupCode} deletedCount={result.DeletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
 
             CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+            uiApplyStopwatch.Stop();
+            stopwatch.Stop();
+            ConsoleLog.Write(
+                "PosScan",
+                $"remote lookup apply completed storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} updated={FormatBool(result.Updated)} deleted={FormatBool(result.Deleted)} remoteResultElapsedMs={remoteResultElapsedMs} indexUpdateElapsedMs={indexUpdateStopwatch.ElapsedMilliseconds} uiApplyElapsedMs={uiApplyStopwatch.ElapsedMilliseconds} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
         }
         catch (OperationCanceledException ex)
         {

@@ -345,9 +345,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isCatalogDownloadProgressFailed;
 
-    [ObservableProperty]
-    private bool _isCatalogDownloadProgressIndeterminate;
-
     public bool IsOrderSyncRetrying
     {
         get => _syncOrchestrator?.IsOrderSyncRetrying ?? false;
@@ -1877,7 +1874,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         bool forceFullDownload,
         CancellationToken cancellationToken)
     {
-        var progress = new Progress<CatalogSyncProgress>(ApplyCatalogDownloadProgress);
+        var compareTotalCount = _priceIndex.Count;
+        var progress = new Progress<CatalogSyncProgress>(
+            value => ApplyCatalogDownloadProgress(value, compareTotalCount));
         return await _shellCatalogService.SyncCatalogAndReloadAsync(
             Session.StoreCode,
             forceFullDownload,
@@ -1885,14 +1884,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             cancellationToken);
     }
 
-    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress)
+    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress, int compareTotalCount)
     {
         _catalogDownloadHideTimer.Stop();
         IsCatalogDownloadProgressVisible = true;
         IsCatalogDownloadProgressFailed = progress.Stage == CatalogSyncProgressStage.Failed;
-        IsCatalogDownloadProgressIndeterminate = progress.Stage is
-            CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing;
-        CatalogDownloadProgressValue = progress.Percent;
 
         if (progress.Stage == CatalogSyncProgressStage.Failed)
         {
@@ -1902,12 +1898,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var stagePercent = CalculateCatalogDownloadStagePercent(progress, compareTotalCount);
+        CatalogDownloadProgressValue = stagePercent;
+
         if (progress.Stage is CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing)
         {
             var stageTitleKey = progress.Stage == CatalogSyncProgressStage.Preparing
                 ? "shell.catalogDownload.preparing"
                 : "shell.catalogDownload.comparing";
-            CatalogDownloadProgressText = _localization.T(stageTitleKey);
+            CatalogDownloadProgressText = string.Format(
+                _localization.CurrentCulture,
+                "{0} {1}%",
+                _localization.T(stageTitleKey),
+                stagePercent);
             CatalogDownloadProgressDetailText = string.Format(
                 _localization.CurrentCulture,
                 _localization.T("shell.catalogDownload.compareDetail"),
@@ -1925,7 +1928,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CatalogDownloadProgressText = string.Format(
             _localization.CurrentCulture,
             _localization.T(titleKey),
-            progress.Percent);
+            stagePercent);
         CatalogDownloadProgressDetailText = string.Format(
             _localization.CurrentCulture,
             _localization.T("shell.catalogDownload.detail"),
@@ -1940,6 +1943,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             StartCatalogDownloadHideTimer(TimeSpan.FromSeconds(5));
         }
+    }
+
+    private static int CalculateCatalogDownloadStagePercent(
+        CatalogSyncProgress progress,
+        int compareTotalCount)
+    {
+        // 核对和下载分别按当前阶段计算，阶段切换时允许重新从 0% 开始。
+        return progress.Stage switch
+        {
+            CatalogSyncProgressStage.Preparing => 0,
+            CatalogSyncProgressStage.Comparing when compareTotalCount <= 0 => 0,
+            CatalogSyncProgressStage.Comparing => Math.Clamp(
+                (int)(progress.ComparedCount * 100L / compareTotalCount),
+                0,
+                100),
+            CatalogSyncProgressStage.Completed => 100,
+            _ => Math.Clamp(progress.Percent, 0, 100)
+        };
     }
 
     private void StartCatalogDownloadHideTimer(TimeSpan interval)

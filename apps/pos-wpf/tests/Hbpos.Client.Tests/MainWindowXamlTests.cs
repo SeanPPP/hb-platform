@@ -5,6 +5,22 @@ namespace Hbpos.Client.Tests;
 public sealed class MainWindowXamlTests
 {
     [Fact]
+    public void Main_window_defaults_to_maximized_and_centers_normal_mode()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        var window = Assert.IsType<XElement>(document.Root);
+
+        Assert.Equal("Maximized", (string?)window.Attribute("WindowState"));
+        Assert.Equal("CenterScreen", (string?)window.Attribute("WindowStartupLocation"));
+    }
+
+    [Fact]
     public void Cashier_login_overlay_restores_focus_when_server_switch_reenables_window()
     {
         var document = XDocument.Load(Path.Combine(

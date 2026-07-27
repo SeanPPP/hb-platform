@@ -881,6 +881,7 @@
   <data name="appUpdate.optional.ready" xml:space="preserve"><value>New version has been downloaded. Install when the terminal is idle.</value></data>
   <data name="appUpdate.force.title" xml:space="preserve"><value>Update required</value></data>
   <data name="appUpdate.force.action" xml:space="preserve"><value>Install update</value></data>
+  <data name="appUpdate.force.dismissDebug" xml:space="preserve"><value>Skip update (Debug)</value></data>
   <data name="appUpdate.force.downloading" xml:space="preserve"><value>Downloading required update. Please wait.</value></data>
   <data name="appUpdate.force.ready" xml:space="preserve"><value>Install this required update before continuing checkout.</value></data>
   <data name="appUpdate.force.minimumRequired" xml:space="preserve"><value>This terminal is below the minimum supported version ({0}). Install the required update before continuing checkout.</value></data>

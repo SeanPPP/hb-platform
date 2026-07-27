@@ -710,7 +710,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 0m,
                 order.OutstandingAmount,
                 0,
-                $"{T("history.installment.paid")}: {order.PaidAmount:C2}",
+                string.Format(
+                    _localization?.CurrentCulture ?? CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName),
+                    "{0}: {1:C2}",
+                    T("history.installment.paid"),
+                    order.PaidAmount),
                 order.Status,
                 InstallmentOrder: order,
                 IsInstallmentOrder: true,

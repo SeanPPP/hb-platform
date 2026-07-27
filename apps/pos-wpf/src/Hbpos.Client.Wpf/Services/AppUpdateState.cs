@@ -10,21 +10,29 @@ public sealed partial class AppUpdateState : ObservableObject
     private Func<Task<ProcessLaunchResult>>? _installAsync;
     private Func<Task>? _retryAsync;
     private Action? _exitApplication;
+#if DEBUG
+    private Func<Task>? _continueStartupAfterDebugDismissAsync;
+#endif
 
     public AppUpdateState()
     {
         InstallUpdateCommand = new AsyncRelayCommand(InstallAsync, CanInstall);
         DismissOptionalUpdateCommand = new RelayCommand(ClearOptionalUpdate);
+        DismissForceUpdateForDebugCommand = new AsyncRelayCommand(
+            DismissForceUpdateForDebugAsync,
+            () => CanDismissForceUpdateForDebug);
         RetryForceUpdateCommand = new AsyncRelayCommand(RetryForceUpdateAsync, CanRetryForceUpdate);
         ExitApplicationCommand = new RelayCommand(ExitApplication, CanExitApplication);
     }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsForceUpdateBlocking))]
+    [NotifyPropertyChangedFor(nameof(CanDismissForceUpdateForDebug))]
     private bool _isForceUpdateRequired;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsForceUpdateBlocking))]
+    [NotifyPropertyChangedFor(nameof(CanDismissForceUpdateForDebug))]
     private bool _isForceUpdatePendingInstall;
 
     [ObservableProperty]
@@ -70,6 +78,18 @@ public sealed partial class AppUpdateState : ObservableObject
 
     public bool IsForceUpdateBlocking => IsForceUpdateRequired && !IsForceUpdatePendingInstall;
 
+    public bool CanDismissForceUpdateForDebug
+    {
+        get
+        {
+#if DEBUG
+            return IsForceUpdateRequired;
+#else
+            return false;
+#endif
+        }
+    }
+
     public bool IsInstallerReady => !string.IsNullOrWhiteSpace(InstallerPath);
 
     public string CurrentVersion
@@ -93,6 +113,8 @@ public sealed partial class AppUpdateState : ObservableObject
     public IAsyncRelayCommand InstallUpdateCommand { get; }
 
     public IRelayCommand DismissOptionalUpdateCommand { get; }
+
+    public IAsyncRelayCommand DismissForceUpdateForDebugCommand { get; }
 
     public IAsyncRelayCommand RetryForceUpdateCommand { get; }
 
@@ -362,6 +384,49 @@ public sealed partial class AppUpdateState : ObservableObject
         NotifyCommandStates();
     }
 
+    public void ConfigureDebugForceUpdateDismissed(Func<Task> continueStartupAsync)
+    {
+#if DEBUG
+        _continueStartupAfterDebugDismissAsync = continueStartupAsync;
+#endif
+    }
+
+    private async Task DismissForceUpdateForDebugAsync()
+    {
+#if DEBUG
+        if (!IsForceUpdateRequired)
+        {
+            return;
+        }
+
+        // 中文注释：仅调试构建允许绕过强制升级，Release 构建在属性与命令两层均保持禁用。
+        IsForceUpdateRequired = false;
+        IsForceUpdatePendingInstall = false;
+        IsForceUpdateError = false;
+        IsOptionalUpdateReady = false;
+        IsDownloading = false;
+        InstallerPath = null;
+        TargetVersion = null;
+        ReleaseNotes = null;
+        _installAsync = null;
+        _retryAsync = null;
+        _exitApplication = null;
+        ClearVersionCheckResult();
+        ClearDownloadProgress();
+        StatusKey = string.Empty;
+        StatusArgs = [];
+        StatusMessage = string.Empty;
+        NotifyCommandStates();
+
+        if (_continueStartupAfterDebugDismissAsync is not null)
+        {
+            await _continueStartupAfterDebugDismissAsync();
+        }
+#else
+        await Task.CompletedTask;
+#endif
+    }
+
     private async Task RetryForceUpdateAsync()
     {
         if (_retryAsync is not null)
@@ -395,6 +460,7 @@ public sealed partial class AppUpdateState : ObservableObject
     private void NotifyCommandStates()
     {
         InstallUpdateCommand.NotifyCanExecuteChanged();
+        DismissForceUpdateForDebugCommand.NotifyCanExecuteChanged();
         RetryForceUpdateCommand.NotifyCanExecuteChanged();
         ExitApplicationCommand.NotifyCanExecuteChanged();
     }

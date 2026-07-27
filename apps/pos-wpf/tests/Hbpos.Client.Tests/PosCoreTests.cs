@@ -68,6 +68,83 @@ public sealed class PosCoreTests
     }
 
     [Fact]
+    public void Local_price_index_upsert_replaces_only_matching_store_lookup_and_aliases()
+    {
+        var index = new LocalSellableItemIndex();
+        var localItem = CreateItem("SKU-OLD", "Zulu Local", "690010", PriceSourceKind.StoreRetailPrice, 5m, itemNumber: "ITEM-OLD");
+        var sibling = CreateItem("SKU-SIBLING", "Bravo Item", "690011", PriceSourceKind.StoreRetailPrice, 6m);
+        var otherStore = CreateItem("SKU-OTHER", "Other Store", "690010", PriceSourceKind.StoreRetailPrice, 7m, storeCode: "S002");
+        index.ReplaceAll([localItem, sibling, otherStore]);
+        var updatedItem = localItem with
+        {
+            ProductCode = "SKU-NEW",
+            DisplayName = "Alpha Local",
+            ItemNumber = "ITEM-NEW",
+            Barcode = "BAR-NEW",
+            RetailPrice = 8m
+        };
+
+        index.Upsert(updatedItem);
+
+        Assert.Same(updatedItem, Assert.Single(index.FindExactMatches("S001", "690010")));
+        Assert.Same(otherStore, Assert.Single(index.FindExactMatches("S002", "690010")));
+        Assert.Empty(index.FindMetadataExactMatches("S001", "ITEM-OLD"));
+        Assert.Empty(index.FindMetadataExactMatches("S001", "SKU-OLD"));
+        Assert.Same(updatedItem, Assert.Single(index.FindMetadataExactMatches("S001", "ITEM-NEW")));
+        Assert.Same(updatedItem, Assert.Single(index.FindMetadataExactMatches("S001", "SKU-NEW")));
+        Assert.Same(updatedItem, Assert.Single(index.FindMetadataExactMatches("S001", "BAR-NEW")));
+        Assert.Equal(["Alpha Local", "Bravo Item", "Other Store"], index.Items.Select(item => item.DisplayName));
+    }
+
+    [Fact]
+    public void Local_price_index_remove_lookup_clears_aliases_only_for_matching_store()
+    {
+        var index = new LocalSellableItemIndex();
+        var localItem = CreateItem("SKU-REMOVE", "Remove Local", "690020", PriceSourceKind.StoreRetailPrice, 5m, itemNumber: "ITEM-REMOVE");
+        var otherStore = CreateItem("SKU-KEEP", "Keep Other Store", "690020", PriceSourceKind.StoreRetailPrice, 7m, storeCode: "S002");
+        index.ReplaceAll([localItem, otherStore]);
+
+        Assert.True(index.RemoveLookup(" s001 ", " 690020 "));
+
+        Assert.Empty(index.FindExactMatches("S001", "690020"));
+        Assert.Empty(index.FindMetadataExactMatches("S001", "ITEM-REMOVE"));
+        Assert.Empty(index.FindMetadataExactMatches("S001", "SKU-REMOVE"));
+        Assert.Same(otherStore, Assert.Single(index.FindExactMatches("S002", "690020")));
+        Assert.False(index.RemoveLookup("S001", "690020"));
+        Assert.Same(otherStore, Assert.Single(index.Items));
+    }
+
+    [Fact]
+    public void Local_price_index_single_upsert_does_not_allocate_a_full_large_index()
+    {
+        const int itemCount = 100_000;
+        var index = new LocalSellableItemIndex();
+        var items = Enumerable.Range(0, itemCount)
+            .Select(itemIndex => CreateItem(
+                $"SKU-{itemIndex:D6}",
+                $"Item {itemIndex:D6}",
+                $"LOOKUP-{itemIndex:D6}",
+                PriceSourceKind.StoreRetailPrice,
+                1m))
+            .ToArray();
+        index.ReplaceAll(items);
+        var warmItem = items[itemCount / 2] with { RetailPrice = 2m };
+        index.Upsert(warmItem);
+        var replacement = warmItem with { RetailPrice = 3m };
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+
+        index.Upsert(replacement);
+
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        Assert.True(allocatedBytes < 5_000_000, $"Single upsert allocated {allocatedBytes:N0} bytes.");
+        Assert.Same(replacement, Assert.Single(index.FindExactMatches("S001", replacement.LookupCode)));
+    }
+
+    [Fact]
     public void Cart_adds_scanned_item_and_calculates_totals()
     {
         var cart = new PosCartService();
