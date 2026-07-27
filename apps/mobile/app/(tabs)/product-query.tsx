@@ -2381,6 +2381,7 @@ function ProductQueryContent() {
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
   const normalizedStoreDiscountRate = normalizeDiscountRateValue(storePrice?.discountRate);
+  const hasActiveDiscount = Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0);
   const discountedRetailPrice = getDiscountedRetailPrice(
     storePrice?.retailPrice,
     normalizedStoreDiscountRate
@@ -2413,7 +2414,10 @@ function ProductQueryContent() {
   );
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+    <SafeAreaView
+      style={[styles.safeArea, hasActiveDiscount ? styles.discountedSafeArea : null]}
+      edges={["top", "left", "right"]}
+    >
       <QueryHeader
         storeName={selectedStore?.storeName}
         canSelectStore={canSelectStore}
@@ -3160,6 +3164,9 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F7F8FA",
+  },
+  discountedSafeArea: {
+    backgroundColor: "#FFF1F0",
   },
   content: {
     paddingHorizontal: 12,

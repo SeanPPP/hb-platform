@@ -18,6 +18,7 @@ import {
   Row,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   message,
@@ -807,12 +808,16 @@ export default function LocalSupplierInvoiceDetailPage() {
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsAutoPricing !== cur.updateIsAutoPricing}>
             {({ getFieldValue }) =>
               getFieldValue('updateIsAutoPricing') ? (
-                <Form.Item name="isAutoPricing" label={t('posAdmin.invoiceDetail.autoPricing', '自动定价')} style={{ marginLeft: 24 }}>
-                  <Select
-                    options={[
-                      { label: t('posAdmin.invoiceDetail.yes', '是'), value: true },
-                      { label: t('posAdmin.invoiceDetail.no', '否'), value: false },
-                    ]}
+                <Form.Item
+                  name="isAutoPricing"
+                  label={t('posAdmin.invoiceDetail.autoPricing', '自动定价')}
+                  valuePropName="checked"
+                  initialValue={false}
+                  style={{ marginLeft: 24 }}
+                >
+                  <Switch
+                    checkedChildren={t('posAdmin.invoiceDetail.yes', '是')}
+                    unCheckedChildren={t('posAdmin.invoiceDetail.no', '否')}
                   />
                 </Form.Item>
               ) : null
@@ -825,12 +830,16 @@ export default function LocalSupplierInvoiceDetailPage() {
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsSpecialProduct !== cur.updateIsSpecialProduct}>
             {({ getFieldValue }) =>
               getFieldValue('updateIsSpecialProduct') ? (
-                <Form.Item name="isSpecialProduct" label={t('posAdmin.invoiceDetail.specialProduct', '特殊商品')} style={{ marginLeft: 24 }}>
-                  <Select
-                    options={[
-                      { label: t('posAdmin.invoiceDetail.yes', '是'), value: true },
-                      { label: t('posAdmin.invoiceDetail.no', '否'), value: false },
-                    ]}
+                <Form.Item
+                  name="isSpecialProduct"
+                  label={t('posAdmin.invoiceDetail.specialProduct', '特殊商品')}
+                  valuePropName="checked"
+                  initialValue={false}
+                  style={{ marginLeft: 24 }}
+                >
+                  <Switch
+                    checkedChildren={t('posAdmin.invoiceDetail.yes', '是')}
+                    unCheckedChildren={t('posAdmin.invoiceDetail.no', '否')}
                   />
                 </Form.Item>
               ) : null

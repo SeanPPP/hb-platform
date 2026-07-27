@@ -932,7 +932,69 @@ async function main() {
   })
   if (productAutoPricingColumnFailure) failures.push(productAutoPricingColumnFailure)
 
+  const productBatchBooleanSwitchFailure = await runTest('商品普通批量编辑应以字段勾选配合布尔开关提交', () => {
+    const openBatchEditStart = pageSource.indexOf('const openBatchEdit = () => {')
+    const openBatchEditEnd = pageSource.indexOf('\n  const setImageBatchTemplate', openBatchEditStart)
+    const openBatchEditSource = pageSource.slice(openBatchEditStart, openBatchEditEnd)
+    const handleBatchEditStart = pageSource.indexOf('const handleBatchEditSave = async () => {')
+    const handleBatchEditEnd = pageSource.indexOf('\n  const openHqSyncModal', handleBatchEditStart)
+    const handleBatchEditSource = pageSource.slice(handleBatchEditStart, handleBatchEditEnd)
+    const batchEditModalStart = pageSource.indexOf('<Modal\n        open={batchEditVisible}')
+    const batchEditModalEnd = pageSource.indexOf('<Modal\n        open={syncToStoreVisible}', batchEditModalStart)
+    const batchEditModalSource = pageSource.slice(batchEditModalStart, batchEditModalEnd)
+    const autoPricingFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.isAutoPricing', '自动定价')}>")
+    const specialProductFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.isSpecialProduct', '特殊商品')}>")
+    const activeFieldStart = batchEditModalSource.indexOf('<Form.Item name="isActive"', specialProductFieldStart)
+    const autoPricingFieldSource = batchEditModalSource.slice(autoPricingFieldStart, specialProductFieldStart)
+    const specialProductFieldSource = batchEditModalSource.slice(specialProductFieldStart, activeFieldStart)
+
+    assert(
+      openBatchEditSource.includes('batchEditForm.setFieldsValue({') &&
+        openBatchEditSource.includes('isAutoPricing: false') &&
+        openBatchEditSource.includes('isSpecialProduct: false'),
+      '打开普通批量编辑时应把两个布尔值明确初始化为 false',
+    )
+    assert(
+      autoPricingFieldSource.includes('name="updateIsAutoPricing" valuePropName="checked"') &&
+        autoPricingFieldSource.includes('<Checkbox>') &&
+        autoPricingFieldSource.includes('name="isAutoPricing" valuePropName="checked" initialValue={false}') &&
+        autoPricingFieldSource.includes('<Switch') &&
+        autoPricingFieldSource.includes("checkedChildren={t('common.yes', '是')}") &&
+        autoPricingFieldSource.includes("unCheckedChildren={t('common.no', '否')}") &&
+        !autoPricingFieldSource.includes('<Select'),
+      '普通批量编辑的自动定价应由字段勾选控制，并使用默认关闭的是/否开关',
+    )
+    assert(
+      specialProductFieldSource.includes('name="updateIsSpecialProduct" valuePropName="checked"') &&
+        specialProductFieldSource.includes('<Checkbox>') &&
+        specialProductFieldSource.includes('name="isSpecialProduct" valuePropName="checked" initialValue={false}') &&
+        specialProductFieldSource.includes('<Switch') &&
+        specialProductFieldSource.includes("checkedChildren={t('common.yes', '是')}") &&
+        specialProductFieldSource.includes("unCheckedChildren={t('common.no', '否')}") &&
+        !specialProductFieldSource.includes('<Select'),
+      '普通批量编辑的特殊商品应由字段勾选控制，并使用默认关闭的是/否开关',
+    )
+    assert(
+      handleBatchEditSource.includes('isAutoPricing: values.updateIsAutoPricing ? !!values.isAutoPricing : undefined') &&
+        handleBatchEditSource.includes('isSpecialProduct: values.updateIsSpecialProduct ? !!values.isSpecialProduct : undefined'),
+      '普通批量编辑未勾选字段时应提交 undefined，勾选后关闭/打开应分别提交 false/true',
+    )
+  })
+  if (productBatchBooleanSwitchFailure) failures.push(productBatchBooleanSwitchFailure)
+
   const storeRecordsBatchUpdateFailure = await runTest('分店记录弹窗应支持批量修改分店业务字段', () => {
+    const openBatchEditStart = pageSource.indexOf('const openStoreRecordBatchEdit = () => {')
+    const openBatchEditEnd = pageSource.indexOf('\n  const handleStoreRecordBatchEditSave', openBatchEditStart)
+    const openBatchEditSource = pageSource.slice(openBatchEditStart, openBatchEditEnd)
+    const batchEditModalStart = pageSource.indexOf('<Modal\n        open={storeRecordBatchEditVisible}')
+    const batchEditModalEnd = pageSource.indexOf('<Modal\n        open={setCodeVisible}', batchEditModalStart)
+    const batchEditModalSource = pageSource.slice(batchEditModalStart, batchEditModalEnd)
+    const autoPricingFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.autoPricing', '自动定价')}")
+    const specialProductFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.specialProduct', '特殊商品')}")
+    const activeFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.cashierUsers.status', '状态')}", specialProductFieldStart)
+    const autoPricingFieldSource = batchEditModalSource.slice(autoPricingFieldStart, specialProductFieldStart)
+    const specialProductFieldSource = batchEditModalSource.slice(specialProductFieldStart, activeFieldStart)
+
     assert(
       typeSource.includes('BatchUpdateProductStoreRecordsRequest') &&
         typeSource.includes('BatchUpdateProductStoreRecordsResult') &&
@@ -996,10 +1058,37 @@ async function main() {
     assert(
       pageSource.includes("t('posAdmin.products.toggleFieldUpdate', '修改该字段')") &&
         pageSource.includes('precision={2}') &&
-        pageSource.includes('precision={4}') &&
-        pageSource.includes("value: true, label: t('common.yes', '是')") &&
-        pageSource.includes("value: false, label: t('common.no', '否')"),
-      '每个字段应由“修改该字段”控制纳入 changes，数字精度与布尔选项要明确',
+        pageSource.includes('precision={4}'),
+      '每个字段应由“修改该字段”控制纳入 changes，并保留数字字段精度',
+    )
+    assert(
+      openBatchEditSource.includes('storeRecordBatchEditForm.setFieldsValue({') &&
+        openBatchEditSource.includes('isAutoPricing: false') &&
+        openBatchEditSource.includes('isSpecialProduct: false'),
+      '打开分店记录批量修改时应把两个布尔值明确初始化为 false',
+    )
+    assert(
+      autoPricingFieldSource.includes('name="updateIsAutoPricing" valuePropName="checked"') &&
+        autoPricingFieldSource.includes('name="isAutoPricing" valuePropName="checked" initialValue={false}') &&
+        autoPricingFieldSource.includes('<Switch') &&
+        autoPricingFieldSource.includes("checkedChildren={t('common.yes', '是')}") &&
+        autoPricingFieldSource.includes("unCheckedChildren={t('common.no', '否')}") &&
+        !autoPricingFieldSource.includes('<Select'),
+      '分店记录自动定价应保留字段勾选，并使用默认关闭的是/否开关',
+    )
+    assert(
+      specialProductFieldSource.includes('name="updateIsSpecialProduct" valuePropName="checked"') &&
+        specialProductFieldSource.includes('name="isSpecialProduct" valuePropName="checked" initialValue={false}') &&
+        specialProductFieldSource.includes('<Switch') &&
+        specialProductFieldSource.includes("checkedChildren={t('common.yes', '是')}") &&
+        specialProductFieldSource.includes("unCheckedChildren={t('common.no', '否')}") &&
+        !specialProductFieldSource.includes('<Select'),
+      '分店记录特殊商品应保留字段勾选，并使用默认关闭的是/否开关',
+    )
+    assert(
+      pageSource.includes("{ enabled: !!values.updateIsAutoPricing, field: 'isAutoPricing', value: values.isAutoPricing }") &&
+        pageSource.includes("{ enabled: !!values.updateIsSpecialProduct, field: 'isSpecialProduct', value: values.isSpecialProduct }"),
+      '分店记录批量修改应仅在字段勾选后提交开关的 false/true 值',
     )
     assert(
       pageSource.includes('if (!storeRecordSelectedRowKeys.length) {') &&

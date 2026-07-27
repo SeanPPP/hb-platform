@@ -1776,6 +1776,10 @@ export default function ProductManagementPage() {
   const openStoreRecordBatchEdit = () => {
     if (!canEditStoreProducts || !storeRecordSelectedRowKeys.length) return
     storeRecordBatchEditForm.resetFields()
+    storeRecordBatchEditForm.setFieldsValue({
+      isAutoPricing: false,
+      isSpecialProduct: false,
+    })
     setStoreRecordBatchEditVisible(true)
   }
 
@@ -1993,6 +1997,10 @@ export default function ProductManagementPage() {
       return
     }
     batchEditForm.resetFields()
+    batchEditForm.setFieldsValue({
+      isAutoPricing: false,
+      isSpecialProduct: false,
+    })
     setBatchEditVisible(true)
   }
 
@@ -2123,8 +2131,8 @@ export default function ProductManagementPage() {
         retailPrice: values.retailPrice ?? undefined,
         purchasePrice: values.purchasePrice ?? undefined,
         middlePackageQuantity: values.middlePackageQuantity ?? undefined,
-        isAutoPricing: values.isAutoPricing,
-        isSpecialProduct: values.isSpecialProduct,
+        isAutoPricing: values.updateIsAutoPricing ? !!values.isAutoPricing : undefined,
+        isSpecialProduct: values.updateIsSpecialProduct ? !!values.isSpecialProduct : undefined,
         isActive: values.isActive,
         categoryGuid: resolvedCategoryGuid ?? undefined,
         localSupplierCode: values.localSupplierCode ?? undefined,
@@ -3638,17 +3646,41 @@ export default function ProductManagementPage() {
           <Form.Item name="middlePackageQuantity" label={t('posAdmin.products.middlePackage', '中包数')}>
             <InputNumber min={1} style={{ width: '100%' }} placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} />
           </Form.Item>
-          <Form.Item name="isAutoPricing" label={t('posAdmin.products.isAutoPricing', '自动定价')}>
-            <Select placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} allowClear>
-              <Select.Option value={true}>{t('posAdmin.products.yes', '是')}</Select.Option>
-              <Select.Option value={false}>{t('posAdmin.products.no', '否')}</Select.Option>
-            </Select>
+          <Form.Item label={t('posAdmin.products.isAutoPricing', '自动定价')}>
+            <Space size="middle">
+              <Form.Item name="updateIsAutoPricing" valuePropName="checked" noStyle>
+                <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsAutoPricing !== cur.updateIsAutoPricing}>
+                {({ getFieldValue }) => (
+                  <Form.Item name="isAutoPricing" valuePropName="checked" initialValue={false} noStyle>
+                    <Switch
+                      disabled={!getFieldValue('updateIsAutoPricing')}
+                      checkedChildren={t('common.yes', '是')}
+                      unCheckedChildren={t('common.no', '否')}
+                    />
+                  </Form.Item>
+                )}
+              </Form.Item>
+            </Space>
           </Form.Item>
-          <Form.Item name="isSpecialProduct" label={t('posAdmin.products.isSpecialProduct', '特殊商品')}>
-            <Select placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} allowClear>
-              <Select.Option value={true}>{t('posAdmin.products.yes', '是')}</Select.Option>
-              <Select.Option value={false}>{t('posAdmin.products.no', '否')}</Select.Option>
-            </Select>
+          <Form.Item label={t('posAdmin.products.isSpecialProduct', '特殊商品')}>
+            <Space size="middle">
+              <Form.Item name="updateIsSpecialProduct" valuePropName="checked" noStyle>
+                <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsSpecialProduct !== cur.updateIsSpecialProduct}>
+                {({ getFieldValue }) => (
+                  <Form.Item name="isSpecialProduct" valuePropName="checked" initialValue={false} noStyle>
+                    <Switch
+                      disabled={!getFieldValue('updateIsSpecialProduct')}
+                      checkedChildren={t('common.yes', '是')}
+                      unCheckedChildren={t('common.no', '否')}
+                    />
+                  </Form.Item>
+                )}
+              </Form.Item>
+            </Space>
           </Form.Item>
           <Form.Item name="isActive" label={t('posAdmin.products.productStatusLabel', '是否启用')}>
             <Select placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} allowClear>
@@ -3870,48 +3902,42 @@ export default function ProductManagementPage() {
             </Col>
             <Col span={12}>
               <Form.Item label={t('posAdmin.products.autoPricing', '自动定价')} style={{ marginBottom: 16 }}>
-                <Space.Compact style={{ width: '100%' }}>
+                <Space size="middle">
                   <Form.Item name="updateIsAutoPricing" valuePropName="checked" noStyle>
                     <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
                   </Form.Item>
                   <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsAutoPricing !== cur.updateIsAutoPricing}>
                     {({ getFieldValue }) => (
-                      <Form.Item name="isAutoPricing" noStyle>
-                        <Select
+                      <Form.Item name="isAutoPricing" valuePropName="checked" initialValue={false} noStyle>
+                        <Switch
                           disabled={!getFieldValue('updateIsAutoPricing')}
-                          placeholder={t('posAdmin.products.autoPricing', '自动定价')}
-                          options={[
-                            { value: true, label: t('common.yes', '是') },
-                            { value: false, label: t('common.no', '否') },
-                          ]}
+                          checkedChildren={t('common.yes', '是')}
+                          unCheckedChildren={t('common.no', '否')}
                         />
                       </Form.Item>
                     )}
                   </Form.Item>
-                </Space.Compact>
+                </Space>
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item label={t('posAdmin.products.specialProduct', '特殊商品')} style={{ marginBottom: 16 }}>
-                <Space.Compact style={{ width: '100%' }}>
+                <Space size="middle">
                   <Form.Item name="updateIsSpecialProduct" valuePropName="checked" noStyle>
                     <Checkbox>{t('posAdmin.products.toggleFieldUpdate', '修改该字段')}</Checkbox>
                   </Form.Item>
                   <Form.Item noStyle shouldUpdate={(prev, cur) => prev.updateIsSpecialProduct !== cur.updateIsSpecialProduct}>
                     {({ getFieldValue }) => (
-                      <Form.Item name="isSpecialProduct" noStyle>
-                        <Select
+                      <Form.Item name="isSpecialProduct" valuePropName="checked" initialValue={false} noStyle>
+                        <Switch
                           disabled={!getFieldValue('updateIsSpecialProduct')}
-                          placeholder={t('posAdmin.products.specialProduct', '特殊商品')}
-                          options={[
-                            { value: true, label: t('common.yes', '是') },
-                            { value: false, label: t('common.no', '否') },
-                          ]}
+                          checkedChildren={t('common.yes', '是')}
+                          unCheckedChildren={t('common.no', '否')}
                         />
                       </Form.Item>
                     )}
                   </Form.Item>
-                </Space.Compact>
+                </Space>
               </Form.Item>
             </Col>
             <Col span={12}>
