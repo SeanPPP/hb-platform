@@ -381,7 +381,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public string InstallmentOrderInfoText => _installmentRepaymentOrder is null
         ? string.Empty
-        : $"{_installmentRepaymentOrder.OrderNumber} | {_installmentRepaymentOrder.CustomerName} | {_installmentRepaymentOrder.CustomerPhone} | {T("payment.installment.outstanding")}: {_installmentRepaymentOrder.OutstandingAmount:C2}";
+        : string.Format(
+            _localization?.CurrentCulture ?? CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName),
+            "{0} | {1} | {2} | {3}: {4:C2}",
+            _installmentRepaymentOrder.OrderNumber,
+            _installmentRepaymentOrder.CustomerName,
+            _installmentRepaymentOrder.CustomerPhone,
+            T("payment.installment.outstanding"),
+            _installmentRepaymentOrder.OutstandingAmount);
 
     public bool IsConfirmPaymentVisible => CanConfirmPayment();
 

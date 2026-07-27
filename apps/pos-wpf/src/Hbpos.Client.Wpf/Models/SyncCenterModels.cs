@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.Globalization;
 
 namespace Hbpos.Client.Wpf.Models;
 
@@ -35,7 +36,7 @@ public sealed record SyncQueueListItem(
 
     public string LastTriedAtDisplay => LastTriedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "-";
 
-    public string AmountDisplay => Amount.HasValue ? Amount.Value.ToString("C2") : "-";
+    public string AmountDisplay => Amount is { } amount ? string.Create(CultureInfo.InvariantCulture, $"${amount:0.00}") : "-";
 }
 
 public sealed record OperationAuditQueueListItem(

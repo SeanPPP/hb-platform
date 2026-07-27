@@ -99,7 +99,7 @@ public sealed class CardRecoveryResultDialogViewModel
 
     public bool HasResponseText => !string.IsNullOrWhiteSpace(ResponseText);
 
-    public string AmountDisplay => Amount?.ToString("C2", CultureInfo.CurrentCulture) ?? "-";
+    public string AmountDisplay => Amount is { } amount ? string.Create(CultureInfo.InvariantCulture, $"${amount:0.00}") : "-";
 
     public string OrderGuidDisplay => OrderGuid?.ToString("D") ?? "-";
 

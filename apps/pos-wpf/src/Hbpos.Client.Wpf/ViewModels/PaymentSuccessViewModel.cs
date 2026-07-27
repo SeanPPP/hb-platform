@@ -106,9 +106,9 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
 
     public string NewTransactionLabel => "success.newTransaction";
 
-    public string TenderedAmountDisplay => TenderedAmount?.ToString("C2", CultureInfo.CurrentCulture) ?? "-";
+    public string TenderedAmountDisplay => TenderedAmount is { } amount ? FormatMoney(amount) : "-";
 
-    public string ChangeAmountDisplay => ChangeAmount?.ToString("C2", CultureInfo.CurrentCulture) ?? "-";
+    public string ChangeAmountDisplay => ChangeAmount is { } amount ? FormatMoney(amount) : "-";
 
     public string TransactionIdDisplay => TransactionId is null
         ? "-"
