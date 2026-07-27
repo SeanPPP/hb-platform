@@ -129,6 +129,7 @@
                              materialDesign:HintAssist.Hint="{loc:Loc returns.searchHint}"
                              InputMethod.IsInputMethodEnabled="False"
                              InputMethod.PreferredImeState="Off"
+                             IsReadOnly="{Binding IsBusy}"
                              Background="Transparent"
                              BorderThickness="0"
                              FontSize="18"
@@ -145,8 +146,30 @@
                             MinWidth="128"
                             Style="{StaticResource PosPrimaryButtonStyle}">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Magnify" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
-                            <TextBlock Text="{loc:Loc Search}" Foreground="White" />
+                            <materialDesign:PackIcon Width="18" Height="18" Foreground="White" Margin="0,0,8,0">
+                                <materialDesign:PackIcon.Style>
+                                    <Style TargetType="materialDesign:PackIcon">
+                                        <Setter Property="Kind" Value="Magnify" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                                <Setter Property="Kind" Value="ProgressClock" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </materialDesign:PackIcon.Style>
+                            </materialDesign:PackIcon>
+                            <TextBlock Foreground="White">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="{loc:Loc Search}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                                <Setter Property="Text" Value="{loc:Loc returns.searching}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </StackPanel>
                     </Button>
                 </Grid>

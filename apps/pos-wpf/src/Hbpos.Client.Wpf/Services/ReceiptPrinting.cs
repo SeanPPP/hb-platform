@@ -79,6 +79,8 @@ public sealed record ReceiptPreviewRow(
     ReceiptPrintAlignment Alignment = ReceiptPrintAlignment.Left,
     bool IsEmphasized = false)
 {
+    public string? QrCodeValue { get; init; }
+
     public bool IsSeparator => Kind == ReceiptPreviewRowKind.Separator;
 
     public bool IsBarcode => Kind == ReceiptPreviewRowKind.Barcode;
@@ -633,7 +635,13 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         public void QrCode(string text)
         {
             _elements.Add(new ReceiptPrintElement(ReceiptPrintElementKind.QrCode, text, ReceiptPrintAlignment.Center));
-            _previewRows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.QrCode, $"QR {text}", ReceiptPrintAlignment.Center));
+            _previewRows.Add(new ReceiptPreviewRow(
+                ReceiptPreviewRowKind.QrCode,
+                $"QR {text}",
+                ReceiptPrintAlignment.Center)
+            {
+                QrCodeValue = text
+            });
         }
 
         public ReceiptPrintDocument Build()

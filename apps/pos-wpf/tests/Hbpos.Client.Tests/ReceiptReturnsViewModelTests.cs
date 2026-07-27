@@ -29,6 +29,62 @@ public sealed class ReceiptReturnsViewModelTests
     }
 
     [Fact]
+    public async Task LookupCommand_shows_busy_state_and_ignores_scanner_until_completion()
+    {
+        var lookupStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupCompletion = new TaskCompletionSource<ReceiptReturnLookupResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (_, _) =>
+            {
+                lookupStarted.TrySetResult(true);
+                return lookupCompletion.Task;
+            }
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        var lookupTask = viewModel.LookupCommand.ExecuteAsync(null);
+        await lookupStarted.Task;
+
+        Assert.True(viewModel.IsBusy);
+        Assert.Equal("Searching for order...", viewModel.StatusMessage);
+        Assert.False(viewModel.LookupCommand.CanExecute(null));
+
+        Assert.True(viewModel.ProcessScannerBarcode("ORDER-002", "scanner-device", "raw"));
+        Assert.Equal("ORDER-001", viewModel.ScanText);
+        Assert.Equal(1, workflow.LookupCallCount);
+
+        lookupCompletion.SetResult(CreateLookupResult());
+        await lookupTask;
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Single(viewModel.OrderLines);
+    }
+
+    [Fact]
+    public async Task LookupCommand_maps_unexpected_failure_to_visible_status()
+    {
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (_, _) => Task.FromException<ReceiptReturnLookupResult>(
+                new InvalidOperationException("Unexpected failure."))
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        await viewModel.LookupCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal("Order lookup failed. Please retry.", viewModel.StatusMessage);
+        Assert.Empty(viewModel.OrderLines);
+    }
+
+    [Fact]
     public async Task BackCommand_resets_pending_return_state_before_leaving()
     {
         var workflow = new FakeReceiptReturnsWorkflowService
@@ -296,6 +352,8 @@ public sealed class ReceiptReturnsViewModelTests
 
         public ReceiptReturnLookupResult LookupResult { get; init; } = new(null, false, false, "");
 
+        public Func<string, CancellationToken, Task<ReceiptReturnLookupResult>>? LookupHandler { get; init; }
+
         public List<PendingReturnLine> AddedLines { get; } = [];
 
         public ReceiptReturnPendingLineResult OpenItemResult { get; init; } = new(null, "");
@@ -307,7 +365,8 @@ public sealed class ReceiptReturnsViewModelTests
         {
             LookupCallCount++;
             LastOrderQuery = orderQuery;
-            return Task.FromResult(LookupResult);
+            return LookupHandler?.Invoke(orderQuery, cancellationToken)
+                ?? Task.FromResult(LookupResult);
         }
 
         public ReceiptReturnProductLookupResult LookupNoReceiptProduct(

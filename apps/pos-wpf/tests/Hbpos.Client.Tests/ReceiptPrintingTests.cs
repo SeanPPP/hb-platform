@@ -178,6 +178,8 @@ public sealed class ReceiptPrintingTests
         Assert.Contains(document.PreviewRows, row => row.Text == "Store: Main Store (S001)");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == orderGuid.ToString());
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == orderGuid.ToString());
+        var qrPreview = Assert.Single(document.PreviewRows, row => row.IsQrCode);
+        Assert.Equal(orderGuid.ToString("D"), qrPreview.QrCodeValue);
     }
 
     [Fact]
@@ -316,6 +318,7 @@ public sealed class ReceiptPrintingTests
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC200");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC200");
         Assert.Contains(document.PreviewRows, row => row.Text == "Voucher: VC200");
+        Assert.Equal("VC200", Assert.Single(document.PreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
@@ -365,6 +368,7 @@ public sealed class ReceiptPrintingTests
         Assert.DoesNotContain("Payment:", document.PlainText, StringComparison.Ordinal);
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "RF123");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "RF123");
+        Assert.Equal("RF123", Assert.Single(document.PreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]

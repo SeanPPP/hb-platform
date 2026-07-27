@@ -161,39 +161,8 @@
                             <TextBlock Text="{loc:Loc success.receiptPreview}" FontSize="14" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
                         </StackPanel>
 
-                        <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding Text}"
-                                               Margin="0,0,0,3"
-                                               FontFamily="Consolas"
-                                               FontSize="11"
-                                               TextWrapping="Wrap">
-                                        <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="TextAlignment" Value="Left" />
-                                                <Setter Property="FontWeight" Value="Normal" />
-                                                <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsCentered}" Value="True">
-                                                        <Setter Property="TextAlignment" Value="Center" />
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding IsRightAligned}" Value="True">
-                                                        <Setter Property="TextAlignment" Value="Right" />
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding IsEmphasized}" Value="True">
-                                                        <Setter Property="FontWeight" Value="Black" />
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding IsMachineCode}" Value="True">
-                                                        <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}"
+                                      ItemTemplate="{StaticResource ReceiptPreviewRowTemplate}" />
                     </StackPanel>
                 </ScrollViewer>
             </Border>

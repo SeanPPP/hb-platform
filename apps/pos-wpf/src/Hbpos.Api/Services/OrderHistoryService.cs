@@ -42,6 +42,10 @@ public interface IOrderHistoryRepository
     Task<OrderHistoryDetailsDto?> GetDetailsAsync(
         Guid orderGuid,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<Guid, OrderHistoryDetailsDto>> GetDetailsByOrderGuidsAsync(
+        IReadOnlyCollection<Guid> orderGuids,
+        CancellationToken cancellationToken);
 }
 
 public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContext) : IOrderHistoryRepository
@@ -124,23 +128,96 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
         Guid orderGuid,
         CancellationToken cancellationToken)
     {
-        var orderGuidText = orderGuid.ToString("D");
-        var order = await dbContext.PosmDb.Queryable<SalesOrder>()
-            .FirstAsync(x => x.OrderGuid == orderGuidText, cancellationToken);
-        if (order is null)
+        var orders = await GetDetailsByOrderGuidsAsync([orderGuid], cancellationToken);
+        return orders.GetValueOrDefault(orderGuid);
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, OrderHistoryDetailsDto>> GetDetailsByOrderGuidsAsync(
+        IReadOnlyCollection<Guid> orderGuids,
+        CancellationToken cancellationToken)
+    {
+        var orderGuidTexts = orderGuids
+            .Where(orderGuid => orderGuid != Guid.Empty)
+            .Distinct()
+            .Select(orderGuid => orderGuid.ToString("D"))
+            .ToList();
+        if (orderGuidTexts.Count == 0)
         {
-            return null;
+            return new Dictionary<Guid, OrderHistoryDetailsDto>();
         }
 
+        var orders = await dbContext.PosmDb.Queryable<SalesOrder>()
+            .Where(order => order.OrderGuid != null && orderGuidTexts.Contains(order.OrderGuid))
+            .ToListAsync(cancellationToken);
+        if (orders.Count == 0)
+        {
+            return new Dictionary<Guid, OrderHistoryDetailsDto>();
+        }
+
+        var foundOrderGuidTexts = orders
+            .Select(order => order.OrderGuid)
+            .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+            .Select(orderGuid => orderGuid!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var lines = await dbContext.PosmDb.Queryable<SalesOrderDetail>()
-            .Where(x => x.OrderGuid == orderGuidText)
+            .Where(line => foundOrderGuidTexts.Contains(line.OrderGuid))
             .ToListAsync(cancellationToken);
         var payments = await dbContext.PosmDb.Queryable<PaymentDetail>()
-            .Where(x => x.OrderGuid == orderGuidText)
+            .Where(payment => payment.OrderGuid != null && foundOrderGuidTexts.Contains(payment.OrderGuid))
             .ToListAsync(cancellationToken);
         var bankTransactions = await dbContext.PosmDb.Queryable<BankTransaction>()
-            .Where(x => x.OrderGuid == orderGuidText)
+            .Where(transaction => transaction.OrderGuid != null && foundOrderGuidTexts.Contains(transaction.OrderGuid))
             .ToListAsync(cancellationToken);
+
+        var linesByOrder = lines
+            .Where(line => !string.IsNullOrWhiteSpace(line.OrderGuid))
+            .GroupBy(line => line.OrderGuid!)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var paymentsByOrder = payments
+            .Where(payment => !string.IsNullOrWhiteSpace(payment.OrderGuid))
+            .GroupBy(payment => payment.OrderGuid!)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var bankTransactionsByOrder = bankTransactions
+            .Where(transaction => !string.IsNullOrWhiteSpace(transaction.OrderGuid))
+            .GroupBy(transaction => transaction.OrderGuid!)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<Guid, OrderHistoryDetailsDto>();
+        foreach (var order in orders)
+        {
+            if (!Guid.TryParse(order.OrderGuid, out var orderGuid))
+            {
+                continue;
+            }
+
+            var orderGuidText = order.OrderGuid!;
+            result[orderGuid] = MapDetails(
+                orderGuid,
+                order,
+                linesByOrder.GetValueOrDefault(orderGuidText) ?? [],
+                paymentsByOrder.GetValueOrDefault(orderGuidText) ?? [],
+                bankTransactionsByOrder.GetValueOrDefault(orderGuidText) ?? []);
+        }
+
+        return result;
+    }
+
+    private static OrderHistoryDetailsDto MapDetails(
+        Guid orderGuid,
+        SalesOrder order,
+        IReadOnlyList<SalesOrderDetail> lines,
+        IReadOnlyList<PaymentDetail> payments,
+        IReadOnlyList<BankTransaction> bankTransactions)
+    {
         var bankTransactionsByPayment = bankTransactions
             .Where(transaction => !string.IsNullOrWhiteSpace(transaction.PaymentGuid))
             .GroupBy(transaction => transaction.PaymentGuid!)

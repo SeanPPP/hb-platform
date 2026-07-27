@@ -766,6 +766,116 @@ public sealed class OrderReturnServiceTests
         Assert.Equal(0m, cardCapacity.RemainingAmount);
     }
 
+    [Fact]
+    public async Task GetReturnContextAsync_UsesConstantBatchCallsForManyHistoricalReturns()
+    {
+        var orderGuid = Guid.NewGuid();
+        var lineGuid = Guid.NewGuid();
+        var originalOrder = CreateOrder(orderGuid, lineGuid, quantity: 50m);
+        var returnOrders = new List<OrderHistoryDetailsDto>();
+        var returnRecords = new List<SalesReturnRecord>();
+        var createdAt = DateTime.UtcNow.AddDays(-1);
+        for (var index = 0; index < 50; index++)
+        {
+            var returnOrderGuid = Guid.NewGuid();
+            returnOrders.Add(CreateOrder(
+                returnOrderGuid,
+                Guid.NewGuid(),
+                quantity: 1m,
+                actualAmount: -0.1m,
+                payments:
+                [
+                    new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Cash, -0.1m, null)
+                ]));
+            returnRecords.Add(new SalesReturnRecord
+            {
+                ReturnDetailGuid = Guid.NewGuid().ToString("D"),
+                ReturnOrderGuid = returnOrderGuid.ToString("D"),
+                OriginalOrderGuid = orderGuid.ToString("D"),
+                OriginalOrderDetailGuid = lineGuid.ToString("D"),
+                ProductCode = "SKU-01",
+                ReturnQuantity = 1m,
+                ReturnAmount = 0.1m,
+                CreatedTime = createdAt.AddMinutes(index)
+            });
+        }
+
+        var orderRepository = new FakeOrderHistoryRepository([originalOrder, .. returnOrders]);
+        var returnRepository = new FakeReturnRepository { ExistingRecords = returnRecords };
+        var service = new OrderReturnService(orderRepository, returnRepository);
+
+        var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
+
+        Assert.NotNull(context);
+        Assert.Equal(1, orderRepository.GetDetailsCallCount);
+        Assert.Equal(1, orderRepository.GetDetailsByOrderGuidsCallCount);
+        Assert.Equal(1, returnRepository.GetByReturnOrderGuidsCallCount);
+        Assert.Equal(0, returnRepository.GetByReturnOrderGuidCallCount);
+        var cashCapacity = Assert.Single(context.PaymentCapacities!, capacity => capacity.Method == PaymentMethodKind.Cash);
+        Assert.Equal(5m, cashCapacity.RefundedAmount);
+    }
+
+    [Fact]
+    public async Task GetReturnContextAsync_SkipsBatchQueriesWhenThereAreNoHistoricalReturns()
+    {
+        var orderGuid = Guid.NewGuid();
+        var orderRepository = new FakeOrderHistoryRepository(
+            CreateOrder(orderGuid, Guid.NewGuid(), quantity: 1m));
+        var returnRepository = new FakeReturnRepository();
+        var service = new OrderReturnService(orderRepository, returnRepository);
+
+        var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
+
+        Assert.NotNull(context);
+        Assert.Equal(1, orderRepository.GetDetailsCallCount);
+        Assert.Equal(0, orderRepository.GetDetailsByOrderGuidsCallCount);
+        Assert.Equal(0, returnRepository.GetByReturnOrderGuidsCallCount);
+    }
+
+    [Fact]
+    public async Task GetReturnContextAsync_ObservesCancellationAfterBatchPreload()
+    {
+        var orderGuid = Guid.NewGuid();
+        var lineGuid = Guid.NewGuid();
+        var returnOrderGuid = Guid.NewGuid();
+        using var cancellationSource = new CancellationTokenSource();
+        var orderRepository = new FakeOrderHistoryRepository(
+        [
+            CreateOrder(orderGuid, lineGuid, quantity: 1m),
+            CreateOrder(
+                returnOrderGuid,
+                Guid.NewGuid(),
+                quantity: 1m,
+                actualAmount: -4.5m,
+                payments:
+                [
+                    new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Cash, -4.5m, null)
+                ])
+        ]);
+        var returnRepository = new FakeReturnRepository
+        {
+            ExistingRecords =
+            [
+                new SalesReturnRecord
+                {
+                    ReturnDetailGuid = Guid.NewGuid().ToString("D"),
+                    ReturnOrderGuid = returnOrderGuid.ToString("D"),
+                    OriginalOrderGuid = orderGuid.ToString("D"),
+                    OriginalOrderDetailGuid = lineGuid.ToString("D"),
+                    ProductCode = "SKU-01",
+                    ReturnQuantity = 1m,
+                    ReturnAmount = 4.5m,
+                    CreatedTime = DateTime.UtcNow
+                }
+            ],
+            AfterGetByReturnOrderGuids = cancellationSource.Cancel
+        };
+        var service = new OrderReturnService(orderRepository, returnRepository);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.GetReturnContextAsync(orderGuid, cancellationSource.Token));
+    }
+
     private static OrderHistoryDetailsDto CreateOrder(
         Guid orderGuid,
         Guid lineGuid,
@@ -850,6 +960,10 @@ public sealed class OrderReturnServiceTests
     {
         private readonly Dictionary<Guid, OrderHistoryDetailsDto> orders = new();
 
+        public int GetDetailsCallCount { get; private set; }
+
+        public int GetDetailsByOrderGuidsCallCount { get; private set; }
+
         public FakeOrderHistoryRepository(OrderHistoryDetailsDto order)
         {
             orders[order.OrderGuid] = order;
@@ -878,8 +992,21 @@ public sealed class OrderReturnServiceTests
 
         public Task<OrderHistoryDetailsDto?> GetDetailsAsync(Guid orderGuid, CancellationToken cancellationToken)
         {
+            GetDetailsCallCount++;
             orders.TryGetValue(orderGuid, out var order);
             return Task.FromResult(order);
+        }
+
+        public Task<IReadOnlyDictionary<Guid, OrderHistoryDetailsDto>> GetDetailsByOrderGuidsAsync(
+            IReadOnlyCollection<Guid> orderGuids,
+            CancellationToken cancellationToken)
+        {
+            GetDetailsByOrderGuidsCallCount++;
+            IReadOnlyDictionary<Guid, OrderHistoryDetailsDto> result = orderGuids
+                .Distinct()
+                .Where(orders.ContainsKey)
+                .ToDictionary(orderGuid => orderGuid, orderGuid => orders[orderGuid]);
+            return Task.FromResult(result);
         }
     }
 
@@ -896,7 +1023,13 @@ public sealed class OrderReturnServiceTests
 
         public bool ReverseReturnOrderLookups { get; init; }
 
+        public Action? AfterGetByReturnOrderGuids { get; init; }
+
         public int InsertValidatedCallCount { get; private set; }
+
+        public int GetByReturnOrderGuidCallCount { get; private set; }
+
+        public int GetByReturnOrderGuidsCallCount { get; private set; }
 
         public Task<IReadOnlyList<SalesReturnRecord>> GetByOriginalOrderGuidAsync(
             Guid originalOrderGuid,
@@ -912,6 +1045,7 @@ public sealed class OrderReturnServiceTests
             Guid returnOrderGuid,
             CancellationToken cancellationToken)
         {
+            GetByReturnOrderGuidCallCount++;
             var records = SnapshotRecords()
                 .Where(record => record.ReturnOrderGuid == returnOrderGuid.ToString("D"))
                 .ToList()
@@ -921,6 +1055,26 @@ public sealed class OrderReturnServiceTests
                 records = records.Reverse().ToList();
             }
 
+            return Task.FromResult(records);
+        }
+
+        public Task<IReadOnlyList<SalesReturnRecord>> GetByReturnOrderGuidsAsync(
+            IReadOnlyCollection<Guid> returnOrderGuids,
+            CancellationToken cancellationToken)
+        {
+            GetByReturnOrderGuidsCallCount++;
+            var returnOrderGuidTexts = returnOrderGuids
+                .Select(returnOrderGuid => returnOrderGuid.ToString("D"))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            IReadOnlyList<SalesReturnRecord> records = SnapshotRecords()
+                .Where(record => record.ReturnOrderGuid is not null && returnOrderGuidTexts.Contains(record.ReturnOrderGuid))
+                .ToList();
+            if (ReverseReturnOrderLookups)
+            {
+                records = records.Reverse().ToList();
+            }
+
+            AfterGetByReturnOrderGuids?.Invoke();
             return Task.FromResult(records);
         }
 
