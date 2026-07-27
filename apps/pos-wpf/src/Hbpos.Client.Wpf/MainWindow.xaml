@@ -530,6 +530,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Text="{Binding CurrentTime}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" />
@@ -1808,6 +1809,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Border Width="36"
                         Height="36"
@@ -1843,6 +1845,14 @@
                         <materialDesign:PackIcon Kind="Update" Width="16" Height="16" Margin="0,0,6,0" />
                         <TextBlock Text="{loc:Loc appUpdate.force.action}" FontWeight="Bold" />
                     </StackPanel>
+                </Button>
+                <Button Grid.Column="3"
+                        Command="{Binding AppUpdate.DismissForceUpdateForDebugCommand}"
+                        Style="{StaticResource TitleBarButtonStyle}"
+                        ToolTip="{loc:Loc appUpdate.force.dismissDebug}"
+                        Margin="10,0,0,0"
+                        Visibility="{Binding AppUpdate.CanDismissForceUpdateForDebug, Converter={StaticResource BoolToVis}}">
+                    <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
                 </Button>
             </Grid>
         </Border>
@@ -1961,7 +1971,7 @@
             </Border>
         </Grid>
 
-        <!-- 强制更新全局遮罩：打开后覆盖整个 MainWindow，只保留继续更新按钮。 -->
+        <!-- 强制更新全局遮罩：Release 只允许继续更新；Debug 提供显式跳过入口。 -->
         <Border Grid.RowSpan="3"
                 Panel.ZIndex="100"
                 Background="#99000000"
@@ -2043,6 +2053,17 @@
                                          Background="#FFE8F0FE"
                                          BorderThickness="0" />
                         </StackPanel>
+                        <Button Command="{Binding AppUpdate.DismissForceUpdateForDebugCommand}"
+                                MinWidth="148"
+                                Height="44"
+                                Margin="0,0,10,0"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                Visibility="{Binding AppUpdate.CanDismissForceUpdateForDebug, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="CloseCircleOutline" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc appUpdate.force.dismissDebug}" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
                         <Button Command="{Binding AppUpdate.RetryForceUpdateCommand}"
                                 services:ButtonFeedback.Cue="Download"
                                 MinWidth="104"

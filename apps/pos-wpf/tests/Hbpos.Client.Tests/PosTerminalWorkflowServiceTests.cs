@@ -532,6 +532,108 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.True(dispatchIndex > cartAddIndex);
     }
 
+    [Fact]
+    public async Task Add_selected_item_waits_for_ui_idle_again_before_remote_apply()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var logs = new ConcurrentQueue<string>();
+        var localItem = CreateItem("SKU-291", "Workflow Idle Local", "930291", PriceSourceKind.StoreRetailPrice, 2.5m);
+        var remoteItem = localItem with { DisplayName = "Workflow Idle Remote", RetailPrice = 3.5m };
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var catalogReloaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var uiPriority = new TwoStageUiPriorityCoordinator();
+        index.ReplaceAll([localItem]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task,
+            uiPriorityCoordinator: uiPriority);
+        service.CatalogReloaded += (_, _) => catalogReloaded.TrySetResult();
+
+        using var logCapture = CaptureClientLog(logs);
+
+        service.AddSelectedItem(Session, localItem, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930291", Found: true, Item: remoteItem, DeletedCount: 0));
+        await uiPriority.SecondWaitEntered.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal("Workflow Idle Local", Assert.Single(cart.Lines).DisplayName);
+        Assert.False(catalogReloaded.Task.IsCompleted);
+
+        uiPriority.ReleaseSecondWait();
+        await catalogReloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup apply completed"));
+
+        Assert.Equal("Workflow Idle Remote", Assert.Single(cart.Lines).DisplayName);
+        Assert.Equal(2, uiPriority.WaitCount);
+        Assert.True(HasLog(logs, "indexUpdateElapsedMs="));
+        Assert.True(HasLog(logs, "uiApplyElapsedMs="));
+    }
+
+    [Fact]
+    public async Task Add_selected_item_remote_apply_runs_on_originating_synchronization_context()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var localItem = CreateItem("SKU-292", "Workflow Context Local", "930292", PriceSourceKind.StoreRetailPrice, 2.5m);
+        var remoteItem = localItem with { DisplayName = "Workflow Context Remote", RetailPrice = 3.5m };
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<(int Caller, int CartChanged, int CatalogReloaded)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        index.ReplaceAll([localItem]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
+        var thread = new Thread(() =>
+        {
+            var context = new SingleThreadSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(context);
+            var callerThreadId = Environment.CurrentManagedThreadId;
+            var cartChangedThreadId = -1;
+            try
+            {
+                cart.CartChanged += (_, _) =>
+                {
+                    if (cart.Lines.SingleOrDefault()?.DisplayName == "Workflow Context Remote")
+                    {
+                        cartChangedThreadId = Environment.CurrentManagedThreadId;
+                    }
+                };
+                service.CatalogReloaded += (_, _) =>
+                {
+                    completion.TrySetResult((
+                        callerThreadId,
+                        cartChangedThreadId,
+                        Environment.CurrentManagedThreadId));
+                    context.Complete();
+                };
+
+                service.AddSelectedItem(Session, localItem, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+                _ = Task.Run(() => remoteLookup.TrySetResult(
+                    new RemoteLookupRefreshResult("S001", "930292", Found: true, Item: remoteItem, DeletedCount: 0)));
+                context.RunOnCurrentThread();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(null);
+            }
+        })
+        {
+            IsBackground = true
+        };
+
+        thread.Start();
+        var threadIds = await completion.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(threadIds.Caller, threadIds.CartChanged);
+        Assert.Equal(threadIds.Caller, threadIds.CatalogReloaded);
+    }
+
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
     private static SellableItemDto CreateItem(
@@ -605,6 +707,69 @@ public sealed class PosTerminalWorkflowServiceTests
         public void Dispose()
         {
             dispose();
+        }
+    }
+
+    private sealed class TwoStageUiPriorityCoordinator : IUiPriorityCoordinator
+    {
+        private readonly TaskCompletionSource _secondWaitEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondWaitReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _waitCount;
+
+        public bool IsUiActive => !_secondWaitReleased.Task.IsCompleted;
+
+        public int WaitCount => Volatile.Read(ref _waitCount);
+
+        public Task SecondWaitEntered => _secondWaitEntered.Task;
+
+        public void NotifyUserInput()
+        {
+        }
+
+        public IDisposable BeginUiOperation(string name)
+        {
+            return new DisposableAction(() => { });
+        }
+
+        public Task WaitForUiIdleAsync(CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _waitCount) == 1)
+            {
+                return Task.CompletedTask;
+            }
+
+            _secondWaitEntered.TrySetResult();
+            return cancellationToken.CanBeCanceled
+                ? _secondWaitReleased.Task.WaitAsync(cancellationToken)
+                : _secondWaitReleased.Task;
+        }
+
+        public void ReleaseSecondWait()
+        {
+            _secondWaitReleased.TrySetResult();
+        }
+    }
+
+    private sealed class SingleThreadSynchronizationContext : SynchronizationContext
+    {
+        private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> _queue = [];
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            _queue.Add((d, state));
+        }
+
+        public void RunOnCurrentThread()
+        {
+            foreach (var (callback, state) in _queue.GetConsumingEnumerable())
+            {
+                callback(state);
+            }
+        }
+
+        public void Complete()
+        {
+            _queue.CompleteAdding();
         }
     }
 

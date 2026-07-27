@@ -265,6 +265,60 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
+    public async Task Force_update_can_only_be_dismissed_in_debug_builds()
+    {
+        var state = new AppUpdateState();
+        var coordinator = CreateCoordinator(
+            CreateRelease(force: true),
+            new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe")),
+            new CapturingInstallerLauncher(),
+            new CapturingPromptService(),
+            state);
+
+        await coordinator.CheckForUpdatesAsync(manual: false);
+
+#if DEBUG
+        var startupResumed = false;
+        state.ConfigureDebugForceUpdateDismissed(() =>
+        {
+            startupResumed = true;
+            return Task.CompletedTask;
+        });
+        Assert.True(state.CanDismissForceUpdateForDebug);
+        Assert.True(state.DismissForceUpdateForDebugCommand.CanExecute(null));
+
+        await state.DismissForceUpdateForDebugCommand.ExecuteAsync(null);
+
+        Assert.False(state.IsForceUpdateBlocking);
+        Assert.False(state.IsInstallerReady);
+        Assert.Null(state.TargetVersion);
+        Assert.Equal(string.Empty, state.StatusKey);
+        Assert.True(startupResumed);
+
+        var pendingState = new AppUpdateState();
+        var pendingCoordinator = CreateCoordinator(
+            CreateRelease(force: true),
+            new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe")),
+            new CapturingInstallerLauncher(),
+            new CapturingPromptService(),
+            pendingState,
+            guard: new ToggleInstallSafetyGuard(canInstall: false));
+        await pendingCoordinator.CheckForUpdatesAsync(manual: false);
+
+        Assert.True(pendingState.IsForceUpdatePendingInstall);
+        Assert.True(pendingState.DismissForceUpdateForDebugCommand.CanExecute(null));
+
+        await pendingState.DismissForceUpdateForDebugCommand.ExecuteAsync(null);
+
+        Assert.False(pendingState.IsForceUpdateRequired);
+        Assert.False(pendingState.IsForceUpdatePendingInstall);
+#else
+        Assert.False(state.CanDismissForceUpdateForDebug);
+        Assert.False(state.DismissForceUpdateForDebugCommand.CanExecute(null));
+#endif
+    }
+
+    [Fact]
     public async Task CheckForUpdatesAsync_force_update_with_active_transaction_stays_nonblocking_until_safe()
     {
         var release = CreateRelease(force: true);

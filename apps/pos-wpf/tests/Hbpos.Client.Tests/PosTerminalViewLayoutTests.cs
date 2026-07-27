@@ -172,6 +172,34 @@ public sealed class PosTerminalViewLayoutTests
                 element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == key));
     }
 
+    [Fact]
+    public void Cart_scrollbar_reserves_width_without_showing_inactive_chrome()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var cartGrid = Assert.Single(view.Descendants(presentation + "DataGrid").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "CartItemsGrid"));
+        Assert.Equal("Visible", (string?)cartGrid.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+
+        var scrollBarStyle = FindStyle(view, x, "CartTouchScrollBarStyle");
+        AssertSetter(scrollBarStyle, "Width", "22");
+        AssertSetter(scrollBarStyle, "MinWidth", "22");
+        var inactiveTrigger = Assert.Single(scrollBarStyle.Descendants(presentation + "Trigger").Where(trigger =>
+            (string?)trigger.Attribute("Property") == "Maximum" && (string?)trigger.Attribute("Value") == "0"));
+        AssertTriggerSetter(inactiveTrigger, "Opacity", "0");
+    }
+
     [Theory]
     [InlineData(1080, 720)]
     [InlineData(1366, 768)]

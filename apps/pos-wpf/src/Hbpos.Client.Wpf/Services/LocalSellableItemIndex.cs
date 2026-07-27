@@ -44,15 +44,9 @@ public sealed class LocalSellableItemIndex
 
         lock (_gate)
         {
-            var items = _items
-                .Where(existing =>
-                    Normalize(existing.StoreCode) != normalizedStoreCode ||
-                    Normalize(existing.LookupCode) != normalizedLookupCode)
-                .Append(item)
-                .OrderBy(existing => existing.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-            var (exactLookupIndex, metadataLookupIndex) = BuildIndexes(items);
-            ReplaceLocked(items, exactLookupIndex, metadataLookupIndex);
+            // 单商品回写只维护受影响的索引项，避免持锁重建全量目录阻塞扫码。
+            RemoveLookupLocked(new ExactLookupKey(normalizedStoreCode, normalizedLookupCode));
+            InsertItemLocked(item);
         }
     }
 
@@ -67,20 +61,7 @@ public sealed class LocalSellableItemIndex
 
         lock (_gate)
         {
-            var items = _items
-                .Where(existing =>
-                    Normalize(existing.StoreCode) != normalizedStoreCode ||
-                    Normalize(existing.LookupCode) != normalizedLookupCode)
-                .OrderBy(existing => existing.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-            if (items.Count == _items.Count)
-            {
-                return false;
-            }
-
-            var (exactLookupIndex, metadataLookupIndex) = BuildIndexes(items);
-            ReplaceLocked(items, exactLookupIndex, metadataLookupIndex);
-            return true;
+            return RemoveLookupLocked(new ExactLookupKey(normalizedStoreCode, normalizedLookupCode));
         }
     }
 
@@ -121,6 +102,67 @@ public sealed class LocalSellableItemIndex
         {
             _metadataLookupIndex[pair.Key] = pair.Value;
         }
+    }
+
+    private bool RemoveLookupLocked(ExactLookupKey key)
+    {
+        if (!_exactLookupIndex.TryGetValue(key, out var existingItems))
+        {
+            return false;
+        }
+
+        while (existingItems.Count > 0)
+        {
+            RemoveItemLocked(existingItems[0]);
+        }
+
+        return true;
+    }
+
+    private void RemoveItemLocked(SellableItemDto item)
+    {
+        for (var index = 0; index < _items.Count; index++)
+        {
+            if (ReferenceEquals(_items[index], item))
+            {
+                _items.RemoveAt(index);
+                break;
+            }
+        }
+
+        RemoveLookup(_exactLookupIndex, item, item.LookupCode);
+        RemoveLookup(_metadataLookupIndex, item, item.Barcode);
+        RemoveLookup(_metadataLookupIndex, item, item.ItemNumber);
+        RemoveLookup(_metadataLookupIndex, item, item.ProductCode);
+    }
+
+    private void InsertItemLocked(SellableItemDto item)
+    {
+        _items.Insert(FindInsertionIndex(_items, item), item);
+        AddLookup(_exactLookupIndex, item, item.LookupCode, keepSorted: true);
+        AddLookup(_metadataLookupIndex, item, item.Barcode, keepSorted: true);
+        AddLookup(_metadataLookupIndex, item, item.ItemNumber, keepSorted: true);
+        AddLookup(_metadataLookupIndex, item, item.ProductCode, keepSorted: true);
+    }
+
+    private static int FindInsertionIndex(List<SellableItemDto> items, SellableItemDto item)
+    {
+        var low = 0;
+        var high = items.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (StringComparer.CurrentCultureIgnoreCase.Compare(items[middle].DisplayName, item.DisplayName) <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
     }
 
     public IReadOnlyList<SellableItemDto> Search(string query, int take = 20)
@@ -191,7 +233,8 @@ public sealed class LocalSellableItemIndex
     private static void AddLookup(
         Dictionary<ExactLookupKey, List<SellableItemDto>> index,
         SellableItemDto item,
-        string? lookupCode)
+        string? lookupCode,
+        bool keepSorted = false)
     {
         var normalizedLookupCode = Normalize(lookupCode);
         if (normalizedLookupCode.Length == 0)
@@ -208,7 +251,38 @@ public sealed class LocalSellableItemIndex
 
         if (!matches.Contains(item))
         {
-            matches.Add(item);
+            if (keepSorted)
+            {
+                matches.Insert(FindInsertionIndex(matches, item), item);
+            }
+            else
+            {
+                matches.Add(item);
+            }
+        }
+    }
+
+    private static void RemoveLookup(
+        Dictionary<ExactLookupKey, List<SellableItemDto>> index,
+        SellableItemDto item,
+        string? lookupCode)
+    {
+        var normalizedLookupCode = Normalize(lookupCode);
+        if (normalizedLookupCode.Length == 0)
+        {
+            return;
+        }
+
+        var key = new ExactLookupKey(Normalize(item.StoreCode), normalizedLookupCode);
+        if (!index.TryGetValue(key, out var matches))
+        {
+            return;
+        }
+
+        matches.Remove(item);
+        if (matches.Count == 0)
+        {
+            index.Remove(key);
         }
     }
 

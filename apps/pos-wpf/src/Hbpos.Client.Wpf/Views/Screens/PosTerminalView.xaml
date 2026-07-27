@@ -209,6 +209,12 @@
             <Setter Property="Background" Value="#FFF3F5F8" />
             <Setter Property="BorderBrush" Value="#FFC3C6D6" />
             <Setter Property="BorderThickness" Value="1" />
+            <Style.Triggers>
+                <!-- 无需滚动时隐藏轨道，但保留 22px 布局占位，避免购物车列宽跳动。 -->
+                <Trigger Property="Maximum" Value="0">
+                    <Setter Property="Opacity" Value="0" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="PosStatusCardStyle" TargetType="Border">
@@ -608,6 +614,7 @@
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           VirtualizingPanel.ScrollUnit="Pixel"
                           ScrollViewer.CanContentScroll="True"
+                          ScrollViewer.VerticalScrollBarVisibility="Visible"
                           ScrollViewer.PanningMode="VerticalOnly"
                           ScrollViewer.PanningDeceleration="0.0008"
                           ScrollViewer.PanningRatio="1.0"

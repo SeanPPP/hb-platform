@@ -49,6 +49,9 @@ public partial class MainWindow : Window
         _displayTopologyService = displayTopologyService;
         _uiPriorityCoordinator = uiPriorityCoordinator;
         _appUpdateCoordinator = appUpdateCoordinator;
+#if DEBUG
+        _viewModel.AppUpdate.ConfigureDebugForceUpdateDismissed(ResumeStartupAfterDebugUpdateDismissalAsync);
+#endif
         DataContext = _viewModel;
         InitializeComponent();
         SourceInitialized += MainWindowSourceInitialized;
@@ -228,12 +231,33 @@ public partial class MainWindow : Window
             return;
         }
 
+        await CompleteStartupInitializationAsync();
+    }
+
+    private async Task CompleteStartupInitializationAsync()
+    {
         var hwnd = new WindowInteropHelper(this).EnsureHandle();
         await _rawScannerService.InitializeAsync();
         _rawScannerService.Start(hwnd);
         await _viewModel.InitializeAsync(_startupOptions);
         StartupCompleted?.Invoke(this, EventArgs.Empty);
     }
+
+#if DEBUG
+    private async Task ResumeStartupAfterDebugUpdateDismissalAsync()
+    {
+        if (!IsStartupBlockedByAppUpdate)
+        {
+            return;
+        }
+
+        IsStartupBlockedByAppUpdate = false;
+        await CompleteStartupInitializationAsync();
+        ActivateForScannerInput();
+        await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
+        ContinueStartupAfterShown();
+    }
+#endif
 
     public void ContinueStartupAfterShown()
     {
