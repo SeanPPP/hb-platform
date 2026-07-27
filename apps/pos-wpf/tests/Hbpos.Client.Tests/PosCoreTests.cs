@@ -704,6 +704,7 @@ public sealed class PosCoreTests
 
         Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("===== TAX INVOICE =====", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, row => row.IsBarcode && row.Text.Contains(order.OrderGuid.ToString(), StringComparison.Ordinal));
+        Assert.Equal(order.OrderGuid.ToString("D"), Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
         Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("GST", StringComparison.Ordinal));
     }
 

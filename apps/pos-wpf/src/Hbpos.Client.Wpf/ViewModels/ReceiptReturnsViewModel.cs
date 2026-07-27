@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Security;
@@ -183,6 +184,14 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             return true;
         }
 
+        if (IsBusy)
+        {
+            ConsoleLog.Write(
+                "ReceiptReturns",
+                $"scanner ignored reason=lookup-busy queryLength={normalizedBarcode.Length}");
+            return true;
+        }
+
         ScanText = normalizedBarcode;
         _ = LookupAsync();
         return true;
@@ -248,18 +257,28 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             return;
         }
 
+        var querySnapshot = ScanText;
+        var stopwatch = Stopwatch.StartNew();
         IsBusy = true;
         try
         {
             if (IsNoReceiptMode)
             {
-                var querySnapshot = ScanText;
                 await AddNoReceiptProductAsync(querySnapshot);
                 return;
             }
 
-            var result = await _workflowService.LookupOrderAsync(Session, ScanText);
+            StatusMessage = T("returns.status.searching", "Searching for order...");
+            var result = await _workflowService.LookupOrderAsync(Session, querySnapshot);
             ApplyOrderLookupResult(result);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = T("returns.status.lookupUnexpectedError", "Order lookup failed. Please retry.");
+            ConsoleLog.Write(
+                "ReceiptReturns",
+                $"lookup failed queryType={GetQueryType(querySnapshot)} queryLength={querySnapshot.Length} " +
+                $"error={ex.GetType().Name} elapsedMs={stopwatch.ElapsedMilliseconds}");
         }
         finally
         {
@@ -729,6 +748,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             _localization?.CurrentCulture ?? CultureInfo.CurrentCulture,
             _localization?.T(key) ?? fallback,
             args);
+    }
+
+    private static string GetQueryType(string query)
+    {
+        return Guid.TryParse(query, out _) ? "guid" : "keyword";
     }
 
     private static bool TryParsePositiveAmount(string value, out decimal amount)

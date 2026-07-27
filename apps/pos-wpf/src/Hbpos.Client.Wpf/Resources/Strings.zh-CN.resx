@@ -1339,6 +1339,9 @@
   <data name="returns.searchHint" xml:space="preserve">
     <value>扫描或输入订单号；开启无小票退货后扫描商品</value>
   </data>
+  <data name="returns.searching" xml:space="preserve">
+    <value>正在查询...</value>
+  </data>
   <data name="returns.originalReceipt" xml:space="preserve">
     <value>原订单商品</value>
   </data>
@@ -1732,11 +1735,20 @@
   <data name="returns.status.lookupPrompt" xml:space="preserve">
     <value>请扫描订单号开始小票退货。</value>
   </data>
+  <data name="returns.status.searching" xml:space="preserve">
+    <value>正在查询订单...</value>
+  </data>
   <data name="returns.status.loadedOnline" xml:space="preserve">
     <value>已从线上订单历史加载订单和退货记录。</value>
   </data>
   <data name="returns.status.lookupFailed" xml:space="preserve">
     <value>订单查询失败：{0}</value>
+  </data>
+  <data name="returns.status.lookupTimedOut" xml:space="preserve">
+    <value>在线订单查询超时，请重试。</value>
+  </data>
+  <data name="returns.status.lookupUnexpectedError" xml:space="preserve">
+    <value>订单查询失败，请重试。</value>
   </data>
   <data name="returns.status.loadedLocalStaleWithError" xml:space="preserve">
     <value>已加载本地订单；线上查询失败。{0}</value>

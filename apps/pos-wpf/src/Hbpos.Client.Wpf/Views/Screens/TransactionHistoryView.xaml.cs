@@ -73,5 +73,7 @@ public partial class TransactionHistoryView : UserControl
         InstallmentOutstandingColumn.Visibility = installmentVisibility;
         InstallmentPaidColumn.Visibility = installmentVisibility;
         ReuploadSelectionColumn.Visibility = localOrdersVisible ? Visibility.Visible : Visibility.Collapsed;
+        RecallActionColumn.Visibility = localOrdersVisible ? Visibility.Visible : Visibility.Collapsed;
+        ContinuePaymentActionColumn.Visibility = installmentVisibility;
     }
 }

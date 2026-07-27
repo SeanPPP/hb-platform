@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics;
 using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Orders;
@@ -19,21 +20,45 @@ public interface IOrderReturnService
 
 public sealed class OrderReturnService(
     IOrderHistoryRepository orderHistoryRepository,
-    IOrderReturnRepository returnRepository) : IOrderReturnService
+    IOrderReturnRepository returnRepository,
+    ILogger<OrderReturnService>? logger = null) : IOrderReturnService
 {
     public async Task<OrderReturnContextDto?> GetReturnContextAsync(
         Guid orderGuid,
         CancellationToken cancellationToken)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var detailsStopwatch = Stopwatch.StartNew();
         var order = await orderHistoryRepository.GetDetailsAsync(orderGuid, cancellationToken);
+        var detailsElapsedMs = detailsStopwatch.ElapsedMilliseconds;
         if (order is null)
         {
+            logger?.LogInformation(
+                "Order return context completed orderGuid={OrderGuid} found=false detailsMs={DetailsMs} elapsedMs={ElapsedMs}",
+                orderGuid,
+                detailsElapsedMs,
+                totalStopwatch.ElapsedMilliseconds);
             return null;
         }
 
+        var recordsStopwatch = Stopwatch.StartNew();
         var records = SortReturnRecords(await returnRepository.GetByOriginalOrderGuidAsync(orderGuid, cancellationToken));
+        var recordsElapsedMs = recordsStopwatch.ElapsedMilliseconds;
         var lineCapacities = BuildLineCapacities(order, records);
+        var paymentsStopwatch = Stopwatch.StartNew();
         var paymentCapacities = await BuildPaymentCapacitiesAsync(order, records, cancellationToken);
+        var paymentsElapsedMs = paymentsStopwatch.ElapsedMilliseconds;
+        logger?.LogInformation(
+            "Order return context completed orderGuid={OrderGuid} found=true lines={LineCount} returnRecords={ReturnRecordCount} " +
+            "paymentCapacities={PaymentCapacityCount} detailsMs={DetailsMs} recordsMs={RecordsMs} paymentsMs={PaymentsMs} elapsedMs={ElapsedMs}",
+            orderGuid,
+            order.Lines.Count,
+            records.Count,
+            paymentCapacities.Count,
+            detailsElapsedMs,
+            recordsElapsedMs,
+            paymentsElapsedMs,
+            totalStopwatch.ElapsedMilliseconds);
         return new OrderReturnContextDto(
             order,
             records.Select(MapRecord).ToList(),
@@ -117,19 +142,62 @@ public sealed class OrderReturnService(
             .OfType<Guid>()
             .Distinct()
             .ToList();
+        if (returnOrderGuids.Count == 0)
+        {
+            return capacities.Values
+                .Select(capacity => capacity.ToDto())
+                .ToList();
+        }
+
+        var returnOrdersByGuid = await orderHistoryRepository.GetDetailsByOrderGuidsAsync(
+            returnOrderGuids,
+            cancellationToken);
+        var returnRecords = await returnRepository.GetByReturnOrderGuidsAsync(
+            returnOrderGuids,
+            cancellationToken);
+        var returnRecordsByOrderGuid = returnRecords
+            .Select(record => new
+            {
+                Record = record,
+                ReturnOrderGuid = TryParseGuid(record.ReturnOrderGuid)
+            })
+            .Where(item => item.ReturnOrderGuid is not null)
+            .GroupBy(item => item.ReturnOrderGuid!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<SalesReturnRecord>)SortReturnRecords(group.Select(item => item.Record).ToList()));
+        var relatedOriginalOrderGuids = returnRecords
+            .Select(record => TryParseGuid(record.OriginalOrderGuid))
+            .OfType<Guid>()
+            .Where(originalOrderGuid =>
+                originalOrderGuid != order.OrderGuid &&
+                !returnOrdersByGuid.ContainsKey(originalOrderGuid))
+            .Distinct()
+            .ToList();
+        var relatedOriginalOrdersByGuid = relatedOriginalOrderGuids.Count == 0
+            ? new Dictionary<Guid, OrderHistoryDetailsDto>()
+            : await orderHistoryRepository.GetDetailsByOrderGuidsAsync(
+                relatedOriginalOrderGuids,
+                cancellationToken);
+        var orderDetailsByGuid = returnOrdersByGuid
+            .Concat(relatedOriginalOrdersByGuid)
+            .ToDictionary(item => item.Key, item => item.Value);
+        orderDetailsByGuid[order.OrderGuid] = order;
         var consumedCapacitiesByOrder = new Dictionary<Guid, Dictionary<PaymentCapacityKey, decimal>>();
 
         foreach (var returnOrderGuid in returnOrderGuids)
         {
-            var returnOrder = await orderHistoryRepository.GetDetailsAsync(returnOrderGuid, cancellationToken);
-            if (returnOrder is null)
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!returnOrdersByGuid.TryGetValue(returnOrderGuid, out var returnOrder))
             {
                 continue;
             }
 
             var globalAllocations = await AllocateReturnOrderPaymentsAsync(
-                returnOrderGuid,
                 returnOrder,
+                returnRecordsByOrderGuid.GetValueOrDefault(returnOrderGuid) ?? [],
+                orderDetailsByGuid,
                 consumedCapacitiesByOrder,
                 cancellationToken);
             if (!globalAllocations.TryGetValue(order.OrderGuid, out var allocatedByCapacity))
@@ -152,12 +220,12 @@ public sealed class OrderReturnService(
     }
 
     private async Task<IReadOnlyDictionary<Guid, Dictionary<PaymentCapacityKey, decimal>>> AllocateReturnOrderPaymentsAsync(
-        Guid returnOrderGuid,
         OrderHistoryDetailsDto returnOrder,
+        IReadOnlyList<SalesReturnRecord> returnRecords,
+        IReadOnlyDictionary<Guid, OrderHistoryDetailsDto> orderDetailsByGuid,
         Dictionary<Guid, Dictionary<PaymentCapacityKey, decimal>> consumedCapacitiesByOrder,
         CancellationToken cancellationToken)
     {
-        var returnRecords = SortReturnRecords(await returnRepository.GetByReturnOrderGuidAsync(returnOrderGuid, cancellationToken));
         var originalOrderSequence = returnRecords
             .Select(record => TryParseGuid(record.OriginalOrderGuid))
             .OfType<Guid>()
@@ -168,15 +236,16 @@ public sealed class OrderReturnService(
             return new Dictionary<Guid, Dictionary<PaymentCapacityKey, decimal>>();
         }
 
-        var originalOrderCache = new Dictionary<Guid, OrderHistoryDetailsDto?>();
         var legacyBlockedCardOrders = new HashSet<Guid>();
         var keyedRefundPayments = new List<(OrderHistoryPaymentDto Payment, PaymentCapacityKey Key)>();
         foreach (var refundPayment in returnOrder.Payments.Where(payment => payment.Amount < 0m))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var key = await TryGetRefundPaymentCapacityKeyAsync(
                 refundPayment,
                 originalOrderSequence,
-                originalOrderCache,
+                orderDetailsByGuid,
                 cancellationToken);
             if (key is null)
             {
@@ -204,13 +273,9 @@ public sealed class OrderReturnService(
 
         foreach (var originalOrderGuid in originalOrderSequence)
         {
-            if (!originalOrderCache.TryGetValue(originalOrderGuid, out var originalOrder))
-            {
-                originalOrder = await orderHistoryRepository.GetDetailsAsync(originalOrderGuid, cancellationToken);
-                originalOrderCache[originalOrderGuid] = originalOrder;
-            }
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (originalOrder is null)
+            if (!orderDetailsByGuid.TryGetValue(originalOrderGuid, out var originalOrder))
             {
                 continue;
             }
@@ -346,33 +411,31 @@ public sealed class OrderReturnService(
             payment.Method == PaymentMethodKind.Card ? NormalizeReference(payment.Reference) : null);
     }
 
-    private async Task<PaymentCapacityKey?> TryGetRefundPaymentCapacityKeyAsync(
+    private Task<PaymentCapacityKey?> TryGetRefundPaymentCapacityKeyAsync(
         OrderHistoryPaymentDto payment,
         IReadOnlyList<Guid> originalOrderSequence,
-        Dictionary<Guid, OrderHistoryDetailsDto?> originalOrderCache,
+        IReadOnlyDictionary<Guid, OrderHistoryDetailsDto> orderDetailsByGuid,
         CancellationToken cancellationToken)
     {
         if (payment.Method != PaymentMethodKind.Card)
         {
-            return new PaymentCapacityKey(payment.Method, null);
+            return Task.FromResult<PaymentCapacityKey?>(new PaymentCapacityKey(payment.Method, null));
         }
 
         if (CardRefundReference.TryGetOriginalReference(payment.Reference, out var originalReference))
         {
-            return new PaymentCapacityKey(payment.Method, NormalizeReference(originalReference));
+            return Task.FromResult<PaymentCapacityKey?>(
+                new PaymentCapacityKey(payment.Method, NormalizeReference(originalReference)));
         }
 
         if (originalOrderSequence.Count != 1)
         {
-            return null;
+            return Task.FromResult<PaymentCapacityKey?>(null);
         }
 
         var originalOrderGuid = originalOrderSequence[0];
-        if (!originalOrderCache.TryGetValue(originalOrderGuid, out var originalOrder))
-        {
-            originalOrder = await orderHistoryRepository.GetDetailsAsync(originalOrderGuid, cancellationToken);
-            originalOrderCache[originalOrderGuid] = originalOrder;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        orderDetailsByGuid.TryGetValue(originalOrderGuid, out var originalOrder);
 
         var cardReferences = originalOrder?.Payments
             .Where(originalPayment => originalPayment.Method == PaymentMethodKind.Card && originalPayment.Amount > 0m)
@@ -381,9 +444,10 @@ public sealed class OrderReturnService(
             .Select(reference => reference!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList() ?? [];
-        return cardReferences.Count == 1
+        PaymentCapacityKey? key = cardReferences.Count == 1
             ? new PaymentCapacityKey(payment.Method, cardReferences[0])
             : null;
+        return Task.FromResult(key);
     }
 
     private readonly record struct PaymentCapacityKey(PaymentMethodKind Method, string? Reference);
@@ -837,6 +901,10 @@ public interface IOrderReturnRepository
         Guid returnOrderGuid,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<SalesReturnRecord>> GetByReturnOrderGuidsAsync(
+        IReadOnlyCollection<Guid> returnOrderGuids,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SalesReturnRecord>> InsertValidatedAsync(
         IReadOnlyList<SalesReturnRecord> records,
         CancellationToken cancellationToken);
@@ -861,6 +929,25 @@ public sealed class SqlSugarOrderReturnRepository(HbposSqlSugarContext dbContext
         var returnOrderGuidText = returnOrderGuid.ToString("D");
         return await dbContext.PosmDb.Queryable<SalesReturnRecord>()
             .Where(x => x.ReturnOrderGuid == returnOrderGuidText)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SalesReturnRecord>> GetByReturnOrderGuidsAsync(
+        IReadOnlyCollection<Guid> returnOrderGuids,
+        CancellationToken cancellationToken)
+    {
+        var returnOrderGuidTexts = returnOrderGuids
+            .Where(returnOrderGuid => returnOrderGuid != Guid.Empty)
+            .Distinct()
+            .Select(returnOrderGuid => returnOrderGuid.ToString("D"))
+            .ToList();
+        if (returnOrderGuidTexts.Count == 0)
+        {
+            return [];
+        }
+
+        return await dbContext.PosmDb.Queryable<SalesReturnRecord>()
+            .Where(record => returnOrderGuidTexts.Contains(record.ReturnOrderGuid))
             .ToListAsync(cancellationToken);
     }
 

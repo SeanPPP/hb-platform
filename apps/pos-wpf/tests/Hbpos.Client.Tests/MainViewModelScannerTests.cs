@@ -4034,6 +4034,9 @@ public sealed class MainViewModelScannerTests
         Assert.True(viewModel.CardRecoveryResultDialog.CanPrintReceipt);
         Assert.Equal("Print receipt", viewModel.CardRecoveryResultDialog.PrintButtonText);
         Assert.True(viewModel.CardRecoveryResultDialog.HasReceiptPreview);
+        Assert.Equal(
+            order.OrderGuid.ToString("D"),
+            Assert.Single(viewModel.CardRecoveryResultDialog.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
 
         await viewModel.PrintRecoveredReceiptCommand.ExecuteAsync(null);
         await WaitUntilAsync(() => printService.Calls.Count == 2);
