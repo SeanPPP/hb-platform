@@ -56,6 +56,7 @@
     <Compile Include="RoleServicePermissionTests.cs" />
     <Compile Include="SeasonalCardRemainingReactServiceTests.cs" />
     <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />
+    <Compile Include="LocalSupplierInvoiceAuditTimestampContractTests.cs" />
     <Compile Include="ReactLocalSupplierInvoiceAuthorizationTests.cs" />
     <Compile Include="LocalSupplierInvoiceImportTests.cs" />
     <Compile Include="LocationReactServiceTests.cs" />

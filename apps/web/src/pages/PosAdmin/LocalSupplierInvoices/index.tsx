@@ -95,6 +95,7 @@ import {
   parseLocalSupplierInvoiceColumnOrder,
   type LocalSupplierInvoiceColumnKey,
 } from './columnOrder'
+import { formatLocalSupplierInvoiceAuditTime } from './auditTime'
 
 const LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY =
   'hbweb_rv.localSupplierInvoices.columnOrder.v1'
@@ -276,13 +277,6 @@ const INBOUND_STATUS_MAP: Record<number, { labelKey: string; color: string }> = 
   0: { labelKey: 'posAdmin.invoices.notInbound', color: 'default' },
   1: { labelKey: 'posAdmin.invoices.partialInbound', color: 'orange' },
   2: { labelKey: 'posAdmin.invoices.inbounded', color: 'green' },
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 function formatDate(value?: string) {
@@ -958,7 +952,7 @@ export default function LocalSupplierInvoicesPage() {
       width: 170,
       sorter: true,
       sortOrder: sortBy === 'createdAt' ? sortOrder : undefined,
-      render: (v: string) => formatDateTime(v),
+      render: (v: string) => formatLocalSupplierInvoiceAuditTime(v),
     },
     {
       title: t('column.creator'),
@@ -974,7 +968,7 @@ export default function LocalSupplierInvoicesPage() {
       width: 170,
       sorter: true,
       sortOrder: sortBy === 'updatedAt' ? sortOrder : undefined,
-      render: (v: string) => formatDateTime(v),
+      render: (v: string) => formatLocalSupplierInvoiceAuditTime(v),
     },
     {
       title: t('column.updater'),

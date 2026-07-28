@@ -21,8 +21,11 @@ namespace BlazorApp.Shared.DTOs
         public int PriceIncreaseItemCount { get; set; }
         public int PriceDecreaseItemCount { get; set; }
         public string? Remarks { get; set; }
+        [JsonConverter(typeof(LocalSupplierInvoiceAuditUtcDateTimeJsonConverter))]
         public DateTime CreatedAt { get; set; }
         public string? CreatedBy { get; set; }
+
+        [JsonConverter(typeof(NullableLocalSupplierInvoiceAuditUtcDateTimeJsonConverter))]
         public DateTime? UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
     }
@@ -47,7 +50,10 @@ namespace BlazorApp.Shared.DTOs
         public string? ImportTemplate { get; set; }
         public int? FlowStatus { get; set; }
         public int? InboundStatus { get; set; }
+        [JsonConverter(typeof(LocalSupplierInvoiceAuditUtcDateTimeJsonConverter))]
         public DateTime CreatedAt { get; set; }
+
+        [JsonConverter(typeof(NullableLocalSupplierInvoiceAuditUtcDateTimeJsonConverter))]
         public DateTime? UpdatedAt { get; set; }
     }
 
