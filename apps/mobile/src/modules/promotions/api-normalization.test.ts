@@ -4,6 +4,7 @@ import {
   buildPromotionPayload,
   normalizePromotionDetail,
   normalizePromotionsResponse,
+  normalizeValidPromotionsResponse,
 } from "./api";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -141,3 +142,41 @@ assertEqual(detail?.scopeType, "StoreOnly", "促销详情归一化保留本店�
 assertEqual(detail?.priority, 0, "促销详情归一化保留默认优先级");
 assertEqual(detail?.products[0]?.productCode, "SKU09", "促销详情归一化保留商品编码");
 assertEqual(detail?.products[0]?.unitWeight, 3, "促销详情归一化保留商品权重");
+
+const validPromotions = normalizeValidPromotionsResponse({
+  Success: true,
+  Data: [
+    {
+      Id: "promo-active-1",
+      Name: "满二件组合价",
+      ApplyQuantity: "2",
+      FixedPrice: "9.9",
+      Priority: "8",
+    },
+    {
+      id: "promo-active-2",
+      name: "任选三件",
+      applyQuantity: 3,
+      fixedPrice: 12,
+      priority: 2,
+    },
+  ],
+});
+
+assertEqual(validPromotions.length, 2, "有效商品促销归一化会解包 ApiResponse 数组");
+assertEqual(validPromotions[0]?.id, "promo-active-1", "有效商品促销归一化支持 PascalCase");
+assertEqual(validPromotions[0]?.applyQuantity, 2, "有效商品促销归一化会转换满足数量");
+assertEqual(validPromotions[0]?.fixedPrice, 9.9, "有效商品促销归一化会转换组合价");
+assertEqual(validPromotions[1]?.name, "任选三件", "有效商品促销归一化支持 camelCase");
+
+const directValidPromotions = normalizeValidPromotionsResponse([
+  {
+    id: "promo-direct",
+    name: "直接数组活动",
+    applyQuantity: 4,
+    fixedPrice: 20,
+  },
+]);
+
+assertEqual(directValidPromotions.length, 1, "有效商品促销归一化支持已解包的直接数组");
+assertEqual(directValidPromotions[0]?.fixedPrice, 20, "直接数组组合价保持数值");

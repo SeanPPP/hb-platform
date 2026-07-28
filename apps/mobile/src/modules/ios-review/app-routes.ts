@@ -2186,6 +2186,64 @@ export function registerIosReviewAppRoutes(
       return { data: true };
     },
   );
+  register(
+    transport,
+    ["GET"],
+    "/react/v1/promotions/valid/by-product",
+    ({ query }) => {
+      const productCode = query.get("productCode") ?? "";
+      const storeCode = query.get("storeCode") ?? "";
+      const now = Date.parse(state().now);
+      const promotions = state().promotions
+        .filter((promotion) => {
+          const products = Array.isArray(promotion.products) ? promotion.products : [];
+          const stores = Array.isArray(promotion.stores) ? promotion.stores : [];
+          // 与真实接口一致：软删除关联既不能匹配商品/门店，也不能阻止总部活动判定。
+          const activeStores = stores.filter(
+            (store) => asRecord(store).isDeleted !== true,
+          );
+          const productMatches = products.some(
+            (product) => {
+              const productLink = asRecord(product);
+              return (
+                productLink.isDeleted !== true
+                && String(productLink.productCode ?? "") === productCode
+              );
+            },
+          );
+          const storeMatches = activeStores.length === 0 || activeStores.some(
+            (store) => String(asRecord(store).storeCode ?? "") === storeCode,
+          );
+          const startsAt = Date.parse(String(promotion.effectiveStart ?? ""));
+          const endsAt = Date.parse(String(promotion.effectiveEnd ?? ""));
+          return (
+            promotion.isDeleted !== true
+            && promotion.isEnabled !== false
+            && productMatches
+            && storeMatches
+            && startsAt <= now
+            && endsAt >= now
+          );
+        })
+        // 审核数据保持与真实接口一致的确定性顺序，避免多活动展示只依赖 fixture 插入顺序。
+        .sort((left, right) => {
+          const priorityDifference = Number(right.priority ?? 0) - Number(left.priority ?? 0);
+          if (priorityDifference !== 0) {
+            return priorityDifference;
+          }
+
+          const startDifference =
+            Date.parse(String(left.effectiveStart ?? ""))
+            - Date.parse(String(right.effectiveStart ?? ""));
+          if (startDifference !== 0) {
+            return startDifference;
+          }
+
+          return String(left.id ?? "").localeCompare(String(right.id ?? ""));
+        });
+      return { data: clone(promotions) };
+    },
+  );
 
   register(
     transport,

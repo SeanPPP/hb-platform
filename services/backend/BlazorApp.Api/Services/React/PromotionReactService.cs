@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -24,6 +25,13 @@ namespace BlazorApp.Api.Services.React
         {
             _context = context;
             _storeScopeService = storeScopeService;
+        }
+
+        internal static Expression<Func<Promotion, bool>> BuildValidWindowPredicate(DateTime now)
+        {
+            // 查询与边界测试共用同一表达式，确保开始和结束时间都采用包含式判断。
+            return p =>
+                !p.IsDeleted && p.IsEnabled && p.EffectiveStart <= now && p.EffectiveEnd >= now;
         }
 
         public async Task<GridResponseDto<PromotionListDto>> GetGridAsync(GridRequestDto request)
@@ -792,19 +800,33 @@ namespace BlazorApp.Api.Services.React
             var now = asOf ?? DateTime.UtcNow;
             var query = _context
                 .PromotionDb.AsQueryable()
-                .Where(p => p.IsEnabled && p.EffectiveStart <= now && p.EffectiveEnd >= now)
+                .Where(BuildValidWindowPredicate(now))
                 .Where(p =>
                     SqlFunc
                         .Subqueryable<PromotionStore>()
-                        .Where(ps => ps.PromotionId == p.Id && ps.StoreCode == storeCode)
+                        .Where(ps =>
+                            ps.PromotionId == p.Id && !ps.IsDeleted && ps.StoreCode == storeCode
+                        )
+                        .Any()
+                    // 没有任何有效门店绑定的活动属于总部活动，对所有门店可见。
+                    || !SqlFunc
+                        .Subqueryable<PromotionStore>()
+                        .Where(ps => ps.PromotionId == p.Id && !ps.IsDeleted)
                         .Any()
                 )
                 .Where(p =>
                     SqlFunc
                         .Subqueryable<PromotionProduct>()
-                        .Where(pp => pp.PromotionId == p.Id && pp.ProductCode == productCode)
+                        .Where(pp =>
+                            pp.PromotionId == p.Id
+                            && !pp.IsDeleted
+                            && pp.ProductCode == productCode
+                        )
                         .Any()
-                );
+                )
+                .OrderBy(p => p.Priority, OrderByType.Desc)
+                .OrderBy(p => p.EffectiveStart, OrderByType.Asc)
+                .OrderBy(p => p.Id, OrderByType.Asc);
 
             var items = await query.ToListAsync();
             var ids = items.Select(x => x.Id).ToList();
@@ -812,14 +834,14 @@ namespace BlazorApp.Api.Services.React
                 ids.Count > 0
                     ? await _context
                         .PromotionProductDb.AsQueryable()
-                        .Where(p => ids.Contains(p.PromotionId))
+                        .Where(p => ids.Contains(p.PromotionId) && !p.IsDeleted)
                         .ToListAsync()
                     : new List<PromotionProduct>();
             var allStores =
                 ids.Count > 0
                     ? await _context
                         .PromotionStoreDb.AsQueryable()
-                        .Where(s => ids.Contains(s.PromotionId))
+                        .Where(s => ids.Contains(s.PromotionId) && !s.IsDeleted)
                         .ToListAsync()
                     : new List<PromotionStore>();
 

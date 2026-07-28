@@ -11,6 +11,7 @@ import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettin
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
+import { ProductPromotionCard } from "@/components/product-maintenance/ProductPromotionCard";
 import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
 import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
 import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
@@ -84,6 +85,9 @@ import {
   buildLocalSupplierInvoicesRestoreHref,
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
+import { createActivePromotionRequestCoordinator } from "@/modules/promotions/active-promotion-request";
+import { fetchValidPromotionsByProduct } from "@/modules/promotions/api";
+import type { PromotionListItem } from "@/modules/promotions/types";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { IOS_REVIEW_SAMPLE_BARCODE } from "@/modules/ios-review/helpers";
 
@@ -351,6 +355,7 @@ function ProductQueryContent() {
   const [selectedLookupProductCode, setSelectedLookupProductCode] = useState<string>();
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [initialDetail, setInitialDetail] = useState<ProductDetail | null>(null);
+  const [activePromotions, setActivePromotions] = useState<PromotionListItem[]>([]);
   const [lastHitLabel, setLastHitLabel] = useState<string>();
   const [lookupVisible, setLookupVisible] = useState(false);
   const [lookupSelectionSource, setLookupSelectionSource] = useState<ScanSource | null>(null);
@@ -421,6 +426,28 @@ function ProductQueryContent() {
   const warehousePriceInteractionLocked = isWarehousePriceInteractionLocked(
     warehousePriceSyncState
   );
+  const activePromotionCoordinatorRef = useRef<ReturnType<
+    typeof createActivePromotionRequestCoordinator
+  > | null>(null);
+  if (!activePromotionCoordinatorRef.current) {
+    activePromotionCoordinatorRef.current = createActivePromotionRequestCoordinator({
+      fetchPromotions: fetchValidPromotionsByProduct,
+      applyPromotions: setActivePromotions,
+      onFailure: (error, context) => {
+        console.warn("[product-query] active promotions load failed", {
+          ...context,
+          message: isAxiosError(error) ? error.message : String(error),
+          status: isAxiosError(error) ? error.response?.status : undefined,
+        });
+      },
+    });
+  }
+  const invalidateActivePromotions = useCallback(() => {
+    activePromotionCoordinatorRef.current?.invalidate();
+  }, []);
+  const loadActivePromotions = useCallback((productCode: string, storeCode: string) => {
+    void activePromotionCoordinatorRef.current?.load(productCode, storeCode);
+  }, []);
   const isProductQueryBusy = useCallback(
     () =>
       isProductQueryInteractionBlocked({
@@ -593,8 +620,10 @@ function ProductQueryContent() {
         return null;
       }
 
+      invalidateActivePromotions();
       console.log("[product-query] load detail", { productCode, selectedStoreCode: targetStoreCode });
       const payload = await getProductFastDetail(productCode, targetStoreCode);
+      loadActivePromotions(payload.productCode, targetStoreCode);
       setDetail(payload);
       setInitialDetail(cloneDetail(payload));
       setSelectedLookupProductCode(productCode);
@@ -605,7 +634,13 @@ function ProductQueryContent() {
       const detailWithCodes = await loadProductCodes(payload, 1, false, targetStoreCode);
       return detailWithCodes ?? payload;
     },
-    [loadProductCodes, selectedStoreCode, t]
+    [
+      invalidateActivePromotions,
+      loadActivePromotions,
+      loadProductCodes,
+      selectedStoreCode,
+      t,
+    ]
   );
 
   const canSelectStore = !isDeviceMode && stores.length > 0 && !isProductQueryBusy();
@@ -620,6 +655,7 @@ function ProductQueryContent() {
       setLoading(true);
       setStorePickerVisible(false);
       try {
+        invalidateActivePromotions();
         await selectStore(store);
 
         if (detail?.productCode) {
@@ -632,6 +668,7 @@ function ProductQueryContent() {
           }
         }
       } catch (error) {
+        invalidateActivePromotions();
         if (detail?.productCode) {
           setDetail(null);
           setInitialDetail(null);
@@ -646,7 +683,15 @@ function ProductQueryContent() {
         setLoading(false);
       }
     },
-    [detail?.productCode, getErrorMessage, isProductQueryBusy, loadDetail, playQueryFeedback, selectStore]
+    [
+      detail?.productCode,
+      getErrorMessage,
+      invalidateActivePromotions,
+      isProductQueryBusy,
+      loadDetail,
+      playQueryFeedback,
+      selectStore,
+    ]
   );
 
   const selectedCreateSupplier = useMemo(
@@ -1180,6 +1225,7 @@ function ProductQueryContent() {
       }
 
       lookupRequestInFlightRef.current = true;
+      invalidateActivePromotions();
 
       console.log("[product-query] lookup start", {
         keyword: nextKeyword,
@@ -1258,6 +1304,7 @@ function ProductQueryContent() {
         });
         setDetail(null);
         setInitialDetail(null);
+        invalidateActivePromotions();
         lookupSelectionOpenRef.current = false;
         setLookupVisible(false);
         setQueryFeedback({ type: "error", query: nextKeyword, message });
@@ -1271,6 +1318,7 @@ function ProductQueryContent() {
     },
     [
       continuousPrintEnabled,
+      invalidateActivePromotions,
       isProductQueryBusy,
       keyword,
       loadDetail,
@@ -1528,13 +1576,14 @@ function ProductQueryContent() {
     setSelectedLookupProductCode(undefined);
     setDetail(null);
     setInitialDetail(null);
+    invalidateActivePromotions();
     setLookupVisible(false);
     setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
     setWarehousePriceSyncContext(null);
     setWarehousePriceSyncState(createWarehousePriceSyncState());
-  }, [isProductQueryBusy]);
+  }, [invalidateActivePromotions, isProductQueryBusy]);
 
   const handleConfirmLookup = useCallback(async () => {
     if (
@@ -1567,6 +1616,7 @@ function ProductQueryContent() {
       const message = getErrorMessage(error, "messages.lookupFailed");
       setDetail(null);
       setInitialDetail(null);
+      invalidateActivePromotions();
       setQueryFeedback({ type: "error", query: keyword.trim(), message });
       setSnackbarMessage(message);
       playQueryFeedback("error");
@@ -1580,6 +1630,7 @@ function ProductQueryContent() {
   }, [
     autoPrintOnLookupConfirm,
     autoPricingDialogSaving,
+    invalidateActivePromotions,
     keyword,
     loadDetail,
     lookupSelectionSource,
@@ -2511,6 +2562,8 @@ function ProductQueryContent() {
                 grade={detail.grade}
                 onPressProductType={() => setProductTypeDialogVisible(true)}
               />
+
+              <ProductPromotionCard items={activePromotions} />
 
               {storePrice ? (
                 <StorePriceStrategyCard

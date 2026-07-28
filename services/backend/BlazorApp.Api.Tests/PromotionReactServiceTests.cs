@@ -83,6 +83,276 @@ public sealed class PromotionReactServiceTests : IDisposable
     }
 
     [Fact]
+    public void BuildValidWindowPredicate_IncludesEffectiveStartAndEndBoundaries()
+    {
+        var now = new DateTime(2026, 7, 28, 3, 0, 0, DateTimeKind.Utc);
+        var isValid = PromotionReactService.BuildValidWindowPredicate(now).Compile();
+
+        Assert.True(
+            isValid(
+                new Promotion
+                {
+                    IsEnabled = true,
+                    EffectiveStart = now,
+                    EffectiveEnd = now.AddMinutes(1),
+                }
+            )
+        );
+        Assert.True(
+            isValid(
+                new Promotion
+                {
+                    IsEnabled = true,
+                    EffectiveStart = now.AddMinutes(-1),
+                    EffectiveEnd = now,
+                }
+            )
+        );
+    }
+
+    [Fact]
+    public async Task GetValidByProductAndStoreAsync_ReturnsCurrentStoreAndHeadquartersPromotionsInStableOrder()
+    {
+        var now = new DateTime(2026, 7, 28, 3, 0, 0, DateTimeKind.Utc);
+
+        Promotion BuildPromotion(
+            string id,
+            int priority = 0,
+            DateTime? effectiveStart = null,
+            DateTime? effectiveEnd = null,
+            bool isEnabled = true,
+            bool isDeleted = false
+        )
+        {
+            return new Promotion
+            {
+                Id = id,
+                Name = id,
+                EffectiveStart = effectiveStart ?? now.AddHours(-1),
+                EffectiveEnd = effectiveEnd ?? now.AddHours(1),
+                IsEnabled = isEnabled,
+                IsExclusive = false,
+                Priority = priority,
+                ApplyQuantity = 2,
+                FixedPrice = 5m,
+                CreatedAt = now,
+                IsDeleted = isDeleted,
+            };
+        }
+
+        await _db
+            .Insertable(
+                new[]
+                {
+                    BuildPromotion("store-only", priority: 12, effectiveStart: now.AddMinutes(-1)),
+                    BuildPromotion("multi-store", priority: 10, effectiveStart: now.AddHours(-2)),
+                    BuildPromotion("headquarters-early", priority: 5, effectiveStart: now.AddHours(-3)),
+                    BuildPromotion("headquarters-a", priority: 5, effectiveStart: now.AddHours(-2)),
+                    BuildPromotion("headquarters-b", priority: 5, effectiveStart: now.AddHours(-2)),
+                    BuildPromotion("other-store", priority: 100),
+                    BuildPromotion("wrong-product"),
+                    BuildPromotion("disabled", isEnabled: false),
+                    BuildPromotion("not-started", effectiveStart: now.AddMinutes(1)),
+                    BuildPromotion("expired", effectiveEnd: now.AddMinutes(-1)),
+                    BuildPromotion("deleted-promotion", isDeleted: true),
+                    BuildPromotion("deleted-product-link"),
+                    BuildPromotion("deleted-current-store-link"),
+                }
+            )
+            .ExecuteCommandAsync();
+
+        await _db
+            .Insertable(
+                new[]
+                {
+                    new PromotionProduct
+                    {
+                        Id = "store-only-product",
+                        PromotionId = "store-only",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "store-only-deleted-product",
+                        PromotionId = "store-only",
+                        ProductCode = "P02",
+                        CreatedAt = now,
+                        IsDeleted = true,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "multi-store-product",
+                        PromotionId = "multi-store",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "headquarters-early-product",
+                        PromotionId = "headquarters-early",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "headquarters-a-product",
+                        PromotionId = "headquarters-a",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "headquarters-b-product",
+                        PromotionId = "headquarters-b",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "other-store-product",
+                        PromotionId = "other-store",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "wrong-product-link",
+                        PromotionId = "wrong-product",
+                        ProductCode = "P010",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "disabled-product",
+                        PromotionId = "disabled",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "not-started-product",
+                        PromotionId = "not-started",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "expired-product",
+                        PromotionId = "expired",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "deleted-promotion-product",
+                        PromotionId = "deleted-promotion",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "deleted-product-link-product",
+                        PromotionId = "deleted-product-link",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                        IsDeleted = true,
+                    },
+                    new PromotionProduct
+                    {
+                        Id = "deleted-current-store-link-product",
+                        PromotionId = "deleted-current-store-link",
+                        ProductCode = "P01",
+                        CreatedAt = now,
+                    },
+                }
+            )
+            .ExecuteCommandAsync();
+
+        await _db
+            .Insertable(
+                new[]
+                {
+                    new PromotionStore
+                    {
+                        Id = "store-only-store",
+                        PromotionId = "store-only",
+                        StoreCode = "S01",
+                        CreatedAt = now,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "store-only-deleted-store",
+                        PromotionId = "store-only",
+                        StoreCode = "S99",
+                        CreatedAt = now,
+                        IsDeleted = true,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "multi-store-s01",
+                        PromotionId = "multi-store",
+                        StoreCode = "S01",
+                        CreatedAt = now,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "multi-store-s02",
+                        PromotionId = "multi-store",
+                        StoreCode = "S02",
+                        CreatedAt = now,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "headquarters-a-deleted-store",
+                        PromotionId = "headquarters-a",
+                        StoreCode = "S99",
+                        CreatedAt = now,
+                        IsDeleted = true,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "other-store-s02",
+                        PromotionId = "other-store",
+                        StoreCode = "S02",
+                        CreatedAt = now,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "deleted-current-store-link-s01",
+                        PromotionId = "deleted-current-store-link",
+                        StoreCode = "S01",
+                        CreatedAt = now,
+                        IsDeleted = true,
+                    },
+                    new PromotionStore
+                    {
+                        Id = "deleted-current-store-link-s02",
+                        PromotionId = "deleted-current-store-link",
+                        StoreCode = "S02",
+                        CreatedAt = now,
+                    },
+                }
+            )
+            .ExecuteCommandAsync();
+
+        var service = CreateService();
+
+        var result = await service.GetValidByProductAndStoreAsync("P01", "S01", now);
+
+        Assert.True(result.Success);
+        var items = Assert.IsType<List<PromotionListDto>>(result.Data);
+        Assert.Equal(
+            new[] { "store-only", "multi-store", "headquarters-early", "headquarters-a", "headquarters-b" },
+            items.Select(item => item.Id).ToArray()
+        );
+        Assert.Equal(1, items.Single(item => item.Id == "store-only").ProductsCount);
+        Assert.Equal(1, items.Single(item => item.Id == "store-only").StoresCount);
+        Assert.Equal(2, items.Single(item => item.Id == "multi-store").StoresCount);
+        Assert.Equal(0, items.Single(item => item.Id == "headquarters-a").StoresCount);
+    }
+
+    [Fact]
     public async Task GetStoreGridAsync_ReturnsCurrentStorePromotionsWithScopeTags()
     {
         var now = DateTime.UtcNow;

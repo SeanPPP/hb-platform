@@ -100,6 +100,11 @@
   "sections": {
     "moreInfo": "More details"
   },
+  "promotion": {
+    "title": "Promotion",
+    "unnamed": "Unnamed promotion",
+    "rule": "{{count}} items for ${{price}}"
+  },
   "hero": {
     "unnamedProduct": "Unnamed product",
     "itemNumber": "Item: {{value}}",

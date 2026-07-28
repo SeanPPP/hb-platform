@@ -220,6 +220,10 @@ export function normalizePromotionsResponse(payload: unknown): PagedResult<Promo
   };
 }
 
+export function normalizeValidPromotionsResponse(payload: unknown): PromotionListItem[] {
+  return getArray(unwrapPayload(payload), "items", "Items").map(normalizePromotion);
+}
+
 export function normalizePromotionDetail(payload: unknown): PromotionDetail | null {
   const data = unwrapPayload(payload);
   const record = asRecord(
@@ -232,6 +236,17 @@ export async function fetchPromotions(query: PromotionGridQuery) {
   const client = await getApiClient();
   const response = await client.post(`${BASE_PATH}/store/grid`, buildPromotionGridPayload(query));
   return normalizePromotionsResponse(response.data);
+}
+
+export async function fetchValidPromotionsByProduct(productCode: string, storeCode: string) {
+  const client = await getApiClient();
+  const response = await client.get(`${BASE_PATH}/valid/by-product`, {
+    params: {
+      productCode: productCode.trim(),
+      storeCode: storeCode.trim(),
+    },
+  });
+  return normalizeValidPromotionsResponse(response.data);
 }
 
 export async function fetchPromotionDetail(id: string, storeCode: string) {

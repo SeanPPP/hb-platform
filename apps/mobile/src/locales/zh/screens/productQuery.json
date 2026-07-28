@@ -100,6 +100,11 @@
   "sections": {
     "moreInfo": "更多信息"
   },
+  "promotion": {
+    "title": "满减活动",
+    "unnamed": "未命名活动",
+    "rule": "满 {{count}} 件 ${{price}}"
+  },
   "hero": {
     "unnamedProduct": "未命名商品",
     "itemNumber": "货号：{{value}}",

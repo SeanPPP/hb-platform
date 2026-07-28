@@ -15,7 +15,10 @@ import {
   normalizeSupplierRows,
 } from "../product-report/api";
 import { normalizeStatisticsFreshness } from "../reports/statistics-freshness";
-import { normalizePromotionsResponse } from "../promotions/api";
+import {
+  normalizePromotionsResponse,
+  normalizeValidPromotionsResponse,
+} from "../promotions/api";
 import { normalizeWarehousePriceSyncResponse } from "../product-maintenance/warehouse-price-sync";
 import { buildInstallmentOrderListPayload } from "../installment-orders/api";
 import {
@@ -971,6 +974,90 @@ async function run() {
     promotions.items[0]?.scopeType,
     "StoreOnly",
     "分店促销 fixture 必须使用页面可识别的 StoreOnly scope",
+  );
+  const productPromotions = normalizeValidPromotionsResponse(
+    await request(
+      "GET",
+      "/react/v1/promotions/valid/by-product?productCode=REV-PROD-001&storeCode=REV001",
+    ),
+  );
+  assert.equal(productPromotions.length, 1, "审核模式商品详情应返回当前有效促销");
+  assert.equal(productPromotions[0]?.name, "Demo Mug Bundle");
+
+  const createProductPromotion = async (
+    name: string,
+    overrides: Record<string, unknown> = {},
+  ) => request("POST", "/react/v1/promotions/store", {
+    name,
+    isEnabled: true,
+    effectiveStart: "2026-07-14T00:00:00.000Z",
+    effectiveEnd: "2026-07-17T00:00:00.000Z",
+    priority: 0,
+    applyQuantity: 2,
+    fixedPrice: 20,
+    products: [{ productCode: "REV-PROD-001" }],
+    stores: [{ storeCode: "REV001" }],
+    ...overrides,
+  });
+  const samePriorityFirst = await createProductPromotion("同优先级活动 A", {
+    priority: 30,
+    effectiveStart: "2026-07-13T00:00:00.000Z",
+  });
+  const samePrioritySecond = await createProductPromotion("同优先级活动 B", {
+    priority: 30,
+    effectiveStart: "2026-07-13T00:00:00.000Z",
+  });
+  const earlierActivity = await createProductPromotion("较早开始活动", {
+    priority: 20,
+    effectiveStart: "2026-07-12T00:00:00.000Z",
+  });
+  const laterActivity = await createProductPromotion("较晚开始活动", {
+    priority: 20,
+    effectiveStart: "2026-07-14T00:00:00.000Z",
+  });
+  await createProductPromotion("总部活动", {
+    priority: 15,
+    // 全部门店关联已软删除时，应按总部活动处理。
+    stores: [{ storeCode: "REV002", isDeleted: true }],
+  });
+  await createProductPromotion("其他门店活动", {
+    priority: 100,
+    stores: [{ storeCode: "REV002" }],
+  });
+  await createProductPromotion("已删除活动", {
+    priority: 100,
+    isDeleted: true,
+  });
+  await createProductPromotion("已删除商品关联", {
+    priority: 100,
+    products: [{ productCode: "REV-PROD-001", isDeleted: true }],
+  });
+  await createProductPromotion("已删除当前门店关联", {
+    priority: 100,
+    stores: [
+      { storeCode: "REV001", isDeleted: true },
+      { storeCode: "REV002" },
+    ],
+  });
+
+  const filteredProductPromotions = normalizeValidPromotionsResponse(
+    await request(
+      "GET",
+      "/react/v1/promotions/valid/by-product?productCode=REV-PROD-001&storeCode=REV001",
+    ),
+  );
+  assert.deepEqual(
+    filteredProductPromotions.map((promotion) => promotion.name),
+    [
+      ...[samePriorityFirst, samePrioritySecond]
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+        .map((promotion) => promotion.name),
+      earlierActivity.name,
+      laterActivity.name,
+      "总部活动",
+      "Demo Mug Bundle",
+    ],
+    "商品活动只应返回当前分店或总部的有效关联，并按优先级、开始时间和 ID 稳定排序",
   );
 
   const getProductDetail = () =>
