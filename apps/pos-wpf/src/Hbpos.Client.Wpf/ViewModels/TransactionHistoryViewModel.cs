@@ -756,7 +756,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 PreviewDiscount = installmentReceipt.DiscountAmount;
                 PreviewTotal = installmentReceipt.ActualAmount;
                 PreviewOrderId = installmentReceipt.TransactionIdDisplay;
-                PreviewSoldAt = installmentReceipt.SoldAtDisplay;
+                PreviewSoldAt = installmentReceipt.SoldAt.ToLocalTime().ToString(
+                    "MMM dd, yyyy HH:mm",
+                    CurrentDisplayCulture);
                 return;
             }
 
@@ -796,7 +798,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         PreviewDiscount = receipt.DiscountAmount;
         PreviewTotal = receipt.ActualAmount;
         PreviewOrderId = receipt.TransactionIdDisplay;
-        PreviewSoldAt = receipt.SoldAtDisplay;
+        PreviewSoldAt = receipt.SoldAt.ToLocalTime().ToString(
+            "MMM dd, yyyy HH:mm",
+            CurrentDisplayCulture);
     }
 
     private async Task<ReceiptDetails?> GetSuspendedReceiptAsync(Guid orderGuid, CancellationToken cancellationToken)

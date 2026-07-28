@@ -1,3 +1,4 @@
+using System.Globalization;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
@@ -715,6 +716,74 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.ReprintCommand.Execute(null);
 
         Assert.True(reprintRequested);
+    }
+
+    [Fact]
+    public async Task Local_history_preview_time_uses_localization_culture()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        var originalDefaultCulture = CultureInfo.DefaultThreadCurrentCulture;
+        var originalDefaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+        try
+        {
+            var localization = new LocalizationService();
+            var soldAt = new DateTimeOffset(2026, 7, 28, 5, 56, 0, TimeSpan.Zero);
+            var orderGuid = Guid.NewGuid();
+            var receiptQuery = new CapturingReceiptQueryService
+            {
+                Orders =
+                [
+                    new LocalOrderSummary(
+                        orderGuid,
+                        "S001",
+                        "POS-01",
+                        "Alice",
+                        soldAt,
+                        5m,
+                        0m,
+                        5m,
+                        "Synced",
+                        1,
+                        "Cash")
+                ],
+                Receipts =
+                {
+                    [orderGuid] = new ReceiptDetails(
+                        orderGuid,
+                        "S001",
+                        "POS-01",
+                        "Alice",
+                        soldAt,
+                        5m,
+                        0m,
+                        5m,
+                        [new ReceiptPreviewLine("Receipt Tea", "930001", 1m, 5m, 0m, 5m)],
+                        [new ReceiptPaymentLine(PaymentMethodKind.Cash, 5m, null)])
+                }
+            };
+            using var viewModel = new TransactionHistoryViewModel(
+                receiptQuery,
+                new CapturingSuspendedOrderService(),
+                new CapturingRemoteOrderHistoryService(),
+                CreateSession(),
+                localization: localization);
+
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(LocalizationService.ChineseCultureName);
+            await viewModel.LoadAsync();
+
+            Assert.Equal(
+                soldAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", localization.CurrentCulture),
+                viewModel.PreviewSoldAt);
+            Assert.DoesNotContain("\u6708", viewModel.PreviewSoldAt, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CultureInfo.DefaultThreadCurrentCulture = originalDefaultCulture;
+            CultureInfo.DefaultThreadCurrentUICulture = originalDefaultUiCulture;
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [Fact]
