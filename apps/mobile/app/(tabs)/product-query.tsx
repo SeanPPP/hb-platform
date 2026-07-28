@@ -3166,7 +3166,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F7F8FA",
   },
   discountedSafeArea: {
-    backgroundColor: "#FFF1F0",
+    backgroundColor: "#FFE0B2",
   },
   content: {
     paddingHorizontal: 12,
