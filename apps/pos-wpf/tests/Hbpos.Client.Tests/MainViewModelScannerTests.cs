@@ -1817,7 +1817,7 @@ public sealed class MainViewModelScannerTests
         shellCatalog.LastProgress!.Report(new CatalogSyncProgress(
             "1042",
             CatalogSyncProgressStage.Comparing,
-            TotalCount: 0,
+            TotalCount: 200,
             DownloadedCount: 0,
             Percent: 0,
             ComparePages: 1,
@@ -1839,7 +1839,7 @@ public sealed class MainViewModelScannerTests
         shellCatalog.LastProgress.Report(new CatalogSyncProgress(
             "1042",
             CatalogSyncProgressStage.Comparing,
-            TotalCount: 0,
+            TotalCount: 200,
             DownloadedCount: 0,
             Percent: 0,
             ComparePages: 2,

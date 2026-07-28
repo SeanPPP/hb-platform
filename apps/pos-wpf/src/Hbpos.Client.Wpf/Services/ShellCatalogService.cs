@@ -174,12 +174,16 @@ public sealed class ShellCatalogService(
         IProgress<CatalogSyncProgress>? progress,
         CancellationToken cancellationToken)
     {
+        // 此方法仅在同步锁内调用，排队任务必须使用上一轮重载后的目录数量计算核对进度。
+        var syncProgress = progress is null
+            ? null
+            : new CatalogSyncProgressSink(progress, priceIndex.Count);
         var result = await Task.Run(async () =>
         {
             Interlocked.Increment(ref _activeSyncCount);
             try
             {
-                await catalogSync.FullSyncAsync(storeCode, cancellationToken, progress, forceFullDownload)
+                await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
                     .ConfigureAwait(false);
                 return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
                     .ConfigureAwait(false);
@@ -223,6 +227,18 @@ public sealed class ShellCatalogService(
     {
         // 满减规则会触发购物车事件，必须回到调用方上下文后再应用，避免后台线程更新 WPF 绑定集合。
         cart.SetAutomaticPromotionRules(promotionRules);
+    }
+
+    private sealed class CatalogSyncProgressSink(
+        IProgress<CatalogSyncProgress> target,
+        int compareTotalCount) : IProgress<CatalogSyncProgress>
+    {
+        public void Report(CatalogSyncProgress value)
+        {
+            target.Report(value.Stage == CatalogSyncProgressStage.Comparing
+                ? value with { TotalCount = compareTotalCount }
+                : value);
+        }
     }
 
     private sealed record LocalCatalogReloadResult(

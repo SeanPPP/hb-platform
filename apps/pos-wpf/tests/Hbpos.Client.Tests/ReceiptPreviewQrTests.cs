@@ -53,6 +53,7 @@ public sealed class ReceiptPreviewQrTests
         Assert.Equal("260", (string?)image.Attribute("Height"));
         Assert.Equal("None", (string?)image.Attribute("Stretch"));
         Assert.Equal("NearestNeighbor", (string?)image.Attribute("RenderOptions.BitmapScalingMode"));
+        Assert.Null((string?)image.Attribute("AutomationProperties.Name"));
         Assert.Contains(
             template.Descendants(presentation + "TextBlock"),
             element => (string?)element.Attribute("Text") == "{Binding Text}");

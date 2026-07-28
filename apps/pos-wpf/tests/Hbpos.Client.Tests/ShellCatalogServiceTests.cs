@@ -54,6 +54,37 @@ public sealed class ShellCatalogServiceTests
     }
 
     [Fact]
+    public async Task SyncCatalogAndReloadAsync_QueuedSyncUsesReloadedIndexCountForComparingProgress()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        priceIndex.ReplaceAll([CreateItem("INITIAL")]);
+        var repository = new FakeLocalCatalogRepository
+        {
+            Items = [CreateItem("SKU-001"), CreateItem("SKU-002"), CreateItem("SKU-003")]
+        };
+        var sync = new CoordinatedCatalogSyncService();
+        var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
+        var reports = new ConcurrentQueue<CatalogSyncProgress>();
+
+        var firstSync = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+        await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var secondSync = service.SyncCatalogAndReloadAsync(
+            "S01",
+            forceFullDownload: false,
+            new RecordingProgress<CatalogSyncProgress>(reports));
+
+        Assert.False(sync.SecondRegularStarted.Task.IsCompleted);
+
+        sync.ReleaseRegularIfNotCanceled();
+        await sync.SecondRegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await Task.WhenAll(firstSync, secondSync).WaitAsync(TimeSpan.FromSeconds(3));
+
+        var comparing = Assert.Single(reports.Where(report =>
+            report.Stage == CatalogSyncProgressStage.Comparing));
+        Assert.Equal(3, comparing.TotalCount);
+    }
+
+    [Fact]
     public async Task LoadLocalCatalogAsync_LoadsAndRebuildsIndexOnBackgroundThread()
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -179,8 +210,11 @@ public sealed class ShellCatalogServiceTests
     {
         private readonly TaskCompletionSource _releaseRegular = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _activeWrites;
+        private int _regularCallCount;
 
         public TaskCompletionSource RegularStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondRegularStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource ResetStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -207,15 +241,36 @@ public sealed class ShellCatalogServiceTests
                     return new LocalCatalogSyncResult(storeCode, 0, 1, 1, 0);
                 }
 
-                RegularStarted.SetResult();
-                try
+                if (Interlocked.Increment(ref _regularCallCount) == 1)
                 {
-                    await _releaseRegular.Task.WaitAsync(cancellationToken);
+                    RegularStarted.SetResult();
+                    try
+                    {
+                        await _releaseRegular.Task.WaitAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        RegularCanceled = true;
+                        throw;
+                    }
                 }
-                catch (OperationCanceledException)
+                else
                 {
-                    RegularCanceled = true;
-                    throw;
+                    SecondRegularStarted.SetResult();
+                    progress?.Report(new CatalogSyncProgress(
+                        storeCode,
+                        CatalogSyncProgressStage.Comparing,
+                        TotalCount: 0,
+                        DownloadedCount: 0,
+                        Percent: 0,
+                        ComparePages: 1,
+                        RemotePages: 0,
+                        UpsertedCount: 0,
+                        DeletedCount: 0,
+                        ElapsedMilliseconds: 1)
+                    {
+                        ComparedCount = 1
+                    });
                 }
 
                 return new LocalCatalogSyncResult(storeCode, 1, 1, 0, 0);
@@ -232,9 +287,19 @@ public sealed class ShellCatalogServiceTests
         }
     }
 
+    private sealed class RecordingProgress<T>(ConcurrentQueue<T> reports) : IProgress<T>
+    {
+        public void Report(T value)
+        {
+            reports.Enqueue(value);
+        }
+    }
+
     private class FakeLocalCatalogRepository : ILocalCatalogRepository
     {
         public IReadOnlyList<CatalogPromotionRuleDto> PromotionRules { get; set; } = [];
+
+        public IReadOnlyList<SellableItemDto> Items { get; set; } = [CreateItem("RESET-ITEM")];
 
         public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
             string storeCode,
@@ -319,7 +384,7 @@ public sealed class ShellCatalogServiceTests
             string storeCode,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<SellableItemDto>>([CreateItem("RESET-ITEM")]);
+            return Task.FromResult(Items);
         }
 
         public Task ReplacePromotionRulesAsync(

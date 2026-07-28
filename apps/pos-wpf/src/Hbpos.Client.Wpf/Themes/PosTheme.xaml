@@ -53,7 +53,6 @@
                    Stretch="None"
                    SnapsToDevicePixels="True"
                    RenderOptions.BitmapScalingMode="NearestNeighbor"
-                   AutomationProperties.Name="{Binding Text}"
                    IsHitTestVisible="False">
                 <Image.Style>
                     <Style TargetType="Image">

@@ -1874,9 +1874,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         bool forceFullDownload,
         CancellationToken cancellationToken)
     {
-        var compareTotalCount = _priceIndex.Count;
-        var progress = new Progress<CatalogSyncProgress>(
-            value => ApplyCatalogDownloadProgress(value, compareTotalCount));
+        var progress = new Progress<CatalogSyncProgress>(ApplyCatalogDownloadProgress);
         return await _shellCatalogService.SyncCatalogAndReloadAsync(
             Session.StoreCode,
             forceFullDownload,
@@ -1884,7 +1882,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             cancellationToken);
     }
 
-    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress, int compareTotalCount)
+    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress)
     {
         _catalogDownloadHideTimer.Stop();
         IsCatalogDownloadProgressVisible = true;
@@ -1898,7 +1896,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var stagePercent = CalculateCatalogDownloadStagePercent(progress, compareTotalCount);
+        var stagePercent = CalculateCatalogDownloadStagePercent(progress);
         CatalogDownloadProgressValue = stagePercent;
 
         if (progress.Stage is CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing)
@@ -1945,17 +1943,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static int CalculateCatalogDownloadStagePercent(
-        CatalogSyncProgress progress,
-        int compareTotalCount)
+    private static int CalculateCatalogDownloadStagePercent(CatalogSyncProgress progress)
     {
         // 核对和下载分别按当前阶段计算，阶段切换时允许重新从 0% 开始。
         return progress.Stage switch
         {
             CatalogSyncProgressStage.Preparing => 0,
-            CatalogSyncProgressStage.Comparing when compareTotalCount <= 0 => 0,
+            CatalogSyncProgressStage.Comparing when progress.TotalCount <= 0 => 0,
             CatalogSyncProgressStage.Comparing => Math.Clamp(
-                (int)(progress.ComparedCount * 100L / compareTotalCount),
+                (int)(progress.ComparedCount * 100L / progress.TotalCount),
                 0,
                 100),
             CatalogSyncProgressStage.Completed => 100,

@@ -69,6 +69,23 @@ public sealed class MainWindowStateTests
         Assert.Same(repository.ExceptionToThrow, reportedException);
     }
 
+    [Fact]
+    public async Task WaitForPendingWindowModeSaveAsync_waits_for_latest_queued_save()
+    {
+        var firstSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var latestSave = firstSave.Task;
+        var waitTask = MainWindow.WaitForPendingWindowModeSaveAsync(() => latestSave);
+
+        var secondSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        latestSave = secondSave.Task;
+        firstSave.SetResult();
+
+        Assert.False(waitTask.IsCompleted);
+
+        secondSave.SetResult();
+        await waitTask;
+    }
+
     private sealed class RecordingSettingsRepository : ILocalAppSettingsRepository
     {
         public Exception? ExceptionToThrow { get; init; }

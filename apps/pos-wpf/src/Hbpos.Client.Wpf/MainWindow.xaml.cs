@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -39,6 +40,8 @@ public partial class MainWindow : Window
     private bool _postShowStartupStarted;
     private bool _windowModeRestored;
     private bool _isApplyingWindowMode;
+    private bool _isWaitingForWindowModeSaveBeforeClose;
+    private bool _isClosingAfterWindowModeSave;
     private WindowState _lastNonMinimizedWindowState = WindowState.Maximized;
 
     public bool IsStartupBlockedByAppUpdate { get; private set; }
@@ -74,6 +77,7 @@ public partial class MainWindow : Window
         PreviewMouseWheel += MainWindowUserInput;
         PreviewTouchDown += MainWindowUserInput;
         StateChanged += MainWindowStateChanged;
+        Closing += MainWindowClosing;
         Closed += MainWindowClosed;
     }
 
@@ -387,9 +391,49 @@ public partial class MainWindow : Window
         PreviewMouseWheel -= MainWindowUserInput;
         PreviewTouchDown -= MainWindowUserInput;
         StateChanged -= MainWindowStateChanged;
+        Closing -= MainWindowClosing;
         _hwndSource?.RemoveHook(MainWindowMessageHook);
         _rawScannerService.Stop();
         _viewModel.Dispose();
+    }
+
+    private async void MainWindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (_isClosingAfterWindowModeSave)
+        {
+            return;
+        }
+
+        if (_isWaitingForWindowModeSaveBeforeClose)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        if (_windowModeSaveTask.IsCompleted)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        _isWaitingForWindowModeSaveBeforeClose = true;
+        try
+        {
+            await WaitForPendingWindowModeSaveAsync(() => _windowModeSaveTask);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "WindowState",
+                $"main window mode save flush failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        finally
+        {
+            _isWaitingForWindowModeSaveBeforeClose = false;
+            _isClosingAfterWindowModeSave = true;
+            Close();
+        }
     }
 
     private IntPtr MainWindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -730,6 +774,19 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             reportException(ex);
+        }
+    }
+
+    internal static async Task WaitForPendingWindowModeSaveAsync(Func<Task> getPendingSave)
+    {
+        while (true)
+        {
+            var pendingSave = getPendingSave();
+            await pendingSave;
+            if (ReferenceEquals(pendingSave, getPendingSave()))
+            {
+                return;
+            }
         }
     }
 

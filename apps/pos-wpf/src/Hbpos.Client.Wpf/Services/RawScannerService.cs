@@ -44,7 +44,7 @@ internal interface IScannerInputDeduplicator
 
 internal sealed class ScannerInputDuplicateGuard
 {
-    private static readonly TimeSpan CrossSourceDuplicateWindow = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan CrossSourceDuplicateWindow = TimeSpan.FromMilliseconds(200);
     private readonly object _gate = new();
     private string? _lastBarcode;
     private string? _lastSource;
