@@ -85,6 +85,38 @@ public sealed class ReceiptReturnsViewModelTests
     }
 
     [Fact]
+    public async Task LookupCommand_clears_previous_return_state_when_next_lookup_fails()
+    {
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (query, _) => query == "ORDER-001"
+                ? Task.FromResult(CreateLookupResult())
+                : Task.FromException<ReceiptReturnLookupResult>(
+                    new InvalidOperationException("Unexpected failure."))
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        await viewModel.LookupCommand.ExecuteAsync(null);
+        viewModel.AddReceiptLineCommand.Execute(viewModel.OrderLines.Single());
+
+        Assert.Single(viewModel.PendingLines);
+        Assert.True(viewModel.ConfirmToCartCommand.CanExecute(null));
+
+        viewModel.ScanText = "ORDER-002";
+        await viewModel.LookupCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.OrderLines);
+        Assert.Empty(viewModel.PendingLines);
+        Assert.False(viewModel.ReturnRecordsMayBeStale);
+        Assert.Equal("No order loaded", viewModel.OrderSummaryText);
+        Assert.Equal("Order lookup failed. Please retry.", viewModel.StatusMessage);
+        Assert.False(viewModel.ConfirmToCartCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task BackCommand_resets_pending_return_state_before_leaving()
     {
         var workflow = new FakeReceiptReturnsWorkflowService

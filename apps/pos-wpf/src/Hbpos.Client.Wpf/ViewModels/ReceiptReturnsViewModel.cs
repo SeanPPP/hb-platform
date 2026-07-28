@@ -258,11 +258,12 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         }
 
         var querySnapshot = ScanText;
+        var isNoReceiptLookup = IsNoReceiptMode;
         var stopwatch = Stopwatch.StartNew();
         IsBusy = true;
         try
         {
-            if (IsNoReceiptMode)
+            if (isNoReceiptLookup)
             {
                 await AddNoReceiptProductAsync(querySnapshot);
                 return;
@@ -274,6 +275,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         }
         catch (Exception ex)
         {
+            if (!isNoReceiptLookup)
+            {
+                ClearSelection();
+            }
+
             StatusMessage = T("returns.status.lookupUnexpectedError", "Order lookup failed. Please retry.");
             ConsoleLog.Write(
                 "ReceiptReturns",
