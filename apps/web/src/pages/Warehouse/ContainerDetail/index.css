@@ -102,14 +102,22 @@
 }
 
 .container-detail-copyable {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
   max-width: 100%;
 }
 
 .container-detail-copyable .ant-typography {
+  min-width: 0;
+  flex: 1 1 auto;
   line-height: 1.2;
 }
 
 .container-detail-copy-button {
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
   padding: 0;

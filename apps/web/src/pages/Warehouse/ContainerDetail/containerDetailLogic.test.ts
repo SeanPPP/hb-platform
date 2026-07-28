@@ -4217,9 +4217,22 @@ assertEqual(
   '货柜明细隔行色应保留 hover 反馈',
 )
 assertEqual(
-  pageSource.includes('className="container-detail-nowrap container-detail-copyable"'),
+  pageSource.includes('<span className="container-detail-nowrap container-detail-copyable">'),
   true,
-  '货号复制区域应使用专属 nowrap 样式保持单行紧凑显示',
+  '货号复制区域应使用无额外包装层的专属 nowrap 弹性容器',
+)
+assertEqual(
+  pageSource.includes('<CopyableText value={getContainerDetailItemNumber(row)} />') &&
+    !pageSource.includes('<CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />') &&
+    pageStyleSource.includes([
+      '.container-detail-copyable .ant-typography {',
+      '  min-width: 0;',
+      '  flex: 1 1 auto;',
+      '  line-height: 1.2;',
+      '}',
+    ].join('\n')),
+  true,
+  '货号文本宽度应跟随拖拽后的列宽，不得被固定最大宽度持续截断',
 )
 assertEqual(
   pageSource.includes('className="container-detail-copy-button"'),

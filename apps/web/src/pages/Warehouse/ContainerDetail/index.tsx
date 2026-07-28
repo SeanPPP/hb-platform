@@ -418,7 +418,7 @@ function getMatchTypeTagColor(value: ContainerDetailMatchTypeFilter) {
   return 'red'
 }
 
-function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }) {
+function CopyableText({ value }: { value?: string }) {
   const { t } = useTranslation()
 
   if (!value) {
@@ -426,8 +426,8 @@ function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }
   }
 
   return (
-    <Space size={4} wrap={false} className="container-detail-nowrap container-detail-copyable">
-      <Typography.Text style={maxWidth ? { maxWidth } : undefined} ellipsis={maxWidth ? { tooltip: value } : false}>
+    <span className="container-detail-nowrap container-detail-copyable">
+      <Typography.Text ellipsis={{ tooltip: value }}>
         {value}
       </Typography.Text>
       <Tooltip title={t('common.copy', 'Copy')}>
@@ -443,7 +443,7 @@ function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }
           }}
         />
       </Tooltip>
-    </Space>
+    </span>
   )
 }
 
@@ -3444,7 +3444,7 @@ export default function ContainerDetailPage() {
       fixed: 'left',
       ...makeSortProps('itemNumber'),
       ...textFilterProps('itemNumber', t('containers.placeholders.filterItemNumber')),
-      render: (_, row) => <CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />,
+      render: (_, row) => <CopyableText value={getContainerDetailItemNumber(row)} />,
     },
     {
       title: renderColumnTitle('englishName', t('containers.fields.englishName')),
