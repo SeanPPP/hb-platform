@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using AutoMapper;
+using BlazorApp.Api.Cache;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
@@ -315,8 +316,18 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var first = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
 
         await SeedProductAsync("P-CACHE-2", "ITEM-CACHE-2", "BAR-CACHE-2", "缓存商品二", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
-        await SeedSaleAsync("O-CACHE-2", "D-CACHE-2", "P-CACHE-2", "S1", new DateTime(2026, 6, 2), 99, 198m);
-        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 2),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-CACHE-2",
+            ProductName = "缓存商品二",
+            Barcode = "BAR-CACHE-2",
+            TotalQuantity = 99,
+            TotalAmount = 198m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
 
         var second = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
 
@@ -532,23 +543,200 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_统计状态失败时直接返回空结果避免明细回退()
+    public async Task GetBestSellersAsync_统计状态失败时返回现有统计商品并保留告警()
     {
         await SeedProductAsync("P-FALLBACK", "ITEM-FALLBACK", "BAR-FALLBACK", "回退商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-FALLBACK", "D-FALLBACK", "P-FALLBACK", "S1", new DateTime(2026, 6, 1), 8, 16m);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 1),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-FALLBACK",
+            ProductName = "回退商品",
+            Barcode = "BAR-FALLBACK",
+            TotalQuantity = 8,
+            TotalAmount = 16m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
         await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Failed, "对账失败");
 
         var result = await CreateService().GetBestSellersAsync(
-            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 1) },
             null,
             pageIndex: 1,
             pageSize: 50
         );
 
-        Assert.Empty(result.Products);
-        Assert.Equal(0, result.Total);
+        var product = Assert.Single(result.Products);
+        Assert.Equal("P-FALLBACK", product.ProductCode);
+        Assert.Equal(8, product.Quantity);
+        Assert.Equal(1, result.Total);
         Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
         Assert.Contains("对账失败", result.StatisticMessage);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_Fresh缓存后状态失败应绕过缓存且失败结果不缓存()
+    {
+        var targetDate = new DateTime(2026, 6, 14);
+        await SeedProductAsync("P-STATUS-CACHE", "ITEM-STATUS-CACHE", "BAR-STATUS-CACHE", "状态缓存商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-STATUS-CACHE",
+            ProductName = "状态缓存商品",
+            Barcode = "BAR-STATUS-CACHE",
+            TotalQuantity = 5,
+            TotalAmount = 10m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Fresh);
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = targetDate, EndDate = targetDate };
+
+        var fresh = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(5, Assert.Single(fresh.Products).Quantity);
+
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 9)
+            .SetColumns(row => row.TotalAmount == 18m)
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-STATUS-CACHE")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Failed)
+            .SetColumns(row => row.ErrorMessage == "对账失败")
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily && row.Date == targetDate)
+            .ExecuteCommandAsync();
+
+        var failed = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(9, Assert.Single(failed.Products).Quantity);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, failed.StatisticStatus);
+        Assert.Equal("对账失败", failed.StatisticMessage);
+
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 12)
+            .SetColumns(row => row.TotalAmount == 24m)
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-STATUS-CACHE")
+            .ExecuteCommandAsync();
+
+        var failedAgain = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(12, Assert.Single(failedAgain.Products).Quantity);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, failedAgain.StatisticStatus);
+
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 15)
+            .SetColumns(row => row.TotalAmount == 30m)
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-STATUS-CACHE")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Fresh)
+            .SetColumns(row => row.ErrorMessage == null)
+            .SetColumns(row => row.LastAggregatedAtUtc == DateTime.UtcNow.AddMinutes(1))
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily && row.Date == targetDate)
+            .ExecuteCommandAsync();
+
+        var refreshed = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(15, Assert.Single(refreshed.Products).Quantity);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, refreshed.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_Fresh缓存后Pending和Stale均不返回旧排名()
+    {
+        var targetDate = new DateTime(2026, 6, 15);
+        await SeedProductAsync("P-NON-FRESH-CACHE", "ITEM-NON-FRESH-CACHE", "BAR-NON-FRESH-CACHE", "非Fresh缓存商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-NON-FRESH-CACHE",
+            ProductName = "非Fresh缓存商品",
+            Barcode = "BAR-NON-FRESH-CACHE",
+            TotalQuantity = 5,
+            TotalAmount = 10m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Fresh);
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = targetDate, EndDate = targetDate };
+
+        var fresh = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Single(fresh.Products);
+
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Pending)
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily && row.Date == targetDate)
+            .ExecuteCommandAsync();
+
+        var pending = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Empty(pending.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, pending.StatisticStatus);
+
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Running)
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily && row.Date == targetDate)
+            .ExecuteCommandAsync();
+
+        var running = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Empty(running.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, running.StatisticStatus);
+
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Stale)
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily && row.Date == targetDate)
+            .ExecuteCommandAsync();
+
+        var stale = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Empty(stale.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Stale, stale.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_版本化缓存仍可由销售看板清缓存清除()
+    {
+        SalesDashboardCacheKeys.ClearActiveKeys();
+        var targetDate = new DateTime(2026, 6, 17);
+        await SeedProductAsync("P-CLEAR-CACHE", "ITEM-CLEAR-CACHE", "BAR-CLEAR-CACHE", "清缓存商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-CLEAR-CACHE",
+            ProductName = "清缓存商品",
+            Barcode = "BAR-CLEAR-CACHE",
+            TotalQuantity = 5,
+            TotalAmount = 10m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Fresh);
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(cache);
+        var range = new DateRangeDto { StartDate = targetDate, EndDate = targetDate };
+
+        var cached = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(5, Assert.Single(cached.Products).Quantity);
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 9)
+            .SetColumns(row => row.TotalAmount == 18m)
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-CLEAR-CACHE")
+            .ExecuteCommandAsync();
+        var beforeClear = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(5, Assert.Single(beforeClear.Products).Quantity);
+
+        var cacheWarmer = new SalesDashboardCacheWarmer(
+            service,
+            NullLogger<SalesDashboardCacheWarmer>.Instance,
+            cache
+        );
+        await cacheWarmer.ClearCacheAsync();
+
+        var afterClear = await service.GetBestSellersAsync(range, null, pageIndex: 1, pageSize: 50);
+        Assert.Equal(9, Assert.Single(afterClear.Products).Quantity);
     }
 
     [Fact]
@@ -1001,6 +1189,66 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.Equal(SalesStatisticRefreshStatus.Stale, data.Status);
         Assert.Equal("Pending", data.ReconciliationStatus);
         Assert.Equal("Pending", data.SalesReconciliationStatus);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_补充退货应按净额对账()
+    {
+        var targetDate = new DateTime(2026, 6, 16);
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Fresh);
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 2,
+            TotalAmount = 20m,
+            OrderCount = 1,
+            CustomerCount = 1,
+            AverageOrderValue = 20m,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-SUM-RETURN",
+            TotalQuantity = 1,
+            TotalAmount = 10m,
+        }).ExecuteCommandAsync();
+        await SeedSaleAsync(
+            "O-SUM-SALE",
+            "D-SUM-SALE",
+            "P-SUM-RETURN",
+            "S1",
+            targetDate.AddHours(9),
+            2,
+            20m
+        );
+        await SeedReturnRecordAsync(
+            "O-SUM-RETURN",
+            "D-SUM-RETURN",
+            "O-SUM-SALE",
+            "D-SUM-SALE",
+            "P-SUM-RETURN",
+            "S1",
+            targetDate.AddHours(10),
+            1m,
+            10m
+        );
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(targetDate);
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal("Passed", data.SalesReconciliationStatus);
+        Assert.Equal(10m, data.ProductTotalAmount);
+        Assert.Equal(10m, data.StoreTotalAmount);
+        Assert.Equal(0m, data.AmountDifference);
+        Assert.Equal(1, data.ProductTotalQuantity);
+        Assert.Equal(1, data.StoreTotalQuantity);
+        Assert.Equal(0, data.QuantityDifference);
     }
 
     [Fact]
@@ -1541,6 +1789,40 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedReturnRecordAsync(
+        string returnOrderGuid,
+        string returnDetailGuid,
+        string originalOrderGuid,
+        string originalDetailGuid,
+        string productCode,
+        string? branchCode,
+        DateTime orderTime,
+        decimal returnQuantity,
+        decimal returnAmount
+    )
+    {
+        await _posmDb.Insertable(new SalesOrder
+        {
+            OrderGuid = returnOrderGuid,
+            BranchCode = branchCode,
+            OrderTime = orderTime,
+            Status = 1,
+            LastUploadTime = orderTime.AddMinutes(5),
+        }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new SalesReturnRecord
+        {
+            ReturnDetailGuid = returnDetailGuid,
+            ReturnOrderGuid = returnOrderGuid,
+            OriginalOrderGuid = originalOrderGuid,
+            OriginalOrderDetailGuid = originalDetailGuid,
+            ProductCode = productCode,
+            ReturnQuantity = returnQuantity,
+            ReturnAmount = returnAmount,
+            CreatedTime = orderTime.AddMinutes(6),
+            UpdatedTime = orderTime.AddMinutes(7),
+        }).ExecuteCommandAsync();
+    }
+
     private async Task SeedPosmOrderAsync(
         string orderGuid,
         string? branchCode,
@@ -1585,14 +1867,14 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         }
     }
 
-    private SalesDashboardReactService CreateService()
+    private SalesDashboardReactService CreateService(IMemoryCache? cache = null)
     {
         return new SalesDashboardReactService(
             CreateSqlSugarContext(_localDb),
             CreatePosmSqlSugarContext(_posmDb),
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
-            new MemoryCache(new MemoryCacheOptions())
+            cache ?? new MemoryCache(new MemoryCacheOptions())
         );
     }
 

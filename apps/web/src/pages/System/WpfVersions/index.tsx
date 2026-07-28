@@ -19,7 +19,6 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  QRCode,
   Segmented,
   Select,
   Space,
@@ -76,6 +75,7 @@ import {
   isWpfRollbackTarget,
   normalizeWpfReleaseChannel,
 } from './logic'
+import WpfDownloadQrCode from './WpfDownloadQrCode'
 
 const { Text, Paragraph } = Typography
 const { Dragger } = Upload
@@ -1334,7 +1334,7 @@ export default function WpfVersionsPage() {
       >
         {qrRelease?.downloadUrl ? (
           <Space direction="vertical" size={16} style={{ width: '100%', alignItems: 'center' }}>
-            <QRCode value={qrRelease.downloadUrl} size={220} />
+            <WpfDownloadQrCode value={qrRelease.downloadUrl} />
             <Space direction="vertical" size={2} align="center">
               <Text strong>{qrRelease.version}</Text>
               <Text>{qrRelease.fileName}</Text>

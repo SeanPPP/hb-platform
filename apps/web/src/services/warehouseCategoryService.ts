@@ -214,7 +214,13 @@ export async function deleteWarehouseCategory(categoryGuid: string): Promise<boo
   const response = await request.delete<ReactApiResponse<boolean> | boolean>(
     `/api/react/v1/warehouse-categories/${categoryGuid}`,
   )
-  return unwrapReactData(response, '删除分类失败')
+  // 删除接口成功时只返回 success，没有 data；不能用需要 data 的通用解包逻辑误报失败。
+  ensureReactSuccess(response, '删除分类失败')
+  if (response && typeof response === 'object' && ('success' in response || 'isSuccess' in response)) {
+    const result = response as ReactApiResponse<boolean>
+    return Boolean(result.success ?? result.isSuccess)
+  }
+  return Boolean(response)
 }
 
 export async function batchAssignProducts(categoryGuid: string, productCodes: string[]): Promise<number> {

@@ -245,30 +245,19 @@ namespace BlazorApp.Api.Services
                     {
                         var subItem = relatedSubItems[i];
                         var (subItemNumber, subBarcode) = subCodes[i];
-                        var subProductCode = Guid.NewGuid().ToString();
                         var subProductName = subItem.SubItemProductName ?? subItem.ProductName;
-
-                        allProducts.Add(
-                            new DomesticProduct
-                            {
-                                ProductCode = subProductCode,
-                                SupplierCode = request.SupplierCode,
-                                ProductName = subProductName,
-                                HBProductNo = subItemNumber,
-                                Barcode = subBarcode,
-                                ProductType = 0,
-                                OEMPrice = subItem.PrivateLabelPrice,
-                                IsActive = true,
-                            }
-                        );
+                        var subSetProductCode = Guid.NewGuid().ToString();
 
                         allSetProducts.Add(
                             new DomesticSetProduct
                             {
-                                SetProductCode = Guid.NewGuid().ToString(),
+                                // 套装子项不再创建独立主档，货号和条码由关系表唯一承载。
+                                SetProductCode = subSetProductCode,
                                 ProductCode = createdItem.ProductCode,
                                 ProductNo = createdItem.HBProductNo,
                                 SetProductNo = subItemNumber,
+                                // 子项没有独立主档，名称必须由关系行持久化。
+                                SetProductName = subProductName,
                                 SetBarcode = subBarcode,
                                 OEMPrice = subItem.PrivateLabelPrice,
                             }
@@ -278,7 +267,8 @@ namespace BlazorApp.Api.Services
                             new DomesticProductCreationLog
                             {
                                 LogId = Guid.NewGuid().ToString(),
-                                ProductCode = subProductCode,
+                                // 保持 ProductCode 的 DomesticProduct 导航语义，子项用 HBProductNo 定位关系行。
+                                ProductCode = createdItem.ProductCode,
                                 SupplierCode = request.SupplierCode,
                                 SupplierName = supplierName,
                                 HBProductNo = subItemNumber,
@@ -295,7 +285,8 @@ namespace BlazorApp.Api.Services
                         createdItem.SubItems.Add(
                             new SubItemDto
                             {
-                                ProductCode = subProductCode,
+                                // 批次编辑接口以此主键精确定位子项关系记录。
+                                ProductCode = subSetProductCode,
                                 HBProductNo = subItemNumber,
                                 Barcode = subBarcode,
                                 ProductName = subProductName ?? "",
@@ -305,30 +296,42 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
-                if (allProducts.Any())
-                    await _context
-                        .Db.Fastest<DomesticProduct>()
-                        .AS("DomesticProduct")
-                        .PageSize(500)
-                        .BulkCopyAsync(allProducts);
-                if (allSetProducts.Any())
-                    await _context
-                        .Db.Fastest<DomesticSetProduct>()
-                        .AS("DomesticSetProduct")
-                        .PageSize(500)
-                        .BulkCopyAsync(allSetProducts);
-                if (allLogs.Any())
-                    await _context
-                        .Db.Fastest<DomesticProductCreationLog>()
-                        .AS("DomesticProductCreationLog")
-                        .PageSize(500)
-                        .BulkCopyAsync(allLogs);
+                // 三类记录必须由同一 SqlSugarClient 的事务提交，避免日志失败后留下孤儿主档或关系行。
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    if (allProducts.Any())
+                        await _context
+                            .Db.Fastest<DomesticProduct>()
+                            .AS("DomesticProduct")
+                            .PageSize(500)
+                            .BulkCopyAsync(allProducts);
+                    if (allSetProducts.Any())
+                        await _context
+                            .Db.Fastest<DomesticSetProduct>()
+                            .AS("DomesticSetProduct")
+                            .PageSize(500)
+                            .BulkCopyAsync(allSetProducts);
+                    if (allLogs.Any())
+                        await _context
+                            .Db.Fastest<DomesticProductCreationLog>()
+                            .AS("DomesticProductCreationLog")
+                            .PageSize(500)
+                            .BulkCopyAsync(allLogs);
+
+                    _context.Db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
+                }
 
                 var response = new CreateDomesticProductBatchResponse
                 {
                     BatchNumber = batchNumber,
                     Items = responseItems,
-                    TotalCreated = allProducts.Count,
+                    TotalCreated = allLogs.Count,
                     NormalProductCount = normalItems.Count,
                     SetProductCount = expandedSetItemCount,
                 };
@@ -459,21 +462,6 @@ namespace BlazorApp.Api.Services
                         BlazorApp.Shared.DTOs.ProductTypeEnum.Set
                     );
 
-                // 创建 DomesticProduct (子商品作为普通商品类型)
-                var domesticProduct = new DomesticProduct
-                {
-                    ProductCode = Guid.NewGuid().ToString(),
-                    SupplierCode = request.SupplierCode,
-                    ProductName = item.SubItemProductName ?? item.ProductName,
-                    HBProductNo = itemNumber,
-                    Barcode = barcode,
-                    ProductType = 0, // 子商品作为普通商品
-                    OEMPrice = item.PrivateLabelPrice,
-                    IsActive = true,
-                };
-
-                await _context.DomesticProductDb.InsertAsync(domesticProduct);
-
                 // 创建 DomesticSetProduct
                 var setProduct = new DomesticSetProduct
                 {
@@ -481,6 +469,8 @@ namespace BlazorApp.Api.Services
                     ProductCode = parentProductCode,
                     ProductNo = parentItemNumber, // 关联到父商品货号
                     SetProductNo = itemNumber,
+                    // 单条创建同样由关系行承载子项名称，和批量路径保持一致。
+                    SetProductName = item.SubItemProductName ?? item.ProductName,
                     SetBarcode = barcode,
                     OEMPrice = item.PrivateLabelPrice,
                 };
@@ -490,7 +480,8 @@ namespace BlazorApp.Api.Services
                 var creationLog = new DomesticProductCreationLog
                 {
                     LogId = Guid.NewGuid().ToString(),
-                    ProductCode = domesticProduct.ProductCode,
+                    // 日志导航仍指向父 DomesticProduct，子项通过 HBProductNo 对应关系表。
+                    ProductCode = parentProductCode,
                     SupplierCode = request.SupplierCode,
                     SupplierName = supplierName,
                     HBProductNo = itemNumber,
@@ -506,7 +497,7 @@ namespace BlazorApp.Api.Services
 
                 return new SubItemDto
                 {
-                    ProductCode = domesticProduct.ProductCode,
+                    ProductCode = setProduct.SetProductCode,
                     HBProductNo = itemNumber,
                     Barcode = barcode,
                     ProductName = item.SubItemProductName ?? item.ProductName ?? "",
@@ -587,6 +578,7 @@ namespace BlazorApp.Api.Services
                         ),
                         SetProductCount = g.Count(x =>
                             x.Product != null && x.Product.ProductType == 1
+                            && (x.Remark == null || !x.Remark.StartsWith("Parent:"))
                         ),
                         TotalCount = g.Count(),
                         Remark = g.First().Remark,
@@ -661,6 +653,40 @@ namespace BlazorApp.Api.Services
                 }
 
                 var firstLog = logs.First();
+                var productCodes = logs
+                    .Select(log => log.ProductCode)
+                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                    .Distinct()
+                    .ToList();
+                var products = productCodes.Any()
+                    ? await _context.DomesticProductDb.GetListAsync(product =>
+                        productCodes.Contains(product.ProductCode)
+                    )
+                    : new List<DomesticProduct>();
+                var setProducts = productCodes.Any()
+                    ? await _context.DomesticSetProductDb.GetListAsync(setProduct =>
+                        productCodes.Contains(setProduct.ProductCode)
+                    )
+                    : new List<DomesticSetProduct>();
+                var productsByProductCode = products
+                    .GroupBy(product => product.ProductCode)
+                    .ToDictionary(group => group.Key, group => group.First());
+                var logsByHBProductNo = logs
+                    .Where(log => !string.IsNullOrWhiteSpace(log.HBProductNo))
+                    .GroupBy(log => log.HBProductNo)
+                    .ToDictionary(group => group.Key, group => group.First());
+                var setSubItemsByParentAndProductNo = setProducts
+                    .Where(setProduct => setProduct.ProductNo != setProduct.SetProductNo)
+                    .GroupBy(setProduct => (setProduct.ProductCode, setProduct.SetProductNo))
+                    .ToDictionary(group => group.Key, group => group.First());
+                var setQuantityByProductCode = setProducts
+                    .Where(setProduct => setProduct.ProductNo != setProduct.SetProductNo)
+                    .GroupBy(setProduct => setProduct.ProductCode)
+                    .ToDictionary(group => group.Key, group => group.Count());
+                var setPriceByProductCode = setProducts
+                    .Where(setProduct => setProduct.ProductNo == setProduct.SetProductNo)
+                    .GroupBy(setProduct => setProduct.ProductCode)
+                    .ToDictionary(group => group.Key, group => group.First().DomesticPrice);
                 var normalCount = 0;
                 var setCount = 0;
 
@@ -668,47 +694,73 @@ namespace BlazorApp.Api.Services
 
                 foreach (var log in logs)
                 {
-                    var product = await _context.DomesticProductDb.GetByIdAsync(log.ProductCode);
+                    productsByProductCode.TryGetValue(log.ProductCode, out var product);
                     var productType = product?.ProductType ?? 0;
 
-                    // 检查是否是子商品（通过 Remark 中的 Parent 信息判断）
-                    var isSubItem = false;
+                    // 子项日志的 ProductCode 保持指向父商品，具体子项由 HBProductNo 对应关系表。
+                    var isSubItem = IsSetSubItemLog(log);
                     string? parentProductCode = null;
                     string? parentHBProductNo = null;
+                    DomesticSetProduct? setSubItem = null;
 
-                    if (!string.IsNullOrEmpty(log.Remark) && log.Remark.StartsWith("Parent:"))
+                    if (isSubItem)
                     {
-                        isSubItem = true;
                         // 查找父商品
-                        var parentItemNumber = log.Remark.Replace("Parent:", "").Trim();
-                        var parentLog = logs.FirstOrDefault(l => l.HBProductNo == parentItemNumber);
-                        if (parentLog != null)
+                        var parentItemNumber = log.Remark!.Replace("Parent:", "").Trim();
+                        logsByHBProductNo.TryGetValue(parentItemNumber, out var parentLog);
+                        parentProductCode = parentLog?.ProductCode ?? log.ProductCode;
+                        parentHBProductNo = parentLog?.HBProductNo ?? parentItemNumber;
+
+                        // 仅新数据的子日志与父项共享 ProductCode，才能改由关系表承担子项标识和价格。
+                        if (parentLog != null && log.ProductCode == parentLog.ProductCode)
                         {
-                            parentProductCode = parentLog.ProductCode;
-                            parentHBProductNo = parentLog.HBProductNo;
+                            setSubItemsByParentAndProductNo.TryGetValue(
+                                (parentProductCode, log.HBProductNo),
+                                out setSubItem
+                            );
                         }
                     }
 
                     if (productType == 0 && !isSubItem)
                         normalCount++;
-                    else if (productType == 1)
+                    else if (productType == 1 && !isSubItem)
                         setCount++;
 
                     items.Add(
                         new BatchDetailItemDto
                         {
-                            ProductCode = log.ProductCode,
+                            // 子项向编辑接口暴露关系主键，避免与共享的父 ProductCode 混淆。
+                            ProductCode = isSubItem
+                                ? setSubItem?.SetProductCode ?? log.ProductCode
+                                : log.ProductCode,
                             HBProductNo = log.HBProductNo,
                             Barcode = log.Barcode,
-                            ProductName = log.ProductName ?? "",
+                            // 新子项优先使用关系行名称；历史行缺失时兼容日志和旧主档名称。
+                            ProductName = isSubItem
+                                ? setSubItem?.SetProductName
+                                    ?? log.ProductName
+                                    ?? product?.ProductName
+                                    ?? ""
+                                : log.ProductName ?? product?.ProductName ?? "",
                             ProductType = isSubItem ? 2 : productType, // 2 = SetSubItem
-                            PrivateLabelPrice = product?.OEMPrice,
+                            PrivateLabelPrice = isSubItem
+                                ? setSubItem?.OEMPrice ?? product?.OEMPrice
+                                : product?.OEMPrice,
                             SetQuantity =
                                 productType == 1
-                                    ? await GetSetQuantityAsync(log.ProductCode)
+                                && !isSubItem
+                                && setQuantityByProductCode.TryGetValue(
+                                    log.ProductCode,
+                                    out var setQuantity
+                                )
+                                    ? setQuantity
                                     : null,
                             SetPrice =
-                                productType == 1 ? await GetSetPriceAsync(log.ProductCode) : null,
+                                productType == 1
+                                && !isSubItem
+                                && setPriceByProductCode.TryGetValue(log.ProductCode, out var setPrice)
+                                    ? setPrice
+                                    : null,
                             ParentProductCode = parentProductCode,
                             ParentHBProductNo = parentHBProductNo,
                         }
@@ -756,6 +808,9 @@ namespace BlazorApp.Api.Services
                 return null;
             }
         }
+
+        private static bool IsSetSubItemLog(DomesticProductCreationLog log) =>
+            !string.IsNullOrEmpty(log.Remark) && log.Remark.StartsWith("Parent:");
 
         /// <summary>
         /// 获取套装价格
@@ -1001,21 +1056,86 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<object>.Error("批次不存在", "BATCH_NOT_FOUND");
                 }
 
-                var updatedCount = 0;
+                // 先完整校验归属再写入，避免请求混入其他批次商品时出现部分更新。
+                var batchProductCodes = logs
+                    .Select(log => log.ProductCode)
+                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                    .ToHashSet();
+                var batchSubItemLogsByHBProductNo = logs
+                    .Where(IsSetSubItemLog)
+                    .Where(log => !string.IsNullOrWhiteSpace(log.HBProductNo))
+                    .GroupBy(log => log.HBProductNo)
+                    .ToDictionary(group => group.Key, group => group.First());
+                var itemsToUpdate = new List<(UpdatePriceItemDto Item, DomesticSetProduct? SetSubItem)>();
 
                 foreach (var item in request.Items)
                 {
-                    // 更新 DomesticProduct
-                    var product = await _context.DomesticProductDb.GetByIdAsync(item.ProductCode);
-                    if (product != null)
+                    if (string.IsNullOrWhiteSpace(item.ProductCode))
                     {
-                        product.OEMPrice = item.PrivateLabelPrice;
-                        await _context.DomesticProductDb.UpdateAsync(product);
-
-                        await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
-
-                        updatedCount++;
+                        return ApiResponse<object>.Error("商品编码不能为空", "VALIDATION_ERROR");
                     }
+
+                    if (batchProductCodes.Contains(item.ProductCode))
+                    {
+                        itemsToUpdate.Add((item, null));
+                        continue;
+                    }
+
+                    // 新子项使用关系主键，除主键命中外还必须验证其父商品和子项日志均属于当前批次。
+                    var setSubItem = await _context.DomesticSetProductDb.GetByIdAsync(
+                        item.ProductCode
+                    );
+                    if (
+                        setSubItem == null
+                        || setSubItem.ProductNo == setSubItem.SetProductNo
+                        || !batchSubItemLogsByHBProductNo.TryGetValue(
+                            setSubItem.SetProductNo,
+                            out var subItemLog
+                        )
+                        || subItemLog.ProductCode != setSubItem.ProductCode
+                    )
+                    {
+                        return ApiResponse<object>.Error("商品不属于该批次", "VALIDATION_ERROR");
+                    }
+
+                    itemsToUpdate.Add((item, setSubItem));
+                }
+
+                var updatedCount = 0;
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    foreach (var (item, setSubItem) in itemsToUpdate)
+                    {
+                        if (setSubItem != null)
+                        {
+                            setSubItem.OEMPrice = item.PrivateLabelPrice;
+                            await _context.DomesticSetProductDb.UpdateAsync(setSubItem);
+                            updatedCount++;
+                            continue;
+                        }
+
+                        // 父项和历史子项仍通过 DomesticProduct 主键更新。
+                        var product = await _context.DomesticProductDb.GetByIdAsync(
+                            item.ProductCode
+                        );
+                        if (product != null)
+                        {
+                            product.OEMPrice = item.PrivateLabelPrice;
+                            await _context.DomesticProductDb.UpdateAsync(product);
+
+                            await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
+
+                            updatedCount++;
+                        }
+                    }
+
+                    _context.Db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
                 }
 
                 return ApiResponse<object>.CreateSuccess($"成功更新 {updatedCount} 个商品的价格");
@@ -1049,10 +1169,14 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<object>.Error("批次不存在", "BATCH_NOT_FOUND");
                 }
 
-                var logsByProductCode = logs
-                    .Where(log => !string.IsNullOrWhiteSpace(log.ProductCode))
-                    .ToDictionary(log => log.ProductCode, log => log);
-                var updatedCount = 0;
+                // 新子项与父项共享 ProductCode，必须以货号定位日志，不能再以 ProductCode 建唯一字典。
+                var logsByHBProductNo = logs
+                    .Where(log => !string.IsNullOrWhiteSpace(log.HBProductNo))
+                    .GroupBy(log => log.HBProductNo)
+                    .ToDictionary(group => group.Key, group => group.First());
+                var itemsToUpdate = new List<
+                    (UpdateBatchItemDto Item, DomesticProductCreationLog Log, DomesticSetProduct? SetSubItem)
+                >();
 
                 foreach (var item in request.Items)
                 {
@@ -1066,26 +1190,85 @@ namespace BlazorApp.Api.Services
                         return ApiResponse<object>.Error("零售价不能为负数", "VALIDATION_ERROR");
                     }
 
-                    if (!logsByProductCode.TryGetValue(item.ProductCode, out var log))
+                    var setSubItem = await _context.DomesticSetProductDb.GetByIdAsync(
+                        item.ProductCode
+                    );
+                    DomesticProductCreationLog? log;
+                    if (
+                        setSubItem != null
+                        && setSubItem.ProductNo != setSubItem.SetProductNo
+                    )
                     {
-                        return ApiResponse<object>.Error("商品不属于该批次", "VALIDATION_ERROR");
+                        logsByHBProductNo.TryGetValue(setSubItem.SetProductNo, out log);
+                        if (
+                            log == null
+                            || log.ProductCode != setSubItem.ProductCode
+                            || !IsSetSubItemLog(log)
+                        )
+                        {
+                            return ApiResponse<object>.Error("商品不属于该批次", "VALIDATION_ERROR");
+                        }
+                    }
+                    else
+                    {
+                        // 父项使用 DomesticProduct 主键；历史子项仍可用其原 DomesticProduct 主键更新。
+                        log = logs.FirstOrDefault(log =>
+                            log.ProductCode == item.ProductCode && !IsSetSubItemLog(log)
+                        ) ?? logs.FirstOrDefault(log => log.ProductCode == item.ProductCode);
+                        if (log == null)
+                        {
+                            return ApiResponse<object>.Error(
+                                "商品不属于该批次",
+                                "VALIDATION_ERROR"
+                            );
+                        }
                     }
 
-                    var productName = item.ProductName ?? "";
-                    var product = await _context.DomesticProductDb.GetByIdAsync(item.ProductCode);
-                    if (product != null)
+                    itemsToUpdate.Add((item, log, setSubItem));
+                }
+
+                // 商品、关系行和创建日志必须在同一客户端事务中写入，任何一步失败都回滚整批。
+                var updatedCount = 0;
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    foreach (var (item, log, setSubItem) in itemsToUpdate)
                     {
-                        product.ProductName = productName;
-                        product.OEMPrice = item.PrivateLabelPrice;
-                        await _context.DomesticProductDb.UpdateAsync(product);
+                        var productName = item.ProductName ?? "";
+                        if (setSubItem != null && setSubItem.ProductNo != setSubItem.SetProductNo)
+                        {
+                            setSubItem.SetProductName = productName;
+                            setSubItem.OEMPrice = item.PrivateLabelPrice;
+                            await _context.DomesticSetProductDb.UpdateAsync(setSubItem);
+                            updatedCount++;
+                        }
+                        else
+                        {
+                            var product = await _context.DomesticProductDb.GetByIdAsync(
+                                log.ProductCode
+                            );
+                            if (product != null)
+                            {
+                                product.ProductName = productName;
+                                product.OEMPrice = item.PrivateLabelPrice;
+                                await _context.DomesticProductDb.UpdateAsync(product);
 
-                        await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
+                                await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
 
-                        updatedCount++;
+                                updatedCount++;
+                            }
+                        }
+
+                        log.ProductName = productName;
+                        await _context.DomesticProductCreationLogDb.UpdateAsync(log);
                     }
 
-                    log.ProductName = productName;
-                    await _context.DomesticProductCreationLogDb.UpdateAsync(log);
+                    _context.Db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
                 }
 
                 return ApiResponse<object>.CreateSuccess($"成功更新 {updatedCount} 个商品");
@@ -1109,7 +1292,9 @@ namespace BlazorApp.Api.Services
         )
         {
             var setProducts = await _context.DomesticSetProductDb.GetListAsync(x =>
-                x.ProductCode == product.ProductCode || x.SetProductNo == product.HBProductNo
+                // 父套装调价只同步父自关联行；历史子主档仍通过子货号精确回写对应关系。
+                (x.ProductCode == product.ProductCode && x.ProductNo == x.SetProductNo)
+                || x.SetProductNo == product.HBProductNo
             );
             foreach (var setProduct in setProducts)
             {

@@ -65,6 +65,44 @@ function assertApiSuccess<T>(response: ApiResponse<T>, fallbackMessage: string):
   }
 }
 
+function getExistingUpdateHqProductsJobId(error: unknown): string | undefined {
+  if (!(error instanceof RequestError) || error.status !== 409) return undefined
+
+  const payload = error.payload as { data?: unknown } | undefined
+  if (!payload?.data || typeof payload.data !== 'object') return undefined
+
+  const data = payload.data as { existingJobId?: unknown; ExistingJobId?: unknown }
+  const jobId = data.existingJobId ?? data.ExistingJobId
+  return typeof jobId === 'string' && jobId.trim() ? jobId.trim() : undefined
+}
+
+export function hasUpdateHqProductsResultStatistics(
+  value: unknown,
+): value is Partial<UpdateHqProductsResult> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+  const candidate = value as Record<string, unknown>
+  return [
+    'total',
+    'updated',
+    'failed',
+    'skipped',
+    'hqExisting',
+    'hbwebCreated',
+    'hqCreated',
+    'hqSynced',
+    'hqPurchasePricesUpdated',
+    'hqRetailPricesUpdated',
+    'hqAutoPricingUpdated',
+    'hqSpecialProductsUpdated',
+    'hqDiscountRatesUpdated',
+    'hqProductSetCodesCreated',
+    'hqProductSetCodesUpdated',
+    'hqStoreMultiCodesCreated',
+    'hqStoreMultiCodesUpdated',
+  ].some((field) => typeof candidate[field] === 'number' && Number.isFinite(candidate[field]))
+}
+
 function normalizeSalesAnalysisItem(raw: unknown): LocalSupplierInvoiceSalesAnalysisItemDto | null {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -438,12 +476,20 @@ export async function startUpdateHqProductsJob(
   invoiceGuid: string,
   data: UpdateHqProductsRequest,
 ): Promise<UpdateHqProductsJobResult> {
-  const response = await request.post<ApiResponse<UpdateHqProductsJobResult>>(
-    `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs`,
-    data,
-  )
-  assertApiSuccess(response, '创建更新HQ商品任务失败')
-  return unwrapApiData(response)
+  try {
+    const response = await request.post<ApiResponse<UpdateHqProductsJobResult>>(
+      `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs`,
+      data,
+    )
+    assertApiSuccess(response, '创建更新HQ商品任务失败')
+    return unwrapApiData(response)
+  } catch (error) {
+    const existingJobId = getExistingUpdateHqProductsJobId(error)
+    if (!existingJobId) throw error
+
+    // 同一张进货单已有任务时接管原任务，避免把正常并发保护误报为更新失败。
+    return getUpdateHqProductsJob(invoiceGuid, existingJobId)
+  }
 }
 
 export async function getUpdateHqProductsJob(

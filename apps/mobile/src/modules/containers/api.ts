@@ -4,7 +4,9 @@ import type {
   AlignDomesticProductCodeRequest,
   AlignDomesticProductCodeResult,
   ContainerDetailBatchActionResult,
+  ContainerDetailBatchUpdateResult,
   ContainerDetailBatchScope,
+  ContainerDetailSaveValidationError,
   ContainerDetailQuery,
   ContainerDetailQueryResult,
   ContainerExportRequest,
@@ -67,6 +69,47 @@ function pickNumber(data: unknown, key: string, fallback: number) {
   const value = (payload as Record<string, unknown>)[key];
   const parsed = typeof value === "string" ? Number(value) : value;
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeDetailValidationErrors(data: unknown): ContainerDetailSaveValidationError[] {
+  const payload = unwrapData(data);
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const record = payload as Record<string, unknown>;
+  const rawErrors = record.validationErrors ?? record.ValidationErrors;
+  if (!Array.isArray(rawErrors)) {
+    return [];
+  }
+
+  return rawErrors.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const error = item as Record<string, unknown>;
+    const hguid = error.hguid ?? error.HGUID;
+    const field = error.field ?? error.Field;
+    const code = error.code ?? error.Code;
+    const message = error.message ?? error.Message;
+    if (
+      typeof hguid !== "string" ||
+      typeof field !== "string" ||
+      typeof code !== "string" ||
+      typeof message !== "string" ||
+      !hguid.trim() ||
+      !field.trim() ||
+      !code.trim() ||
+      !message.trim()
+    ) {
+      return [];
+    }
+    return [{
+      hguid: hguid.trim(),
+      field: field.trim(),
+      code: code.trim(),
+      message: message.trim(),
+    }];
+  });
 }
 
 function mapDetailUpdate(item: UpdateContainerDetailRequest) {
@@ -224,12 +267,15 @@ export async function updateContainer(containerGuid: string, data: UpdateContain
   return true;
 }
 
-export async function batchUpdateDetails(updates: UpdateContainerDetailRequest[]) {
+export async function batchUpdateDetails(
+  updates: UpdateContainerDetailRequest[],
+): Promise<ContainerDetailBatchUpdateResult> {
   const response = await apiClient.post(`${CONTAINERS_PATH}/batch-update-details`, updates.map(mapDetailUpdate));
   ensureSuccess(response.data, "批量更新货柜明细失败");
   return {
     totalUpdated: pickNumber(response.data, "totalUpdated", updates.length),
     totalRequested: pickNumber(response.data, "totalRequested", updates.length),
+    validationErrors: normalizeDetailValidationErrors(response.data),
   };
 }
 

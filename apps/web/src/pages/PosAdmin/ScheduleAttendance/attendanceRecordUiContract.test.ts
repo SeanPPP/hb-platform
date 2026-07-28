@@ -7,6 +7,10 @@ function assert(condition: unknown, message: string): asserts condition {
 
 const pageSource = readFileSync(path.resolve(process.cwd(), 'src/pages/PosAdmin/ScheduleAttendance/index.tsx'), 'utf8')
 const serviceSource = readFileSync(path.resolve(process.cwd(), 'src/services/scheduleAttendanceService.ts'), 'utf8')
+const trajectoryMapSource = readFileSync(
+  path.resolve(process.cwd(), 'src/pages/PosAdmin/ScheduleAttendance/AttendanceLocationTrajectoryMap.tsx'),
+  'utf8',
+)
 
 assert(pageSource.includes("type TabKey = 'schedules' | 'records'"), '考勤页应有独立记录 tab，不改变排班 CRUD')
 assert(pageSource.includes('buildAttendanceRecordSummary'), '记录表应复用首上班/最终下班与班段工时逻辑')
@@ -42,6 +46,15 @@ assert(pageSource.includes('serverAdjustmentPreview.existingSession?.workedMinut
 assert(pageSource.includes('getProposedAdjustmentPunchStatus'), '异常状态必须从服务端 proposed session 精确匹配请求打卡')
 assert(!pageSource.includes('adjustmentPreview.exceptions.map'), '补卡预览不得继续展示忽略 grace 的本地异常推断')
 assert(pageSource.includes("window.open(externalMapUrl, '_blank', 'noopener,noreferrer')"), '地图只能由明确点击后在外部窗口打开')
+assert(pageSource.includes('buildAttendanceLocationTrajectory'), '班中样本必须按有效班段生成时间轨迹')
+assert(pageSource.includes('sampleRequestIdRef'), '快速切换班中样本时必须阻止旧响应覆盖新抽屉')
+assert((pageSource.match(/sampleRequestIdRef\.current !== requestId/g) ?? []).length >= 3, '打卡、分段样本和最终结果写入前都必须拒绝旧请求')
+assert(pageSource.includes('sampleRequestIdRef.current += 1'), '关闭抽屉必须使仍在执行的样本请求失效')
+assert(pageSource.includes('trajectoryMapVisible ?'), '轨迹地图必须由显式状态门控，打开抽屉时不得自动加载')
+assert(!pageSource.includes('tile.openstreetmap.org'), '考勤主页面不得直接加载 OSM 图块')
+assert(trajectoryMapSource.includes("await import('leaflet')"), 'Leaflet 必须在用户明确加载轨迹地图后动态导入')
+assert(trajectoryMapSource.includes('https://tile.openstreetmap.org/'), '轨迹地图应使用明确的 OSM 图块地址')
+assert(trajectoryMapSource.includes('map?.remove()'), '关闭或切换轨迹时必须销毁 Leaflet 地图实例')
 assert(serviceSource.includes('MY_PUNCH_ADJUSTMENTS_ENDPOINT'), '补卡 mutation 路由必须集中在服务层')
 assert(serviceSource.includes("`${API_BASE}/records`"), '考勤记录必须走 Punch.ViewManagedStore 保护的 records endpoint')
 

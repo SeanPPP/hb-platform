@@ -344,11 +344,29 @@ export async function updateContainer(containerGuid: string, data: UpdateContain
 
 export async function batchUpdateDetails(
   updates: UpdateContainerDetailRequest[],
-): Promise<{ totalUpdated: number; totalRequested: number }> {
+): Promise<{
+  totalUpdated: number
+  totalRequested: number
+  validationErrors: Array<{
+    hguid: string
+    field: string
+    code: string
+    message: string
+  }>
+}> {
   const response = await request<{
     success?: boolean
     message?: string
-    data?: { totalUpdated?: number; totalRequested?: number }
+    data?: {
+      totalUpdated?: number
+      totalRequested?: number
+      validationErrors?: Array<{
+        hguid?: string
+        field?: string
+        code?: string
+        message?: string
+      }>
+    }
   }>(`${API_BASE}/batch-update-details`, {
     method: 'POST',
     data: updates.map((item) => ({
@@ -377,6 +395,14 @@ export async function batchUpdateDetails(
   return {
     totalUpdated: response.data?.totalUpdated ?? updates.length,
     totalRequested: response.data?.totalRequested ?? updates.length,
+    validationErrors: (response.data?.validationErrors ?? [])
+      .filter((error) => Boolean(error.hguid && error.field && error.code && error.message))
+      .map((error) => ({
+        hguid: error.hguid!,
+        field: error.field!,
+        code: error.code!,
+        message: error.message!,
+      })),
   }
 }
 

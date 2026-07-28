@@ -245,29 +245,39 @@ export function buildProductLabelCommand(payload: ProductLabelPrintPayload, prin
 export function buildEmployeeCashierBarcodeLabelCommand(
   payload: EmployeeCashierBarcodeLabelPrintPayload
 ) {
-  const employeeName = cpclText(payload.employeeName, 30) || "--";
+  const employeeName = truncateTextByWidth(cpclText(payload.employeeName) || "--", 320, 7);
+  const rawUsername = cpclText(payload.username);
+  const username = truncateTextByWidth(rawUsername ? `@${rawUsername}` : "--", 320, 4);
   const barcodeValue = cpclText(payload.barcode);
   if (!isValidEan13(barcodeValue)) {
     throw new Error("Employee cashier barcode must be a valid EAN13 value.");
   }
 
   const qrUnitWidth = 8;
-  // 13 位纯数字在 M 纠错下使用 Version 1（21×21），据此在标准标签中水平居中。
+  // 13 位纯数字在 M 纠错下使用 Version 1（21×21），U8 对应 168×168 点。
   const qrWidth = 21 * qrUnitWidth;
-  const qrX = Math.round((STANDARD_WIDTH - qrWidth) / 2);
+  const qrX = 374;
+  // 实体价格标签的单张安全高度约 220 点；二维码和可读编号必须在此范围内完成。
+  const qrY = 8;
+  // CPCL 字体 4 的数字实际宽度约 16 点，不能沿用通用的 12 点近似值。
+  const barcodeTextWidth = barcodeValue.length * 16;
   const barcodeTextX = Math.max(
     20,
-    Math.round((STANDARD_WIDTH - estimateTextWidth(barcodeValue, 4)) / 2)
+    Math.min(
+      qrX + Math.round((qrWidth - barcodeTextWidth) / 2),
+      STANDARD_WIDTH - barcodeTextWidth - 20
+    )
   );
   const lines = [
     `! 0 200 200 ${STANDARD_HEIGHT} 1`,
     `PAGE-WIDTH ${STANDARD_WIDTH}`,
-    text(7, 20, 30, employeeName, 30),
-    `BARCODE QR ${qrX} 104 M 2 U ${qrUnitWidth}`,
+    text(7, 20, 42, employeeName),
+    text(4, 20, 128, username),
+    `BARCODE QR ${qrX} ${qrY} M 2 U ${qrUnitWidth}`,
     `MA,${barcodeValue}`,
     "ENDQR",
     // CPCL 二维码不会自动打印可读文本，单独保留编号供人工核对和输入。
-    text(4, barcodeTextX, 326, barcodeValue),
+    text(4, barcodeTextX, 180, barcodeValue),
   ];
   lines.push("PRINT");
   return command(lines);

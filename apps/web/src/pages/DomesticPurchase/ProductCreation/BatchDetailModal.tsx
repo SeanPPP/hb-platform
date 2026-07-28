@@ -8,6 +8,7 @@ import { getBatchDetail, updatePrivateLabelPrice } from '../../../services/domes
 import { ProductCreationType } from '../../../types/domesticProductCreation'
 import type { BatchDetail, BatchInfo, BatchProductItem, UpdatePriceItem } from '../../../types/domesticProductCreation'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import { getBatchDetailErrorMessage } from './batchDetailErrorMessage'
 import { exportProductCreationBatchToExcel, getExportableBatchItems } from './exportBatchDetail'
 
 interface BatchDetailModalProps {
@@ -66,9 +67,9 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
       } else {
         message.error(response.message || t('productCreation.saveFailed', '保存失败'))
       }
-    } catch {
+    } catch (error) {
       setSaving(false)
-      message.error(t('productCreation.saveFailed', '保存失败'))
+      message.error(getBatchDetailErrorMessage(error, t('productCreation.saveFailed', '保存失败')))
     }
   }
 

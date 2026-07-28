@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   Modal,
+  Select,
   Space,
   Switch,
   Table,
@@ -25,6 +26,7 @@ import { createStore, getNextStoreCode, getStoreByGuid, getStores, syncStoreToHq
 import type { CreateStoreDto, StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import { RequestError } from '../../../utils/request'
 import StoreUserManagement from './StoreUserManagement'
+import { formatStoreTimeZoneId, storeTimeZoneOptions } from './timeZoneOptions'
 import {
   DEFAULT_SYSTEM_LIST_PAGE_SIZE,
   createLatestRequestGuard,
@@ -245,6 +247,7 @@ export default function SystemStoresPage() {
         contactEmail: detail.contactEmail,
         abn: detail.abn,
         brandName: detail.brandName,
+        timeZoneId: detail.timeZoneId,
         isActive: detail.isActive,
       })
     } catch (error) {
@@ -397,6 +400,12 @@ export default function SystemStoresPage() {
       render: (value?: string) => value || '--',
     },
     {
+      title: t('system.stores.timeZone'),
+      dataIndex: 'timeZoneId',
+      width: 220,
+      render: formatStoreTimeZoneId,
+    },
+    {
       title: t('system.stores.contactPhone'),
       dataIndex: 'contactPhone',
       width: 130,
@@ -509,7 +518,7 @@ export default function SystemStoresPage() {
           dataSource={data}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1480 }}
+          scroll={{ x: 1700 }}
           onChange={handleTableChange}
           pagination={{
             current: page,
@@ -564,6 +573,7 @@ export default function SystemStoresPage() {
               <Descriptions.Item label={t('system.stores.storeCode')}>{detailStore.storeCode}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.brandName')}>{detailStore.brandName || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.abn')}>{detailStore.abn || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.timeZone')}>{formatStoreTimeZoneId(detailStore.timeZoneId)}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactPhone')}>{detailStore.contactPhone || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactEmail')}>{detailStore.contactEmail || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.cashRegisterEnabled')}>
@@ -636,6 +646,13 @@ export default function SystemStoresPage() {
               )}
             />
           </Form.Item>
+          <Form.Item
+            label={t('system.stores.timeZone')}
+            name="timeZoneId"
+            rules={[{ required: true, message: t('system.stores.timeZoneRequired') }]}
+          >
+            <Select options={storeTimeZoneOptions} />
+          </Form.Item>
           <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
             <Input autoComplete="off" />
           </Form.Item>
@@ -694,6 +711,13 @@ export default function SystemStoresPage() {
             ]}
           >
             <Input />
+          </Form.Item>
+          <Form.Item
+            label={t('system.stores.timeZone')}
+            name="timeZoneId"
+            rules={[{ required: true, message: t('system.stores.timeZoneRequired') }]}
+          >
+            <Select options={storeTimeZoneOptions} />
           </Form.Item>
           <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
             <Input />

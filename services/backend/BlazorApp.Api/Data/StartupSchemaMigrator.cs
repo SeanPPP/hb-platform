@@ -19,6 +19,7 @@ namespace BlazorApp.Api.Data
 
             // 关键位置：统一串起所有启动兜底迁移，避免 Program.cs 只接入其中一条补列链路。
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
+            await EnsureStoreTimeZoneSchemaAsync(db, logger);
             await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
             await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);
@@ -32,6 +33,41 @@ namespace BlazorApp.Api.Data
             await EnsureEmployeeProfileSensitiveChangeSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
             await EnsurePreorderSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureStoreTimeZoneSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger)
+        {
+            const string sql = """
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @StoreTimeZoneSchemaLockResult int;
+    EXEC @StoreTimeZoneSchemaLockResult = sys.sp_getapplock
+        @Resource = N'StoreTimeZone_Schema_Initialization',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Transaction',
+        @LockTimeout = 30000;
+    IF @StoreTimeZoneSchemaLockResult < 0
+        THROW 51030, 'Unable to acquire store time-zone schema lock.', 1;
+
+    IF OBJECT_ID(N'[dbo].[Store]', N'U') IS NOT NULL
+    BEGIN
+        IF COL_LENGTH('dbo.Store', 'TimeZoneId') IS NULL
+            ALTER TABLE [dbo].[Store] ADD [TimeZoneId] nvarchar(80) NULL;
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+""";
+
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("门店考勤时区字段检查完成");
         }
 
         private static async Task EnsureAttendanceWorkSessionSchemaAsync(

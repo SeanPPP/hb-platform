@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using AutoMapper;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Data;
@@ -39,6 +41,12 @@ namespace BlazorApp.Api.Services.React
         public decimal? GrossProfit { get; set; }
         public string? CostSource { get; set; }
     }
+
+    internal sealed record ProductStatisticStatusSnapshot(
+        string Status,
+        string? Message,
+        string CacheVersion
+    );
 
     internal class BestSellerBranchAggregateRow
     {
@@ -5165,8 +5173,18 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+                // 状态必须先于缓存读取，避免重算或对账失败后继续展示旧的 Fresh 排名。
+                var statisticStatus = await GetProductStatisticStatusAsync(startDate, endDate);
                 var cacheKey = branchCodes == null
-                    ? SalesDashboardCacheKeys.BestSellers(dateRange, pageIndex, pageSize)
+                    && statisticStatus.Status == SalesStatisticRefreshStatus.Fresh
+                    ? SalesDashboardCacheKeys.BestSellers(
+                        dateRange,
+                        pageIndex,
+                        pageSize,
+                        statisticStatus.CacheVersion
+                    )
                     : null;
                 if (
                     cacheKey != null
@@ -5184,7 +5202,8 @@ namespace BlazorApp.Api.Services.React
                         dateRange,
                         branchCodes,
                         pageIndex,
-                        pageSize
+                        pageSize,
+                        statisticStatus
                     );
                     if (ShouldCacheBestSellerResult(statisticResult))
                     {
@@ -5257,27 +5276,16 @@ namespace BlazorApp.Api.Services.React
             DateRangeDto dateRange,
             List<string>? branchCodes,
             int pageIndex,
-            int pageSize
+            int pageSize,
+            ProductStatisticStatusSnapshot statisticStatus
         )
         {
             var startDate = dateRange.StartDate.Date;
             var endDate = dateRange.EndDate.Date;
-            var statisticStatus = await GetProductStatisticStatusAsync(startDate, endDate);
-            if (statisticStatus.Status == SalesStatisticRefreshStatus.Failed)
-            {
-                _logger.LogWarning(
-                    "[BestSellers] Product statistic status failed, POSM fallback disabled: {Message}",
-                    statisticStatus.Message
-                );
-                return CreateEmptyBestSellerResponse(
-                    pageIndex,
-                    pageSize,
-                    SalesStatisticRefreshStatus.Failed,
-                    statisticStatus.Message ?? "商品统计状态失败，请先修复或重新生成统计表。"
-                );
-            }
-
-            if (statisticStatus.Status != SalesStatisticRefreshStatus.Fresh)
+            if (
+                statisticStatus.Status != SalesStatisticRefreshStatus.Fresh
+                && statisticStatus.Status != SalesStatisticRefreshStatus.Failed
+            )
             {
                 // 非 Fresh 说明日期范围不完整或水位过期，不能把部分统计当完整排名展示。
                 return CreateEmptyBestSellerResponse(
@@ -5285,6 +5293,15 @@ namespace BlazorApp.Api.Services.React
                     pageSize,
                     statisticStatus.Status,
                     statisticStatus.Message ?? "商品统计未完整生成，请先生成商品统计。"
+                );
+            }
+
+            if (statisticStatus.Status == SalesStatisticRefreshStatus.Failed)
+            {
+                // 对账失败时保留已生成排名供排查和使用，但不回退 POSM，也不进入缓存。
+                _logger.LogWarning(
+                    "[BestSellers] Product statistic status failed, returning persisted rows without cache: {Message}",
+                    statisticStatus.Message
                 );
             }
 
@@ -5318,8 +5335,8 @@ namespace BlazorApp.Api.Services.React
                 return CreateEmptyBestSellerResponse(
                     pageIndex,
                     pageSize,
-                    SalesStatisticRefreshStatus.Fresh,
-                    null
+                    statisticStatus.Status,
+                    statisticStatus.Message
                 );
             }
 
@@ -5578,7 +5595,7 @@ namespace BlazorApp.Api.Services.React
                 );
         }
 
-        private async Task<(string Status, string? Message)> GetProductStatisticStatusAsync(
+        private async Task<ProductStatisticStatusSnapshot> GetProductStatisticStatusAsync(
             DateTime startDate,
             DateTime endDate
         )
@@ -5592,27 +5609,79 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             if (!states.Any())
-                return (SalesStatisticRefreshStatus.Pending, "商品统计尚未回填完整。");
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "商品统计尚未回填完整。",
+                    "none"
+                );
+            }
+
+            var cacheVersionSource = string.Join(
+                "|",
+                states
+                    .OrderBy(state => state.Date)
+                    .Select(state =>
+                        $"{state.Date:yyyyMMdd}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks ?? 0}:{state.CompletedAtUtc?.Ticks ?? 0}"
+                    )
+            );
+            var cacheVersion = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(cacheVersionSource))
+            );
 
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Failed))
-                return (SalesStatisticRefreshStatus.Failed, states.FirstOrDefault(s => s.Status == SalesStatisticRefreshStatus.Failed)?.ErrorMessage);
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Failed,
+                    states.FirstOrDefault(s => s.Status == SalesStatisticRefreshStatus.Failed)?.ErrorMessage,
+                    cacheVersion
+                );
+            }
 
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Queued || s.Status == SalesStatisticRefreshStatus.Running))
-                return (SalesStatisticRefreshStatus.Pending, "商品统计正在重算中。");
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "商品统计正在重算中。",
+                    cacheVersion
+                );
+            }
 
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Stale))
-                return (SalesStatisticRefreshStatus.Stale, "商品统计正在等待延迟上传数据补算。");
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Stale,
+                    "商品统计正在等待延迟上传数据补算。",
+                    cacheVersion
+                );
+            }
 
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Pending))
-                return (SalesStatisticRefreshStatus.Pending, "商品统计正在生成中。");
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "商品统计正在生成中。",
+                    cacheVersion
+                );
+            }
 
             var expectedDays = (int)(endDate - startDate).TotalDays + 1;
             if (states.Select(s => s.Date.Date).Distinct().Count() < expectedDays)
-                return (SalesStatisticRefreshStatus.Pending, "日期范围内仍有商品统计未生成。");
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "日期范围内仍有商品统计未生成。",
+                    cacheVersion
+                );
+            }
 
             // Best Sellers 请求链路只读统计状态表；源数据水位由统计任务写入状态，避免页面触发 POSM 重查询。
 
-            return (SalesStatisticRefreshStatus.Fresh, null);
+            return new ProductStatisticStatusSnapshot(
+                SalesStatisticRefreshStatus.Fresh,
+                null,
+                cacheVersion
+            );
         }
 
         private static string? ResolveCostSource(List<BestSellerBranchSaleDto> branchSales)

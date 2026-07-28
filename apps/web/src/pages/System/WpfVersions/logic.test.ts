@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { webcrypto } from 'node:crypto'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { QRCodeSVG } from '@rc-component/qrcode'
 import {
   buildWpfPolicyPayload,
   calculateFileSha256,
@@ -16,6 +19,7 @@ import {
   isSupportedWpfInstallerFile,
   normalizeWpfReleaseChannel,
 } from './logic'
+import WpfDownloadQrCode from './WpfDownloadQrCode'
 import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
@@ -40,6 +44,11 @@ function assertTruthy(value: unknown, message: string) {
   if (!value) {
     throw new Error(message)
   }
+}
+
+function getQrViewBoxSize(markup: string) {
+  const match = markup.match(/viewBox="0 0 (\d+) \d+"/)
+  return match ? Number(match[1]) : 0
 }
 
 function canSubmitPolicyEditor(
@@ -632,12 +641,28 @@ assertTruthy(
 assertTruthy(
   wpfVersionsPageSource.includes('open={Boolean(qrRelease)}')
     && wpfVersionsPageSource.includes('onCancel={() => setQrRelease(null)}')
-    && wpfVersionsPageSource.includes('<QRCode value={qrRelease.downloadUrl} size={220} />')
+    && wpfVersionsPageSource.includes('<WpfDownloadQrCode value={qrRelease.downloadUrl} />')
     && wpfVersionsPageSource.includes('<Text strong>{qrRelease.version}</Text>')
     && wpfVersionsPageSource.includes('<Text>{qrRelease.fileName}</Text>')
     && wpfVersionsPageSource.includes('copyable={{ text: qrRelease.downloadUrl }}')
     && wpfVersionsPageSource.includes('{qrRelease.downloadUrl}'),
-  'WPF 下载二维码弹窗必须展示当前版本、文件名、二维码和可复制的同一下载链接',
+  'WPF 下载二维码弹窗必须展示带标准静区的可扫描二维码、当前版本、文件名和可复制的同一下载链接',
+)
+
+const qrCompatibilityTestUrl =
+  'https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com/wpf-releases/production/1.0.4/Hbpos.Client.Wpf-1.0.4-x64.exe'
+const marginlessQrMarkup = renderToStaticMarkup(createElement(QRCodeSVG, {
+  level: 'M',
+  size: 280,
+  value: qrCompatibilityTestUrl,
+}))
+const marginQrMarkup = renderToStaticMarkup(createElement(WpfDownloadQrCode, {
+  value: qrCompatibilityTestUrl,
+}))
+assertEqual(
+  getQrViewBoxSize(marginQrMarkup),
+  getQrViewBoxSize(marginlessQrMarkup) + 8,
+  'WPF 下载二维码必须在真实渲染结果中保留四模块静区',
 )
 
 const localeKeys = collectWpfVersionLocaleKeys()

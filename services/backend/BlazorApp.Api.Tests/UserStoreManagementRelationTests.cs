@@ -1003,6 +1003,87 @@ namespace BlazorApp.Api.Tests
                 .FirstAsync(store => store.StoreCode == "1999");
             Assert.NotNull(createdStore);
             Assert.False(createdStore!.IsActive);
+            Assert.Null(result.Data!.TimeZoneId);
+            Assert.Null(createdStore.TimeZoneId);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenTimeZoneIsInvalid_ReturnsValidationErrorWithoutInsert()
+        {
+            var service = CreateStoreService();
+            var dto = new CreateStoreDto
+            {
+                StoreName = "Invalid Time Zone Store",
+                StoreCode = "1998",
+            };
+            dto.TimeZoneId = "Australia/Perth";
+
+            var result = await service.CreateStoreAsync(dto);
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_STORE_TIME_ZONE", result.ErrorCode);
+            Assert.False(await _db.Queryable<Store>()
+                .AnyAsync(store => store.StoreCode == "1998"));
+        }
+
+        [Fact]
+        public async Task UpdateStoreByGuidAsync_WhenTimeZoneIsInvalid_ReturnsValidationErrorAndPreservesStore()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-time-zone-update",
+                StoreName = "Existing Store",
+                StoreCode = "1997",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+            var dto = new UpdateStoreDto
+            {
+                StoreName = "Changed Store",
+                StoreCode = "1997",
+                IsActive = false,
+            };
+            dto.TimeZoneId = "Australia/Perth";
+
+            var result = await service.UpdateStoreByGuidAsync("store-time-zone-update", dto);
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_STORE_TIME_ZONE", result.ErrorCode);
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-time-zone-update");
+            Assert.Equal("Existing Store", store!.StoreName);
+            Assert.True(store.IsActive);
+        }
+
+        [Fact]
+        public async Task UpdateStoreByGuidAsync_WhenTimeZoneIsBlank_PreservesExistingTimeZoneAndReturnsIt()
+        {
+            var store = new Store
+            {
+                StoreGUID = "store-time-zone-preserve",
+                StoreName = "Existing Store",
+                StoreCode = "1996",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+            };
+            store.TimeZoneId = "Australia/Melbourne";
+            await _db.Insertable(store).ExecuteCommandAsync();
+            var dto = new UpdateStoreDto
+            {
+                StoreName = "Updated Store",
+                StoreCode = "1996",
+                IsActive = true,
+            };
+            dto.TimeZoneId = "  ";
+
+            var result = await CreateStoreService().UpdateStoreByGuidAsync(store.StoreGUID, dto);
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("Australia/Melbourne", result.Data!.TimeZoneId);
+            var updated = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == store.StoreGUID);
+            Assert.Equal("Australia/Melbourne", updated!.TimeZoneId);
         }
 
         [Fact]

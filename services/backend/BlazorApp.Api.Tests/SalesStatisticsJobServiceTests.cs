@@ -327,6 +327,43 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateProductStoreDailyStatistics_补充退货分店没有营业额基准时仍应Failed()
+    {
+        var targetDate = new DateTime(2026, 5, 2);
+        await SeedProductAsync("P-RETURN-MISSING-STORE");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-RETURN-MISSING-STORE-SALE",
+            detailGuid: "DETAIL-RETURN-MISSING-STORE-SALE",
+            productCode: "P-RETURN-MISSING-STORE",
+            branchCode: "1004",
+            orderTime: targetDate.AddHours(9),
+            quantity: 2,
+            actualAmount: 20m,
+            supplierCode: "200"
+        );
+        await SeedReturnRecordAsync(
+            returnOrderGuid: "ORDER-RETURN-MISSING-STORE-RETURN",
+            returnDetailGuid: "DETAIL-RETURN-MISSING-STORE-RETURN",
+            originalOrderGuid: "ORDER-RETURN-MISSING-STORE-SALE",
+            originalDetailGuid: "DETAIL-RETURN-MISSING-STORE-SALE",
+            productCode: "P-RETURN-MISSING-STORE",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            returnQuantity: 1m,
+            returnAmount: 10m
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1004", 20m, 2);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var state = await LoadRefreshStateAsync(targetDate);
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, state!.Status);
+        Assert.Contains("1018", state.ErrorMessage, StringComparison.Ordinal);
+        Assert.Contains("分店营业额统计缺失", state.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UpdateProductStoreDailyStatistics_旧库没有退货表时仍按明细表统计()
     {
         var targetDate = new DateTime(2026, 5, 1);
@@ -378,8 +415,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             productCode: "P-NEW-RETURN",
             branchCode: "1018",
             orderTime: targetDate.AddHours(9),
-            quantity: 2,
-            actualAmount: 20m,
+            quantity: 821,
+            actualAmount: 3922.80m,
             supplierCode: "200"
         );
         await SeedReturnRecordAsync(
@@ -390,21 +427,112 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             productCode: "P-NEW-RETURN",
             branchCode: "1018",
             orderTime: targetDate.AddHours(10),
-            returnQuantity: 1m,
-            returnAmount: 10m
+            returnQuantity: 19m,
+            returnAmount: 110.40m
         );
-        await SeedStoreSalesStatisticAsync(targetDate, "1018", 10m, 1);
+        // 分店营业额保留销售毛额；商品统计会从补充退货表扣减为净额。
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 3922.80m, 821);
 
         await CreateService().UpdateProductStoreDailyStatistics(targetDate);
 
         var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
             .Where(x => x.Date == targetDate && x.BranchCode == "1018" && x.ProductCode == "P-NEW-RETURN")
             .FirstAsync();
+        var storeStat = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(x => x.Date == targetDate && x.BranchCode == "1018")
+            .FirstAsync();
         var state = await LoadRefreshStateAsync(targetDate);
 
         Assert.NotNull(stat);
-        Assert.Equal(1, stat!.TotalQuantity);
-        Assert.Equal(10m, stat.TotalAmount);
+        Assert.Equal(802, stat!.TotalQuantity);
+        Assert.Equal(3812.40m, stat.TotalAmount);
+        Assert.NotNull(storeStat);
+        Assert.Equal(821, storeStat!.TotalQuantity);
+        Assert.Equal(3922.80m, storeStat.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_扣除补充退货后仍超容差应Failed()
+    {
+        var targetDate = new DateTime(2026, 5, 3);
+        await SeedProductAsync("P-RETURN-REAL-DIFF");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-RETURN-REAL-DIFF-SALE",
+            detailGuid: "DETAIL-RETURN-REAL-DIFF-SALE",
+            productCode: "P-RETURN-REAL-DIFF",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 22,
+            actualAmount: 220m,
+            supplierCode: "200"
+        );
+        await SeedReturnRecordAsync(
+            returnOrderGuid: "ORDER-RETURN-REAL-DIFF-RETURN",
+            returnDetailGuid: "DETAIL-RETURN-REAL-DIFF-RETURN",
+            originalOrderGuid: "ORDER-RETURN-REAL-DIFF-SALE",
+            originalDetailGuid: "DETAIL-RETURN-REAL-DIFF-SALE",
+            productCode: "P-RETURN-REAL-DIFF",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            returnQuantity: 11m,
+            returnAmount: 110m
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 400m, 22);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var state = await LoadRefreshStateAsync(targetDate);
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, state!.Status);
+        Assert.Contains("金额差 180", state.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_补充退货设备码带空格时与摘要使用同一分店()
+    {
+        var targetDate = new DateTime(2026, 5, 4);
+        await SeedProductAsync("P-RETURN-DEVICE-TRIM");
+        await SeedDeviceRegistrationAsync("DEVICE-RETURN-TRIM", "1018");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-RETURN-DEVICE-TRIM-SALE",
+            detailGuid: "DETAIL-RETURN-DEVICE-TRIM-SALE",
+            productCode: "P-RETURN-DEVICE-TRIM",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 22,
+            actualAmount: 220m,
+            supplierCode: "200"
+        );
+        await SeedReturnRecordAsync(
+            returnOrderGuid: "ORDER-RETURN-DEVICE-TRIM-RETURN",
+            returnDetailGuid: "DETAIL-RETURN-DEVICE-TRIM-RETURN",
+            originalOrderGuid: "ORDER-RETURN-DEVICE-TRIM-SALE",
+            originalDetailGuid: "DETAIL-RETURN-DEVICE-TRIM-SALE",
+            productCode: "P-RETURN-DEVICE-TRIM",
+            branchCode: null,
+            orderTime: targetDate.AddHours(10),
+            returnQuantity: 11m,
+            returnAmount: 110m,
+            deviceCode: " DEVICE-RETURN-TRIM "
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 220m, 22);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row =>
+                row.Date == targetDate
+                && row.BranchCode == "1018"
+                && row.ProductCode == "P-RETURN-DEVICE-TRIM"
+            )
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+
+        Assert.NotNull(stat);
+        Assert.Equal(11, stat!.TotalQuantity);
+        Assert.Equal(110m, stat.TotalAmount);
+        Assert.NotNull(state);
         Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
     }
 
@@ -1727,7 +1855,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         DateTime orderTime,
         decimal returnQuantity,
         decimal returnAmount,
-        bool insertOrder = true
+        bool insertOrder = true,
+        string? deviceCode = null
     )
     {
         if (insertOrder)
@@ -1736,7 +1865,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             {
                 OrderGuid = returnOrderGuid,
                 BranchCode = branchCode,
-                DeviceCode = null,
+                DeviceCode = deviceCode,
                 OrderTime = orderTime,
                 Status = 1,
                 LastUploadTime = orderTime.AddMinutes(5),

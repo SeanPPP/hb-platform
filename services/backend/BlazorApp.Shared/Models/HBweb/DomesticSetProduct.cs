@@ -40,6 +40,13 @@ namespace BlazorApp.Shared.Models
         public string SetProductNo { get; set; } = string.Empty;
 
         /// <summary>
+        /// 套装子项名称；历史关系行允许为空并回退到创建日志或旧主档名称
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 200)]
+        [Display(Name = "套装子项名称")]
+        public string? SetProductName { get; set; }
+
+        /// <summary>
         /// 套装条码
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 50)]

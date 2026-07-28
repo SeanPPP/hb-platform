@@ -9,8 +9,10 @@ import {
   getCheckProductsJob,
   getPasteDetailsJob,
   ensureHqProducts,
+  hasUpdateHqProductsResultStatistics,
   startCheckProductsJob,
   startPasteDetailsJob,
+  startUpdateHqProductsJob,
   syncInvoicesFromHq,
   updateDetailAction,
   updateHqProducts,
@@ -443,6 +445,34 @@ async function main() {
   })
   if (editPageButtonFailure) failures.push(editPageButtonFailure)
 
+  const updateHqConflictDisplayFailure = await runTest('更新HQ商品重复任务冲突不应显示全零失败统计', () => {
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ existingJobId: 'hq-job-running' }),
+      false,
+      '仅包含 existingJobId 的冲突 payload 不是 HQ 更新统计',
+    )
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ errors: ['普通校验错误'] }),
+      false,
+      '仅包含错误列表的普通失败 payload 不是 HQ 更新统计',
+    )
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ failed: '0' }),
+      false,
+      '统计计数字段类型错误时不能伪造成 HQ 更新统计',
+    )
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ total: 0, updated: 0, failed: 0, errors: [] }),
+      true,
+      '后端真实返回全零统计时仍应识别为 HQ 更新统计',
+    )
+    assert(
+      editPageSource.includes('if (!hasUpdateHqProductsResultStatistics(candidate)) return undefined'),
+      '409 仅返回 existingJobId 时应保留后端冲突消息，不能伪造成失败 0 条',
+    )
+  })
+  if (updateHqConflictDisplayFailure) failures.push(updateHqConflictDisplayFailure)
+
   const editPageImportFailure = await runTest('编辑页不应动态导入已静态使用的本地供应商进货单服务', () => {
     assert(
       !editPageSource.includes("await import('../../../../services/localSupplierInvoiceService')"),
@@ -530,6 +560,46 @@ async function main() {
     )
   })
   if (batchEditPersistFailure) failures.push(batchEditPersistFailure)
+
+  const batchEditBooleanSwitchFailure = await runTest('新旧进货单批量编辑的自动定价和特殊商品应使用布尔开关', () => {
+    const pageSources = [
+      ['当前进货单编辑页', editPageSource],
+      ['旧进货单详情页', detailPageSource],
+    ] as const
+
+    for (const [pageName, pageSource] of pageSources) {
+      const batchEditModalStart = pageSource.indexOf('{/* 批量编辑 Modal')
+      const batchEditModalEnd = pageSource.indexOf('</Modal>', batchEditModalStart)
+      const batchEditModalSource = pageSource.slice(batchEditModalStart, batchEditModalEnd)
+
+      assert(batchEditModalStart >= 0 && batchEditModalEnd > batchEditModalStart, `${pageName}应保留批量编辑弹窗`)
+      assert(
+        /name="isAutoPricing"[\s\S]*?valuePropName="checked"[\s\S]*?initialValue=\{false\}[\s\S]*?<Switch/.test(batchEditModalSource),
+        `${pageName}自动定价值应使用默认关闭的 Switch`,
+      )
+      assert(
+        /name="isSpecialProduct"[\s\S]*?valuePropName="checked"[\s\S]*?initialValue=\{false\}[\s\S]*?<Switch/.test(batchEditModalSource),
+        `${pageName}特殊商品值应使用默认关闭的 Switch`,
+      )
+      assertEqual(
+        (batchEditModalSource.match(/checkedChildren=\{t\('posAdmin\.invoiceDetail\.yes', '是'\)\}/g) ?? []).length,
+        2,
+        `${pageName}两个布尔开关都应显示“是”文案`,
+      )
+      assertEqual(
+        (batchEditModalSource.match(/unCheckedChildren=\{t\('posAdmin\.invoiceDetail\.no', '否'\)\}/g) ?? []).length,
+        2,
+        `${pageName}两个布尔开关都应显示“否”文案`,
+      )
+      assert(batchEditModalSource.includes('name="updateIsAutoPricing" valuePropName="checked"'), `${pageName}应保留自动定价字段选择 Checkbox`)
+      assert(batchEditModalSource.includes('name="updateIsSpecialProduct" valuePropName="checked"'), `${pageName}应保留特殊商品字段选择 Checkbox`)
+      assert(!/name="isAutoPricing"[\s\S]*?<Select/.test(batchEditModalSource), `${pageName}自动定价值不应继续使用 Select`)
+      assert(!/name="isSpecialProduct"[\s\S]*?<Select/.test(batchEditModalSource), `${pageName}特殊商品值不应继续使用 Select`)
+      assert(pageSource.includes('isAutoPricing: values.updateIsAutoPricing ? values.isAutoPricing : undefined'), `${pageName}未选择自动定价字段时不应提交值`)
+      assert(pageSource.includes('isSpecialProduct: values.updateIsSpecialProduct ? values.isSpecialProduct : undefined'), `${pageName}未选择特殊商品字段时不应提交值`)
+    }
+  })
+  if (batchEditBooleanSwitchFailure) failures.push(batchEditBooleanSwitchFailure)
 
   const updateToStoreHqFailure = await runTest('更新到分店应移除同步HQ耦合并保留独立HQ弹窗', () => {
     const storeModalStart = editPageSource.indexOf('{/* 更新到分店价格 Modal')
@@ -1438,6 +1508,71 @@ async function main() {
     assertEqual(result.hqRetailPricesUpdated, 2, '字段级更新 HQ 应保留零售价更新统计')
   })
   if (updateHqProductsPayloadFailure) failures.push(updateHqProductsPayloadFailure)
+
+  const updateHqProductsConflictJobFailure = await runTest('更新HQ商品遇到运行中任务时应接管 existingJobId', async () => {
+    const requests: Array<{ url: string; method: string }> = []
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      requests.push({ url, method })
+
+      if (method === 'POST') {
+        return new Response(JSON.stringify({
+          success: false,
+          message: '同一张本地进货单已有同类后台任务正在执行，请等待完成后再提交新的批量写入',
+          data: { existingJobId: 'hq-job-running' },
+        }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'hq-job-running',
+          invoiceGuid: 'invoice-1',
+          operationId: 'hq-operation-running',
+          status: 'Running',
+          targetStoreCodes: ['1033'],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const job = await startUpdateHqProductsJob('invoice-1', {
+      detailGuids: ['detail-1'],
+      targetStoreCodes: ['1033'],
+      updateFields: {
+        updatePurchasePrice: true,
+        updateRetailPrice: false,
+        updateIsAutoPricing: false,
+        updateIsSpecialProduct: false,
+        updateDiscountRate: false,
+      },
+      idempotencyKey: 'new-attempt',
+    })
+
+    assertDeepEqual(
+      requests,
+      [
+        {
+          url: '/api/react/v1/local-supplier-invoices/invoice-1/details/update-hq-products/jobs',
+          method: 'POST',
+        },
+        {
+          url: '/api/react/v1/local-supplier-invoices/invoice-1/details/update-hq-products/jobs/hq-job-running',
+          method: 'GET',
+        },
+      ],
+      '冲突后应查询并接管后端返回的 existingJobId',
+    )
+    assertEqual(job.jobId, 'hq-job-running', '应返回正在运行的原任务供页面继续轮询')
+    assertEqual(job.status, 'Running', '接管任务应保留当前运行状态')
+  })
+  if (updateHqProductsConflictJobFailure) failures.push(updateHqProductsConflictJobFailure)
 
   const pasteDetailsJobServiceFailure = await runTest('pasteDetails 后台 Job 接口应调用任务创建和查询地址', async () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

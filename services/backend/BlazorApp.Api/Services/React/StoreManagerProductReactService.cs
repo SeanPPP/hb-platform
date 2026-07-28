@@ -51,6 +51,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         StoreCode = s.StoreCode,
                         StoreName = s.StoreName,
+                        TimeZoneId = s.TimeZoneId,
                         IsActive = s.IsActive,
                     })
                     .ToListAsync();

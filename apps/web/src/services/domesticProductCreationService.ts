@@ -1,7 +1,109 @@
-import type { BatchDetail, BatchInfo, BatchListParams, BatchProductItem, CreateBatchRequest, CreateBatchResponse, PrefixCodeListParams, PrefixCodeResponse, UpdatePriceItem } from '../types/domesticProductCreation'
+import type { BatchDetail, BatchInfo, BatchListParams, BatchProductItem, CreateBatchRequest, CreateBatchResponse, PrefixCodeListParams, PrefixCodeResponse, SetProductTemplateDetail, SetProductTemplatePayload, SetProductTemplateSubItem, SetProductTemplateSummary, UpdatePriceItem } from '../types/domesticProductCreation'
 import request from '../utils/request'
 
 const API_BASE = '/api/v1/domestic-product-creation'
+
+type ApiOperationResult<T> = { success: boolean; data?: T; message?: string }
+
+function unwrapApiOperation<T>(response: any): ApiOperationResult<T> {
+  const outer = response?.data ?? response
+  if (outer?.success !== undefined) {
+    return { success: Boolean(outer.success), data: outer.data, message: outer.message }
+  }
+  if (response?.success !== undefined) {
+    return { success: Boolean(response.success), data: response.data, message: response.message }
+  }
+  return { success: true, data: outer }
+}
+
+function transformSetProductTemplateSubItem(raw: Record<string, unknown>, index: number): SetProductTemplateSubItem {
+  return {
+    productName: String(raw.productName ?? raw.subItemProductName ?? ''),
+    privateLabelPrice: Number(raw.privateLabelPrice ?? 0),
+    sortOrder: Number(raw.sortOrder ?? raw.sequence ?? index + 1),
+  }
+}
+
+function transformSetProductTemplateSummary(raw: Record<string, unknown>): SetProductTemplateSummary {
+  return {
+    templateId: String(raw.templateId ?? raw.id ?? raw.templateGuid ?? ''),
+    supplierCode: String(raw.supplierCode ?? ''),
+    templateName: String(raw.templateName ?? raw.name ?? ''),
+    setProductName: String(raw.setProductName ?? raw.productName ?? ''),
+    isEnabled: raw.isEnabled == null ? Boolean(raw.isActive ?? true) : Boolean(raw.isEnabled),
+    setQuantity: Number(raw.setQuantity ?? raw.subItemCount ?? raw.itemCount ?? (Array.isArray(raw.subItems) ? raw.subItems.length : 0)),
+    updatedAt: raw.updatedAt ? String(raw.updatedAt) : raw.updatedTime ? String(raw.updatedTime) : undefined,
+  }
+}
+
+function transformSetProductTemplateDetail(raw: Record<string, unknown>): SetProductTemplateDetail {
+  const subItems = Array.isArray(raw.subItems) ? raw.subItems : Array.isArray(raw.items) ? raw.items : []
+  return {
+    ...transformSetProductTemplateSummary(raw),
+    subItems: subItems.map((item: Record<string, unknown>, index: number) => transformSetProductTemplateSubItem(item, index)),
+  }
+}
+
+export async function getSetProductTemplates(supplierCode: string, includeInactive = false): Promise<ApiOperationResult<SetProductTemplateSummary[]>> {
+  const response: any = await request(`${API_BASE}/templates`, {
+    method: 'GET',
+    params: { supplierCode, includeInactive },
+  })
+  const result = unwrapApiOperation<unknown>(response)
+  if (!result.success) return { success: false, data: [], message: result.message }
+  const rawItems = Array.isArray(result.data)
+    ? result.data
+    : Array.isArray((result.data as any)?.items)
+      ? (result.data as any).items
+      : []
+  return {
+    success: true,
+    data: rawItems.map((item: Record<string, unknown>) => transformSetProductTemplateSummary(item)),
+    message: result.message,
+  }
+}
+
+export async function getSetProductTemplate(templateId: string, supplierCode: string): Promise<ApiOperationResult<SetProductTemplateDetail>> {
+  const response: any = await request(`${API_BASE}/templates/${encodeURIComponent(templateId)}`, {
+    method: 'GET',
+    params: { supplierCode },
+  })
+  const result = unwrapApiOperation<Record<string, unknown>>(response)
+  return result.success && result.data
+    ? { success: true, data: transformSetProductTemplateDetail(result.data), message: result.message }
+    : { success: false, message: result.message || '加载套装模板失败' }
+}
+
+export async function createSetProductTemplate(payload: SetProductTemplatePayload): Promise<ApiOperationResult<SetProductTemplateDetail>> {
+  const response: any = await request(`${API_BASE}/templates`, { method: 'POST', data: payload })
+  const result = unwrapApiOperation<Record<string, unknown>>(response)
+  return result.success
+    ? { success: true, data: result.data ? transformSetProductTemplateDetail(result.data) : undefined, message: result.message }
+    : { success: false, message: result.message || '保存套装模板失败' }
+}
+
+export async function updateSetProductTemplate(templateId: string, supplierCode: string, payload: SetProductTemplatePayload): Promise<ApiOperationResult<SetProductTemplateDetail>> {
+  const response: any = await request(`${API_BASE}/templates/${encodeURIComponent(templateId)}`, {
+    method: 'PUT',
+    params: { supplierCode },
+    data: payload,
+  })
+  const result = unwrapApiOperation<Record<string, unknown>>(response)
+  return result.success
+    ? { success: true, data: result.data ? transformSetProductTemplateDetail(result.data) : undefined, message: result.message }
+    : { success: false, message: result.message || '更新套装模板失败' }
+}
+
+export async function deactivateSetProductTemplate(templateId: string, supplierCode: string): Promise<ApiOperationResult<void>> {
+  const response: any = await request(`${API_BASE}/templates/${encodeURIComponent(templateId)}/deactivate`, {
+    method: 'POST',
+    params: { supplierCode },
+  })
+  const result = unwrapApiOperation<void>(response)
+  return result.success
+    ? { success: true, message: result.message }
+    : { success: false, message: result.message || '停用套装模板失败' }
+}
 
 function transformCreateBatchResponse(raw: Record<string, unknown>): CreateBatchResponse {
   return {
@@ -123,7 +225,13 @@ export async function getBatchDetail(batchNumber: string): Promise<{ success: bo
 export async function updatePrivateLabelPrice(batchNumber: string, items: UpdatePriceItem[]): Promise<{ success: boolean; message?: string }> {
   const response: any = await request(`${API_BASE}/batch/${batchNumber}/prices`, {
     method: 'PUT',
-    data: { items },
+    // 页面统一使用详情模型的 itemNumber；API 契约字段名为 productCode。
+    data: {
+      items: items.map((item) => ({
+        productCode: item.itemNumber,
+        privateLabelPrice: item.privateLabelPrice,
+      })),
+    },
   })
   return response?.data ?? response
 }

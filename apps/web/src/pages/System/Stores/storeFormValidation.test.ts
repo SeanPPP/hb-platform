@@ -14,8 +14,17 @@ function assertOccurrenceAtLeast(source: string, expected: string, count: number
   }
 }
 
+function assertOccurrenceExactly(source: string, expected: string, count: number, label: string) {
+  const actual = source.split(expected).length - 1
+  if (actual !== count) {
+    throw new Error(`${label}. Expected exactly ${count}, actual ${actual}. Value: ${expected}`)
+  }
+}
+
 const pageSource = readFileSync(resolve('src/pages/System/Stores/index.tsx'), 'utf8')
 const detailPageSource = readFileSync(resolve('src/pages/System/Stores/Detail.tsx'), 'utf8')
+const timeZoneOptionsSource = readFileSync(resolve('src/pages/System/Stores/timeZoneOptions.ts'), 'utf8')
+const storeTypesSource = readFileSync(resolve('src/types/store.ts'), 'utf8')
 const zhSource = readFileSync(resolve('src/i18n/locales/zh.json'), 'utf8')
 const enSource = readFileSync(resolve('src/i18n/locales/en.json'), 'utf8')
 
@@ -89,6 +98,90 @@ assertIncludes(
   enSource,
   '"abnMaxLength": "ABN cannot exceed 20 characters"',
   '英文文案应明确说明 ABN 最大长度',
+)
+
+assertIncludes(
+  timeZoneOptionsSource,
+  "value: 'Australia/Brisbane', label: 'Australia/Brisbane (Queensland)'",
+  '时区选项应包含 Queensland 的 Australia/Brisbane',
+)
+assertIncludes(
+  timeZoneOptionsSource,
+  "value: 'Australia/Sydney', label: 'Australia/Sydney (New South Wales)'",
+  '时区选项应包含 New South Wales 的 Australia/Sydney',
+)
+assertIncludes(
+  timeZoneOptionsSource,
+  "value: 'Australia/Melbourne', label: 'Australia/Melbourne (Victoria)'",
+  '时区选项应包含 Victoria 的 Australia/Melbourne',
+)
+assertOccurrenceExactly(
+  timeZoneOptionsSource,
+  "value: 'Australia/",
+  3,
+  '共享分店时区选项只能包含三个已批准的 IANA 时区',
+)
+assertOccurrenceExactly(
+  storeTypesSource,
+  'timeZoneId?: string',
+  3,
+  'StoreDto、CreateStoreDto 和 UpdateStoreDto 都应声明可选时区字段',
+)
+assertIncludes(
+  pageSource,
+  'name="timeZoneId"',
+  '创建和编辑分店表单应提供时区选择项',
+)
+assertOccurrenceAtLeast(
+  pageSource,
+  'name="timeZoneId"',
+  2,
+  '创建和编辑分店表单都应要求选择时区',
+)
+assertIncludes(
+  pageSource,
+  "t('system.stores.timeZoneRequired')",
+  '分店时区必填应使用模块自己的提示文案',
+)
+assertIncludes(
+  pageSource,
+  'timeZoneId: detail.timeZoneId',
+  '编辑分店时应回填服务端返回的时区，缺失时不得猜测默认值',
+)
+assertIncludes(
+  pageSource,
+  "dataIndex: 'timeZoneId'",
+  '分店列表应显示时区列',
+)
+assertIncludes(
+  pageSource,
+  'detailStore.timeZoneId',
+  '列表页内详情弹窗应展示时区字段',
+)
+assertIncludes(
+  detailPageSource,
+  'store.timeZoneId',
+  '独立分店详情页应展示时区字段',
+)
+assertIncludes(
+  zhSource,
+  '"timeZone": "时区"',
+  '中文文案应包含时区标签',
+)
+assertIncludes(
+  zhSource,
+  '"timeZoneRequired": "请选择时区"',
+  '中文文案应包含时区必填提示',
+)
+assertIncludes(
+  enSource,
+  '"timeZone": "Time Zone"',
+  '英文文案应包含时区标签',
+)
+assertIncludes(
+  enSource,
+  '"timeZoneRequired": "Please select a time zone"',
+  '英文文案应包含时区必填提示',
 )
 
 console.log('storeFormValidation.test: ok')

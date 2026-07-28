@@ -64,5 +64,6 @@ export interface WarehouseLocationLabelPrintPayload {
 
 export interface EmployeeCashierBarcodeLabelPrintPayload {
   employeeName: string;
+  username: string;
   barcode: string;
 }

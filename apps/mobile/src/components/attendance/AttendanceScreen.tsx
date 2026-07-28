@@ -86,6 +86,7 @@ import { getAttendanceDeviceContext } from "@/modules/attendance/required-locati
 import type {
   AttendanceAvailabilityPayload,
   AttendancePunch,
+  AttendancePunchMutationResult,
   AttendancePunchVerificationState,
   AttendanceSchedulePayload,
   AttendanceScheduleUpdatePayload,
@@ -1014,7 +1015,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
 
-    let result: AttendancePunch;
+    let result: AttendancePunchMutationResult;
     try {
       result = await punchMutation.mutateAsync(
         buildAttendanceQrPunchPayload(
@@ -1040,10 +1041,15 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     try {
       // 关键逻辑：服务端成功后必须完成纯 tracking 生命周期，不受 UI 会话失效影响。
       await applyAttendanceTrackingLifecycle(result, qrStore.storeCode, {
-        start: async (storeCode) => startAttendanceLocationTracking({
-          storeCode,
-          ...(await getAttendanceDeviceContext()),
-        }),
+        start: async (storeCode) => {
+          await startAttendanceLocationTracking({
+            storeCode,
+            startedAtUtc: result.serverTimeUtc,
+            workDate: result.workDate,
+            storeTimeZone: result.storeTimeZone,
+            ...(await getAttendanceDeviceContext()),
+          });
+        },
         stop: stopAttendanceLocationTracking,
       });
     } catch (error) {
@@ -1313,7 +1319,11 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
             {isPunchRecordsTab ? (
               <>
                 <TodayPunchCard
-                title={t("sections.selectedDay")}
+                title={
+                  selectedDate === todayDate
+                    ? t("sections.today")
+                    : t("sections.selectedDay")
+                }
                 selectedDate={selectedDate}
                 storeName={selectedStoreName}
                 allowPunch={selectedDate === todayDate}

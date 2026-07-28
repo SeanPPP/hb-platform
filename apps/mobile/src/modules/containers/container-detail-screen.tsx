@@ -9,6 +9,7 @@ import {
   Checkbox,
   Chip,
   Divider,
+  HelperText,
   Menu,
   Modal,
   Portal,
@@ -331,6 +332,7 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const [bulkOemPrice, setBulkOemPrice] = useState("");
   const [editingDetail, setEditingDetail] = useState<ContainerDetail | null>(null);
   const [editForm, setEditForm] = useState<EditForm | null>(null);
+  const [editEnglishNameError, setEditEnglishNameError] = useState("");
   const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false);
   const [showRangeFilters, setShowRangeFilters] = useState(false);
   const [rangeFilters, setRangeFilters] = useState<DetailRangeFilterForm>(EMPTY_DETAIL_RANGE_FILTERS);
@@ -384,15 +386,49 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     void queryClient.invalidateQueries({ queryKey: ["containers", "list"] });
   };
 
+  function closeEditModal() {
+    setEditEnglishNameError("");
+    setEditingDetail(null);
+    setEditForm(null);
+  }
+
+  function openEditModal(detail: ContainerDetail) {
+    setEditEnglishNameError("");
+    setEditingDetail(detail);
+    setEditForm(buildEditForm(detail));
+  }
+
+  function handleEditEnglishNameChange(value: string) {
+    setEditEnglishNameError("");
+    setEditForm((current) => current && { ...current, englishName: value });
+  }
+
   const updateMutation = useMutation({
     mutationFn: () => {
       if (!editingDetail || !editForm) throw new Error("没有可保存的明细");
       return batchUpdateDetails([buildEditPayload(editingDetail, editForm)]);
     },
-    onSuccess: () => {
-      setEditingDetail(null);
-      setEditForm(null);
+    onSuccess: (result) => {
       invalidateDetail();
+      const editingHguid = editingDetail ? getDetailGuid(editingDetail).trim() : "";
+      const rowError = result.validationErrors.find(
+        (error) => error.hguid === editingHguid && error.field === "*",
+      );
+      if (rowError) {
+        // 明细已失效时继续编辑无法恢复，关闭弹窗并用表单级提示说明原因。
+        closeEditModal();
+        setSnackbar(rowError.message);
+        return;
+      }
+      const englishNameError = result.validationErrors.find(
+        (error) => error.hguid === editingHguid && error.field === "英文名称",
+      );
+      if (englishNameError) {
+        // 同一请求的其它字段已成功保存；保留草稿，只让用户修正被拒绝的英文名称。
+        setEditEnglishNameError(englishNameError.message);
+        return;
+      }
+      closeEditModal();
       setSnackbar("明细已保存");
     },
     onError: (error) => setSnackbar(error instanceof Error ? error.message : "保存明细失败"),
@@ -876,10 +912,7 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
                 alignDisabled={alignDomesticProductCodeMutation.isPending}
                 onToggle={() => toggleSelection(hguid)}
                 onAlign={() => handleAlignDomesticProductCode(detail)}
-                onEdit={() => {
-                  setEditingDetail(detail);
-                  setEditForm(buildEditForm(detail));
-                }}
+                onEdit={() => openEditModal(detail)}
               />
             );
           })
@@ -903,12 +936,21 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
       </ScrollView>
 
       <Portal>
-        <Modal visible={Boolean(editingDetail && editForm)} onDismiss={() => setEditingDetail(null)} contentContainerStyle={styles.modal}>
+        <Modal visible={Boolean(editingDetail && editForm)} onDismiss={closeEditModal} contentContainerStyle={styles.modal}>
           <Text variant="titleMedium">编辑明细</Text>
           {editForm ? (
             <>
               <TextInput mode="outlined" label="中文名称" value={editForm.productName} onChangeText={(value) => setEditForm((current) => current && { ...current, productName: value })} />
-              <TextInput mode="outlined" label="英文名称" value={editForm.englishName} onChangeText={(value) => setEditForm((current) => current && { ...current, englishName: value })} />
+              <TextInput
+                mode="outlined"
+                label="英文名称"
+                value={editForm.englishName}
+                error={Boolean(editEnglishNameError)}
+                onChangeText={handleEditEnglishNameChange}
+              />
+              <HelperText type="error" visible={Boolean(editEnglishNameError)}>
+                {editEnglishNameError}
+              </HelperText>
               <View style={styles.inputRow}>
                 <TextInput mode="outlined" label="国内价" keyboardType="decimal-pad" value={editForm.domesticPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, domesticPrice: value })} style={styles.inputHalf} />
                 <TextInput mode="outlined" label="进口价" keyboardType="decimal-pad" value={editForm.importPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, importPrice: value })} style={styles.inputHalf} />
@@ -928,7 +970,7 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
             </>
           ) : null}
           <View style={styles.actionRow}>
-            <Button onPress={() => setEditingDetail(null)}>取消</Button>
+            <Button onPress={closeEditModal}>取消</Button>
             <Button mode="contained" loading={updateMutation.isPending} onPress={() => updateMutation.mutate()}>保存</Button>
           </View>
         </Modal>

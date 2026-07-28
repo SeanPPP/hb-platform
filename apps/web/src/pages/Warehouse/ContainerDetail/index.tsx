@@ -10,6 +10,7 @@ import {
   ReloadOutlined,
   SaveOutlined,
   SearchOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import {
   DndContext,
@@ -113,6 +114,7 @@ import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCo
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
+  applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailColumnState,
   applyContainerDetailLoadedTextFilters,
@@ -125,6 +127,7 @@ import {
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
+  buildPendingContainerDetailSavePlan,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
@@ -140,6 +143,8 @@ import {
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailTableScrollY,
   countContainerDetailInvalidTranslationResults,
+  countSuccessfullySavedContainerDetailRows,
+  clearSavedPendingContainerDetailFields,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
@@ -155,6 +160,7 @@ import {
   getContainerDetailRealtimeImportPrice,
   getContainerDetailRealtimeRetailPrice,
   getContainerDetailVisibleOemPrice,
+  getPendingContainerDetailEnglishNameError,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
   getContainerDetailProductName,
@@ -172,9 +178,12 @@ import {
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
+  mergePendingContainerDetailPatch,
   matchesContainerDetailSelectedTags,
   omitContainerDetailTextFilters,
+  reconcilePendingContainerDetailSaveFailureKeys,
   rollbackContainerDetailWarehouseStatuses,
+  settleScopedContainerDetailSave,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
@@ -192,6 +201,10 @@ import {
   type ContainerDetailTagFilter,
   type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
+  type ContainerDetailSaveValidationError,
+  type PendingContainerDetailPatch,
+  type PendingContainerDetailPatchMap,
+  type PendingContainerDetailSavePlan,
 } from './containerDetailLogic'
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip } from '../Products/categoryPath'
 import CategoryTreePicker from '../Products/CategoryTreePicker'
@@ -200,6 +213,12 @@ import {
   pushProductsToHqUpdateFieldOptions,
 } from '../../../types/posProduct'
 import type { PushProductsToHqResult, PushProductsToHqUpdateField } from '../../../types/posProduct'
+import ContainerCategoryManageModal from './ContainerCategoryManageModal'
+import {
+  resolveContainerCategoryTargetAfterMutation,
+  resolveContainerCategorySelectionAfterRefresh,
+  type ContainerCategoryChange,
+} from './containerCategoryManageLogic'
 import ContainerTagFilters from './ContainerTagFilters'
 import useContainerSetCode from './useContainerSetCode'
 import {
@@ -218,17 +237,7 @@ import './index.css'
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'packingQuantity' | 'unitVolume' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'unitTransportCost' | 'warehouseImportPrice' | 'lastOEMPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
-type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> &
-  Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
-type PendingContainerDetailPricePatchMap = Record<string, PendingContainerDetailPricePatch>
-type PendingContainerDetailPriceSavePlan = {
-  pendingPatches: PendingContainerDetailPricePatch[]
-  detailUpdates: UpdateContainerDetailRequest[]
-  rowKeyByHguid: Map<string, string>
-  saveKeys: string[]
-  importPriceCount: number
-  retailPriceCount: number
-}
+type PendingContainerDetailPageSavePlan = PendingContainerDetailSavePlan & { saveKeys: string[] }
 type ContainerDetailExportFormat = 'excel' | 'pdf'
 type ContainerExistingProductUpdateField =
   | 'domesticPrice'
@@ -633,7 +642,7 @@ export default function ContainerDetailPage() {
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
-  const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})
+  const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
@@ -656,7 +665,6 @@ export default function ContainerDetailPage() {
   const [batchModalScopeRows, setBatchModalScopeRows] = useState<ContainerDetail[]>([])
   const [batchEnglishName, setBatchEnglishName] = useState('')
   const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
-  const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
   const [batchCategoryOpen, setBatchCategoryOpen] = useState(false)
   const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>()
   const [batchCategorySaving, setBatchCategorySaving] = useState(false)
@@ -664,6 +672,8 @@ export default function ContainerDetailPage() {
   const [rowCategoryEditingRow, setRowCategoryEditingRow] = useState<ContainerDetail | null>(null)
   const [rowTargetCategoryGuid, setRowTargetCategoryGuid] = useState<string>()
   const [rowCategorySaving, setRowCategorySaving] = useState(false)
+  const [categoryManageOpen, setCategoryManageOpen] = useState(false)
+  const [categoryManageContext, setCategoryManageContext] = useState<'batch' | 'row' | null>(null)
   const [editingProductNameRowKey, setEditingProductNameRowKey] = useState<string | null>(null)
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -673,7 +683,7 @@ export default function ContainerDetailPage() {
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
-  const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
+  const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [aligningDomesticProductDetailHguid, setAligningDomesticProductDetailHguid] = useState<string | null>(null)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
@@ -705,8 +715,14 @@ export default function ContainerDetailPage() {
   const createProductsLoadingRef = useRef(false)
   const submitContainerLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
+  const reloadCurrentDetailRef = useRef<() => Promise<void>>(async () => undefined)
+  const currentContainerGuidRef = useRef(containerGuid)
+  currentContainerGuidRef.current = containerGuid
+  const pendingDetailPatchesRef = useRef<PendingContainerDetailPatchMap>({})
+  const pendingDetailContainerGuidRef = useRef(containerGuid)
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
+  const failedPendingDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
   const detailTableRef = useRef<TableRef | null>(null)
   const lastDetailTableScrollTopRef = useRef(0)
@@ -732,6 +748,21 @@ export default function ContainerDetailPage() {
       },
     }),
   )
+
+  const updatePendingDetailPatches = (
+    updater: (current: PendingContainerDetailPatchMap) => PendingContainerDetailPatchMap,
+  ) => {
+    const next = updater(pendingDetailPatchesRef.current)
+    pendingDetailPatchesRef.current = next
+    const currentFailureKeys = failedPendingDetailSaveKeysRef.current
+    const reconciledFailureKeys = reconcilePendingContainerDetailSaveFailureKeys(
+      currentFailureKeys,
+      next,
+    )
+    currentFailureKeys.clear()
+    reconciledFailureKeys.forEach((key) => currentFailureKeys.add(key))
+    setPendingDetailPatches(next)
+  }
 
   const containerDetailTabTitle = container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined
   const containerDetailTabKey = containerGuid ? `/warehouse/container/detail/${containerGuid}` : undefined
@@ -823,6 +854,49 @@ export default function ContainerDetailPage() {
     categoryName: selectedRowTargetCategory?.categoryName,
     warehouseCategoryGUID: rowTargetCategoryGuid,
   }, categoryLookup, i18n.language) : undefined
+  const categoryManageActiveTargetGuid = categoryManageContext === 'batch'
+    ? targetCategoryGuid
+    : categoryManageContext === 'row'
+      ? rowTargetCategoryGuid
+      : undefined
+
+  const openCategoryManageModal = (context: 'batch' | 'row') => {
+    setCategoryManageContext(context)
+    setCategoryManageOpen(true)
+  }
+
+  const closeCategoryManageModal = () => {
+    setCategoryManageOpen(false)
+    setCategoryManageContext(null)
+  }
+
+  const handleCategoriesChanged = (
+    tree: WarehouseCategoryNode[],
+    change: ContainerCategoryChange,
+  ) => {
+    const selection = resolveContainerCategorySelectionAfterRefresh(
+      tree,
+      undefined,
+      categoryManageActiveTargetGuid,
+      change,
+    )
+
+    setCategories(tree)
+    setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1))
+    if (categoryManageContext === 'batch') {
+      setTargetCategoryGuid(selection.activeTargetCategoryGuid)
+    } else if (categoryManageContext === 'row') {
+      setRowTargetCategoryGuid(selection.activeTargetCategoryGuid)
+    }
+  }
+
+  const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {
+    if (categoryManageContext === 'batch') {
+      setTargetCategoryGuid((current) => resolveContainerCategoryTargetAfterMutation(current, change))
+    } else if (categoryManageContext === 'row') {
+      setRowTargetCategoryGuid((current) => resolveContainerCategoryTargetAfterMutation(current, change))
+    }
+  }
 
   const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
 
@@ -939,8 +1013,20 @@ export default function ContainerDetailPage() {
       lastLoadedContainerDetailSuccessRef.current = null
       lastDetailTableScrollTopRef.current = 0
       setDetailLoading(true)
-      setRows([])
-      setPendingPricePatches({})
+      const isContainerChange = pendingDetailContainerGuidRef.current !== containerGuid
+      if (isContainerChange) {
+        pendingDetailContainerGuidRef.current = containerGuid
+        pendingDetailSavePromisesRef.current.clear()
+        failedDetailSaveKeysRef.current = new Set()
+        failedPendingDetailSaveKeysRef.current = new Set()
+        setPendingDetailSaveCount(0)
+        setDetailSaveSubmitting(false)
+        updatePendingDetailPatches(() => ({}))
+      }
+      // 同一货柜刷新、筛选或重算时保留本地草稿；切换货柜才清空旧货柜状态。
+      if (isContainerChange || Object.keys(pendingDetailPatchesRef.current).length === 0) {
+        setRows([])
+      }
       setSelectedRowKeys([])
     } else {
       setDetailLoadingMore(true)
@@ -963,7 +1049,8 @@ export default function ContainerDetailPage() {
         return
       }
 
-      setRows((items) => mode === 'reset' ? result.items : mergeContainerDetailLoadedItems(items, result.items))
+      const loadedItems = applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)
+      setRows((items) => mode === 'reset' ? loadedItems : mergeContainerDetailLoadedItems(items, loadedItems))
       if (result.totalComputed !== false) {
         setDetailItemsTotal(result.itemsTotal)
       }
@@ -1000,6 +1087,9 @@ export default function ContainerDetailPage() {
       loadDetailChunk(1, 'reset'),
     ])
   }
+
+  // 保存期间筛选条件可能变化；始终通过 ref 调用最新 render 的查询闭包。
+  reloadCurrentDetailRef.current = () => loadDetailChunk(1, 'reset')
 
   useEffect(() => {
     if (!active) return
@@ -1507,13 +1597,13 @@ export default function ContainerDetailPage() {
   const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
   const canAlignDomesticProductCode = access.canEditContainer && (access.isAdmin || access.hasPermission(P.Products.Edit))
-  const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
-  const pendingPricePatchCount = pendingPricePatchList.length
+  const pendingDetailPatchList = useMemo(() => Object.values(pendingDetailPatches), [pendingDetailPatches])
+  const pendingDetailPatchCount = pendingDetailPatchList.length
 
-  const ensureNoPendingPriceDetails = () => {
-    if (!pendingPricePatchCount) return true
-    // 价格列改为手动保存后，跨库/后台动作必须先阻止未落库价格继续流转。
-    message.warning(t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/零售价'))
+  const ensureNoPendingDetails = () => {
+    if (!pendingDetailPatchCount) return true
+    // 跨库和后台动作必须等待价格、英文名称等本地草稿统一落库。
+    message.warning(t('containers.messages.savePendingDetailsFirst', '请先点击“保存明细”保存待提交的明细修改'))
     return false
   }
 
@@ -1521,7 +1611,19 @@ export default function ContainerDetailPage() {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
   }
 
-  const markPendingPricePatch = (row: ContainerDetail, patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格'>) => {
+  const queuePendingDetailUpdates = (updates: PendingContainerDetailPatch[]) => {
+    updatePendingDetailPatches((current) => (
+      updates.reduce(
+        (next, update) => mergePendingContainerDetailPatch(next, update),
+        current,
+      )
+    ))
+  }
+
+  const markPendingDetailPatch = (
+    row: ContainerDetail,
+    patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格' | '英文名称'>,
+  ) => {
     const key = rowKey(row)
     const isExistingProductRetailPatch = !row.是否新商品 && '贴牌价格' in patch
     const visiblePatch: Partial<ContainerDetail> = isExistingProductRetailPatch
@@ -1534,33 +1636,7 @@ export default function ContainerDetailPage() {
       : patch
     patchRow(key, visiblePatch)
     if (!row.hguid) return
-
-    setPendingPricePatches((current) => {
-      const nextPatch: PendingContainerDetailPricePatch = { ...(current[key] ?? { hguid: row.hguid }) }
-      if ('进口价格' in patch) {
-        if (patch.进口价格 == null) {
-          delete nextPatch.进口价格
-        } else {
-          nextPatch.进口价格 = patch.进口价格
-        }
-      }
-      if ('贴牌价格' in patch) {
-        if (patch.贴牌价格 == null) {
-          delete nextPatch.贴牌价格
-        } else {
-          nextPatch.贴牌价格 = patch.贴牌价格
-        }
-      }
-
-      const next = { ...current }
-      // 价格列改为手动保存：清空输入只影响本地展示，不新增后端清空价格语义。
-      if (nextPatch.进口价格 == null && nextPatch.贴牌价格 == null) {
-        delete next[key]
-      } else {
-        next[key] = nextPatch
-      }
-      return next
-    })
+    queuePendingDetailUpdates([{ hguid: row.hguid, ...patch }])
   }
 
   const getDetailSaveFailedMessage = () => t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
@@ -1569,16 +1645,25 @@ export default function ContainerDetailPage() {
     message.error(error instanceof Error ? error.message : getDetailSaveFailedMessage())
   }
 
-  const trackDetailSavePromise = <T,>(saveKeys: string[], promise: Promise<T>) => {
+  const trackDetailSavePromise = <T,>(
+    saveKeys: string[],
+    promise: Promise<T>,
+    failureKeys = failedDetailSaveKeysRef.current,
+    saveContainerGuid = containerGuid,
+  ) => {
     const trackedPromise = promise.catch((error) => {
-      saveKeys.forEach((saveKey) => failedDetailSaveKeysRef.current.add(saveKey))
+      if (currentContainerGuidRef.current === saveContainerGuid) {
+        saveKeys.forEach((saveKey) => failureKeys.add(saveKey))
+      }
       throw error
     }).then((value) => {
-      saveKeys.forEach((saveKey) => failedDetailSaveKeysRef.current.delete(saveKey))
+      saveKeys.forEach((saveKey) => failureKeys.delete(saveKey))
       return value
     }).finally(() => {
       pendingDetailSavePromisesRef.current.delete(trackedPromise)
-      setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+      if (currentContainerGuidRef.current === saveContainerGuid) {
+        setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+      }
     })
     pendingDetailSavePromisesRef.current.add(trackedPromise)
     setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
@@ -1590,7 +1675,10 @@ export default function ContainerDetailPage() {
     if (pendingSaves.length) {
       await Promise.all(pendingSaves)
     }
-    if (failedDetailSaveKeysRef.current.size > 0) {
+    if (
+      failedDetailSaveKeysRef.current.size > 0
+      || failedPendingDetailSaveKeysRef.current.size > 0
+    ) {
       throw new Error(getDetailSaveFailedMessage())
     }
   }
@@ -1606,55 +1694,64 @@ export default function ContainerDetailPage() {
     )
   }
 
-  const buildPendingPriceSavePlan = (): PendingContainerDetailPriceSavePlan | null => {
-    const pendingPatches = pendingPricePatchList
-    const detailUpdates = pendingPatches
-      .map((patch) => {
-        const update: UpdateContainerDetailRequest = { hguid: patch.hguid }
-        if (patch.进口价格 != null) update.进口价格 = patch.进口价格
-        if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格
-        return update
-      })
-      .filter((update) => update.进口价格 != null || update.贴牌价格 != null)
-
-    if (!detailUpdates.length) {
-      message.warning(t('containers.messages.noPendingPriceDetails', '没有待保存的明细价格'))
+  const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {
+    if (!pendingDetailPatchList.length) {
+      message.warning(t('containers.messages.noPendingDetails', '没有待保存的明细修改'))
       return null
     }
-
-    const rowKeyByHguid = new Map(rows.map((row) => [row.hguid, rowKey(row)]))
-    const saveKeys = detailUpdates.flatMap((update) => buildContainerDetailSaveFailureKeys(rowKeyByHguid.get(update.hguid) ?? update.hguid, update))
+    const plan = buildPendingContainerDetailSavePlan(pendingDetailPatchList)
+    const saveKeys = plan.detailUpdates.flatMap((update) => (
+      buildContainerDetailSaveFailureKeys(update.hguid, update)
+    ))
     return {
-      pendingPatches,
-      detailUpdates,
-      rowKeyByHguid,
+      ...plan,
       saveKeys,
-      importPriceCount: pendingPatches.filter((patch) => patch.进口价格 != null).length,
-      retailPriceCount: pendingPatches.filter((patch) => patch.贴牌价格 != null).length,
     }
   }
 
-  const confirmSavePendingPriceDetails = (plan: PendingContainerDetailPriceSavePlan) => new Promise<boolean>((resolve) => {
+  const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>((resolve) => {
+    const invalidEnglishNameCount = plan.pendingPatches.filter((patch) => (
+      Boolean(getPendingContainerDetailEnglishNameError(patch))
+    )).length
     Modal.confirm({
-      title: t('containers.modals.savePendingPriceDetailsTitle', '确认保存明细价格'),
+      title: t('containers.modals.savePendingDetailsTitle', '确认保存明细'),
       content: (
         <Space direction="vertical" size={8}>
-          <Typography.Text strong>{t('containers.modals.savePendingPriceDetailsUpdateTitle', '更新说明')}</Typography.Text>
+          <Typography.Text strong>{t('containers.modals.savePendingDetailsUpdateTitle', '更新说明')}</Typography.Text>
           <Typography.Text>
             {t(
-              'containers.modals.savePendingPriceDetailsSummary',
-              '本次将保存 {{total}} 条明细价格，其中进口价 {{importPriceCount}} 条，零售价 {{retailPriceCount}} 条。',
-              { total: plan.pendingPatches.length, importPriceCount: plan.importPriceCount, retailPriceCount: plan.retailPriceCount },
+              'containers.modals.savePendingDetailsSummary',
+              '本次涉及 {{total}} 条明细：进口价 {{importPriceCount}} 条、零售价 {{retailPriceCount}} 条、英文名称 {{englishNameCount}} 条、清除英文名称 {{clearEnglishNameCount}} 条。',
+              {
+                total: plan.pendingPatches.length,
+                importPriceCount: plan.importPriceCount,
+                retailPriceCount: plan.retailPriceCount,
+                englishNameCount: plan.englishNameCount,
+                clearEnglishNameCount: plan.clearEnglishNameCount,
+              },
             )}
           </Typography.Text>
-          <Typography.Text type="warning">
-            {t('containers.modals.savePendingPriceDetailsExistingRetailHint', '已有商品零售价会同步更新仓库商品实时零售价，并同步本货柜明细贴牌价格。')}
-          </Typography.Text>
+          {plan.retailPriceCount > 0 ? (
+            <>
+              <Typography.Text type="warning">
+                {t('containers.modals.savePendingDetailsExistingRetailHint', '已有商品零售价会同步更新仓库商品实时零售价，并同步本货柜明细贴牌价格。')}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {t('containers.modals.savePendingDetailsNewRetailHint', '新商品零售价只保存到本货柜明细，后续创建商品时继续使用该价格。')}
+              </Typography.Text>
+            </>
+          ) : null}
+          {invalidEnglishNameCount > 0 ? (
+            <Typography.Text type="danger">
+              {t(
+                'containers.modals.savePendingDetailsInvalidEnglishHint',
+                '{{count}} 条英文名称为空或包含中文，本次不会保存并会继续保留。',
+                { count: invalidEnglishNameCount },
+              )}
+            </Typography.Text>
+          ) : null}
           <Typography.Text type="secondary">
-            {t('containers.modals.savePendingPriceDetailsNewRetailHint', '新商品零售价只保存到本货柜明细，后续创建商品时继续使用该价格。')}
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            {t('containers.modals.savePendingPriceDetailsRetryHint', '如果保存失败，待保存状态会保留，可修正后重试。')}
+            {t('containers.modals.savePendingDetailsRetryHint', '如果保存失败，待保存状态会保留，可修正后重试。')}
           </Typography.Text>
         </Space>
       ),
@@ -1665,34 +1762,92 @@ export default function ContainerDetailPage() {
     })
   })
 
-  const executePendingPriceSavePlan = async (plan: PendingContainerDetailPriceSavePlan) => {
-    setPriceDetailsSaving(true)
+  const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {
+    const saveContainerGuid = containerGuid
+    const detailRequestIdAtSaveStart = containerDetailLoadRequestIdRef.current
+    const detailControllerAtSaveStart = detailAbortControllerRef.current
+    setDetailSaveSubmitting(true)
     try {
-      // 保存明细只提交逐行改过的价格字段，不复用批量统一改价入口，避免覆盖未编辑行。
-      await trackDetailSavePromise(plan.saveKeys, batchUpdateDetails(plan.detailUpdates))
-      setPendingPricePatches((current) => {
-        const next = { ...current }
-        plan.pendingPatches.forEach((patch) => {
-          delete next[plan.rowKeyByHguid.get(patch.hguid) ?? patch.hguid]
-        })
-        return next
-      })
-      message.success(t('containers.messages.detailPricesSaved', { count: plan.pendingPatches.length, defaultValue: '已保存 {{count}} 条明细价格' }))
+      const saveRequest = plan.detailUpdates.length
+        ? trackDetailSavePromise(
+            plan.saveKeys,
+            batchUpdateDetails(plan.detailUpdates),
+            failedPendingDetailSaveKeysRef.current,
+            saveContainerGuid,
+          )
+        : Promise.resolve({ totalUpdated: 0, totalRequested: 0, validationErrors: [] })
+      const scopedSave = await settleScopedContainerDetailSave(
+        saveRequest,
+        {
+          saveContainerGuid,
+          detailRequestIdAtSaveStart,
+          abortControllerTokenAtSaveStart: detailControllerAtSaveStart,
+        },
+        () => ({
+          containerGuid: currentContainerGuidRef.current,
+          detailRequestId: containerDetailLoadRequestIdRef.current,
+          abortControllerToken: detailAbortControllerRef.current,
+        }),
+      )
+      const result = scopedSave.result
+      if (!scopedSave.isCurrentContainer) {
+        return
+      }
+      const validationErrors: ContainerDetailSaveValidationError[] = [
+        ...plan.localValidationErrors,
+        ...result.validationErrors,
+      ]
+      if (plan.detailUpdates.length > 0 && scopedSave.shouldInvalidateDetailLoad) {
+        // 保存结果优先于更早发出的查询，避免旧响应在队列清理后覆盖刚保存的本地值。
+        detailControllerAtSaveStart?.abort()
+        containerDetailLoadRequestIdRef.current += 1
+        setDetailLoading(false)
+        setDetailLoadingMore(false)
+      }
+      updatePendingDetailPatches((current) => (
+        clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)
+      ))
+      if (plan.detailUpdates.length > 0 && scopedSave.shouldReloadCurrentDetail) {
+        // 后发查询可能在事务提交前读取旧快照，保存完成后用当前筛选条件立即替换。
+        await reloadCurrentDetailRef.current()
+      }
+
+      const savedRowCount = countSuccessfullySavedContainerDetailRows(
+        plan.detailUpdates,
+        result.validationErrors,
+      )
+
+      if (savedRowCount > 0) {
+        message.success(t('containers.messages.detailsSaved', '已保存 {{count}} 条明细', { count: savedRowCount }))
+      }
+      if (validationErrors.length > 0) {
+        const failedRowCount = new Set(validationErrors.map((error) => error.hguid)).size
+        const reasons = Array.from(new Set(validationErrors.map((error) => error.message))).join('；')
+        message.warning(t(
+          'containers.messages.detailFieldsNotSaved',
+          '{{count}} 条明细有字段未保存：{{reasons}}',
+          { count: failedRowCount, reasons },
+        ))
+      }
     } catch (error) {
-      handleDetailSaveError(error)
+      if (currentContainerGuidRef.current === saveContainerGuid) {
+        handleDetailSaveError(error)
+      }
     } finally {
-      setPriceDetailsSaving(false)
+      if (currentContainerGuidRef.current === saveContainerGuid) {
+        setDetailSaveSubmitting(false)
+      }
     }
   }
 
-  const savePendingPriceDetails = async () => {
+  const savePendingDetails = async () => {
     if (!access.canEditContainer) return
     // 保存前先锁定本次提交范围，确认弹窗和实际落库共用同一份计划。
-    const savePlan = buildPendingPriceSavePlan()
+    const savePlan = buildPendingDetailSavePlan()
     if (!savePlan) return
-    const confirmed = await confirmSavePendingPriceDetails(savePlan)
+    const confirmed = await confirmSavePendingDetails(savePlan)
     if (!confirmed) return
-    await executePendingPriceSavePlan(savePlan)
+    await executePendingDetailSavePlan(savePlan)
   }
 
   const startEditingProductName = (row: ContainerDetail) => {
@@ -2099,12 +2254,13 @@ export default function ContainerDetailPage() {
     const updates = buildContainerDetailTranslationUpdates(scopedRows, translations)
     const skippedInvalidCount = countContainerDetailInvalidTranslationResults(scopedRows, translations)
     if (updates.length) {
-      await batchUpdateDetails(updates)
+      queuePendingDetailUpdates(updates)
       setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
-      if (!selectedRowKeys.length) {
-        await loadDetailChunk(1, 'reset')
-      }
-      message.success(t('containers.messages.namesTranslated', { count: updates.length }))
+      message.success(t(
+        'containers.messages.namesTranslatedPending',
+        '已生成 {{count}} 条英文名称，请点击“保存明细”提交',
+        { count: updates.length },
+      ))
     }
     if (skippedInvalidCount > 0) {
       message.warning(t('containers.messages.invalidTranslatedNamesSkipped', { count: skippedInvalidCount }))
@@ -2138,7 +2294,8 @@ export default function ContainerDetailPage() {
     }
     setBatchModalTargetCount(scopedRows.length)
     setBatchModalScopeRows(scopedRows)
-    setTargetCategoryGuid(undefined)
+    // 从工具栏管理分类后，保留仍存在的目标分类，打开批量分类即可直接使用。
+    setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID)
     // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
     setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
     setBatchCategoryOpen(true)
@@ -2200,6 +2357,7 @@ export default function ContainerDetailPage() {
   }
 
   const closeRowCategoryModal = () => {
+    closeCategoryManageModal()
     setRowCategoryOpen(false)
     setRowCategoryEditingRow(null)
     setRowTargetCategoryGuid(undefined)
@@ -2298,29 +2456,21 @@ export default function ContainerDetailPage() {
     const scopedRows = batchModalScopeRows
     const updates = buildContainerDetailEnglishNameUpdates(scopedRows, batchEnglishName)
     if (!updates.length) {
-      message.warning(t('containers.messages.enterEnglishName'))
+      message.warning(t('containers.messages.enterValidEnglishName', '请输入不含中文的英文名称'))
       return
     }
 
-    setBatchEnglishNameSaving(true)
-    try {
-      const result = await batchUpdateDetails(updates)
-      if (result.totalUpdated > 0) {
-        setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
-        if (!selectedRowKeys.length) {
-          await loadDetailChunk(1, 'reset')
-        }
-      }
-      setBatchEnglishNameModalOpen(false)
-      setBatchModalTargetCount(0)
-      setBatchModalScopeRows([])
-      setBatchEnglishName('')
-      message.success(t('containers.messages.englishNamesUpdated', { count: result.totalUpdated }))
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : t('containers.messages.englishNamesUpdateFailed'))
-    } finally {
-      setBatchEnglishNameSaving(false)
-    }
+    queuePendingDetailUpdates(updates)
+    setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
+    setBatchEnglishNameModalOpen(false)
+    setBatchModalTargetCount(0)
+    setBatchModalScopeRows([])
+    setBatchEnglishName('')
+    message.success(t(
+      'containers.messages.englishNamesPending',
+      '已添加 {{count}} 条英文名称修改，请点击“保存明细”提交',
+      { count: updates.length },
+    ))
   }
 
   const clearEnglishNames = async () => {
@@ -2332,15 +2482,16 @@ export default function ContainerDetailPage() {
       return
     }
 
-    await batchUpdateDetails(updates)
+    queuePendingDetailUpdates(updates)
     setRows((items) => applyContainerDetailEnglishNameUpdates(
       items,
       updates.map((update) => ({ hguid: update.hguid, 英文名称: undefined })),
     ))
-    if (!selectedRowKeys.length) {
-      await loadDetailChunk(1, 'reset')
-    }
-    message.success(t('containers.messages.englishNamesCleared', { count: updates.length }))
+    message.success(t(
+      'containers.messages.englishNamesClearPending',
+      '已添加 {{count}} 条清除英文名称操作，请点击“保存明细”提交',
+      { count: updates.length },
+    ))
   }
 
   const showHqTranslationResult = (result: HqTranslationResult) => {
@@ -2549,7 +2700,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
-    if (!ensureNoPendingPriceDetails()) return
+    if (!ensureNoPendingDetails()) return
 
     const selection = buildContainerDetailHqPushSelection(selectedRows)
     if (!selection.items.length) {
@@ -2737,7 +2888,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.missingContainerGuid', '缺少货柜 GUID'))
       return
     }
-    if (!ensureNoPendingPriceDetails()) return
+    if (!ensureNoPendingDetails()) return
     blurActiveContainerDetailEditableCell()
     try {
       await flushPendingDetailSaves()
@@ -2780,7 +2931,7 @@ export default function ContainerDetailPage() {
       message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
       return
     }
-    if (!ensureNoPendingPriceDetails()) return
+    if (!ensureNoPendingDetails()) return
     const scopedRows = await confirmBatchRows(t('containers.actions.createNewProducts'))
     if (!scopedRows) return
     const detailHguids = scopedRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
@@ -2839,7 +2990,7 @@ export default function ContainerDetailPage() {
   }
 
   const updateExistingPurchase = async () => {
-    if (!ensureNoPendingPriceDetails()) return
+    if (!ensureNoPendingDetails()) return
     const confirmed = await confirmBatchRowsWithUpdateFields(
       t('containers.actions.updateExistingPurchase'),
       containerExistingProductUpdateFields,
@@ -3300,18 +3451,30 @@ export default function ContainerDetailPage() {
       width: 180,
       ...makeSortProps('englishName'),
       ...textFilterProps('englishName', t('containers.placeholders.filterEnglishName', '英文名称过滤')),
-      render: (_, row) => access.canEditContainer ? (
-        <Input.TextArea
-          ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
-          className="container-detail-english-name-input"
-          value={getContainerDetailEnglishName(row) ?? ''}
-          autoSize={{ minRows: 1, maxRows: 2 }}
-          style={{ resize: 'none' }}
-          onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
-          onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value }).catch(handleDetailSaveError)}
-          onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
-        />
-      ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
+      render: (_, row) => {
+        if (!access.canEditContainer) return <TwoLineText value={getContainerDetailEnglishName(row)} />
+        const pendingPatch = row.hguid ? pendingDetailPatches[row.hguid] : undefined
+        const validationError = getPendingContainerDetailEnglishNameError(pendingPatch)
+        const validationMessage = validationError === 'CONTAINS_CHINESE'
+          ? t('containers.messages.englishNameContainsChinese', '英文名称不能包含中文')
+          : validationError === 'EMPTY_ENGLISH_NAME'
+            ? t('containers.messages.emptyEnglishNameNotSaved', '空白英文名称不会保存，如需清空请使用“清除英文名称”')
+            : undefined
+        return (
+          <Input.TextArea
+            ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
+            className="container-detail-english-name-input"
+            value={getContainerDetailEnglishName(row) ?? ''}
+            autoSize={{ minRows: 1, maxRows: 2 }}
+            style={{ resize: 'none' }}
+            status={validationError ? 'error' : undefined}
+            aria-invalid={Boolean(validationError)}
+            title={validationMessage}
+            onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
+          />
+        )
+      },
     },
     {
       key: 'categoryName',
@@ -3514,7 +3677,7 @@ export default function ContainerDetailPage() {
               precision={2}
               controls={false}
               style={{ width: 78 }}
-              onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })}
+              onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
             />
           ))
@@ -3538,7 +3701,7 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
-            onChange={(value) => markPendingPricePatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
+            onChange={(value) => markPendingDetailPatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
           />
         ) : renderOemPriceCell(row),
@@ -3969,7 +4132,6 @@ export default function ContainerDetailPage() {
         title={t('containers.modals.batchEditEnglishNameTitle')}
         open={batchEnglishNameModalOpen}
         okText={t('containers.actions.batchEditEnglishName')}
-        confirmLoading={batchEnglishNameSaving}
         onOk={() => void submitBatchEditEnglishName()}
         onCancel={() => {
           setBatchEnglishNameModalOpen(false)
@@ -3999,6 +4161,7 @@ export default function ContainerDetailPage() {
         confirmLoading={batchCategorySaving}
         okButtonProps={{ disabled: !targetCategoryGuid || categoryLoading || !categories.length }}
         onCancel={() => {
+          closeCategoryManageModal()
           setBatchCategoryOpen(false)
           setBatchModalTargetCount(0)
           setBatchModalScopeRows([])
@@ -4063,6 +4226,17 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      {access.canManageWarehouseCategories ? (
+        <ContainerCategoryManageModal
+          open={categoryManageOpen}
+          categories={categories}
+          language={i18n.language}
+          activeTargetCategoryGuid={categoryManageActiveTargetGuid}
+          onCancel={closeCategoryManageModal}
+          onMutationCommitted={handleCategoryMutationCommitted}
+          onCategoriesChanged={handleCategoriesChanged}
+        />
+      ) : null}
       <div className={pageClassName}>
       <Spin spinning={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -4184,13 +4358,13 @@ export default function ContainerDetailPage() {
                         </Button>
                       ) : null}
                       {canSubmitContainer ? (
-                        <Tooltip title={pendingDetailSaveCount > 0 || pendingPricePatchCount > 0 ? t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/零售价') : ''}>
+                        <Tooltip title={pendingDetailSaveCount > 0 || pendingDetailPatchCount > 0 ? t('containers.messages.savePendingDetailsFirst', '请先点击“保存明细”保存待提交的明细修改') : ''}>
                           <Button
                             size="small"
                             type="primary"
                             icon={<CheckCircleOutlined />}
                             loading={submitContainerLoading}
-                            disabled={submitContainerLoading || pendingDetailSaveCount > 0 || pendingPricePatchCount > 0}
+                            disabled={submitContainerLoading || pendingDetailSaveCount > 0 || pendingDetailPatchCount > 0}
                             onClick={() => void submitContainer()}
                           >
                             {t('containers.actions.submitContainer', '提交货柜')}
@@ -4249,6 +4423,15 @@ export default function ContainerDetailPage() {
                           <Button size="small">{t('containers.actions.batchActions')}</Button>
                         </Dropdown>
                       ) : null}
+                      {access.canManageWarehouseCategories ? (
+                        <Button
+                          size="small"
+                          icon={<SettingOutlined />}
+                          onClick={() => openCategoryManageModal('batch')}
+                        >
+                          {t('containers.actions.manageCategories', '管理分类')}
+                        </Button>
+                      ) : null}
                       {access.canDeleteContainer ? <Button size="small" danger icon={<DeleteOutlined />} onClick={deleteSelected}>{t('containers.actions.deleteDetails')}</Button> : null}
                     </Space>
                     <Space wrap size={[8, 4]} className="container-detail-action-meta">
@@ -4284,11 +4467,11 @@ export default function ContainerDetailPage() {
                       <Button
                         size="small"
                         icon={<SaveOutlined />}
-                        loading={priceDetailsSaving}
-                        disabled={!pendingPricePatchCount || priceDetailsSaving}
-                        onClick={() => void savePendingPriceDetails()}
+                        loading={detailSaveSubmitting}
+                        disabled={!pendingDetailPatchCount || detailSaveSubmitting}
+                        onClick={() => void savePendingDetails()}
                       >
-                        {t('containers.actions.saveDetails', '保存明细')}{pendingPricePatchCount ? ` (${pendingPricePatchCount})` : ''}
+                        {t('containers.actions.saveDetails', '保存明细')}{pendingDetailPatchCount ? ` (${pendingDetailPatchCount})` : ''}
                       </Button>
                     </Space>
                   ) : null}

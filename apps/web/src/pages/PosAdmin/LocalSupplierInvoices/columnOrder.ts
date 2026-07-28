@@ -78,6 +78,30 @@ export function dispatchLocalSupplierInvoiceDragHandleKeyDown<
   dndListener?.(event)
 }
 
+export function dispatchLocalSupplierInvoiceDragHandlePointerDown<
+  TEvent extends { stopPropagation: () => void },
+>(event: TEvent, dndListener?: (event: TEvent) => void) {
+  // 指针拖拽只交给手柄处理，避免排序表头截获激活事件。
+  event.stopPropagation()
+  dndListener?.(event)
+}
+
+export function dispatchLocalSupplierInvoiceSortableHeaderKeyDown<
+  TEvent extends { code: string; stopPropagation: () => void },
+>(
+  event: TEvent,
+  dndListener?: (event: TEvent) => void,
+  sortListener?: (event: TEvent) => void,
+) {
+  if (event.code === 'Space') {
+    // 排序列头用 Space 拖拽、Enter 排序，避免两个键盘入口互相抢占。
+    event.stopPropagation()
+    dndListener?.(event)
+    return
+  }
+  sortListener?.(event)
+}
+
 export function mergeLocalSupplierInvoiceColumnOrder(
   savedOrder: unknown,
   availableOrder: readonly LocalSupplierInvoiceColumnKey[] =

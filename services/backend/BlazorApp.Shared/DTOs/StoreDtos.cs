@@ -80,6 +80,12 @@ namespace BlazorApp.Shared.DTOs
         public string? Address { get; set; }
 
         /// <summary>
+        /// 门店考勤时区；为空时继续使用门店资料推导。
+        /// </summary>
+        [StringLength(80, ErrorMessage = "门店时区长度不能超过80个字符")]
+        public string? TimeZoneId { get; set; }
+
+        /// <summary>
         /// 联系电话
         /// </summary>
         [StringLength(20, ErrorMessage = "联系电话长度不能超过20个字符")]
@@ -142,6 +148,12 @@ namespace BlazorApp.Shared.DTOs
         public string? Address { get; set; }
 
         /// <summary>
+        /// 门店考勤时区；空白值不会覆盖既有配置。
+        /// </summary>
+        [StringLength(80, ErrorMessage = "门店时区长度不能超过80个字符")]
+        public string? TimeZoneId { get; set; }
+
+        /// <summary>
         /// 联系电话
         /// </summary>
         [StringLength(20, ErrorMessage = "联系电话长度不能超过20个字符")]
@@ -202,6 +214,12 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [StringLength(200, ErrorMessage = "地址长度不能超过200个字符")]
         public string? Address { get; set; }
+
+        /// <summary>
+        /// 门店考勤时区；为空表示由服务端按既有规则推导。
+        /// </summary>
+        [StringLength(80, ErrorMessage = "门店时区长度不能超过80个字符")]
+        public string? TimeZoneId { get; set; }
 
         /// <summary>
         /// 联系电话
@@ -300,6 +318,12 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [StringLength(200, ErrorMessage = "地址长度不能超过200个字符")]
         public string? Address { get; set; }
+
+        /// <summary>
+        /// 门店考勤时区；为空表示由服务端按既有规则推导。
+        /// </summary>
+        [StringLength(80, ErrorMessage = "门店时区长度不能超过80个字符")]
+        public string? TimeZoneId { get; set; }
 
         /// <summary>
         /// 联系电话

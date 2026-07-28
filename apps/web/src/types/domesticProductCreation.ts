@@ -66,7 +66,36 @@ export interface CreateBatchResponse {
   setProductCount: number
 }
 
+export interface SetProductTemplateSubItem {
+  productName: string
+  privateLabelPrice: number
+  sortOrder: number
+}
+
+export interface SetProductTemplateSummary {
+  templateId: string
+  supplierCode: string
+  templateName: string
+  setProductName: string
+  isEnabled: boolean
+  setQuantity: number
+  updatedAt?: string
+}
+
+export interface SetProductTemplateDetail extends SetProductTemplateSummary {
+  subItems: SetProductTemplateSubItem[]
+}
+
+export interface SetProductTemplatePayload {
+  supplierCode: string
+  templateName: string
+  setProductName: string
+  isEnabled?: boolean
+  subItems: Array<Pick<SetProductTemplateSubItem, 'productName' | 'privateLabelPrice'>>
+}
+
 export interface UpdatePriceItem {
+  /** 详情行主键；请求服务会按后端契约序列化为 productCode。 */
   itemNumber: string
   privateLabelPrice?: number
 }

@@ -262,6 +262,9 @@ for (const malformed of [
   { punchGuid: "P-1", punchType: "Break", storeCode: "STORE-01", serverTimeUtc: "2026-07-16T00:00:00Z" },
   { punchGuid: "P-1", punchType: "ClockOut", storeCode: "", serverTimeUtc: "2026-07-16T00:00:00Z" },
   { punchGuid: "P-1", punchType: "ClockOut", storeCode: "STORE-01", serverTimeUtc: "" },
+  { punchGuid: "P-1", punchType: "ClockOut", storeCode: "STORE-01", serverTimeUtc: "2026-07-16T00:00:00Z", workDate: "", storeTimeZone: "Australia/Sydney" },
+  { punchGuid: "P-1", punchType: "ClockOut", storeCode: "STORE-01", serverTimeUtc: "2026-07-16T00:00:00Z", workDate: "2026-07-16T01:00:00", storeTimeZone: "Australia/Sydney" },
+  { punchGuid: "P-1", punchType: "ClockOut", storeCode: "STORE-01", serverTimeUtc: "2026-07-16T00:00:00Z", workDate: "2026-07-16", storeTimeZone: "" },
 ]) {
   assert.throws(
     () => normalizeAttendancePunchMutationResult(malformed, historyCompatiblePunch),
@@ -274,6 +277,8 @@ const strictPunch = normalizeAttendancePunchMutationResult({
   PunchType: "ClockOut",
   StoreCode: "STORE-02",
   ServerTimeUtc: "2026-07-16T00:00:00Z",
+  WorkDate: "2026-07-16T00:00:00",
+  StoreTimeZone: "Australia/Sydney",
 }, historyCompatiblePunch);
 assert.deepEqual(
   {
@@ -281,14 +286,18 @@ assert.deepEqual(
     punchType: strictPunch.punchType,
     storeCode: strictPunch.storeCode,
     serverTimeUtc: strictPunch.serverTimeUtc,
+    workDate: strictPunch.workDate,
+    storeTimeZone: strictPunch.storeTimeZone,
   },
   {
     punchGuid: "P-1",
     punchType: "ClockOut",
     storeCode: "STORE-02",
     serverTimeUtc: "2026-07-16T00:00:00Z",
+    workDate: "2026-07-16",
+    storeTimeZone: "Australia/Sydney",
   },
-  "有效 mutation 响应必须保留服务端权威 tracking 字段",
+  "有效 mutation 响应必须保留服务端权威 tracking 窗口字段",
 );
 
 async function runAsyncTests() {

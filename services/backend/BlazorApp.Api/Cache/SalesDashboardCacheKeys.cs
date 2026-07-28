@@ -206,9 +206,24 @@ namespace BlazorApp.Api.Cache
         /// </summary>
         public static string BestSellers(DateRangeDto dateRange, int pageIndex, int pageSize)
         {
-            var key = $"{PREFIX}:BestSellers:{Hash(dateRange, pageIndex, pageSize)}";
+            return BestSellers(dateRange, pageIndex, pageSize, null);
+        }
+
+        /// <summary>
+        /// 生成包含商品统计水位的热销商品缓存键。
+        /// </summary>
+        public static string BestSellers(
+            DateRangeDto dateRange,
+            int pageIndex,
+            int pageSize,
+            string? cacheVersion
+        )
+        {
+            var key = string.IsNullOrWhiteSpace(cacheVersion)
+                ? $"{PREFIX}:BestSellers:{Hash(dateRange, pageIndex, pageSize)}"
+                : $"{PREFIX}:BestSellers:{Hash(dateRange, pageIndex, pageSize, cacheVersion)}";
             _activeKeys.Add(key);
-            LogKeyGenerated("BestSellers", key, dateRange, pageIndex, pageSize);
+            LogKeyGenerated("BestSellers", key, dateRange, pageIndex, pageSize, cacheVersion);
             return key;
         }
 

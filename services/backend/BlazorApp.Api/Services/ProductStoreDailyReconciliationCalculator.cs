@@ -30,6 +30,40 @@ namespace BlazorApp.Api.Services
         private const decimal AmountToleranceRate = 0.001m;
         private const decimal AmountAbsoluteTolerance = 100m;
 
+        public static IReadOnlyList<ProductStoreDailyBranchRollup> ApplyExistingStoreAdjustments(
+            IEnumerable<ProductStoreDailyBranchRollup> storeRows,
+            IEnumerable<ProductStoreDailyBranchRollup> adjustments
+        )
+        {
+            var adjustmentMap = adjustments
+                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                .GroupBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new ProductStoreDailyBranchRollup(
+                        group.Key,
+                        group.Sum(x => x.TotalAmount),
+                        group.Sum(x => x.TotalQuantity)
+                    ),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // 只调整已有分店营业额行，避免单独一笔退货掩盖“分店统计缺失”。
+            return storeRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                .GroupBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    adjustmentMap.TryGetValue(group.Key, out var adjustment);
+                    return new ProductStoreDailyBranchRollup(
+                        group.Key,
+                        group.Sum(x => x.TotalAmount) + (adjustment?.TotalAmount ?? 0m),
+                        group.Sum(x => x.TotalQuantity) + (adjustment?.TotalQuantity ?? 0)
+                    );
+                })
+                .ToList();
+        }
+
         public static ProductStoreDailyReconciliationResult Calculate(
             DateTime targetDate,
             IEnumerable<ProductStoreDailyBranchRollup> productRows,

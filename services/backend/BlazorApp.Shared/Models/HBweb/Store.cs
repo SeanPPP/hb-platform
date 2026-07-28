@@ -32,6 +32,12 @@ namespace BlazorApp.Shared.Models
         public string? Address { get; set; }
 
         /// <summary>
+        /// 门店考勤使用的 IANA 时区；为空时按既有地址和名称规则推导。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 80)]
+        public string? TimeZoneId { get; set; }
+
+        /// <summary>
         /// 联系邮箱
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 100)]

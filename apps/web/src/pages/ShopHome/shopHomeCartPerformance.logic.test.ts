@@ -558,6 +558,21 @@ async function main() {
   })
   if (bestSellerStatusNoticeFailure) failures.push(bestSellerStatusNoticeFailure)
 
+  const bestSellerFailedRowsNoticeFailure = await runTest('热销商品 Failed 状态应同时保留商品行和格式化警告', () => {
+    assert(
+      bestSellersSource.includes("import { formatStatisticMessageAmounts } from '../../../utils/statisticMessage'") &&
+        bestSellersSource.includes('const formattedStatisticMessage = useMemo(') &&
+        bestSellersSource.includes('formatStatisticMessageAmounts(statisticMessage)') &&
+        bestSellersSource.includes('formattedStatisticMessage ||') &&
+        bestSellersSource.includes('<Tooltip title={formattedStatisticMessage}>') &&
+        bestSellersSource.includes("type={statisticStatus === 'Failed' ? 'error' : 'warning'}") &&
+        bestSellersSource.includes('message={bestSellerStatusNotice}') &&
+        bestSellersSource.includes('dataSource={products}'),
+      'Failed 状态没有同时保留商品行、红色警告，或 Tooltip/Alert 未使用精确格式化消息',
+    )
+  })
+  if (bestSellerFailedRowsNoticeFailure) failures.push(bestSellerFailedRowsNoticeFailure)
+
   const bestSellerTableColumnsFailure = await runTest('热销商品表格应显示条码、复制、状态、分店销量和加购操作', () => {
     assert(
       bestSellersSource.includes('BarcodePreview') &&
