@@ -33,6 +33,11 @@ import {
   reconcilePendingContainerDetailSaveFailureKeys,
   settleScopedContainerDetailSave,
   shouldInvalidateContainerDetailLoadAfterSave,
+  shouldLoadNextContainerDetailChunk,
+  startContainerDetailAppendRequest,
+  startContainerDetailReadAheadRequest,
+  finishContainerDetailAppendRequest,
+  finishContainerDetailReadAheadRequest,
   moveContainerDetailColumnOrder,
   getContainerDetailRemoteQueryResetState,
   findContainerDetailRowsMissingCreateProductRetailPrice,
@@ -47,6 +52,8 @@ import {
   calculateContainerSetCodePurchasePrice,
   calculateContainerDetailTransportCost,
   calculateContainerDetailUnitTransportCost,
+  cancelContainerDetailAppendRequest,
+  cancelContainerDetailReadAheadRequest,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   mergeContainerDetailLoadedItems,
@@ -318,6 +325,188 @@ assertEqual(
   }),
   96,
   '小屏横屏表格高度不足时应只保留可操作硬下限',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1000,
+    clientHeight: 500,
+    scrollHeight: 2101,
+  }),
+  false,
+  '距底部超过 600px 时不应提前加载下一块',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1000,
+    clientHeight: 500,
+    scrollHeight: 2100,
+  }),
+  true,
+  '桌面表格距底部 600px 时应开始预加载下一块',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1000,
+    clientHeight: 800,
+    scrollHeight: 2601,
+  }),
+  false,
+  '大表格距底部超过一个可视区时不应预加载下一块',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1000,
+    clientHeight: 800,
+    scrollHeight: 2600,
+  }),
+  true,
+  '大表格应使用一个完整可视区作为预加载距离',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: Number.NaN,
+    clientHeight: Number.NaN,
+    scrollHeight: 1201,
+  }),
+  false,
+  '无效滚动位置和高度应安全归零，且不能误触发远距离预加载',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: -100,
+    clientHeight: -20,
+    scrollHeight: 500,
+  }),
+  true,
+  '负数滚动指标应安全归零，并按最小 600px 阈值判断',
+)
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 0,
+    clientHeight: 800,
+    scrollHeight: 500,
+  }),
+  true,
+  '内容不足一个可视区时应允许加载下一块填满表格',
+)
+
+const firstAppendStart = startContainerDetailAppendRequest(null, 'container-a:query-a:2')
+assertEqual(firstAppendStart.started, true, '没有追加请求在途时应允许开始下一块')
+const repeatedAppendStart = startContainerDetailAppendRequest(
+  firstAppendStart.request,
+  'container-a:query-a:2',
+)
+assertEqual(repeatedAppendStart.started, false, '同一追加请求在途时应同步阻止重复请求')
+assertEqual(
+  repeatedAppendStart.request,
+  firstAppendStart.request,
+  '重复触发必须保留原请求 token',
+)
+const competingAppendStart = startContainerDetailAppendRequest(
+  firstAppendStart.request,
+  'container-a:query-a:3',
+)
+assertEqual(competingAppendStart.started, false, '任一追加请求在途时都不应并发开始另一页')
+cancelContainerDetailAppendRequest(firstAppendStart.request)
+assertEqual(firstAppendStart.request.controller.signal.aborted, true, '重置查询时应取消在途追加请求')
+
+const replacementAppendStart = startContainerDetailAppendRequest(null, 'container-b:query-b:2')
+assertEqual(
+  finishContainerDetailAppendRequest(replacementAppendStart.request, firstAppendStart.request),
+  replacementAppendStart.request,
+  '旧请求结束时不得释放新查询的追加 token',
+)
+const releasedAppendRequest = finishContainerDetailAppendRequest(
+  replacementAppendStart.request,
+  replacementAppendStart.request,
+)
+assertEqual(releasedAppendRequest, null, '请求所有者结束时应释放追加 token')
+assertEqual(
+  startContainerDetailAppendRequest(releasedAppendRequest, 'container-b:query-b:2').started,
+  true,
+  '追加请求结束释放 token 后应允许重试同一页',
+)
+const prefetchedPageController = new AbortController()
+assertEqual(
+  startContainerDetailAppendRequest(
+    null,
+    'container-a:query-a:2',
+    prefetchedPageController,
+  ).request.controller,
+  prefetchedPageController,
+  '消费前读缓存时追加 token 应接管同一个 controller',
+)
+
+let resolveReadAheadPage: ((value: string) => void) | undefined
+let readAheadLoadCount = 0
+const firstReadAheadStart = startContainerDetailReadAheadRequest(
+  null,
+  'container-a:query-a:2',
+  2,
+  async () => {
+    readAheadLoadCount += 1
+    return await new Promise<string>((resolve) => {
+      resolveReadAheadPage = resolve
+    })
+  },
+)
+const repeatedReadAheadStart = startContainerDetailReadAheadRequest(
+  firstReadAheadStart.request,
+  'container-a:query-a:2',
+  2,
+  async () => {
+    readAheadLoadCount += 1
+    return 'duplicate-page-2'
+  },
+)
+assertEqual(repeatedReadAheadStart.started, false, '同一下一页在途或已缓存时不应重复预取')
+assertEqual(repeatedReadAheadStart.request, firstReadAheadStart.request, '重复预取应复用同一 promise')
+assertEqual(readAheadLoadCount, 1, '高频预取触发只能发出一个相同页请求')
+resolveReadAheadPage?.('page-2')
+assertDeepEqual(
+  await firstReadAheadStart.request.promise,
+  { status: 'success', result: 'page-2' },
+  '预取完成后应把下一页结果保存在可重复消费的 promise 中',
+)
+assertEqual(
+  readAheadLoadCount,
+  1,
+  '消费已经完成的前读缓存不得重新请求相同页',
+)
+
+const nextReadAheadStart = startContainerDetailReadAheadRequest(
+  firstReadAheadStart.request,
+  'container-a:query-a:3',
+  3,
+  async () => 'page-3',
+)
+assertEqual(firstReadAheadStart.request.controller.signal.aborted, true, '替换前读页时应取消旧页 controller')
+assertEqual(nextReadAheadStart.started, true, '消费第 2 页后应允许开始预取第 3 页')
+assertEqual(
+  finishContainerDetailReadAheadRequest(nextReadAheadStart.request, firstReadAheadStart.request),
+  nextReadAheadStart.request,
+  '旧前读请求结束时不得释放第 3 页缓存',
+)
+assertEqual(
+  finishContainerDetailReadAheadRequest(nextReadAheadStart.request, nextReadAheadStart.request),
+  null,
+  '当前前读请求被消费后应释放缓存槽',
+)
+cancelContainerDetailReadAheadRequest(nextReadAheadStart.request)
+assertEqual(nextReadAheadStart.request.controller.signal.aborted, true, '重置或 KeepAlive 切出时应取消前读请求')
+
+const failedReadAheadStart = startContainerDetailReadAheadRequest(
+  null,
+  'container-a:query-a:4',
+  4,
+  async () => {
+    throw new Error('prefetch failed')
+  },
+)
+assertEqual(
+  (await failedReadAheadStart.request.promise).status,
+  'failure',
+  '后台预取失败应转为可消费结果，避免产生未处理 Promise 拒绝',
 )
 
 const exportRow = buildContainerDetailExportRow({
@@ -1575,6 +1764,38 @@ assertDeepEqual(
   '缺少 hguid 的明细不能被误判为同一行',
 )
 
+const firstContainerDetailChunk = Array.from({ length: 50 }, (_, index): ContainerDetail => ({
+  id: index + 1,
+  hguid: `paged-${index + 1}`,
+}))
+const secondContainerDetailChunk = Array.from({ length: 50 }, (_, index): ContainerDetail => ({
+  id: index + 51,
+  hguid: `paged-${index + 51}`,
+}))
+const finalContainerDetailChunk = Array.from({ length: 40 }, (_, index): ContainerDetail => ({
+  id: index + 101,
+  hguid: `paged-${index + 101}`,
+}))
+const loadedContainerDetailChunks = mergeContainerDetailLoadedItems(
+  mergeContainerDetailLoadedItems(firstContainerDetailChunk, secondContainerDetailChunk),
+  finalContainerDetailChunk,
+)
+assertDeepEqual(
+  {
+    loadedCount: loadedContainerDetailChunks.length,
+    uniqueCount: new Set(loadedContainerDetailChunks.map((row) => row.hguid)).size,
+    firstGuid: loadedContainerDetailChunks[0]?.hguid,
+    lastGuid: loadedContainerDetailChunks[loadedContainerDetailChunks.length - 1]?.hguid,
+  },
+  {
+    loadedCount: 140,
+    uniqueCount: 140,
+    firstGuid: 'paged-1',
+    lastGuid: 'paged-140',
+  },
+  '三批货柜明细应按 50、100、140 稳定追加且不产生重复行',
+)
+
 assertDeepEqual(
   getContainerDetailRemoteQueryResetState({ selectedRowKeys: ['a', 'b'] }),
   {
@@ -2432,12 +2653,20 @@ assertEqual(
   '匹配国内数据检测请求应使用行供应商编码且不再提交条码兜底',
 )
 assertEqual(
-  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentRequestId)') &&
+  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)') &&
     pageSource.includes('products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))') &&
     pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
     pageSource.includes('加载态只校正表格展示状态，不写库'),
   true,
   '页面加载后应对当前懒加载块只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
+)
+assertEqual(
+  pageSource.includes('const containerDetailReconcileGenerationRef = useRef(0)') &&
+    pageSource.includes('const currentReconcileGeneration = containerDetailReconcileGenerationRef.current') &&
+    pageSource.includes('if (containerDetailReconcileGenerationRef.current !== reconcileGeneration)') &&
+    !pageSource.includes('containerDetailLoadRequestIdRef.current !== requestId)'),
+  true,
+  '追加页之间应共享匹配校正 generation；只有重置、切换或离开页面才能使旧校正结果失效',
 )
 assertEqual(
   pageSource.includes('SkipRelatedProductSync: true'),
@@ -4164,10 +4393,89 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
-    pageSource.includes('target.scrollTop + target.clientHeight >= target.scrollHeight - 96') &&
+    pageSource.includes('shouldLoadNextContainerDetailChunk({') &&
     pageSource.includes('void loadNextDetailChunk()'),
   true,
-  '货柜明细表格滚动处理应同时保存滚动位置并保留触底加载下一块',
+  '货柜明细表格滚动处理应保存滚动位置，并在进入预加载区时加载下一块',
+)
+assertEqual(
+  pageSource.includes('const detailAppendRequestRef = useRef<') &&
+    pageSource.includes('const detailResetRequestRef = useRef<') &&
+    pageSource.includes('startContainerDetailAppendRequest(') &&
+    pageSource.includes('cancelContainerDetailAppendRequest(detailAppendRequestRef.current)') &&
+    pageSource.includes('finishContainerDetailAppendRequest(') &&
+    pageSource.includes('detailAppendRequestRef.current = appendStart.request') &&
+    pageSource.includes('|| detailResetRequestRef.current'),
+  true,
+  '货柜明细追加加载应同步防重入、避让重置请求，并只允许请求所有者释放 token',
+)
+assertEqual(
+  pageSource.includes('const detailReadAheadRequestRef = useRef<') &&
+    pageSource.includes('const startDetailReadAhead = (pageNumber: number) =>') &&
+    pageSource.includes('startContainerDetailReadAheadRequest(') &&
+    pageSource.includes('resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)') &&
+    pageSource.includes('detailReadAheadRequestRef.current?.key === requestKey') &&
+    pageSource.includes('await readAheadRequest.promise') &&
+    pageSource.includes('startDetailReadAhead(result.pageNumber + 1)') &&
+    pageSource.includes('startDetailReadAhead(detailPageNumber + 1)') &&
+    pageSource.includes('cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)'),
+  true,
+  '货柜明细应只保留下一页前读缓存，滚动消费后接续预取并在失效时取消',
+)
+assertEqual(
+  (() => {
+    const readAheadStart = pageSource.indexOf('const startDetailReadAhead = (pageNumber: number) =>')
+    const readAheadEnd = pageSource.indexOf('const loadDetailChunk = async', readAheadStart)
+    const readAheadSource = pageSource.slice(readAheadStart, readAheadEnd)
+    return readAheadStart >= 0 &&
+      readAheadEnd > readAheadStart &&
+      readAheadSource.includes('pageSize: CONTAINER_DETAIL_PAGE_SIZE') &&
+      readAheadSource.includes('includeTotal: false') &&
+      readAheadSource.includes('includeStats: false')
+  })(),
+  true,
+  '前读页必须保持 50 条，并跳过 total 与标签统计',
+)
+assertEqual(
+  (() => {
+    const firstPageStart = pageSource.indexOf('const resultPromise = queryContainerProducts(')
+    const secondPageStart = pageSource.indexOf(
+      'resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)',
+      firstPageStart,
+    )
+    const firstPageAwait = pageSource.indexOf('result = await resultPromise', secondPageStart)
+    return firstPageStart >= 0 &&
+      secondPageStart > firstPageStart &&
+      firstPageAwait > secondPageStart
+  })(),
+  true,
+  '重置查询应先启动首屏请求，再并发第 2 页并等待首屏结果',
+)
+assertEqual(
+  pageSource.includes("void loadNextDetailChunk('auto')") &&
+    pageSource.includes("source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey") &&
+    pageSource.includes('detailResetRequestRef.current = null') &&
+    pageSource.includes('setDetailLoadingMore(false)'),
+  true,
+  '标签自动补齐失败后应停止自动重试，清理时应同步释放加载状态',
+)
+const detailQueryAutoReloadIndex = pageSource.indexOf('requestedDetailQueryKey: activeLoadQueryKey')
+const detailLoadEffectIndex = pageSource.lastIndexOf('useEffect(() => {', detailQueryAutoReloadIndex)
+const detailLoadCancellationIndex = pageSource.indexOf(
+  'const cancelDetailLoads = () =>',
+  detailLoadEffectIndex,
+)
+const skipDetailAutoReloadIndex = pageSource.lastIndexOf(
+  'if (shouldSkipDetailAutoReload({',
+  detailQueryAutoReloadIndex,
+)
+assertEqual(
+  detailLoadEffectIndex >= 0 &&
+    detailLoadCancellationIndex >= detailLoadEffectIndex &&
+    detailLoadCancellationIndex < skipDetailAutoReloadIndex &&
+    pageSource.indexOf('return cancelDetailLoads', skipDetailAutoReloadIndex) >= 0,
+  true,
+  'KeepAlive 命中缓存跳过重载时也必须注册追加请求取消函数',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),

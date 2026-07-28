@@ -304,6 +304,120 @@ export function calculateContainerDetailTableScrollY({
   return Math.max(hardMinScrollY, Math.min(maxScrollY, availableHeight))
 }
 
+export interface ContainerDetailLoadMoreScrollMetrics {
+  scrollTop: number
+  clientHeight: number
+  scrollHeight: number
+}
+
+export function shouldLoadNextContainerDetailChunk({
+  scrollTop,
+  clientHeight,
+  scrollHeight,
+}: ContainerDetailLoadMoreScrollMetrics) {
+  const safeScrollTop = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0)
+  const safeClientHeight = Math.max(0, Number.isFinite(clientHeight) ? clientHeight : 0)
+  const safeScrollHeight = Math.max(0, Number.isFinite(scrollHeight) ? scrollHeight : 0)
+  const preloadDistance = Math.max(600, safeClientHeight)
+  const remainingDistance = safeScrollHeight - safeScrollTop - safeClientHeight
+
+  return remainingDistance <= preloadDistance
+}
+
+export interface ContainerDetailAppendRequest {
+  key: string
+  controller: AbortController
+}
+
+export function startContainerDetailAppendRequest(
+  activeRequest: ContainerDetailAppendRequest | null,
+  requestKey: string,
+  controller = new AbortController(),
+) {
+  if (activeRequest) {
+    return {
+      request: activeRequest,
+      started: false,
+    }
+  }
+
+  return {
+    request: {
+      key: requestKey,
+      controller,
+    },
+    started: true,
+  }
+}
+
+export function cancelContainerDetailAppendRequest(
+  request: ContainerDetailAppendRequest | null,
+) {
+  request?.controller.abort()
+}
+
+export function finishContainerDetailAppendRequest(
+  activeRequest: ContainerDetailAppendRequest | null,
+  finishedRequest: ContainerDetailAppendRequest | null,
+) {
+  return activeRequest === finishedRequest ? null : activeRequest
+}
+
+export type ContainerDetailReadAheadOutcome<T> =
+  | { status: 'success'; result: T }
+  | { status: 'failure'; error: unknown }
+
+export interface ContainerDetailReadAheadRequest<T> {
+  key: string
+  pageNumber: number
+  controller: AbortController
+  promise: Promise<ContainerDetailReadAheadOutcome<T>>
+}
+
+export function startContainerDetailReadAheadRequest<T>(
+  activeRequest: ContainerDetailReadAheadRequest<T> | null,
+  requestKey: string,
+  pageNumber: number,
+  load: (signal: AbortSignal) => Promise<T>,
+) {
+  if (activeRequest?.key === requestKey) {
+    return {
+      request: activeRequest,
+      started: false,
+    }
+  }
+
+  activeRequest?.controller.abort()
+  const controller = new AbortController()
+  const promise = load(controller.signal).then(
+    (result): ContainerDetailReadAheadOutcome<T> => ({ status: 'success', result }),
+    (error: unknown): ContainerDetailReadAheadOutcome<T> => ({ status: 'failure', error }),
+  )
+
+  return {
+    request: {
+      key: requestKey,
+      pageNumber,
+      controller,
+      promise,
+    },
+    started: true,
+  }
+}
+
+export function cancelContainerDetailReadAheadRequest<T>(
+  request: ContainerDetailReadAheadRequest<T> | null,
+) {
+  request?.controller.abort()
+}
+
+export function finishContainerDetailReadAheadRequest<T>(
+  activeRequest: ContainerDetailReadAheadRequest<T> | null,
+  finishedRequest: ContainerDetailReadAheadRequest<T> | null,
+) {
+  return activeRequest === finishedRequest ? null : activeRequest
+}
+
 export type ContainerDetailSortField =
   | 'itemNumber'
   | 'barcode'
