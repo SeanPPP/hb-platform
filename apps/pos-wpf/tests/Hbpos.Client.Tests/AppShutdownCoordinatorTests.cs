@@ -126,6 +126,45 @@ public sealed class AppShutdownCoordinatorTests
     }
 
     [Fact]
+    public async Task PrepareAsync_logs_actual_remaining_budget_timeout()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
+        var coordinator = new AppShutdownCoordinator(
+            timeProvider,
+            totalBudget: TimeSpan.FromSeconds(3));
+        _ = coordinator.GetOrStartRemainingBudget();
+        timeProvider.Advance(TimeSpan.FromMilliseconds(2950));
+        coordinator.RegisterStep(
+            "remaining-budget-log",
+            100,
+            TimeSpan.FromSeconds(1),
+            cancellationToken => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        void CaptureLine(string line)
+        {
+            if (line.Contains("step=remaining-budget-log", StringComparison.Ordinal))
+            {
+                lines.Enqueue(line);
+            }
+        }
+
+        ConsoleLog.LineWritten += CaptureLine;
+        try
+        {
+            await coordinator.PrepareAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= CaptureLine;
+        }
+
+        var timeoutLine = Assert.Single(lines);
+        Assert.Contains("timeoutMs=50", timeoutLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("timeoutMs=1000", timeoutLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PrepareAsync_bounds_synchronous_delegate_prefix_and_continues()
     {
         var coordinator = new AppShutdownCoordinator();

@@ -397,6 +397,35 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Pre_canceled_shutdown_records_cashier_logout_once_across_retries()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => viewModel.ReportOfflineForShutdownAsync(cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => viewModel.ReportOfflineForShutdownAsync(cancellation.Token));
+
+        var logoutAudit = Assert.Single(
+            auditLogger.Events.Where(auditEvent =>
+                auditEvent.OperationType == OperationAuditTypes.CashierLogout));
+        Assert.Equal("Succeeded", logoutAudit.Outcome);
+        Assert.Equal("CASHIER-1", logoutAudit.CashierId);
+        Assert.Equal("APP_SHUTDOWN", logoutAudit.ReasonCode);
+    }
+
+    [Fact]
     public async Task Shutdown_offline_report_receives_coordinator_cancellation_token()
     {
         var runtimeStatus = new RecordingRuntimeStatusApiClient();

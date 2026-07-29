@@ -2374,9 +2374,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task ReportOfflineForShutdownAsync(CancellationToken cancellationToken = default)
     {
         BeginShutdown();
-        await ObserveShutdownCancellationAsync(cancellationToken);
-        await ObserveConnectivityRefreshForShutdownAsync(cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
         if (!_shutdownLogoutRecorded && Session.CashierSession is not null)
         {
             _shutdownLogoutRecorded = true;
@@ -2388,6 +2385,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 reasonCode: "APP_SHUTDOWN");
         }
 
+        await ObserveShutdownCancellationAsync(cancellationToken);
+        await ObserveConnectivityRefreshForShutdownAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         await ReportRuntimeStatusSafeAsync(
             false,
             cancellationToken,

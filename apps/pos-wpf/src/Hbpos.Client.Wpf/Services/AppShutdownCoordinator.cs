@@ -151,7 +151,7 @@ public sealed class AppShutdownCoordinator : IAppShutdownCoordinator
             CancelAndDisposeAfterCompletion(step.Name, stepCancellation, stepTask);
             ConsoleLog.WriteError(
                 "Shutdown",
-                $"shutdown step timed out step={step.Name} timeoutMs={step.Timeout.TotalMilliseconds:0}");
+                $"shutdown step timed out step={step.Name} timeoutMs={timeout.TotalMilliseconds:0}");
         }
         catch (OperationCanceledException) when (preparationCancellation.IsCancellationRequested)
         {
