@@ -32,10 +32,14 @@ public sealed record PosTerminalWorkflowResult
 
 public sealed class PosTerminalCatalogReloadedEventArgs : EventArgs
 {
-    public PosTerminalCatalogReloadedEventArgs(IReadOnlyList<SellableItemDto> catalogItems)
+    public PosTerminalCatalogReloadedEventArgs(IReadOnlyList<SellableItemDto>? catalogItems = null)
     {
-        CatalogItems = catalogItems;
+        HasCatalogSnapshot = catalogItems is not null;
+        CatalogItems = catalogItems ?? [];
     }
+
+    // 增量远程补录只通知索引已变更，避免为 UI 事件复制完整商品目录。
+    public bool HasCatalogSnapshot { get; }
 
     public IReadOnlyList<SellableItemDto> CatalogItems { get; }
 }
@@ -584,11 +588,11 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 
             if (result.Updated && result.Item is not null)
             {
+                await Task.Run(() => _priceIndex.Upsert(result.Item), cancellationToken);
                 PosTerminalWorkflowResult addResult;
                 lock (_remoteLookupGate)
                 {
                     // ponytail: 复用现有远程查询锁串行化短回写；并发吞吐成为瓶颈时再按 RemoteLookupKey 分锁。
-                    _priceIndex.Upsert(result.Item);
                     // 本地未命中后远端已返回最新商品，这里直接加购，避免加购后再重复排队远端刷新。
                     addResult = AddItem(
                         session,
@@ -600,7 +604,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
                         refreshRemoteAfterAdd: false);
                 }
 
-                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs());
                 ConsoleLog.Write(
                     "PosScan",
                     $"{FormatTraceId(traceId)}remote lookup local miss added storeCode={session.StoreCode} lookupCode={LogValue(scanText)} productCode={LogValue(result.Item.ProductCode)} elapsedMs={stopwatch.ElapsedMilliseconds}");
@@ -614,8 +618,8 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 
             if (result.Deleted)
             {
-                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
-                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+                await Task.Run(() => _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode), cancellationToken);
+                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs());
             }
 
             ConsoleLog.Write(
@@ -873,14 +877,17 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             await _uiPriorityCoordinator.WaitForUiIdleAsync();
             var indexUpdateStopwatch = Stopwatch.StartNew();
 
-            if (result.Updated && result.Item is not null)
+            await Task.Run(() =>
             {
-                _priceIndex.Upsert(result.Item);
-            }
-            else if (result.Deleted)
-            {
-                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
-            }
+                if (result.Updated && result.Item is not null)
+                {
+                    _priceIndex.Upsert(result.Item);
+                }
+                else if (result.Deleted)
+                {
+                    _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
+                }
+            });
 
             indexUpdateStopwatch.Stop();
             var uiApplyStopwatch = Stopwatch.StartNew();
@@ -908,7 +915,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
                     $"remote lookup deleted local cache only storeCode={result.StoreCode} lookupCode={result.LookupCode} deletedCount={result.DeletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
 
-            CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+            CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs());
             uiApplyStopwatch.Stop();
             stopwatch.Stop();
             ConsoleLog.Write(

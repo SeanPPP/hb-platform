@@ -716,6 +716,7 @@ public sealed class ReceiptPrintingTests
         await store.SaveAsync(settings);
         var loaded = await store.LoadAsync();
 
+        Assert.Equal(1, repository.BatchWriteCount);
         Assert.Equal("USB,", loaded.PrinterPort);
         Assert.Equal("HB", loaded.BrandName);
         Assert.Equal("Sunnybank", loaded.StoreName);
@@ -1001,6 +1002,8 @@ public sealed class ReceiptPrintingTests
     {
         private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
 
+        public int BatchWriteCount { get; private set; }
+
         public Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_values.TryGetValue(key, out var value) ? value : null);
@@ -1009,6 +1012,19 @@ public sealed class ReceiptPrintingTests
         public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
         {
             _values[key] = value;
+            return Task.CompletedTask;
+        }
+
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            BatchWriteCount++;
+            foreach (var (key, value) in values)
+            {
+                _values[key] = value;
+            }
+
             return Task.CompletedTask;
         }
 

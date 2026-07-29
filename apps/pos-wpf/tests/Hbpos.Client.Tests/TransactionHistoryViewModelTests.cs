@@ -832,7 +832,11 @@ public sealed class TransactionHistoryViewModelTests
             suspendedOrders,
             new CapturingRemoteOrderHistoryService(),
             CreateSession(),
-            localization: localization);
+            localization: localization)
+        {
+            DateFrom = localSoldAt.Date,
+            DateTo = localSoldAt.Date
+        };
 
         await viewModel.LoadAsync();
         Assert.Equal("Suspended", viewModel.SelectedOrder?.PaymentSummary);
@@ -849,6 +853,34 @@ public sealed class TransactionHistoryViewModelTests
         localization.SetCulture("en-US");
 
         Assert.Equal("Jul 28, 2026 05:56", viewModel.SelectedOrder?.SoldAtDisplay);
+    }
+
+    [Fact]
+    public void Dispose_is_idempotent_and_stops_culture_updates()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            localization: localization);
+        var changeCount = 0;
+        viewModel.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
     }
 
     [Fact]

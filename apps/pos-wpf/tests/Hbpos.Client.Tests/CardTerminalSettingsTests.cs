@@ -166,6 +166,7 @@ public sealed class CardTerminalSettingsTests
             },
             SaveToken);
 
+        Assert.Equal(1, repository.BatchWriteCount);
         Assert.Null(protector.LastProtectedValue);
         Assert.Null(repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
     }
@@ -392,6 +393,7 @@ public sealed class CardTerminalSettingsTests
 
         await store.SaveLinklyCloudCredentialAsync(CardTerminalEnvironment.Sandbox, $" {username} ", password);
 
+        Assert.Equal(1, repository.BatchWriteCount);
         Assert.Equal(username, repository.GetStoredValue("CardTerminal:LinklyCloudUsername:Sandbox"));
         AssertSecretEquals(password, protector.LastProtectedValue, "Linkly Cloud API password should be passed to the protector");
         Assert.Equal(Protect(password), repository.GetStoredValue("CardTerminal:LinklyCloudPasswordProtected:Sandbox"));
@@ -424,6 +426,31 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
+    public async Task GetLinklyCloudCredentialAsync_prefers_atomic_snapshot_over_split_legacy_keys()
+    {
+        var repository = new InMemorySettingsRepository();
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector());
+        await store.SaveLinklyCloudCredentialAsync(
+            CardTerminalEnvironment.Production,
+            "snapshot-user",
+            "snapshot-password");
+        await repository.SetValueAsync(
+            "CardTerminal:LinklyCloudUsername:Production",
+            "mixed-user");
+        await repository.SetValueAsync(
+            "CardTerminal:LinklyCloudPasswordProtected:Production",
+            Protect("mixed-password"));
+
+        var credential = await store.GetLinklyCloudCredentialAsync(CardTerminalEnvironment.Production);
+
+        Assert.Equal("snapshot-user", credential.Username);
+        AssertSecretEquals(
+            "snapshot-password",
+            credential.Password,
+            "credential reads should come from one saved generation");
+    }
+
+    [Fact]
     public async Task GetOrCreateLinklyCloudPosIdAsync_reuses_uuid_v4_for_same_store_and_device()
     {
         var repository = new InMemorySettingsRepository();
@@ -437,6 +464,24 @@ public sealed class CardTerminalSettingsTests
         Assert.NotEqual(first, third);
         AssertUuidV4(first);
         AssertUuidV4(third);
+    }
+
+    [Fact]
+    public async Task GetOrCreateLinklyCloudPosIdAsync_serializes_concurrent_initialization()
+    {
+        var repository = new InterleavingSettingsRepository();
+        var stores = Enumerable.Range(0, 8)
+            .Select(_ => new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector()))
+            .ToArray();
+
+        var posIds = await Task.WhenAll(stores.Select(store =>
+            store.GetOrCreateLinklyCloudPosIdAsync(
+                CardTerminalEnvironment.Production,
+                "S01",
+                "TERM-1")));
+
+        Assert.Single(posIds.Distinct(StringComparer.Ordinal));
+        Assert.Equal(posIds[0], repository.StoredValue);
     }
 
     [Fact]
@@ -800,6 +845,8 @@ public sealed class CardTerminalSettingsTests
     {
         private readonly Dictionary<string, string> _values;
 
+        public int BatchWriteCount { get; private set; }
+
         public InMemorySettingsRepository(IReadOnlyDictionary<string, string?>? seedValues = null)
         {
             _values = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -828,6 +875,19 @@ public sealed class CardTerminalSettingsTests
             return Task.CompletedTask;
         }
 
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            BatchWriteCount++;
+            foreach (var (key, value) in values)
+            {
+                _values[key] = value;
+            }
+
+            return Task.CompletedTask;
+        }
+
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
             _values.Remove(key);
@@ -837,6 +897,39 @@ public sealed class CardTerminalSettingsTests
         public string? GetStoredValue(string key)
         {
             return _values.TryGetValue(key, out var value) ? value : null;
+        }
+    }
+
+    private sealed class InterleavingSettingsRepository : ILocalAppSettingsRepository
+    {
+        private string? _value;
+
+        public string? StoredValue => Volatile.Read(ref _value);
+
+        public async Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            return key.Contains("LinklyCloudPosId:", StringComparison.Ordinal)
+                ? Volatile.Read(ref _value)
+                : null;
+        }
+
+        public async Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            Volatile.Write(ref _value, value);
+        }
+
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
         }
     }
 

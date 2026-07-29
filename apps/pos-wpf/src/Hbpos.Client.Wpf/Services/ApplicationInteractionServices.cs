@@ -70,7 +70,8 @@ public sealed class WpfApplicationExitService : IApplicationExitService
 public sealed class WpfConfirmationDialogService :
     ObservableObject,
     IConfirmationDialogService,
-    IConfirmationDialogPresenter
+    IConfirmationDialogPresenter,
+    IDisposable
 {
     private readonly ILocalizationService _localization;
     private TaskCompletionSource<bool>? _completionSource;
@@ -84,6 +85,7 @@ public sealed class WpfConfirmationDialogService :
     private string _confirmButtonText = string.Empty;
     private string _cancelButtonText = string.Empty;
     private bool _isDestructive;
+    private bool _disposed;
 
     public WpfConfirmationDialogService(ILocalizationService localization)
     {
@@ -141,6 +143,17 @@ public sealed class WpfConfirmationDialogService :
     public IRelayCommand ConfirmCommand { get; }
 
     public IRelayCommand CancelCommand { get; }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _localization.CultureChanged -= OnCultureChanged;
+    }
 
     public Task<bool> ConfirmExitApplicationAsync() =>
         ShowAsync(

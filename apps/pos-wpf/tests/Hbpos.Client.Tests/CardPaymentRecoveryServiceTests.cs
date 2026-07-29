@@ -1429,10 +1429,17 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(
             "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
             audit.RootElement.GetProperty("operationType").GetString());
-        Assert.Equal("MANAGER-01", audit.RootElement.GetProperty("cashierId").GetString());
+        Assert.Equal("Succeeded", audit.RootElement.GetProperty("outcome").GetString());
         Assert.Equal(
-            "Bank case confirms no charge",
-            audit.RootElement.GetProperty("properties").GetProperty("evidence").GetString());
+            CardPaymentSupervisorDecision.ConfirmNotPaid.ToString(),
+            audit.RootElement.GetProperty("reasonCode").GetString());
+        Assert.Equal("MANAGER-01", audit.RootElement.GetProperty("cashierId").GetString());
+        var properties = audit.RootElement.GetProperty("properties");
+        Assert.Equal(attempt.AttemptGuid.ToString("D"), properties.GetProperty("attemptGuid").GetString());
+        Assert.Equal(JsonValueKind.Null, properties.GetProperty("operationGuid").ValueKind);
+        Assert.Equal("SESSION-SUPERVISOR-001", properties.GetProperty("sessionId").GetString());
+        Assert.Equal("Bank case confirms no charge", properties.GetProperty("evidence").GetString());
+        Assert.Equal(JsonValueKind.Null, properties.GetProperty("financialReference").ValueKind);
     }
 
     [Fact]
@@ -1464,6 +1471,11 @@ public sealed class CardPaymentRecoveryServiceTests
         var journal = Assert.IsType<LocalFinancialSupervisorResolution>(attempts.LastPaymentJournal);
         Assert.Equal(string.Empty, journal.Reason);
         Assert.Equal("BANK-PAYMENT-001", journal.FinancialReference);
+        using var audit = JsonDocument.Parse(journal.AuditPayloadJson);
+        Assert.Equal("Succeeded", audit.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(
+            CardPaymentSupervisorDecision.ConfirmPaid.ToString(),
+            audit.RootElement.GetProperty("reasonCode").GetString());
     }
 
     [Fact]
@@ -1493,6 +1505,12 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(0, backend.AcknowledgeCallCount);
         Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
         Assert.Equal(string.Empty, attempts.LastPaymentJournal?.Reason);
+        var journal = Assert.IsType<LocalFinancialSupervisorResolution>(attempts.LastPaymentJournal);
+        using var audit = JsonDocument.Parse(journal.AuditPayloadJson);
+        Assert.Equal("Succeeded", audit.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(
+            CardPaymentSupervisorDecision.ContinueWaiting.ToString(),
+            audit.RootElement.GetProperty("reasonCode").GetString());
     }
 
     [Theory]

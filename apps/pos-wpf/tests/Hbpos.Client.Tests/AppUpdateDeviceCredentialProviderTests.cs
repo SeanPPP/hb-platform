@@ -35,7 +35,12 @@ public sealed class AppUpdateDeviceCredentialProviderTests
             var result = await provider.GetCredentialsAsync();
 
             Assert.Null(result);
-            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+            var connectionString = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Pooling = false,
+            }.ToString();
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'DeviceCache';";

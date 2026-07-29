@@ -362,9 +362,7 @@ public sealed class CardTerminalSetupService(
             // 统一使用按环境解析后的 endpoint，避免调用链里新旧变量优先级不一致。
             LinklyCloudAuthBaseUrl = authBaseUrl,
             LinklyCloudRestBaseUrl = restBaseUrl,
-            LinklyPosVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(
-                environment,
-                settings.LinklyPosVendorId)
+            LinklyPosVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(environment)
         };
         var result = await linklyCloudTerminalClient.TestConnectionAsync(
             settings,

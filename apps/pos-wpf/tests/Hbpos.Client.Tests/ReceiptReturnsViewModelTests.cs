@@ -1,3 +1,4 @@
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -8,6 +9,44 @@ namespace Hbpos.Client.Tests;
 
 public sealed class ReceiptReturnsViewModelTests
 {
+    [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new ReceiptReturnsViewModel(
+            new FakeReceiptReturnsWorkflowService(),
+            CreateSession(),
+            () => { },
+            localization: localization);
+        var localizedChangeCount = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(ReceiptReturnsViewModel.OrderSummaryText) or
+                nameof(ReceiptReturnsViewModel.StatusMessage))
+            {
+                localizedChangeCount++;
+            }
+        };
+
+        try
+        {
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+            Assert.True(localizedChangeCount > 0);
+
+            viewModel.Dispose();
+            viewModel.Dispose();
+            var countAfterDispose = localizedChangeCount;
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+
+            Assert.Equal(countAfterDispose, localizedChangeCount);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
     [Theory]
     [InlineData("HBPOSE1-K1-AA-BB")]
     [InlineData("HBPOSE2-compact-token")]

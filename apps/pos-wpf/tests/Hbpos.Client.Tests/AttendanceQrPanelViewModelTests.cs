@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
 using System.Net;
@@ -494,6 +495,26 @@ public sealed class AttendanceQrPanelViewModelTests
     }
 
     [Fact]
+    public async Task Dispose_does_not_wait_for_a_non_cooperative_refresh_request()
+    {
+        var fixture = new Fixture(online: true);
+        fixture.Api.BlockRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Api.IgnoreCancellationWhileBlocked = true;
+        var viewModel = fixture.CreateViewModel(
+            startTimer: true,
+            tickInterval: TimeSpan.FromMilliseconds(10),
+            refreshInterval: TimeSpan.FromHours(1));
+        await fixture.Api.RefreshBlocked.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var startedAt = Stopwatch.GetTimestamp();
+        viewModel.Dispose();
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+        fixture.Api.BlockRefresh.TrySetResult();
+
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(100), $"Dispose blocked for {elapsed.TotalMilliseconds:0}ms.");
+    }
+
+    [Fact]
     public async Task Offline_refresh_never_lowers_observed_clock_high_water_mark()
     {
         var fixture = new Fixture(online: true);
@@ -618,6 +639,8 @@ public sealed class AttendanceQrPanelViewModelTests
 
         public TaskCompletionSource RefreshBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public bool IgnoreCancellationWhileBlocked { get; set; }
+
         public List<AttendanceSigningKeyRegistrationRequest> Registrations { get; } = [];
 
         public int RegistrationCount => Volatile.Read(ref _registrationCount);
@@ -631,7 +654,14 @@ public sealed class AttendanceQrPanelViewModelTests
             if (BlockRefresh is not null)
             {
                 RefreshBlocked.TrySetResult();
-                await BlockRefresh.Task.WaitAsync(cancellationToken);
+                if (IgnoreCancellationWhileBlocked)
+                {
+                    await BlockRefresh.Task;
+                }
+                else
+                {
+                    await BlockRefresh.Task.WaitAsync(cancellationToken);
+                }
             }
 
             if (ConflictNextRegistration)
@@ -692,6 +722,18 @@ public sealed class AttendanceQrPanelViewModelTests
         public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
         {
             Values[key] = value;
+            return Task.CompletedTask;
+        }
+
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            foreach (var (key, value) in values)
+            {
+                Values[key] = value;
+            }
+
             return Task.CompletedTask;
         }
 
@@ -822,7 +864,12 @@ public sealed class AttendanceQrPanelViewModelTests
         var result = new BarcodeReaderGeneric
         {
             AutoRotate = false,
-            Options = new DecodingOptions { PossibleFormats = [BarcodeFormat.QR_CODE], TryHarder = true },
+            Options = new DecodingOptions
+            {
+                PossibleFormats = [BarcodeFormat.QR_CODE],
+                PureBarcode = true,
+                TryHarder = true,
+            },
         }.Decode(new RGBLuminanceSource(pixels, bitmap.PixelWidth, bitmap.PixelHeight, RGBLuminanceSource.BitmapFormat.BGRA32));
         return result?.Text;
     }

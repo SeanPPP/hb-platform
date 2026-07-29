@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Channels;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -11,8 +12,15 @@ internal static class ConsoleLog
     private static int _attachAttempted;
     private static ApplicationLogDefaults _centerDefaults = ApplicationLogDefaults.Default;
     private static IApplicationLogSink _centerSink = NoopApplicationLogSink.Instance;
+    private static readonly object FileLogGate = new();
+    private static FileLogWorker? _fileLogWorker;
+    private static Task? _fileLogStopTask;
+    private static long _droppedFileLogLines;
+    private static int _fileLogStopped;
 
     internal static event Action<string>? LineWritten;
+
+    internal static long DroppedFileLogLineCount => Interlocked.Read(ref _droppedFileLogLines);
 
     internal static void ConfigureCenterDefaults(ApplicationLogDefaults defaults)
     {
@@ -126,6 +134,41 @@ internal static class ConsoleLog
         return result;
     }
 
+    internal static async Task FlushFileLogAsync(CancellationToken cancellationToken = default)
+    {
+        FileLogWorker? worker;
+        lock (FileLogGate)
+        {
+            worker = _fileLogWorker;
+        }
+
+        if (worker is not null)
+        {
+            await worker.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal static async Task StopFileLogAsync(CancellationToken cancellationToken = default)
+    {
+        Task stopTask;
+        lock (FileLogGate)
+        {
+            if (_fileLogStopTask is null)
+            {
+                Interlocked.Exchange(ref _fileLogStopped, 1);
+                var worker = _fileLogWorker;
+                _fileLogWorker = null;
+                _fileLogStopTask = worker is null
+                    ? Task.CompletedTask
+                    : worker.StopAsync(CancellationToken.None);
+            }
+
+            stopTask = _fileLogStopTask;
+        }
+
+        await stopTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static void WriteFileLog(string line)
     {
         var logPath = Environment.GetEnvironmentVariable("HBPOS_CLIENT_LOG_FILE");
@@ -134,20 +177,138 @@ internal static class ConsoleLog
             return;
         }
 
-        try
+        FileLogWorker worker;
+        lock (FileLogGate)
         {
-            var logDirectory = Path.GetDirectoryName(logPath);
-            if (!string.IsNullOrWhiteSpace(logDirectory))
+            // 停止与首次写入共用同一把锁，禁止停止完成后重新创建无人回收的 writer。
+            if (Volatile.Read(ref _fileLogStopped) != 0 || _fileLogStopTask is not null)
             {
-                Directory.CreateDirectory(logDirectory);
+                return;
             }
 
-            File.AppendAllText(logPath, line + Environment.NewLine);
+            if (_fileLogWorker is null)
+            {
+                _fileLogWorker = new FileLogWorker(logPath.Trim(), () => Interlocked.Increment(ref _droppedFileLogLines));
+            }
+
+            worker = _fileLogWorker;
         }
-        catch (Exception)
+
+        if (!worker.TryWrite(line))
         {
-            // Startup diagnostics should never block the POS app.
+            Interlocked.Increment(ref _droppedFileLogLines);
         }
+    }
+
+    private sealed class FileLogWorker
+    {
+        private const int Capacity = 4096;
+        private readonly Channel<FileLogEntry> _entries = Channel.CreateBounded<FileLogEntry>(
+            new BoundedChannelOptions(Capacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+                AllowSynchronousContinuations = false
+            });
+        private readonly string _logPath;
+        private readonly Action _recordDrop;
+        private readonly Task _consumerTask;
+        private int _faulted;
+        private int _stopped;
+
+        public FileLogWorker(string logPath, Action recordDrop)
+        {
+            _logPath = logPath;
+            _recordDrop = recordDrop;
+            _consumerTask = Task.Run(ConsumeAsync);
+        }
+
+        public bool TryWrite(string line)
+        {
+            if (Volatile.Read(ref _faulted) != 0 || Volatile.Read(ref _stopped) != 0)
+            {
+                return false;
+            }
+
+            return _entries.Writer.TryWrite(new FileLogEntry(line, null));
+        }
+
+        public async Task FlushAsync(CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref _faulted) != 0 || Volatile.Read(ref _stopped) != 0)
+            {
+                return;
+            }
+
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                await _entries.Writer.WriteAsync(new FileLogEntry(null, completion), cancellationToken).ConfigureAwait(false);
+                await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ChannelClosedException)
+            {
+                // 停止与刷新竞争时，调用方只需等待同一个停止任务即可。
+            }
+        }
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+            {
+                _entries.Writer.TryComplete();
+            }
+
+            await _consumerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task ConsumeAsync()
+        {
+            try
+            {
+                await foreach (var entry in _entries.Reader.ReadAllAsync().ConfigureAwait(false))
+                {
+                    if (entry.FlushCompletion is not null)
+                    {
+                        entry.FlushCompletion.TrySetResult();
+                        continue;
+                    }
+
+                    if (Volatile.Read(ref _faulted) != 0)
+                    {
+                        _recordDrop();
+                        continue;
+                    }
+
+                    try
+                    {
+                        var logDirectory = Path.GetDirectoryName(_logPath);
+                        if (!string.IsNullOrWhiteSpace(logDirectory))
+                        {
+                            Directory.CreateDirectory(logDirectory);
+                        }
+
+                        File.AppendAllText(_logPath, entry.Line + Environment.NewLine);
+                    }
+                    catch (Exception)
+                    {
+                        // 文件镜像失败后停止写入，避免错误日志反向递归或阻塞收银线程。
+                        Volatile.Write(ref _faulted, 1);
+                        _recordDrop();
+                    }
+                }
+            }
+            finally
+            {
+                while (_entries.Reader.TryRead(out var entry))
+                {
+                    entry.FlushCompletion?.TrySetCanceled();
+                }
+            }
+        }
+
+        private sealed record FileLogEntry(string? Line, TaskCompletionSource? FlushCompletion);
     }
 
     private static void EnsureConsoleAttached()

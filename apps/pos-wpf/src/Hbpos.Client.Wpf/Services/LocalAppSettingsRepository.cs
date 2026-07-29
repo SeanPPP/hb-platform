@@ -6,57 +6,108 @@ public interface ILocalAppSettingsRepository
 
     Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default);
 
+    Task SetValuesAsync(
+        IReadOnlyDictionary<string, string> values,
+        CancellationToken cancellationToken = default);
+
     Task DeleteValueAsync(string key, CancellationToken cancellationToken = default);
 }
 
 public sealed class LocalAppSettingsRepository(LocalSqliteStore store) : ILocalAppSettingsRepository
 {
-    public async Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
+    public Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
     {
-        await using var connection = await store.OpenConnectionAsync(cancellationToken);
-        await EnsureAppSettingsTableAsync(connection, cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT Value
-            FROM AppSettings
-            WHERE Key = $Key;
-            """;
-        command.Parameters.AddWithValue("$Key", key);
+        var keySnapshot = key;
+        return Task.Run(async () =>
+        {
+            await using var connection = await store.OpenConnectionAsync(cancellationToken);
+            await EnsureAppSettingsTableAsync(connection, cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT Value
+                FROM AppSettings
+                WHERE Key = $Key;
+                """;
+            command.Parameters.AddWithValue("$Key", keySnapshot);
 
-        return await command.ExecuteScalarAsync(cancellationToken) as string;
+            return await command.ExecuteScalarAsync(cancellationToken) as string;
+        }, cancellationToken);
     }
 
-    public async Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
+    public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
     {
-        await using var connection = await store.OpenConnectionAsync(cancellationToken);
-        await EnsureAppSettingsTableAsync(connection, cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO AppSettings (Key, Value, UpdatedAt)
-            VALUES ($Key, $Value, $UpdatedAt)
-            ON CONFLICT(Key) DO UPDATE SET
-                Value = excluded.Value,
-                UpdatedAt = excluded.UpdatedAt;
-            """;
-        command.Parameters.AddWithValue("$Key", key);
-        command.Parameters.AddWithValue("$Value", value);
-        command.Parameters.AddWithValue("$UpdatedAt", DateTimeOffset.UtcNow.ToString("O"));
-
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return SetValuesAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [key] = value,
+            },
+            cancellationToken);
     }
 
-    public async Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
+    public Task SetValuesAsync(
+        IReadOnlyDictionary<string, string> values,
+        CancellationToken cancellationToken = default)
     {
-        await using var connection = await store.OpenConnectionAsync(cancellationToken);
-        await EnsureAppSettingsTableAsync(connection, cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            DELETE FROM AppSettings
-            WHERE Key = $Key;
-            """;
-        command.Parameters.AddWithValue("$Key", key);
+        ArgumentNullException.ThrowIfNull(values);
+        var valuesSnapshot = values
+            .Select(pair =>
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(pair.Key);
+                return new KeyValuePair<string, string>(pair.Key, pair.Value);
+            })
+            .ToArray();
+        if (valuesSnapshot.Length == 0)
+        {
+            return Task.CompletedTask;
+        }
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return Task.Run(async () =>
+        {
+            await using var connection = await store.OpenConnectionAsync(cancellationToken);
+            await EnsureAppSettingsTableAsync(connection, cancellationToken);
+            using var transaction = connection.BeginTransaction();
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO AppSettings (Key, Value, UpdatedAt)
+                VALUES ($Key, $Value, $UpdatedAt)
+                ON CONFLICT(Key) DO UPDATE SET
+                    Value = excluded.Value,
+                    UpdatedAt = excluded.UpdatedAt;
+                """;
+            var keyParameter = command.Parameters.Add("$Key", Microsoft.Data.Sqlite.SqliteType.Text);
+            var valueParameter = command.Parameters.Add("$Value", Microsoft.Data.Sqlite.SqliteType.Text);
+            var updatedAtParameter = command.Parameters.Add("$UpdatedAt", Microsoft.Data.Sqlite.SqliteType.Text);
+            var updatedAt = DateTimeOffset.UtcNow.ToString("O");
+
+            foreach (var (key, value) in valuesSnapshot)
+            {
+                keyParameter.Value = key;
+                valueParameter.Value = value;
+                updatedAtParameter.Value = updatedAt;
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }, cancellationToken);
+    }
+
+    public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var keySnapshot = key;
+        return Task.Run(async () =>
+        {
+            await using var connection = await store.OpenConnectionAsync(cancellationToken);
+            await EnsureAppSettingsTableAsync(connection, cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                DELETE FROM AppSettings
+                WHERE Key = $Key;
+                """;
+            command.Parameters.AddWithValue("$Key", keySnapshot);
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }, cancellationToken);
     }
 
     private static async Task EnsureAppSettingsTableAsync(

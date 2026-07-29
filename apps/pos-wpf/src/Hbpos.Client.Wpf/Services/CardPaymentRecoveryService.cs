@@ -2322,7 +2322,7 @@ public sealed class CardPaymentRecoveryService(
             EventId = auditEventId,
             OccurredAtUtc = resolvedAt,
             OperationType = "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
-            Outcome = resolution.Decision.ToString(),
+            Outcome = "Succeeded",
             CashierId = resolution.OperatorCashierId,
             UserGuid = resolution.OperatorUserGuid,
             CashierName = resolution.OperatorName,

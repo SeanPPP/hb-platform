@@ -1219,6 +1219,18 @@ public sealed class CashierPermissionTests
             return Task.CompletedTask;
         }
 
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            foreach (var (key, value) in values)
+            {
+                _values[key] = value;
+            }
+
+            return Task.CompletedTask;
+        }
+
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
             _values.Remove(key);

@@ -13,6 +13,40 @@ namespace Hbpos.Client.Tests;
 public sealed class DeviceRegistrationViewModelTests
 {
     [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new DeviceRegistrationViewModel(
+            new StubDeviceRegistrationWorkflowService(),
+            localization);
+        var localizedChangeCount = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(DeviceRegistrationViewModel.TitleText))
+            {
+                localizedChangeCount++;
+            }
+        };
+
+        try
+        {
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+            Assert.Equal(1, localizedChangeCount);
+
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+
+            Assert.Equal(1, localizedChangeCount);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
+    [Fact]
     public async Task Saving_new_server_address_blocks_registration_until_restart()
     {
         var workflow = new StubDeviceRegistrationWorkflowService();

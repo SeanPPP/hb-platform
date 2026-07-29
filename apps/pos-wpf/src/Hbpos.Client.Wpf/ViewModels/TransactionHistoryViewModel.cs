@@ -85,6 +85,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IConfirmationDialogService? _confirmationDialogService;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
+    private bool _disposed;
 
     [ObservableProperty]
     private string _searchText = string.Empty;
@@ -1318,6 +1319,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;

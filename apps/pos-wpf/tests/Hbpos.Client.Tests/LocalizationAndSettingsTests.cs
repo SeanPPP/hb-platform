@@ -107,6 +107,13 @@ public sealed class LocalizationAndSettingsTests
             "settings.linkly.mode.cloudDirectSync",
             "settings.linkly.mode.cloudBackendAsync",
             "settings.linkly.localIp.title",
+            "settings.linkly.localIp.sandboxSafety",
+            "settings.linkly.localIp.testVirtualTerminal",
+            "settings.linkly.localIp.hostRequired",
+            "settings.linkly.localIp.portInvalid",
+            "settings.linkly.localIp.timeoutInvalid",
+            "settings.linkly.localIp.testing",
+            "settings.linkly.test.configurationChanged",
             "settings.linkly.cloudDirect.title",
             "settings.linkly.cloudBackend.title",
             "settings.linkly.cloudBackend.description",
@@ -366,6 +373,49 @@ public sealed class LocalizationAndSettingsTests
             await settings.SetValueAsync("Language", "zh-CN");
 
             Assert.Equal("zh-CN", await settings.GetValueAsync("Language"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task App_settings_batch_write_rolls_back_all_values_when_second_write_fails()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var settings = new LocalAppSettingsRepository(store);
+            await schema.InitializeAsync();
+            await settings.SetValueAsync("First", "before");
+            await using (var connection = await store.OpenConnectionAsync())
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    CREATE TRIGGER RejectFailSetting
+                    BEFORE INSERT ON AppSettings
+                    WHEN NEW.Key = 'Fail'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated batch write failure');
+                    END;
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["First"] = "after",
+                ["Fail"] = "invalid",
+            };
+
+            await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => settings.SetValuesAsync(values));
+
+            Assert.Equal("before", await settings.GetValueAsync("First"));
+            Assert.Null(await settings.GetValueAsync("Fail"));
         }
         finally
         {

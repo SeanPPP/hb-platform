@@ -339,6 +339,7 @@
   <data name="customerDisplay.window.noSecondDisplay" xml:space="preserve"><value>No second display detected. Customer display was not opened.</value></data>
   <data name="shell.customerDisplayWindow" xml:space="preserve"><value>Customer display window</value></data>
   <data name="shell.languageToggle" xml:space="preserve"><value>中 / EN</value></data>
+  <data name="shell.language.saveFailedRestartMayRevert" xml:space="preserve"><value>Language changed for this session, but saving failed. It may revert after restart.</value></data>
   <data name="shell.cashierLogin.overlayTitle" xml:space="preserve"><value>Cashier login required</value></data>
   <data name="shell.cashierLogin.overlayMessage" xml:space="preserve"><value>Scan a cashier barcode to continue.</value></data>
   <data name="shell.cashierLogin.overlayAction" xml:space="preserve"><value>Log in cashier</value></data>

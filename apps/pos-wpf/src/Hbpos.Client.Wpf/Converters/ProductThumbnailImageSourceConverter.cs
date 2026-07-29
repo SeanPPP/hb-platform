@@ -21,7 +21,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static readonly ConcurrentDictionary<string, byte> LoggedDiagnostics = new(StringComparer.Ordinal);
     private static readonly HttpClient RemoteImageHttpClient = CreateRemoteImageHttpClient();
     private static readonly object RemoteImageLoaderLock = new();
-    private static readonly SemaphoreSlim RemoteImageDownloadGate = new(4);
+    private static readonly SemaphoreSlim ImageDecodeGate = new(4);
     private static Func<Uri, CancellationToken, Task<byte[]>> RemoteImageBytesLoader = DownloadRemoteImageBytesAsync;
     private static Func<Uri> ApiBaseAddressProvider = ServiceRegistration.GetApiBaseAddress;
     private static int nextAsyncLoadVersion;
@@ -164,7 +164,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return results.Count(preloaded => preloaded);
     }
 
-    private ImageSource? CreateImageSource(ImageRequest imageRequest)
+    private ImageSource? CreateImageSource(ImageRequest imageRequest, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -183,12 +183,18 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
             if (imageRequest.IsRemoteUri)
             {
-                return TryDownloadRemoteImageBytes(imageRequest, out var remoteBytes)
+                return TryDownloadRemoteImageBytes(imageRequest, cancellationToken, out var remoteBytes)
                     ? CreateBitmapImageFromBytes(
                         remoteBytes,
                         applyDecodePixelWidth: true,
                         Math.Max(1, DecodePixelWidth))
                     : null;
+            }
+
+            if (imageRequest.IsLocalFileUri && !File.Exists(imageRequest.Uri.LocalPath))
+            {
+                LogRejectedRequest(imageRequest.CacheKey, "file-missing", "file");
+                return null;
             }
 
             if (string.Equals(imageRequest.Uri.Scheme, "pack", StringComparison.OrdinalIgnoreCase))
@@ -206,11 +212,19 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             uriImage.BeginInit();
             uriImage.UriSource = imageRequest.Uri;
             uriImage.DecodePixelWidth = Math.Max(1, DecodePixelWidth);
-            uriImage.CreateOptions = BitmapCreateOptions.DelayCreation;
-            uriImage.CacheOption = BitmapCacheOption.Default;
+            uriImage.CacheOption = BitmapCacheOption.OnLoad;
             uriImage.EndInit();
 
+            if (uriImage.CanFreeze)
+            {
+                uriImage.Freeze();
+            }
+
             return uriImage;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -244,31 +258,16 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         ImageSource? imageSource;
-        if (imageRequest.IsRemoteUri)
+        await ImageDecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await RemoteImageDownloadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                imageSource = await Task.Run(() =>
-                {
-                    return TryDownloadRemoteImageBytes(imageRequest, cancellationToken, out var remoteBytes)
-                        ? CreateBitmapImageFromBytes(
-                            remoteBytes,
-                            applyDecodePixelWidth: true,
-                            decodePixelWidth)
-                        : null;
-                }, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                RemoteImageDownloadGate.Release();
-            }
+            imageSource = await Task.Run(
+                () => CreateImageSourceOnWorker(imageRequest, decodePixelWidth, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
-        else
+        finally
         {
-            var converter = new ProductThumbnailImageSourceConverter { DecodePixelWidth = decodePixelWidth };
-            imageSource = await Task.Run(() => converter.CreateImageSource(imageRequest), cancellationToken)
-                .ConfigureAwait(false);
+            ImageDecodeGate.Release();
         }
 
         if (imageSource is not null)
@@ -404,29 +403,16 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return;
         }
 
-        if (imageRequest.IsRemoteUri)
-        {
-            var cts = new CancellationTokenSource();
-            target.SetValue(AsyncLoadCancellationProperty, cts);
-            _ = LoadRemoteImageForTargetAsync(
-                target,
-                imageRequest,
-                trimmedSourceText,
-                decodePixelWidth,
-                cacheKey,
-                version,
-                cts);
-            return;
-        }
-
-        var converter = new ProductThumbnailImageSourceConverter { DecodePixelWidth = decodePixelWidth };
-        var imageSource = converter.CreateImageSource(imageRequest);
-        if (imageRequest.CanCache && imageSource is not null)
-        {
-            Cache.TryAdd(cacheKey, imageSource);
-        }
-
-        SetTargetImageSource(target, imageSource);
+        var cts = new CancellationTokenSource();
+        target.SetValue(AsyncLoadCancellationProperty, cts);
+        _ = LoadImageForTargetAsync(
+            target,
+            imageRequest,
+            trimmedSourceText,
+            decodePixelWidth,
+            cacheKey,
+            version,
+            cts);
     }
 
     private static void CancelAsyncImageLoad(DependencyObject target)
@@ -462,7 +448,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
-    private static async Task LoadRemoteImageForTargetAsync(
+    private static async Task LoadImageForTargetAsync(
         DependencyObject target,
         ImageRequest imageRequest,
         string sourceText,
@@ -471,31 +457,35 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         int version,
         CancellationTokenSource cts)
     {
+        CancellationToken cancellationToken;
+        try
+        {
+            cancellationToken = cts.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
         ImageSource? imageSource = null;
         var gateEntered = false;
         try
         {
-            await RemoteImageDownloadGate.WaitAsync(cts.Token).ConfigureAwait(false);
+            await ImageDecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             gateEntered = true;
-            imageSource = await Task.Run(() =>
-            {
-                return TryDownloadRemoteImageBytes(imageRequest, cts.Token, out var remoteBytes)
-                    ? CreateBitmapImageFromBytes(
-                        remoteBytes,
-                        applyDecodePixelWidth: true,
-                        decodePixelWidth)
-                    : null;
-            }, cts.Token).ConfigureAwait(false);
-            if (!cts.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
+            imageSource = await Task.Run(
+                () => CreateImageSourceOnWorker(imageRequest, decodePixelWidth, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
             {
                 Cache.TryAdd(cacheKey, imageSource);
             }
-            else if (!cts.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
+            else if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
             {
                 MarkFailedCache(cacheKey);
             }
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return;
         }
@@ -503,7 +493,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         {
             if (gateEntered)
             {
-                RemoteImageDownloadGate.Release();
+                ImageDecodeGate.Release();
             }
         }
 
@@ -514,26 +504,53 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return;
         }
 
-        await dispatcher.InvokeAsync(() =>
+        try
         {
-            if (ReferenceEquals(target.GetValue(AsyncLoadCancellationProperty), cts))
+            await dispatcher.InvokeAsync(() =>
             {
-                target.ClearValue(AsyncLoadCancellationProperty);
-                cts.Dispose();
-            }
+                if (ReferenceEquals(target.GetValue(AsyncLoadCancellationProperty), cts))
+                {
+                    target.ClearValue(AsyncLoadCancellationProperty);
+                    cts.Dispose();
+                }
 
-            if ((int)target.GetValue(AsyncLoadVersionProperty) != version)
-            {
-                return;
-            }
+                if ((int)target.GetValue(AsyncLoadVersionProperty) != version)
+                {
+                    return;
+                }
 
-            if (!string.Equals(GetAsyncSourceText(target)?.Trim(), sourceText, StringComparison.Ordinal))
-            {
-                return;
-            }
+                if (!string.Equals(GetAsyncSourceText(target)?.Trim(), sourceText, StringComparison.Ordinal))
+                {
+                    return;
+                }
 
-            SetTargetImageSource(target, imageSource);
-        });
+                SetTargetImageSource(target, imageSource);
+            });
+        }
+        catch (TaskCanceledException)
+        {
+            cts.Dispose();
+        }
+        catch (InvalidOperationException)
+        {
+            cts.Dispose();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            cts.Dispose();
+            LogImageDiagnosticOnce(
+                $"async-dispatch:{cacheKey}",
+                $"thumbnail UI apply failed sourceKind={imageRequest.SourceKind} error={ex.GetType().Name}");
+        }
+    }
+
+    private static ImageSource? CreateImageSourceOnWorker(
+        ImageRequest imageRequest,
+        int decodePixelWidth,
+        CancellationToken cancellationToken)
+    {
+        var converter = new ProductThumbnailImageSourceConverter { DecodePixelWidth = decodePixelWidth };
+        return converter.CreateImageSource(imageRequest, cancellationToken);
     }
 
     private static void SetTargetImageSource(DependencyObject target, ImageSource? imageSource)
@@ -729,19 +746,22 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static bool TryCreateLocalFileRequest(string sourceText, out ImageRequest? imageRequest)
     {
         imageRequest = null;
-        if (!Path.IsPathRooted(sourceText) || !File.Exists(sourceText))
+        if (!Path.IsPathRooted(sourceText) || IsRootRelativeApiPath(sourceText))
         {
-            if (Path.IsPathRooted(sourceText) && !IsRootRelativeApiPath(sourceText))
-            {
-                LogRejectedRequest(sourceText, "file-missing", "file");
-            }
-
             return false;
         }
 
         try
         {
-            imageRequest = new ImageRequest(Path.GetFullPath(sourceText), null, File.ReadAllBytes(sourceText), "file");
+            var fullPath = Path.GetFullPath(sourceText);
+            if (!Uri.TryCreate(fullPath, UriKind.Absolute, out var fileUri) || !fileUri.IsFile)
+            {
+                LogRejectedRequest(sourceText, "invalid-file-uri", "file");
+                return false;
+            }
+
+            // 本地文件只在此建立地址，实际读取和解码统一由后台共享闸门执行。
+            imageRequest = new ImageRequest(fullPath, fileUri, null, "file");
             return true;
         }
         catch (IOException)
@@ -1138,7 +1158,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private sealed record ImageRequest(string CacheKey, Uri? Uri, byte[]? ImageBytes, string SourceKind)
     {
-        public bool CanCache => ImageBytes is not null || IsRemoteUri;
+        public bool CanCache => ImageBytes is not null || IsRemoteUri || IsLocalFileUri;
+
+        public bool IsLocalFileUri =>
+            Uri is not null &&
+            string.Equals(Uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase);
 
         public bool IsRemoteUri =>
             Uri is not null &&

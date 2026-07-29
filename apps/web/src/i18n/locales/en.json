@@ -3495,7 +3495,8 @@
       "installmentRepaymentComplete": "Complete Installment Repayment",
       "installmentRepaymentCancel": "Cancel Installment Repayment",
       "dailyCloseSave": "Save Daily Close",
-      "dailyCloseReprint": "Reprint Daily Close"
+      "dailyCloseReprint": "Reprint Daily Close",
+      "cardPaymentSupervisorResolution": "Card Payment Supervisor Resolution"
     }
   },
   "system": {

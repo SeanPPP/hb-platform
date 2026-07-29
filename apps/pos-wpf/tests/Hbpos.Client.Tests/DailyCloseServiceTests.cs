@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -9,6 +10,27 @@ namespace Hbpos.Client.Tests;
 
 public sealed class DailyCloseServiceTests
 {
+    [Fact]
+    public async Task LoadReportAsync_offloads_slow_local_read_and_waits_for_its_result()
+    {
+        var repository = new BlockingDailyCloseRepository();
+        var service = new DailyCloseService(repository);
+        var callerThreadId = Environment.CurrentManagedThreadId;
+        var stopwatch = Stopwatch.StartNew();
+
+        var loadTask = service.LoadReportAsync(CreateSession(), new DateTime(2026, 5, 28));
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(100));
+        await repository.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.NotEqual(callerThreadId, repository.ExecutionThreadId);
+        Assert.False(loadTask.IsCompleted);
+
+        var report = await loadTask;
+
+        Assert.True(stopwatch.Elapsed >= TimeSpan.FromMilliseconds(500));
+        Assert.Equal(1, report.OrderCount);
+    }
+
     [Fact]
     public async Task LoadReportAsync_filters_by_store_device_and_local_business_date()
     {
@@ -214,6 +236,39 @@ public sealed class DailyCloseServiceTests
         }
     }
 
+    [Fact]
+    public async Task SaveAsync_returns_committed_archive_when_post_commit_checkpoint_is_canceled()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            using var callerCancellation = new CancellationTokenSource();
+            var checkpoint = new CancelingCheckpointService(callerCancellation);
+            var service = new DailyCloseService(new LocalDailyCloseRepository(store), checkpoint);
+            var session = CreateSession();
+
+            await schema.InitializeAsync();
+
+            var archive = await service.SaveAsync(
+                session,
+                new DateTime(2026, 5, 28),
+                [],
+                callerCancellation.Token);
+
+            Assert.NotEqual(Guid.Empty, archive.DailyCloseGuid);
+            Assert.True(callerCancellation.IsCancellationRequested);
+            await using var connection = await store.OpenConnectionAsync();
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM LocalDailyCloses;"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static CashDenominationCount Count(decimal value, int quantity)
     {
         var denomination = DailyCloseService.AustralianDenominations.Single(item => item.Value == value);
@@ -354,5 +409,61 @@ public sealed class DailyCloseServiceTests
         command.Parameters.AddWithValue("$DailyCloseGuid", dailyCloseGuid.ToString());
         command.Parameters.AddWithValue("$DenominationValue", denominationValue);
         await command.ExecuteNonQueryAsync();
+    }
+
+    private sealed class BlockingDailyCloseRepository : ILocalDailyCloseRepository
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ExecutionThreadId { get; private set; }
+
+        public async Task<DailyCloseReport> LoadReportAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            ExecutionThreadId = Environment.CurrentManagedThreadId;
+            Started.TrySetResult();
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+            return new DailyCloseReport(
+                businessDate,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                session.StoreCode,
+                session.DeviceCode,
+                session.CashierId,
+                session.CashierName,
+                1,
+                [],
+                0m,
+                0m);
+        }
+
+        public Task<DailyCloseArchive> SaveAsync(
+            DailyCloseReport report,
+            IReadOnlyList<CashDenominationCount> cashCounts,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<DailyCloseArchive>> GetArchivesAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class CancelingCheckpointService(CancellationTokenSource callerCancellation)
+        : ILocalSqliteCheckpointService
+    {
+        public Task CheckpointWalAsync(CancellationToken cancellationToken = default)
+        {
+            Assert.False(cancellationToken.CanBeCanceled);
+            callerCancellation.Cancel();
+            throw new OperationCanceledException("simulated post-commit checkpoint cancellation");
+        }
     }
 }

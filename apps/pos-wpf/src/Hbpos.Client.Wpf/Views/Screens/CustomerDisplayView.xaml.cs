@@ -15,6 +15,7 @@ public partial class CustomerDisplayView : UserControl
     private readonly DispatcherTimer _imageAdvanceTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _videoTimeoutTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private CustomerDisplayViewModel? _viewModel;
+    private DispatcherOperation? _pendingScrollOperation;
 
     public CustomerDisplayView()
     {
@@ -35,6 +36,7 @@ public partial class CustomerDisplayView : UserControl
 
     private void CustomerDisplayViewDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
+        CancelPendingScroll();
         UnsubscribeFromViewModel();
         SubscribeToViewModel(e.NewValue as CustomerDisplayViewModel);
         RefreshPromotionLayout();
@@ -271,23 +273,35 @@ public partial class CustomerDisplayView : UserControl
 
     private void ScrollLatestLineIntoView()
     {
-        var latestLine = _viewModel?.Lines.LastOrDefault();
-        if (latestLine is null)
+        if (_pendingScrollOperation is { Status: DispatcherOperationStatus.Pending or DispatcherOperationStatus.Executing })
         {
             return;
         }
 
-        LineDataGrid.Dispatcher.BeginInvoke(
+        _pendingScrollOperation = LineDataGrid.Dispatcher.BeginInvoke(
             new Action(() =>
             {
-                LineDataGrid.UpdateLayout();
+                _pendingScrollOperation = null;
+                var latestLine = _viewModel?.Lines.LastOrDefault();
+                if (latestLine is null)
+                {
+                    return;
+                }
+
                 LineDataGrid.ScrollIntoView(latestLine);
             }),
             DispatcherPriority.Background);
     }
 
+    private void CancelPendingScroll()
+    {
+        _pendingScrollOperation?.Abort();
+        _pendingScrollOperation = null;
+    }
+
     private void UnsubscribeFromViewModel()
     {
+        CancelPendingScroll();
         if (_viewModel is not null)
         {
             _viewModel.Lines.CollectionChanged -= LinesCollectionChanged;

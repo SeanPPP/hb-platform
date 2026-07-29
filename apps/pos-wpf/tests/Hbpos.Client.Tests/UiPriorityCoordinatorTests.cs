@@ -2,6 +2,7 @@ using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class UiPriorityCoordinatorTests
 {
     [Fact]

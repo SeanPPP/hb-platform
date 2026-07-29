@@ -114,6 +114,32 @@ public sealed class ConfirmationDialogServiceTests
         Assert.False(await resultTask);
     }
 
+    [Fact]
+    public async Task Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var service = new WpfConfirmationDialogService(localization);
+        var resultTask = service.ConfirmExitApplicationAsync();
+        var changeCount = 0;
+        service.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            service.Dispose();
+            service.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+            service.CancelCommand.Execute(null);
+            Assert.False(await resultTask);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
     private static Task<bool> OpenAsync(IConfirmationDialogService service, string scenario) =>
         scenario switch
         {

@@ -44,6 +44,7 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<IAppShutdownCoordinator, AppShutdownCoordinator>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
         services.AddSingleton<IEmergencyLoginPublicKeyCache, EmergencyLoginPublicKeyCache>();
         services.AddHttpClient<IEmergencyLoginPublicKeyApiClient, EmergencyLoginPublicKeyApiClient>(client =>

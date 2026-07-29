@@ -85,6 +85,17 @@ public sealed class CustomerDisplayViewModelTests
     }
 
     [Fact]
+    public void CustomerDisplayView_coalesces_pending_line_scrolls_without_forcing_layout()
+    {
+        var (_, codeBehind) = ReadCustomerDisplayViewFiles();
+
+        Assert.Contains("private DispatcherOperation? _pendingScrollOperation;", codeBehind);
+        Assert.Contains("DispatcherOperationStatus.Pending or DispatcherOperationStatus.Executing", codeBehind);
+        Assert.Contains("CancelPendingScroll();", codeBehind);
+        Assert.DoesNotContain("LineDataGrid.UpdateLayout();", codeBehind);
+    }
+
+    [Fact]
     public void LoadAdvertisements_filters_unplayable_items_and_marks_idle_visible_when_cart_is_empty()
     {
         var viewModel = new CustomerDisplayViewModel();

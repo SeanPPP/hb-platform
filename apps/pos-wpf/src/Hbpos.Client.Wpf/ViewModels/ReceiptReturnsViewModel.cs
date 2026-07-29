@@ -22,6 +22,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 {
     public const string PageId = "ReceiptReturns";
 
+    private bool _disposed;
+
     private const string DefaultStatusMessage = "Scan an order number to start a receipt return.";
     private const string DefaultOrderSummaryText = "No order loaded";
     private const string DefaultOpenItemName = "Open Item";
@@ -97,7 +99,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RefreshLocalizedState();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         LookupCommand = new AsyncRelayCommand(LookupAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ScanText));
@@ -158,8 +160,24 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
         DisposeOpenItemAuthorization();
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RefreshLocalizedState();
     }
 
     public void ResetToDefault()

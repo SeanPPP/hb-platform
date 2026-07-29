@@ -75,6 +75,13 @@
   <data name="settings.linkly.localIp.title" xml:space="preserve"><value>本地 Linkly IP Gateway</value></data>
   <data name="settings.linkly.localIp.description" xml:space="preserve"><value>通过 IP 地址和端口连接本机或局域网内的 Windows Linkly EFT-Client。</value></data>
   <data name="settings.linkly.localIp.ipAddress" xml:space="preserve"><value>IP 地址</value></data>
+  <data name="settings.linkly.localIp.sandboxSafety" xml:space="preserve"><value>Sandbox 不会改变本地 IP 的 TCP 目标。请确认 Linkly EFT-Client 实际连接的是 VPP。此测试仅检查连接和刷卡机就绪状态，不会发起付款、退款或其他金融交易。</value></data>
+  <data name="settings.linkly.localIp.testVirtualTerminal" xml:space="preserve"><value>测试虚拟刷卡机</value></data>
+  <data name="settings.linkly.localIp.hostRequired" xml:space="preserve"><value>请输入 Linkly 本地 IP 主机地址。</value></data>
+  <data name="settings.linkly.localIp.portInvalid" xml:space="preserve"><value>请输入 1 到 65535 之间的 Linkly 端口。</value></data>
+  <data name="settings.linkly.localIp.timeoutInvalid" xml:space="preserve"><value>请输入大于 0 秒的 Linkly 超时时间。</value></data>
+  <data name="settings.linkly.localIp.testing" xml:space="preserve"><value>正在检测 Linkly LocalIp {0}:{1}...</value></data>
+  <data name="settings.linkly.test.configurationChanged" xml:space="preserve"><value>检测期间 Linkly 设置已更改，请重新测试当前设置。</value></data>
   <data name="settings.linkly.cloudDirect.title" xml:space="preserve"><value>Cloud 直连同步</value></data>
   <data name="settings.linkly.cloudDirect.description" xml:space="preserve"><value>在本机保存 Cloud API 测试账号，完成刷卡机配对后测试直连 Cloud。该模式仅返回交易状态结果。</value></data>
   <data name="settings.linkly.cloudBackend.title" xml:space="preserve"><value>Cloud 后端异步</value></data>

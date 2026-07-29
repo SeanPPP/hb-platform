@@ -8,7 +8,7 @@ using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class DeviceRegistrationViewModel : ObservableObject
+public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDisposable
 {
     private const int PendingDeviceStatus = -1;
     private static readonly TimeSpan DefaultApprovalPollingInterval = TimeSpan.FromSeconds(5);
@@ -26,6 +26,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
     private Task? _approvalPollingTask;
     private long _registrationSessionVersion;
     private bool _isReregisterCancelRequested;
+    private bool _disposed;
 
     [ObservableProperty]
     private StoreSelectionItem? _selectedStore;
@@ -83,7 +84,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         _apiServerSettings?.Load();
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         RegisterCommand = new AsyncRelayCommand(RegisterAsync, CanRegister);
@@ -758,6 +759,36 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
             CancelRequested?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
+        if (_apiServerSettings is not null)
+        {
+            PropertyChangedEventManager.RemoveHandler(
+                _apiServerSettings,
+                OnApiServerSettingsPropertyChanged,
+                nameof(ApiServerSettingsViewModel.RestartRequired));
+        }
+
+        StopApprovalPolling();
+        _approvalPollingTask = null;
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 }
 

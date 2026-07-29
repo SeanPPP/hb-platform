@@ -4,10 +4,13 @@ namespace Hbpos.Client.Wpf.Services;
 
 public sealed class LocalSellableItemIndex
 {
+    private const int CancellationCheckInterval = 256;
     private readonly object _gate = new();
     private readonly List<SellableItemDto> _items = [];
     private readonly Dictionary<ExactLookupKey, List<SellableItemDto>> _exactLookupIndex = [];
     private readonly Dictionary<ExactLookupKey, List<SellableItemDto>> _metadataLookupIndex = [];
+
+    internal Action<string, int>? SearchProgressForTests { get; set; }
 
     public IReadOnlyList<SellableItemDto> Items
     {
@@ -28,6 +31,23 @@ public sealed class LocalSellableItemIndex
             {
                 return _items.Count;
             }
+        }
+    }
+
+    public IReadOnlyList<SellableItemDto> GetFirst(string? storeCode, int take = 8)
+    {
+        if (take <= 0)
+        {
+            return [];
+        }
+
+        var normalizedStoreCode = Normalize(storeCode);
+        lock (_gate)
+        {
+            return _items
+                .Where(item => normalizedStoreCode.Length == 0 || Normalize(item.StoreCode) == normalizedStoreCode)
+                .Take(take)
+                .ToArray();
         }
     }
 
@@ -178,12 +198,27 @@ public sealed class LocalSellableItemIndex
 
     public IReadOnlyList<SellableItemDto> Search(string query, int take = 20)
     {
-        return Search(null, query, take);
+        return Search(null, query, CancellationToken.None, take);
+    }
+
+    public IReadOnlyList<SellableItemDto> Search(string query, CancellationToken cancellationToken, int take = 20)
+    {
+        return Search(null, query, cancellationToken, take);
     }
 
     public IReadOnlyList<SellableItemDto> Search(string? storeCode, string query, int take = 20)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        return Search(storeCode, query, CancellationToken.None, take);
+    }
+
+    public IReadOnlyList<SellableItemDto> Search(
+        string? storeCode,
+        string query,
+        CancellationToken cancellationToken,
+        int take = 20)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(query) || take <= 0)
         {
             return [];
         }
@@ -193,11 +228,29 @@ public sealed class LocalSellableItemIndex
         SellableItemDto[] snapshot;
         lock (_gate)
         {
-            snapshot = _items.ToArray();
+            snapshot = new SellableItemDto[_items.Count];
+            for (var index = 0; index < _items.Count; index++)
+            {
+                if (index % CancellationCheckInterval == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                snapshot[index] = _items[index];
+            }
         }
 
-        return snapshot
-            .Where(item => normalizedStoreCode.Length == 0 || Normalize(item.StoreCode) == normalizedStoreCode)
+        var matches = snapshot
+            .Where((item, index) =>
+            {
+                if (index % CancellationCheckInterval == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    SearchProgressForTests?.Invoke(query, index);
+                }
+
+                return normalizedStoreCode.Length == 0 || Normalize(item.StoreCode) == normalizedStoreCode;
+            })
             .Select(item => new { Item = item, Rank = Rank(item, normalized) })
             .Where(match => match.Rank < int.MaxValue)
             .OrderBy(match => match.Rank)
@@ -205,6 +258,8 @@ public sealed class LocalSellableItemIndex
             .Take(take)
             .Select(match => match.Item)
             .ToList();
+        cancellationToken.ThrowIfCancellationRequested();
+        return matches;
     }
 
     public IReadOnlyList<SellableItemDto> FindExactMatches(string storeCode, string query)

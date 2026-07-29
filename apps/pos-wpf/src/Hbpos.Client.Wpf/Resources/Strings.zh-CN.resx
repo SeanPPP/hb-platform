@@ -951,6 +951,9 @@
   <data name="shell.languageToggle" xml:space="preserve">
     <value>中 / EN</value>
   </data>
+  <data name="shell.language.saveFailedRestartMayRevert" xml:space="preserve">
+    <value>本次语言切换已生效，但保存失败；重启后可能恢复。</value>
+  </data>
   <data name="shell.cashierLogin.overlayTitle" xml:space="preserve">
     <value>请先扫码登录收银员</value>
   </data>

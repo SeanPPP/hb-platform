@@ -304,3 +304,39 @@ Permissions.PosTerminal.Audit.View
 - `LocalFinancialSupervisorResolutionRepository.cs` 及部分相关测试仍为未跟踪文件，是前序金融修复的一部分，不得遗漏。
 - 后续提交必须按任务路径精确暂存，并继续使用中文提交信息和 reasonix。
 - GitNexus 当前索引落后于工作区，曾返回旧的“备注必填”实现。涉及本交接内容时，应以当前源文件和测试结果为准；索引更新后再重新运行影响分析。
+
+## 10. 2026-07-29 云端闭环续作
+
+### 10.1 已实现
+
+- 客户端 `CARD_PAYMENT_SUPERVISOR_RESOLUTION` 事件统一发送 `Outcome = Succeeded`。
+- `ConfirmPaid`、`ConfirmNotPaid`、`ContinueWaiting` 继续保存在 `ReasonCode`，支付状态机和锁定规则未修改。
+- Hbpos.Api 已放行该 operation type，以及 `attemptGuid`、`operationGuid`、`sessionId`、`evidence`、`financialReference` 五个属性。
+- 服务端仍只持久化通用 Outcome；现有清洗、长度限制、未知属性过滤和 EventId 幂等逻辑保持不变。
+- Web 操作类型映射和中英文文案已补齐，下拉框、列表和详情继续复用现有 `OPERATION_TYPE_KEYS`，未修改页面结构。
+- 本轮没有新增 API、DTO、数据库表或 schema 迁移。
+
+### 10.2 旧队列兼容与恢复
+
+实施前只读检查发现，本机已有 3 条该类型事件处于 `Rejected / INVALID_OPERATION_TYPE`。
+
+- 服务端仅针对 `CARD_PAYMENT_SUPERVISOR_RESOLUTION` 兼容旧的三态 Outcome，并在入库时规范化为 `Succeeded`。
+- 不扩大全局 `AllowedOutcomes`，其他 operation type 仍只能使用 `Succeeded`、`Denied`、`Failed`。
+- 不自动修改本机 `hbpos_logs.db`，也不批量重排其他永久拒绝事件。
+- Hbpos.Api 发布后，在 POS“同步中心 -> 审计日志”中手动重试这 3 条记录；服务端会保留原 EventId，并将重复接收按既有幂等逻辑处理。
+
+### 10.3 验证结果
+
+```text
+CardPaymentRecoveryServiceTests：73/73 通过
+OperationAuditIngestServiceTests：16/16 通过
+Web operation-logs 测试：通过
+WPF Release 构建：0 警告，0 错误
+Web production 构建：通过
+```
+
+生产环境仍需在 Hbpos.Api 发布后完成以下验收：
+
+- [ ] 手动重试本机 3 条旧事件后，不再出现 `INVALID_OPERATION_TYPE` 或 `INVALID_OUTCOME`。
+- [ ] 云端 `pos_operation_audit` 存在对应原 EventId，Outcome 为 `Succeeded`，ReasonCode 保留主管决定。
+- [ ] Web 可按“主管付款结案”筛选并查看主管身份、备注及安全业务属性。

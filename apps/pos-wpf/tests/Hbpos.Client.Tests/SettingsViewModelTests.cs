@@ -227,15 +227,20 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
-    public void ResetTestSalesDataCommand_is_visible_and_enabled_in_debug_when_service_is_configured()
+    public void ResetTestSalesDataCommand_matches_build_configuration_when_service_is_configured()
     {
         var viewModel = new SettingsViewModel(
             new FakeCardTerminalSetupService(),
             resetTestSalesDataAsync: _ => Task.CompletedTask,
             confirmResetTestSalesDataAsync: () => Task.FromResult(true));
 
+#if DEBUG
         Assert.True(viewModel.IsDebugTestSalesDataResetVisible);
         Assert.True(viewModel.ResetTestSalesDataCommand.CanExecute(null));
+#else
+        Assert.False(viewModel.IsDebugTestSalesDataResetVisible);
+        Assert.False(viewModel.ResetTestSalesDataCommand.CanExecute(null));
+#endif
     }
 
     [Fact]
@@ -258,9 +263,14 @@ public sealed class SettingsViewModelTests
 
         await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
 
+#if DEBUG
         Assert.Equal(1, confirmCallCount);
-        Assert.Equal(0, resetCallCount);
         Assert.Equal("Ready.", viewModel.StatusMessage);
+#else
+        Assert.Equal(0, confirmCallCount);
+        Assert.Equal("Test sales data reset service is not configured.", viewModel.StatusMessage);
+#endif
+        Assert.Equal(0, resetCallCount);
     }
 
     [Fact]
@@ -279,8 +289,13 @@ public sealed class SettingsViewModelTests
 
         await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
 
+#if DEBUG
         Assert.Equal(1, resetCallCount);
         Assert.Equal("Local test sales data deleted.", viewModel.StatusMessage);
+#else
+        Assert.Equal(0, resetCallCount);
+        Assert.Equal("Test sales data reset service is not configured.", viewModel.StatusMessage);
+#endif
     }
 
     [Fact]
@@ -298,7 +313,11 @@ public sealed class SettingsViewModelTests
         await viewModel.ResetTestSalesDataCommand.ExecuteAsync(null);
 
         Assert.Equal(0, resetCallCount);
+#if DEBUG
         Assert.Equal("Ready.", viewModel.StatusMessage);
+#else
+        Assert.Equal("Test sales data reset service is not configured.", viewModel.StatusMessage);
+#endif
     }
 
     [Fact]
@@ -802,6 +821,174 @@ public sealed class SettingsViewModelTests
         Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
         Assert.Equal("connection failed", viewModel.LinklyTestStatusMessage);
         Assert.Equal("connection failed", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public void LocalIp_sandbox_uses_virtual_pin_pad_text_and_safety_hint()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(), localization)
+        {
+            IsLinklySandbox = true
+        };
+
+        Assert.True(viewModel.IsLinklySandboxLocalIpMode);
+        Assert.Equal("Test virtual PIN pad", viewModel.LinklyTestActionText);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("\u6D4B\u8BD5\u865A\u62DF\u5237\u5361\u673A", viewModel.LinklyTestActionText);
+
+        viewModel.SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync;
+
+        Assert.False(viewModel.IsLinklySandboxLocalIpMode);
+        Assert.Equal("\u6D4B\u8BD5 Linkly", viewModel.LinklyTestActionText);
+    }
+
+    [Theory]
+    [InlineData("", "2011", "30", "Enter the Linkly Local IP host.")]
+    [InlineData("127.0.0.1", "0", "30", "Enter a Linkly port from 1 to 65535.")]
+    [InlineData("127.0.0.1", "65536", "30", "Enter a Linkly port from 1 to 65535.")]
+    [InlineData("127.0.0.1", "2011", "0", "Enter a Linkly timeout greater than zero seconds.")]
+    public async Task TestLinklyCommand_rejects_invalid_local_endpoint_without_calling_terminal(
+        string host,
+        string port,
+        string timeout,
+        string expectedMessage)
+    {
+        var service = new FakeCardTerminalSetupService();
+        var viewModel = new SettingsViewModel(service)
+        {
+            LinklyHostText = host,
+            LinklyPortText = port,
+            TimeoutSecondsText = timeout
+        };
+
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.LinklyTestCallCount);
+        Assert.Equal(expectedMessage, viewModel.LinklyTestStatusMessage);
+        Assert.Equal(expectedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_passes_valid_local_endpoint_without_silent_defaults()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "connected")
+        };
+        var viewModel = new SettingsViewModel(service)
+        {
+            LinklyHostText = " 127.0.0.2 ",
+            LinklyPortText = "3211",
+            TimeoutSecondsText = "17"
+        };
+
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.LinklyTestCallCount);
+        Assert.Equal("127.0.0.2", service.LastLinklyTestHost);
+        Assert.Equal(3211, service.LastLinklyTestPort);
+        Assert.Equal(TimeSpan.FromSeconds(17), service.LastLinklyTestTimeout);
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_shows_running_endpoint_and_disables_duplicate_click()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "connected")
+        };
+        service.BlockNextLinklyTest();
+        var viewModel = new SettingsViewModel(service)
+        {
+            LinklyHostText = "127.0.0.1",
+            LinklyPortText = "2011",
+            TimeoutSecondsText = "30"
+        };
+
+        var testTask = viewModel.TestLinklyCommand.ExecuteAsync(null);
+        await service.WaitForLinklyTestStartAsync();
+
+        Assert.Equal("Checking Linkly LocalIp 127.0.0.1:2011...", viewModel.LinklyTestStatusMessage);
+        Assert.False(viewModel.TestLinklyCommand.CanExecute(null));
+        Assert.Equal(1, service.LinklyTestCallCount);
+
+        service.ReleaseLinklyTest();
+        await testTask;
+
+        Assert.Equal("connected", viewModel.LinklyTestStatusMessage);
+        Assert.True(viewModel.TestLinklyCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_discards_success_when_local_endpoint_changes_during_test()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "connected")
+        };
+        service.BlockNextLinklyTest();
+        var viewModel = new SettingsViewModel(service)
+        {
+            LinklyHostText = "127.0.0.1",
+            LinklyPortText = "2011",
+            TimeoutSecondsText = "30"
+        };
+
+        var testTask = viewModel.TestLinklyCommand.ExecuteAsync(null);
+        await service.WaitForLinklyTestStartAsync();
+        viewModel.LinklyHostText = "127.0.0.2";
+
+        service.ReleaseLinklyTest();
+        await testTask;
+
+        Assert.Equal("127.0.0.1", service.LastLinklyTestHost);
+        Assert.Equal("127.0.0.2", viewModel.LinklyHostText);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.Equal(
+            "Linkly settings changed during the test. Test the current settings again.",
+            viewModel.LinklyTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_discards_success_when_mode_changes_during_test()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "connected")
+        };
+        service.BlockNextLinklyTest();
+        var viewModel = new SettingsViewModel(service);
+
+        var testTask = viewModel.TestLinklyCommand.ExecuteAsync(null);
+        await service.WaitForLinklyTestStartAsync();
+        viewModel.SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync;
+
+        service.ReleaseLinklyTest();
+        await testTask;
+
+        Assert.Equal(LinklySettingsMode.CloudBackendAsync, viewModel.SelectedLinklyMode);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.Equal(
+            "Linkly settings changed during the test. Test the current settings again.",
+            viewModel.LinklyTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_permission_denied_does_not_call_terminal()
+    {
+        var service = new FakeCardTerminalSetupService();
+        var viewModel = new SettingsViewModel(
+            service,
+            enforcePermissionsWhenNoCashier: true);
+
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.LinklyTestCallCount);
     }
 
     [Fact]
@@ -1665,6 +1852,14 @@ public sealed class SettingsViewModelTests
 
         public int LinklyCloudBackendStatusTestCallCount { get; private set; }
 
+        public int LinklyTestCallCount { get; private set; }
+
+        public string? LastLinklyTestHost { get; private set; }
+
+        public int? LastLinklyTestPort { get; private set; }
+
+        public TimeSpan? LastLinklyTestTimeout { get; private set; }
+
         public int SaveLinklyCallCount { get; private set; }
 
         public int SaveLinklyCloudCallCount { get; private set; }
@@ -1682,6 +1877,10 @@ public sealed class SettingsViewModelTests
         private TaskCompletionSource<bool>? _pendingLinklyCloudPair;
 
         private TaskCompletionSource<bool>? _pendingLinklyCloudBackendStatusTest;
+
+        private TaskCompletionSource<bool>? _pendingLinklyTest;
+
+        private TaskCompletionSource<bool> _linklyTestStarted = CreatePendingOperation();
 
         public (CardTerminalEnvironment Environment, string Username, string Password)? SavedLinklyCloudCredential { get; private set; }
 
@@ -1962,6 +2161,22 @@ public sealed class SettingsViewModelTests
             _pendingLinklyCloudBackendStatusTest?.TrySetResult(true);
         }
 
+        public void BlockNextLinklyTest()
+        {
+            _pendingLinklyTest = CreatePendingOperation();
+            _linklyTestStarted = CreatePendingOperation();
+        }
+
+        public Task WaitForLinklyTestStartAsync()
+        {
+            return _linklyTestStarted.Task;
+        }
+
+        public void ReleaseLinklyTest()
+        {
+            _pendingLinklyTest?.TrySetResult(true);
+        }
+
         private async Task<LinklyCloudCredentialSettings> WaitForLinklyCloudCredentialLoadAsync(
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken)
@@ -2026,13 +2241,24 @@ public sealed class SettingsViewModelTests
             return Task.CompletedTask;
         }
 
-        public Task<LinklyConnectionTestResult> TestLinklyConnectionAsync(
+        public async Task<LinklyConnectionTestResult> TestLinklyConnectionAsync(
             string host,
             int port,
             TimeSpan timeout,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(LinklyTestResult);
+            LinklyTestCallCount++;
+            LastLinklyTestHost = host;
+            LastLinklyTestPort = port;
+            LastLinklyTestTimeout = timeout;
+            _linklyTestStarted.TrySetResult(true);
+            if (_pendingLinklyTest is not null)
+            {
+                await _pendingLinklyTest.Task.WaitAsync(cancellationToken);
+                _pendingLinklyTest = null;
+            }
+
+            return LinklyTestResult;
         }
     }
 

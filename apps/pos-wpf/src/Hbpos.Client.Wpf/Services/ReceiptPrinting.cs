@@ -222,14 +222,19 @@ public sealed class ReceiptPrinterSettingsStore(ILocalAppSettingsRepository sett
 
     public async Task SaveAsync(ReceiptPrinterSettings settings, CancellationToken cancellationToken = default)
     {
-        await settingsRepository.SetValueAsync(PrinterPortKey, NormalizePort(settings.PrinterPort), cancellationToken);
-        await settingsRepository.SetValueAsync(BrandNameKey, NormalizeText(settings.BrandName, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StoreNameKey, NormalizeText(settings.StoreName, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StoreAddressKey, NormalizeText(settings.StoreAddress, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StorePhoneKey, NormalizeText(settings.StorePhone, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(AbnKey, NormalizeText(settings.Abn, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(ReturnPolicyKey, NormalizeText(settings.ReturnPolicy, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(CutDistanceKey, Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture), cancellationToken);
+        await settingsRepository.SetValuesAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [PrinterPortKey] = NormalizePort(settings.PrinterPort),
+                [BrandNameKey] = NormalizeText(settings.BrandName, string.Empty),
+                [StoreNameKey] = NormalizeText(settings.StoreName, string.Empty),
+                [StoreAddressKey] = NormalizeText(settings.StoreAddress, string.Empty),
+                [StorePhoneKey] = NormalizeText(settings.StorePhone, string.Empty),
+                [AbnKey] = NormalizeText(settings.Abn, string.Empty),
+                [ReturnPolicyKey] = NormalizeText(settings.ReturnPolicy, string.Empty),
+                [CutDistanceKey] = Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture),
+            },
+            cancellationToken);
     }
 
     private static string NormalizePort(string? value)

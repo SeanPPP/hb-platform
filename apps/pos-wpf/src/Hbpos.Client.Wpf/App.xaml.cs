@@ -16,7 +16,9 @@ public partial class App : Application
     private const int MainWindowPreparingPercent = 65;
     private const int MainWindowInitializedPercent = 85;
     private const int StartupCompletedPercent = 100;
+    private const int OfflineShutdownTimeoutSeconds = 1;
     private const int HostShutdownTimeoutSeconds = 2;
+    private const int ShutdownPreparationTimeoutSeconds = 3;
 
     private IHost? _host;
     private SingleInstanceStartupLease? _startupLease;
@@ -64,6 +66,7 @@ public partial class App : Application
             _startupProgressState?.SetStage(HostBuiltPercent, StartupText("startup.stage.initializingServices"));
 
             await _host.StartAsync();
+            RegisterShutdownSteps(_host);
             var localization = _host.Services.GetRequiredService<ILocalizationService>();
             LocalizationResourceProvider.Instance.Configure(localization);
             ButtonFeedbackRouter.Register(_host.Services.GetRequiredService<IUserFeedbackService>());
@@ -104,14 +107,10 @@ public partial class App : Application
             FinishStartupExperience();
             if (_host is not null)
             {
-                try
-                {
-                    _host.Dispose();
-                }
-                catch (Exception disposeEx)
-                {
-                    ConsoleLog.WriteError("Startup", $"host dispose after startup failure failed error={disposeEx.GetType().Name} message={disposeEx.Message}", exception: disposeEx);
-                }
+                DisposeHostWithinTimeout(
+                    _host,
+                    TimeSpan.FromSeconds(HostShutdownTimeoutSeconds),
+                    "startup-host-dispose");
 
                 _host = null;
             }
@@ -123,49 +122,195 @@ public partial class App : Application
         }
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
+        var host = _host;
+        IAppShutdownCoordinator? shutdownCoordinator = null;
+        if (host is not null)
+        {
+            try
+            {
+                shutdownCoordinator = host.Services.GetService<IAppShutdownCoordinator>();
+                _ = shutdownCoordinator?.GetOrStartRemainingBudget();
+            }
+            catch (Exception ex)
+            {
+                LogShutdownCleanupFailure("budget-start", ex);
+            }
+        }
+
         try
         {
-            FinishStartupExperience();
+            try
+            {
+                FinishStartupExperience();
+            }
+            catch (Exception ex)
+            {
+                LogShutdownCleanupFailure("startup-experience", ex);
+            }
 
-            if (_host is not null)
+            _host = null;
+            if (host is not null)
             {
                 try
                 {
-                    var mainViewModel = _host.Services.GetService<MainViewModel>();
-                    if (mainViewModel is not null)
-                    {
-                        await mainViewModel.ReportOfflineForShutdownAsync();
-                    }
-
-                    // 退出入口同样是 async void，StopAsync 失败时记录日志后继续释放资源。
-                    // 两条 uploader 与本地 writer 共享宿主的 2 秒退出总预算。
-                    await _host.StopAsync(TimeSpan.FromSeconds(HostShutdownTimeoutSeconds));
+                    _ = WaitForShutdownPreparation(
+                        shutdownCoordinator,
+                        shutdownCoordinator?.GetOrStartRemainingBudget() ??
+                        TimeSpan.FromSeconds(ShutdownPreparationTimeoutSeconds));
                 }
                 catch (Exception ex)
                 {
-                    ConsoleLog.WriteError("Shutdown", $"host stop failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
+                    LogShutdownCleanupFailure("prepare", ex);
                 }
-                finally
-                {
-                    _host.Dispose();
-                    _host = null;
-                }
+
+                DisposeHostWithinTimeout(
+                    host,
+                    shutdownCoordinator?.GetOrStartRemainingBudget() ?? TimeSpan.Zero,
+                    "host-dispose");
             }
 
-            _startupLease?.Dispose();
-            _startupLease = null;
-        }
-        catch (Exception ex)
-        {
-            ConsoleLog.WriteError("Shutdown", $"shutdown cleanup failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
+            try
+            {
+                _startupLease?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                LogShutdownCleanupFailure("startup-lease-dispose", ex);
+            }
+            finally
+            {
+                _startupLease = null;
+            }
+
+            // 正常关闭由协调器中的 file-log-stop 步骤收尾；仅在 Host 尚未建立或协调器不可用时执行兜底。
+            if (host is null || shutdownCoordinator is null)
+            {
+                using var stopLogTimeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(ShutdownPreparationTimeoutSeconds));
+                try
+                {
+                    ConsoleLog.StopFileLogAsync(stopLogTimeout.Token).GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    LogShutdownCleanupFailure("file-log-stop", ex);
+                }
+            }
         }
         finally
         {
             ResetGlobalLogging();
             base.OnExit(e);
         }
+    }
+
+    private static void LogShutdownCleanupFailure(string stage, Exception ex)
+    {
+        ConsoleLog.WriteError(
+            "Shutdown",
+            $"shutdown cleanup failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
+            exception: ex);
+    }
+
+    internal static bool WaitForShutdownPreparation(
+        IAppShutdownCoordinator? coordinator,
+        TimeSpan timeout)
+    {
+        if (coordinator is null)
+        {
+            return false;
+        }
+
+        var remainingBudget = coordinator.GetOrStartRemainingBudget();
+        var waitBudget = timeout < remainingBudget ? timeout : remainingBudget;
+        if (waitBudget <= TimeSpan.Zero)
+        {
+            return coordinator.IsPrepared;
+        }
+
+        using var cancellation = new CancellationTokenSource(waitBudget);
+        try
+        {
+            // 系统关机可能忽略 Window.Closing 的 Cancel；这里等待同一个幂等任务，避免与 Dispose 竞态。
+            coordinator
+                .PrepareAsync(cancellation.Token)
+                .WaitAsync(waitBudget)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex)
+        {
+            LogShutdownCleanupFailure("prepare-wait", ex);
+        }
+
+        return coordinator.IsPrepared;
+    }
+
+    internal static bool DisposeHostWithinTimeout(
+        IDisposable host,
+        TimeSpan timeout,
+        string stage)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"shutdown cleanup timed out stage={stage} timeoutMs={Math.Max(0, timeout.TotalMilliseconds):0}");
+            return false;
+        }
+
+        var disposeTask = Task.Run(host.Dispose);
+        try
+        {
+            disposeTask.WaitAsync(timeout).GetAwaiter().GetResult();
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            _ = disposeTask.ContinueWith(
+                static completedTask => _ = completedTask.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"shutdown cleanup timed out stage={stage} timeoutMs={Math.Max(0, timeout.TotalMilliseconds):0}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LogShutdownCleanupFailure(stage, ex);
+            return false;
+        }
+    }
+
+    private static void RegisterShutdownSteps(IHost host)
+    {
+        var coordinator = host.Services.GetRequiredService<IAppShutdownCoordinator>();
+        coordinator.RegisterStep(
+            "runtime-offline",
+            order: 100,
+            TimeSpan.FromSeconds(OfflineShutdownTimeoutSeconds),
+            async cancellationToken =>
+            {
+                var mainViewModel = host.Services.GetService<MainViewModel>();
+                if (mainViewModel is not null)
+                {
+                    await mainViewModel.ReportOfflineForShutdownAsync(cancellationToken);
+                }
+            });
+        coordinator.RegisterStep(
+            "host-stop",
+            order: 200,
+            TimeSpan.FromSeconds(HostShutdownTimeoutSeconds),
+            cancellationToken => host.StopAsync(cancellationToken));
+        coordinator.RegisterStep(
+            "file-log-stop",
+            order: 300,
+            TimeSpan.FromSeconds(HostShutdownTimeoutSeconds),
+            cancellationToken => ConsoleLog.StopFileLogAsync(cancellationToken));
     }
 
     private void RegisterGlobalExceptionObservers()

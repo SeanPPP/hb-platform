@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -7,6 +8,8 @@ public sealed class CardTerminalSettingsStore(
     IDeviceAuthorizationProtector protector,
     ISquareTokenApiClient? squareTokenApiClient = null) : ICardTerminalSettingsStore
 {
+    private static readonly SemaphoreSlim LinklyCloudPosIdGate = new(1, 1);
+
     private const string ProcessorKey = "CardTerminal:Processor";
     private const string EnvironmentKey = "CardTerminal:Environment";
     private const string LinklyHostKey = "CardTerminal:LinklyHost";
@@ -16,6 +19,7 @@ public sealed class CardTerminalSettingsStore(
     private const string LinklyCloudSecretKeyPrefix = "CardTerminal:LinklyCloudSecretProtected:";
     private const string LinklyCloudUsernameKeyPrefix = "CardTerminal:LinklyCloudUsername:";
     private const string LinklyCloudPasswordKeyPrefix = "CardTerminal:LinklyCloudPasswordProtected:";
+    private const string LinklyCloudCredentialSnapshotKeyPrefix = "CardTerminal:LinklyCloudCredentialSnapshot:";
     private const string LinklyCloudPosIdKeyPrefix = "CardTerminal:LinklyCloudPosId:";
     private const string LegacySquareTokenKey = "CardTerminal:SquareAccessTokenProtected";
     private const string SquareTokenKeyPrefix = "CardTerminal:SquareAccessTokenProtected:";
@@ -92,10 +96,6 @@ public sealed class CardTerminalSettingsStore(
         string? squareAccessToken,
         CancellationToken cancellationToken = default)
     {
-        await settingsRepository.SetValueAsync(ProcessorKey, configuration.Processor.ToString(), cancellationToken);
-        await settingsRepository.SetValueAsync(EnvironmentKey, configuration.Environment.ToString(), cancellationToken);
-        await settingsRepository.SetValueAsync(LinklyHostKey, NormalizeText(configuration.LinklyHost, CardTerminalConfiguration.Default.LinklyHost), cancellationToken);
-        await settingsRepository.SetValueAsync(LinklyPortKey, NormalizePort(configuration.LinklyPort).ToString(), cancellationToken);
         var linklyPriority = configuration.LinklyConnectionModePriority is null ||
             configuration.LinklyConnectionModePriority.Count == 0
             ? CardTerminalSettings.NormalizeLinklyConnectionModePriority(null, configuration.LinklyConnectionMode)
@@ -103,17 +103,20 @@ public sealed class CardTerminalSettingsStore(
                 configuration.LinklyConnectionModePriority,
                 configuration.LinklyConnectionModePriority[0]);
         var primaryLinklyMode = linklyPriority[0];
-        await settingsRepository.SetValueAsync(
-            LinklyConnectionModeKey,
-            CardTerminalSettings.FormatLinklyConnectionMode(primaryLinklyMode),
+        await settingsRepository.SetValuesAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ProcessorKey] = configuration.Processor.ToString(),
+                [EnvironmentKey] = configuration.Environment.ToString(),
+                [LinklyHostKey] = NormalizeText(configuration.LinklyHost, CardTerminalConfiguration.Default.LinklyHost),
+                [LinklyPortKey] = NormalizePort(configuration.LinklyPort).ToString(),
+                [LinklyConnectionModeKey] = CardTerminalSettings.FormatLinklyConnectionMode(primaryLinklyMode),
+                [LinklyConnectionModePriorityKey] = CardTerminalSettings.FormatLinklyConnectionModePriority(linklyPriority),
+                [SquareLocationIdKey] = configuration.SquareLocationId?.Trim() ?? string.Empty,
+                [SquareDeviceIdKey] = configuration.SquareDeviceId?.Trim() ?? string.Empty,
+                [TimeoutSecondsKey] = NormalizeTimeoutSeconds(configuration.TerminalTimeoutSeconds).ToString(),
+            },
             cancellationToken);
-        await settingsRepository.SetValueAsync(
-            LinklyConnectionModePriorityKey,
-            CardTerminalSettings.FormatLinklyConnectionModePriority(linklyPriority),
-            cancellationToken);
-        await settingsRepository.SetValueAsync(SquareLocationIdKey, configuration.SquareLocationId?.Trim() ?? string.Empty, cancellationToken);
-        await settingsRepository.SetValueAsync(SquareDeviceIdKey, configuration.SquareDeviceId?.Trim() ?? string.Empty, cancellationToken);
-        await settingsRepository.SetValueAsync(TimeoutSecondsKey, NormalizeTimeoutSeconds(configuration.TerminalTimeoutSeconds).ToString(), cancellationToken);
 
         // Square token 已移到 Hbpos API；保存设置时不再把新 access token 写入本机缓存。
         _ = squareAccessToken;
@@ -186,38 +189,59 @@ public sealed class CardTerminalSettingsStore(
         string deviceCode,
         CancellationToken cancellationToken = default)
     {
-        var key = GetLinklyCloudPosIdKey(environment, storeCode, deviceCode);
-        var existing = await settingsRepository.GetValueAsync(key, cancellationToken);
-        if (IsUuidV4(existing))
+        await LinklyCloudPosIdGate.WaitAsync(cancellationToken);
+        try
         {
-            LogLinklyCloud($"posId reused environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(existing)}");
-            return existing!.Trim();
-        }
-
-        // 仅生产环境兼容旧版无环境 key，读取成功后立即写入新 key，避免沙箱误用生产 POS ID。
-        if (environment == CardTerminalEnvironment.Production)
-        {
-            var legacyKey = GetLegacyLinklyCloudPosIdKey(storeCode, deviceCode);
-            var legacy = await settingsRepository.GetValueAsync(legacyKey, cancellationToken);
-            if (IsUuidV4(legacy))
+            // 进入创建边界后使用不可取消写入，避免 SQLite 已提交但调用方收到取消并生成第二个身份。
+            var key = GetLinklyCloudPosIdKey(environment, storeCode, deviceCode);
+            var existing = await settingsRepository.GetValueAsync(key, CancellationToken.None);
+            if (IsUuidV4(existing))
             {
-                var migrated = legacy!.Trim();
-                await settingsRepository.SetValueAsync(key, migrated, cancellationToken);
-                LogLinklyCloud($"posId migrated environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(migrated)}");
-                return migrated;
+                LogLinklyCloud($"posId reused environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(existing)}");
+                return existing!.Trim();
             }
-        }
 
-        var posId = Guid.NewGuid().ToString("D");
-        await settingsRepository.SetValueAsync(key, posId, cancellationToken);
-        LogLinklyCloud($"posId generated environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(posId)} replacedInvalid={!string.IsNullOrWhiteSpace(existing)}");
-        return posId;
+            // 仅生产环境兼容旧版无环境 key，读取成功后立即写入新 key，避免沙箱误用生产 POS ID。
+            if (environment == CardTerminalEnvironment.Production)
+            {
+                var legacyKey = GetLegacyLinklyCloudPosIdKey(storeCode, deviceCode);
+                var legacy = await settingsRepository.GetValueAsync(legacyKey, CancellationToken.None);
+                if (IsUuidV4(legacy))
+                {
+                    var migrated = legacy!.Trim();
+                    await settingsRepository.SetValueAsync(key, migrated, CancellationToken.None);
+                    LogLinklyCloud($"posId migrated environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(migrated)}");
+                    return migrated;
+                }
+            }
+
+            var posId = Guid.NewGuid().ToString("D");
+            await settingsRepository.SetValueAsync(key, posId, CancellationToken.None);
+            LogLinklyCloud($"posId generated environment={environment} store={LogValue(storeCode)} device={LogValue(deviceCode)} posId={ShortId(posId)} replacedInvalid={!string.IsNullOrWhiteSpace(existing)}");
+            return posId;
+        }
+        finally
+        {
+            LinklyCloudPosIdGate.Release();
+        }
     }
 
     public async Task<LinklyCloudCredentialSettings> GetLinklyCloudCredentialAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default)
     {
+        var snapshot = await settingsRepository.GetValueAsync(
+            GetLinklyCloudCredentialSnapshotKey(environment),
+            cancellationToken);
+        if (TryParseLinklyCloudCredentialSnapshot(snapshot, out var snapshotUsername, out var snapshotPassword))
+        {
+            return new LinklyCloudCredentialSettings(
+                snapshotUsername,
+                protector.Unprotect(snapshotPassword),
+                true);
+        }
+
+        // 兼容升级前分别保存的两个 key；新写入统一读取单行快照，避免并发更新时混合两代凭据。
         var username = NormalizeOptional(await settingsRepository.GetValueAsync(
             GetLinklyCloudUsernameKey(environment),
             cancellationToken));
@@ -256,13 +280,14 @@ public sealed class CardTerminalSettingsStore(
             throw new InvalidOperationException("Linkly Cloud password could not be protected.");
         }
 
-        await settingsRepository.SetValueAsync(
-            GetLinklyCloudUsernameKey(environment),
-            username.Trim(),
-            cancellationToken);
-        await settingsRepository.SetValueAsync(
-            GetLinklyCloudPasswordKey(environment),
-            protectedPassword,
+        await settingsRepository.SetValuesAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [GetLinklyCloudUsernameKey(environment)] = username.Trim(),
+                [GetLinklyCloudPasswordKey(environment)] = protectedPassword,
+                [GetLinklyCloudCredentialSnapshotKey(environment)] = JsonSerializer.Serialize(
+                    new[] { username.Trim(), protectedPassword }),
+            },
             cancellationToken);
         LogLinklyCloud($"protected cloud api credential saved environment={environment} hasUsername=true");
     }
@@ -307,6 +332,43 @@ public sealed class CardTerminalSettingsStore(
     private static string GetLinklyCloudPasswordKey(CardTerminalEnvironment environment)
     {
         return $"{LinklyCloudPasswordKeyPrefix}{environment}";
+    }
+
+    private static string GetLinklyCloudCredentialSnapshotKey(CardTerminalEnvironment environment)
+    {
+        return $"{LinklyCloudCredentialSnapshotKeyPrefix}{environment}";
+    }
+
+    private static bool TryParseLinklyCloudCredentialSnapshot(
+        string? snapshot,
+        out string? username,
+        out string? protectedPassword)
+    {
+        username = null;
+        protectedPassword = null;
+        if (string.IsNullOrWhiteSpace(snapshot))
+        {
+            return false;
+        }
+
+        try
+        {
+            var values = JsonSerializer.Deserialize<string[]>(snapshot);
+            if (values is not { Length: 2 } ||
+                string.IsNullOrWhiteSpace(values[0]) ||
+                string.IsNullOrWhiteSpace(values[1]))
+            {
+                return false;
+            }
+
+            username = values[0].Trim();
+            protectedPassword = values[1];
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string GetLinklyCloudPosIdKey(

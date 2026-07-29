@@ -189,6 +189,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
         var matchedItem = CreateItem("SKU-101A", "Workflow Match", "930101A", PriceSourceKind.StoreRetailPrice, 2.2m);
+        index.ReplaceAll([matchedItem]);
         var workflow = new FakePosTerminalWorkflowService
         {
             ProcessScanResult = new PosTerminalWorkflowResult
@@ -222,6 +223,230 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsMatchesPopupOpen);
         Assert.False(viewModel.IsTouchKeyboardOpen);
         Assert.Equal("pos.status.multipleMatches", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Catalog_index_update_refreshes_only_an_open_nonempty_search()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(
+        [
+            CreateItem("SKU-CATALOG-1", "Catalog Tea", "930CAT1", PriceSourceKind.StoreRetailPrice, 3m),
+            CreateItem("SKU-CATALOG-2", "Catalog Coffee", "930CAT2", PriceSourceKind.StoreRetailPrice, 4m)
+        ]);
+        var workflow = new FakePosTerminalWorkflowService();
+        using var viewModel = new PosTerminalViewModel(
+            index,
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            workflowService: workflow)
+        {
+            ScanText = "tea",
+            IsMatchesPopupOpen = true
+        };
+
+        workflow.RaiseCatalogIndexUpdated();
+
+        await WaitUntilAsync(() => viewModel.Matches.Count == 1);
+        Assert.Equal("Catalog Tea", Assert.Single(viewModel.Matches).DisplayName);
+
+        viewModel.IsMatchesPopupOpen = false;
+        index.ReplaceAll([CreateItem("SKU-CATALOG-3", "Catalog Matcha", "930CAT3", PriceSourceKind.StoreRetailPrice, 5m)]);
+        workflow.RaiseCatalogIndexUpdated();
+
+        Assert.Equal("Catalog Tea", Assert.Single(viewModel.Matches).DisplayName);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_open_empty_match_panel_shows_only_first_eight_items()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(Enumerable.Range(1, 10).Select(index =>
+            CreateItem($"SKU-EMPTY-{index}", $"Catalog {index:D2}", $"930EMPTY{index:D2}", PriceSourceKind.StoreRetailPrice, index)));
+        using var viewModel = new PosTerminalViewModel(index, new PosCartService(), Session, onOpenPayment: null);
+
+        viewModel.IsMatchesPopupOpen = true;
+
+        await WaitUntilAsync(() => viewModel.Matches.Count == 8);
+        Assert.Equal(8, viewModel.Matches.Count);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_reopening_empty_match_panel_replaces_stale_matches_with_first_eight_items()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(Enumerable.Range(1, 10).Select(index =>
+            CreateItem($"SKU-REOPEN-{index}", $"Reopen Catalog {index:D2}", $"930REOPEN{index:D2}", PriceSourceKind.StoreRetailPrice, index)));
+        var staleItem = CreateItem("SKU-STALE", "Stale Match", "930STALE", PriceSourceKind.StoreRetailPrice, 1m);
+        using var viewModel = new PosTerminalViewModel(index, new PosCartService(), Session, onOpenPayment: null);
+        viewModel.LoadMatches([staleItem]);
+        viewModel.ScanText = "stale";
+
+        viewModel.ClearSearchCommand.Execute(null);
+        viewModel.IsMatchesPopupOpen = true;
+
+        await WaitUntilAsync(() => viewModel.Matches.Count == 8 && viewModel.Matches.All(item => item.DisplayName != staleItem.DisplayName));
+        Assert.Equal(8, viewModel.Matches.Count);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_catalog_match_refresh_keeps_ui_enqueue_under_50ms_for_100k_items()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(Enumerable.Range(0, 100_000).Select(index =>
+            CreateItem($"SKU-PERF-{index}", $"Catalog Item {index:D6}", $"930PERF{index:D6}", PriceSourceKind.StoreRetailPrice, 1m)));
+        using var viewModel = new PosTerminalViewModel(index, new PosCartService(), Session, onOpenPayment: null)
+        {
+            IsMatchesPopupOpen = true
+        };
+
+        var stopwatch = Stopwatch.StartNew();
+        viewModel.ScanText = "Catalog Item 099999";
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(50), $"UI refresh enqueue took {stopwatch.ElapsedMilliseconds}ms.");
+        await WaitUntilAsync(() => viewModel.Matches.Count == 1 && viewModel.Matches[0].DisplayName == "Catalog Item 099999");
+    }
+
+    [Fact]
+    public async Task Pos_terminal_catalog_match_refresh_does_not_block_ui_heartbeat_when_search_is_slow()
+    {
+        var item = CreateItem("SKU-SLOW", "Slow Catalog", "930SLOW", PriceSourceKind.StoreRetailPrice, 1m);
+        var searchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            searchCatalogMatches: (_, _, _) =>
+            {
+                searchStarted.TrySetResult();
+                Thread.Sleep(500);
+                return [item];
+            })
+        {
+            IsMatchesPopupOpen = true
+        };
+
+        var stopwatch = Stopwatch.StartNew();
+        viewModel.ScanText = "slow";
+        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var maxHeartbeatGap = TimeSpan.Zero;
+        var previousHeartbeat = stopwatch.Elapsed;
+        while (stopwatch.Elapsed < TimeSpan.FromMilliseconds(500))
+        {
+            await Task.Delay(10);
+            var currentHeartbeat = stopwatch.Elapsed;
+            maxHeartbeatGap = TimeSpan.FromTicks(Math.Max(maxHeartbeatGap.Ticks, (currentHeartbeat - previousHeartbeat).Ticks));
+            previousHeartbeat = currentHeartbeat;
+        }
+
+        Assert.True(maxHeartbeatGap < TimeSpan.FromMilliseconds(100), $"UI heartbeat gap was {maxHeartbeatGap.TotalMilliseconds:F0}ms.");
+        await WaitUntilAsync(() => viewModel.Matches.Count == 1 && viewModel.Matches[0].DisplayName == item.DisplayName);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_default_catalog_search_cancels_old_real_index_work_before_applying_new_result()
+    {
+        var index = new LocalSellableItemIndex();
+        var newItem = CreateItem("SKU-NEW", "New Result", "930NEW", PriceSourceKind.StoreRetailPrice, 1m);
+        index.ReplaceAll(
+            Enumerable.Range(0, 99_999)
+                .Select(index => CreateItem($"SKU-OLD-{index}", $"Old Result {index:D6}", $"930OLD{index:D6}", PriceSourceKind.StoreRetailPrice, 1m))
+                .Append(newItem));
+        var oldSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldSearchProgress = -1;
+        index.SearchProgressForTests = (query, progress) =>
+        {
+            if (!string.Equals(query, "old", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Volatile.Write(ref oldSearchProgress, progress);
+            if (progress == 0)
+            {
+                oldSearchStarted.TrySetResult();
+                Thread.Sleep(200);
+            }
+        };
+        using var viewModel = new PosTerminalViewModel(
+            index,
+            new PosCartService(),
+            Session,
+            onOpenPayment: null)
+        {
+            IsMatchesPopupOpen = true
+        };
+
+        viewModel.ScanText = "old";
+        await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        viewModel.ScanText = "new result";
+        await WaitUntilAsync(() => viewModel.Matches.Count == 1 && viewModel.Matches[0].DisplayName == newItem.DisplayName);
+
+        Assert.InRange(Volatile.Read(ref oldSearchProgress), 0, 255);
+        Assert.Equal(newItem.DisplayName, Assert.Single(viewModel.Matches).DisplayName);
+        index.SearchProgressForTests = null;
+    }
+
+    [Fact]
+    public async Task Pos_terminal_dispose_cancels_inflight_catalog_match_refresh()
+    {
+        var searchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            searchCatalogMatches: (_, _, cancellationToken) =>
+            {
+                searchStarted.TrySetResult();
+                cancellationToken.WaitHandle.WaitOne();
+                cancellationObserved.TrySetResult();
+                cancellationToken.ThrowIfCancellationRequested();
+                return [];
+            })
+        {
+            IsMatchesPopupOpen = true
+        };
+
+        viewModel.ScanText = "dispose";
+        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        viewModel.Dispose();
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Empty(viewModel.Matches);
+    }
+
+    [Fact]
+    public void Pos_terminal_dispose_is_idempotent_and_stops_culture_updates()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            localization: localization);
+        var changeCount = 0;
+        viewModel.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
     }
 
     [Fact]
@@ -1779,7 +2004,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Retired Snack", line.DisplayName);
         Assert.Single(cart.Lines);
-        Assert.Empty(viewModel.Matches);
+        Assert.False(viewModel.IsMatchesPopupOpen);
+        Assert.True(string.IsNullOrEmpty(viewModel.ScanText));
     }
 
     [Fact]
@@ -1932,8 +2158,6 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         var indexedItem = Assert.Single(index.Search("930107"));
         Assert.Equal("Synced Tea", indexedItem.DisplayName);
-        var match = Assert.Single(viewModel.Matches);
-        Assert.Equal("Synced Tea", match.DisplayName);
         Assert.Contains("completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
         Assert.True(syncToken.CanBeCanceled);
     }
@@ -1974,8 +2198,6 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(resetCalled);
         var indexedItem = Assert.Single(index.Search("930109"));
         Assert.Equal("Reset Tea", indexedItem.DisplayName);
-        var match = Assert.Single(viewModel.Matches);
-        Assert.Equal("Reset Tea", match.DisplayName);
         Assert.Contains("reset completed", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
         Assert.True(resetToken.CanBeCanceled);
     }
@@ -5522,6 +5744,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public void RaiseCatalogReloaded(IReadOnlyList<SellableItemDto> catalogItems)
         {
             CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(catalogItems));
+        }
+
+        public void RaiseCatalogIndexUpdated()
+        {
+            CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs());
         }
     }
 

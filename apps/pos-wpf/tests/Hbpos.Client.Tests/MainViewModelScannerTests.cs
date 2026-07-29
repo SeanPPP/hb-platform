@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Globalization;
 using System.Reflection;
@@ -175,6 +176,86 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Language_save_failure_keeps_runtime_culture_and_reports_restart_warning()
+    {
+        var settings = new FakeSettingsRepository { SetException = new InvalidOperationException("settings unavailable") };
+        var viewModel = CreateAuthorizedMainViewModelWithSettings(settingsRepository: settings);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ToggleCultureCommand.ExecuteAsync(null);
+
+        Assert.Equal("zh-CN", viewModel.SelectedCultureName);
+        Assert.Contains("重启后可能恢复", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Language_save_requests_are_ordered_and_latest_culture_wins()
+    {
+        var firstWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settings = new FakeSettingsRepository
+        {
+            FirstSetStarted = firstWriteStarted,
+            ReleaseFirstSet = releaseFirstWrite
+        };
+        var viewModel = CreateAuthorizedMainViewModelWithSettings(settingsRepository: settings);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var command = viewModel.ToggleCultureCommand;
+        Assert.True(command.CanExecute(null));
+        command.Execute(null);
+        var firstToggle = command.ExecutionTask;
+        Assert.NotNull(firstToggle);
+        await firstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(command.CanExecute(null));
+        command.Execute(null);
+        var secondToggle = command.ExecutionTask;
+        Assert.NotNull(secondToggle);
+        Assert.NotSame(firstToggle, secondToggle);
+        releaseFirstWrite.TrySetResult();
+        await Task.WhenAll(firstToggle!, secondToggle!);
+
+        Assert.Equal(["zh-CN", "en-US"], settings.SetValues);
+        Assert.Equal("en-US", viewModel.SelectedCultureName);
+        Assert.DoesNotContain("重启后可能恢复", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Older_language_save_failure_does_not_override_latest_success()
+    {
+        var firstWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settings = new FakeSettingsRepository
+        {
+            FirstSetStarted = firstWriteStarted,
+            ReleaseFirstSet = releaseFirstWrite,
+            FirstSetException = new InvalidOperationException("old zh write failed")
+        };
+        var viewModel = CreateAuthorizedMainViewModelWithSettings(settingsRepository: settings);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var command = viewModel.ToggleCultureCommand;
+        Assert.True(command.CanExecute(null));
+        command.Execute(null);
+        var firstToggle = command.ExecutionTask;
+        Assert.NotNull(firstToggle);
+        await firstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(command.CanExecute(null));
+        command.Execute(null);
+        var secondToggle = command.ExecutionTask;
+        Assert.NotNull(secondToggle);
+        Assert.NotSame(firstToggle, secondToggle);
+        releaseFirstWrite.TrySetResult();
+        await Task.WhenAll(firstToggle!, secondToggle!);
+
+        Assert.Equal(["zh-CN", "en-US"], settings.SetValues);
+        Assert.Equal("en-US", settings.LastPersistedValue);
+        Assert.Equal("en-US", viewModel.SelectedCultureName);
+        Assert.Equal("en-US", CultureInfo.CurrentCulture.Name);
+        Assert.DoesNotContain("重启后可能恢复", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Cashier_login_overlay_stays_open_until_cashier_session_exists()
     {
         var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
@@ -312,7 +393,201 @@ public sealed class MainViewModelScannerTests
             {
                 Assert.Equal("CASHIER_LOGOUT", auditEvent.OperationType);
                 Assert.Equal("Succeeded", auditEvent.Outcome);
-            });
+        });
+    }
+
+    [Fact]
+    public async Task Shutdown_offline_report_receives_coordinator_cancellation_token()
+    {
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        using var cancellation = new CancellationTokenSource();
+
+        await viewModel.ReportOfflineForShutdownAsync(cancellation.Token);
+
+        Assert.True(runtimeStatus.LastCancellationToken.CanBeCanceled);
+        Assert.Equal(cancellation.Token, runtimeStatus.LastCancellationToken);
+    }
+
+    [Fact]
+    public async Task Shutdown_ignores_late_online_connectivity_result()
+    {
+        var connectivityStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delayedOnlineResult = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectivity = new FakeConnectivityApiClient(false);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: connectivity,
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        runtimeStatus.Reports.Clear();
+        connectivity.CheckOnlineStarted = connectivityStarted;
+        connectivity.PendingResponse = delayedOnlineResult;
+
+        var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
+        await connectivityStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        viewModel.BeginShutdown();
+        var offlineTask = viewModel.ReportOfflineForShutdownAsync();
+        Assert.False(offlineTask.IsCompleted);
+        delayedOnlineResult.TrySetResult(true);
+        await Task.WhenAll(refreshTask, offlineTask);
+
+        Assert.False(viewModel.Session.IsOnline);
+        var report = Assert.Single(runtimeStatus.Reports);
+        Assert.False(report.IsOnline);
+    }
+
+    [Fact]
+    public async Task Shutdown_waits_for_ignored_online_report_before_reporting_offline()
+    {
+        var runtimeStatus = new BlockingOnlineRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
+        await runtimeStatus.OnlineStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var offlineTask = viewModel.ReportOfflineForShutdownAsync();
+
+        Assert.False(offlineTask.IsCompleted);
+        Assert.Empty(runtimeStatus.CompletedReports);
+
+        runtimeStatus.ReleaseOnline.TrySetResult();
+        await Task.WhenAll(refreshTask, offlineTask);
+
+        Assert.Equal([true, false], runtimeStatus.CompletedReports.Select(report => report.IsOnline));
+    }
+
+    [Fact]
+    public async Task Shutdown_budget_exhaustion_never_reports_offline_before_late_online_finishes()
+    {
+        var runtimeStatus = new BlockingOnlineRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
+        await runtimeStatus.OnlineStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        using var exhaustedBudget = new CancellationTokenSource();
+        exhaustedBudget.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => viewModel.ReportOfflineForShutdownAsync(exhaustedBudget.Token));
+        Assert.Empty(runtimeStatus.CompletedReports);
+
+        runtimeStatus.ReleaseOnline.TrySetResult();
+        await refreshTask;
+
+        var report = Assert.Single(runtimeStatus.CompletedReports);
+        Assert.True(report.IsOnline);
+    }
+
+    [Fact]
+    public async Task Dispose_cancels_lifetime_and_ignores_late_connectivity_result()
+    {
+        var connectivityStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delayedOnlineResult = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectivity = new FakeConnectivityApiClient(false)
+        {
+            CheckOnlineStarted = connectivityStarted,
+            PendingResponse = delayedOnlineResult
+        };
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: connectivity,
+            runtimeStatusApiClient: runtimeStatus);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        runtimeStatus.Reports.Clear();
+
+        var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
+        await connectivityStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        viewModel.Dispose();
+        delayedOnlineResult.TrySetResult(true);
+        await refreshTask;
+
+        Assert.False(viewModel.Session.IsOnline);
+        Assert.Empty(runtimeStatus.Reports);
+    }
+
+    [Fact]
+    public async Task Begin_shutdown_and_dispose_do_not_block_on_external_cancellation_callback()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var cancellation = Assert.IsType<CancellationTokenSource>(
+            typeof(MainViewModel)
+                .GetField("_shutdownCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(viewModel));
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = cancellation.Token.Register(() =>
+        {
+            callbackStarted.TrySetResult();
+            try
+            {
+                Thread.Sleep(100);
+            }
+            finally
+            {
+                callbackCompleted.TrySetResult();
+            }
+        });
+
+        var beginStartedAt = Stopwatch.GetTimestamp();
+        viewModel.BeginShutdown();
+        Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var disposeStartedAt = Stopwatch.GetTimestamp();
+        viewModel.Dispose();
+        Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
+
+        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var shutdownCancellationTask = Assert.IsAssignableFrom<Task>(
+            typeof(MainViewModel)
+                .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(viewModel));
+        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task Begin_shutdown_stops_shell_timers_and_locks_cached_payment()
+    {
+        using var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var timerFields = new[]
+        {
+            "_clockTimer",
+            "_connectivityTimer",
+            "_catalogDownloadHideTimer"
+        };
+        var timers = timerFields
+            .Select(fieldName => Assert.IsType<System.Windows.Threading.DispatcherTimer>(
+                typeof(MainViewModel)
+                    .GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(viewModel)))
+            .ToArray();
+        foreach (var timer in timers)
+        {
+            timer.Start();
+        }
+
+        viewModel.BeginShutdown();
+        viewModel.BeginShutdown();
+
+        Assert.All(timers, timer => Assert.False(timer.IsEnabled));
+        Assert.NotNull(viewModel.CashPayment);
+        Assert.True(viewModel.CashPayment!.IsPaymentInteractionLocked);
+        Assert.False(viewModel.CashPayment.SelectCardCommand.CanExecute(null));
     }
 
     [Fact]
@@ -4633,17 +4908,21 @@ public sealed class MainViewModelScannerTests
         var originalAuthorization = Assert.IsType<DeviceAuthorizationContext>(authorizationState.Current);
 
         await viewModel.PosTerminal!.ReregisterDeviceCommand.ExecuteAsync(null);
-        viewModel.DeviceRegistration!.SelectedStore = viewModel.DeviceRegistration.Stores.Single(store => store.StoreCode == "2042");
-        var submitTask = viewModel.DeviceRegistration.RegisterCommand.ExecuteAsync(null);
+        var registration = Assert.IsType<DeviceRegistrationViewModel>(viewModel.DeviceRegistration);
+        registration.SelectedStore = registration.Stores.Single(store => store.StoreCode == "2042");
+        var submitTask = registration.RegisterCommand.ExecuteAsync(null);
         await deviceApi.WaitForReregisterStartedAsync();
 
-        Assert.True(viewModel.DeviceRegistration.CancelCommand.CanExecute(null));
+        Assert.True(registration.CancelCommand.CanExecute(null));
 
-        viewModel.DeviceRegistration.CancelCommand.Execute(null);
+        registration.CancelCommand.Execute(null);
 
         Assert.False(viewModel.IsDeviceReregistrationDialogOpen);
         Assert.Null(viewModel.DeviceRegistration);
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.True((bool)typeof(DeviceRegistrationViewModel)
+            .GetField("_disposed", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(registration)!);
 
         pendingReregister.SetResult(new DeviceReregisterResponse("POS-NEW", "2042", "New Store", -1, false, "Pending approval"));
         await submitTask;
@@ -4975,9 +5254,10 @@ public sealed class MainViewModelScannerTests
     private static MainViewModel CreateAuthorizedMainViewModelWithSettings(
         FakeDeviceApiClient? deviceApiClient = null,
         FakeSyncQueueRepository? syncQueueRepository = null,
-        ApiServerSettingsViewModel? apiServerSettings = null)
+        ApiServerSettingsViewModel? apiServerSettings = null,
+        FakeSettingsRepository? settingsRepository = null)
     {
-        var settingsRepository = new FakeSettingsRepository();
+        settingsRepository ??= new FakeSettingsRepository();
         var catalogRepository = new FakeCatalogRepository();
         var orderRepository = new FakeLocalOrderRepository();
         var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
@@ -5312,12 +5592,54 @@ public sealed class MainViewModelScannerTests
 
     private sealed class FakeSettingsRepository : ILocalAppSettingsRepository
     {
+        public Exception? SetException { get; init; }
+
+        public Exception? FirstSetException { get; init; }
+
+        public TaskCompletionSource? FirstSetStarted { get; init; }
+
+        public TaskCompletionSource? ReleaseFirstSet { get; init; }
+
+        public List<string> SetValues { get; } = [];
+
+        public string? LastPersistedValue { get; private set; }
+
+        private int _setCount;
+
         public Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
         {
             return Task.FromResult<string?>(null);
         }
 
-        public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
+        public async Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
+        {
+            SetValues.Add(value);
+            var setCount = Interlocked.Increment(ref _setCount);
+            if (setCount == 1)
+            {
+                FirstSetStarted?.TrySetResult();
+                if (ReleaseFirstSet is not null)
+                {
+                    await ReleaseFirstSet.Task;
+                }
+            }
+
+            if (setCount == 1 && FirstSetException is not null)
+            {
+                throw FirstSetException;
+            }
+
+            if (SetException is not null)
+            {
+                throw SetException;
+            }
+
+            LastPersistedValue = value;
+        }
+
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
         }
@@ -5806,15 +6128,20 @@ public sealed class MainViewModelScannerTests
 
         public int CheckOnlineCallCount { get; private set; }
 
+        public TaskCompletionSource? CheckOnlineStarted { get; set; }
+
+        public TaskCompletionSource<bool>? PendingResponse { get; set; }
+
         public Task<bool> CheckOnlineAsync(CancellationToken cancellationToken = default)
         {
             CheckOnlineCallCount++;
+            CheckOnlineStarted?.TrySetResult();
             if (CheckOnlineException is not null)
             {
                 return Task.FromException<bool>(CheckOnlineException);
             }
 
-            return Task.FromResult(_responses.Count > 0 && _responses.Dequeue());
+            return PendingResponse?.Task ?? Task.FromResult(_responses.Count > 0 && _responses.Dequeue());
         }
     }
 
@@ -5826,11 +6153,14 @@ public sealed class MainViewModelScannerTests
 
         public Exception? ReportException { get; init; }
 
+        public CancellationToken LastCancellationToken { get; private set; }
+
         public Task ReportAsync(
             PosRuntimeStatusReport report,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+            LastCancellationToken = cancellationToken;
             if (ReportException is not null)
             {
                 return Task.FromException(ReportException);

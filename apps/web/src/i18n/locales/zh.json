@@ -3495,7 +3495,8 @@
       "installmentRepaymentComplete": "完成分期还款",
       "installmentRepaymentCancel": "取消分期还款",
       "dailyCloseSave": "保存日结",
-      "dailyCloseReprint": "补打日结"
+      "dailyCloseReprint": "补打日结",
+      "cardPaymentSupervisorResolution": "主管付款结案"
     }
   },
   "system": {

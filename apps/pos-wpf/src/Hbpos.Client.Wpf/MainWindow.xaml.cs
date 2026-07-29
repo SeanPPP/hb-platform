@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
     private readonly IAppUpdateCoordinator _appUpdateCoordinator;
     private readonly ILocalAppSettingsRepository _localAppSettingsRepository;
+    private readonly IAppShutdownCoordinator _appShutdownCoordinator;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
     private Task _windowModeSaveTask = Task.CompletedTask;
@@ -55,7 +56,8 @@ public partial class MainWindow : Window
         IDisplayTopologyService displayTopologyService,
         IUiPriorityCoordinator uiPriorityCoordinator,
         IAppUpdateCoordinator appUpdateCoordinator,
-        ILocalAppSettingsRepository localAppSettingsRepository)
+        ILocalAppSettingsRepository localAppSettingsRepository,
+        IAppShutdownCoordinator? appShutdownCoordinator = null)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
@@ -64,6 +66,7 @@ public partial class MainWindow : Window
         _uiPriorityCoordinator = uiPriorityCoordinator;
         _appUpdateCoordinator = appUpdateCoordinator;
         _localAppSettingsRepository = localAppSettingsRepository;
+        _appShutdownCoordinator = appShutdownCoordinator ?? new AppShutdownCoordinator();
 #if DEBUG
         _viewModel.AppUpdate.ConfigureDebugForceUpdateDismissed(ResumeStartupAfterDebugUpdateDismissalAsync);
 #endif
@@ -393,12 +396,11 @@ public partial class MainWindow : Window
         StateChanged -= MainWindowStateChanged;
         Closing -= MainWindowClosing;
         _hwndSource?.RemoveHook(MainWindowMessageHook);
-        _rawScannerService.Stop();
-        _viewModel.Dispose();
     }
 
     private async void MainWindowClosing(object? sender, CancelEventArgs e)
     {
+        _ = _appShutdownCoordinator.GetOrStartRemainingBudget();
         if (_isClosingAfterWindowModeSave)
         {
             return;
@@ -410,22 +412,23 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_windowModeSaveTask.IsCompleted)
-        {
-            return;
-        }
-
         e.Cancel = true;
         _isWaitingForWindowModeSaveBeforeClose = true;
+        IsEnabled = false;
+        var scannerStopTask = StopExternalInputForShutdownAsync(_rawScannerService.Stop);
+        _viewModel.BeginShutdown();
         try
         {
-            await WaitForPendingWindowModeSaveAsync(() => _windowModeSaveTask);
+            await WaitForClosePreparationAsync(
+                () => _windowModeSaveTask,
+                _appShutdownCoordinator,
+                scannerStopTask);
         }
         catch (Exception ex)
         {
             ConsoleLog.WriteError(
-                "WindowState",
-                $"main window mode save flush failed error={ex.GetType().Name} message={ex.Message}",
+                "Shutdown",
+                $"main window close preparation failed error={ex.GetType().Name} message={ex.Message}",
                 exception: ex);
         }
         finally
@@ -788,6 +791,67 @@ public partial class MainWindow : Window
                 return;
             }
         }
+    }
+
+    internal static async Task WaitForClosePreparationAsync(
+        Func<Task> getPendingWindowModeSave,
+        IAppShutdownCoordinator shutdownCoordinator,
+        Task? externalInputStopTask = null)
+    {
+        var windowSaveTask = WaitForPendingWindowModeSaveAsync(getPendingWindowModeSave);
+        var closePreparationTask = Task.WhenAll(
+            windowSaveTask,
+            externalInputStopTask ?? Task.CompletedTask);
+        var remainingBudget = shutdownCoordinator.GetOrStartRemainingBudget();
+        var windowSaveBudget = remainingBudget < TimeSpan.FromMilliseconds(250)
+            ? remainingBudget
+            : TimeSpan.FromMilliseconds(250);
+        try
+        {
+            if (windowSaveBudget > TimeSpan.Zero)
+            {
+                await closePreparationTask.WaitAsync(windowSaveBudget);
+            }
+        }
+        catch (TimeoutException)
+        {
+            _ = closePreparationTask.ContinueWith(
+                static completedTask => _ = completedTask.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            ConsoleLog.WriteError(
+                "Shutdown",
+                "window state or input stop did not finish within 250ms; continuing bounded shutdown");
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"window close preparation failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
+        await shutdownCoordinator.PrepareAsync();
+    }
+
+    internal static Task StopExternalInputForShutdownAsync(Action stop)
+    {
+        ArgumentNullException.ThrowIfNull(stop);
+        return Task.Run(() =>
+        {
+            try
+            {
+                stop();
+            }
+            catch (Exception ex)
+            {
+                ConsoleLog.WriteError(
+                    "Shutdown",
+                    $"external input stop failed error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
+            }
+        });
     }
 
     internal static WindowState ResolveWindowState(string? savedMode)
