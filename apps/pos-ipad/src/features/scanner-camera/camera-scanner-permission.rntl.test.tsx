@@ -2,6 +2,12 @@
 import { expect, jest, test } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 
+jest.doMock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "en", resolvedLanguage: "en" },
+  }),
+}));
+
 const requestPermission = jest.fn();
 
 jest.doMock("expo-camera", () => {

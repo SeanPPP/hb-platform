@@ -11,20 +11,20 @@ const placeholderPattern = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/gu;
 
 // 新增页面必须在这里登记其实际承载可见文案的 source，避免路由已注册而未纳入双语审计。
 const registeredPageCopySurfaces = {
-  "app/attendance-audit.tsx": "src/features/attendance-audit/attendance-audit-screen.tsx",
-  "app/catalog-maintenance.tsx": "src/features/catalog/maintenance/catalog-maintenance-screen.tsx",
-  "app/daily-close.tsx": "src/features/daily-close/daily-close-screen.tsx",
+  "app/attendance-audit.tsx": "src/features/attendance-audit/attendance-audit-copy.ts",
+  "app/catalog-maintenance.tsx": "src/features/catalog/maintenance/catalog-maintenance-copy.ts",
+  "app/daily-close.tsx": "src/features/daily-close/daily-close-copy.ts",
   "app/held-orders.tsx": "src/features/held-orders/held-orders-copy.ts",
   "app/index.tsx": "src/ui/screens/bootstrap-screen.tsx",
-  "app/installments.tsx": "src/features/installments/installment-screen.tsx",
+  "app/installments.tsx": "src/features/installments/installment-copy.ts",
   "app/login.tsx": "src/features/cashier-login/cashier-login-screen.tsx",
   "app/payment.tsx": "src/features/payments/ui/payment-copy.ts",
   "app/registration.tsx": "src/features/device-registration/device-registration-screen.tsx",
   "app/remote-history.tsx": "src/features/remote-history/remote-history-copy.ts",
   "app/returns.tsx": "src/features/returns/return-copy.ts",
   "app/sales.tsx": "src/features/sales/ui/sales-copy.ts",
-  "app/settings.tsx": "src/features/settings/settings-screen.tsx",
-  "app/special-products.tsx": "src/features/special-products/special-products-screen.tsx",
+  "app/settings.tsx": "src/features/settings/settings-copy.ts",
+  "app/special-products.tsx": "src/features/special-products/special-products-copy.ts",
   "app/sync-history.tsx": "src/features/sync-history/sync-history-copy.ts",
 };
 
@@ -51,6 +51,8 @@ test("全局 i18n 中英文键及插值参数完全一致", async () => {
   ]);
 
   assertCopyParity("src/i18n/locales", english, chinese);
+  assertNoBilingualCopy("src/i18n/locales/en.json", english);
+  assertNoBilingualCopy("src/i18n/locales/zh.json", chinese);
 });
 
 test("所有显式双语 copy 表保持键和插值参数一致", async () => {
@@ -153,6 +155,74 @@ test("所有已注册 POS 页面均登记到可审计的可见文案 source", as
       source.trim().length > 0,
       `${route} 的可见文案 source 不得为空: ${surface}`,
     );
+  }
+});
+
+test("页面、弹窗与无障碍文案不得把中英文翻译拼在同一字面量", async () => {
+  const files = await sourceFiles();
+  const uiFiles = files.filter((file) => {
+    const path = relativePath(file);
+    return (
+      path.endsWith(".tsx") &&
+      !/\.(?:test|spec|rntl)\.tsx$/u.test(path)
+    );
+  });
+  // 弹窗和共享组件不一定对应路由，统一扫描所有 typed copy，避免登记遗漏。
+  const copyFiles = files.filter((file) =>
+    relativePath(file).endsWith("-copy.ts"),
+  );
+  const failures = [];
+
+  for (const file of new Set([...uiFiles, ...copyFiles])) {
+    const sourceText = await readFile(file, "utf8");
+    const source = ts.createSourceFile(
+      file,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    visit(source, (node) => {
+      const text = visibleLiteralText(node, source);
+      if (text === null || !isBilingualTranslationPair(text)) return;
+      const { line } = source.getLineAndCharacterOfPosition(
+        node.getStart(source),
+      );
+      failures.push(
+        `${relativePath(file)}:${line + 1} ${JSON.stringify(
+          text.replace(/\s+/gu, " ").trim(),
+        )}`,
+      );
+    });
+  }
+
+  assert.deepEqual(
+    failures,
+    [],
+    `操作员界面仍存在中英文同屏文案：\n${failures.join("\n")}`,
+  );
+});
+
+test("双语同屏识别覆盖常见分隔形式，并允许品牌与协议缩写", () => {
+  for (const value of [
+    "中文 / English",
+    "中文/English",
+    "中文（English）",
+    "English (中文)",
+    "中文\nEnglish",
+    "中文 English",
+    "English 中文",
+  ]) {
+    assert.equal(isBilingualTranslationPair(value), true, value);
+  }
+
+  for (const value of [
+    "请在 iPad 设置中允许相机",
+    "此设备或 Development Build 未提供相机能力",
+    "门店 / 设备",
+    "支付方式：Square",
+  ]) {
+    assert.equal(isBilingualTranslationPair(value), false, value);
   }
 });
 
@@ -282,6 +352,79 @@ function literalText(expression) {
     : null;
 }
 
+function visibleLiteralText(node, source) {
+  if (ts.isJsxText(node)) {
+    return node.getText(source);
+  }
+  if (ts.isTemplateExpression(node)) {
+    return node.getText(source);
+  }
+  if (
+    ts.isStringLiteralLike(node) &&
+    !ts.isImportDeclaration(node.parent) &&
+    !ts.isExportDeclaration(node.parent)
+  ) {
+    return node.text;
+  }
+  return null;
+}
+
+function isBilingualTranslationPair(value) {
+  const text = String(value)
+    .replace(/\{\{[^}]*\}\}/gu, "")
+    .replace(/\$\{[^}]*\}/gu, "")
+    .trim();
+  const languageText = text
+    .replace(
+      /\b(?:API|AUD|App Store|Development Build|ETag|HB|HID|ID|iPadOS|iPad|iOS|Linkly|OPENITEM|PAN|Permissions(?:\.[A-Za-z]+)+|POS|QR|SQLCipher|Square|token|UUID|UTC|WPF|YYYY-MM-DD)\b/gu,
+      "",
+    )
+    .trim();
+  if (!hasHan(languageText) || !hasLatin(languageText)) {
+    return false;
+  }
+
+  const separated = languageText.split(
+    /(?<!:)\s*\/\s*(?!\/)|\s*\|\s*|\r?\n/gu,
+  );
+  if (hasOpposingLanguageSegments(separated)) return true;
+
+  for (const match of languageText.matchAll(
+    /([^()（）]+)[(（]([^()（）]+)[)）]/gu,
+  )) {
+    if (hasOpposingLanguageSegments([match[1], match[2]])) return true;
+  }
+
+  const collapsed = languageText.replace(/\s+/gu, " ").trim();
+  return (
+    /^[\p{Script=Han}\p{N}\p{P}\p{S}\s]+ [A-Za-z][A-Za-z0-9 &'’.-]*$/u.test(
+      collapsed,
+    ) ||
+    /^[A-Za-z][A-Za-z0-9 &'’.-]* [\p{Script=Han}\p{N}\p{P}\p{S}\s]+$/u.test(
+      collapsed,
+    )
+  );
+}
+
+function hasOpposingLanguageSegments(segments) {
+  return segments.some(
+    (segment, index) =>
+      hasHan(segment) &&
+      segments.some(
+        (candidate, candidateIndex) =>
+          candidateIndex !== index && hasLatin(candidate) && !hasHan(candidate),
+      ),
+  );
+}
+
+function hasHan(value) {
+  return /\p{Script=Han}/u.test(value);
+}
+
+function hasLatin(value) {
+  return /[A-Za-z]/u.test(value);
+}
+
 function objectProperty(object, name) {
   const property = object.properties.find(
     (candidate) =>
@@ -317,6 +460,17 @@ function assertCopyParity(label, english, chinese) {
       `${label} 的 ${key} 插值参数不一致`,
     );
   }
+}
+
+function assertNoBilingualCopy(label, copy) {
+  const failures = Object.entries(copy)
+    .filter(([, value]) => isBilingualTranslationPair(value))
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+  assert.deepEqual(
+    failures,
+    [],
+    `${label} 仍存在中英文同屏文案：\n${failures.join("\n")}`,
+  );
 }
 
 function placeholders(value) {

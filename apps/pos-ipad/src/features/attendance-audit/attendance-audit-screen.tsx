@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Image,
@@ -11,6 +12,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  attendanceAuditQrStatusCopyKey,
+  attendanceAuditStatusCopyKey,
+  attendanceAuditText,
+  attendanceAuditUploadStateCopyKey,
+  resolveAttendanceAuditLocale,
+  type AttendanceAuditCopyKey,
+} from "./attendance-audit-copy";
 import type {
   AttendanceAuditPresenter,
   AttendanceAuditPresenterState,
@@ -43,6 +52,11 @@ type AttendanceAuditScreenProps = Readonly<{
   presenter: AttendanceAuditScreenPresenter;
 }>;
 
+type AttendanceAuditTranslate = (
+  key: AttendanceAuditCopyKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
+
 /**
  * iPad 横屏高密度工作台：考勤 QR 始终独立显示；审计读取按 Audit.View
  * 单独保护。UI 永不接收二维码 token、签名密钥或审计 properties 原文。
@@ -51,6 +65,12 @@ export function AttendanceAuditScreen({
   onBack,
   presenter,
 }: AttendanceAuditScreenProps) {
+  const { i18n } = useTranslation();
+  const locale = resolveAttendanceAuditLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+  const t: AttendanceAuditTranslate = (key, values) =>
+    attendanceAuditText(locale, key, values);
   const state = useSyncExternalStore(
     presenter.subscribe,
     presenter.getState,
@@ -64,13 +84,13 @@ export function AttendanceAuditScreen({
   return (
     <SafeAreaView style={styles.safeArea} testID="attendance-audit-screen">
       <View style={styles.page}>
-        <Header onBack={onBack} />
+        <Header onBack={onBack} t={t} />
         <View
           style={styles.workspace}
           testID="attendance-audit-workspace"
         >
-          <AttendanceQrPane presenter={presenter} state={state} />
-          <AuditWorkspace presenter={presenter} state={state} />
+          <AttendanceQrPane presenter={presenter} state={state} t={t} />
+          <AuditWorkspace presenter={presenter} state={state} t={t} />
         </View>
       </View>
     </SafeAreaView>
@@ -79,22 +99,21 @@ export function AttendanceAuditScreen({
 
 function Header({
   onBack,
-}: Readonly<{ onBack: (() => void) | undefined }>) {
+  t,
+}: Readonly<{
+  onBack: (() => void) | undefined;
+  t: AttendanceAuditTranslate;
+}>) {
   return (
     <View style={styles.header}>
       <View>
-        <Text style={styles.eyebrow}>门店安全 / STORE SECURITY</Text>
-        <Text style={styles.title}>
-          考勤与审计 / Attendance & audit
-        </Text>
-        <Text style={styles.subtitle}>
-          动态短时二维码与本设备操作轨迹；密钥、token 和支付引用不会显示。
-          / Short-lived QR and device-scoped audit trail; secrets stay hidden.
-        </Text>
+        <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
+        <Text style={styles.title}>{t("header.title")}</Text>
+        <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
       </View>
       {onBack ? (
         <ActionButton
-          label="返回销售 / Back to sales"
+          label={t("action.back")}
           onPress={onBack}
           testID="attendance-audit-back"
           tone="quiet"
@@ -107,9 +126,11 @@ function Header({
 function AttendanceQrPane({
   presenter,
   state,
+  t,
 }: Readonly<{
   presenter: AttendanceAuditScreenPresenter;
   state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
 }>) {
   const qr = state.qr;
   const locked =
@@ -118,14 +139,12 @@ function AttendanceQrPane({
     <View style={[styles.panel, styles.qrPanel]}>
       <View style={styles.panelHeading}>
         <View>
-          <Text style={styles.panelKicker}>ATTENDANCE</Text>
-          <Text style={styles.panelTitle}>考勤二维码 / QR</Text>
+          <Text style={styles.panelKicker}>{t("qr.kicker")}</Text>
+          <Text style={styles.panelTitle}>{t("qr.title")}</Text>
         </View>
         <StatusPill
           label={
-            qr.online
-              ? "在线验证 / Verified"
-              : "离线签发 / Offline signed"
+            qr.online ? t("qr.online") : t("qr.offline")
           }
           tone={qr.online ? "success" : "warning"}
         />
@@ -139,17 +158,12 @@ function AttendanceQrPane({
             testID="attendance-clock-lock"
           >
             <Text style={styles.lockIcon}>!</Text>
-            <Text style={styles.lockTitle}>
-              时钟回拨 / Clock rollback
-            </Text>
-            <Text style={styles.lockBody}>
-              二维码已锁定。请在线重新同步可信时间后再使用。
-              / QR locked; an online re-sync of trusted time is required.
-            </Text>
+            <Text style={styles.lockTitle}>{t("qr.clockRollback.title")}</Text>
+            <Text style={styles.lockBody}>{t("qr.clockRollback.body")}</Text>
           </View>
         ) : qr.qrImageUri ? (
           <Image
-            accessibilityLabel="考勤二维码 / Attendance QR"
+            accessibilityLabel={t("qr.imageLabel")}
             resizeMode="contain"
             source={{ uri: qr.qrImageUri }}
             style={styles.qrImage}
@@ -161,36 +175,31 @@ function AttendanceQrPane({
               <ActivityIndicator color={posColors.orange} size="large" />
             ) : null}
             <Text style={styles.placeholderTitle}>
-              {qr.kind === "initializing"
-                ? "正在建立安全二维码… / Preparing secure QR…"
-                : "二维码暂不可用 / QR unavailable"}
+              {t(qr.kind === "initializing" ? "qr.preparing" : "qr.unavailable")}
             </Text>
-            <Text style={styles.placeholderBody}>
-              首次启用或安全身份失效时必须联网登记。
-              / Online registration is required for first use or re-keying.
-            </Text>
+            <Text style={styles.placeholderBody}>{t("qr.placeholder")}</Text>
           </View>
         )}
       </View>
 
       <View style={styles.countdownCard}>
         <Text style={styles.countdownValue}>
-          {qr.secondsRemaining} 秒 / {qr.secondsRemaining} sec
+          {t("qr.remaining", { seconds: qr.secondsRemaining })}
         </Text>
         <Text style={styles.countdownLabel}>
-          当前二维码剩余有效期 / Current QR validity
+          {t("qr.remainingLabel")}
         </Text>
       </View>
       <View style={styles.contextCard}>
-        <ContextRow label="门店 / Store" value={qr.storeText || "—"} />
+        <ContextRow label={t("context.store")} value={qr.storeText || "—"} />
         <ContextRow
-          label="设备 / Device"
+          label={t("context.device")}
           value={qr.deviceText || "—"}
         />
       </View>
-      <QrStatusMessage statusCode={qr.statusCode} />
+      <QrStatusMessage statusCode={qr.statusCode} t={t} />
       <ActionButton
-        label="安全刷新 / Secure refresh"
+        label={t("action.refreshQr")}
         onPress={() => void presenter.refreshAttendanceQr()}
         testID="attendance-qr-refresh"
       />
@@ -201,9 +210,11 @@ function AttendanceQrPane({
 function AuditWorkspace({
   presenter,
   state,
+  t,
 }: Readonly<{
   presenter: AttendanceAuditScreenPresenter;
   state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
 }>) {
   const audit = state.audit;
   if (!audit.access.canView) {
@@ -213,15 +224,8 @@ function AuditWorkspace({
         testID="audit-permission-required"
       >
         <Text style={styles.permissionCode}>AUDIT.VIEW</Text>
-        <Text style={styles.permissionTitle}>
-          审计记录受保护 / Audit trail protected
-        </Text>
-        <Text style={styles.permissionBody}>
-          当前收银员没有 Permissions.PosTerminal.Audit.View。
-          考勤二维码仍可正常使用；请由主管授权后重新登录。
-          / The current cashier cannot view audit records. Attendance QR
-          remains available; sign in again after supervisor approval.
-        </Text>
+        <Text style={styles.permissionTitle}>{t("audit.permission.title")}</Text>
+        <Text style={styles.permissionBody}>{t("audit.permission.body")}</Text>
       </View>
     );
   }
@@ -230,20 +234,20 @@ function AuditWorkspace({
     <View style={[styles.panel, styles.auditPanel]}>
       <View style={styles.panelHeading}>
         <View>
-          <Text style={styles.panelKicker}>OPERATION AUDIT</Text>
-          <Text style={styles.panelTitle}>操作审计 / Audit trail</Text>
+          <Text style={styles.panelKicker}>{t("audit.kicker")}</Text>
+          <Text style={styles.panelTitle}>{t("audit.title")}</Text>
         </View>
         <Text style={styles.resultCount}>
-          {audit.rows.length} 项 / records
+          {t("audit.resultCount", { count: audit.rows.length })}
         </Text>
       </View>
 
-      <AuditFilters presenter={presenter} state={state} />
-      <AuditStatus state={state} />
+      <AuditFilters presenter={presenter} state={state} t={t} />
+      <AuditStatus state={state} t={t} />
 
       <View style={styles.auditMasterDetail}>
-        <AuditList presenter={presenter} state={state} />
-        <AuditDetails state={state} />
+        <AuditList presenter={presenter} state={state} t={t} />
+        <AuditDetails state={state} t={t} />
       </View>
     </View>
   );
@@ -252,26 +256,28 @@ function AuditWorkspace({
 function AuditFilters({
   presenter,
   state,
+  t,
 }: Readonly<{
   presenter: AttendanceAuditScreenPresenter;
   state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
 }>) {
   const audit = state.audit;
   const sources: readonly {
     label: string;
     source: OperationAuditSource;
   }[] = [
-    { label: "本机 / Local", source: "local" },
-    { label: "远程 / Remote", source: "remote" },
+    { label: t("audit.source.local"), source: "local" },
+    { label: t("audit.source.remote"), source: "remote" },
   ];
   const uploadStates: readonly {
     label: string;
     state: OperationAuditUploadState | null;
   }[] = [
-    { label: "全部 / All", state: null },
-    { label: "待传 / Pending", state: "pending" },
-    { label: "已传 / Uploaded", state: "uploaded" },
-    { label: "拒绝 / Rejected", state: "rejected" },
+    { label: t("audit.upload.all"), state: null },
+    { label: t("audit.upload.pending"), state: "pending" },
+    { label: t("audit.upload.uploaded"), state: "uploaded" },
+    { label: t("audit.upload.rejected"), state: "rejected" },
   ];
   return (
     <View style={styles.filters}>
@@ -303,12 +309,12 @@ function AuditFilters({
       </View>
       <View style={styles.searchRow}>
         <TextInput
-          accessibilityLabel="搜索操作审计 / Search operation audit"
+          accessibilityLabel={t("audit.searchLabel")}
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={(value) => presenter.setAuditQuery(value)}
           onSubmitEditing={() => void presenter.loadAudit()}
-          placeholder="小票、订单、操作 / Receipt, order, operation"
+          placeholder={t("audit.searchPlaceholder")}
           placeholderTextColor={posColors.mutedInk}
           style={styles.searchInput}
           testID="audit-search-input"
@@ -319,7 +325,7 @@ function AuditFilters({
             audit.kind === "loading" ||
             (audit.source === "remote" && !audit.online)
           }
-          label="查询 / Search"
+          label={t("audit.action.search")}
           onPress={() => void presenter.loadAudit()}
           testID="audit-search-submit"
         />
@@ -330,19 +336,21 @@ function AuditFilters({
 
 function AuditStatus({
   state,
-}: Readonly<{ state: AttendanceAuditPresenterState }>) {
+  t,
+}: Readonly<{
+  state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
+}>) {
   const audit = state.audit;
   if (audit.kind === "loading") {
     return (
       <View style={styles.loadingLine}>
         <ActivityIndicator color={posColors.orange} />
-        <Text style={styles.loadingText}>
-          正在读取审计记录… / Loading audit records…
-        </Text>
+        <Text style={styles.loadingText}>{t("audit.loading")}</Text>
       </View>
     );
   }
-  const message = auditStatusMessage(audit.statusCode);
+  const message = auditStatusMessage(audit.statusCode, t);
   if (!message) return null;
   return (
     <View
@@ -357,24 +365,21 @@ function AuditStatus({
 function AuditList({
   presenter,
   state,
+  t,
 }: Readonly<{
   presenter: AttendanceAuditScreenPresenter;
   state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
 }>) {
   const audit = state.audit;
   return (
     <View style={styles.auditListPane}>
-      <Text style={styles.sectionLabel}>记录 / RECORDS</Text>
+      <Text style={styles.sectionLabel}>{t("audit.records")}</Text>
       <ScrollView contentContainerStyle={styles.auditList}>
         {audit.rows.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>
-              暂无记录 / No audit records
-            </Text>
-            <Text style={styles.emptyBody}>
-              更改来源或筛选后重新查询。
-              / Change source or filters, then search again.
-            </Text>
+            <Text style={styles.emptyTitle}>{t("audit.empty.title")}</Text>
+            <Text style={styles.emptyBody}>{t("audit.empty.body")}</Text>
           </View>
         ) : (
           audit.rows.map((row) => (
@@ -383,6 +388,7 @@ function AuditList({
               onPress={() => void presenter.selectAudit(row.eventId)}
               record={row}
               selected={audit.selectedEventId === row.eventId}
+              t={t}
             />
           ))
         )}
@@ -395,10 +401,12 @@ function AuditRow({
   onPress,
   record,
   selected,
+  t,
 }: Readonly<{
   onPress(): void;
   record: OperationAuditRecord;
   selected: boolean;
+  t: AttendanceAuditTranslate;
 }>) {
   return (
     <Pressable
@@ -413,7 +421,7 @@ function AuditRow({
           {record.operationType}
         </Text>
         <StatusPill
-          label={uploadStateLabel(record.uploadState)}
+          label={uploadStateLabel(record.uploadState, t)}
           tone={
             record.uploadState === "rejected"
               ? "danger"
@@ -437,25 +445,24 @@ function AuditRow({
 
 function AuditDetails({
   state,
-}: Readonly<{ state: AttendanceAuditPresenterState }>) {
+  t,
+}: Readonly<{
+  state: AttendanceAuditPresenterState;
+  t: AttendanceAuditTranslate;
+}>) {
   const { audit } = state;
   return (
     <View style={styles.auditDetailPane}>
-      <Text style={styles.sectionLabel}>详情 / DETAILS</Text>
+      <Text style={styles.sectionLabel}>{t("audit.details")}</Text>
       <ScrollView contentContainerStyle={styles.detailScroll}>
         {audit.detailLoading ? (
           <ActivityIndicator color={posColors.orange} />
         ) : audit.detail ? (
-          <AuditDetailCard record={audit.detail} />
+          <AuditDetailCard record={audit.detail} t={t} />
         ) : (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>
-              选择一条记录 / Select a record
-            </Text>
-            <Text style={styles.emptyBody}>
-              这里只显示已校验并脱敏的字段。
-              / Only validated and redacted fields are shown.
-            </Text>
+            <Text style={styles.emptyTitle}>{t("audit.detail.empty.title")}</Text>
+            <Text style={styles.emptyBody}>{t("audit.detail.empty.body")}</Text>
           </View>
         )}
       </ScrollView>
@@ -465,29 +472,33 @@ function AuditDetails({
 
 function AuditDetailCard({
   record,
-}: Readonly<{ record: OperationAuditRecord }>) {
+  t,
+}: Readonly<{
+  record: OperationAuditRecord;
+  t: AttendanceAuditTranslate;
+}>) {
   return (
     <View style={styles.detailCard}>
-      <DetailRow label="操作 / Operation" value={record.operationType} />
-      <DetailRow label="结果 / Outcome" value={record.outcome} />
+      <DetailRow label={t("audit.detail.operation")} value={record.operationType} />
+      <DetailRow label={t("audit.detail.outcome")} value={record.outcome} />
       <DetailRow
-        label="时间 / Time"
+        label={t("audit.detail.time")}
         value={formatTimestamp(record.occurredAtIso)}
       />
       <DetailRow
-        label="收银员 / Cashier"
+        label={t("audit.detail.cashier")}
         value={record.cashierName ?? "—"}
       />
       <DetailRow
-        label="小票 / Receipt"
+        label={t("audit.detail.receipt")}
         value={record.receiptNumber ?? "—"}
       />
       <DetailRow
-        label="订单 / Order"
+        label={t("audit.detail.order")}
         value={record.orderGuid ?? "—"}
       />
       <DetailRow
-        label="金额 / Amount"
+        label={t("audit.detail.amount")}
         value={
           record.paymentAmountCents === null
             ? "—"
@@ -495,18 +506,18 @@ function AuditDetailCard({
         }
       />
       <DetailRow
-        label="关联 / Correlation"
+        label={t("audit.detail.correlation")}
         value={record.correlationId ?? "—"}
       />
       {record.safeMessage ? (
         <View style={styles.messageCard}>
-          <Text style={styles.detailLabel}>安全消息 / Safe message</Text>
+          <Text style={styles.detailLabel}>{t("audit.detail.safeMessage")}</Text>
           <Text style={styles.safeMessage}>{record.safeMessage}</Text>
         </View>
       ) : null}
       {record.items.length > 0 ? (
         <View style={styles.itemsCard}>
-          <Text style={styles.detailLabel}>商品变化 / Item changes</Text>
+          <Text style={styles.detailLabel}>{t("audit.detail.itemChanges")}</Text>
           {record.items.map((item) => (
             <View key={`${item.lineIndex}-${item.productCode ?? "none"}`}>
               <Text style={styles.itemTitle}>
@@ -529,6 +540,12 @@ function AuditDetailCard({
 export function AttendanceAuditUnavailableScreen({
   onBack,
 }: Readonly<{ onBack?(): void }>) {
+  const { i18n } = useTranslation();
+  const locale = resolveAttendanceAuditLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+  const t: AttendanceAuditTranslate = (key, values) =>
+    attendanceAuditText(locale, key, values);
   return (
     <SafeAreaView
       style={styles.safeArea}
@@ -536,18 +553,11 @@ export function AttendanceAuditUnavailableScreen({
     >
       <View style={styles.unavailablePage}>
         <Text style={styles.permissionCode}>SECURE RUNTIME</Text>
-        <Text style={styles.permissionTitle}>
-          安全服务尚未接线 / Secure services unavailable
-        </Text>
-        <Text style={styles.permissionBody}>
-          考勤密钥、可信时间或审计仓储未由原生组合根提供。页面保持关闭，
-          不会用临时存储降级。 / The native composition root has not supplied
-          secure key, trusted-time, or audit storage services. No insecure
-          fallback is used.
-        </Text>
+        <Text style={styles.permissionTitle}>{t("unavailable.title")}</Text>
+        <Text style={styles.permissionBody}>{t("unavailable.body")}</Text>
         {onBack ? (
           <ActionButton
-            label="返回销售 / Back to sales"
+            label={t("action.back")}
             onPress={onBack}
             testID="attendance-audit-unavailable-back"
           />
@@ -587,20 +597,16 @@ function DetailRow({
 
 function QrStatusMessage({
   statusCode,
-}: Readonly<{ statusCode: AttendanceAuditPresenterState["qr"]["statusCode"] }>) {
-  const messages = {
-    "clock-rollback":
-      "可信时间已锁定 / Trusted time locked",
-    "enable-online":
-      "首次启用需联网 / Online setup required",
-    "offline-signed":
-      "使用已登记本机密钥离线签发 / Signed locally with the registered device key",
-    "online-verified":
-      "设备身份与可信时间已在线验证 / Device identity and trusted time verified",
-    "setup-failed":
-      "安全二维码建立失败，请检查网络后重试 / Secure QR setup failed; check connectivity and retry",
-  } as const;
-  return <Text style={styles.qrStatus}>{messages[statusCode]}</Text>;
+  t,
+}: Readonly<{
+  statusCode: AttendanceAuditPresenterState["qr"]["statusCode"];
+  t: AttendanceAuditTranslate;
+}>) {
+  return (
+    <Text style={styles.qrStatus}>
+      {t(attendanceAuditQrStatusCopyKey(statusCode))}
+    </Text>
+  );
 }
 
 function ActionButton({
@@ -672,27 +678,17 @@ function StatusPill({
 
 function auditStatusMessage(
   statusCode: AttendanceAuditPresenterState["audit"]["statusCode"],
+  t: AttendanceAuditTranslate,
 ): string | null {
   if (!statusCode) return null;
-  const messages = {
-    "details-failed":
-      "详情读取失败；未显示部分结果。 / Details failed; no partial result shown.",
-    "details-unavailable":
-      "记录已不存在或不可访问。 / Record is unavailable.",
-    "list-failed":
-      "审计读取失败；未显示可能误导的部分列表。 / Audit load failed; no partial list shown.",
-    "online-required":
-      "远程审计必须联网；本机审计仍可读取。 / Remote audit requires connectivity; local audit remains available.",
-    "permission-required":
-      "当前收银员无审计查看权限。 / Audit.View permission is required.",
-  } as const;
-  return messages[statusCode];
+  return t(attendanceAuditStatusCopyKey(statusCode));
 }
 
-function uploadStateLabel(value: OperationAuditUploadState): string {
-  if (value === "pending") return "待传 / Pending";
-  if (value === "rejected") return "拒绝 / Rejected";
-  return "已传 / Uploaded";
+function uploadStateLabel(
+  value: OperationAuditUploadState,
+  t: AttendanceAuditTranslate,
+): string {
+  return t(attendanceAuditUploadStateCopyKey(value));
 }
 
 function formatTimestamp(value: string): string {

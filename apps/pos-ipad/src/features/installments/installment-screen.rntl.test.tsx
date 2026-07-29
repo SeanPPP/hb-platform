@@ -1,9 +1,5 @@
 import { expect, jest, test } from "@jest/globals";
-import {
-  fireEvent,
-  render,
-  waitFor,
-} from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
 import type { InstallmentDetails } from "./installment-models";
 import type { InstallmentPresenterState } from "./installment-presenter";
@@ -13,6 +9,42 @@ import {
   InstallmentsUnavailableScreen,
 } from "./installment-screen";
 import type { InstallmentScreenPresenter } from "./installment-screen";
+
+let mockLanguage = "en";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
+  }),
+}));
+
+test("英文界面只显示英文分期文案", async () => {
+  mockLanguage = "en";
+  const { presenter } = createPresenter({ orders: [summary()] });
+  const screen = await render(<InstallmentScreen presenter={presenter} />);
+
+  expect(screen.getByText("Installments")).toBeTruthy();
+  expect(screen.getAllByText("Active")).toHaveLength(2);
+  expect(screen.queryByText("分期")).toBeNull();
+  expect(screen.queryByText("分期 / Installments")).toBeNull();
+  await screen.unmount();
+});
+
+test("中文界面只显示中文分期文案", async () => {
+  mockLanguage = "zh";
+  try {
+    const { presenter } = createPresenter({ orders: [summary()] });
+    const screen = await render(<InstallmentScreen presenter={presenter} />);
+
+    expect(screen.getByText("分期")).toBeTruthy();
+    expect(screen.getAllByText("进行中")).toHaveLength(2);
+    expect(screen.queryByText("Installments")).toBeNull();
+    expect(screen.queryByText("分期 / Installments")).toBeNull();
+    await screen.unmount();
+  } finally {
+    mockLanguage = "en";
+  }
+});
 
 test("横屏工作台加载历史、显示离线只读提示并支持返回", async () => {
   const onBack = jest.fn();
@@ -98,11 +130,9 @@ test("创建页只收集券码并说明在线 query+lock，不显示 reservation
   expect(
     screen.getByTestId("installment-create-voucher-help"),
   ).toHaveTextContent(
-    "只输入券码；提交后由在线支付服务查询并锁定。 / Enter the voucher code only; the online payment provider will query and lock it after submission.",
+    "Enter the voucher code only; the online payment provider will query and lock it after submission.",
   );
-  expect(
-    screen.queryByTestId("installment-create-voucher-token"),
-  ).toBeNull();
+  expect(screen.queryByTestId("installment-create-voucher-token")).toBeNull();
   await fireEvent.press(screen.getByTestId("installment-create-submit"));
 
   expect(spies.setCustomerName).toHaveBeenCalledWith("Bob");
@@ -131,14 +161,12 @@ test("续付券同样只显示券码和在线 query+lock 说明", async () => {
   expect(
     screen.getByTestId("installment-repayment-voucher-help"),
   ).toHaveTextContent(
-    "只输入券码；提交后由在线支付服务查询并锁定。 / Enter the voucher code only; the online payment provider will query and lock it after submission.",
+    "Enter the voucher code only; the online payment provider will query and lock it after submission.",
   );
   expect(
     screen.queryByTestId("installment-repayment-voucher-token"),
   ).toBeNull();
-  expect(spies.setRepaymentVoucherReference).toHaveBeenCalledWith(
-    "V-REPAY",
-  );
+  expect(spies.setRepaymentVoucherReference).toHaveBeenCalledWith("V-REPAY");
   await screen.unmount();
 });
 
@@ -231,12 +259,8 @@ test("运行时未接线页只说明不可用并安全返回", async () => {
     <InstallmentsUnavailableScreen onBack={onBack} />,
   );
 
-  expect(
-    screen.getByTestId("installments-runtime-unavailable"),
-  ).toBeTruthy();
-  await fireEvent.press(
-    screen.getByTestId("installments-unavailable-back"),
-  );
+  expect(screen.getByTestId("installments-runtime-unavailable")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("installments-unavailable-back"));
   expect(onBack).toHaveBeenCalledTimes(1);
   await screen.unmount();
 });
@@ -339,9 +363,7 @@ function summary() {
   };
 }
 
-function details(
-  status: "Active" | "PaidOff",
-): InstallmentDetails {
+function details(status: "Active" | "PaidOff"): InstallmentDetails {
   const balanceCents = status === "Active" ? 8_000 : 0;
   return {
     ...summary(),

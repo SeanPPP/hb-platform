@@ -248,7 +248,7 @@ afterEach(() => {
 });
 
 describe("SalesScreen", () => {
-  it("始终显示语言切换操作，点击后调用注入回调并保留 44pt 触控目标", async () => {
+  it("语言切换操作只使用当前界面语言，并保留 44pt 触控目标", async () => {
     const onSwitchLanguage = jest.fn();
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
     const screen = await render(
@@ -261,7 +261,10 @@ describe("SalesScreen", () => {
     );
 
     const languageAction = screen.getByTestId("sales-switch-language");
-    expect(screen.getByText("English")).toBeTruthy();
+    expect(screen.getByText("语言")).toBeTruthy();
+    expect(languageAction.props.accessibilityLabel).toBe(
+      "将界面语言切换为英文",
+    );
     expect(
       StyleSheet.flatten(languageAction.props.style).minHeight,
     ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
@@ -270,6 +273,28 @@ describe("SalesScreen", () => {
 
     salesPresenter.destroy();
     await screen.unmount();
+
+    const englishPresenter = presenter(
+      new ScreenCartPort(EMPTY_SALE_CART),
+    );
+    const englishScreen = await render(
+      <SalesScreen
+        locale="en"
+        onSwitchLanguage={onSwitchLanguage}
+        presenter={englishPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    const englishLanguageAction = englishScreen.getByTestId(
+      "sales-switch-language",
+    );
+    expect(englishScreen.getByText("Language")).toBeTruthy();
+    expect(englishLanguageAction.props.accessibilityLabel).toBe(
+      "Switch interface language to Chinese",
+    );
+    expect(englishScreen.queryByText("中文")).toBeNull();
+    englishPresenter.destroy();
+    await englishScreen.unmount();
   });
 
   it("空购物车禁用结账，并为操作按钮保留至少 44pt 触控目标", async () => {

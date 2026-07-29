@@ -430,7 +430,7 @@ export function SalesScreen({
       ? [
           {
             id: "daily-close" as const,
-            label: locale === "zh" ? "日结" : "Daily close",
+            label: t("header.dailyClose"),
             onPress: onOpenDailyClose,
             testID: "sales-open-daily-close",
             tone: "quiet" as const,
@@ -441,7 +441,7 @@ export function SalesScreen({
       ? [
           {
             id: "returns" as const,
-            label: locale === "zh" ? "退货" : "Returns",
+            label: t("header.returns"),
             onPress: onOpenReturns,
             testID: "sales-open-returns",
             tone: "quiet" as const,
@@ -452,7 +452,7 @@ export function SalesScreen({
       ? [
           {
             id: "remote-history" as const,
-            label: locale === "zh" ? "远程历史" : "History",
+            label: t("header.remoteHistory"),
             onPress: onOpenRemoteHistory,
             testID: "sales-open-remote-history",
             tone: "quiet" as const,
@@ -463,7 +463,7 @@ export function SalesScreen({
       ? [
           {
             id: "special-products" as const,
-            label: locale === "zh" ? "特殊商品" : "Specials",
+            label: t("header.specialProducts"),
             onPress: onOpenSpecialProducts,
             testID: "sales-open-special-products",
             tone: "quiet" as const,
@@ -474,7 +474,7 @@ export function SalesScreen({
       ? [
           {
             id: "installments" as const,
-            label: locale === "zh" ? "分期" : "Installments",
+            label: t("header.installments"),
             onPress: onOpenInstallments,
             testID: "sales-open-installments",
             tone: "quiet" as const,
@@ -485,7 +485,7 @@ export function SalesScreen({
       ? [
           {
             id: "settings" as const,
-            label: locale === "zh" ? "设置" : "Settings",
+            label: t("header.settings"),
             onPress: onOpenSettings,
             testID: "sales-open-settings",
             tone: "quiet" as const,
@@ -496,7 +496,7 @@ export function SalesScreen({
       ? [
           {
             id: "attendance-audit" as const,
-            label: locale === "zh" ? "考勤与审计" : "Attendance",
+            label: t("header.attendanceAudit"),
             onPress: onOpenAttendanceAudit,
             testID: "sales-open-attendance-audit",
             tone: "quiet" as const,
@@ -536,8 +536,9 @@ export function SalesScreen({
       tone: "secondary",
     },
     {
+      accessibilityLabel: t("header.languageSwitchHint"),
       id: "language",
-      label: locale === "zh" ? "English" : "中文",
+      label: t("header.language"),
       onPress: () => onSwitchLanguage?.(),
       testID: "sales-switch-language",
       tone: "quiet",
@@ -562,24 +563,13 @@ export function SalesScreen({
           <Text style={styles.workspace}>{t("app.workspace")}</Text>
         </View>
         <SalesToolbar
-          accessibilityCopy={
-            locale === "zh"
-              ? {
-                  moveEarlier: "前移",
-                  moveLater: "后移",
-                  reorderHint: "长按后拖动可排序；也可使用前移或后移操作。",
-                  positionChanged: (label, position, total) =>
-                    `${label} 已移到第 ${position} 位，共 ${total} 位。`,
-                }
-              : {
-                  moveEarlier: "Move earlier",
-                  moveLater: "Move later",
-                  reorderHint:
-                    "Long press and drag to reorder, or use the move earlier and move later actions.",
-                  positionChanged: (label, position, total) =>
-                    `${label} moved to position ${position} of ${total}.`,
-                }
-          }
+          accessibilityCopy={{
+            moveEarlier: t("toolbar.moveEarlier"),
+            moveLater: t("toolbar.moveLater"),
+            reorderHint: t("toolbar.reorderHint"),
+            positionChanged: (label, position, total) =>
+              t("toolbar.positionChanged", { label, position, total }),
+          }}
           actions={toolbarActions}
           canonicalOrder={toolbarOrder}
           onOrderChange={onToolbarOrderChange}

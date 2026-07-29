@@ -2,6 +2,12 @@
 import { expect, jest, test } from "@jest/globals";
 import { render } from "@testing-library/react-native";
 
+jest.doMock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "en", resolvedLanguage: "en" },
+  }),
+}));
+
 jest.doMock("expo-camera", () => {
   const React = require("react");
   const { View } = require("react-native");

@@ -20,15 +20,51 @@ import {
 
 import type { DailyCloseArchive, DailyCloseSummary } from "@/core/contracts";
 
+let mockLanguage = "en";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
+  }),
+}));
+
 describe("DailyCloseScreen", () => {
-  it("横屏中英双语操作台显示 11 种面额并把所有触控目标保持为至少 44pt", async () => {
+  it("英文界面只显示英文日结文案", async () => {
+    mockLanguage = "en";
+    const presenter = new ScreenPresenter();
+    const screen = await render(<DailyCloseScreen presenter={presenter} />);
+
+    expect(screen.getByText("Daily close")).toBeTruthy();
+    expect(screen.getByText("Cash")).toBeTruthy();
+    expect(screen.queryByText("日结")).toBeNull();
+    expect(screen.queryByText("日结 / Daily close")).toBeNull();
+    await screen.unmount();
+  });
+
+  it("中文界面只显示中文日结文案", async () => {
+    mockLanguage = "zh";
+    try {
+      const presenter = new ScreenPresenter();
+      const screen = await render(<DailyCloseScreen presenter={presenter} />);
+
+      expect(screen.getByText("日结")).toBeTruthy();
+      expect(screen.getByText("现金")).toBeTruthy();
+      expect(screen.queryByText("Daily close")).toBeNull();
+      expect(screen.queryByText("日结 / Daily close")).toBeNull();
+      await screen.unmount();
+    } finally {
+      mockLanguage = "en";
+    }
+  });
+
+  it("横屏操作台显示 11 种面额并把所有触控目标保持为至少 44pt", async () => {
     const presenter = new ScreenPresenter();
     const onBack = jest.fn();
     const screen = await render(
       <DailyCloseScreen onBack={onBack} presenter={presenter} />,
     );
 
-    expect(screen.getByText(/日结.*Daily close/i)).toBeTruthy();
+    expect(screen.getByText("Daily close")).toBeTruthy();
     expect(
       StyleSheet.flatten(
         screen.getByTestId("daily-close-workspace").props.style,
@@ -91,11 +127,6 @@ describe("DailyCloseScreen", () => {
     expect(
       screen.getByTestId("daily-close-count-10000").props.showSoftInputOnFocus,
     ).toBe(true);
-    expect(
-      screen.getByText(
-        /进入点钞或点按任一面额会自动打开系统数字键盘；当前输入会滚至键盘上方/,
-      ),
-    ).toBeTruthy();
     expect(
       screen.getByText(
         /The numeric keyboard opens automatically for counting; the focused field stays visible above it/,
@@ -185,7 +216,7 @@ describe("DailyCloseScreen", () => {
     });
     const screen = await render(<DailyCloseScreen presenter={presenter} />);
 
-    expect(screen.getByText("Cash / 现金")).toBeTruthy();
+    expect(screen.getByText("Cash")).toBeTruthy();
     expect(screen.getByText(/\$12\.00.*-\$2\.00.*\$10\.00/)).toBeTruthy();
     expect(screen.getByTestId("daily-close-history-close-old")).toBeTruthy();
     expect(screen.queryByTestId("daily-close-save")).toBeNull();

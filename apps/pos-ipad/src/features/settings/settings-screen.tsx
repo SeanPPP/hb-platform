@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Modal,
   Pressable,
@@ -12,6 +13,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  resolveSettingsLocale,
+  settingsText,
+  type SettingsCopyKey,
+  type SettingsLocale,
+} from "./settings-copy";
 import {
   type PaymentEnvironment,
   type SettingsDangerousConfirmation,
@@ -70,20 +77,21 @@ export type SettingsScreenPresenter = Pick<
   Readonly<{ getState(): SettingsState }>;
 
 type SettingsScreenProps = Readonly<{
+  locale?: SettingsLocale;
   onBack?(): void;
   presenter: SettingsScreenPresenter;
   scanner?: HidScannerRouter;
 }>;
 
 const NAV_ITEMS: readonly Readonly<{
-  label: string;
+  label: SettingsCopyKey;
   pane: SettingsPane;
 }>[] = [
-  { pane: "general", label: "系统与目录 / System" },
-  { pane: "payments", label: "支付终端 / Payments" },
-  { pane: "peripherals", label: "外设 / Peripherals" },
-  { pane: "device", label: "设备注册 / Device" },
-  { pane: "hardware", label: "硬件测试 / Hardware test" },
+  { pane: "general", label: "navigation.general" },
+  { pane: "payments", label: "navigation.payments" },
+  { pane: "peripherals", label: "navigation.peripherals" },
+  { pane: "device", label: "navigation.device" },
+  { pane: "hardware", label: "navigation.hardware" },
 ];
 
 /**
@@ -91,6 +99,7 @@ const NAV_ITEMS: readonly Readonly<{
  * 而在同一屏显示完整影响范围，确保自动化、键盘与触控都走同一确认路径。
  */
 export function SettingsScreen({
+  locale: localeOverride,
   onBack,
   presenter,
   scanner,
@@ -114,6 +123,14 @@ export function SettingsScreen({
     };
   }, [scanner]);
   const setScannerStatus = usePosShellStore((current) => current.setScanner);
+  const { i18n } = useTranslation();
+  const locale =
+    localeOverride ??
+    resolveSettingsLocale(i18n.resolvedLanguage ?? i18n.language);
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
   const interactionLocked = state.busy || state.confirmation !== null;
 
   return (
@@ -130,18 +147,14 @@ export function SettingsScreen({
         ) : null}
         <View style={styles.header}>
           <View style={styles.titleGroup}>
-            <Text style={styles.eyebrow}>终端管理 / TERMINAL ADMIN</Text>
-            <Text style={styles.title}>设置 / Settings</Text>
-            <Text style={styles.subtitle}>
-              管理公开运行参数与本机外设；支付凭据和设备密钥始终留在受保护服务中。
-              / Manage public runtime choices and local peripherals; protected
-              credentials stay on the service.
-            </Text>
+            <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
+            <Text style={styles.title}>{t("header.title")}</Text>
+            <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
           </View>
           {onBack ? (
             <ActionButton
               disabled={interactionLocked}
-              label="返回销售页 / Back to sales"
+              label={t("action.backToSales")}
               onPress={onBack}
               testID="settings-back"
               tone="quiet"
@@ -150,7 +163,7 @@ export function SettingsScreen({
         </View>
 
         {state.statusCode ? (
-          <StatusBanner statusCode={state.statusCode} />
+          <StatusBanner locale={locale} statusCode={state.statusCode} />
         ) : null}
 
         <View style={styles.workspace} testID="settings-workspace">
@@ -158,12 +171,12 @@ export function SettingsScreen({
             pointerEvents={state.confirmation ? "none" : "auto"}
             style={styles.navigation}
           >
-            <Text style={styles.navigationTitle}>设置分区 / Sections</Text>
+            <Text style={styles.navigationTitle}>{t("navigation.title")}</Text>
             {NAV_ITEMS.map((item) => (
               <ActionButton
                 disabled={interactionLocked}
                 key={item.pane}
-                label={item.label}
+                label={t(item.label)}
                 onPress={() => presenter.selectPane(item.pane)}
                 selected={state.activePane === item.pane}
                 testID={`settings-nav-${item.pane}`}
@@ -171,12 +184,14 @@ export function SettingsScreen({
               />
             ))}
             <View style={styles.deviceBadge}>
-              <Text style={styles.badgeLabel}>当前终端 / Terminal</Text>
+              <Text style={styles.badgeLabel}>
+                {t("device.currentTerminal")}
+              </Text>
               <Text style={styles.badgeValue}>
                 {state.device.deviceCode || "—"}
               </Text>
               <Text style={styles.badgeMeta}>
-                {state.device.storeCode || "未绑定 / Unbound"}
+                {state.device.storeCode || t("device.unbound")}
               </Text>
             </View>
           </View>
@@ -189,24 +204,28 @@ export function SettingsScreen({
           >
             {state.kind === "loading" || state.kind === "idle" ? (
               <EmptyPanel
-                message="正在读取本机设置… / Loading terminal settings…"
+                message={t("state.loading")}
                 testID="settings-loading"
               />
             ) : null}
             {state.kind === "failed" ? (
               <EmptyPanel
-                message="本机设置暂不可读 / Terminal settings unavailable"
+                message={t("state.failed")}
                 testID="settings-failed"
               />
             ) : null}
             {state.kind === "unauthorized" ? (
               <EmptyPanel
-                message="没有查看设置权限 / Settings permission required"
+                message={t("state.unauthorized")}
                 testID="settings-unauthorized"
               />
             ) : null}
             {state.kind === "ready" ? (
-              <SettingsPaneContent presenter={presenter} state={state} />
+              <SettingsPaneContent
+                locale={locale}
+                presenter={presenter}
+                state={state}
+              />
             ) : null}
           </ScrollView>
         </View>
@@ -223,6 +242,7 @@ export function SettingsScreen({
               <ConfirmationCard
                 busy={state.busy}
                 confirmation={state.confirmation}
+                locale={locale}
                 onCancel={() => presenter.cancelConfirmation()}
                 onConfirm={() => void presenter.confirmDangerousAction()}
               />
@@ -235,22 +255,22 @@ export function SettingsScreen({
 }
 
 export function SettingsUnavailableScreen({
+  locale: localeOverride,
   onBack,
-}: Readonly<{ onBack(): void }>) {
+}: Readonly<{ locale?: SettingsLocale; onBack(): void }>) {
+  const { i18n } = useTranslation();
+  const locale =
+    localeOverride ??
+    resolveSettingsLocale(i18n.resolvedLanguage ?? i18n.language);
+  const t = (key: SettingsCopyKey) => settingsText(locale, key);
   return (
     <SafeAreaView style={styles.safeArea} testID="settings-runtime-unavailable">
       <View style={styles.unavailable}>
-        <Text style={styles.eyebrow}>TERMINAL SETTINGS</Text>
-        <Text style={styles.unavailableTitle}>
-          设置服务暂不可用 / Settings unavailable
-        </Text>
-        <Text style={styles.unavailableHint}>
-          本机运行时尚未接入设置适配器，未执行任何配置或数据变更。 / The
-          settings adapter is not connected; no configuration or local data was
-          changed.
-        </Text>
+        <Text style={styles.eyebrow}>{t("unavailable.eyebrow")}</Text>
+        <Text style={styles.unavailableTitle}>{t("unavailable.title")}</Text>
+        <Text style={styles.unavailableHint}>{t("unavailable.hint")}</Text>
         <ActionButton
-          label="返回销售页 / Back to sales"
+          label={t("action.backToSales")}
           onPress={onBack}
           testID="settings-unavailable-back"
         />
@@ -260,43 +280,59 @@ export function SettingsUnavailableScreen({
 }
 
 function SettingsPaneContent({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
   switch (state.activePane) {
     case "payments":
-      return <PaymentsPane presenter={presenter} state={state} />;
+      return (
+        <PaymentsPane locale={locale} presenter={presenter} state={state} />
+      );
     case "peripherals":
-      return <PeripheralsPane presenter={presenter} state={state} />;
+      return (
+        <PeripheralsPane locale={locale} presenter={presenter} state={state} />
+      );
     case "device":
-      return <DevicePane presenter={presenter} state={state} />;
+      return <DevicePane locale={locale} presenter={presenter} state={state} />;
     case "hardware":
-      return <HardwarePane presenter={presenter} state={state} />;
+      return (
+        <HardwarePane locale={locale} presenter={presenter} state={state} />
+      );
     default:
-      return <GeneralPane presenter={presenter} state={state} />;
+      return (
+        <GeneralPane locale={locale} presenter={presenter} state={state} />
+      );
   }
 }
 
 function GeneralPane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
   const locked = state.busy || state.confirmation !== null;
+  const t = (key: SettingsCopyKey) => settingsText(locale, key);
   return (
     <View testID="settings-pane-content-general">
       <PaneHeading
-        subtitle="切换服务地址会改变数据分区，必须确认且本机无待处理交易。/ Endpoint changes require confirmation and a clear local queue."
-        title="系统与商品目录 / System & catalog"
+        subtitle={t("general.subtitle")}
+        title={t("general.title")}
       />
-      <SectionCard eyebrow="NETWORK" title="API 地址 / API address">
+      <SectionCard
+        eyebrow={t("eyebrow.network")}
+        title={t("general.apiAddress")}
+      >
         <TextInput
-          accessibilityLabel="API 地址 / API address"
+          accessibilityLabel={t("general.apiAddress")}
           autoCapitalize="none"
           autoCorrect={false}
           editable={!locked && state.access.canReregisterDevice}
@@ -309,65 +345,64 @@ function GeneralPane({
         />
         <ActionButton
           disabled={locked || !state.access.canReregisterDevice}
-          label="检查并申请切换 / Review change"
+          label={t("general.reviewApiAddress")}
           onPress={() => presenter.requestApiAddressChange()}
           testID="settings-api-request-change"
         />
       </SectionCard>
 
-      <SectionCard eyebrow="CATALOG" title="商品目录 / Catalog">
+      <SectionCard eyebrow={t("eyebrow.catalog")} title={t("general.catalog")}>
         <View style={styles.metricRow}>
           <Metric
-            label="快照 / Snapshot"
-            value={state.catalog.snapshotId ?? "无 / None"}
+            label={t("metric.snapshot")}
+            value={state.catalog.snapshotId ?? t("value.none")}
           />
           <Metric
-            label="商品数 / Items"
+            label={t("metric.items")}
             value={String(state.catalog.itemCount)}
           />
           <Metric
-            label="启用时间 / Activated"
+            label={t("metric.activated")}
             value={compactDate(state.catalog.activatedAt)}
           />
         </View>
         <View style={styles.actionRow}>
           <ActionButton
             disabled={locked || !state.access.canDownloadCatalog}
-            label="下载并安全启用 / Download"
+            label={t("general.downloadCatalog")}
             onPress={() => void presenter.downloadCatalog()}
             testID="settings-catalog-download"
           />
           <ActionButton
             disabled={locked || !state.access.canResetCatalog}
-            label="申请重置 / Review reset"
+            label={t("general.resetCatalog")}
             onPress={() => presenter.requestCatalogReset()}
             testID="settings-catalog-reset"
             tone="danger"
           />
         </View>
-        <Text style={styles.safetyNote}>
-          下载失败时保留当前已验证目录；重置前不会清除待同步销售或退款。 / A
-          failed download keeps the active catalog; reset never clears queued
-          sales or returns.
-        </Text>
+        <Text style={styles.safetyNote}>{t("general.catalogSafety")}</Text>
       </SectionCard>
 
-      <SectionCard eyebrow="UPDATES" title="应用更新 / App update">
+      <SectionCard
+        eyebrow={t("eyebrow.updates")}
+        title={t("general.appUpdate")}
+      >
         <View style={styles.metricRow}>
-          <Metric label="渠道 / Channel" value={state.appUpdate.channel} />
+          <Metric label={t("metric.channel")} value={state.appUpdate.channel} />
           <Metric
-            label="当前版本 / Current"
+            label={t("metric.currentVersion")}
             value={state.appUpdate.currentVersion || "—"}
           />
           <Metric
-            label="可用版本 / Available"
-            value={state.appUpdate.availableVersion ?? "已是最新 / Current"}
+            label={t("metric.availableVersion")}
+            value={state.appUpdate.availableVersion ?? t("value.current")}
           />
         </View>
         <View style={styles.actionRow}>
           <ActionButton
             disabled={locked || !state.access.canManageAppUpdate}
-            label="检查更新 / Check"
+            label={t("general.checkUpdate")}
             onPress={() => void presenter.checkForAppUpdate()}
             testID="settings-update-check"
             tone="secondary"
@@ -378,7 +413,7 @@ function GeneralPane({
               !state.access.canManageAppUpdate ||
               !state.appUpdate.restartAvailable
             }
-            label="申请安全重启 / Review restart"
+            label={t("general.restart")}
             onPress={() => presenter.requestAppRestart()}
             testID="settings-update-restart"
             tone="danger"
@@ -390,12 +425,15 @@ function GeneralPane({
 }
 
 function PaymentsPane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
+  const t = (key: SettingsCopyKey) => settingsText(locale, key);
   const disabled =
     state.busy ||
     state.confirmation !== null ||
@@ -411,18 +449,14 @@ function PaymentsPane({
   return (
     <View testID="settings-pane-content-payments">
       <PaneHeading
-        subtitle="这里只保存公开的环境、门店和终端选择；受保护支付凭据由服务端管理。/ Only public environment and terminal choices are stored here."
-        title="支付终端 / Payment terminals"
+        subtitle={t("payments.subtitle")}
+        title={t("payments.title")}
       />
       <SectionCard
-        eyebrow="ACTIVE CARD TERMINAL"
-        title="刷卡终端提供方 / Card terminal provider"
+        eyebrow={t("eyebrow.activeCardTerminal")}
+        title={t("payments.provider")}
       >
-        <Text style={styles.sectionCopy}>
-          必须明确选择一个终端提供方；未选择或所选终端不可用时，银行卡支付保持关闭。
-          / Select exactly one terminal provider; card payments remain disabled
-          when no available provider is selected.
-        </Text>
+        <Text style={styles.sectionCopy}>{t("payments.providerHint")}</Text>
         <View style={styles.actionRow}>
           <ToggleButton
             disabled={disabled || !squareAvailable}
@@ -444,33 +478,35 @@ function PaymentsPane({
           testID="settings-payment-provider-state"
         >
           {state.paymentProviderDraft === null
-            ? "未选择：银行卡支付已关闭 / Not selected: card payments disabled"
+            ? t("payments.noneSelected")
             : state.paymentProviderDraft === "square"
-              ? "已选择 Square / Square selected"
-              : "已选择 Linkly / Linkly selected"}
+              ? t("payments.squareSelected")
+              : t("payments.linklySelected")}
         </Text>
       </SectionCard>
       <View style={styles.twoColumn}>
         <SectionCard
-          eyebrow="CARD TERMINAL"
+          eyebrow={t("eyebrow.cardTerminal")}
           style={styles.columnCard}
           title="Square"
         >
           <Availability
             available={squareAvailable}
             blockerCode={state.square.blockerCode}
+            locale={locale}
           />
           <EnvironmentSelector
             disabled={squareDisabled}
             environment={state.squareDraft.environment}
+            locale={locale}
             onSelect={(environment) =>
               presenter.setSquareEnvironment(environment)
             }
             prefix="settings-square"
           />
-          <FieldLabel label="门店位置 ID / Location ID" />
+          <FieldLabel label={t("field.locationId")} />
           <TextInput
-            accessibilityLabel="Square 门店位置 ID / Square location ID"
+            accessibilityLabel={t("field.squareLocationId")}
             autoCapitalize="none"
             autoCorrect={false}
             editable={!squareDisabled}
@@ -479,9 +515,9 @@ function PaymentsPane({
             testID="settings-square-location"
             value={state.squareDraft.locationId}
           />
-          <FieldLabel label="终端设备 ID / Device ID" />
+          <FieldLabel label={t("field.deviceId")} />
           <TextInput
-            accessibilityLabel="Square 终端设备 ID / Square device ID"
+            accessibilityLabel={t("field.squareDeviceId")}
             autoCapitalize="none"
             autoCorrect={false}
             editable={!squareDisabled}
@@ -492,34 +528,36 @@ function PaymentsPane({
           />
           <ActionButton
             disabled={squareDisabled}
-            label="测试可用性 / Test"
+            label={t("action.test")}
             onPress={() => void presenter.testPaymentProvider("square")}
             testID="settings-square-test"
             tone="secondary"
           />
         </SectionCard>
 
-        <SectionCard eyebrow="EFTPOS" style={styles.columnCard} title="Linkly">
+        <SectionCard
+          eyebrow={t("eyebrow.eftpos")}
+          style={styles.columnCard}
+          title="Linkly"
+        >
           <Availability
             available={linklyAvailable}
             blockerCode={state.linkly.blockerCode}
+            locale={locale}
           />
           <EnvironmentSelector
             disabled={linklyDisabled}
             environment={state.linklyDraft.environment}
+            locale={locale}
             onSelect={(environment) =>
               presenter.setLinklyEnvironment(environment)
             }
             prefix="settings-linkly"
           />
-          <Text style={styles.sectionCopy}>
-            iPad 使用后端异步 Linkly 通道。商户与 POS
-            认证材料不会进入本机普通设置。 / iPad uses the backend asynchronous
-            Linkly channel; merchant authentication material is not stored here.
-          </Text>
+          <Text style={styles.sectionCopy}>{t("payments.linklyHint")}</Text>
           <ActionButton
             disabled={linklyDisabled}
-            label="测试可用性 / Test"
+            label={t("action.test")}
             onPress={() => void presenter.testPaymentProvider("linkly")}
             testID="settings-linkly-test"
             tone="secondary"
@@ -528,7 +566,7 @@ function PaymentsPane({
       </View>
       <ActionButton
         disabled={disabled}
-        label="保存支付终端选择 / Save payment choices"
+        label={t("payments.save")}
         onPress={() => void presenter.savePaymentSettings()}
         testID="settings-payment-save"
       />
@@ -537,12 +575,18 @@ function PaymentsPane({
 }
 
 function PeripheralsPane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
   const printerDisabled =
     state.busy ||
     state.confirmation !== null ||
@@ -554,14 +598,17 @@ function PeripheralsPane({
   return (
     <View testID="settings-pane-content-peripherals">
       <PaneHeading
-        subtitle="发现、连接并验证本机打印机、扫描器与独立客显。/ Discover, connect and verify local peripherals."
-        title="外设 / Peripherals"
+        subtitle={t("peripherals.subtitle")}
+        title={t("peripherals.title")}
       />
-      <SectionCard eyebrow="RECEIPT" title="小票打印机 / Printer">
+      <SectionCard
+        eyebrow={t("eyebrow.receipt")}
+        title={t("peripherals.printer")}
+      >
         <View style={styles.actionRow}>
           <ToggleButton
             disabled={printerDisabled}
-            label="打印 / Printing"
+            label={t("peripherals.printing")}
             onPress={() =>
               presenter.setPrinterEnabled(!state.printer.printEnabled)
             }
@@ -570,7 +617,7 @@ function PeripheralsPane({
           />
           <ToggleButton
             disabled={printerDisabled}
-            label="钱箱 / Drawer"
+            label={t("peripherals.drawer")}
             onPress={() =>
               presenter.setDrawerEnabled(!state.printer.drawerEnabled)
             }
@@ -590,7 +637,11 @@ function PeripheralsPane({
           />
           <ToggleButton
             disabled={printerDisabled}
-            label={state.printer.locale}
+            label={t(
+              state.printer.locale === "en"
+                ? "printer.locale.en"
+                : "printer.locale.zhCN",
+            )}
             onPress={() =>
               presenter.setPrinterLocale(
                 state.printer.locale === "en" ? "zh-CN" : "en",
@@ -600,9 +651,9 @@ function PeripheralsPane({
             testID="settings-printer-locale"
           />
         </View>
-        <FieldLabel label="设备 ID / Peripheral ID" />
+        <FieldLabel label={t("field.peripheralId")} />
         <TextInput
-          accessibilityLabel="打印机设备 ID / Printer peripheral ID"
+          accessibilityLabel={t("field.printerPeripheralId")}
           autoCapitalize="none"
           autoCorrect={false}
           editable={!printerDisabled}
@@ -614,20 +665,20 @@ function PeripheralsPane({
         <View style={styles.actionRow}>
           <ActionButton
             disabled={printerDisabled}
-            label="扫描打印机 / Scan"
+            label={t("peripherals.scanPrinters")}
             onPress={() => void presenter.scanPrinters()}
             testID="settings-printer-scan"
             tone="secondary"
           />
           <ActionButton
             disabled={printerDisabled}
-            label="保存 / Save"
+            label={t("action.save")}
             onPress={() => void presenter.savePrinterSettings()}
             testID="settings-printer-save"
           />
           <ActionButton
             disabled={printerDisabled}
-            label="测试打印 / Test"
+            label={t("peripherals.testPrint")}
             onPress={() => void presenter.testPrinter()}
             testID="settings-printer-test"
             tone="secondary"
@@ -648,7 +699,7 @@ function PeripheralsPane({
             <ActionButton
               compact
               disabled={printerDisabled}
-              label="连接 / Connect"
+              label={t("action.connect")}
               onPress={() => void presenter.connectPrinter(device.id)}
               testID={`settings-printer-connect-${device.id}`}
             />
@@ -658,12 +709,14 @@ function PeripheralsPane({
 
       <View style={styles.twoColumn}>
         <SectionCard
-          eyebrow="SCANNER"
+          eyebrow={t("eyebrow.scanner")}
           style={styles.columnCard}
-          title="扫描器 / Scanner"
+          title={t("peripherals.scanner")}
         >
           <Text style={styles.sectionCopy}>
-            状态 / Status: {state.hardware.scannerStatus}
+            {t("label.status", {
+              status: hardwareStatusText(locale, state.hardware.scannerStatus),
+            })}
           </Text>
           <ActionButton
             disabled={
@@ -671,24 +724,26 @@ function PeripheralsPane({
               state.confirmation !== null ||
               !state.access.canTestScanner
             }
-            label="等待一次扫码 / Capture one scan"
+            label={t("peripherals.captureOneScan")}
             onPress={() => void presenter.testScanner()}
             testID="settings-scanner-test"
             tone="secondary"
           />
         </SectionCard>
         <SectionCard
-          eyebrow="CUSTOMER DISPLAY"
+          eyebrow={t("eyebrow.customerDisplay")}
           style={styles.columnCard}
-          title="独立客显 / External display"
+          title={t("peripherals.externalDisplay")}
         >
           <Text style={styles.sectionCopy}>
-            状态 / Status: {state.externalDisplay.status}
+            {t("label.status", {
+              status: hardwareStatusText(locale, state.externalDisplay.status),
+            })}
           </Text>
           <View style={styles.actionRow}>
             <ToggleButton
               disabled={displayDisabled || !state.externalDisplay.available}
-              label="启用 / Enabled"
+              label={t("action.enabled")}
               onPress={() =>
                 void presenter.setExternalDisplayEnabled(
                   !state.externalDisplay.enabled,
@@ -699,7 +754,7 @@ function PeripheralsPane({
             />
             <ActionButton
               disabled={displayDisabled || !state.externalDisplay.available}
-              label="测试画面 / Test"
+              label={t("peripherals.testDisplay")}
               onPress={() => void presenter.testExternalDisplay()}
               testID="settings-display-test"
               tone="secondary"
@@ -712,9 +767,11 @@ function PeripheralsPane({
 }
 
 function DevicePane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
@@ -722,29 +779,36 @@ function DevicePane({
     state.busy ||
     state.confirmation !== null ||
     !state.access.canReregisterDevice;
+  const t = (key: SettingsCopyKey) => settingsText(locale, key);
   return (
     <View testID="settings-pane-content-device">
-      <PaneHeading
-        subtitle="重新注册只改变可信设备绑定，不会删除本地待同步业务记录。/ Re-registration changes the trusted binding without deleting queued business records."
-        title="设备注册 / Device registration"
-      />
-      <SectionCard eyebrow="CURRENT BINDING" title="当前绑定 / Current">
+      <PaneHeading subtitle={t("device.subtitle")} title={t("device.title")} />
+      <SectionCard
+        eyebrow={t("eyebrow.currentBinding")}
+        title={t("device.currentBinding")}
+      >
         <View style={styles.metricRow}>
-          <Metric label="门店 / Store" value={state.device.storeCode || "—"} />
           <Metric
-            label="门店名称 / Store name"
+            label={t("metric.store")}
+            value={state.device.storeCode || "—"}
+          />
+          <Metric
+            label={t("metric.storeName")}
             value={state.device.storeName || "—"}
           />
           <Metric
-            label="设备 / Device"
+            label={t("metric.device")}
             value={state.device.deviceCode || "—"}
           />
         </View>
       </SectionCard>
-      <SectionCard eyebrow="RE-REGISTER" title="重新注册 / Re-register">
-        <FieldLabel label="目标门店代码 / Target store code" />
+      <SectionCard
+        eyebrow={t("eyebrow.reregister")}
+        title={t("device.reregister")}
+      >
+        <FieldLabel label={t("field.targetStoreCode")} />
         <TextInput
-          accessibilityLabel="目标门店代码 / Target store code"
+          accessibilityLabel={t("field.targetStoreCode")}
           autoCapitalize="characters"
           autoCorrect={false}
           editable={!disabled}
@@ -753,9 +817,9 @@ function DevicePane({
           testID="settings-reregister-store"
           value={state.reregisterStoreCode}
         />
-        <FieldLabel label="终端名称 / Terminal name" />
+        <FieldLabel label={t("field.terminalName")} />
         <TextInput
-          accessibilityLabel="终端名称 / Terminal name"
+          accessibilityLabel={t("field.terminalName")}
           editable={!disabled}
           onChangeText={(value) => presenter.setTerminalName(value)}
           style={styles.textInput}
@@ -764,7 +828,7 @@ function DevicePane({
         />
         <ActionButton
           disabled={disabled}
-          label="检查并申请重新注册 / Review re-registration"
+          label={t("device.reviewReregistration")}
           onPress={() => presenter.requestDeviceReregistration()}
           testID="settings-reregister-request"
           tone="danger"
@@ -775,21 +839,24 @@ function DevicePane({
 }
 
 function HardwarePane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
+  const t = (key: SettingsCopyKey) => settingsText(locale, key);
   return (
     <View testID="settings-pane-content-hardware">
       <PaneHeading
-        subtitle="逐项验证硬件链路；测试不会创建销售或支付。/ Verify each hardware path without creating a sale or payment."
-        title="硬件测试 / Hardware test"
+        subtitle={t("hardware.subtitle")}
+        title={t("hardware.title")}
       />
       <View style={styles.hardwareGrid}>
         <HardwareCard
-          actionLabel="打印测试小票 / Print test"
+          actionLabel={t("hardware.printTest")}
           disabled={
             state.busy ||
             state.confirmation !== null ||
@@ -797,11 +864,12 @@ function HardwarePane({
           }
           onPress={() => void presenter.testPrinter()}
           status={state.hardware.printerStatus}
+          statusText={hardwareStatusText(locale, state.hardware.printerStatus)}
           testID="settings-hardware-printer"
-          title="打印机 / Printer"
+          title={t("peripherals.printer")}
         />
         <HardwareCard
-          actionLabel="等待一次扫码 / Capture scan"
+          actionLabel={t("hardware.captureScan")}
           disabled={
             state.busy ||
             state.confirmation !== null ||
@@ -809,11 +877,12 @@ function HardwarePane({
           }
           onPress={() => void presenter.testScanner()}
           status={state.hardware.scannerStatus}
+          statusText={hardwareStatusText(locale, state.hardware.scannerStatus)}
           testID="settings-hardware-scanner"
-          title="扫描器 / Scanner"
+          title={t("peripherals.scanner")}
         />
         <HardwareCard
-          actionLabel="显示测试画面 / Show test"
+          actionLabel={t("hardware.showTest")}
           disabled={
             state.busy ||
             state.confirmation !== null ||
@@ -822,13 +891,20 @@ function HardwarePane({
           }
           onPress={() => void presenter.testExternalDisplay()}
           status={state.hardware.externalDisplayStatus}
+          statusText={hardwareStatusText(
+            locale,
+            state.hardware.externalDisplayStatus,
+          )}
           testID="settings-hardware-display"
-          title="独立客显 / Display"
+          title={t("hardware.display")}
         />
       </View>
-      <SectionCard eyebrow="LAST CAPTURE" title="最近扫码 / Last scan">
+      <SectionCard
+        eyebrow={t("eyebrow.lastCapture")}
+        title={t("hardware.lastScan")}
+      >
         <Text style={styles.scannerValue}>
-          {state.hardware.lastScannerValue ?? "等待测试 / Waiting for test"}
+          {state.hardware.lastScannerValue ?? t("hardware.waitingForTest")}
         </Text>
       </SectionCard>
     </View>
@@ -838,11 +914,13 @@ function HardwarePane({
 function ConfirmationCard({
   busy,
   confirmation,
+  locale,
   onCancel,
   onConfirm,
 }: Readonly<{
   busy: boolean;
   confirmation: SettingsDangerousConfirmation;
+  locale: SettingsLocale;
   onCancel(): void;
   onConfirm(): void;
 }>) {
@@ -854,25 +932,26 @@ function ConfirmationCard({
     >
       <View style={styles.confirmationCopy}>
         <Text style={styles.confirmationTitle}>
-          {confirmationTitle(confirmation)}
+          {confirmationTitle(locale, confirmation)}
         </Text>
         <Text style={styles.confirmationBody}>
-          确认前会再次检查活动购物车、待同步销售/退款、未决支付与耐久写入。
-          待同步数据不会被清除；存在任何项目时操作会被阻断。 / Local pending
-          data is never cleared; any pending work blocks this action.
+          {settingsText(locale, "confirmation.body")}
         </Text>
       </View>
       <View style={styles.confirmationActions}>
         <ActionButton
           disabled={busy}
-          label="取消 / Cancel"
+          label={settingsText(locale, "action.cancel")}
           onPress={onCancel}
           testID="settings-confirm-cancel"
           tone="quiet"
         />
         <ActionButton
           disabled={busy}
-          label={busy ? "检查中… / Checking…" : "确认执行 / Confirm"}
+          label={settingsText(
+            locale,
+            busy ? "action.checking" : "action.confirm",
+          )}
           onPress={onConfirm}
           testID="settings-confirm"
           tone="danger"
@@ -885,11 +964,13 @@ function ConfirmationCard({
 function EnvironmentSelector({
   disabled,
   environment,
+  locale,
   onSelect,
   prefix,
 }: Readonly<{
   disabled: boolean;
   environment: PaymentEnvironment;
+  locale: SettingsLocale;
   onSelect(environment: PaymentEnvironment): void;
   prefix: string;
 }>) {
@@ -897,14 +978,14 @@ function EnvironmentSelector({
     <View style={styles.actionRow}>
       <ToggleButton
         disabled={disabled}
-        label="生产 / Production"
+        label={settingsText(locale, "environment.production")}
         onPress={() => onSelect("Production")}
         selected={environment === "Production"}
         testID={`${prefix}-production`}
       />
       <ToggleButton
         disabled={disabled}
-        label="沙盒 / Sandbox"
+        label={settingsText(locale, "environment.sandbox")}
         onPress={() => onSelect("Sandbox")}
         selected={environment === "Sandbox"}
         testID={`${prefix}-sandbox`}
@@ -918,6 +999,7 @@ function HardwareCard({
   disabled,
   onPress,
   status,
+  statusText,
   testID,
   title,
 }: Readonly<{
@@ -925,6 +1007,7 @@ function HardwareCard({
   disabled: boolean;
   onPress(): void;
   status: string;
+  statusText: string;
   testID: string;
   title: string;
 }>) {
@@ -942,7 +1025,7 @@ function HardwareCard({
         ]}
         testID={`${testID}-status`}
       >
-        {status}
+        {statusText}
       </Text>
       <ActionButton
         disabled={disabled}
@@ -990,7 +1073,12 @@ function SectionCard({
 function Availability({
   available,
   blockerCode,
-}: Readonly<{ available: boolean; blockerCode: string | null }>) {
+  locale,
+}: Readonly<{
+  available: boolean;
+  blockerCode: string | null;
+  locale: SettingsLocale;
+}>) {
   return (
     <View
       style={[
@@ -1000,8 +1088,10 @@ function Availability({
     >
       <Text style={styles.availabilityText}>
         {available
-          ? "运行时可用 / Runtime ready"
-          : `运行时未配置 / Runtime unavailable${blockerCode ? ` · ${blockerCode}` : ""}`}
+          ? settingsText(locale, "availability.ready")
+          : settingsText(locale, "availability.unavailable", {
+              blocker: blockerCode ? ` · ${blockerCode}` : "",
+            })}
       </Text>
     </View>
   );
@@ -1034,8 +1124,9 @@ function EmptyPanel({
 }
 
 function StatusBanner({
+  locale,
   statusCode,
-}: Readonly<{ statusCode: SettingsStatusCode }>) {
+}: Readonly<{ locale: SettingsLocale; statusCode: SettingsStatusCode }>) {
   const success = isSuccessStatus(statusCode);
   return (
     <View
@@ -1046,10 +1137,20 @@ function StatusBanner({
       ]}
       testID="settings-status"
     >
-      <Text style={styles.statusText}>{statusCopy(statusCode)}</Text>
+      <Text style={styles.statusText}>{statusCopy(locale, statusCode)}</Text>
       <Text style={styles.statusCode}>[{statusCode}]</Text>
     </View>
   );
+}
+
+function hardwareStatusText(locale: SettingsLocale, status: string): string {
+  const statusKey: Readonly<Record<string, SettingsCopyKey>> = {
+    connected: "hardware.connected",
+    ready: "hardware.ready",
+    disconnected: "hardware.disconnected",
+    unavailable: "hardware.unavailable",
+  };
+  return statusKey[status] ? settingsText(locale, statusKey[status]) : status;
 }
 
 function ToggleButton({
@@ -1131,74 +1232,32 @@ function ActionButton({
 }
 
 function confirmationTitle(
+  locale: SettingsLocale,
   confirmation: SettingsDangerousConfirmation,
 ): string {
   switch (confirmation.kind) {
     case "change-api-address":
-      return `切换 API 地址 / Change API address\n${confirmation.apiBaseUrl}`;
+      return settingsText(locale, "confirmation.changeApiAddress", {
+        apiBaseUrl: confirmation.apiBaseUrl,
+      });
     case "change-payment-settings":
-      return "切换支付终端配置 / Change payment terminal settings";
+      return settingsText(locale, "confirmation.changePaymentSettings");
     case "reset-catalog":
-      return "重置本地商品目录 / Reset local catalog";
+      return settingsText(locale, "confirmation.resetCatalog");
     case "reregister-device":
-      return `重新注册到 ${confirmation.targetStoreCode} / Re-register device`;
+      return settingsText(locale, "confirmation.reregisterDevice", {
+        targetStoreCode: confirmation.targetStoreCode,
+      });
     default:
-      return "安全重启应用 / Restart app safely";
+      return settingsText(locale, "confirmation.restartApp");
   }
 }
 
-function statusCopy(statusCode: SettingsStatusCode): string {
-  const copy: Record<SettingsStatusCode, string> = {
-    "api-address-saved":
-      "API 地址已保存；运行时必须按适配器指引重新建立。/ API address saved.",
-    "api-health-check-failed":
-      "候选 API 健康检查失败，旧地址保持不变 / Candidate API unavailable; previous address retained",
-    "app-restart-requested": "已请求安全重启 / Safe restart requested",
-    "app-update-check-failed": "更新检查失败 / Update check failed",
-    "app-update-checked": "更新检查完成 / Update check complete",
-    "catalog-download-failed":
-      "目录下载失败，当前目录仍可用 / Download failed; current catalog remains active",
-    "catalog-downloaded": "目录已下载并启用 / Catalog activated",
-    "catalog-reset": "本地目录已重置 / Local catalog reset",
-    "catalog-reset-failed": "目录重置失败 / Catalog reset failed",
-    "device-reregister-failed":
-      "重新注册未开始 / Re-registration did not start",
-    "device-reregister-started":
-      "设备重新注册已开始 / Device re-registration started",
-    "display-setting-failed": "客显设置失败 / Display setting failed",
-    "display-setting-saved": "客显设置已保存 / Display setting saved",
-    "display-test-failed": "客显测试失败 / Display test failed",
-    "display-test-passed": "客显测试已发送 / Display test sent",
-    "invalid-api-address": "API 地址格式不安全 / Invalid API address",
-    "invalid-device-registration":
-      "请选择不同的有效门店 / Choose a different valid store",
-    "load-failed": "读取设置失败 / Settings load failed",
-    "payment-settings-invalid":
-      "可用支付通道的公开配置不完整 / Public payment provider configuration is incomplete",
-    "payment-settings-save-failed":
-      "支付终端设置保存失败 / Payment settings save failed",
-    "payment-settings-saved": "支付终端设置已保存 / Payment settings saved",
-    "payment-test-failed": "支付通道测试失败 / Payment test failed",
-    "payment-test-passed": "支付通道可用 / Payment provider available",
-    "pending-local-data":
-      "存在本地待处理业务，操作已阻断且数据保持不变 / Pending local work blocked the action",
-    "permission-required": "需要相应设置权限 / Permission required",
-    "printer-connect-failed": "打印机连接失败 / Printer connection failed",
-    "printer-connected": "打印机已连接 / Printer connected",
-    "printer-scan-failed": "打印机扫描失败 / Printer scan failed",
-    "printer-scan-finished": "打印机扫描完成 / Printer scan complete",
-    "printer-settings-save-failed":
-      "打印机设置保存失败 / Printer settings save failed",
-    "printer-settings-saved": "打印机设置已保存 / Printer settings saved",
-    "printer-test-failed": "测试打印失败 / Test print failed",
-    "printer-test-passed": "测试小票已发送 / Test receipt sent",
-    "restart-failed": "重启或地址切换失败 / Restart or endpoint change failed",
-    "safety-check-failed":
-      "无法确认本地安全状态，操作已阻断 / Safety state unavailable; action blocked",
-    "scanner-test-failed": "扫码测试失败 / Scanner test failed",
-    "scanner-test-passed": "已收到扫码 / Scan received",
-  };
-  return copy[statusCode];
+function statusCopy(
+  locale: SettingsLocale,
+  statusCode: SettingsStatusCode,
+): string {
+  return settingsText(locale, `status.${statusCode}` as SettingsCopyKey);
 }
 
 function isSuccessStatus(statusCode: SettingsStatusCode): boolean {

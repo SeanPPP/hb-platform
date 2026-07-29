@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
@@ -9,8 +9,20 @@ import {
   type AttendanceAuditPresenterState,
 } from "./index";
 
+let mockLanguage: "en" | "zh" = "zh";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
+  }),
+}));
+
 describe("AttendanceAuditScreen", () => {
-  it("横屏双语显示短时 QR、倒计时和审计主从区，触控目标至少 44pt", async () => {
+  beforeEach(() => {
+    mockLanguage = "zh";
+  });
+
+  it("横屏显示短时 QR、倒计时和审计主从区，触控目标至少 44pt", async () => {
     const presenter = new ScreenPresenter();
     const onBack = jest.fn();
     const screen = await render(
@@ -18,7 +30,7 @@ describe("AttendanceAuditScreen", () => {
     );
 
     expect(presenter.startCalls).toBe(1);
-    expect(screen.getByText(/考勤与审计.*Attendance & audit/i)).toBeTruthy();
+    expect(screen.getByText("考勤与审计")).toBeTruthy();
     expect(
       StyleSheet.flatten(
         screen.getByTestId("attendance-audit-workspace").props.style,
@@ -27,7 +39,7 @@ describe("AttendanceAuditScreen", () => {
     expect(
       screen.getByTestId("attendance-qr-image").props.source.uri,
     ).toBe("data:image/png;base64,QQ==");
-    expect(screen.getByText(/15 秒.*15 sec/i)).toBeTruthy();
+    expect(screen.getByText("15 秒")).toBeTruthy();
     expect(screen.queryByText(/HBATE1/)).toBeNull();
 
     for (const testID of [
@@ -52,6 +64,25 @@ describe("AttendanceAuditScreen", () => {
     await screen.unmount();
   });
 
+  it("按当前语言只渲染一种审计文案，旧双语字符串不会出现", async () => {
+    const chinese = await render(
+      <AttendanceAuditScreen presenter={new ScreenPresenter()} />,
+    );
+    expect(chinese.getByText("考勤与审计")).toBeTruthy();
+    expect(chinese.queryByText("Attendance & audit")).toBeNull();
+    expect(chinese.queryByText("考勤与审计 / Attendance & audit")).toBeNull();
+    await chinese.unmount();
+
+    mockLanguage = "en";
+    const english = await render(
+      <AttendanceAuditScreen presenter={new ScreenPresenter()} />,
+    );
+    expect(english.getByText("Attendance & audit")).toBeTruthy();
+    expect(english.queryByText("考勤与审计")).toBeNull();
+    expect(english.queryByText("考勤与审计 / Attendance & audit")).toBeNull();
+    await english.unmount();
+  });
+
   it("可信时间回拨锁存时移除 QR 并显示必须在线重同步的安全提示", async () => {
     const presenter = new ScreenPresenter({
       qr: {
@@ -68,8 +99,8 @@ describe("AttendanceAuditScreen", () => {
 
     expect(screen.queryByTestId("attendance-qr-image")).toBeNull();
     expect(screen.getByTestId("attendance-clock-lock")).toBeTruthy();
-    expect(screen.getByText(/时钟回拨.*Clock rollback/i)).toBeTruthy();
-    expect(screen.getByText(/在线重新同步.*online re-sync/i)).toBeTruthy();
+    expect(screen.getByText("时钟回拨")).toBeTruthy();
+    expect(screen.getByText(/在线重新同步可信时间/)).toBeTruthy();
     await screen.unmount();
   });
 

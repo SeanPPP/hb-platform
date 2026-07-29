@@ -14,6 +14,7 @@ import {
   SETTINGS_VIEW_PERMISSION,
   SettingsPresenter,
   SettingsScreen,
+  SettingsUnavailableScreen,
   type SettingsControlPort,
   type SettingsDangerousConfirmation,
   type SettingsDangerousActionResult,
@@ -27,6 +28,12 @@ import {
 } from "@/core/db/pos-settings-repository";
 import { posColors } from "@/ui/theme";
 
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "en", resolvedLanguage: "en" },
+  }),
+}));
+
 const presenters: SettingsPresenter[] = [];
 
 afterEach(() => {
@@ -35,17 +42,27 @@ afterEach(() => {
 });
 
 describe("SettingsScreen", () => {
-  it("呈现横屏中英双语五分区，并保持导航与主要操作至少 44pt", async () => {
+  it("运行时不可用页按当前语言显示", async () => {
+    const onBack = jest.fn();
+    const screen = await render(
+      <SettingsUnavailableScreen locale="zh" onBack={onBack} />,
+    );
+    expect(screen.getByText("设置服务暂不可用")).toBeTruthy();
+    expect(screen.queryByText("Settings unavailable")).toBeNull();
+  });
+
+  it("英文界面只呈现英文五分区，并保持导航与主要操作至少 44pt", async () => {
     const port = new ScreenSettingsPort();
     const presenter = createPresenter(port);
     await presenter.load();
     const onBack = jest.fn();
     const screen = await render(
-      <SettingsScreen onBack={onBack} presenter={presenter} />,
+      <SettingsScreen locale="en" onBack={onBack} presenter={presenter} />,
     );
     await screen.findByTestId("settings-pane-content-general");
 
-    expect(screen.getByText(/设置.*Settings/i)).toBeTruthy();
+    expect(screen.getByText("Settings")).toBeTruthy();
+    expect(screen.queryByText("设置")).toBeNull();
     expect(
       StyleSheet.flatten(screen.getByTestId("settings-workspace").props.style)
         .flexDirection,
@@ -76,7 +93,9 @@ describe("SettingsScreen", () => {
     port.snapshotValue = { ...snapshot(), paymentProvider: null };
     const presenter = createPresenter(port);
     await presenter.load();
-    const screen = await render(<SettingsScreen presenter={presenter} />);
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
     await screen.findByTestId("settings-pane-content-general");
 
     await fireEvent.press(screen.getByTestId("settings-nav-payments"));
@@ -90,9 +109,10 @@ describe("SettingsScreen", () => {
     expect(screen.queryByText(/密码|password/i)).toBeNull();
     expect(
       screen.getByText(
-        /必须明确选择一个终端提供方.*Select exactly one terminal provider/i,
+        "Select exactly one terminal provider; card payments remain disabled when no available provider is selected.",
       ),
     ).toBeTruthy();
+    expect(screen.queryByText(/必须明确选择一个终端提供方/)).toBeNull();
     expect(
       screen.getByTestId("settings-payment-provider-square").props
         .accessibilityState.selected,
@@ -137,19 +157,19 @@ describe("SettingsScreen", () => {
       },
     ]);
     await screen.findByText(/\[payment-settings-saved\]/);
-    expect(
-      screen.getByLabelText("Square 门店位置 ID / Square location ID"),
-    ).toBeTruthy();
-    expect(
-      screen.getByLabelText("Square 终端设备 ID / Square device ID"),
-    ).toBeTruthy();
+    expect(screen.getByText("Payment settings saved")).toBeTruthy();
+    expect(screen.queryByText("支付终端设置已保存")).toBeNull();
+    expect(screen.getByLabelText("Square location ID")).toBeTruthy();
+    expect(screen.getByLabelText("Square device ID")).toBeTruthy();
   });
 
-  it("危险操作显示明确确认，确认后才调用端口", async () => {
+  it("中文危险操作显示明确确认，确认后才调用端口", async () => {
     const port = new ScreenSettingsPort();
     const presenter = createPresenter(port);
     await presenter.load();
-    const screen = await render(<SettingsScreen presenter={presenter} />);
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
     await screen.findByTestId("settings-pane-content-general");
 
     await fireEvent.changeText(
@@ -178,6 +198,14 @@ describe("SettingsScreen", () => {
       ]),
     );
     await screen.findByText(/\[api-address-saved\]/);
+    expect(
+      screen.getByText("API 地址已保存；运行时必须按适配器指引重新建立。"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "API address saved. The runtime must reconnect as directed by its adapter.",
+      ),
+    ).toBeNull();
   });
 
   it("外设与硬件测试页可扫描/连接打印机并测试打印、扫码和客显", async () => {
@@ -214,7 +242,7 @@ describe("SettingsScreen", () => {
     expect(screen.queryByText("930000000001")).toBeNull();
   });
 
-  it("不可用硬件不显示绿色健康状态，关键配置输入具备双语标签", async () => {
+  it("不可用硬件不显示绿色健康状态，关键配置输入使用中文标签", async () => {
     const port = new ScreenSettingsPort();
     const current = snapshot();
     port.snapshotValue = {
@@ -226,20 +254,18 @@ describe("SettingsScreen", () => {
     };
     const presenter = createPresenter(port);
     await presenter.load();
-    const screen = await render(<SettingsScreen presenter={presenter} />);
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
 
     await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
     await screen.findByTestId("settings-pane-content-peripherals");
-    expect(
-      screen.getByLabelText("打印机设备 ID / Printer peripheral ID"),
-    ).toBeTruthy();
+    expect(screen.getByLabelText("打印机设备 ID")).toBeTruthy();
 
     await fireEvent.press(screen.getByTestId("settings-nav-device"));
     await screen.findByTestId("settings-pane-content-device");
-    expect(
-      screen.getByLabelText("目标门店代码 / Target store code"),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("终端名称 / Terminal name")).toBeTruthy();
+    expect(screen.getByLabelText("目标门店代码")).toBeTruthy();
+    expect(screen.getByLabelText("终端名称")).toBeTruthy();
 
     await fireEvent.press(screen.getByTestId("settings-nav-hardware"));
     const scannerStatus = screen.getByTestId(

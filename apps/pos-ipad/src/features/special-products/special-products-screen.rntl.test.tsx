@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
@@ -15,8 +15,19 @@ import {
 
 import type { SpecialProductItem } from "@/core/contracts";
 
+let mockLanguage: "en" | "zh" = "zh";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
+  }),
+}));
 
 describe("SpecialProductsScreen", () => {
+  beforeEach(() => {
+    mockLanguage = "zh";
+  });
+
   it("离线显示本地列表并允许加购，但所有管理写操作禁用且触控至少 44pt", async () => {
     const presenter = new ScreenPresenter({
       items: [product("A"), product("B")],
@@ -123,6 +134,25 @@ describe("SpecialProductsScreen", () => {
     expect(screen.queryByText(/very-secret/)).toBeNull();
     expect(screen.queryByText(/https:\/\/host/)).toBeNull();
     await screen.unmount();
+  });
+
+  it("按当前语言只显示一种特殊商品文案，旧双语字符串不会出现", async () => {
+    const chinese = await render(
+      <SpecialProductsScreen presenter={new ScreenPresenter()} />,
+    );
+    expect(chinese.getByText("特殊商品")).toBeTruthy();
+    expect(chinese.queryByText("Special products")).toBeNull();
+    expect(chinese.queryByText("特殊商品 / Special products")).toBeNull();
+    await chinese.unmount();
+
+    mockLanguage = "en";
+    const english = await render(
+      <SpecialProductsScreen presenter={new ScreenPresenter()} />,
+    );
+    expect(english.getByText("Special products")).toBeTruthy();
+    expect(english.queryByText("特殊商品")).toBeNull();
+    expect(english.queryByText("特殊商品 / Special products")).toBeNull();
+    await english.unmount();
   });
 });
 

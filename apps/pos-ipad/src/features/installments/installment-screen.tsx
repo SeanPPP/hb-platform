@@ -1,8 +1,5 @@
-import {
-  useEffect,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Pressable,
@@ -14,9 +11,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import type {
-  InstallmentPaymentMethod,
-} from "./installment-models";
+import {
+  installmentText,
+  resolveInstallmentLocale,
+  type InstallmentLocale,
+} from "./installment-copy";
+import type { InstallmentPaymentMethod } from "./installment-models";
 import type {
   InstallmentCreateDraft,
   InstallmentPresenter,
@@ -28,8 +28,6 @@ import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
 import { posColors } from "@/ui/theme";
 
 export const INSTALLMENTS_MIN_TOUCH_TARGET = 44;
-const VOUCHER_QUERY_LOCK_HELP =
-  "只输入券码；提交后由在线支付服务查询并锁定。 / Enter the voucher code only; the online payment provider will query and lock it after submission.";
 
 export type InstallmentScreenPresenter = Pick<
   InstallmentPresenter,
@@ -82,8 +80,13 @@ export function InstallmentScreen({
     presenter.getState,
     presenter.getState,
   );
-  const [confirmation, setConfirmation] =
-    useState<ConfirmationKind | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationKind | null>(
+    null,
+  );
+  const { i18n } = useTranslation();
+  const locale = resolveInstallmentLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
 
   useEffect(() => {
     void presenter.load();
@@ -99,6 +102,7 @@ export function InstallmentScreen({
         <Header
           canCreate={state.access.canCreate}
           busy={state.busy}
+          locale={locale}
           onBack={onBack}
           pane={state.pane}
           showCreate={presenter.showCreate}
@@ -112,20 +116,19 @@ export function InstallmentScreen({
             testID="installments-offline-note"
           >
             <Text style={styles.offlineText}>
-              离线模式：仅可浏览本机加密缓存；创建、首付、补款、取消、作废和取货均已锁定。
-              / Offline: cached viewing only; every installment write is locked.
+              {installmentText(locale, "offline")}
             </Text>
           </View>
         ) : null}
 
         {state.statusCode ? (
-          <StatusBanner statusCode={state.statusCode} />
+          <StatusBanner locale={locale} statusCode={state.statusCode} />
         ) : null}
         {state.recoveryRequired && state.online ? (
           <View style={styles.recoveryActions}>
             <ActionButton
               disabled={state.busy}
-              label="恢复上一笔 / Recover previous action"
+              label={installmentText(locale, "action.recover")}
               onPress={() => void presenter.recoverBlocking()}
               testID="installments-recover-blocking-action"
               tone="danger"
@@ -134,12 +137,17 @@ export function InstallmentScreen({
         ) : null}
 
         {state.pane === "create" ? (
-          <CreateWorkspace presenter={presenter} state={state} />
+          <CreateWorkspace
+            locale={locale}
+            presenter={presenter}
+            state={state}
+          />
         ) : (
           <View style={styles.workspace}>
-            <HistoryPane presenter={presenter} state={state} />
+            <HistoryPane locale={locale} presenter={presenter} state={state} />
             <DetailsPane
               confirmation={confirmation}
+              locale={locale}
               presenter={presenter}
               setConfirmation={setConfirmation}
               state={state}
@@ -154,6 +162,7 @@ export function InstallmentScreen({
 function Header({
   canCreate,
   busy,
+  locale,
   onBack,
   pane,
   showCreate,
@@ -161,6 +170,7 @@ function Header({
 }: Readonly<{
   canCreate: boolean;
   busy: boolean;
+  locale: InstallmentLocale;
   onBack: (() => void) | undefined;
   pane: "history" | "create";
   showCreate(): void;
@@ -169,17 +179,16 @@ function Header({
   return (
     <View style={styles.header}>
       <View style={styles.titleGroup}>
-        <Text style={styles.eyebrow}>门店运营 / STORE OPERATIONS</Text>
-        <Text style={styles.title}>分期 / Installments</Text>
+        <Text style={styles.eyebrow}>{installmentText(locale, "eyebrow")}</Text>
+        <Text style={styles.title}>{installmentText(locale, "title")}</Text>
         <Text style={styles.subtitle}>
-          历史可从本机缓存读取；所有创建、付款、退款和状态变更必须在线。
-          / History may use the local cache; all mutations require a live backend.
+          {installmentText(locale, "subtitle")}
         </Text>
       </View>
       <View style={styles.headerActions}>
         {onBack ? (
           <ActionButton
-            label="返回 / Back"
+            label={installmentText(locale, "action.back")}
             onPress={onBack}
             testID="installments-back"
             tone="quiet"
@@ -187,7 +196,7 @@ function Header({
         ) : null}
         <ActionButton
           disabled={busy}
-          label="历史 / History"
+          label={installmentText(locale, "action.history")}
           onPress={showHistory}
           selected={pane === "history"}
           testID="installments-history-tab"
@@ -196,7 +205,7 @@ function Header({
         {canCreate ? (
           <ActionButton
             disabled={busy}
-            label="新建 / New"
+            label={installmentText(locale, "action.new")}
             onPress={showCreate}
             selected={pane === "create"}
             testID="installments-create-tab"
@@ -208,9 +217,11 @@ function Header({
 }
 
 function HistoryPane({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   state: InstallmentPresenterState;
 }>) {
@@ -218,19 +229,23 @@ function HistoryPane({
     label: string;
     status: InstallmentStatus | null;
   }[] = [
-    { label: "全部 / All", status: null },
-    { label: "进行中 / Active", status: "Active" },
-    { label: "已付清 / Paid", status: "PaidOff" },
-    { label: "已取货 / Picked", status: "PickedUp" },
-    { label: "已取消 / Cancelled", status: "Cancelled" },
+    { label: installmentText(locale, "filter.all"), status: null },
+    { label: installmentText(locale, "filter.active"), status: "Active" },
+    { label: installmentText(locale, "filter.paid"), status: "PaidOff" },
+    { label: installmentText(locale, "filter.picked"), status: "PickedUp" },
+    { label: installmentText(locale, "filter.cancelled"), status: "Cancelled" },
   ];
   return (
     <View style={[styles.pane, styles.historyPane]}>
       <View style={styles.panelHeader}>
         <View>
-          <Text style={styles.panelTitle}>分期历史 / History</Text>
+          <Text style={styles.panelTitle}>
+            {installmentText(locale, "history.title")}
+          </Text>
           <Text style={styles.panelMeta}>
-            {state.orders.length} 项 / items
+            {installmentText(locale, "history.count", {
+              count: state.orders.length,
+            })}
           </Text>
         </View>
         {state.kind === "loading" ? (
@@ -239,12 +254,12 @@ function HistoryPane({
       </View>
       <View style={styles.searchRow}>
         <TextInput
-          accessibilityLabel="搜索分期 / Search installments"
+          accessibilityLabel={installmentText(locale, "search.accessibility")}
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={presenter.setSearchQuery}
           onSubmitEditing={() => void presenter.load()}
-          placeholder="分期号、客户、电话 / Number, customer, phone"
+          placeholder={installmentText(locale, "search.placeholder")}
           placeholderTextColor={posColors.mutedInk}
           style={styles.searchInput}
           testID="installments-search"
@@ -252,7 +267,7 @@ function HistoryPane({
         />
         <ActionButton
           disabled={state.kind === "loading"}
-          label="查询 / Search"
+          label={installmentText(locale, "action.search")}
           onPress={() => void presenter.load()}
           testID="installments-search-submit"
         />
@@ -279,14 +294,15 @@ function HistoryPane({
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>
               {state.kind === "loading"
-                ? "正在读取… / Loading…"
-                : "暂无分期记录 / No installment records"}
+                ? installmentText(locale, "history.loading")
+                : installmentText(locale, "history.empty")}
             </Text>
           </View>
         ) : (
           state.orders.map((order) => (
             <OrderRow
               key={order.installmentGuid}
+              locale={locale}
               onPress={() => void presenter.select(order.installmentGuid)}
               order={order}
               selected={state.selectedGuid === order.installmentGuid}
@@ -299,10 +315,12 @@ function HistoryPane({
 }
 
 function OrderRow({
+  locale,
   onPress,
   order,
   selected,
 }: Readonly<{
+  locale: InstallmentLocale;
   onPress(): void;
   order: InstallmentSummary;
   selected: boolean;
@@ -324,15 +342,15 @@ function OrderRow({
           {order.customerName} · {order.customerPhone ?? "—"}
         </Text>
         <Text style={styles.orderMeta}>
-          {displayDate(order.updatedAtIso)} · {order.deviceCode}
+          {displayDate(order.updatedAtIso, locale)} · {order.deviceCode}
         </Text>
       </View>
       <View style={styles.orderAmounts}>
-        <StatusPill status={order.status} />
-        <Text style={styles.balanceAmount}>
-          {money(order.balanceCents)}
+        <StatusPill locale={locale} status={order.status} />
+        <Text style={styles.balanceAmount}>{money(order.balanceCents)}</Text>
+        <Text style={styles.balanceLabel}>
+          {installmentText(locale, "balance.label")}
         </Text>
-        <Text style={styles.balanceLabel}>余额 / balance</Text>
       </View>
     </Pressable>
   );
@@ -340,11 +358,13 @@ function OrderRow({
 
 function DetailsPane({
   confirmation,
+  locale,
   presenter,
   setConfirmation,
   state,
 }: Readonly<{
   confirmation: ConfirmationKind | null;
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   setConfirmation(value: ConfirmationKind | null): void;
   state: InstallmentPresenterState;
@@ -354,7 +374,7 @@ function DetailsPane({
       <View style={[styles.pane, styles.detailsPane, styles.centered]}>
         <ActivityIndicator color={posColors.orange} size="large" />
         <Text style={styles.emptyTitle}>
-          正在读取详情… / Loading details…
+          {installmentText(locale, "details.loading")}
         </Text>
       </View>
     );
@@ -363,18 +383,17 @@ function DetailsPane({
     return (
       <View style={[styles.pane, styles.detailsPane, styles.centered]}>
         <Text style={styles.emptyTitle}>
-          选择一张分期单 / Select an installment
+          {installmentText(locale, "details.empty")}
         </Text>
         <Text style={styles.emptyHint}>
-          离线时若本机没有加密详情缓存，页面不会向网络发起写操作。
+          {installmentText(locale, "details.offlineHint")}
         </Text>
       </View>
     );
   }
 
   const details = state.details;
-  const writeDisabled =
-    state.busy || !state.online || state.recoveryRequired;
+  const writeDisabled = state.busy || !state.online || state.recoveryRequired;
   return (
     <ScrollView
       contentContainerStyle={styles.detailsContent}
@@ -383,28 +402,35 @@ function DetailsPane({
     >
       <View style={styles.detailHeading}>
         <View>
-          <Text style={styles.detailNumber}>
-            {details.installmentNumber}
-          </Text>
+          <Text style={styles.detailNumber}>{details.installmentNumber}</Text>
           <Text style={styles.detailCustomer}>
             {details.customerName} · {details.customerPhone ?? "—"}
           </Text>
         </View>
-        <StatusPill status={details.status} />
+        <StatusPill locale={locale} status={details.status} />
       </View>
 
       <View style={styles.metrics}>
-        <Metric label="总额 / Total" value={money(details.totalCents)} />
-        <Metric label="首付 / Down" value={money(details.downPaymentCents)} />
-        <Metric label="已付 / Paid" value={money(details.paidCents)} />
+        <Metric
+          label={installmentText(locale, "metric.total")}
+          value={money(details.totalCents)}
+        />
+        <Metric
+          label={installmentText(locale, "metric.down")}
+          value={money(details.downPaymentCents)}
+        />
+        <Metric
+          label={installmentText(locale, "metric.paid")}
+          value={money(details.paidCents)}
+        />
         <Metric
           emphasized
-          label="余额 / Balance"
+          label={installmentText(locale, "metric.balance")}
           value={money(details.balanceCents)}
         />
       </View>
 
-      <Section title="商品 / Items">
+      <Section title={installmentText(locale, "section.items")}>
         {details.lines.map((line) => (
           <View key={line.installmentLineGuid} style={styles.factRow}>
             <View style={styles.factGrow}>
@@ -420,20 +446,21 @@ function DetailsPane({
         ))}
       </Section>
 
-      <Section title="付款历史 / Payments">
+      <Section title={installmentText(locale, "section.payments")}>
         {details.payments.length === 0 ? (
           <Text style={styles.emptyHint}>
-            暂无付款 / No recorded payments
+            {installmentText(locale, "payments.empty")}
           </Text>
         ) : (
           details.payments.map((payment) => (
             <View key={payment.paymentGuid} style={styles.factRow}>
               <View style={styles.factGrow}>
                 <Text style={styles.factPrimary}>
-                  {methodLabel(payment.method)} · {payment.status}
+                  {methodLabel(payment.method, locale)} ·{" "}
+                  {paymentStatusLabel(payment.status, locale)}
                 </Text>
                 <Text style={styles.factSecondary}>
-                  {displayDate(payment.recordedAtIso)}
+                  {displayDate(payment.recordedAtIso, locale)}
                   {payment.cardType ? ` · ${payment.cardType}` : ""}
                   {payment.maskedCardNumber
                     ? ` · ${payment.maskedCardNumber}`
@@ -449,15 +476,15 @@ function DetailsPane({
       </Section>
 
       {details.note ? (
-        <Section title="备注 / Note">
+        <Section title={installmentText(locale, "section.note")}>
           <Text style={styles.noteText}>{details.note}</Text>
         </Section>
       ) : null}
 
-      {details.status === "Active" &&
-      state.access.canAddRepayment ? (
+      {details.status === "Active" && state.access.canAddRepayment ? (
         <RepaymentPanel
           disabled={writeDisabled}
+          locale={locale}
           presenter={presenter}
           state={state}
         />
@@ -467,17 +494,18 @@ function DetailsPane({
         <CancellationPanel
           confirmation={confirmation}
           disabled={writeDisabled}
+          locale={locale}
           presenter={presenter}
           setConfirmation={setConfirmation}
           state={state}
         />
       ) : null}
 
-      {details.status === "PaidOff" &&
-      state.access.canConfirmPickup ? (
+      {details.status === "PaidOff" && state.access.canConfirmPickup ? (
         <PickupPanel
           confirmation={confirmation}
           disabled={writeDisabled}
+          locale={locale}
           presenter={presenter}
           setConfirmation={setConfirmation}
           state={state}
@@ -487,10 +515,10 @@ function DetailsPane({
       {details.pickupInfo ? (
         <View style={styles.completedNote}>
           <Text style={styles.completedTitle}>
-            已取货 / Picked up
+            {installmentText(locale, "completed.picked")}
           </Text>
           <Text style={styles.completedText}>
-            {displayDate(details.pickupInfo.pickedUpAtIso)} ·{" "}
+            {displayDate(details.pickupInfo.pickedUpAtIso, locale)} ·{" "}
             {details.pickupInfo.pickedUpBy}
           </Text>
         </View>
@@ -498,11 +526,11 @@ function DetailsPane({
       {details.cancellationInfo ? (
         <View style={styles.cancelledNote}>
           <Text style={styles.completedTitle}>
-            已取消 / Cancelled
+            {installmentText(locale, "completed.cancelled")}
           </Text>
           <Text style={styles.completedText}>
-            {details.cancellationInfo.kind} ·{" "}
-            {displayDate(details.cancellationInfo.cancelledAtIso)}
+            {cancellationLabel(details.cancellationInfo.kind, locale)} ·{" "}
+            {displayDate(details.cancellationInfo.cancelledAtIso, locale)}
           </Text>
         </View>
       ) : null}
@@ -512,18 +540,25 @@ function DetailsPane({
 
 function RepaymentPanel({
   disabled,
+  locale,
   presenter,
   state,
 }: Readonly<{
   disabled: boolean;
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   state: InstallmentPresenterState;
 }>) {
   return (
     <View style={styles.actionCard}>
-      <Text style={styles.sectionTitle}>续付 / Add repayment</Text>
+      <Text style={styles.sectionTitle}>
+        {installmentText(locale, "repayment.title")}
+      </Text>
       <TextInput
-        accessibilityLabel="续付金额 / Repayment amount"
+        accessibilityLabel={installmentText(
+          locale,
+          "repayment.amountAccessibility",
+        )}
         editable={!disabled}
         keyboardType="decimal-pad"
         onChangeText={presenter.setRepaymentAmount}
@@ -534,6 +569,7 @@ function RepaymentPanel({
       />
       <PaymentMethodSelector
         disabled={disabled}
+        locale={locale}
         onSelect={presenter.setRepaymentMethod}
         prefix="installment-repayment-method"
         selected={state.repaymentMethod}
@@ -541,10 +577,13 @@ function RepaymentPanel({
       {state.repaymentMethod === "voucher" ? (
         <>
           <TextInput
-            accessibilityLabel="续付券码 / Repayment voucher code"
+            accessibilityLabel={installmentText(
+              locale,
+              "repayment.voucherAccessibility",
+            )}
             editable={!disabled}
             onChangeText={presenter.setRepaymentVoucherReference}
-            placeholder="券码 / Voucher code"
+            placeholder={installmentText(locale, "voucher.placeholder")}
             style={styles.textInput}
             testID="installment-repayment-voucher-reference"
             value={state.repaymentVoucherReference}
@@ -553,7 +592,7 @@ function RepaymentPanel({
             style={styles.fieldHint}
             testID="installment-repayment-voucher-help"
           >
-            {VOUCHER_QUERY_LOCK_HELP}
+            {installmentText(locale, "voucher.help")}
           </Text>
         </>
       ) : null}
@@ -561,8 +600,8 @@ function RepaymentPanel({
         disabled={disabled}
         label={
           state.busy
-            ? "处理中… / Working…"
-            : "记录续付 / Add repayment"
+            ? installmentText(locale, "action.working")
+            : installmentText(locale, "action.addRepayment")
         }
         onPress={() => void presenter.addRepayment()}
         testID="installment-add-repayment"
@@ -575,12 +614,14 @@ function RepaymentPanel({
 function CancellationPanel({
   confirmation,
   disabled,
+  locale,
   presenter,
   setConfirmation,
   state,
 }: Readonly<{
   confirmation: ConfirmationKind | null;
   disabled: boolean;
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   setConfirmation(value: ConfirmationKind | null): void;
   state: InstallmentPresenterState;
@@ -588,13 +629,16 @@ function CancellationPanel({
   return (
     <View style={styles.dangerCard}>
       <Text style={styles.sectionTitle}>
-        取消分期 / Cancel installment
+        {installmentText(locale, "cancel.title")}
       </Text>
       <TextInput
-        accessibilityLabel="取消退款原因 / Cancellation reason"
+        accessibilityLabel={installmentText(
+          locale,
+          "cancel.reasonAccessibility",
+        )}
         editable={!disabled}
         onChangeText={presenter.setCancelReason}
-        placeholder="退款取消原因 / Refund-cancel reason"
+        placeholder={installmentText(locale, "cancel.reasonPlaceholder")}
         style={styles.textInput}
         testID="installment-cancel-reason"
         value={state.cancelReason}
@@ -602,23 +646,26 @@ function CancellationPanel({
       <View style={styles.inlineActions}>
         <ActionButton
           disabled={disabled}
-          label="退款并取消 / Refund & cancel"
+          label={installmentText(locale, "action.refundCancel")}
           onPress={() => setConfirmation("cancel")}
           testID="installment-cancel-refund"
           tone="danger"
         />
         <TextInput
-          accessibilityLabel="作废原因 / Void reason"
+          accessibilityLabel={installmentText(
+            locale,
+            "void.reasonAccessibility",
+          )}
           editable={!disabled}
           onChangeText={presenter.setVoidReason}
-          placeholder="作废原因 / Void reason"
+          placeholder={installmentText(locale, "void.reasonPlaceholder")}
           style={[styles.textInput, styles.growInput]}
           testID="installment-void-reason"
           value={state.voidReason}
         />
         <ActionButton
           disabled={disabled}
-          label="作废 / Void"
+          label={installmentText(locale, "action.void")}
           onPress={() => setConfirmation("void")}
           testID="installment-void"
           tone="danger"
@@ -627,6 +674,7 @@ function CancellationPanel({
       {confirmation === "cancel" || confirmation === "void" ? (
         <ConfirmationStrip
           kind={confirmation}
+          locale={locale}
           onCancel={() => setConfirmation(null)}
           onConfirm={() => {
             const action =
@@ -645,12 +693,14 @@ function CancellationPanel({
 function PickupPanel({
   confirmation,
   disabled,
+  locale,
   presenter,
   setConfirmation,
   state,
 }: Readonly<{
   confirmation: ConfirmationKind | null;
   disabled: boolean;
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   setConfirmation(value: ConfirmationKind | null): void;
   state: InstallmentPresenterState;
@@ -658,20 +708,20 @@ function PickupPanel({
   return (
     <View style={styles.actionCard}>
       <Text style={styles.sectionTitle}>
-        取货确认 / Confirm pickup
+        {installmentText(locale, "pickup.title")}
       </Text>
       <TextInput
-        accessibilityLabel="取货备注 / Pickup note"
+        accessibilityLabel={installmentText(locale, "pickup.noteAccessibility")}
         editable={!disabled}
         onChangeText={presenter.setPickupNote}
-        placeholder="证件核对或备注 / ID check or note"
+        placeholder={installmentText(locale, "pickup.notePlaceholder")}
         style={styles.textInput}
         testID="installment-pickup-note"
         value={state.pickupNote}
       />
       <ActionButton
         disabled={disabled}
-        label="确认已取货 / Confirm pickup"
+        label={installmentText(locale, "action.confirmPickup")}
         onPress={() => setConfirmation("pickup")}
         testID="installment-confirm-pickup"
         wide
@@ -679,6 +729,7 @@ function PickupPanel({
       {confirmation === "pickup" ? (
         <ConfirmationStrip
           kind="pickup"
+          locale={locale}
           onCancel={() => setConfirmation(null)}
           onConfirm={() => {
             setConfirmation(null);
@@ -692,37 +743,32 @@ function PickupPanel({
 
 function ConfirmationStrip({
   kind,
+  locale,
   onCancel,
   onConfirm,
 }: Readonly<{
   kind: ConfirmationKind;
+  locale: InstallmentLocale;
   onCancel(): void;
   onConfirm(): void;
 }>) {
-  const message =
-    kind === "cancel"
-      ? "将按原付款记录执行退款，并在结果明确后取消分期。"
-      : kind === "void"
-        ? "作废不会退款；仅用于无需退款的错误分期单。"
-        : "确认后分期单会标记为已取货。";
+  const message = installmentText(locale, `confirmation.${kind}`);
   return (
     <View
       accessibilityLiveRegion="assertive"
       style={styles.confirmation}
       testID={`installment-confirm-${kind}`}
     >
-      <Text style={styles.confirmationText}>
-        {message} / Confirm this operation?
-      </Text>
+      <Text style={styles.confirmationText}>{message}</Text>
       <View style={styles.inlineActions}>
         <ActionButton
-          label="返回 / Back"
+          label={installmentText(locale, "action.back")}
           onPress={onCancel}
           testID="installment-confirm-operation-cancel"
           tone="quiet"
         />
         <ActionButton
-          label="确认 / Confirm"
+          label={installmentText(locale, "action.confirm")}
           onPress={onConfirm}
           testID="installment-confirm-operation-submit"
           tone="danger"
@@ -733,34 +779,35 @@ function ConfirmationStrip({
 }
 
 function CreateWorkspace({
+  locale,
   presenter,
   state,
 }: Readonly<{
+  locale: InstallmentLocale;
   presenter: InstallmentScreenPresenter;
   state: InstallmentPresenterState;
 }>) {
   const draft = state.createDraft;
   const disabled =
-    state.busy ||
-    !state.online ||
-    state.recoveryRequired ||
-    !draft;
+    state.busy || !state.online || state.recoveryRequired || !draft;
   return (
     <View style={styles.workspace} testID="installment-create-workspace">
       <ScrollView
         contentContainerStyle={styles.detailsContent}
         style={[styles.pane, styles.historyPane]}
       >
-        <Text style={styles.panelTitle}>当前订单 / Current cart</Text>
+        <Text style={styles.panelTitle}>
+          {installmentText(locale, "cart.title")}
+        </Text>
         <Text style={styles.panelMeta}>
-          创建时组合根会再次核对购物车 revision，页面快照不能越权替代真实购物车。
+          {installmentText(locale, "cart.hint")}
         </Text>
         {draft ? (
-          <DraftSummary draft={draft} />
+          <DraftSummary draft={draft} locale={locale} />
         ) : (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>
-              当前购物车为空 / Current cart is empty
+              {installmentText(locale, "cart.empty")}
             </Text>
           </View>
         )}
@@ -770,43 +817,61 @@ function CreateWorkspace({
         style={[styles.pane, styles.detailsPane]}
       >
         <Text style={styles.panelTitle}>
-          客户与首付 / Customer & down payment
+          {installmentText(locale, "create.title")}
         </Text>
         <TextInput
-          accessibilityLabel="客户姓名 / Customer name"
+          accessibilityLabel={installmentText(
+            locale,
+            "create.customerNameAccessibility",
+          )}
           editable={!disabled}
           onChangeText={presenter.setCustomerName}
-          placeholder="客户姓名 / Customer name"
+          placeholder={installmentText(
+            locale,
+            "create.customerNamePlaceholder",
+          )}
           style={styles.textInput}
           testID="installment-create-customer-name"
           value={state.customerName}
         />
         <TextInput
-          accessibilityLabel="客户电话 / Customer phone"
+          accessibilityLabel={installmentText(
+            locale,
+            "create.customerPhoneAccessibility",
+          )}
           editable={!disabled}
           keyboardType="phone-pad"
           onChangeText={presenter.setCustomerPhone}
-          placeholder="客户电话 / Customer phone"
+          placeholder={installmentText(
+            locale,
+            "create.customerPhonePlaceholder",
+          )}
           style={styles.textInput}
           testID="installment-create-customer-phone"
           value={state.customerPhone}
         />
         <TextInput
-          accessibilityLabel="分期备注 / Installment note"
+          accessibilityLabel={installmentText(
+            locale,
+            "create.noteAccessibility",
+          )}
           editable={!disabled}
           multiline
           onChangeText={presenter.setCreateNote}
-          placeholder="备注 / Note"
+          placeholder={installmentText(locale, "create.notePlaceholder")}
           style={[styles.textInput, styles.multilineInput]}
           testID="installment-create-note"
           value={state.createNote}
         />
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>
-            首付金额 / Down payment
+            {installmentText(locale, "create.downPayment")}
           </Text>
           <TextInput
-            accessibilityLabel="首付金额 / Down payment amount"
+            accessibilityLabel={installmentText(
+              locale,
+              "create.downPaymentAccessibility",
+            )}
             editable={!disabled}
             keyboardType="decimal-pad"
             onChangeText={presenter.setCreateDownPayment}
@@ -816,11 +881,15 @@ function CreateWorkspace({
             value={state.createDownPayment}
           />
           <Text style={styles.fieldHint}>
-            分期总额最低 {money(5_000)}；首付最低 {money(2_000)}。
+            {installmentText(locale, "create.minimums", {
+              total: money(5_000),
+              downPayment: money(2_000),
+            })}
           </Text>
         </View>
         <PaymentMethodSelector
           disabled={disabled}
+          locale={locale}
           onSelect={presenter.setCreatePaymentMethod}
           prefix="installment-create-method"
           selected={state.createPaymentMethod}
@@ -828,10 +897,13 @@ function CreateWorkspace({
         {state.createPaymentMethod === "voucher" ? (
           <>
             <TextInput
-              accessibilityLabel="首付券码 / Down payment voucher code"
+              accessibilityLabel={installmentText(
+                locale,
+                "create.voucherAccessibility",
+              )}
               editable={!disabled}
               onChangeText={presenter.setCreateVoucherReference}
-              placeholder="券码 / Voucher code"
+              placeholder={installmentText(locale, "voucher.placeholder")}
               style={styles.textInput}
               testID="installment-create-voucher-reference"
               value={state.createVoucherReference}
@@ -840,7 +912,7 @@ function CreateWorkspace({
               style={styles.fieldHint}
               testID="installment-create-voucher-help"
             >
-              {VOUCHER_QUERY_LOCK_HELP}
+              {installmentText(locale, "voucher.help")}
             </Text>
           </>
         ) : null}
@@ -848,8 +920,8 @@ function CreateWorkspace({
           disabled={disabled}
           label={
             state.busy
-              ? "处理中… / Working…"
-              : "创建分期并收取首付 / Create & take down payment"
+              ? installmentText(locale, "action.working")
+              : installmentText(locale, "action.create")
           }
           onPress={() => void presenter.create()}
           testID="installment-create-submit"
@@ -862,12 +934,15 @@ function CreateWorkspace({
 
 function DraftSummary({
   draft,
-}: Readonly<{ draft: InstallmentCreateDraft }>) {
+  locale,
+}: Readonly<{ draft: InstallmentCreateDraft; locale: InstallmentLocale }>) {
   return (
     <View style={styles.draftCard}>
       <View style={styles.detailHeading}>
         <Text style={styles.sectionTitle}>
-          {draft.lines.length} 项 / items
+          {installmentText(locale, "draft.count", {
+            count: draft.lines.length,
+          })}
         </Text>
         <Text style={styles.draftTotal}>{money(draft.totalCents)}</Text>
       </View>
@@ -877,9 +952,7 @@ function DraftSummary({
             <Text style={styles.factPrimary}>{line.displayName}</Text>
             <Text style={styles.factSecondary}>× {line.quantity}</Text>
           </View>
-          <Text style={styles.factAmount}>
-            {money(line.actualAmountCents)}
-          </Text>
+          <Text style={styles.factAmount}>{money(line.actualAmountCents)}</Text>
         </View>
       ))}
     </View>
@@ -888,11 +961,13 @@ function DraftSummary({
 
 function PaymentMethodSelector({
   disabled,
+  locale,
   onSelect,
   prefix,
   selected,
 }: Readonly<{
   disabled: boolean;
+  locale: InstallmentLocale;
   onSelect(method: InstallmentPaymentMethod): void;
   prefix: string;
   selected: InstallmentPaymentMethod;
@@ -901,9 +976,9 @@ function PaymentMethodSelector({
     method: InstallmentPaymentMethod;
     label: string;
   }[] = [
-    { method: "cash", label: "现金 / Cash" },
-    { method: "card", label: "银行卡 / Card" },
-    { method: "voucher", label: "券 / Voucher" },
+    { method: "cash", label: installmentText(locale, "method.cash") },
+    { method: "card", label: installmentText(locale, "method.card") },
+    { method: "voucher", label: installmentText(locale, "method.voucher") },
   ];
   return (
     <View style={styles.methodRow}>
@@ -953,8 +1028,9 @@ function Metric({
 }
 
 function StatusPill({
+  locale,
   status,
-}: Readonly<{ status: InstallmentStatus }>) {
+}: Readonly<{ locale: InstallmentLocale; status: InstallmentStatus }>) {
   return (
     <View
       style={[
@@ -968,14 +1044,18 @@ function StatusPill({
               : styles.statusCancelled,
       ]}
     >
-      <Text style={styles.statusText}>{statusLabel(status)}</Text>
+      <Text style={styles.statusText}>{statusLabel(status, locale)}</Text>
     </View>
   );
 }
 
 function StatusBanner({
+  locale,
   statusCode,
-}: Readonly<{ statusCode: InstallmentStatusCode }>) {
+}: Readonly<{
+  locale: InstallmentLocale;
+  statusCode: InstallmentStatusCode;
+}>) {
   const danger = [
     "action-failed",
     "authorization-declined",
@@ -991,9 +1071,7 @@ function StatusBanner({
   return (
     <View
       accessibilityLiveRegion={
-        statusCode === "payment-recovery-required"
-          ? "assertive"
-          : "polite"
+        statusCode === "payment-recovery-required" ? "assertive" : "polite"
       }
       style={[
         styles.statusBanner,
@@ -1006,7 +1084,7 @@ function StatusBanner({
       }
     >
       <Text style={styles.statusBannerText}>
-        {statusMessage(statusCode)}
+        {statusMessage(statusCode, locale)}
       </Text>
     </View>
   );
@@ -1015,22 +1093,25 @@ function StatusBanner({
 export function InstallmentsUnavailableScreen({
   onBack,
 }: Readonly<{ onBack(): void }>) {
+  const { i18n } = useTranslation();
+  const locale = resolveInstallmentLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
   return (
     <SafeAreaView
       style={styles.safeArea}
       testID="installments-runtime-unavailable"
     >
       <View style={styles.unavailable}>
-        <Text style={styles.eyebrow}>INSTALLMENTS</Text>
+        <Text style={styles.eyebrow}>{installmentText(locale, "title")}</Text>
         <Text style={styles.title}>
-          分期功能暂不可用 / Installments unavailable
+          {installmentText(locale, "unavailable.title")}
         </Text>
         <Text style={styles.subtitle}>
-          在线支付恢复、加密缓存或可信收银员运行时尚未接线，请返回销售页。
-          / The trusted payment and cache runtime is not configured.
+          {installmentText(locale, "unavailable.subtitle")}
         </Text>
         <ActionButton
-          label="返回销售 / Back to sales"
+          label={installmentText(locale, "action.backToSales")}
           onPress={onBack}
           testID="installments-unavailable-back"
           wide
@@ -1096,10 +1177,10 @@ function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function displayDate(iso: string): string {
+function displayDate(iso: string, locale: InstallmentLocale): string {
   const parsed = new Date(iso);
   return Number.isFinite(parsed.getTime())
-    ? parsed.toLocaleString("en-AU", {
+    ? parsed.toLocaleString(locale === "zh" ? "zh-AU" : "en-AU", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
@@ -1109,48 +1190,39 @@ function displayDate(iso: string): string {
     : iso;
 }
 
-function statusLabel(status: InstallmentStatus): string {
-  if (status === "Active") return "进行中 / Active";
-  if (status === "PaidOff") return "已付清 / Paid off";
-  if (status === "PickedUp") return "已取货 / Picked up";
-  return "已取消 / Cancelled";
+function statusLabel(
+  status: InstallmentStatus,
+  locale: InstallmentLocale,
+): string {
+  return installmentText(locale, `status.${status}`);
 }
 
-function methodLabel(method: InstallmentPaymentMethod): string {
-  if (method === "cash") return "现金 / Cash";
-  if (method === "card") return "银行卡 / Card";
-  return "券 / Voucher";
+function methodLabel(
+  method: InstallmentPaymentMethod,
+  locale: InstallmentLocale,
+): string {
+  return installmentText(locale, `method.${method}`);
 }
 
-function statusMessage(code: InstallmentStatusCode): string {
-  const messages: Record<InstallmentStatusCode, string> = {
-    "action-failed": "操作失败，请核对状态后重试。/ Operation failed.",
-    "authorization-declined":
-      "支付未获批准，分期状态未改变。/ Payment was declined; no installment change was made.",
-    "cancel-complete": "分期已退款取消。/ Installment refunded and cancelled.",
-    conflict: "服务端状态已变化，请刷新后处理。/ Server state changed; refresh first.",
-    "create-complete": "分期已创建并记录首付。/ Installment and down payment recorded.",
-    "details-failed": "详情读取失败。/ Unable to load details.",
-    "details-unavailable":
-      "本机没有可用详情缓存。/ No cached details are available.",
-    "history-failed": "分期历史读取失败。/ Unable to load history.",
-    "invalid-create":
-      "请核对购物车、客户、最低 AUD 50 总额及最低 AUD 20 首付。/ Check cart, customer and minimum amounts.",
-    "invalid-repayment":
-      "续付金额或付款信息无效。/ Repayment amount or tender is invalid.",
-    "online-required":
-      "此操作必须在线完成。/ This operation requires a live backend.",
-    "payment-recovery-required":
-      "支付结果未知：恢复完成前禁止再次扣款、退款、作废或切换付款方式。/ Payment outcome unknown; recovery is required before any new action.",
-    "permission-required":
-      "当前收银员没有所需权限。/ Cashier permission is required.",
-    "pickup-complete": "取货已确认。/ Pickup confirmed.",
-    "repayment-complete": "续付已记录。/ Repayment recorded.",
-    "recovery-complete":
-      "上一笔支付与分期状态已恢复。/ Previous payment and installment action recovered.",
-    "void-complete": "分期已作废。/ Installment voided.",
-  };
-  return messages[code];
+function paymentStatusLabel(
+  status: "Recorded" | "Voided",
+  locale: InstallmentLocale,
+): string {
+  return installmentText(locale, `paymentStatus.${status}`);
+}
+
+function cancellationLabel(
+  kind: "RefundCancel" | "VoidCancel",
+  locale: InstallmentLocale,
+): string {
+  return installmentText(locale, `cancellation.${kind}`);
+}
+
+function statusMessage(
+  code: InstallmentStatusCode,
+  locale: InstallmentLocale,
+): string {
+  return installmentText(locale, `status.${code}`);
 }
 
 const styles = StyleSheet.create({

@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,6 +12,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
+  resolveSpecialProductsLocale,
+  specialProductsStatusCopyKey,
+  specialProductsText,
+  type SpecialProductsCopyKey,
+} from "./special-products-copy";
+import {
   type SpecialProductsPresenter,
   type SpecialProductsStatusCode,
   type SpecialProductsState,
@@ -18,14 +25,17 @@ import {
 
 import type { SpecialProductItem } from "@/core/contracts";
 import { posColors } from "@/ui/theme";
-
-
 export const SPECIAL_PRODUCTS_MIN_TOUCH_TARGET = 44;
 
 type SpecialProductsScreenProps = Readonly<{
   onBack?(): void;
   presenter: SpecialProductsScreenPresenter;
 }>;
+
+type SpecialProductsTranslate = (
+  key: SpecialProductsCopyKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
 
 export type SpecialProductsScreenPresenter = Pick<
   SpecialProductsPresenter,
@@ -48,6 +58,12 @@ export function SpecialProductsScreen({
   onBack,
   presenter,
 }: SpecialProductsScreenProps) {
+  const { i18n } = useTranslation();
+  const locale = resolveSpecialProductsLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+  const t: SpecialProductsTranslate = (key, values) =>
+    specialProductsText(locale, key, values);
   const state = useSyncExternalStore(
     presenter.subscribe,
     presenter.getState,
@@ -63,17 +79,14 @@ export function SpecialProductsScreen({
       <View style={styles.page}>
         <View style={styles.header}>
           <View style={styles.titleGroup}>
-            <Text style={styles.eyebrow}>门店运营 / STORE OPERATIONS</Text>
-            <Text style={styles.title}>特殊商品 / Special products</Text>
-            <Text style={styles.subtitle}>
-              本地列表可离线浏览与加购；标记、取消、下载和排序需要在线。
-              / Browse and add cached items offline; management changes require online access.
-            </Text>
+            <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
+            <Text style={styles.title}>{t("header.title")}</Text>
+            <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
           </View>
           <View style={styles.headerActions}>
             {onBack ? (
               <ActionButton
-                label="返回 / Back"
+                label={t("action.back")}
                 onPress={onBack}
                 testID="special-products-back"
                 tone="quiet"
@@ -81,7 +94,7 @@ export function SpecialProductsScreen({
             ) : null}
             <ActionButton
               disabled={state.busy || state.kind === "loading"}
-              label="刷新本地 / Refresh local"
+              label={t("action.refreshLocal")}
               onPress={() => void presenter.load()}
               testID="special-products-refresh-local"
               tone="secondary"
@@ -91,8 +104,8 @@ export function SpecialProductsScreen({
                 disabled={!state.online || state.busy}
                 label={
                   state.busy
-                    ? "处理中… / Working…"
-                    : "下载更新 / Download"
+                    ? t("action.working")
+                    : t("action.download")
                 }
                 onPress={() => void presenter.download()}
                 testID="special-products-download"
@@ -107,23 +120,21 @@ export function SpecialProductsScreen({
             style={styles.offlineNote}
             testID="special-products-offline-note"
           >
-            <Text style={styles.offlineNoteText}>
-              离线模式：本地浏览与加购可用，管理写操作已锁定。/ Offline: local browsing and cart access remain available.
-            </Text>
+            <Text style={styles.offlineNoteText}>{t("offlineNote")}</Text>
           </View>
         ) : null}
 
         {state.statusCode ? (
-          <StatusBanner statusCode={state.statusCode} />
+          <StatusBanner statusCode={state.statusCode} t={t} />
         ) : null}
 
         <View style={styles.workspace}>
           <View style={styles.catalogPane}>
             <View style={styles.panelHeader}>
               <View>
-                <Text style={styles.panelTitle}>本地特殊商品 / Local list</Text>
+                <Text style={styles.panelTitle}>{t("catalog.title")}</Text>
                 <Text style={styles.panelMeta}>
-                  {state.items.length} 项 / items
+                  {t("catalog.itemCount", { count: state.items.length })}
                 </Text>
               </View>
               {state.kind === "loading" ? (
@@ -136,19 +147,19 @@ export function SpecialProductsScreen({
 
             {state.kind === "unauthorized" ? (
               <EmptyState
-                message="没有查看权限 / View permission required"
+                message={t("catalog.unauthorized")}
                 testID="special-products-unauthorized"
               />
             ) : null}
             {state.kind === "failed" && state.items.length === 0 ? (
               <EmptyState
-                message="本地列表读取失败 / Local list unavailable"
+                message={t("catalog.failed")}
                 testID="special-products-failed"
               />
             ) : null}
             {state.kind === "ready" && state.items.length === 0 ? (
               <EmptyState
-                message="暂无特殊商品 / No special products"
+                message={t("catalog.empty")}
                 testID="special-products-empty"
               />
             ) : null}
@@ -170,6 +181,7 @@ export function SpecialProductsScreen({
                     onMoveDown={() => void presenter.reorder(item.productCode, 1)}
                     onMoveUp={() => void presenter.reorder(item.productCode, -1)}
                     onRemove={() => void presenter.mark(item.productCode, false)}
+                    t={t}
                   />
                 )}
                 testID="special-products-list"
@@ -182,18 +194,16 @@ export function SpecialProductsScreen({
               style={styles.managementPane}
               testID="special-products-management"
             >
-              <Text style={styles.panelTitle}>添加商品 / Add product</Text>
-              <Text style={styles.managementHint}>
-                候选来自本地目录；真正标记时仍需在线。/ Candidates are local; marking still requires online access.
-              </Text>
+              <Text style={styles.panelTitle}>{t("management.title")}</Text>
+              <Text style={styles.managementHint}>{t("management.hint")}</Text>
               <TextInput
-                accessibilityLabel="搜索本地商品 / Search local products"
+                accessibilityLabel={t("management.searchLabel")}
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!state.busy}
                 onChangeText={(query) => presenter.setSearchQuery(query)}
                 onSubmitEditing={() => void presenter.searchCandidates()}
-                placeholder="名称、条码或商品码 / Name, barcode or code"
+                placeholder={t("management.searchPlaceholder")}
                 placeholderTextColor="#7B8793"
                 selectionColor={posColors.orange}
                 style={styles.searchInput}
@@ -204,8 +214,8 @@ export function SpecialProductsScreen({
                 disabled={state.busy || state.searching}
                 label={
                   state.searching
-                    ? "搜索中… / Searching…"
-                    : "搜索本地目录 / Search local"
+                    ? t("management.searching")
+                    : t("management.search")
                 }
                 onPress={() => void presenter.searchCandidates()}
                 testID="special-products-search"
@@ -213,9 +223,7 @@ export function SpecialProductsScreen({
               />
 
               {state.candidates.length === 0 ? (
-                <Text style={styles.candidateEmpty}>
-                  输入关键词查找可标记商品。/ Enter a query to find candidates.
-                </Text>
+                <Text style={styles.candidateEmpty}>{t("management.empty")}</Text>
               ) : (
                 <FlatList
                   contentContainerStyle={styles.candidateList}
@@ -237,7 +245,7 @@ export function SpecialProductsScreen({
                       <ActionButton
                         compact
                         disabled={!state.online || state.busy}
-                        label="标记 / Add"
+                        label={t("management.mark")}
                         onPress={() => void presenter.mark(item.productCode, true)}
                         testID={`special-products-mark-${item.productCode}`}
                       />
@@ -258,21 +266,23 @@ export function SpecialProductsScreen({
 export function SpecialProductsUnavailableScreen({
   onBack,
 }: Readonly<{ onBack(): void }>) {
+  const { i18n } = useTranslation();
+  const locale = resolveSpecialProductsLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+  const t: SpecialProductsTranslate = (key, values) =>
+    specialProductsText(locale, key, values);
   return (
     <SafeAreaView
       style={styles.safeArea}
       testID="special-products-runtime-unavailable"
     >
       <View style={styles.unavailable}>
-        <Text style={styles.eyebrow}>SPECIAL PRODUCTS</Text>
-        <Text style={styles.unavailableTitle}>
-          功能暂不可用 / Feature unavailable
-        </Text>
-        <Text style={styles.unavailableHint}>
-          本机运行时尚未提供特殊商品服务，请返回销售页。/ The local runtime has not provided this service.
-        </Text>
+        <Text style={styles.eyebrow}>{t("unavailable.eyebrow")}</Text>
+        <Text style={styles.unavailableTitle}>{t("unavailable.title")}</Text>
+        <Text style={styles.unavailableHint}>{t("unavailable.hint")}</Text>
         <ActionButton
-          label="返回销售页 / Back to sales"
+          label={t("unavailable.back")}
           onPress={onBack}
           testID="special-products-unavailable-back"
         />
@@ -293,6 +303,7 @@ function SpecialProductRow({
   onMoveDown,
   onMoveUp,
   onRemove,
+  t,
 }: Readonly<{
   canAddToCart: boolean;
   canManage: boolean;
@@ -305,6 +316,7 @@ function SpecialProductRow({
   onMoveDown(): void;
   onMoveUp(): void;
   onRemove(): void;
+  t: SpecialProductsTranslate;
 }>) {
   const managementDisabled = disabled || !online;
   return (
@@ -331,7 +343,7 @@ function SpecialProductRow({
           <ActionButton
             compact
             disabled={disabled}
-            label="加购 / Add"
+            label={t("row.add")}
             onPress={onAddToCart}
             testID={`special-products-add-${item.productCode}`}
           />
@@ -358,7 +370,7 @@ function SpecialProductRow({
               compact
               danger
               disabled={managementDisabled}
-              label="取消 / Remove"
+              label={t("row.remove")}
               onPress={onRemove}
               testID={`special-products-remove-${item.productCode}`}
               tone="quiet"
@@ -418,7 +430,11 @@ function ActionButton({
 
 function StatusBanner({
   statusCode,
-}: Readonly<{ statusCode: SpecialProductsStatusCode }>) {
+  t,
+}: Readonly<{
+  statusCode: SpecialProductsStatusCode;
+  t: SpecialProductsTranslate;
+}>) {
   const failure =
     statusCode.endsWith("-failed") ||
     statusCode === "online-required" ||
@@ -436,7 +452,7 @@ function StatusBanner({
           failure && styles.statusBannerFailureText,
         ]}
       >
-        {STATUS_COPY[statusCode]}
+        {t(specialProductsStatusCopyKey(statusCode))}
       </Text>
     </View>
   );
@@ -456,21 +472,6 @@ function EmptyState({
 function formatAud(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
-
-const STATUS_COPY: Readonly<Record<SpecialProductsStatusCode, string>> = {
-  "added-to-cart": "已加入购物车 / Added to cart",
-  "add-to-cart-failed": "加购未完成 / Could not add to cart",
-  "download-complete": "下载完成 / Download complete",
-  "download-failed": "下载未完成 / Download did not complete",
-  "load-failed": "本地列表读取失败 / Local list could not be read",
-  "mark-complete": "特殊商品标记已更新 / Special product updated",
-  "mark-failed": "标记未完成 / Update did not complete",
-  "online-required": "此管理操作需要在线 / This management action requires online access",
-  "permission-required": "当前收银员没有所需权限 / Required permission is missing",
-  "reorder-complete": "本地顺序已保存 / Local order saved",
-  "reorder-failed": "排序未保存 / Order was not saved",
-  "search-failed": "本地候选搜索失败 / Local candidate search failed",
-};
 
 const styles = StyleSheet.create({
   safeArea: {

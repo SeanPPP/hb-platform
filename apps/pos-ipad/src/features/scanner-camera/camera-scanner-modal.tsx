@@ -4,6 +4,7 @@ import {
   type BarcodeScanningResult,
 } from "expo-camera";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Modal,
@@ -12,6 +13,13 @@ import {
   Text,
   View,
 } from "react-native";
+
+import {
+  cameraScannerContextCopyKey,
+  cameraScannerText,
+  resolveCameraScannerLocale,
+  type CameraScannerCopyKey,
+} from "./camera-scanner-copy";
 
 import {
   normalizeScanValue,
@@ -37,6 +45,8 @@ export type CameraScannerModalProps = Readonly<{
 
 type NativeAvailability = "checking" | "ready" | "unavailable";
 
+type CameraScannerTranslate = (key: CameraScannerCopyKey) => string;
+
 /**
  * 相机是 HID 的兜底输入，不改变当前路由上下文；条码仍必须先由 scanner 接受。
  * 扫描成功后立即关闭，避免原生回调抖动造成重复加购或重复授权。
@@ -48,6 +58,11 @@ export function CameraScannerModal({
   scanner,
   visible,
 }: CameraScannerModalProps) {
+  const { i18n } = useTranslation();
+  const locale = resolveCameraScannerLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
+  const t: CameraScannerTranslate = (key) => cameraScannerText(locale, key);
   const [permission, requestPermission] = useCameraPermissions();
   const [availability, setAvailability] = useState<NativeAvailability>("checking");
   const [cameraStarted, setCameraStarted] = useState(false);
@@ -167,11 +182,9 @@ export function CameraScannerModal({
     >
       <View accessibilityViewIsModal style={styles.backdrop} testID="camera-scanner-modal">
         <View style={styles.panel}>
-          <Text style={styles.eyebrow}>相机扫码 / CAMERA SCAN</Text>
-          <Text style={styles.title}>{contextLabel(context)}</Text>
-          <Text style={styles.description}>
-            请将条码置于取景框内；成功后会立即返回当前操作。/ Keep the barcode inside the frame; a successful scan returns to the current task.
-          </Text>
+          <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
+          <Text style={styles.title}>{contextLabel(context, t)}</Text>
+          <Text style={styles.description}>{t("description")}</Text>
 
           {showCamera ? (
             <View style={styles.previewFrame}>
@@ -197,17 +210,18 @@ export function CameraScannerModal({
               permissionGranted={Boolean(permission?.granted)}
               permissionDenied={permissionDenied}
               onRequestPermission={requestCameraPermission}
+              t={t}
             />
           )}
 
           <Pressable
-            accessibilityLabel="关闭相机扫码 / Close camera scanner"
+            accessibilityLabel={t("action.closeLabel")}
             accessibilityRole="button"
             onPress={close}
             style={({ pressed }) => [styles.closeButton, pressed && styles.buttonPressed]}
             testID="camera-scanner-close"
           >
-            <Text style={styles.closeButtonLabel}>取消 / Cancel</Text>
+            <Text style={styles.closeButtonLabel}>{t("action.cancel")}</Text>
           </Pressable>
         </View>
       </View>
@@ -220,19 +234,19 @@ function CameraState({
   onRequestPermission,
   permissionGranted,
   permissionDenied,
+  t,
 }: Readonly<{
   availability: NativeAvailability;
   permissionDenied: boolean;
   permissionGranted: boolean;
   onRequestPermission(): void;
+  t: CameraScannerTranslate;
 }>) {
   if (permissionDenied) {
     return (
       <View accessibilityRole="alert" style={styles.state} testID="camera-scanner-permission-denied">
-        <Text style={styles.stateTitle}>相机权限已被拒绝 / Camera permission denied</Text>
-        <Text style={styles.stateCopy}>
-          请在 iPad 设置中允许相机后重试；不会使用手动输入替代扫码。/ Allow Camera in iPad Settings, then try again.
-        </Text>
+        <Text style={styles.stateTitle}>{t("permission.denied.title")}</Text>
+        <Text style={styles.stateCopy}>{t("permission.denied.body")}</Text>
       </View>
     );
   }
@@ -240,10 +254,8 @@ function CameraState({
   if (availability === "unavailable") {
     return (
       <View accessibilityRole="alert" style={styles.state} testID="camera-scanner-unavailable">
-        <Text style={styles.stateTitle}>相机不可用 / Camera unavailable</Text>
-        <Text style={styles.stateCopy}>
-          此设备或 Development Build 未提供相机扫码能力；为防止误入账，本次不会交付任何条码。/ This device or build has no camera scanner, so no barcode will be delivered.
-        </Text>
+        <Text style={styles.stateTitle}>{t("unavailable.title")}</Text>
+        <Text style={styles.stateCopy}>{t("unavailable.body")}</Text>
       </View>
     );
   }
@@ -251,17 +263,15 @@ function CameraState({
   if (!permissionGranted) {
     return (
       <View style={styles.state} testID="camera-scanner-permission-request-state">
-        <Text style={styles.stateTitle}>需要相机权限 / Camera permission required</Text>
-        <Text style={styles.stateCopy}>
-          相机只在本次扫码期间使用。/ Camera access is used only while scanning.
-        </Text>
+        <Text style={styles.stateTitle}>{t("permission.required.title")}</Text>
+        <Text style={styles.stateCopy}>{t("permission.required.body")}</Text>
         <Pressable
           accessibilityRole="button"
           onPress={onRequestPermission}
           style={({ pressed }) => [styles.permissionButton, pressed && styles.buttonPressed]}
           testID="camera-scanner-request-permission"
         >
-          <Text style={styles.permissionButtonLabel}>允许相机 / Allow camera</Text>
+          <Text style={styles.permissionButtonLabel}>{t("action.allowCamera")}</Text>
         </Pressable>
       </View>
     );
@@ -271,7 +281,7 @@ function CameraState({
     return (
       <View style={styles.state} testID="camera-scanner-starting">
         <ActivityIndicator color={posColors.orange} />
-        <Text style={styles.stateTitle}>正在检查相机 / Checking camera</Text>
+        <Text style={styles.stateTitle}>{t("checking")}</Text>
       </View>
     );
   }
@@ -279,21 +289,16 @@ function CameraState({
   return (
     <View style={styles.state} testID="camera-scanner-starting">
       <ActivityIndicator color={posColors.orange} />
-      <Text style={styles.stateTitle}>正在启动相机 / Starting camera</Text>
+      <Text style={styles.stateTitle}>{t("starting")}</Text>
     </View>
   );
 }
 
-function contextLabel(context: ScannerCaptureContext): string {
-  const labels: Record<ScannerCaptureContext, string> = {
-    "cashier-login": "收银员登录 / Cashier sign-in",
-    dialog: "对话框扫码 / Dialog scan",
-    "emergency-qr": "紧急二维码 / Emergency QR",
-    product: "商品条码 / Product barcode",
-    "product-search": "商品搜索 / Product search",
-    "supervisor-authorization": "主管授权 / Supervisor authorization",
-  };
-  return labels[context];
+function contextLabel(
+  context: ScannerCaptureContext,
+  t: CameraScannerTranslate,
+): string {
+  return t(cameraScannerContextCopyKey(context));
 }
 
 const styles = StyleSheet.create({

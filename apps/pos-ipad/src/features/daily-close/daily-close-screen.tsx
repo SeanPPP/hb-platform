@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type Ref,
 } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -22,6 +23,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  dailyCloseText,
+  resolveDailyCloseLocale,
+  type DailyCloseLocale,
+} from "./daily-close-copy";
 import {
   type DailyClosePresenter,
   type DailyCloseState,
@@ -68,6 +74,10 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
     presenter.getState,
   );
   const [businessDate, setBusinessDate] = useState(state.businessDate);
+  const { i18n } = useTranslation();
+  const locale = resolveDailyCloseLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
   const firstCountInputRef = useRef<TextInput>(null);
   const summaryScrollRef = useRef<ScrollView>(null);
 
@@ -116,18 +126,20 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
         <View style={styles.page}>
           <View style={styles.header}>
             <View style={styles.titleGroup}>
-              <Text style={styles.eyebrow}>门店运营 / STORE OPERATIONS</Text>
-              <Text style={styles.title}>日结 / Daily close</Text>
+              <Text style={styles.eyebrow}>
+                {dailyCloseText(locale, "eyebrow")}
+              </Text>
+              <Text style={styles.title}>
+                {dailyCloseText(locale, "title")}
+              </Text>
               <Text style={styles.subtitle}>
-                本机、本门店、本营业日汇总；每次保存形成独立冻结归档。 / Local
-                store, terminal and business-day totals; every save creates a
-                separate archive.
+                {dailyCloseText(locale, "subtitle")}
               </Text>
             </View>
             <View style={styles.headerActions}>
               {onBack ? (
                 <ActionButton
-                  label="返回 / Back"
+                  label={dailyCloseText(locale, "action.back")}
                   onPress={onBack}
                   testID="daily-close-back"
                   tone="quiet"
@@ -135,7 +147,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               ) : null}
               <ActionButton
                 disabled={state.busy}
-                label="点钞 / Count"
+                label={dailyCloseText(locale, "action.count")}
                 onPress={showCount}
                 selected={state.activePane === "count"}
                 testID="daily-close-show-count"
@@ -143,7 +155,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               />
               <ActionButton
                 disabled={state.busy}
-                label="历史 / History"
+                label={dailyCloseText(locale, "action.history")}
                 onPress={() => presenter.showHistory()}
                 selected={state.activePane === "history"}
                 testID="daily-close-show-history"
@@ -153,7 +165,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
           </View>
 
           {state.statusCode ? (
-            <StatusBanner statusCode={state.statusCode} />
+            <StatusBanner locale={locale} statusCode={state.statusCode} />
           ) : null}
 
           <View style={styles.workspace} testID="daily-close-workspace">
@@ -169,15 +181,18 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               <View style={styles.sectionHeader}>
                 <View>
                   <Text style={styles.sectionTitle}>
-                    当日汇总 / Business-day summary
+                    {dailyCloseText(locale, "summary.title")}
                   </Text>
                   <Text style={styles.sectionHint}>
-                    时间窗为门店本地午夜起止的半开区间 [from, to)。
+                    {dailyCloseText(locale, "summary.hint")}
                   </Text>
                 </View>
                 <View style={styles.dateControls}>
                   <TextInput
-                    accessibilityLabel="营业日 / Business date"
+                    accessibilityLabel={dailyCloseText(
+                      locale,
+                      "businessDate.accessibility",
+                    )}
                     editable={!state.busy}
                     onChangeText={setBusinessDate}
                     onFocus={revealSummaryInput}
@@ -190,8 +205,8 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                     disabled={state.busy}
                     label={
                       state.kind === "loading"
-                        ? "刷新中… / Loading…"
-                        : "刷新 / Refresh"
+                        ? dailyCloseText(locale, "action.refreshing")
+                        : dailyCloseText(locale, "action.refresh")
                     }
                     onPress={refresh}
                     testID="daily-close-refresh"
@@ -203,27 +218,33 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                 <>
                   <View style={styles.tenderCard}>
                     <View style={styles.tenderHeader}>
-                      <Text style={styles.tenderMethod}>方式 / Method</Text>
+                      <Text style={styles.tenderMethod}>
+                        {dailyCloseText(locale, "tender.method")}
+                      </Text>
                       <Text style={styles.tenderValues}>
-                        销售 / 退款 / 净额
+                        {dailyCloseText(locale, "tender.values")}
                       </Text>
                     </View>
                     {state.summary.tenders.map((tender) => (
-                      <TenderRow key={tender.method} tender={tender} />
+                      <TenderRow
+                        key={tender.method}
+                        locale={locale}
+                        tender={tender}
+                      />
                     ))}
                   </View>
 
                   <View style={styles.metrics}>
                     <Metric
-                      label="订单 / Orders"
+                      label={dailyCloseText(locale, "metric.orders")}
                       value={String(state.summary.orderCount)}
                     />
                     <Metric
-                      label="退货数量 / Return qty"
+                      label={dailyCloseText(locale, "metric.returnQuantity")}
                       value={state.summary.returnQuantity}
                     />
                     <Metric
-                      label="应有现金 / Expected"
+                      label={dailyCloseText(locale, "metric.expectedCash")}
                       value={money(state.summary.expectedCashCents)}
                     />
                   </View>
@@ -232,8 +253,8 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                 <View style={styles.emptyCard}>
                   <Text style={styles.emptyTitle}>
                     {state.kind === "loading"
-                      ? "正在读取本地汇总… / Loading local summary…"
-                      : "请选择营业日并刷新 / Select a business date and refresh"}
+                      ? dailyCloseText(locale, "summary.loading")
+                      : dailyCloseText(locale, "summary.empty")}
                   </Text>
                 </View>
               )}
@@ -243,21 +264,22 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                   <View style={styles.sectionHeader}>
                     <View>
                       <Text style={styles.sectionTitle}>
-                        现金点算 / Cash count
+                        {dailyCloseText(locale, "count.title")}
                       </Text>
                       <Text style={styles.sectionHint}>
-                        只接受非负整数张数；金额始终以整数分币计算。进入点钞或点按任一面额会自动打开系统数字键盘；当前输入会滚至键盘上方。
-                        / Enter non-negative whole-number quantities. The
-                        numeric keyboard opens automatically for counting; the
-                        focused field stays visible above it.
+                        {dailyCloseText(locale, "count.hint")}
                       </Text>
                     </View>
                     <View style={styles.countTotals}>
                       <Text style={styles.countTotalText}>
-                        纸币 {money(state.notesSubtotalCents)}
+                        {dailyCloseText(locale, "count.notes", {
+                          amount: money(state.notesSubtotalCents),
+                        })}
                       </Text>
                       <Text style={styles.countTotalText}>
-                        硬币 {money(state.coinsSubtotalCents)}
+                        {dailyCloseText(locale, "count.coins", {
+                          amount: money(state.coinsSubtotalCents),
+                        })}
                       </Text>
                     </View>
                   </View>
@@ -275,6 +297,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                         disabled={state.busy}
                         inputRef={index === 0 ? firstCountInputRef : undefined}
                         key={count.denominationCents}
+                        locale={locale}
                         onChange={(quantity) =>
                           presenter.setCount(count.denominationCents, quantity)
                         }
@@ -287,7 +310,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                   <View style={styles.saveBar}>
                     <View>
                       <Text style={styles.countedLabel}>
-                        实点现金 / Counted cash
+                        {dailyCloseText(locale, "count.countedCash")}
                       </Text>
                       <Text style={styles.countedAmount}>
                         {money(state.countedCashCents)}
@@ -300,7 +323,9 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                             : styles.varianceDifferent,
                         ]}
                       >
-                        差额 / Variance {signedMoney(state.varianceCents)}
+                        {dailyCloseText(locale, "count.variance", {
+                          amount: signedMoney(state.varianceCents),
+                        })}
                       </Text>
                     </View>
                     <ActionButton
@@ -309,8 +334,8 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                       }
                       label={
                         state.busy
-                          ? "处理中… / Working…"
-                          : "保存并打印 / Save & print"
+                          ? dailyCloseText(locale, "action.working")
+                          : dailyCloseText(locale, "action.save")
                       }
                       onPress={() => void presenter.saveAndPrint()}
                       testID="daily-close-save"
@@ -321,8 +346,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               ) : (
                 <View style={styles.permissionNote}>
                   <Text style={styles.permissionText}>
-                    当前权限仅允许查看；点钞和保存已隐藏。/ View-only access:
-                    counting and saving are hidden.
+                    {dailyCloseText(locale, "permission.viewOnly")}
                   </Text>
                 </View>
               )}
@@ -332,15 +356,17 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               contentContainerStyle={styles.paneContent}
               style={[styles.pane, styles.historyPane]}
             >
-              <Text style={styles.sectionTitle}>冻结归档 / Saved archives</Text>
+              <Text style={styles.sectionTitle}>
+                {dailyCloseText(locale, "history.title")}
+              </Text>
               <Text style={styles.sectionHint}>
-                同一营业日可保留多次归档；补打始终使用所选冻结事实。
+                {dailyCloseText(locale, "history.hint")}
               </Text>
 
               <View style={styles.historyList}>
                 {state.archives.length === 0 ? (
                   <Text style={styles.historyEmpty}>
-                    暂无归档 / No saved archives
+                    {dailyCloseText(locale, "history.empty")}
                   </Text>
                 ) : (
                   state.archives.map((archive) => (
@@ -357,7 +383,10 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
               </View>
 
               {state.selectedArchive ? (
-                <ArchiveDetails archive={state.selectedArchive} />
+                <ArchiveDetails
+                  archive={state.selectedArchive}
+                  locale={locale}
+                />
               ) : null}
 
               {state.access.canReprint ? (
@@ -365,8 +394,8 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                   disabled={state.busy || !state.selectedArchive}
                   label={
                     state.busy
-                      ? "处理中… / Working…"
-                      : "补打所选归档 / Reprint selected"
+                      ? dailyCloseText(locale, "action.working")
+                      : dailyCloseText(locale, "action.reprint")
                   }
                   onPress={() => void presenter.reprintSelected()}
                   testID="daily-close-reprint"
@@ -385,16 +414,21 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
 export function DailyCloseUnavailableScreen({
   onBack,
 }: Readonly<{ onBack(): void }>) {
+  const { i18n } = useTranslation();
+  const locale = resolveDailyCloseLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.unavailable}>
-        <Text style={styles.title}>日结暂不可用 / Daily close unavailable</Text>
+        <Text style={styles.title}>
+          {dailyCloseText(locale, "unavailable.title")}
+        </Text>
         <Text style={styles.subtitle}>
-          本地归档或打印服务尚未接线，请返回销售页。/ Local archive or printing
-          services are not configured.
+          {dailyCloseText(locale, "unavailable.subtitle")}
         </Text>
         <ActionButton
-          label="返回销售 / Back to sales"
+          label={dailyCloseText(locale, "unavailable.back")}
           onPress={onBack}
           testID="daily-close-unavailable-back"
           wide
@@ -405,11 +439,17 @@ export function DailyCloseUnavailableScreen({
 }
 
 function TenderRow({
+  locale,
   tender,
-}: Readonly<{ tender: DailyCloseTenderBreakdown }>) {
+}: Readonly<{
+  locale: DailyCloseLocale;
+  tender: DailyCloseTenderBreakdown;
+}>) {
   return (
     <View style={styles.tenderRow}>
-      <Text style={styles.tenderMethod}>{tenderName(tender.method)}</Text>
+      <Text style={styles.tenderMethod}>
+        {tenderName(tender.method, locale)}
+      </Text>
       <Text style={styles.tenderValues}>
         {money(tender.salesCents)} / {money(tender.refundCents)} /{" "}
         {money(tender.netCents)}
@@ -433,6 +473,7 @@ function DenominationField({
   denominationCents,
   disabled,
   inputRef,
+  locale,
   onChange,
   onFocus,
   subtotalCents,
@@ -442,6 +483,7 @@ function DenominationField({
   denominationCents: AudCashDenominationCents;
   disabled: boolean;
   inputRef?: Ref<TextInput> | undefined;
+  locale: DailyCloseLocale;
   onChange(quantity: number): void;
   onFocus(event: FocusEvent): void;
   subtotalCents: number;
@@ -455,7 +497,13 @@ function DenominationField({
         <Text style={styles.denominationSubtotal}>{money(subtotalCents)}</Text>
       </View>
       <TextInput
-        accessibilityLabel={`${denominationLabel(denominationCents)} count`}
+        accessibilityLabel={dailyCloseText(
+          locale,
+          "denomination.accessibility",
+          {
+            denomination: denominationLabel(denominationCents),
+          },
+        )}
         autoFocus={autoFocus}
         editable={!disabled}
         keyboardType="number-pad"
@@ -513,25 +561,43 @@ function ArchiveRow({
   );
 }
 
-function ArchiveDetails({ archive }: Readonly<{ archive: DailyCloseArchive }>) {
+function ArchiveDetails({
+  archive,
+  locale,
+}: Readonly<{
+  archive: DailyCloseArchive;
+  locale: DailyCloseLocale;
+}>) {
   return (
     <View style={styles.archiveDetails}>
-      <Text style={styles.detailTitle}>所选归档 / Selected archive</Text>
-      <Text style={styles.detailLine}>
-        终端 / Terminal: {archive.deviceCode}
+      <Text style={styles.detailTitle}>
+        {dailyCloseText(locale, "archive.selected")}
       </Text>
       <Text style={styles.detailLine}>
-        收银员 / Cashier: {archive.savedCashierName}
+        {dailyCloseText(locale, "archive.terminal", {
+          value: archive.deviceCode,
+        })}
       </Text>
       <Text style={styles.detailLine}>
-        订单 / Orders: {archive.orderCount} · 退货 / Returns:{" "}
-        {archive.returnQuantity}
+        {dailyCloseText(locale, "archive.cashier", {
+          value: archive.savedCashierName,
+        })}
       </Text>
       <Text style={styles.detailLine}>
-        应有 / Expected {money(archive.expectedCashCents)}
+        {dailyCloseText(locale, "archive.ordersReturns", {
+          orders: archive.orderCount,
+          returns: archive.returnQuantity,
+        })}
       </Text>
       <Text style={styles.detailLine}>
-        实点 / Counted {money(archive.countedCashCents)}
+        {dailyCloseText(locale, "archive.expected", {
+          amount: money(archive.expectedCashCents),
+        })}
+      </Text>
+      <Text style={styles.detailLine}>
+        {dailyCloseText(locale, "archive.counted", {
+          amount: money(archive.countedCashCents),
+        })}
       </Text>
       <Text
         style={[
@@ -541,7 +607,9 @@ function ArchiveDetails({ archive }: Readonly<{ archive: DailyCloseArchive }>) {
             : styles.varianceDifferent,
         ]}
       >
-        差额 / Variance {signedMoney(archive.varianceCents)}
+        {dailyCloseText(locale, "count.variance", {
+          amount: signedMoney(archive.varianceCents),
+        })}
       </Text>
     </View>
   );
@@ -597,8 +665,12 @@ function ActionButton({
 }
 
 function StatusBanner({
+  locale,
   statusCode,
-}: Readonly<{ statusCode: DailyCloseStatusCode }>) {
+}: Readonly<{
+  locale: DailyCloseLocale;
+  statusCode: DailyCloseStatusCode;
+}>) {
   const success =
     statusCode === "saved-printed" || statusCode === "reprint-printed";
   return (
@@ -610,37 +682,23 @@ function StatusBanner({
       ]}
       testID={`daily-close-status-${statusCode}`}
     >
-      <Text style={styles.statusText}>{statusMessage(statusCode)}</Text>
+      <Text style={styles.statusText}>{statusMessage(statusCode, locale)}</Text>
     </View>
   );
 }
 
-function statusMessage(statusCode: DailyCloseStatusCode): string {
-  return {
-    "invalid-business-date":
-      "营业日或门店时区无效。/ Invalid business date or store time zone.",
-    "load-failed":
-      "本地日结汇总读取失败，请重试。/ Local daily-close summary could not be loaded.",
-    "permission-required":
-      "当前收银员没有执行此操作的权限。/ Permission required.",
-    "reprint-failed":
-      "补打失败；冻结归档未改变。/ Reprint failed; the archive is unchanged.",
-    "reprint-printed": "所选归档已发送打印。/ Selected archive sent to print.",
-    "save-failed":
-      "归档未保存，点钞数量已保留。/ Save failed; counts were preserved.",
-    "saved-print-failed":
-      "归档与审计已保存，但打印失败，可从历史补打。/ Saved safely; printing failed and can be retried from history.",
-    "saved-printed": "归档与审计已保存并发送打印。/ Saved and sent to print.",
-    "select-archive-required": "请先选择一个归档。/ Select an archive first.",
-  }[statusCode];
+function statusMessage(
+  statusCode: DailyCloseStatusCode,
+  locale: DailyCloseLocale,
+): string {
+  return dailyCloseText(locale, `status.${statusCode}`);
 }
 
-function tenderName(method: DailyCloseTenderBreakdown["method"]): string {
-  return {
-    cash: "Cash / 现金",
-    card: "Card / 银行卡",
-    voucher: "Voucher / 代金券",
-  }[method];
+function tenderName(
+  method: DailyCloseTenderBreakdown["method"],
+  locale: DailyCloseLocale,
+): string {
+  return dailyCloseText(locale, `method.${method}`);
 }
 
 function denominationLabel(value: AudCashDenominationCents): string {
