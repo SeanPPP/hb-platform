@@ -16,6 +16,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 {
     public const string PageId = "SpecialProducts";
 
+    private bool _disposed;
+
     public string ScannerPageId => PageId;
 
     private const int PageSize = 20;
@@ -131,7 +133,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         MoveUpCommand = new AsyncRelayCommand<SellableItemDto>(item => MoveSpecialProductAsync(item, -1), CanMoveUp);
         MoveDownCommand = new AsyncRelayCommand<SellableItemDto>(item => MoveSpecialProductAsync(item, 1), CanMoveDown);
 
-        _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+        _localization.CultureChanged += OnCultureChanged;
         _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
         StatusMessage = T("specialProducts.status.ready");
     }
@@ -1023,11 +1025,23 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _localization.CultureChanged -= OnCultureChanged;
         CancelDownloadProgressAutoHide();
         _thumbnailEnableCts?.Cancel();
         _thumbnailEnableCts?.Dispose();
         _thumbnailEnableCts = null;
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 
     private void Back()

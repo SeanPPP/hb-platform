@@ -512,8 +512,15 @@ public sealed class LinklyCloudTerminalClient(
         decimal requestedAmount,
         string requestedTxnRef)
     {
-        var amount = response.Amount ?? requestedAmount;
-        var txnRef = string.IsNullOrWhiteSpace(response.TxnRef) ? requestedTxnRef : response.TxnRef.Trim();
+        var amount = response.Amount;
+        var returnedTxnRef = NormalizeOptional(response.TxnRef);
+        // Cloud 直连在提交前没有可持久化的 TxnRef；必须要求终端回传真实引用，但不能拿临时客户端跟踪号冒充银行引用。
+        if (response.Succeeded && (amount is null || string.IsNullOrWhiteSpace(returnedTxnRef)))
+        {
+            return new PaymentAuthorizationResult(false, null, "ANZ Linkly Cloud result could not be verified.", ResultUnknown: true);
+        }
+
+        var txnRef = returnedTxnRef ?? requestedTxnRef;
         var transaction = new CardTransactionDto(
             ProcessorName,
             txnRef,
@@ -526,7 +533,7 @@ public sealed class LinklyCloudTerminalClient(
             NormalizeOptional(response.ResponseText),
             NormalizeOptional(response.Stan),
             null,
-            decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
+            amount is decimal value ? decimal.Round(value, 2, MidpointRounding.AwayFromZero) : 0m,
             null,
             NormalizeOptional(response.RefundReference));
         var approved = response.Succeeded;
@@ -770,6 +777,19 @@ public sealed class ConfiguredLinklyTerminalClient(
             (mode, modeSettings) => RefundOneModeAsync(mode, amount, session, modeSettings, originalReference, cancellationToken));
     }
 
+    public Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        string refundTxnRef,
+        CancellationToken cancellationToken = default)
+    {
+        return RunWithPriorityAsync(
+            settings,
+            (mode, modeSettings) => RefundOneModeAsync(mode, amount, session, modeSettings, originalReference, cancellationToken, refundTxnRef));
+    }
+
     public Task<PaymentAuthorizationResult> VoidAsync(
         decimal amount,
         PosSessionState session,
@@ -807,7 +827,8 @@ public sealed class ConfiguredLinklyTerminalClient(
         PosSessionState session,
         CardTerminalSettings settings,
         string? originalReference,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? refundTxnRef = null)
     {
         // 退款沿用同一分派规则，避免上层 UI 直接理解 Linkly 模式。
         return mode switch
@@ -816,7 +837,9 @@ public sealed class ConfiguredLinklyTerminalClient(
             LinklyConnectionMode.CloudBackendAsync => backendClient is null
                 ? Task.FromResult(BackendUnavailable())
                 : backendClient.RefundAsync(amount, session, settings, originalReference, cancellationToken),
-            _ => localClient.RefundAsync(amount, session, settings, originalReference, cancellationToken)
+            _ => string.IsNullOrWhiteSpace(refundTxnRef)
+                ? localClient.RefundAsync(amount, session, settings, originalReference, cancellationToken)
+                : localClient.RefundWithReferenceAsync(amount, session, settings, originalReference, refundTxnRef, cancellationToken)
         };
     }
 

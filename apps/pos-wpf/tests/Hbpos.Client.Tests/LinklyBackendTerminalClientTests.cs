@@ -67,7 +67,7 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_treats_approved_response_code_as_success_when_transaction_success_is_missing()
+    public async Task PurchaseAsync_keeps_result_unknown_when_backend_approval_lacks_verified_amount()
     {
         var handler = new StubHttpMessageHandler(request =>
             request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.OrdinalIgnoreCase)
@@ -99,10 +99,9 @@ public sealed class LinklyBackendTerminalClientTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.Equal("00", result.ResponseCode);
-        Assert.Equal("APPROVED", result.ResponseText);
-        Assert.Equal(1, dialog.CloseCallCount);
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, dialog.CloseCallCount);
     }
 
     [Fact]
@@ -299,7 +298,7 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_uses_backend_contract_without_client_secret_payload()
+    public async Task PurchaseAsync_keeps_backend_contract_but_locks_when_completed_status_lacks_transaction_amount()
     {
         using var logs = new ConsoleLogCapture();
         var requests = new List<HttpRequestMessage>();
@@ -366,13 +365,8 @@ public sealed class LinklyBackendTerminalClientTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.Equal(
-            "ANZBACKEND:260601120001:session=backend-session-1:environment=Sandbox",
-            result.Reference);
-        Assert.True(LinklyBackendPaymentReference.TryGetPrintMarker(result.Reference, out var environment, out var sessionId));
-        Assert.Equal("Sandbox", environment);
-        Assert.Equal("backend-session-1", sessionId);
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         using var activeRequestLog = FindLinklyLog(logs.Lines, "active session", "request");
         Assert.Equal("GET", activeRequestLog.RootElement.GetProperty("request").GetProperty("method").GetString());
         Assert.Equal(JsonValueKind.Null, activeRequestLog.RootElement.GetProperty("request").GetProperty("body").ValueKind);
@@ -429,8 +423,7 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Null(TryReadJsonString(createBody, "txnRef"));
         Assert.Contains(dialog.States, state => state.DisplayText == "PRESENT CARD");
         Assert.Contains(dialog.States, state => state.ReceiptText == "MERCHANT RECEIPT\nAPPROVED");
-        Assert.Equal("MERCHANT RECEIPT\nAPPROVED", Assert.Single(result.CardTransactions!).ReceiptText);
-        Assert.Equal(1, dialog.CloseCallCount);
+        Assert.Equal(0, dialog.CloseCallCount);
     }
 
     [Fact]
@@ -2215,6 +2208,50 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_locks_when_completed_terminal_amount_differs()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            return request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.OrdinalIgnoreCase)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "backend-amount-mismatch",
+                        "status": "Completed",
+                        "txnRef": "260601120003",
+                        "responseCode": "00",
+                        "responseText": "APPROVED",
+                        "transactionSuccess": true,
+                        "displayText": "APPROVED",
+                        "receiptText": "APPROVED RECEIPT",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": "2026-06-01T02:00:00Z",
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":true,\"TxnRef\":\"260601120003\",\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AmtPurchase\":999}}"
+                          }
+                        ]
+                      }
+                    }
+                    """);
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_uses_protected_session_result_when_later_transaction_notification_conflicts()
     {
         var handler = new StubHttpMessageHandler(request =>
@@ -2243,7 +2280,7 @@ public sealed class LinklyBackendTerminalClientTests
                         "notifications": [
                           {
                             "type": "transaction",
-                            "payloadJson": "{\"Response\":{\"Success\":true,\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AuthCode\":\"AUTH1\"}}",
+                            "payloadJson": "{\"Response\":{\"Success\":true,\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AuthCode\":\"AUTH1\",\"AmtPurchase\":1000}}",
                             "receivedAt": "2026-06-01T02:00:00Z"
                           },
                           {
@@ -2416,7 +2453,12 @@ public sealed class LinklyBackendTerminalClientTests
                         "recoveryCount": 0,
                         "receiptPrintedAt": null,
                         "lastHttpStatus": 202,
-                        "notifications": []
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{ \"Response\": { \"Success\": true, \"TxnRef\": \"260601120198\", \"ResponseCode\": \"00\", \"ResponseText\": \"APPROVED\" } }"
+                          }
+                        ]
                       }
                     }
                     """),
@@ -2440,7 +2482,12 @@ public sealed class LinklyBackendTerminalClientTests
                         "recoveryCount": 0,
                         "receiptPrintedAt": null,
                         "lastHttpStatus": 200,
-                        "notifications": []
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{ \"Response\": { \"Success\": true, \"TxnRef\": \"260601120198\", \"ResponseCode\": \"00\", \"ResponseText\": \"APPROVED\" } }"
+                          }
+                        ]
                       }
                     }
                     """),
@@ -2466,7 +2513,7 @@ public sealed class LinklyBackendTerminalClientTests
                         "notifications": [
                           {
                             "type": "transaction",
-                            "payloadJson": "{\"Response\":{\"Success\":true,\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AuthCode\":\"AUTH1\",\"TxnRef\":\"260601120031\"}}",
+                            "payloadJson": "{\"Response\":{\"Success\":true,\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AuthCode\":\"AUTH1\",\"TxnRef\":\"260601120031\",\"AmtPurchase\":1000}}",
                             "receivedAt": "2026-06-01T02:00:03Z"
                           }
                         ]
@@ -4383,6 +4430,52 @@ public sealed class LinklyBackendTerminalClientTests
         };
     }
 
+    // 大多数交互测试关注对话框、轮询和按键；旧桩只有 APPROVED 状态而没有终端金额。
+    // 仅在当前桩已收到本次付款请求时补齐真实 transaction 通知，避免跨测试共享金额状态。
+    private static string AddVerifiedAmountToGenericApprovedFixture(string json, string? requestedMinorAmount)
+    {
+        if (string.IsNullOrWhiteSpace(requestedMinorAmount) ||
+            json.Contains("backend-approved-without-transaction-success", StringComparison.Ordinal) ||
+            json.Contains("backend-session-1", StringComparison.Ordinal) ||
+            !json.Contains("\"notifications\": []", StringComparison.Ordinal) ||
+            (!json.Contains("\"responseCode\": \"00\"", StringComparison.Ordinal) &&
+             !json.Contains("\"responseCode\": \"08\"", StringComparison.Ordinal)))
+        {
+            return json;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("txnRef", out var txnRef) ||
+                string.IsNullOrWhiteSpace(txnRef.GetString()))
+            {
+                return json;
+            }
+
+            var responseCode = data.TryGetProperty("responseCode", out var code) ? code.GetString() : "00";
+            var responseText = data.TryGetProperty("responseText", out var text) ? text.GetString() : "APPROVED";
+            var payloadJson = JsonSerializer.Serialize(new
+            {
+                Response = new
+                {
+                    Success = true,
+                    TxnRef = txnRef.GetString(),
+                    ResponseCode = responseCode,
+                    ResponseText = responseText,
+                    AmtPurchase = long.Parse(requestedMinorAmount, System.Globalization.CultureInfo.InvariantCulture)
+                }
+            });
+            var notification = JsonSerializer.Serialize(new { type = "transaction", payloadJson });
+            return json.Replace("\"notifications\": []", $"\"notifications\": [{notification}]", StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+
     private static HttpResponseMessage ReadyHealthResponse()
     {
         return JsonResponse(
@@ -4497,6 +4590,7 @@ public sealed class LinklyBackendTerminalClientTests
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
         private readonly Func<HttpRequestMessage, CancellationToken, HttpResponseMessage>? _healthHandler;
         private readonly bool _passHealthRequestsToHandler;
+        private string? _requestedMinorAmount;
 
         public StubHttpMessageHandler(
             Func<HttpRequestMessage, HttpResponseMessage> handler,
@@ -4521,17 +4615,45 @@ public sealed class LinklyBackendTerminalClientTests
             _healthHandler = healthHandler;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.AbsolutePath.EndsWith("/api/v1/linkly/cloud-backend/transactions", StringComparison.Ordinal) &&
+                request.Content is not null)
+            {
+                _requestedMinorAmount = TryReadJsonString(
+                    request.Content.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult(),
+                    "amtPurchase");
+            }
+
+            HttpResponseMessage response;
             if (!_passHealthRequestsToHandler &&
                 request.RequestUri!.AbsolutePath.EndsWith("/api/v1/linkly/cloud-backend/health", StringComparison.Ordinal))
             {
-                return Task.FromResult(_healthHandler?.Invoke(request, cancellationToken) ?? ReadyHealthResponse());
+                response = _healthHandler?.Invoke(request, cancellationToken) ?? ReadyHealthResponse();
+            }
+            else
+            {
+                response = await _handler(request, cancellationToken);
             }
 
-            return _handler(request, cancellationToken);
+            if (response.Content is null || string.IsNullOrWhiteSpace(_requestedMinorAmount))
+            {
+                return response;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            var updatedJson = AddVerifiedAmountToGenericApprovedFixture(json, _requestedMinorAmount);
+            if (string.Equals(json, updatedJson, StringComparison.Ordinal))
+            {
+                return response;
+            }
+
+            response.Content.Dispose();
+            response.Content = new StringContent(updatedJson, Encoding.UTF8, "application/json");
+            return response;
         }
     }
 

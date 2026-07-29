@@ -965,6 +965,26 @@
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextWrapping="Wrap"
                                                Margin="0,0,0,12" />
+                                    <TextBlock Text="{loc:Loc settings.payment.environment}" Style="{StaticResource SettingsLabelStyle}" />
+                                    <CheckBox IsChecked="{Binding IsLinklySandbox, Mode=TwoWay}"
+                                              IsEnabled="{Binding CanChangeEnvironment}"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,0,14">
+                                        <TextBlock Text="{loc:Loc settings.payment.sandbox.toggle}" FontWeight="Bold" />
+                                    </CheckBox>
+                                    <Border Background="#FFF6F8FB"
+                                            BorderBrush="{StaticResource PosBorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="12,8"
+                                            Margin="0,0,0,14"
+                                            Visibility="{Binding IsLinklySandboxLocalIpMode, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc settings.linkly.localIp.sandboxSafety}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
                                     <TextBlock Text="{loc:Loc settings.linkly.localIp.ipAddress}" Style="{StaticResource SettingsLabelStyle}" />
                                     <TextBox Text="{Binding LinklyHostText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                              Style="{StaticResource SettingsFieldTextBoxStyle}"
@@ -1281,7 +1301,7 @@
                                             Margin="0,0,10,0">
                                         <StackPanel Orientation="Horizontal">
                                             <materialDesign:PackIcon Kind="LanConnect" Width="18" Height="18" Margin="0,0,8,0" />
-                                            <TextBlock Text="{loc:Loc settings.linkly.test}" />
+                                            <TextBlock Text="{Binding LinklyTestActionText, Mode=OneWay}" />
                                         </StackPanel>
                                     </Button>
                                     <Button Command="{Binding SaveLinklyCommand}"

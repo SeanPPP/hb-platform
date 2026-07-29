@@ -178,6 +178,8 @@ public sealed class ReceiptPrintingTests
         Assert.Contains(document.PreviewRows, row => row.Text == "Store: Main Store (S001)");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == orderGuid.ToString());
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == orderGuid.ToString());
+        var qrPreview = Assert.Single(document.PreviewRows, row => row.IsQrCode);
+        Assert.Equal(orderGuid.ToString("D"), qrPreview.QrCodeValue);
     }
 
     [Fact]
@@ -316,6 +318,7 @@ public sealed class ReceiptPrintingTests
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC200");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC200");
         Assert.Contains(document.PreviewRows, row => row.Text == "Voucher: VC200");
+        Assert.Equal("VC200", Assert.Single(document.PreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
@@ -365,6 +368,7 @@ public sealed class ReceiptPrintingTests
         Assert.DoesNotContain("Payment:", document.PlainText, StringComparison.Ordinal);
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "RF123");
         Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "RF123");
+        Assert.Equal("RF123", Assert.Single(document.PreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
@@ -712,6 +716,7 @@ public sealed class ReceiptPrintingTests
         await store.SaveAsync(settings);
         var loaded = await store.LoadAsync();
 
+        Assert.Equal(1, repository.BatchWriteCount);
         Assert.Equal("USB,", loaded.PrinterPort);
         Assert.Equal("HB", loaded.BrandName);
         Assert.Equal("Sunnybank", loaded.StoreName);
@@ -997,6 +1002,8 @@ public sealed class ReceiptPrintingTests
     {
         private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
 
+        public int BatchWriteCount { get; private set; }
+
         public Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_values.TryGetValue(key, out var value) ? value : null);
@@ -1005,6 +1012,19 @@ public sealed class ReceiptPrintingTests
         public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
         {
             _values[key] = value;
+            return Task.CompletedTask;
+        }
+
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            BatchWriteCount++;
+            foreach (var (key, value) in values)
+            {
+                _values[key] = value;
+            }
+
             return Task.CompletedTask;
         }
 

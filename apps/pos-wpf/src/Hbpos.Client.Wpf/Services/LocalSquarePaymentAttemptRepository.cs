@@ -1,4 +1,5 @@
 using System.Globalization;
+using Hbpos.Client.Wpf.Models;
 using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -43,11 +44,20 @@ public sealed record LocalSquarePaymentAttempt(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
     DateTimeOffset? OrderCompletedAt,
-    DateTimeOffset? ResolvedAt);
+    DateTimeOffset? ResolvedAt,
+    string OperationKind = "Sale",
+    Guid? OperationGuid = null,
+    string? SubmissionToken = null,
+    string? RefundBusinessKey = null);
 
 public sealed record SquarePaymentAttemptContext(
     Guid AttemptGuid,
-    string IdempotencyKey);
+    string IdempotencyKey,
+    Func<string, string?, DateTimeOffset, CancellationToken, Task>? BindCheckoutAsync = null,
+    string? SubmissionToken = null)
+{
+    public bool CanBindCheckout => BindCheckoutAsync is not null;
+}
 
 public interface ISquarePaymentAttemptContextAccessor
 {
@@ -84,12 +94,101 @@ public interface ILocalSquarePaymentAttemptRepository
 {
     Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default);
 
+    async Task<LocalSquarePaymentAttempt> CreateOrGetOpenRefundAsync(
+        LocalSquarePaymentAttempt attempt,
+        CancellationToken cancellationToken = default)
+    {
+        await CreateAsync(attempt, cancellationToken);
+        return attempt;
+    }
+
+    async Task<bool> TryBeginRefundSubmissionAsync(
+        Guid attemptGuid,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkRecoveringAsync(attemptGuid, updatedAt, cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryMarkRefundCheckoutCreatedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string checkoutId,
+        string? checkoutStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkCheckoutCreatedAsync(attemptGuid, checkoutId, checkoutStatus, updatedAt, cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryMarkRefundPaymentVerifiedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string paymentId,
+        string paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkPaymentVerifiedAsync(
+            attemptGuid,
+            paymentId,
+            paymentStatus,
+            responseCode,
+            responseText,
+            completedAt,
+            cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryMarkRefundFailedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        LocalSquarePaymentAttemptStatus status,
+        string? checkoutStatus,
+        string? paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null)
+    {
+        await MarkFailedAsync(
+            attemptGuid,
+            status,
+            checkoutStatus,
+            paymentStatus,
+            responseCode,
+            responseText,
+            resolvedAt,
+            cancellationToken,
+            cancelReason);
+        return true;
+    }
+
     Task MarkCheckoutCreatedAsync(
         Guid attemptGuid,
         string checkoutId,
         string? checkoutStatus,
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default);
+
+    async Task<bool> TryMarkCheckoutCreatedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string checkoutId,
+        string? checkoutStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkCheckoutCreatedAsync(attemptGuid, checkoutId, checkoutStatus, updatedAt, cancellationToken);
+        return true;
+    }
 
     Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default);
 
@@ -126,9 +225,38 @@ public interface ILocalSquarePaymentAttemptRepository
     Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
         string storeCode,
         string deviceCode,
-        string cashierId,
+        string? cashierId,
         string environment,
         CancellationToken cancellationToken = default);
+
+    Task<LocalSquarePaymentAttempt?> GetLatestOpenSaleAttemptForTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default) =>
+        GetLatestOpenAttemptAsync(
+            storeCode,
+            deviceCode,
+            cashierId: null,
+            environment,
+            cancellationToken);
+
+    Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenRefundAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> ResolveRefundAsync(
+        CardRefundAttemptResolution resolution,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
+    Task<bool> ResolveRefundWithJournalAsync(
+        CardRefundAttemptResolution resolution,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default) =>
+        ResolveRefundAsync(resolution, cancellationToken);
 
     Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default);
 }
@@ -155,6 +283,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 Amount, AmountCents, Currency, Status, CheckoutStatus, CancelReason,
                 OrderDraftJson, StoreCode, DeviceCode, CashierId, PaymentId, PaymentStatus,
                 ResponseCode, ResponseText, CreatedAt, UpdatedAt, CompletedAt, OrderCompletedAt, ResolvedAt
+                , OperationKind, OperationGuid, SubmissionToken, RefundBusinessKey
             )
             VALUES
             (
@@ -162,10 +291,223 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 $Amount, $AmountCents, $Currency, $Status, $CheckoutStatus, $CancelReason,
                 $OrderDraftJson, $StoreCode, $DeviceCode, $CashierId, $PaymentId, $PaymentStatus,
                 $ResponseCode, $ResponseText, $CreatedAt, $UpdatedAt, $CompletedAt, $OrderCompletedAt, $ResolvedAt
+                , $OperationKind, $OperationGuid, $SubmissionToken, $RefundBusinessKey
             );
             """;
         AddAttemptParameters(command, attempt);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<LocalSquarePaymentAttempt> CreateOrGetOpenRefundAsync(
+        LocalSquarePaymentAttempt attempt,
+        CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(attempt.OperationKind, "Refund", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(attempt.RefundBusinessKey))
+        {
+            throw new InvalidOperationException("退款 attempt 必须包含稳定的 RefundBusinessKey。");
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        await using (var insertCommand = connection.CreateCommand())
+        {
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText = """
+                INSERT OR IGNORE INTO LocalSquarePaymentAttempts
+                (
+                    AttemptGuid, CheckoutId, IdempotencyKey, DeviceId, LocationId, Environment,
+                    Amount, AmountCents, Currency, Status, CheckoutStatus, CancelReason,
+                    OrderDraftJson, StoreCode, DeviceCode, CashierId, PaymentId, PaymentStatus,
+                    ResponseCode, ResponseText, CreatedAt, UpdatedAt, CompletedAt, OrderCompletedAt, ResolvedAt,
+                    OperationKind, OperationGuid, SubmissionToken, RefundBusinessKey
+                )
+                VALUES
+                (
+                    $AttemptGuid, $CheckoutId, $IdempotencyKey, $DeviceId, $LocationId, $Environment,
+                    $Amount, $AmountCents, $Currency, $Status, $CheckoutStatus, $CancelReason,
+                    $OrderDraftJson, $StoreCode, $DeviceCode, $CashierId, $PaymentId, $PaymentStatus,
+                    $ResponseCode, $ResponseText, $CreatedAt, $UpdatedAt, $CompletedAt, $OrderCompletedAt, $ResolvedAt,
+                    $OperationKind, $OperationGuid, $SubmissionToken, $RefundBusinessKey
+                );
+                """;
+            AddAttemptParameters(insertCommand, attempt);
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        LocalSquarePaymentAttempt? persisted;
+        await using (var readCommand = connection.CreateCommand())
+        {
+            readCommand.Transaction = transaction;
+            readCommand.CommandText = """
+                SELECT *
+                FROM LocalSquarePaymentAttempts
+                WHERE OperationKind = 'Refund'
+                  AND RefundBusinessKey = $RefundBusinessKey
+                  AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+                LIMIT 1;
+                """;
+            readCommand.Parameters.AddWithValue("$RefundBusinessKey", attempt.RefundBusinessKey);
+            for (var i = 0; i < TerminalStatuses.Length; i++)
+            {
+                readCommand.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+            }
+
+            await using var reader = await readCommand.ExecuteReaderAsync(cancellationToken);
+            persisted = await reader.ReadAsync(cancellationToken) ? ReadAttempt(reader) : null;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return persisted ?? throw new InvalidOperationException("退款 attempt 原子落库后无法读取。");
+    }
+
+    public async Task<bool> TryBeginRefundSubmissionAsync(
+        Guid attemptGuid,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteUpdateCountAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $RecoveringStatus,
+                ResponseCode = NULL,
+                ResponseText = NULL,
+                SubmissionToken = $SubmissionToken,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND Status = $PendingStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND SubmissionToken IS NULL
+              AND COALESCE(ResponseCode, '') IN ('', $ConfirmedNotRefunded);
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+                command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
+                command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+                command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
+                command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$ConfirmedNotRefunded", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+            },
+            cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryMarkRefundCheckoutCreatedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string checkoutId,
+        string? checkoutStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteRefundSubmissionUpdateAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET CheckoutId = $CheckoutId,
+                CheckoutStatus = $CheckoutStatus,
+                Status = $Status,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+            """,
+            attemptGuid,
+            submissionToken,
+            command =>
+            {
+                command.Parameters.AddWithValue("$CheckoutId", checkoutId);
+                command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+                command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+            },
+            cancellationToken);
+    }
+
+    public async Task<bool> TryMarkRefundPaymentVerifiedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string paymentId,
+        string paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteRefundSubmissionUpdateAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                PaymentId = $PaymentId,
+                PaymentStatus = $PaymentStatus,
+                ResponseCode = $ResponseCode,
+                ResponseText = $ResponseText,
+                CompletedAt = $CompletedAt,
+                UpdatedAt = $CompletedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+            """,
+            attemptGuid,
+            submissionToken,
+            command =>
+            {
+                command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.PaymentVerified.ToString());
+                command.Parameters.AddWithValue("$PaymentId", paymentId);
+                command.Parameters.AddWithValue("$PaymentStatus", paymentStatus);
+                command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
+                command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+            },
+            cancellationToken);
+    }
+
+    public async Task<bool> TryMarkRefundFailedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        LocalSquarePaymentAttemptStatus status,
+        string? checkoutStatus,
+        string? paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null)
+    {
+        return await ExecuteRefundSubmissionUpdateAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                CheckoutStatus = COALESCE($CheckoutStatus, CheckoutStatus),
+                CancelReason = COALESCE($CancelReason, CancelReason),
+                PaymentStatus = COALESCE($PaymentStatus, PaymentStatus),
+                ResponseCode = $ResponseCode,
+                ResponseText = $ResponseText,
+                ResolvedAt = $ResolvedAt,
+                UpdatedAt = $ResolvedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+            """,
+            attemptGuid,
+            submissionToken,
+            command =>
+            {
+                command.Parameters.AddWithValue("$Status", status.ToString());
+                command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$CancelReason", (object?)cancelReason ?? DBNull.Value);
+                command.Parameters.AddWithValue("$PaymentStatus", (object?)paymentStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
+            },
+            cancellationToken);
     }
 
     public async Task MarkCheckoutCreatedAsync(
@@ -175,14 +517,18 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default)
     {
-        await ExecuteUpdateAsync(
+        await ExecuteGuardedUpdateAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET CheckoutId = $CheckoutId,
                 CheckoutStatus = $CheckoutStatus,
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
-            WHERE AttemptGuid = $AttemptGuid;
+            WHERE AttemptGuid = $AttemptGuid
+              AND (
+                    OperationKind <> 'Refund'
+                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  );
             """,
             command =>
             {
@@ -206,6 +552,165 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             cancellationToken);
     }
 
+    public async Task<bool> TryMarkCheckoutCreatedAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string checkoutId,
+        string? checkoutStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteUpdateCountAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET CheckoutId = $CheckoutId,
+                CheckoutStatus = $CheckoutStatus,
+                Status = $Status,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND SubmissionToken = $SubmissionToken
+              AND Status IN ($PendingStatus, $RecoveringStatus, $CheckoutCreatedStatus);
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+                command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
+                command.Parameters.AddWithValue("$CheckoutId", checkoutId);
+                command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+                command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
+                command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+                command.Parameters.AddWithValue("$CheckoutCreatedStatus", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+                command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+            },
+            cancellationToken) == 1;
+    }
+
+    public Task<bool> ResolveRefundAsync(
+        CardRefundAttemptResolution resolution,
+        CancellationToken cancellationToken = default) =>
+        ResolveRefundCoreAsync(resolution, journal: null, cancellationToken);
+
+    public Task<bool> ResolveRefundWithJournalAsync(
+        CardRefundAttemptResolution resolution,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        if (journal.Target != LocalFinancialSupervisorResolutionTarget.CardRefund ||
+            journal.AttemptGuid != resolution.AttemptGuid)
+        {
+            throw new ArgumentException("主管结案 journal 与 Square 退款 attempt 不匹配。", nameof(journal));
+        }
+
+        return ResolveRefundCoreAsync(resolution, journal, cancellationToken);
+    }
+
+    private async Task<bool> ResolveRefundCoreAsync(
+        CardRefundAttemptResolution resolution,
+        LocalFinancialSupervisorResolution? journal,
+        CancellationToken cancellationToken)
+    {
+        var sql = resolution.Decision switch
+        {
+            CardRefundSupervisorDecision.ConfirmRefunded => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    PaymentId = $RefundReference,
+                    PaymentStatus = $PaymentStatus,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    SubmissionToken = NULL,
+                    CompletedAt = $ResolvedAt,
+                    ResolvedAt = $ResolvedAt,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Refund'
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
+                """,
+            CardRefundSupervisorDecision.ConfirmNotRefunded => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    CheckoutId = NULL,
+                    CheckoutStatus = NULL,
+                    CancelReason = NULL,
+                    PaymentId = NULL,
+                    PaymentStatus = NULL,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    SubmissionToken = NULL,
+                    CompletedAt = NULL,
+                    OrderCompletedAt = NULL,
+                    ResolvedAt = NULL,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Refund'
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
+                """,
+            _ => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    SubmissionToken = NULL,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Refund'
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
+                """
+        };
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$AttemptGuid", resolution.AttemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", resolution.Decision switch
+        {
+            CardRefundSupervisorDecision.ConfirmRefunded => LocalSquarePaymentAttemptStatus.PaymentVerified.ToString(),
+            CardRefundSupervisorDecision.ConfirmNotRefunded => LocalSquarePaymentAttemptStatus.Pending.ToString(),
+            _ => LocalSquarePaymentAttemptStatus.Recovering.ToString()
+        });
+        command.Parameters.AddWithValue("$RefundReference", (object?)Normalize(resolution.RefundReference) ?? DBNull.Value);
+        command.Parameters.AddWithValue("$PaymentStatus", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
+        command.Parameters.AddWithValue("$ResponseCode", resolution.Decision switch
+        {
+            CardRefundSupervisorDecision.ConfirmRefunded => CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
+            CardRefundSupervisorDecision.ConfirmNotRefunded => CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            _ => CardRefundSupervisorResolutionCodes.ContinueWaiting
+        });
+        command.Parameters.AddWithValue("$ResponseText", BuildResolutionText(resolution));
+        command.Parameters.AddWithValue("$ResolvedAt", resolution.ResolvedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ResolvedCode1", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
+        command.Parameters.AddWithValue("$ResolvedCode2", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+        command.Parameters.AddWithValue("$ReviewStatus1", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus2", LocalSquarePaymentAttemptStatus.Unknown.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus3", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        if (journal is not null)
+        {
+            await LocalFinancialSupervisorResolutionRepository.InsertAsync(
+                connection,
+                transaction,
+                journal,
+                cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     public async Task UpdateCheckoutStatusAsync(
         Guid attemptGuid,
         LocalSquarePaymentAttemptStatus status,
@@ -214,14 +719,18 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default)
     {
-        await ExecuteUpdateAsync(
+        await ExecuteGuardedUpdateAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET Status = $Status,
                 CheckoutStatus = COALESCE($CheckoutStatus, CheckoutStatus),
                 CancelReason = COALESCE($CancelReason, CancelReason),
                 UpdatedAt = $UpdatedAt
-            WHERE AttemptGuid = $AttemptGuid;
+            WHERE AttemptGuid = $AttemptGuid
+              AND (
+                    OperationKind <> 'Refund'
+                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  );
             """,
             command =>
             {
@@ -243,7 +752,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         DateTimeOffset completedAt,
         CancellationToken cancellationToken = default)
     {
-        await ExecuteUpdateAsync(
+        await ExecuteGuardedUpdateAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET Status = $Status,
@@ -253,7 +762,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResponseText = $ResponseText,
                 CompletedAt = $CompletedAt,
                 UpdatedAt = $CompletedAt
-            WHERE AttemptGuid = $AttemptGuid;
+            WHERE AttemptGuid = $AttemptGuid
+              AND (
+                    OperationKind <> 'Refund'
+                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  );
             """,
             command =>
             {
@@ -279,7 +792,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         CancellationToken cancellationToken = default,
         string? cancelReason = null)
     {
-        await ExecuteUpdateAsync(
+        await ExecuteGuardedUpdateAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET Status = $Status,
@@ -290,7 +803,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResponseText = $ResponseText,
                 ResolvedAt = $ResolvedAt,
                 UpdatedAt = $ResolvedAt
-            WHERE AttemptGuid = $AttemptGuid;
+            WHERE AttemptGuid = $AttemptGuid
+              AND (
+                    OperationKind <> 'Refund'
+                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  );
             """,
             command =>
             {
@@ -328,7 +845,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
     public async Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
         string storeCode,
         string deviceCode,
-        string cashierId,
+        string? cashierId,
         string environment,
         CancellationToken cancellationToken = default)
     {
@@ -339,16 +856,18 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             FROM LocalSquarePaymentAttempts
             WHERE StoreCode = $StoreCode
               AND DeviceCode = $DeviceCode
-              AND CashierId = $CashierId
+              AND ($CashierId IS NULL OR CashierId = $CashierId)
               AND Environment = $Environment
+              AND OperationKind = $OperationKind
               AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
             ORDER BY UpdatedAt DESC, CreatedAt DESC
             LIMIT 1;
             """;
         command.Parameters.AddWithValue("$StoreCode", storeCode);
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
-        command.Parameters.AddWithValue("$CashierId", cashierId);
+        command.Parameters.AddWithValue("$CashierId", (object?)cashierId ?? DBNull.Value);
         command.Parameters.AddWithValue("$Environment", environment);
+        command.Parameters.AddWithValue("$OperationKind", "Sale");
         for (var i = 0; i < TerminalStatuses.Length; i++)
         {
             command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
@@ -357,6 +876,18 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? ReadAttempt(reader) : null;
     }
+
+    public Task<LocalSquarePaymentAttempt?> GetLatestOpenSaleAttemptForTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default) =>
+        GetLatestOpenAttemptAsync(
+            storeCode,
+            deviceCode,
+            cashierId: null,
+            environment,
+            cancellationToken);
 
     public async Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
     {
@@ -369,7 +900,90 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         return await reader.ReadAsync(cancellationToken) ? ReadAttempt(reader) : null;
     }
 
+    public async Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenRefundAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT *
+            FROM LocalSquarePaymentAttempts
+            WHERE StoreCode = $StoreCode
+              AND DeviceCode = $DeviceCode
+              AND Environment = $Environment
+              AND OperationKind = $OperationKind
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+            ORDER BY UpdatedAt DESC, CreatedAt DESC;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", storeCode);
+        command.Parameters.AddWithValue("$DeviceCode", deviceCode);
+        command.Parameters.AddWithValue("$Environment", environment);
+        command.Parameters.AddWithValue("$OperationKind", "Refund");
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
+
+        var attempts = new List<LocalSquarePaymentAttempt>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            attempts.Add(ReadAttempt(reader));
+        }
+
+        return attempts;
+    }
+
     private async Task ExecuteUpdateAsync(
+        string sql,
+        Action<SqliteCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteUpdateCountAsync(sql, configure, cancellationToken);
+    }
+
+    private async Task ExecuteGuardedUpdateAsync(
+        string sql,
+        Action<SqliteCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        var affected = await ExecuteUpdateCountAsync(
+            sql,
+            command =>
+            {
+                configure(command);
+                AddSupervisorResolvedCodeParameters(command);
+            },
+            cancellationToken);
+        if (affected != 1)
+        {
+            throw new InvalidOperationException("支付 attempt 状态已变化，旧任务不得继续写入。");
+        }
+    }
+
+    private async Task<bool> ExecuteRefundSubmissionUpdateAsync(
+        string sql,
+        Guid attemptGuid,
+        string submissionToken,
+        Action<SqliteCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteUpdateCountAsync(
+            sql,
+            command =>
+            {
+                command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+                command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
+                AddSupervisorResolvedCodeParameters(command);
+                configure(command);
+            },
+            cancellationToken) == 1;
+    }
+
+    private async Task<int> ExecuteUpdateCountAsync(
         string sql,
         Action<SqliteCommand> configure,
         CancellationToken cancellationToken)
@@ -378,7 +992,13 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         configure(command);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static void AddSupervisorResolvedCodeParameters(SqliteCommand command)
+    {
+        command.Parameters.AddWithValue("$ResolvedCode1", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
+        command.Parameters.AddWithValue("$ResolvedCode2", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
     }
 
     private static void AddAttemptParameters(SqliteCommand command, LocalSquarePaymentAttempt attempt)
@@ -409,7 +1029,22 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$CompletedAt", attempt.CompletedAt?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$OrderCompletedAt", attempt.OrderCompletedAt?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$ResolvedAt", attempt.ResolvedAt?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$OperationKind", attempt.OperationKind);
+        command.Parameters.AddWithValue("$OperationGuid", attempt.OperationGuid?.ToString() ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$SubmissionToken", (object?)attempt.SubmissionToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$RefundBusinessKey", (object?)attempt.RefundBusinessKey ?? DBNull.Value);
     }
+
+    private static string BuildResolutionText(CardRefundAttemptResolution resolution)
+    {
+        var evidence = Normalize(resolution.Evidence);
+        return evidence is null
+            ? resolution.Reason
+            : $"{resolution.Reason} Evidence: {evidence}";
+    }
+
+    private static string? Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static LocalSquarePaymentAttempt ReadAttempt(SqliteDataReader reader)
     {
@@ -438,7 +1073,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             ReadDateTimeOffset(reader, "UpdatedAt"),
             ReadNullableDateTimeOffset(reader, "CompletedAt"),
             ReadNullableDateTimeOffset(reader, "OrderCompletedAt"),
-            ReadNullableDateTimeOffset(reader, "ResolvedAt"));
+            ReadNullableDateTimeOffset(reader, "ResolvedAt"),
+            ReadNullableString(reader, "OperationKind") ?? "Sale",
+            ReadNullableGuid(reader, "OperationGuid"),
+            ReadNullableString(reader, "SubmissionToken"),
+            ReadNullableString(reader, "RefundBusinessKey"));
     }
 
     private static Guid ReadGuid(SqliteDataReader reader, string name) => Guid.Parse(ReadString(reader, name));
@@ -488,5 +1127,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         return string.IsNullOrWhiteSpace(value)
             ? null
             : DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+    }
+
+    private static Guid? ReadNullableGuid(SqliteDataReader reader, string name)
+    {
+        var value = ReadNullableString(reader, name);
+        return string.IsNullOrWhiteSpace(value) ? null : Guid.Parse(value);
     }
 }

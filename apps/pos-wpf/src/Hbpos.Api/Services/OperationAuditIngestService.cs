@@ -32,6 +32,7 @@ public sealed class SqlSugarOperationAuditIngestService(
         "CART_ITEM_PRICE_CHANGE", "CART_LINE_DISCOUNT_CHANGE", "CART_ORDER_DISCOUNT_CHANGE", "CART_CLEAR",
         "ORDER_HOLD", "ORDER_RECALL", "ORDER_CANCEL",
         "CASH_DRAWER_OPEN", "PAYMENT_TENDER_ADD", "PAYMENT_TENDER_REMOVE", "PAYMENT_CANCEL", "SALE_COMPLETE",
+        "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
         "RETURN_REFUND_COMPLETE", "SALE_VOID", "RECEIPT_REPRINT",
         "INSTALLMENT_REPAYMENT_COMPLETE", "INSTALLMENT_REPAYMENT_CANCEL",
         "DAILY_CLOSE_SAVE", "DAILY_CLOSE_REPRINT", "PERMISSION_OVERRIDE"
@@ -41,7 +42,8 @@ public sealed class SqlSugarOperationAuditIngestService(
     {
         "source", "action", "status", "screen", "mode", "reason", "result",
         "paymentMethod", "cashDrawerMode", "itemCount", "requestingCashierId",
-        "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode"
+        "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode",
+        "attemptGuid", "operationGuid", "sessionId", "evidence", "financialReference"
     };
 
     private static readonly Regex UrlQueryRegex = new(
@@ -175,7 +177,8 @@ public sealed class SqlSugarOperationAuditIngestService(
         }
 
         if (string.IsNullOrWhiteSpace(auditEvent.Outcome) ||
-            !AllowedOutcomes.Contains(auditEvent.Outcome.Trim()))
+            (!AllowedOutcomes.Contains(auditEvent.Outcome.Trim()) &&
+             !IsLegacyCardPaymentSupervisorOutcome(auditEvent.OperationType, auditEvent.Outcome)))
         {
             return ("INVALID_OUTCOME", "outcome must be Succeeded, Denied or Failed");
         }
@@ -208,7 +211,9 @@ public sealed class SqlSugarOperationAuditIngestService(
             OccurredAtUtc = source.OccurredAtUtc.UtcDateTime,
             ReceivedAtUtc = DateTime.SpecifyKind(receivedAtUtc, DateTimeKind.Utc),
             OperationType = CanonicalOperationType(source.OperationType),
-            Outcome = CanonicalOutcome(source.Outcome),
+            Outcome = IsLegacyCardPaymentSupervisorOutcome(source.OperationType, source.Outcome)
+                ? "Succeeded"
+                : CanonicalOutcome(source.Outcome),
             CashierId = CleanStructured(source.CashierId, 100),
             UserGuid = CleanStructured(source.UserGuid, 100),
             CashierName = CleanStructured(source.CashierName, 128),
@@ -279,6 +284,22 @@ public sealed class SqlSugarOperationAuditIngestService(
     {
         return AllowedOperationTypes.First(x =>
             string.Equals(x, value.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsLegacyCardPaymentSupervisorOutcome(string operationType, string outcome)
+    {
+        // 仅兼容已经写入本机 outbox 的旧三态 payload；新客户端统一发送 Succeeded。
+        if (!string.Equals(
+                operationType.Trim(),
+                "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return string.Equals(outcome.Trim(), "ConfirmPaid", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(outcome.Trim(), "ConfirmNotPaid", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(outcome.Trim(), "ContinueWaiting", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeCurrency(string? value)

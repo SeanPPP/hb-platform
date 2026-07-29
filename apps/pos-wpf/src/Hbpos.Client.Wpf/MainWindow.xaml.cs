@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -32,6 +33,7 @@ public partial class MainWindow : Window
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
     private readonly IAppUpdateCoordinator _appUpdateCoordinator;
     private readonly ILocalAppSettingsRepository _localAppSettingsRepository;
+    private readonly IAppShutdownCoordinator _appShutdownCoordinator;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
     private Task _windowModeSaveTask = Task.CompletedTask;
@@ -39,6 +41,8 @@ public partial class MainWindow : Window
     private bool _postShowStartupStarted;
     private bool _windowModeRestored;
     private bool _isApplyingWindowMode;
+    private bool _isWaitingForWindowModeSaveBeforeClose;
+    private bool _isClosingAfterWindowModeSave;
     private WindowState _lastNonMinimizedWindowState = WindowState.Maximized;
 
     public bool IsStartupBlockedByAppUpdate { get; private set; }
@@ -52,7 +56,8 @@ public partial class MainWindow : Window
         IDisplayTopologyService displayTopologyService,
         IUiPriorityCoordinator uiPriorityCoordinator,
         IAppUpdateCoordinator appUpdateCoordinator,
-        ILocalAppSettingsRepository localAppSettingsRepository)
+        ILocalAppSettingsRepository localAppSettingsRepository,
+        IAppShutdownCoordinator? appShutdownCoordinator = null)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
@@ -61,6 +66,7 @@ public partial class MainWindow : Window
         _uiPriorityCoordinator = uiPriorityCoordinator;
         _appUpdateCoordinator = appUpdateCoordinator;
         _localAppSettingsRepository = localAppSettingsRepository;
+        _appShutdownCoordinator = appShutdownCoordinator ?? new AppShutdownCoordinator();
 #if DEBUG
         _viewModel.AppUpdate.ConfigureDebugForceUpdateDismissed(ResumeStartupAfterDebugUpdateDismissalAsync);
 #endif
@@ -74,6 +80,7 @@ public partial class MainWindow : Window
         PreviewMouseWheel += MainWindowUserInput;
         PreviewTouchDown += MainWindowUserInput;
         StateChanged += MainWindowStateChanged;
+        Closing += MainWindowClosing;
         Closed += MainWindowClosed;
     }
 
@@ -387,9 +394,59 @@ public partial class MainWindow : Window
         PreviewMouseWheel -= MainWindowUserInput;
         PreviewTouchDown -= MainWindowUserInput;
         StateChanged -= MainWindowStateChanged;
+        Closing -= MainWindowClosing;
         _hwndSource?.RemoveHook(MainWindowMessageHook);
-        _rawScannerService.Stop();
-        _viewModel.Dispose();
+    }
+
+    private async void MainWindowClosing(object? sender, CancelEventArgs e)
+    {
+        _ = _appShutdownCoordinator.GetOrStartRemainingBudget();
+        if (_isClosingAfterWindowModeSave)
+        {
+            return;
+        }
+
+        if (_isWaitingForWindowModeSaveBeforeClose)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        e.Cancel = true;
+        _isWaitingForWindowModeSaveBeforeClose = true;
+        IsEnabled = false;
+        _viewModel.BeginShutdown();
+        try
+        {
+            _rawScannerService.Stop();
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"external input stop failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
+        try
+        {
+            await WaitForClosePreparationAsync(
+                () => _windowModeSaveTask,
+                _appShutdownCoordinator);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"main window close preparation failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        finally
+        {
+            _isWaitingForWindowModeSaveBeforeClose = false;
+            _isClosingAfterWindowModeSave = true;
+            Close();
+        }
     }
 
     private IntPtr MainWindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -731,6 +788,57 @@ public partial class MainWindow : Window
         {
             reportException(ex);
         }
+    }
+
+    internal static async Task WaitForPendingWindowModeSaveAsync(Func<Task> getPendingSave)
+    {
+        while (true)
+        {
+            var pendingSave = getPendingSave();
+            await pendingSave;
+            if (ReferenceEquals(pendingSave, getPendingSave()))
+            {
+                return;
+            }
+        }
+    }
+
+    internal static async Task WaitForClosePreparationAsync(
+        Func<Task> getPendingWindowModeSave,
+        IAppShutdownCoordinator shutdownCoordinator)
+    {
+        var windowSaveTask = WaitForPendingWindowModeSaveAsync(getPendingWindowModeSave);
+        var remainingBudget = shutdownCoordinator.GetOrStartRemainingBudget();
+        var windowSaveBudget = remainingBudget < TimeSpan.FromMilliseconds(250)
+            ? remainingBudget
+            : TimeSpan.FromMilliseconds(250);
+        try
+        {
+            if (windowSaveBudget > TimeSpan.Zero)
+            {
+                await windowSaveTask.WaitAsync(windowSaveBudget);
+            }
+        }
+        catch (TimeoutException)
+        {
+            _ = windowSaveTask.ContinueWith(
+                static completedTask => _ = completedTask.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"window state did not finish within {windowSaveBudget.TotalMilliseconds:F0}ms; continuing bounded shutdown");
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"window close preparation failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
+        await shutdownCoordinator.PrepareAsync();
     }
 
     internal static WindowState ResolveWindowState(string? savedMode)

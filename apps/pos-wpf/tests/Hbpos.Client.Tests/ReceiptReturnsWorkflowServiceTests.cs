@@ -46,6 +46,8 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         Assert.Equal(1m, line.ReturnedQuantity);
         Assert.Equal(1m, line.AvailableQuantity);
         Assert.Equal(10m, line.ReturnUnitAmount);
+        Assert.Equal(0, remote.QueryCallCount);
+        Assert.Equal(1, remote.ReturnContextCallCount);
     }
 
     [Fact]
@@ -61,6 +63,47 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         Assert.False(result.IsRemote);
         Assert.True(result.ReturnRecordsMayBeStale);
         Assert.Equal(order.OrderGuid, result.Order.OrderGuid);
+    }
+
+    [Fact]
+    public async Task LookupOrderAsync_RemoteTimeoutReturnsVisibleFailureWithoutLocalFallback()
+    {
+        var order = CreateLocalOrder(Guid.NewGuid());
+        var remote = new FakeRemoteOrderHistoryService
+        {
+            ReturnContextException = new TaskCanceledException("The request timed out.")
+        };
+        var service = CreateService(
+            remote,
+            new FakeLocalOrderRepository([order]));
+
+        var result = await service.LookupOrderAsync(
+            CreateOnlineSession(),
+            order.OrderGuid.ToString("D"));
+
+        Assert.Null(result.Order);
+        Assert.False(result.IsRemote);
+        Assert.False(result.ReturnRecordsMayBeStale);
+        Assert.Equal("Online order lookup timed out. Please retry.", result.StatusMessage);
+        Assert.Equal(1, remote.ReturnContextCallCount);
+    }
+
+    [Fact]
+    public async Task LookupOrderAsync_ExplicitCancellationStillPropagates()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var remote = new FakeRemoteOrderHistoryService
+        {
+            ReturnContextException = new OperationCanceledException(cancellation.Token)
+        };
+        var service = CreateService(remote);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.LookupOrderAsync(
+                CreateOnlineSession(),
+                Guid.NewGuid().ToString("D"),
+                cancellation.Token));
     }
 
     [Theory]
@@ -389,8 +432,15 @@ public sealed class ReceiptReturnsWorkflowServiceTests
 
         public OrderReturnContextDto? ReturnContext { get; init; }
 
+        public Exception? ReturnContextException { get; init; }
+
+        public int QueryCallCount { get; private set; }
+
+        public int ReturnContextCallCount { get; private set; }
+
         public Task<RemoteOrderHistoryResult> QueryAsync(RemoteOrderHistoryQuery query, CancellationToken cancellationToken = default)
         {
+            QueryCallCount++;
             return Task.FromResult(QueryResult);
         }
 
@@ -401,6 +451,12 @@ public sealed class ReceiptReturnsWorkflowServiceTests
 
         public Task<OrderReturnContextDto?> GetReturnContextAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
+            ReturnContextCallCount++;
+            if (ReturnContextException is not null)
+            {
+                return Task.FromException<OrderReturnContextDto?>(ReturnContextException);
+            }
+
             return Task.FromResult(ReturnContext);
         }
 

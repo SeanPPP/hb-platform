@@ -1,3 +1,4 @@
+using System.Globalization;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
@@ -571,7 +572,22 @@ public sealed class TransactionHistoryViewModelTests
                     10m,
                     1,
                     SuspendedOrderStatus.Pending)
-            ]
+            ],
+            Orders =
+            {
+                [suspendedOrderGuid] = new SuspendedOrder(
+                    suspendedOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "C001",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    10m,
+                    0m,
+                    10m,
+                    SuspendedOrderStatus.Pending,
+                    [])
+            }
         };
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
@@ -586,11 +602,15 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.RecallSelectedCommand.CanExecute(null));
         Assert.Equal(suspendedOrderGuid, viewModel.SelectedOrder?.OrderGuid);
         Assert.True(viewModel.SelectedOrder?.CanRecall);
+        Assert.Equal(
+            suspendedOrderGuid.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
     public async Task Remote_history_shows_reprint_hidden_and_hides_recall()
     {
+        var orderGuid = Guid.NewGuid();
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
             new CapturingSuspendedOrderService(),
@@ -599,7 +619,7 @@ public sealed class TransactionHistoryViewModelTests
                 QueryResult = new RemoteOrderHistoryResult(
                 [
                     new RemoteOrderHistorySummary(
-                        Guid.NewGuid(),
+                        orderGuid,
                         "S001",
                         "POS-01",
                         "Alice",
@@ -610,7 +630,21 @@ public sealed class TransactionHistoryViewModelTests
                         1,
                         "Cash",
                         "Synced")
-                ])
+                ]),
+                Receipts =
+                {
+                    [orderGuid] = new ReceiptDetails(
+                        orderGuid,
+                        "S001",
+                        "POS-01",
+                        "Alice",
+                        DateTimeOffset.Now,
+                        12m,
+                        0m,
+                        12m,
+                        [new ReceiptPreviewLine("Remote Tea", "930002", 1m, 12m, 0m, 12m)],
+                        [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)])
+                }
             },
             CreateSession());
 
@@ -621,6 +655,9 @@ public sealed class TransactionHistoryViewModelTests
         Assert.False(viewModel.IsReprintVisible);
         Assert.False(viewModel.RecallSelectedCommand.CanExecute(null));
         Assert.False(viewModel.ReprintCommand.CanExecute(null));
+        Assert.Equal(
+            orderGuid.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
@@ -672,10 +709,81 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.IsReprintVisible);
         Assert.True(viewModel.ReprintCommand.CanExecute(null));
         Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("===== TAX INVOICE =====", StringComparison.Ordinal));
+        Assert.Equal(
+            orderGuid.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
 
         viewModel.ReprintCommand.Execute(null);
 
         Assert.True(reprintRequested);
+    }
+
+    [Fact]
+    public async Task Local_history_preview_time_uses_localization_culture()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        var originalDefaultCulture = CultureInfo.DefaultThreadCurrentCulture;
+        var originalDefaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+        try
+        {
+            var localization = new LocalizationService();
+            var soldAt = new DateTimeOffset(2026, 7, 28, 5, 56, 0, TimeSpan.Zero);
+            var orderGuid = Guid.NewGuid();
+            var receiptQuery = new CapturingReceiptQueryService
+            {
+                Orders =
+                [
+                    new LocalOrderSummary(
+                        orderGuid,
+                        "S001",
+                        "POS-01",
+                        "Alice",
+                        soldAt,
+                        5m,
+                        0m,
+                        5m,
+                        "Synced",
+                        1,
+                        "Cash")
+                ],
+                Receipts =
+                {
+                    [orderGuid] = new ReceiptDetails(
+                        orderGuid,
+                        "S001",
+                        "POS-01",
+                        "Alice",
+                        soldAt,
+                        5m,
+                        0m,
+                        5m,
+                        [new ReceiptPreviewLine("Receipt Tea", "930001", 1m, 5m, 0m, 5m)],
+                        [new ReceiptPaymentLine(PaymentMethodKind.Cash, 5m, null)])
+                }
+            };
+            using var viewModel = new TransactionHistoryViewModel(
+                receiptQuery,
+                new CapturingSuspendedOrderService(),
+                new CapturingRemoteOrderHistoryService(),
+                CreateSession(),
+                localization: localization);
+
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(LocalizationService.ChineseCultureName);
+            await viewModel.LoadAsync();
+
+            Assert.Equal(
+                soldAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", localization.CurrentCulture),
+                viewModel.PreviewSoldAt);
+            Assert.DoesNotContain("\u6708", viewModel.PreviewSoldAt, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CultureInfo.DefaultThreadCurrentCulture = originalDefaultCulture;
+            CultureInfo.DefaultThreadCurrentUICulture = originalDefaultUiCulture;
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [Fact]
@@ -701,6 +809,7 @@ public sealed class TransactionHistoryViewModelTests
     {
         var suspendedOrderGuid = Guid.NewGuid();
         var localization = new LocalizationService();
+        var localSoldAt = new DateTime(2026, 7, 28, 5, 56, 0, DateTimeKind.Unspecified);
         var suspendedOrders = new CapturingSuspendedOrderService
         {
             PendingOrders =
@@ -710,7 +819,7 @@ public sealed class TransactionHistoryViewModelTests
                     "S001",
                     "POS-01",
                     "Alice",
-                    DateTimeOffset.Now,
+                    new DateTimeOffset(localSoldAt, TimeZoneInfo.Local.GetUtcOffset(localSoldAt)),
                     10m,
                     0m,
                     10m,
@@ -723,17 +832,55 @@ public sealed class TransactionHistoryViewModelTests
             suspendedOrders,
             new CapturingRemoteOrderHistoryService(),
             CreateSession(),
-            localization: localization);
+            localization: localization)
+        {
+            DateFrom = localSoldAt.Date,
+            DateTo = localSoldAt.Date
+        };
 
         await viewModel.LoadAsync();
         Assert.Equal("Suspended", viewModel.SelectedOrder?.PaymentSummary);
         Assert.Equal("Local", viewModel.SourceOptions[0].Label);
+        Assert.Equal("Jul 28, 2026 05:56", viewModel.SelectedOrder?.SoldAtDisplay);
 
         localization.SetCulture("zh-CN");
 
         Assert.Equal("\u6302\u5355", viewModel.SelectedOrder?.PaymentSummary);
         Assert.Equal("\u5F85\u53D6\u56DE", viewModel.SelectedOrder?.StatusLabel);
         Assert.Equal("\u672C\u5730", viewModel.SourceOptions[0].Label);
+        Assert.Contains("\u6708", viewModel.SelectedOrder?.SoldAtDisplay);
+
+        localization.SetCulture("en-US");
+
+        Assert.Equal("Jul 28, 2026 05:56", viewModel.SelectedOrder?.SoldAtDisplay);
+    }
+
+    [Fact]
+    public void Dispose_is_idempotent_and_stops_culture_updates()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            localization: localization);
+        var changeCount = 0;
+        viewModel.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
     }
 
     [Fact]
@@ -793,6 +940,9 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Receipt Tea", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Cash", StringComparison.Ordinal) && preview.Text.Contains("$30.00", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Balance due", StringComparison.Ordinal) && preview.Text.Contains("$90.00", StringComparison.Ordinal));
+        Assert.Equal(
+            order.OrderId.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, preview => preview.IsQrCode).QrCodeValue);
 
         await viewModel.ContinueInstallmentPaymentCommand.ExecuteAsync(row);
 
@@ -851,6 +1001,9 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("TAX INVOICE", StringComparison.Ordinal));
         Assert.DoesNotContain(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("===== INSTALLMENT =====", StringComparison.Ordinal));
+        Assert.Equal(
+            order.OrderId.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, preview => preview.IsQrCode).QrCodeValue);
 
         await viewModel.ConfirmInstallmentPickupCommand.ExecuteAsync(row);
 
@@ -954,6 +1107,8 @@ public sealed class TransactionHistoryViewModelTests
     {
         public IReadOnlyList<SuspendedOrderSummary> PendingOrders { get; set; } = [];
 
+        public Dictionary<Guid, SuspendedOrder> Orders { get; } = [];
+
         public string? LastDeviceCode { get; private set; }
 
         public Guid? RecalledOrderGuid { get; private set; }
@@ -976,7 +1131,7 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<SuspendedOrder?> GetOrderAsync(Guid suspendedOrderGuid, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<SuspendedOrder?>(null);
+            return Task.FromResult(Orders.TryGetValue(suspendedOrderGuid, out var order) ? order : null);
         }
 
         public Task<SuspendedOrder> RecallOrderAsync(Guid suspendedOrderGuid, CancellationToken cancellationToken = default)
@@ -1002,6 +1157,8 @@ public sealed class TransactionHistoryViewModelTests
     {
         public RemoteOrderHistoryResult QueryResult { get; init; } = new([]);
 
+        public Dictionary<Guid, ReceiptDetails> Receipts { get; } = [];
+
         public RemoteOrderHistoryQuery? LastQuery { get; private set; }
 
         public Task<RemoteOrderHistoryResult> QueryAsync(RemoteOrderHistoryQuery query, CancellationToken cancellationToken = default)
@@ -1012,7 +1169,7 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<ReceiptDetails?> GetDetailsAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<ReceiptDetails?>(null);
+            return Task.FromResult(Receipts.TryGetValue(orderGuid, out var receipt) ? receipt : null);
         }
 
         public Task<OrderReturnContextDto?> GetReturnContextAsync(Guid orderGuid, CancellationToken cancellationToken = default)

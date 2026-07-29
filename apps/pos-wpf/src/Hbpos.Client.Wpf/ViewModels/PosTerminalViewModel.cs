@@ -43,6 +43,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<string, CancellationToken, Task<bool>>? _tryLoginCashierFromScannerFallbackAsync;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>> _searchCatalogMatches;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
@@ -52,6 +53,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private bool _isPromotionEvaluationRunning;
     private string? _queuedPromotionEvaluationReason;
     private Task _pendingPromotionEvaluationTask = Task.CompletedTask;
+    private CancellationTokenSource? _matchesRefreshCts;
+    private long _matchesRefreshVersion;
+    private bool _disposed;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -115,9 +119,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IPromotionEvaluationService? promotionEvaluationService = null,
         IOperationAuditLogger? operationAuditLogger = null,
         Func<Task>? onLockCashierAsync = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>>? searchCatalogMatches = null)
     {
         _priceIndex = priceIndex;
+        _searchCatalogMatches = searchCatalogMatches ?? ((storeCode, query, cancellationToken) =>
+            _priceIndex.Search(storeCode, query, cancellationToken));
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
         _promotionEvaluationService = promotionEvaluationService;
@@ -333,6 +340,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        CancelMatchesRefresh();
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;
@@ -356,6 +370,23 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     partial void OnScanTextChanged(string value)
     {
         ClearSearchCommand.NotifyCanExecuteChanged();
+        if (IsMatchesPopupOpen)
+        {
+            RefreshMatches();
+        }
+    }
+
+    partial void OnIsMatchesPopupOpenChanged(bool value)
+    {
+        if (!value)
+        {
+            CancelMatchesRefresh();
+        }
+        else
+        {
+            // 中文注释：每次重开都按当前快照重建，避免关闭、清空后仍显示旧匹配。
+            RefreshMatches();
+        }
     }
 
     partial void OnKeypadBufferChanged(string value)
@@ -626,7 +657,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void OnWorkflowCatalogReloaded(object? sender, PosTerminalCatalogReloadedEventArgs e)
     {
-        RefreshMatches(e.CatalogItems);
+        RefreshMatches(requireOpenNonEmptySearch: true);
     }
 
     private void AppendScanText(string? value)
@@ -1629,8 +1660,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             }
 
             SetStatusText(startingMessage);
-            var catalogItems = await downloadCatalogAsync(cancellationToken);
-            RefreshMatches(catalogItems);
+            await downloadCatalogAsync(cancellationToken);
+            RefreshMatches(requireOpenNonEmptySearch: true);
             SetStatusText(completedMessage);
         }
         catch (OperationCanceledException)
@@ -1644,26 +1675,151 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
-    private void RefreshMatches(IReadOnlyList<SellableItemDto> catalogItems)
+    private void RefreshMatches(bool requireOpenNonEmptySearch = false)
     {
-        var matches = string.IsNullOrWhiteSpace(ScanText)
-            ? catalogItems.Take(8)
-            : _priceIndex.Search(Session.StoreCode, ScanText);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            _ = RefreshMatchesOnDispatcherSafeAsync(dispatcher, requireOpenNonEmptySearch);
+            return;
+        }
+
+        if (_disposed ||
+            (requireOpenNonEmptySearch && (!IsMatchesPopupOpen || string.IsNullOrWhiteSpace(ScanText))))
+        {
+            return;
+        }
+
+        // 中文注释：这些 UI 状态只在 Dispatcher 上读取，后台搜索仅持有不可变快照。
+        var storeCode = Session.StoreCode;
+        var query = ScanText;
+        var popupOpen = IsMatchesPopupOpen;
+        var cancellationSource = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _matchesRefreshCts, cancellationSource);
+        var version = Interlocked.Increment(ref _matchesRefreshVersion);
+        previous?.Cancel();
+        _ = RefreshMatchesSafeAsync(
+            version,
+            storeCode,
+            query,
+            popupOpen,
+            cancellationSource,
+            cancellationSource.Token);
+    }
+
+    private async Task RefreshMatchesOnDispatcherSafeAsync(
+        System.Windows.Threading.Dispatcher dispatcher,
+        bool requireOpenNonEmptySearch)
+    {
+        try
+        {
+            await dispatcher.InvokeAsync(
+                () => RefreshMatches(requireOpenNonEmptySearch),
+                System.Windows.Threading.DispatcherPriority.DataBind).Task;
+        }
+        catch (TaskCanceledException) when (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+        {
+            // 应用退出时不再排队新的目录刷新。
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("CatalogSearch", $"dispatcher refresh failed error={ex.Message}");
+        }
+    }
+
+    private async Task RefreshMatchesSafeAsync(
+        long version,
+        string? storeCode,
+        string query,
+        bool popupOpen,
+        CancellationTokenSource cancellationSource,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var matches = string.IsNullOrWhiteSpace(query)
+                ? await Task.Run(() => _priceIndex.GetFirst(storeCode, take: 8), cancellationToken)
+                : await Task.Run(() => _searchCatalogMatches(storeCode, query, cancellationToken), cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await ApplyMatchesOnDispatcherAsync(version, storeCode, query, popupOpen, matches, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+            // 新搜索、关闭面板或释放 VM 时的预期取消。
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("CatalogSearch", $"match refresh failed error={ex.Message}");
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _matchesRefreshCts, null, cancellationSource);
+            cancellationSource.Dispose();
+        }
+    }
+
+    private async Task ApplyMatchesOnDispatcherAsync(
+        long version,
+        string? storeCode,
+        string query,
+        bool popupOpen,
+        IReadOnlyList<SellableItemDto> matches,
+        CancellationToken cancellationToken)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            ApplyMatchesIfCurrent(version, storeCode, query, popupOpen, matches);
+            return;
+        }
+
+        await dispatcher.InvokeAsync(
+            () => ApplyMatchesIfCurrent(version, storeCode, query, popupOpen, matches),
+            System.Windows.Threading.DispatcherPriority.DataBind,
+            cancellationToken).Task;
+    }
+
+    private void ApplyMatchesIfCurrent(
+        long version,
+        string? storeCode,
+        string query,
+        bool popupOpen,
+        IReadOnlyList<SellableItemDto> matches)
+    {
+        if (_disposed ||
+            version != Volatile.Read(ref _matchesRefreshVersion) ||
+            !string.Equals(query, ScanText, StringComparison.Ordinal) ||
+            !string.Equals(storeCode, Session.StoreCode, StringComparison.Ordinal) ||
+            popupOpen != IsMatchesPopupOpen)
+        {
+            return;
+        }
+
         Matches.ReplaceWith(matches);
         SelectedItem = Matches.FirstOrDefault();
     }
 
+    private void CancelMatchesRefresh()
+    {
+        Interlocked.Increment(ref _matchesRefreshVersion);
+        var cancellationSource = Interlocked.Exchange(ref _matchesRefreshCts, null);
+        cancellationSource?.Cancel();
+    }
+
     private void ApplyWorkflowResult(PosTerminalWorkflowResult result, string? statusTextOverride = null)
     {
-        if (result.Matches is not null)
-        {
-            Matches.ReplaceWith(result.Matches);
-            SelectedItem = result.SelectedItem;
-        }
-
         if (result.MatchesPopupOpen is bool matchesPopupOpen)
         {
             IsMatchesPopupOpen = matchesPopupOpen;
+        }
+
+        if (result.Matches is not null)
+        {
+            // 工作流结果是本次扫码的权威快照，取消打开弹窗时触发的通用搜索，避免异步结果覆盖它。
+            CancelMatchesRefresh();
+            Matches.ReplaceWith(result.Matches);
+            SelectedItem = result.SelectedItem;
         }
 
         if (result.TouchKeyboardOpen is bool touchKeyboardOpen)

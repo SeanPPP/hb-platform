@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
@@ -108,6 +109,13 @@ public sealed class ReceiptReturnsWorkflowService(
             return new ReceiptReturnLookupResult(null, false, false, T("returns.status.lookupPrompt", "Scan or enter an order number."));
         }
 
+        var stopwatch = Stopwatch.StartNew();
+        var queryType = TryParseOrderGuid(query, out _) ? "guid" : "keyword";
+        ConsoleLog.Write(
+            "ReceiptReturns",
+            $"lookup started store={session.StoreCode} online={session.IsOnline} " +
+            $"queryType={queryType} queryLength={query.Length}");
+
         if (session.IsOnline && remoteOrderHistoryService is not null)
         {
             try
@@ -118,28 +126,51 @@ public sealed class ReceiptReturnsWorkflowService(
                     var context = await remoteOrderHistoryService.GetReturnContextAsync(remoteOrderGuid.Value, cancellationToken);
                     if (context is not null)
                     {
-                        return new ReceiptReturnLookupResult(
+                        var result = new ReceiptReturnLookupResult(
                             MapRemote(context),
                             true,
                             false,
                             T("returns.status.loadedOnline", "Loaded online order and return records."));
+                        LogLookupCompleted(result, queryType, query.Length, stopwatch.ElapsedMilliseconds);
+                        return result;
                     }
                 }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                var result = new ReceiptReturnLookupResult(
+                    null,
+                    false,
+                    false,
+                    T("returns.status.lookupTimedOut", "Online order lookup timed out. Please retry."));
+                ConsoleLog.Write(
+                    "ReceiptReturns",
+                    $"lookup timed-out queryType={queryType} queryLength={query.Length} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return result;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 var fallback = await LookupLocalOrderAsync(session, query, cancellationToken);
-                return fallback.Order is null
+                var result = fallback.Order is null
                     ? new ReceiptReturnLookupResult(null, false, true, Format("returns.status.lookupFailed", "Online order lookup failed: {0}", ex.Message))
                     : fallback with
                     {
                         ReturnRecordsMayBeStale = true,
                         StatusMessage = Format("returns.status.loadedLocalStaleWithError", "Loaded local order; online return records may be stale. {0}", ex.Message)
                     };
+                ConsoleLog.Write(
+                    "ReceiptReturns",
+                    $"lookup remote-failed queryType={queryType} queryLength={query.Length} " +
+                    $"fallbackFound={result.Order is not null} error={ex.GetType().Name} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return result;
             }
         }
 
-        return await LookupLocalOrderAsync(session, query, cancellationToken);
+        var localResult = await LookupLocalOrderAsync(session, query, cancellationToken);
+        LogLookupCompleted(localResult, queryType, query.Length, stopwatch.ElapsedMilliseconds);
+        return localResult;
     }
 
     public ReceiptReturnProductLookupResult LookupNoReceiptProduct(
@@ -408,6 +439,19 @@ public sealed class ReceiptReturnsWorkflowService(
                 $"remaining={capacity.RemainingAmount:0.00} reference={LogValue(capacity.Reference)} " +
                 $"cardTxCount={capacity.CardTransactions?.Count ?? 0} refundReferences={LogValue(refundReferences)}");
         }
+    }
+
+    private static void LogLookupCompleted(
+        ReceiptReturnLookupResult result,
+        string queryType,
+        int queryLength,
+        long elapsedMilliseconds)
+    {
+        ConsoleLog.Write(
+            "ReceiptReturns",
+            $"lookup completed queryType={queryType} queryLength={queryLength} " +
+            $"source={(result.IsRemote ? "remote" : "local")} found={result.Order is not null} " +
+            $"stale={result.ReturnRecordsMayBeStale} elapsedMs={elapsedMilliseconds}");
     }
 
     private static string LogValue(string? value)

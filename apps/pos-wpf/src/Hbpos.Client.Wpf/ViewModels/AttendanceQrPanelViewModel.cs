@@ -261,16 +261,24 @@ public sealed class AttendanceQrPanelViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
         _localization.CultureChanged -= OnCultureChanged;
-        _stop.Cancel();
+        var cancellationTask = _stop.CancelAsync();
         var loops = new[] { _tickLoopTask, _refreshLoopTask }.OfType<Task>().ToArray();
-        if (loops.Length > 0)
-        {
-            Task.WhenAll(loops).GetAwaiter().GetResult();
-        }
-        ReplaceIdentity(null);
-        _stop.Dispose();
-        _refreshGate.Dispose();
-        _stateGate.Dispose();
+        _ = Task.WhenAll(loops.Append(cancellationTask)).ContinueWith(
+            completedTask =>
+            {
+                if (completedTask.Exception is not null)
+                {
+                    LogFailure("dispose", completedTask.Exception);
+                }
+
+                ReplaceIdentity(null);
+                _stop.Dispose();
+                _refreshGate.Dispose();
+                _stateGate.Dispose();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task RunTickLoopAsync(CancellationToken cancellationToken)

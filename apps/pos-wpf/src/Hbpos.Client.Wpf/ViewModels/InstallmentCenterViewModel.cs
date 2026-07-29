@@ -15,7 +15,6 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private readonly Func<PosCartServiceSnapshot?, Task> _showCreateAsync;
     private readonly Action _backToPayment;
     private readonly ILocalizationService? _localization;
-    private readonly ICardTerminalClient? _cardTerminalClient;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
@@ -24,6 +23,9 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
     private object[] _statusResourceArgs = [];
+    private Guid _repaymentPaymentGuid = Guid.NewGuid();
+    private string? _repaymentIdempotencyKey;
+    private readonly HashSet<Guid> _lockedInstallmentGuids = [];
 
     [ObservableProperty] private PosSessionState _session;
     [ObservableProperty] private PosCartServiceSnapshot? _cartSnapshot;
@@ -36,6 +38,11 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     [ObservableProperty] private string _repaymentVoucherToken = string.Empty;
     [ObservableProperty] private string _voidReason = string.Empty;
     [ObservableProperty] private string _statusMessage = string.Empty;
+    [ObservableProperty] private LocalInstallmentRefundStep? _selectedRefundStep;
+    [ObservableProperty] private InstallmentRefundSupervisorDecision _supervisorRefundDecision = InstallmentRefundSupervisorDecision.ContinueWaiting;
+    [ObservableProperty] private string _supervisorRefundReason = string.Empty;
+    [ObservableProperty] private string _supervisorRefundEvidence = string.Empty;
+    [ObservableProperty] private string _supervisorRefundReference = string.Empty;
 
     public InstallmentCenterViewModel(
         IInstallmentOrderService installmentOrderService,
@@ -54,7 +61,6 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         _showCreateAsync = showCreateAsync;
         _backToPayment = backToPayment;
         _localization = localization;
-        _cardTerminalClient = cardTerminalClient;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
@@ -66,17 +72,19 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
         if (_localization is not null)
         {
-            _onCultureChanged = (_, _) => RaiseLocalizedProperties();
+            _onCultureChanged = OnCultureChanged;
             _localization.CultureChanged += _onCultureChanged;
         }
 
         LoadCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
+        RecoveryCommand = new AsyncRelayCommand(RecoverAsync, () => !IsBusy && Session.IsOnline);
         SearchCommand = new AsyncRelayCommand(SearchAsync, () => !IsBusy);
         CreateInstallmentCommand = new AsyncRelayCommand(CreateInstallmentAsync, CanCreateInstallment);
         AddRepaymentCommand = new AsyncRelayCommand(AddRepaymentAsync, CanAddRepayment);
         CancelWithRefundCommand = new AsyncRelayCommand(CancelWithRefundAsync, CanCancelWithRefund);
         VoidCancelCommand = new AsyncRelayCommand(VoidCancelAsync, CanVoidCancel);
         ConfirmPickupCommand = new AsyncRelayCommand(ConfirmPickupAsync, CanConfirmPickup);
+        SupervisorResolveRefundCommand = new AsyncRelayCommand(ResolveRefundBySupervisorAsync, CanResolveRefundBySupervisor);
         BackToPaymentCommand = new RelayCommand(_backToPayment);
 
         RefreshPaymentMethodOptions();
@@ -85,14 +93,23 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     public ObservableCollection<InstallmentOrderSummary> Orders { get; } = [];
     public ObservableCollection<InstallmentPaymentMethodOption> PaymentMethodOptions { get; } = [];
+    public ObservableCollection<LocalInstallmentRefundStep> RefundStepsForReview { get; } = [];
+    public IReadOnlyList<InstallmentRefundSupervisorDecision> SupervisorRefundDecisions { get; } =
+        [
+            InstallmentRefundSupervisorDecision.ConfirmRefunded,
+            InstallmentRefundSupervisorDecision.ConfirmNotRefunded,
+            InstallmentRefundSupervisorDecision.ContinueWaiting
+        ];
 
     public IAsyncRelayCommand LoadCommand { get; }
+    public IAsyncRelayCommand RecoveryCommand { get; }
     public IAsyncRelayCommand SearchCommand { get; }
     public IAsyncRelayCommand CreateInstallmentCommand { get; }
     public IAsyncRelayCommand AddRepaymentCommand { get; }
     public IAsyncRelayCommand CancelWithRefundCommand { get; }
     public IAsyncRelayCommand VoidCancelCommand { get; }
     public IAsyncRelayCommand ConfirmPickupCommand { get; }
+    public IAsyncRelayCommand SupervisorResolveRefundCommand { get; }
     public IRelayCommand BackToPaymentCommand { get; }
 
     public string PageTitleText => T("installment.center.title", "Installment Center");
@@ -121,14 +138,24 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     public bool IsCancelWithRefundEnabled => CanCancelWithRefund();
     public bool IsVoidCancelEnabled => CanVoidCancel();
     public bool IsConfirmPickupEnabled => CanConfirmPickup();
+    public bool IsSelectedOrderLocked => SelectedOrder is not null && _lockedInstallmentGuids.Contains(SelectedOrder.OrderId);
+    public bool HasRefundStepsForReview => RefundStepsForReview.Count > 0 && IsRefundSupervisorAuthorized;
+    public bool IsSupervisorResolutionEnabled => CanResolveRefundBySupervisor();
+
+    private bool IsRefundSupervisorAuthorized =>
+        (!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+        _cashierSessionContext.RequirePermission(Permissions.PosTerminal.Installments.Cancel, out _);
 
     partial void OnSelectedOrderChanged(InstallmentOrderSummary? value)
     {
         RepaymentAmount = value?.OutstandingAmount ?? 0m;
+        ResetRepaymentOperation();
         OnPropertyChanged(nameof(SelectedOrderNumberText));
         OnPropertyChanged(nameof(SelectedOrderCustomerText));
         OnPropertyChanged(nameof(SelectedOrderOutstandingText));
+        OnPropertyChanged(nameof(IsSelectedOrderLocked));
         RaiseSelectionStateChanged();
+        _ = RefreshSupervisorRefundStepsSafelyAsync(value?.OrderId);
     }
 
     partial void OnIsBusyChanged(bool value)
@@ -138,20 +165,33 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         RaiseSelectionStateChanged();
     }
 
-    partial void OnRepaymentAmountChanged(decimal value) => RaiseSelectionStateChanged();
-    partial void OnRepaymentMethodChanged(PaymentMethodKind value) => RaiseSelectionStateChanged();
-    partial void OnRepaymentReferenceChanged(string value) => RaiseSelectionStateChanged();
-    partial void OnRepaymentVoucherTokenChanged(string value) => RaiseSelectionStateChanged();
+    partial void OnRepaymentAmountChanged(decimal value) { ResetRepaymentOperation(); RaiseSelectionStateChanged(); }
+    partial void OnRepaymentMethodChanged(PaymentMethodKind value) { ResetRepaymentOperation(); RaiseSelectionStateChanged(); }
+    partial void OnRepaymentReferenceChanged(string value) { ResetRepaymentOperation(); RaiseSelectionStateChanged(); }
+    partial void OnRepaymentVoucherTokenChanged(string value) { ResetRepaymentOperation(); RaiseSelectionStateChanged(); }
+    partial void OnSelectedRefundStepChanged(LocalInstallmentRefundStep? value) => RaiseSelectionStateChanged();
     partial void OnSessionChanged(PosSessionState value)
     {
         if (value.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(value.CashierSession);
         }
+
+        OnPropertyChanged(nameof(HasRefundStepsForReview));
     }
 
-    public async Task LoadAsync() => await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
+    public async Task LoadAsync()
+    {
+        await RecoverPendingOperationsAsync();
+        await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
+    }
     public async Task SearchAsync() => await LoadCoreAsync(() => _installmentOrderService.SearchAsync(Session, SearchText), "installment.center.status.searched", "Found {0} installment orders.");
+
+    public async Task RecoverAsync()
+    {
+        await RecoverPendingOperationsAsync();
+        await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
+    }
 
     public void Prepare(PosSessionState session, PosCartServiceSnapshot? cartSnapshot)
     {
@@ -254,87 +294,32 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
         var orderId = SelectedOrder.OrderId;
         var payment = new InstallmentPaymentDraft(
-            Guid.NewGuid(),
+            _repaymentPaymentGuid,
             RepaymentMethod,
             RepaymentAmount,
             Normalize(RepaymentReference),
-            Normalize(RepaymentVoucherToken));
-        if (RepaymentMethod == PaymentMethodKind.Card)
-        {
-            if (_cardTerminalClient is null)
-            {
-                SetStatusResource("installment.center.status.cardTerminalRequired", "Configure a card terminal before adding a card repayment.");
-                return;
-            }
+            Normalize(RepaymentVoucherToken),
+            IdempotencyKey: _repaymentIdempotencyKey ??= $"{orderId:D}:repayment:{_repaymentPaymentGuid:D}");
 
-            // 银行卡补款必须先由终端授权，API 只记录已授权的付款结果。
-            PaymentAuthorizationResult authorization;
-            try
-            {
-                authorization = await _cardTerminalClient.AuthorizeAsync(RepaymentAmount, Session);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                var correlation = OperationAuditEvents.CreateCorrelation();
-                OperationAuditEvents.RecordAction(
-                    _operationAuditLogger,
-                    OperationAuditTypes.InstallmentRepaymentComplete,
-                    "Failed",
-                    Session,
-                    reasonCode: "CARD_AUTHORIZATION_EXCEPTION",
-                    safeMessage: ex.GetType().Name,
-                    paymentMethod: PaymentMethodKind.Card.ToString(),
-                    paymentAmount: RepaymentAmount,
-                    orderGuid: orderId.ToString("D"),
-                    correlationId: correlation.CorrelationId,
-                    traceId: correlation.TraceId);
-                ConsoleLog.WriteError(
-                    "InstallmentAudit",
-                    $"installment card authorization failed error={ex.GetType().Name}",
-                    new ApplicationLogContext(TraceId: correlation.TraceId),
-                    ex);
-                throw;
-            }
-
-            if (!authorization.Approved)
-            {
-                OperationAuditEvents.RecordAction(
-                    _operationAuditLogger,
-                    OperationAuditTypes.InstallmentRepaymentComplete,
-                    "Denied",
-                    Session,
-                    reasonCode: "CARD_NOT_AUTHORIZED",
-                    safeMessage: authorization.Message,
-                    paymentMethod: PaymentMethodKind.Card.ToString(),
-                    paymentAmount: RepaymentAmount,
-                    orderGuid: orderId.ToString("D"));
-                SetLiteralStatus(authorization.Message ?? T("installment.center.status.cardNotAuthorized", "Card repayment was not authorized."));
-                return;
-            }
-
-            payment = payment with
-            {
-                Amount = authorization.AuthorizedAmount ?? RepaymentAmount,
-                Reference = authorization.Reference ?? Normalize(RepaymentReference),
-                CardTransactions = authorization.CardTransactions
-            };
-        }
-
-        await RunOrderActionAsync(
+        var result = await RunOrderActionAsync(
             () => _installmentOrderService.AddRepaymentAsync(new InstallmentOrderRepaymentRequest(orderId, Session, payment)),
             OperationAuditTypes.InstallmentRepaymentComplete,
             "REPAYMENT",
             payment.Method.ToString(),
             payment.Amount,
             orderId);
+        if (!result.RequiresReview)
+        {
+            ResetRepaymentOperation();
+        }
     }
 
     private bool CanAddRepayment() => !IsBusy &&
         !IsOffline &&
+        !IsSelectedOrderLocked &&
         SelectedOrder is { CanAddRepayment: true } &&
         RepaymentAmount > 0m &&
         RepaymentAmount <= SelectedOrder.OutstandingAmount &&
-        (RepaymentMethod != PaymentMethodKind.Card || _cardTerminalClient is not null) &&
         (RepaymentMethod != PaymentMethodKind.Voucher || (!string.IsNullOrWhiteSpace(RepaymentReference) && !string.IsNullOrWhiteSpace(RepaymentVoucherToken)));
     private async Task CancelWithRefundAsync()
     {
@@ -356,7 +341,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
     }
 
-    private bool CanCancelWithRefund() => !IsBusy && !IsOffline && SelectedOrder is { CanCancelWithRefund: true };
+    private bool CanCancelWithRefund() => !IsBusy && !IsOffline && !IsSelectedOrderLocked && SelectedOrder is { CanCancelWithRefund: true };
     private async Task VoidCancelAsync()
     {
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "void-cancel");
@@ -394,6 +379,85 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     }
 
     private bool CanConfirmPickup() => !IsBusy && !IsOffline && SelectedOrder is { CanConfirmPickup: true };
+
+    private async Task ResolveRefundBySupervisorAsync()
+    {
+        using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "supervisor-refund-resolution");
+        if (authorization is null || SelectedOrder is null || SelectedRefundStep is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = authorization.Activate();
+        var authorizer = OperationAuthorizationScope.CurrentAuthorizingSession ?? Session.CashierSession;
+        var decision = SupervisorRefundDecision;
+        var resolution = new InstallmentRefundSupervisorResolution(
+            decision,
+            authorizer?.CashierId ?? Session.CashierId,
+            Normalize(SupervisorRefundReason) ?? string.Empty,
+            Normalize(SupervisorRefundEvidence),
+            Normalize(SupervisorRefundReference),
+            authorizer?.UserGuid ?? Session.CashierSession?.UserGuid,
+            authorizer?.CashierName ?? Session.CashierName);
+
+        try
+        {
+            IsBusy = true;
+            var resolved = await _installmentOrderService.ResolveRefundStepAsync(SelectedRefundStep.RefundStepGuid, resolution);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.InstallmentRepaymentCancel,
+                resolved ? "SupervisorResolved" : "SupervisorResolutionRejected",
+                Session,
+                reasonCode: decision.ToString(),
+                safeMessage: $"reason={resolution.Reason}; evidence={resolution.Evidence ?? "-"}; refundReference={resolution.RefundReference ?? "-"}",
+                orderGuid: SelectedOrder.OrderId.ToString("D"));
+            if (!resolved)
+            {
+                SetLiteralStatus("该退款步骤正在处理或已结案，保持锁定。 ");
+                return;
+            }
+
+            if (decision != InstallmentRefundSupervisorDecision.ContinueWaiting)
+            {
+                var result = await _installmentOrderService.ResumeCancelAfterSupervisorAsync(SelectedRefundStep.OperationGuid, SelectedOrder.OrderNumber, Session);
+                SetLiteralStatus(result.Message);
+                if (result.Succeeded && result.Order is not null)
+                {
+                    AppendOrUpdateOrder(result.Order);
+                }
+            }
+            else
+            {
+                SetLiteralStatus("已记录继续等待，退款保持锁定。 ");
+            }
+        }
+        catch (ArgumentException exception)
+        {
+            SetLiteralStatus(exception.Message);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.InstallmentRepaymentCancel,
+                "SupervisorResolutionFailed",
+                Session,
+                reasonCode: decision.ToString(),
+                safeMessage: exception.GetType().Name,
+                orderGuid: SelectedOrder.OrderId.ToString("D"));
+            SetLiteralStatus("主管结案未保存，退款保持锁定。 ");
+        }
+        finally
+        {
+            IsBusy = false;
+            await RefreshSupervisorRefundStepsSafelyAsync(SelectedOrder.OrderId);
+            await RefreshLockedInstallmentsSafelyAsync();
+        }
+    }
+
+    private bool CanResolveRefundBySupervisor() =>
+        !IsBusy && !IsOffline && IsRefundSupervisorAuthorized && IsSelectedOrderLocked && SelectedRefundStep is not null;
 
     private bool TryRequirePermission(string permissionCode)
     {
@@ -434,7 +498,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             action,
             Session);
 
-    private async Task RunOrderActionAsync(
+    private async Task<InstallmentOrderActionResult> RunOrderActionAsync(
         Func<Task<InstallmentOrderActionResult>> action,
         string? operationType = null,
         string? reasonCode = null,
@@ -465,6 +529,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             {
                 await LoadCoreAsync(() => _installmentOrderService.SearchAsync(Session, SearchText), "installment.center.status.searched", "Found {0} installment orders.", result.Message);
             }
+
+            return result;
         }
         catch (Exception ex)
         {
@@ -491,11 +557,83 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             }
 
             SetLiteralStatus(ex.Message);
+            return new InstallmentOrderActionResult(false, ex.Message, RequiresReview: ex is OperationCanceledException);
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private async Task RecoverPendingOperationsAsync()
+    {
+        if (!Session.IsOnline)
+        {
+            return;
+        }
+
+        try
+        {
+            var recovered = await _installmentOrderService.RecoverPendingOperationsAsync(Session);
+            var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session);
+            _lockedInstallmentGuids.Clear();
+            _lockedInstallmentGuids.UnionWith(lockedInstallments);
+            OnPropertyChanged(nameof(IsSelectedOrderLocked));
+            RaiseSelectionStateChanged();
+            await RefreshSupervisorRefundStepsSafelyAsync(SelectedOrder?.OrderId);
+            var locked = recovered.Count(item => item.State == LocalInstallmentOperationState.ResultUnknown);
+            if (locked > 0)
+            {
+                SetLiteralStatus($"{locked} 个分期支付结果未知，已锁定，请勿重复收款。");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            SetLiteralStatus($"分期恢复失败：{ex.GetType().Name}。请勿重复收款。");
+        }
+    }
+
+    private async Task RefreshSupervisorRefundStepsSafelyAsync(Guid? installmentGuid)
+    {
+        try
+        {
+            var steps = installmentGuid is null
+                ? []
+                : await _installmentOrderService.GetRefundStepsForReviewAsync(installmentGuid.Value);
+            RefundStepsForReview.ReplaceWith(steps);
+            SelectedRefundStep = RefundStepsForReview.FirstOrDefault();
+            OnPropertyChanged(nameof(HasRefundStepsForReview));
+            RaiseSelectionStateChanged();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            RefundStepsForReview.Clear();
+            SelectedRefundStep = null;
+            OnPropertyChanged(nameof(HasRefundStepsForReview));
+            ConsoleLog.WriteError("InstallmentSupervisor", "failed to load refund review steps", null, exception);
+        }
+    }
+
+    private async Task RefreshLockedInstallmentsSafelyAsync()
+    {
+        try
+        {
+            var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session);
+            _lockedInstallmentGuids.Clear();
+            _lockedInstallmentGuids.UnionWith(lockedInstallments);
+            OnPropertyChanged(nameof(IsSelectedOrderLocked));
+            RaiseSelectionStateChanged();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ConsoleLog.WriteError("InstallmentSupervisor", "failed to refresh installment locks", null, exception);
+        }
+    }
+
+    private void ResetRepaymentOperation()
+    {
+        _repaymentPaymentGuid = Guid.NewGuid();
+        _repaymentIdempotencyKey = null;
     }
 
     private void RaiseSelectionStateChanged()
@@ -505,11 +643,14 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         CancelWithRefundCommand.NotifyCanExecuteChanged();
         VoidCancelCommand.NotifyCanExecuteChanged();
         ConfirmPickupCommand.NotifyCanExecuteChanged();
+        RecoveryCommand.NotifyCanExecuteChanged();
+        SupervisorResolveRefundCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsCreateEnabled));
         OnPropertyChanged(nameof(IsAddRepaymentEnabled));
         OnPropertyChanged(nameof(IsCancelWithRefundEnabled));
         OnPropertyChanged(nameof(IsVoidCancelEnabled));
         OnPropertyChanged(nameof(IsConfirmPickupEnabled));
+        OnPropertyChanged(nameof(IsSupervisorResolutionEnabled));
         OnPropertyChanged(nameof(IsOffline));
     }
 
@@ -537,6 +678,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         OnPropertyChanged(nameof(SelectedOrderCustomerText));
         OnPropertyChanged(nameof(SelectedOrderOutstandingText));
     }
+
+    private void OnCultureChanged(object? sender, EventArgs args) => RaiseLocalizedProperties();
 
     private void RefreshPaymentMethodOptions()
     {
@@ -587,11 +730,10 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     public void Dispose()
     {
-        if (_localization is not null && _onCultureChanged is not null)
+        var onCultureChanged = Interlocked.Exchange(ref _onCultureChanged, null);
+        if (_localization is not null && onCultureChanged is not null)
         {
-            _localization.CultureChanged -= _onCultureChanged;
+            _localization.CultureChanged -= onCultureChanged;
         }
-
-        _onCultureChanged = null;
     }
 }

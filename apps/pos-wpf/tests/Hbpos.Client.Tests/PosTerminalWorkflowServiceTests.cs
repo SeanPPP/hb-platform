@@ -79,6 +79,67 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Process_scan_remote_miss_with_100k_catalog_emits_constant_size_ui_update_under_50ms()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var catalog = Enumerable.Range(0, 100_000)
+            .Select(itemIndex => CreateItem(
+                $"SKU-LARGE-{itemIndex:D6}",
+                $"Large Catalog Item {itemIndex:D6}",
+                $"93{itemIndex:D6}",
+                PriceSourceKind.StoreRetailPrice,
+                2.5m) with
+            {
+                Barcode = null,
+                ItemNumber = null
+            })
+            .ToArray();
+        index.ReplaceAll(catalog);
+        var remoteItem = CreateItem(
+            "SKU-LARGE-REMOTE",
+            "Large Catalog Remote Item",
+            "99999999",
+            PriceSourceKind.StoreRetailPrice,
+            6.5m);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+                Task.FromResult(new RemoteLookupRefreshResult(
+                    storeCode,
+                    lookupCode,
+                    Found: true,
+                    remoteItem,
+                    DeletedCount: 0)));
+        PosTerminalCatalogReloadedEventArgs? catalogRefresh = null;
+        var uiApplyElapsed = TimeSpan.MaxValue;
+        service.CatalogReloaded += (_, args) =>
+        {
+            var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            _ = args.HasCatalogSnapshot;
+            _ = args.CatalogItems.Count;
+            uiApplyElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt);
+            catalogRefresh = args;
+        };
+
+        var result = await service.ProcessScanAsync(
+            Session,
+            remoteItem.LookupCode,
+            preferExactLookup: true,
+            source: "raw");
+
+        Assert.NotNull(catalogRefresh);
+        Assert.False(catalogRefresh.HasCatalogSnapshot);
+        Assert.Empty(catalogRefresh.CatalogItems);
+        Assert.True(
+            uiApplyElapsed < TimeSpan.FromMilliseconds(50),
+            $"UI apply took {uiApplyElapsed.TotalMilliseconds:0.###} ms.");
+        Assert.Equal(100_001, index.Count);
+        Assert.Same(remoteItem, result.SelectedItem);
+    }
+
+    [Fact]
     public async Task Process_scan_async_remote_not_found_keeps_no_local_match_after_local_miss()
     {
         var cart = new PosCartService();
@@ -256,7 +317,7 @@ public sealed class PosTerminalWorkflowServiceTests
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-241", "Retired Workflow Snack", "930241", PriceSourceKind.StoreRetailPrice, 4.2m);
         var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var catalogReloaded = new TaskCompletionSource<IReadOnlyList<SellableItemDto>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var catalogReloaded = new TaskCompletionSource<PosTerminalCatalogReloadedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         index.ReplaceAll([item]);
         var service = new PosTerminalWorkflowService(
             index,
@@ -267,15 +328,17 @@ public sealed class PosTerminalWorkflowServiceTests
                 index.ReplaceAll([]);
                 return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
             });
-        service.CatalogReloaded += (_, args) => catalogReloaded.TrySetResult(args.CatalogItems);
+        service.CatalogReloaded += (_, args) => catalogReloaded.TrySetResult(args);
 
         service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
         Assert.Single(cart.Lines);
 
         remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930241", Found: false, Item: null, DeletedCount: 1));
-        var catalogItems = await catalogReloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var catalogRefresh = await catalogReloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Empty(catalogItems);
+        Assert.False(catalogRefresh.HasCatalogSnapshot);
+        Assert.Empty(catalogRefresh.CatalogItems);
+        Assert.Empty(index.Items);
         var line = Assert.Single(cart.Lines);
         Assert.Equal("Retired Workflow Snack", line.DisplayName);
     }

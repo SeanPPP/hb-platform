@@ -8,6 +8,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:orders="clr-namespace:Hbpos.Contracts.Orders;assembly=Hbpos.Contracts"
              xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
+             xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
              mc:Ignorable="d"
              AutomationProperties.AutomationId="PaymentScreen"
              d:DesignHeight="688"
@@ -876,7 +877,34 @@
                     <Border Width="32" Height="32" Margin="0,0,10,0" Background="{StaticResource PosAccentBrush}" CornerRadius="16" VerticalAlignment="Top">
                         <materialDesign:PackIcon Kind="Information" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
-                    <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="#8F4E00" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="#8F4E00" VerticalAlignment="Center" />
+                        <Button Command="{Binding CardPaymentErrorPrimaryActionCommand}"
+                                AutomationProperties.AutomationId="RecoverPreviousCardTransactionButton"
+                                MinWidth="148"
+                                Height="40"
+                                Margin="0,10,0,0"
+                                HorizontalAlignment="Left">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding IsPaymentInteractionLocked}" Value="True" />
+                                                <Condition Binding="{Binding CardPaymentErrorOverlay.PrimaryActionKind}"
+                                                           Value="{x:Static vm:CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious}" />
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="{Binding CardPaymentErrorOverlay.PrimaryButtonTextKey, Converter={StaticResource LocalizationKeyConverter}}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                    </StackPanel>
                 </Grid>
             </Border>
 

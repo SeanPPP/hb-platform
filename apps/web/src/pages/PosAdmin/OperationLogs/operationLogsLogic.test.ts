@@ -153,8 +153,14 @@ assertDeepEqual(
     'INSTALLMENT_REPAYMENT_CANCEL',
     'DAILY_CLOSE_SAVE',
     'DAILY_CLOSE_REPRINT',
+    'CARD_PAYMENT_SUPERVISOR_RESOLUTION',
   ],
   '固定事件代码应完整覆盖核心收银链路',
+)
+assertEqual(
+  operationTypeKeys.CARD_PAYMENT_SUPERVISOR_RESOLUTION,
+  'operationLogs.operations.cardPaymentSupervisorResolution',
+  '主管付款结案应映射到固定的本地化键',
 )
 
 assertEqual(
@@ -175,6 +181,16 @@ assertDeepEqual(
 const operationLogsPageSource = readFileSync('src/pages/PosAdmin/OperationLogs/index.tsx', 'utf8')
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
+assertEqual(
+  zhLocale.operationLogs.operations.cardPaymentSupervisorResolution,
+  '主管付款结案',
+  '主管付款结案应提供中文文案',
+)
+assertEqual(
+  enLocale.operationLogs.operations.cardPaymentSupervisorResolution,
+  'Card Payment Supervisor Resolution',
+  '主管付款结案应提供英文文案',
+)
 assertEqual(
   operationLogsPageSource.includes('formatMoney(item.beforeUnitPrice'),
   true,

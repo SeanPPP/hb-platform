@@ -13,8 +13,11 @@ namespace Hbpos.Client.Wpf.ViewModels;
 /// </summary>
 internal sealed class CardPaymentSession
 {
+    private readonly object _lifetimeSync = new();
     private CancellationTokenSource? _activeCardPaymentCts;
     private CancellationTokenSource? _manuallyCancelledCardPaymentCts;
+    private CancellationTokenSource? _shutdownCancellationSource;
+    private Task _shutdownCancellationTask = Task.CompletedTask;
     private bool _cardPaymentCancellationRequested;
     private bool _awaitingLateCardResultAfterManualCancel;
     private bool _discardLateCardResultAfterManualCancel;
@@ -63,22 +66,35 @@ internal sealed class CardPaymentSession
 
     public void EndCardPayment(CancellationTokenSource? cardPaymentCts)
     {
-        if (!ReferenceEquals(_activeCardPaymentCts, cardPaymentCts))
+        CancellationTokenSource? active;
+        Task shutdownCancellationTask;
+        lock (_lifetimeSync)
         {
-            return;
-        }
+            if (!ReferenceEquals(_activeCardPaymentCts, cardPaymentCts))
+            {
+                return;
+            }
 
-        var active = _activeCardPaymentCts;
-        _activeCardPaymentCts = null;
-        if (ReferenceEquals(_manuallyCancelledCardPaymentCts, cardPaymentCts))
-        {
-            _manuallyCancelledCardPaymentCts = null;
+            active = _activeCardPaymentCts;
+            _activeCardPaymentCts = null;
+            if (ReferenceEquals(_manuallyCancelledCardPaymentCts, cardPaymentCts))
+            {
+                _manuallyCancelledCardPaymentCts = null;
+            }
+
+            shutdownCancellationTask = ReferenceEquals(_shutdownCancellationSource, active)
+                ? _shutdownCancellationTask
+                : Task.CompletedTask;
+            if (ReferenceEquals(_shutdownCancellationSource, active))
+            {
+                _shutdownCancellationSource = null;
+            }
         }
 
         _cardPaymentCancellationRequested = false;
         _vm.IsCardPaymentInProgress = false;
-        _vm.IsPaymentInteractionLocked = false;
-        active?.Dispose();
+        _vm.IsPaymentInteractionLocked = _vm.IsShuttingDown || HasUnknownResult || _vm.IsCardRecoveryBlocked;
+        DisposeAfterCancellation(active, shutdownCancellationTask);
         _vm.NotifyPaymentCommandStates();
     }
 
@@ -100,6 +116,36 @@ internal sealed class CardPaymentSession
         _vm.IsPaymentInteractionLocked = false;
         _vm.SetStatus("payment.status.cardCancelled");
         _vm.NotifyPaymentCommandStates();
+    }
+
+    public Task CancelForShutdownAsync()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_activeCardPaymentCts is null || _activeCardPaymentCts.IsCancellationRequested)
+            {
+                return _shutdownCancellationTask;
+            }
+
+            var cancellation = _activeCardPaymentCts;
+            _shutdownCancellationSource = cancellation;
+            // 退出取消不是人工撤销：不清空 session、不释放交互锁，让工作流把已越过提交边界的结果持久化为待恢复。
+            _shutdownCancellationTask = Task.Run(() =>
+            {
+                try
+                {
+                    cancellation.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    ConsoleLog.WriteError(
+                        "Shutdown",
+                        $"card payment shutdown cancellation failed error={ex.GetType().Name} message={ex.Message}",
+                        exception: ex);
+                }
+            });
+            return _shutdownCancellationTask;
+        }
     }
 
     public void DetachCanceledActiveCardPayment()
@@ -188,7 +234,12 @@ internal sealed class CardPaymentSession
             return false;
         }
 
-        if (cardPaymentWasManuallyCancelled && IsConfirmedCardCancellation(result.StatusMessage))
+        if (result.CardResult?.RequiresRecovery == true)
+        {
+            return TryHandleFailedResult(result);
+        }
+
+        if (cardPaymentWasManuallyCancelled && result.CardResult?.Outcome == CardPaymentTerminalOutcome.Cancelled)
         {
             SetCancellationStatus(wasManuallyCancelled: true);
         }
@@ -209,7 +260,7 @@ internal sealed class CardPaymentSession
     public bool TryHandleFailedResult(PaymentTenderAttemptResult result)
     {
         ShowOverlayIfTerminalError(result);
-        if (IsCardResultUnknownStatusKey(result.StatusKey))
+        if (result.CardResult?.RequiresRecovery == true)
         {
             _cardPaymentResultUnknownRequiresRecovery = true;
             _vm.IsPaymentInteractionLocked = true;
@@ -234,18 +285,19 @@ internal sealed class CardPaymentSession
 
     private bool TrySetCardTerminalFailureStatus(PaymentTenderAttemptResult result)
     {
-        if (IsSquareFriendlyStatusKey(result.StatusKey))
+        var disposition = result.CardResult;
+        if (disposition?.PreserveStatus == true)
         {
             return false;
         }
 
-        if (IsConfirmedCardCancellation(result.StatusMessage))
+        if (disposition?.Outcome == CardPaymentTerminalOutcome.Cancelled)
         {
             _vm.SetStatus("payment.status.cardCancelled");
             return true;
         }
 
-        if (IsTimeoutMessage(result.StatusMessage))
+        if (disposition?.Outcome == CardPaymentTerminalOutcome.TimedOut)
         {
             _vm.SetStatus("payment.status.cardTimedOut");
             return true;
@@ -270,9 +322,20 @@ internal sealed class CardPaymentSession
 
     public bool CanExecuteErrorPrimaryAction()
     {
-        return _vm.CardPaymentErrorOverlay is { IsOpen: true, HasPrimaryAction: true } overlay &&
-            (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback ||
-             _vm.NavigationActions.CanRecoverPreviousCardTransaction);
+        if (_vm.CardPaymentErrorOverlay is not { HasPrimaryAction: true } overlay)
+        {
+            return false;
+        }
+
+        return overlay.PrimaryActionKind switch
+        {
+            CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => overlay.IsOpen,
+            CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
+                _cardPaymentResultUnknownRequiresRecovery &&
+                !_vm.IsShuttingDown &&
+                _vm.NavigationActions.CanRecoverPreviousCardTransaction,
+            _ => false
+        };
     }
 
     public async Task ExecuteErrorPrimaryActionAsync()
@@ -291,21 +354,50 @@ internal sealed class CardPaymentSession
             return;
         }
 
-        _vm.SetStatus("payment.card.error.overlay.activeSession.recovering");
-        var recoveryResolved = await (_vm.NavigationActions.RecoverPreviousCardTransactionAsync?.Invoke() ?? Task.FromResult(false));
-        if (recoveryResolved)
+        try
         {
+            _vm.SetStatus("payment.card.error.overlay.activeSession.recovering");
+            var recoveryResolved = await (
+                _vm.NavigationActions.RecoverPreviousCardTransactionAsync?.Invoke() ??
+                Task.FromResult(false));
+            if (!recoveryResolved)
+            {
+                return;
+            }
+
+            // 恢复期间可能建立了更晚的全局恢复锁，不能用旧结果将其覆盖。
+            if (_vm.IsCardRecoveryBlocked)
+            {
+                _vm.IsPaymentInteractionLocked = true;
+                _vm.NotifyPaymentCommandStates();
+                return;
+            }
+
             _cardPaymentResultUnknownRequiresRecovery = false;
-            _vm.IsPaymentInteractionLocked = false;
+            _vm.IsPaymentInteractionLocked = _vm.IsShuttingDown;
+            if (_vm.CardPaymentErrorOverlay?.PrimaryActionKind ==
+                CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+            {
+                _vm.CardPaymentErrorOverlay = null;
+            }
+
             _vm.NotifyPaymentCommandStates();
         }
-
-        if (_vm.CardPaymentErrorOverlay is not null && !_cardPaymentResultUnknownRequiresRecovery)
+        catch (Exception ex)
         {
-            _vm.CardPaymentErrorOverlay.IsOpen = false;
+            ConsoleLog.WriteError(
+                "CardPayment",
+                $"previous card recovery failed error={ex.GetType().Name}",
+                exception: ex);
+            _cardPaymentResultUnknownRequiresRecovery = true;
+            _vm.IsPaymentInteractionLocked = true;
+            _vm.SetStatus("payment.card.resultUnknown");
+            _vm.NotifyPaymentCommandStates();
         }
-
-        _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        finally
+        {
+            _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        }
     }
 
     // ── Linkly fallback ──
@@ -373,50 +465,18 @@ internal sealed class CardPaymentSession
         return _vm.T(key);
     }
 
-    // ── Static classifiers ──
-
-    public static bool IsCardResultUnknownStatusKey(string statusKey)
-    {
-        return statusKey is
-            "linkly.backend.resultUnknown" or
-            "linkly.backend.cancelledUnknown" or
-            "linkly.cloud.resultUnknown";
-    }
-
-    private static bool IsCardDeclinedStatusKey(string statusKey)
-    {
-        return string.Equals(statusKey, "payment.status.cardDeclined", StringComparison.Ordinal);
-    }
-
-    private static bool IsSquareFriendlyStatusKey(string statusKey)
-    {
-        // Square 已映射状态要保留原文案，避免再被通用取消/超时识别覆盖。
-        return statusKey is
-            "payment.card.squareCanceled" or
-            "payment.card.squareCanceledBuyer" or
-            "payment.card.squareCanceledSeller" or
-            "payment.card.squareTimedOut" or
-            "payment.card.squareTerminalOffline" or
-            "payment.card.squareTerminalNotPickedUp";
-    }
-
-    private static bool IsTimeoutMessage(string? message)
-    {
-        return !string.IsNullOrWhiteSpace(message) &&
-            (message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-             message.Contains("timeout", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsConfirmedCardCancellation(string? message)
-    {
-        return !string.IsNullOrWhiteSpace(message) &&
-            message.Contains("cancel", StringComparison.OrdinalIgnoreCase) &&
-            !message.Contains("could not be confirmed", StringComparison.OrdinalIgnoreCase);
-    }
-
     private void ShowOverlayIfTerminalError(PaymentTenderAttemptResult result)
     {
-        var overlay = ClassifyCardPaymentError(result.StatusKey, result.StatusMessage, result.IsTerminalDecline);
+        var overlay = result.CardResult?.ErrorKind switch
+        {
+            CardPaymentErrorKind.ConnectionFailed => CardPaymentErrorOverlayViewModel.ConnectionFailed(),
+            CardPaymentErrorKind.CloudCommunicationFailed => CardPaymentErrorOverlayViewModel.CloudCommunicationFailed(),
+            CardPaymentErrorKind.ActiveSessionRequiresRecovery => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
+            CardPaymentErrorKind.SquareCommunicationFailed => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
+            CardPaymentErrorKind.Timeout => CardPaymentErrorOverlayViewModel.Timeout(),
+            CardPaymentErrorKind.CardDeclined => CardPaymentErrorOverlayViewModel.CardDeclined(result.StatusMessage),
+            _ => null
+        };
         if (overlay is null)
             return;
 
@@ -425,91 +485,66 @@ internal sealed class CardPaymentSession
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
     }
 
-    private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentError(
-        string statusKey,
-        string? statusMessage,
-        bool isTerminalDecline)
-    {
-        var overlay = ClassifyCardPaymentErrorByStatusKey(statusKey);
-        if (overlay is not null)
-        {
-            return overlay;
-        }
-
-        if (string.IsNullOrWhiteSpace(statusMessage))
-        {
-            return isTerminalDecline && IsCardDeclinedStatusKey(statusKey)
-                ? CardPaymentErrorOverlayViewModel.CardDeclined(null)
-                : null;
-        }
-
-        var message = statusMessage;
-
-        if (message.Contains("unfinished card transaction", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery();
-
-        if (message.Contains("connection failed", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("connection was closed", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("could not be sent", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ConnectionFailed();
-
-        if (message.Contains("communication failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (message.Contains("Square", StringComparison.OrdinalIgnoreCase))
-                return CardPaymentErrorOverlayViewModel.SquareCommunicationFailed();
-            return CardPaymentErrorOverlayViewModel.CloudCommunicationFailed();
-        }
-
-        if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.Timeout();
-
-        if (message.Contains("unavailable", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ConnectionFailed();
-
-        // 普通银行拒付不是系统故障，但需要给收银员一个醒目的原因弹窗。
-        if (isTerminalDecline && IsCardDeclinedStatusKey(statusKey) && !IsConfirmedCardCancellation(message))
-            return CardPaymentErrorOverlayViewModel.CardDeclined(message);
-
-        return null;
-    }
-
-    private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentErrorByStatusKey(string statusKey)
-    {
-        return statusKey switch
-        {
-            "linkly.local.connectionFailed" or
-            "payment.card.linklyUnavailable" => CardPaymentErrorOverlayViewModel.ConnectionFailed(),
-
-            "linkly.cloud.communicationFailed" or
-            "linkly.backend.communicationFailed" => CardPaymentErrorOverlayViewModel.CloudCommunicationFailed(),
-
-            "linkly.backend.activeSessionRequiresRecovery" or
-            "linkly.backend.resultUnknown" or
-            "linkly.backend.cancelledUnknown" or
-            "linkly.cloud.resultUnknown" => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
-
-            "payment.card.squareCommunicationFailed" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
-            "payment.card.squareTimedOut" => CardPaymentErrorOverlayViewModel.Timeout(),
-            "payment.card.squareTerminalOffline" or
-            "payment.card.squareTerminalNotPickedUp" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
-
-            "linkly.local.timeout" or
-            "linkly.cloud.timeout" or
-            "linkly.backend.timeout" => CardPaymentErrorOverlayViewModel.Timeout(),
-
-            _ => null
-        };
-    }
-
     // ── Dispose support ──
 
     public void Dispose()
     {
         CompletePendingLinklyFallbackPrompt(confirmed: false);
-        _activeCardPaymentCts?.Dispose();
-        _activeCardPaymentCts = null;
-        _manuallyCancelledCardPaymentCts?.Dispose();
-        _manuallyCancelledCardPaymentCts = null;
+        CancellationTokenSource? orphanedManuallyCancelled;
+        CancellationTokenSource? orphanedShutdownCancellation;
+        Task shutdownCancellationTask;
+        lock (_lifetimeSync)
+        {
+            shutdownCancellationTask = _shutdownCancellationTask;
+            // active CTS 仍可能被 AddTenderAsync 使用；只有真实工作流 finally 的 EndCardPayment 可以释放它。
+            orphanedManuallyCancelled = ReferenceEquals(
+                _manuallyCancelledCardPaymentCts,
+                _activeCardPaymentCts)
+                ? null
+                : _manuallyCancelledCardPaymentCts;
+            if (orphanedManuallyCancelled is not null)
+            {
+                _manuallyCancelledCardPaymentCts = null;
+            }
+
+            orphanedShutdownCancellation = ReferenceEquals(
+                _shutdownCancellationSource,
+                _activeCardPaymentCts)
+                ? null
+                : _shutdownCancellationSource;
+            if (orphanedShutdownCancellation is not null)
+            {
+                _shutdownCancellationSource = null;
+            }
+        }
+
+        DisposeAfterCancellation(orphanedManuallyCancelled, shutdownCancellationTask);
+        if (!ReferenceEquals(orphanedShutdownCancellation, orphanedManuallyCancelled))
+        {
+            DisposeAfterCancellation(orphanedShutdownCancellation, shutdownCancellationTask);
+        }
+    }
+
+    private static void DisposeAfterCancellation(
+        CancellationTokenSource? cancellation,
+        Task cancellationTask)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        if (cancellationTask.IsCompleted)
+        {
+            cancellation.Dispose();
+            return;
+        }
+
+        _ = cancellationTask.ContinueWith(
+            static (_, state) => ((CancellationTokenSource)state!).Dispose(),
+            cancellation,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }

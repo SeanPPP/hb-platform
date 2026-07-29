@@ -25,7 +25,7 @@
             <Setter Property="Foreground" Value="#FF475569" />
             <Setter Property="FontSize" Value="{StaticResource PosFontSizeSmall}" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Padding" Value="6,8" />
             <Setter Property="MinHeight" Value="48" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
             <Setter Property="BorderBrush" Value="#FFE2E8F0" />
@@ -42,7 +42,7 @@
         </Style>
 
         <Style x:Key="HistoryGridCellStyle" TargetType="DataGridCell">
-            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Padding" Value="6,0" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
@@ -64,6 +64,12 @@
                     <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
                 </Trigger>
             </Style.Triggers>
+        </Style>
+
+        <Style x:Key="HistoryGridTextStyle" TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="TextTrimming" Value="None" />
+            <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
         <Style x:Key="HistoryRowStyle" TargetType="DataGridRow">
@@ -140,6 +146,7 @@
             <Setter Property="Foreground" Value="#FF15803D" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="Wrap" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsSuspendedOrder}" Value="True">
                     <Setter Property="Foreground" Value="#FFC2410C" />
@@ -319,12 +326,13 @@
                           IsReadOnly="True"
                           AutoGenerateColumns="False"
                           CanUserAddRows="False"
+                          CanUserResizeColumns="False"
                           RowBackground="White"
                           AlternatingRowBackground="#FFFBFDFF"
                           RowStyle="{StaticResource HistoryRowStyle}"
                           CellStyle="{StaticResource HistoryGridCellStyle}"
                           ColumnHeaderStyle="{StaticResource HistoryColumnHeaderStyle}"
-                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           ScrollViewer.VerticalScrollBarVisibility="Auto"
                           GridLinesVisibility="None"
                           BorderThickness="0"
@@ -341,19 +349,19 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="{loc:Loc OrderNumber}" Binding="{Binding DisplayOrderId}" Width="150" />
-                        <DataGridTextColumn Header="{loc:Loc Time}" Binding="{Binding SoldAtDisplay}" Width="132" />
-                        <DataGridTextColumn x:Name="StandardCashierColumn" Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="118" />
-                        <DataGridTextColumn x:Name="InstallmentCustomerColumn" Header="{loc:Loc Customer}" Binding="{Binding CashierName}" Width="118" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="InstallmentPhoneColumn" Header="{loc:Loc Phone}" Binding="{Binding CustomerPhone}" Width="126" Visibility="Collapsed" />
-                        <DataGridTextColumn Header="{loc:Loc Terminal}" Binding="{Binding DeviceCode}" Width="92" />
-                        <DataGridTextColumn x:Name="StandardItemsColumn" Header="{loc:Loc Items}" Binding="{Binding LineCount}" Width="66" />
-                        <DataGridTextColumn x:Name="InstallmentTotalColumn" Header="{loc:Loc Total}" Binding="{Binding TotalAmount, StringFormat={}{0:C2}}" Width="102" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="StandardAmountColumn" Header="{loc:Loc Amount}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112" />
-                        <DataGridTextColumn x:Name="InstallmentOutstandingColumn" Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="StandardPaymentColumn" Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="106" />
-                        <DataGridTextColumn x:Name="InstallmentPaidColumn" Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="106" Visibility="Collapsed" />
-                        <DataGridTemplateColumn Header="{loc:Loc common.status}" Width="116">
+                        <DataGridTextColumn Header="{loc:Loc OrderNumber}" Binding="{Binding DisplayOrderId}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn Header="{loc:Loc Time}" Binding="{Binding SoldAtDisplay}" Width="13*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="StandardCashierColumn" Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="InstallmentCustomerColumn" Header="{loc:Loc Customer}" Binding="{Binding CashierName}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="InstallmentPhoneColumn" Header="{loc:Loc Phone}" Binding="{Binding CustomerPhone}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
+                        <DataGridTextColumn Header="{loc:Loc Terminal}" Binding="{Binding DeviceCode}" Width="9*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="StandardItemsColumn" Header="{loc:Loc Items}" Binding="{Binding LineCount}" Width="6*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="InstallmentTotalColumn" Header="{loc:Loc Total}" Binding="{Binding TotalAmount, StringFormat={}{0:C2}}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="StandardAmountColumn" Header="{loc:Loc Amount}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="InstallmentOutstandingColumn" Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="StandardPaymentColumn" Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
+                        <DataGridTextColumn x:Name="InstallmentPaidColumn" Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
+                        <DataGridTemplateColumn Header="{loc:Loc common.status}" Width="10*">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Border Style="{StaticResource HistoryStatusBadgeBorderStyle}">
@@ -362,7 +370,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc suspended.recall}" Width="96">
+                        <DataGridTemplateColumn x:Name="RecallActionColumn" Header="{loc:Loc suspended.recall}" Width="96">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Button Command="{Binding DataContext.RecallOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
@@ -378,7 +386,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc history.installment.continuePayment}" Width="132">
+                        <DataGridTemplateColumn x:Name="ContinuePaymentActionColumn" Header="{loc:Loc history.installment.continuePayment}" Width="132">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Button Command="{Binding DataContext.ContinueInstallmentPaymentCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
@@ -635,39 +643,8 @@
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="8" ShadowDepth="2" Opacity="0.08" />
                             </Border.Effect>
-                            <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Text}"
-                                                   Margin="0,0,0,3"
-                                                   FontFamily="Consolas"
-                                                   FontSize="11"
-                                                   TextWrapping="Wrap">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="TextAlignment" Value="Left" />
-                                                    <Setter Property="FontWeight" Value="Normal" />
-                                                    <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IsCentered}" Value="True">
-                                                            <Setter Property="TextAlignment" Value="Center" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding IsRightAligned}" Value="True">
-                                                            <Setter Property="TextAlignment" Value="Right" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding IsEmphasized}" Value="True">
-                                                            <Setter Property="FontWeight" Value="Black" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding IsMachineCode}" Value="True">
-                                                            <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
+                            <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}"
+                                          ItemTemplate="{StaticResource ReceiptPreviewRowTemplate}" />
                         </Border>
                     </StackPanel>
                 </ScrollViewer>

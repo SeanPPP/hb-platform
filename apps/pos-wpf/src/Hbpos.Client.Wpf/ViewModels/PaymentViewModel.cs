@@ -45,6 +45,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private int _paymentEntryVersion;
     private decimal _workflowRemainingAmount;
     private InstallmentOrderSummary? _installmentRepaymentOrder;
+    private string? _installmentDraftFingerprint;
+    private Guid? _installmentDraftPaymentGuid;
+    private string? _installmentDraftCardIdempotencyKey;
+    private bool _externalCardRecoveryBlocked;
+    private int _shutdownStarted;
     private bool _disposed;
 
     [ObservableProperty]
@@ -232,6 +237,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         _disposed = true;
+        BeginShutdown();
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;
@@ -239,6 +245,21 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         _cardSession.Dispose();
     }
+
+    public void BeginShutdown()
+    {
+        if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
+        {
+            return;
+        }
+
+        // 关闭窗口期间只取消仍在等待的终端调用，保留 attempt 与恢复锁给下次启动核对。
+        IsPaymentInteractionLocked = true;
+        _ = _cardSession.CancelForShutdownAsync();
+        NotifyPaymentCommandStates();
+    }
+
+    internal bool IsShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
 
@@ -538,11 +559,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherChangeAmount = 0m;
         _paymentEntryVersion++;
         _cardSession.ResetManualCancellationState();
-        _cardSession.SetResultUnknownRecoveryRequired(false);
+        _cardSession.SetResultUnknownRecoveryRequired(_externalCardRecoveryBlocked);
         _cardSession.Cancel();
         _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = false;
+        IsPaymentInteractionLocked = _externalCardRecoveryBlocked;
         _installmentRepaymentOrder = null;
         IsInstallmentSwitchLocked = false;
         IsInstallmentPaymentEnabled = false;
@@ -1023,7 +1044,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"tender cancelled unexpectedly method={method} error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            SetStatus("payment.status.tenderFailed");
+            NotifyPaymentCommandStates();
+            return;
         }
         catch (Exception ex)
         {
@@ -1045,7 +1068,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"tender failed method={method} error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            SetStatus("payment.status.tenderFailed");
+            NotifyPaymentCommandStates();
+            return;
         }
         finally
         {
@@ -1065,7 +1090,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             (!result.Succeeded || result.Tender is null))
         {
             _cardSession.TryHandleCancelledResult(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
-            await ReleaseVoucherTendersAfterCardFailureAsync();
+            if (result.CardResult?.RequiresRecovery != true)
+            {
+                await ReleaseVoucherTendersAfterCardFailureAsync();
+            }
             return;
         }
 
@@ -1099,7 +1127,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
             if (isCard)
             {
-                var resultUnknown = CardPaymentSession.IsCardResultUnknownStatusKey(result.StatusKey);
+                var resultUnknown = result.CardResult?.RequiresRecovery == true;
                 _cardSession.TryHandleFailedResult(result);
                 if (!resultUnknown)
                 {
@@ -1314,7 +1342,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         if (IsRecoveredCardAttemptTender(tender))
         {
-            // 中文注释：恢复出的已批准卡款是真实扣款，不能像普通本地 tender 一样删除。
+            // PaymentTenders 中的银行卡项都已经过终端批准，不能像现金 tender 一样删除后重新刷卡。
             return;
         }
 
@@ -1407,8 +1435,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private static bool IsRecoveredCardAttemptTender(PaymentTender tender)
     {
-        return tender.Method == PaymentMethodKind.Card &&
-            tender.IdempotencyKey?.StartsWith("CARD_ATTEMPT:", StringComparison.OrdinalIgnoreCase) == true;
+        return tender.Method == PaymentMethodKind.Card;
     }
 
     private async Task ConfirmPaymentAsync()
@@ -1478,8 +1505,27 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            IsPaymentInteractionLocked = false;
+            // 结算期间若发现已批准卡款无法安全落盘，finally 不能覆盖待恢复锁。
+            IsPaymentInteractionLocked =
+                IsShuttingDown ||
+                _cardSession.HasUnknownResult ||
+                IsCardRecoveryBlocked;
         }
+    }
+
+    internal bool IsCardRecoveryBlocked => _externalCardRecoveryBlocked;
+
+    internal void SetCardRecoveryBlocked(bool blocked, string? statusMessage = null)
+    {
+        _externalCardRecoveryBlocked = blocked;
+        _cardSession.SetResultUnknownRecoveryRequired(blocked);
+        IsPaymentInteractionLocked = blocked || IsShuttingDown || _cardSession.IsActive;
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+        {
+            SetStatus(blocked ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
+        }
+
+        NotifyPaymentCommandStates();
     }
 
     private async Task CompletePaymentFromTendersCoreAsync()
@@ -1506,6 +1552,30 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 Session,
                 tenderSnapshot,
                 cashTenderedAmount);
+        }
+        catch (CardPaymentPersistenceUnknownException ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "RequiresReview",
+                Session,
+                before,
+                reasonCode: "CARD_PERSISTENCE_UNKNOWN",
+                safeMessage: ex.InnerException?.GetType().Name ?? ex.GetType().Name,
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: tenderSnapshot.Sum(tender => tender.Amount),
+                orderGuid: ex.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"approved card order persistence unknown operation={operationType} error={ex.InnerException?.GetType().Name ?? ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            SetCardRecoveryBlocked(true, ex.Message);
+            return;
         }
         catch (PaymentUploadFailedException ex)
         {
@@ -1556,7 +1626,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"payment completion failed operation={operationType} error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            SetStatus("payment.status.paymentFailed");
+            NotifyPaymentCommandStates();
+            return;
         }
 
         OperationAuditEvents.RecordCartChange(
@@ -1648,6 +1720,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                     paymentMethod: appliedTender.Method.ToString(),
                     paymentAmount: appliedTender.Amount,
                     orderGuid: completedOrder.OrderId.ToString("D"));
+                ResetInstallmentPaymentDraft();
                 PaymentTenders.Clear();
                 _installmentRepaymentOrder = completedOrder;
                 TenderAmountText = string.Empty;
@@ -1749,6 +1822,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 paymentMethod: $"Installment+{appliedTender.Method}",
                 paymentAmount: appliedTender.Amount,
                 orderGuid: createResult.Order?.OrderId.ToString("D"));
+            ResetInstallmentPaymentDraft();
             PaymentTenders.Clear();
             _cart.Clear();
             TenderAmountText = string.Empty;
@@ -1964,7 +2038,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"payment upload retry technical failure operation={operationType} error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            SetStatus("payment.status.uploadFailed");
+            NotifyPaymentCommandStates();
+            return;
         }
     }
 
@@ -1977,11 +2053,19 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         PendingSyncCount = result.PendingSyncCount;
         Session = result.UpdatedSession;
         RefreshCart();
-        SetStatus("payment.status.completed");
+        SetStatus(result.HasPostCommitWarning
+            ? "payment.status.completedWarning"
+            : "payment.status.completed");
         // 中文注释：支付完成后的导航、同步、自动开钱箱和打印属于后台收尾，不得继承本次提权票据。
         using (OperationAuthorizationScope.Suspend())
         {
-            PaymentCompleted?.Invoke(this, new PaymentCompletedEventArgs(result.Order, result.TenderedAmount, result.ChangeAmount));
+            PaymentCompleted?.Invoke(
+                this,
+                new PaymentCompletedEventArgs(
+                    result.Order,
+                    result.TenderedAmount,
+                    result.ChangeAmount,
+                    result.HasPostCommitWarning));
         }
     }
 
@@ -2411,20 +2495,51 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 line.ActualAmount)).ToList());
     }
 
-    private static InstallmentPaymentDraft CreateInstallmentPaymentDraft(PaymentTender tender)
+    private InstallmentPaymentDraft CreateInstallmentPaymentDraft(PaymentTender tender)
     {
         var (reference, reservationToken) = tender.Method == PaymentMethodKind.Voucher
             ? OrderUploadService.ParseVoucherReference(tender.Reference)
             : (tender.Reference, null);
 
+        // 中文注释：结果未知时用户会再次确认同一草稿，必须复用 GUID 和幂等键，不能重新授权终端或创建另一笔分期操作。
+        var fingerprint = string.Join(
+            '\u001f',
+            _installmentRepaymentOrder?.OrderId.ToString("N") ?? "create",
+            Session.StoreCode,
+            Session.DeviceCode,
+            tender.Method,
+            tender.Amount.ToString(CultureInfo.InvariantCulture),
+            reference ?? string.Empty,
+            reservationToken ?? string.Empty,
+            tender.IdempotencyKey ?? string.Empty,
+            InstallmentCustomerName.Trim(),
+            InstallmentCustomerPhone.Trim(),
+            _cart.ActualAmount.ToString(CultureInfo.InvariantCulture));
+        if (!string.Equals(_installmentDraftFingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            _installmentDraftFingerprint = fingerprint;
+            _installmentDraftPaymentGuid = Guid.NewGuid();
+            _installmentDraftCardIdempotencyKey = tender.IdempotencyKey ??
+                (tender.Method == PaymentMethodKind.Card
+                    ? $"preauthorized-card:{_installmentDraftPaymentGuid.Value:D}"
+                    : null);
+        }
+
         return new InstallmentPaymentDraft(
-            Guid.NewGuid(),
+            _installmentDraftPaymentGuid!.Value,
             tender.Method,
             tender.Amount,
             reference,
             reservationToken,
             tender.CardTransactions,
-            tender.IdempotencyKey ?? (tender.Method == PaymentMethodKind.Card ? $"preauthorized-card:{Guid.NewGuid():D}" : null));
+            tender.IdempotencyKey ?? _installmentDraftCardIdempotencyKey);
+    }
+
+    private void ResetInstallmentPaymentDraft()
+    {
+        _installmentDraftFingerprint = null;
+        _installmentDraftPaymentGuid = null;
+        _installmentDraftCardIdempotencyKey = null;
     }
 
     private decimal GetRefundRemainingAmount(PaymentMethodKind method)

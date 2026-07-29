@@ -1,9 +1,11 @@
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Constants;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Installments;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -122,7 +124,7 @@ public sealed class InstallmentCenterViewModelTests
         viewModel.RepaymentMethod = PaymentMethodKind.Card;
         viewModel.RepaymentReference = string.Empty;
 
-        Assert.False(viewModel.AddRepaymentCommand.CanExecute(null));
+        Assert.True(viewModel.AddRepaymentCommand.CanExecute(null));
 
         viewModel.RepaymentMethod = PaymentMethodKind.Voucher;
         viewModel.RepaymentReference = "VIP001";
@@ -171,13 +173,9 @@ public sealed class InstallmentCenterViewModelTests
     }
 
     [Fact]
-    public async Task AddRepaymentCommand_authorizes_card_repayment_before_service_call()
+    public async Task AddRepaymentCommand_delegates_card_repayment_to_restartable_operation_service()
     {
         var targetOrder = CreateOrder("IO-001", "张三", "0400111222", "待补款", canAddRepayment: true);
-        var cardTransactions = new[]
-        {
-            new CardTransactionDto("Square", "TXN-001", "AUTH-001", "VISA", 4, "1234", "MID-1", "00", "APPROVED", "RRN-1", DateTimeOffset.Now, 40m, "receipt")
-        };
         var service = new FakeInstallmentOrderService
         {
             Orders = [targetOrder],
@@ -188,7 +186,7 @@ public sealed class InstallmentCenterViewModelTests
             CreateSession(),
             _ => Task.CompletedTask,
             () => { },
-            cardTerminalClient: new ApprovedCardTerminalClient("CARD-001", cardTransactions));
+            cardTerminalClient: new StubCardTerminalClient(authorizeException: new InvalidOperationException("the page must not authorize cards")));
 
         await viewModel.LoadAsync();
         viewModel.RepaymentAmount = 40m;
@@ -200,22 +198,22 @@ public sealed class InstallmentCenterViewModelTests
 
         Assert.NotNull(service.LastRepaymentRequest);
         Assert.Equal(PaymentMethodKind.Card, service.LastRepaymentRequest!.Payment.Method);
-        Assert.Equal("CARD-001", service.LastRepaymentRequest.Payment.Reference);
-        Assert.Same(cardTransactions, service.LastRepaymentRequest.Payment.CardTransactions);
+        Assert.Null(service.LastRepaymentRequest.Payment.Reference);
+        Assert.Null(service.LastRepaymentRequest.Payment.CardTransactions);
     }
 
     [Fact]
-    public async Task AddRepaymentCommand_records_denied_when_card_authorization_is_rejected()
+    public async Task AddRepaymentCommand_does_not_invoke_the_page_card_terminal()
     {
         var auditLogger = new RecordingOperationAuditLogger();
         var targetOrder = CreateOrder("IO-CARD-DENIED", "张三", "0400111222", "待补款", canAddRepayment: true);
-        var service = new FakeInstallmentOrderService { Orders = [targetOrder] };
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder], AddRepaymentResult = new InstallmentOrderActionResult(true, "已交由分期操作服务处理") };
         var viewModel = new InstallmentCenterViewModel(
             service,
             CreateSession(),
             _ => Task.CompletedTask,
             () => { },
-            cardTerminalClient: new StubCardTerminalClient(new PaymentAuthorizationResult(false, Message: "Card declined")),
+            cardTerminalClient: new StubCardTerminalClient(authorizeException: new InvalidOperationException("the page must not authorize cards")),
             operationAuditLogger: auditLogger);
 
         await viewModel.LoadAsync();
@@ -223,24 +221,23 @@ public sealed class InstallmentCenterViewModelTests
         viewModel.RepaymentMethod = PaymentMethodKind.Card;
         await viewModel.AddRepaymentCommand.ExecuteAsync(null);
 
-        Assert.Null(service.LastRepaymentRequest);
+        Assert.NotNull(service.LastRepaymentRequest);
         var auditEvent = Assert.Single(auditLogger.Events);
         Assert.Equal("INSTALLMENT_REPAYMENT_COMPLETE", auditEvent.OperationType);
-        Assert.Equal("Denied", auditEvent.Outcome);
-        Assert.Equal("CARD_NOT_AUTHORIZED", auditEvent.ReasonCode);
+        Assert.Equal("Succeeded", auditEvent.Outcome);
+        Assert.Equal("REPAYMENT", auditEvent.ReasonCode);
         Assert.Equal("Card", auditEvent.PaymentMethod);
         Assert.Equal(40m, auditEvent.PaymentAmount);
         Assert.Equal(targetOrder.OrderId.ToString("D"), auditEvent.OrderGuid);
-        Assert.Equal("Card declined", auditEvent.SafeMessage);
+        Assert.Null(auditEvent.SafeMessage);
     }
 
     [Fact]
-    public async Task AddRepaymentCommand_records_failed_and_shared_trace_when_card_authorization_throws()
+    public async Task AddRepaymentCommand_records_service_failure_without_page_terminal_exception()
     {
         var auditLogger = new RecordingOperationAuditLogger();
-        var systemLog = new RecordingApplicationLogSink();
         var targetOrder = CreateOrder("IO-CARD-ERROR", "张三", "0400111222", "待补款", canAddRepayment: true);
-        var service = new FakeInstallmentOrderService { Orders = [targetOrder] };
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder], AddRepaymentResult = new InstallmentOrderActionResult(false, "等待恢复", RequiresReview: true) };
         var viewModel = new InstallmentCenterViewModel(
             service,
             CreateSession(),
@@ -253,26 +250,14 @@ public sealed class InstallmentCenterViewModelTests
         viewModel.RepaymentAmount = 40m;
         viewModel.RepaymentMethod = PaymentMethodKind.Card;
 
-        ConsoleLog.ConfigureCenterSink(systemLog);
-        try
-        {
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => viewModel.AddRepaymentCommand.ExecuteAsync(null));
-        }
-        finally
-        {
-            ConsoleLog.ConfigureCenterSink(null);
-        }
+        await viewModel.AddRepaymentCommand.ExecuteAsync(null);
 
-        Assert.Null(service.LastRepaymentRequest);
+        Assert.NotNull(service.LastRepaymentRequest);
         var auditEvent = Assert.Single(auditLogger.Events);
         Assert.Equal("INSTALLMENT_REPAYMENT_COMPLETE", auditEvent.OperationType);
         Assert.Equal("Failed", auditEvent.Outcome);
-        Assert.Equal("CARD_AUTHORIZATION_EXCEPTION", auditEvent.ReasonCode);
-        Assert.False(string.IsNullOrWhiteSpace(auditEvent.TraceId));
-        Assert.False(string.IsNullOrWhiteSpace(auditEvent.CorrelationId));
-        var systemEvent = Assert.Single(systemLog.Entries, entry => entry.Category == "InstallmentAudit");
-        Assert.Equal(auditEvent.TraceId, systemEvent.TraceId);
+        Assert.Equal("REPAYMENT", auditEvent.ReasonCode);
+        Assert.Equal("等待恢复", auditEvent.SafeMessage);
     }
 
     [Fact]
@@ -339,6 +324,81 @@ public sealed class InstallmentCenterViewModelTests
         Assert.False(viewModel.ConfirmPickupCommand.CanExecute(null));
     }
 
+    [Fact]
+    public async Task Supervisor_refund_resolution_records_reason_evidence_and_has_no_ordinary_retry_path()
+    {
+        var targetOrder = CreateOrder("IO-REFUND-UNKNOWN", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var step = new LocalInstallmentRefundStep(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            PaymentMethodKind.Card,
+            40m,
+            "TXN-001",
+            "refund-key",
+            LocalInstallmentRefundStepState.ResultUnknown,
+            null, null, "未知", null, null, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            LockedInstallments = new HashSet<Guid> { targetOrder.OrderId },
+            RefundStepsForReview = [step],
+            ResumeCancelResult = new InstallmentOrderActionResult(false, "退款保持锁定", RequiresReview: true)
+        };
+        var session = CreateSession() with
+        {
+            CashierSession = CreateCashierSession(Permissions.PosTerminal.Installments.Cancel)
+        };
+        var viewModel = new InstallmentCenterViewModel(service, session, _ => Task.CompletedTask, () => { });
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.HasRefundStepsForReview);
+        Assert.True(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
+        viewModel.SupervisorRefundDecision = InstallmentRefundSupervisorDecision.ConfirmNotRefunded;
+        viewModel.SupervisorRefundReason = "银行明确确认未退款";
+        viewModel.SupervisorRefundEvidence = "bank-case-123";
+        await viewModel.SupervisorResolveRefundCommand.ExecuteAsync(null);
+
+        Assert.NotNull(service.LastSupervisorResolution);
+        Assert.Equal("C001", service.LastSupervisorResolution!.OperatorId);
+        Assert.Equal("bank-case-123", service.LastSupervisorResolution.Evidence);
+        Assert.Equal(step.OperationGuid, service.LastResumeOperationGuid);
+    }
+
+    [Fact]
+    public async Task Ordinary_cashier_cannot_see_or_execute_supervisor_refund_resolution()
+    {
+        var targetOrder = CreateOrder("IO-REFUND-DENIED", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var step = new LocalInstallmentRefundStep(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), PaymentMethodKind.Card, 40m, "TXN-001", "refund-key", LocalInstallmentRefundStepState.ResultUnknown, null, null, null, null, null, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder], LockedInstallments = new HashSet<Guid> { targetOrder.OrderId }, RefundStepsForReview = [step] };
+        var session = CreateSession() with { CashierSession = CreateCashierSession() };
+        var viewModel = new InstallmentCenterViewModel(service, session, _ => Task.CompletedTask, () => { });
+
+        await viewModel.LoadAsync();
+
+        Assert.False(viewModel.HasRefundStepsForReview);
+        Assert.False(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
+        Assert.Null(service.LastSupervisorResolution);
+    }
+
+    [Fact]
+    public void Dispose_stops_receiving_culture_changed_events()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new InstallmentCenterViewModel(new FakeInstallmentOrderService(), CreateSession(), _ => Task.CompletedTask, () => { }, localization);
+        var notifications = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(InstallmentCenterViewModel.PageTitleText)) notifications++;
+        };
+
+        viewModel.Dispose();
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(0, notifications);
+    }
+
     private static InstallmentOrderSummary CreateOrder(
         string orderNumber,
         string customerName,
@@ -373,6 +433,9 @@ public sealed class InstallmentCenterViewModelTests
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
     }
 
+    private static CashierSessionDto CreateCashierSession(params string[] permissions) => new(
+        "C001", "user-1", "Alice", "S001", "POS-01", [], permissions, ["S001"], false, false, false);
+
     private static PosCartServiceSnapshot CreateCartSnapshot()
     {
         return new PosCartServiceSnapshot(
@@ -396,6 +459,12 @@ public sealed class InstallmentCenterViewModelTests
 
         public bool ThrowOnRepayment { get; init; }
 
+        public IReadOnlySet<Guid> LockedInstallments { get; init; } = new HashSet<Guid>();
+
+        public IReadOnlyList<LocalInstallmentRefundStep> RefundStepsForReview { get; init; } = [];
+
+        public InstallmentOrderActionResult ResumeCancelResult { get; init; } = new(false, "退款保持锁定", RequiresReview: true);
+
         public InstallmentOrderRepaymentRequest? LastRepaymentRequest { get; private set; }
 
         public Guid LastCancelOrderId { get; private set; }
@@ -405,6 +474,28 @@ public sealed class InstallmentCenterViewModelTests
         public string? LastVoidReason { get; private set; }
 
         public Guid? LastConfirmPickupOrderId { get; private set; }
+
+        public InstallmentRefundSupervisorResolution? LastSupervisorResolution { get; private set; }
+
+        public Guid? LastResumeOperationGuid { get; private set; }
+
+        public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(LockedInstallments);
+
+        public Task<IReadOnlyList<LocalInstallmentRefundStep>> GetRefundStepsForReviewAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RefundStepsForReview);
+
+        public Task<bool> ResolveRefundStepAsync(Guid refundStepGuid, InstallmentRefundSupervisorResolution resolution, CancellationToken cancellationToken = default)
+        {
+            LastSupervisorResolution = resolution;
+            return Task.FromResult(true);
+        }
+
+        public Task<InstallmentOrderActionResult> ResumeCancelAfterSupervisorAsync(Guid operationGuid, string installmentNumber, PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            LastResumeOperationGuid = operationGuid;
+            return Task.FromResult(ResumeCancelResult);
+        }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {

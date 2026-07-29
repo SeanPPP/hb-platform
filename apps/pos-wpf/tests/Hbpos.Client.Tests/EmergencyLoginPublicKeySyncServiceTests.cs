@@ -325,6 +325,18 @@ public sealed class EmergencyLoginPublicKeySyncServiceTests
             return Task.CompletedTask;
         }
 
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            foreach (var (key, value) in values)
+            {
+                Values[key] = value;
+            }
+
+            return Task.CompletedTask;
+        }
+
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
             Values.Remove(key);

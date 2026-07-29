@@ -37,6 +37,7 @@ public sealed class SuspendedOrderService(
             throw new InvalidOperationException("Cart is empty.");
         }
 
+        var sessionSnapshot = session with { };
         var orderGuid = Guid.NewGuid();
         var snapshot = cart.CreateSnapshot();
         var lines = snapshot.Lines
@@ -69,10 +70,10 @@ public sealed class SuspendedOrderService(
 
         var order = new SuspendedOrder(
             orderGuid,
-            session.StoreCode,
-            session.DeviceCode,
-            session.CashierId,
-            session.CashierName,
+            sessionSnapshot.StoreCode,
+            sessionSnapshot.DeviceCode,
+            sessionSnapshot.CashierId,
+            sessionSnapshot.CashierName,
             DateTimeOffset.Now,
             cart.TotalAmount,
             cart.DiscountAmount,
@@ -83,7 +84,7 @@ public sealed class SuspendedOrderService(
             ReturnPaymentCapacities = cart.ReturnPaymentCapacities.ToArray()
         };
 
-        await repository.SaveAsync(order, cancellationToken);
+        await Task.Run(() => repository.SaveAsync(order, cancellationToken), cancellationToken);
         cart.Clear();
         return order;
     }
@@ -95,14 +96,18 @@ public sealed class SuspendedOrderService(
         int take = 100,
         CancellationToken cancellationToken = default)
     {
-        return repository.GetPendingAsync(storeCode, deviceCode, keyword, take, cancellationToken);
+        return Task.Run(
+            () => repository.GetPendingAsync(storeCode, deviceCode, keyword, take, cancellationToken),
+            cancellationToken);
     }
 
     public Task<SuspendedOrder?> GetOrderAsync(
         Guid suspendedOrderGuid,
         CancellationToken cancellationToken = default)
     {
-        return repository.GetAsync(suspendedOrderGuid, cancellationToken);
+        return Task.Run(
+            () => repository.GetAsync(suspendedOrderGuid, cancellationToken),
+            cancellationToken);
     }
 
     public async Task<SuspendedOrder> RecallOrderAsync(
@@ -114,7 +119,9 @@ public sealed class SuspendedOrderService(
             throw new InvalidOperationException("Cart must be empty before recalling a suspended order.");
         }
 
-        var order = await repository.GetAsync(suspendedOrderGuid, cancellationToken)
+        var order = await Task.Run(
+                () => repository.GetAsync(suspendedOrderGuid, cancellationToken),
+                cancellationToken)
             ?? throw new InvalidOperationException("Suspended order was not found.");
         if (order.Status != SuspendedOrderStatus.Pending)
         {
@@ -144,7 +151,23 @@ public sealed class SuspendedOrderService(
                 line.DiscountSource))
             .ToArray()));
         cart.AddReturnPaymentCapacities(order.ReturnPaymentCapacities);
-        await repository.MarkStatusAsync(suspendedOrderGuid, SuspendedOrderStatus.Recalled, cancellationToken);
+        try
+        {
+            // 购物车已恢复后进入不可取消提交段，避免 caller token 让 DB 仍为 Pending。
+            await Task.Run(
+                () => repository.MarkStatusAsync(
+                    suspendedOrderGuid,
+                    SuspendedOrderStatus.Recalled,
+                    CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch
+        {
+            // 召回前已要求空购物车；状态提交失败时清回空状态，允许安全重试。
+            cart.Clear();
+            throw;
+        }
+
         return order with { Status = SuspendedOrderStatus.Recalled };
     }
 

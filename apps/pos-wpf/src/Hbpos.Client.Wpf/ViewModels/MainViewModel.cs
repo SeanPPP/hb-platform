@@ -100,9 +100,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
+    private readonly CancellationTokenSource _shutdownCancellation = new();
+    private readonly object _connectivityRefreshSync = new();
 
     private bool _isApplyingCulture;
-    private bool _isRefreshingConnectivity;
     private bool _isAutoOrderSyncRetrying;
     private bool _schemaReady;
     private LocalOrder? _lastCompletedOrder;
@@ -110,12 +111,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private Task? _deviceRegistrationStoreLoadTask;
     private Task? _posPostShowStartupTask;
     private AppStartupOptions? _startupOptions;
-    private bool _disposed;
+    private int _disposed;
     private bool _startupCardRecoveryPendingAfterCashierLogin;
     private bool _shutdownLogoutRecorded;
     private bool _allowApiServerSwitchNavigation;
     private object? _apiServerSwitchFrozenScreen;
     private int _applicationExitStarted;
+    private int _shutdownStarted;
+    private long _languageSaveRequestVersion;
+    private Task<bool>? _connectivityRefreshTask;
+    private Task _shutdownCancellationTask = Task.CompletedTask;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -544,14 +549,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CloseCustomerDisplayWindowCommand = new AsyncRelayCommand(CloseCustomerDisplayWindowFromCommandAsync);
         ShowCustomerDisplayNormalCommand = new AsyncRelayCommand(() => SetCustomerDisplayWindowModeFromCommandAsync(CustomerDisplayWindowMode.Normal));
         ShowCustomerDisplayFullscreenCommand = new AsyncRelayCommand(() => SetCustomerDisplayWindowModeFromCommandAsync(CustomerDisplayWindowMode.Fullscreen));
-        ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
+        ToggleCultureCommand = new AsyncRelayCommand(
+            ToggleCultureAsync,
+            AsyncRelayCommandOptions.AllowConcurrentExecutions);
         ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
         LoginCashierCommand = new AsyncRelayCommand(LoginCashierFromInputAsync, CanLoginCashierFromInput);
         ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync);
         CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
         PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
         RetryActiveSessionRecoveryCommand = _cardRecoveryPresenter.RetryActiveSessionRecoveryCommand;
-        ManualConfirmActiveSessionRecoveryCommand = _cardRecoveryPresenter.ManualConfirmActiveSessionRecoveryCommand;
+        ResolveCardRefundCommand = _cardRecoveryPresenter.ResolveCardRefundCommand;
+        ResolveCardPaymentCommand = _cardRecoveryPresenter.ResolveCardPaymentCommand;
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
@@ -612,6 +620,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
+            setPaymentRecoveryBlocked: (blocked, message) => CashPayment?.SetCardRecoveryBlocked(blocked, message),
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
@@ -648,7 +657,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             canPrintReceipt: () => IsShellPermissionAllowed(Permissions.PosTerminal.Receipt.PrintLast),
             notifyShowCashPaymentCanExecuteChanged: () => ShowCashPaymentCommand!.NotifyCanExecuteChanged(),
             notifyPrintRecoveredReceiptCanExecuteChanged: () => PrintRecoveredReceiptCommand!.NotifyCanExecuteChanged(),
-            notifyPropertyChanged: name => OnPropertyChanged(name));
+            notifyPropertyChanged: name => OnPropertyChanged(name),
+            operationAuthorizationService: _operationAuthorizationService,
+            operationAuditLogger: _operationAuditLogger,
+            requirePermission: TryRequireShellPermission);
 
     private SyncOrchestrator CreateSyncOrchestrator() =>
         new(
@@ -762,7 +774,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public DeviceRegistrationViewModel? DeviceRegistration
     {
         get => _deviceRegistration;
-        private set => SetProperty(ref _deviceRegistration, value);
+        private set
+        {
+            if (ReferenceEquals(_deviceRegistration, value))
+            {
+                return;
+            }
+
+            var previous = _deviceRegistration;
+            if (SetProperty(ref _deviceRegistration, value))
+            {
+                // 设备注册页会订阅本地化并保留审批轮询，替换或关闭时必须立即释放旧实例。
+                previous?.Dispose();
+            }
+        }
     }
 
     public SettingsViewModel? Settings => _screenNavigator.Settings;
@@ -807,7 +832,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public IRelayCommand RetryActiveSessionRecoveryCommand { get; }
 
-    public IRelayCommand ManualConfirmActiveSessionRecoveryCommand { get; }
+    public IAsyncRelayCommand<CardRefundSupervisorDecision> ResolveCardRefundCommand { get; }
+
+    public IAsyncRelayCommand<CardPaymentSupervisorDecision> ResolveCardPaymentCommand { get; }
 
     public IRelayCommand ShowCashPaymentCommand { get; }
 
@@ -853,18 +880,43 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand ExitApplicationCommand { get; }
 
-    public void Dispose()
+    public void BeginShutdown()
     {
-        if (_disposed)
+        lock (_connectivityRefreshSync)
         {
-            return;
-        }
+            if (_shutdownStarted != 0)
+            {
+                return;
+            }
 
-        _disposed = true;
+            Volatile.Write(ref _shutdownStarted, 1);
+            // CancellationToken 回调属于外部代码，必须离开 Dispatcher，避免关机截止时间被同步回调绕过。
+            _shutdownCancellationTask = CancelForShutdownAsync(
+                _shutdownCancellation,
+                "main-view-model");
+        }
 
         _clockTimer.Stop();
         _connectivityTimer.Stop();
         _catalogDownloadHideTimer.Stop();
+
+        // 先冻结支付入口；支付会话自身也会把终端取消回调调度到后台。
+        CashPayment?.BeginShutdown();
+    }
+
+    public void Dispose()
+    {
+        lock (_connectivityRefreshSync)
+        {
+            if (_disposed != 0)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _disposed, 1);
+        }
+
+        BeginShutdown();
         _clockTimer.Tick -= OnClockTimerTick;
         _connectivityTimer.Tick -= OnConnectivityTimerTick;
         _catalogDownloadHideTimer.Tick -= OnCatalogDownloadHideTimerTick;
@@ -885,7 +937,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         // 主壳销毁时统一释放当前缓存子页面，避免 singleton 服务事件继续持有旧页面。
         _screenNavigator.ClearScreens();
+        DeviceRegistration = null;
         CancelStartupCatalogIndexLoad();
+        DisposeShutdownCancellationWhenSafe();
     }
 
     public async Task InitializeAsync(AppStartupOptions startupOptions)
@@ -1241,6 +1295,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task InitializePosExperienceAsync(AppStartupOptions startupOptions)
     {
+        if (!startupOptions.PreviewMode)
+        {
+            await RecoverPendingInstallmentOperationsSafelyAsync();
+        }
+
         _screenNavigator.ClearScreens();
         _screenNavigator.SetCachedPosTerminalScreen(null);
         _screenNavigator.SetCachedSpecialProductsScreen(null);
@@ -1310,6 +1369,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await BeginStartupCatalogIndexLoadAsync(startupOptions);
         await PreloadStartupSpecialProductsDataAsync(startupOptions);
         _screenNavigator.NavigateFromStartup(startupOptions.InitialScreen);
+    }
+
+    private async Task RecoverPendingInstallmentOperationsSafelyAsync()
+    {
+        try
+        {
+            // 中文注释：服务端/本地操作使用 CAS 领取状态；此处不重置或读取购物车，启动与服务切换可安全重复调用。
+            var recovered = await Task.Run(
+                () => _installmentOrderService.RecoverPendingOperationsAsync(Session, CancellationToken.None),
+                CancellationToken.None);
+            if (recovered.Count > 0)
+            {
+                ConsoleLog.Write(
+                    "InstallmentRecovery",
+                    $"startup recovery completed store={Session.StoreCode} count={recovered.Count}");
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 未知金融结果必须继续保持锁定；启动恢复失败不能阻断 POS 或清空后来建立的购物车。
+            ConsoleLog.WriteError(
+                "InstallmentRecovery",
+                $"startup recovery failed store={Session.StoreCode} error={ex.GetType().Name}",
+                null,
+                ex);
+        }
     }
 
     private Task ContinuePosStartupAfterShownAsync(AppStartupOptions startupOptions, Window? owner)
@@ -1508,7 +1593,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = ApplyLanguageAsync(value, persist: true);
+        _ = ApplyLanguageSafeAsync(value);
     }
 
     private void OnCultureChanged(object? sender, EventArgs e)
@@ -1522,14 +1607,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ApplySelectedCultureName(await _shellCultureService.RestoreAsync(startupOptions, _schemaReady));
     }
 
-    private async Task ApplyLanguageAsync(string cultureName, bool persist)
+    private async Task ApplyLanguageSafeAsync(string cultureName)
     {
-        ApplySelectedCultureName(await _shellCultureService.ApplyAsync(cultureName, persist, _schemaReady));
+        var requestVersion = Interlocked.Increment(ref _languageSaveRequestVersion);
+        try
+        {
+            var applyTask = _shellCultureService.ApplyAsync(cultureName, persist: true, _schemaReady);
+            // 服务会在首个 await 前切换运行文化，选择器也要立即反映本次选择。
+            ApplySelectedCultureName(_localization.CurrentCulture.Name);
+            var appliedCulture = await applyTask;
+            if (requestVersion != Volatile.Read(ref _languageSaveRequestVersion))
+            {
+                return;
+            }
+
+            ApplySelectedCultureName(appliedCulture);
+        }
+        catch (Exception ex)
+        {
+            if (requestVersion != Volatile.Read(ref _languageSaveRequestVersion))
+            {
+                return;
+            }
+
+            // SetCulture 已先于本地设置写入执行；保存失败时保留本次运行语言，并让选择器回显实际文化。
+            ConsoleLog.WriteError("ShellCulture", "language persistence failed", null, ex);
+            ApplySelectedCultureName(_localization.CurrentCulture.Name);
+            StatusMessage = _localization.T("shell.language.saveFailedRestartMayRevert");
+        }
     }
 
-    private async Task ToggleCultureAsync()
+    private Task ToggleCultureAsync()
     {
-        ApplySelectedCultureName(await _shellCultureService.ToggleAsync(_schemaReady));
+        var nextCultureName = string.Equals(
+            _localization.CurrentCulture.Name,
+            LocalizationService.ChineseCultureName,
+            StringComparison.OrdinalIgnoreCase)
+            ? LocalizationService.DefaultCultureName
+            : LocalizationService.ChineseCultureName;
+        return ApplyLanguageSafeAsync(nextCultureName);
     }
 
     private void RefreshLocalizedShell(bool resetStatus = false)
@@ -1727,28 +1843,84 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task<bool> RefreshOnlineStateAsync(CancellationToken cancellationToken, bool autoRetryOrders)
     {
-        if (_isRefreshingConnectivity)
+        Task<bool> refreshTask;
+        lock (_connectivityRefreshSync)
         {
-            return Session.IsOnline;
-        }
-
-        _isRefreshingConnectivity = true;
-        try
-        {
-            var isOnline = await _connectivityApiClient.CheckOnlineAsync(cancellationToken);
-            if (Session.IsOnline != isOnline)
+            if (IsLifetimeEnding || _connectivityRefreshTask is not null)
             {
-                Session = Session with { IsOnline = isOnline };
+                return Session.IsOnline;
             }
 
-            await ReportRuntimeStatusSafeAsync(isOnline, cancellationToken);
+            var publicationGate = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            refreshTask = RefreshOnlineStateAfterPublicationAsync(
+                publicationGate.Task,
+                cancellationToken,
+                autoRetryOrders);
+            _connectivityRefreshTask = refreshTask;
+            publicationGate.TrySetResult();
+        }
+
+        try
+        {
+            return await refreshTask;
+        }
+        finally
+        {
+            lock (_connectivityRefreshSync)
+            {
+                if (ReferenceEquals(_connectivityRefreshTask, refreshTask))
+                {
+                    _connectivityRefreshTask = null;
+                }
+            }
+        }
+    }
+
+    private async Task<bool> RefreshOnlineStateAfterPublicationAsync(
+        Task publicationGate,
+        CancellationToken cancellationToken,
+        bool autoRetryOrders)
+    {
+        await publicationGate;
+        return await RefreshOnlineStateCoreAsync(cancellationToken, autoRetryOrders);
+    }
+
+    private async Task<bool> RefreshOnlineStateCoreAsync(CancellationToken cancellationToken, bool autoRetryOrders)
+    {
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _shutdownCancellation.Token);
+        var refreshCancellation = linkedCancellation.Token;
+        try
+        {
+            var isOnline = await _connectivityApiClient.CheckOnlineAsync(refreshCancellation);
+            if (!TryApplyConnectivityState(isOnline))
+            {
+                return Session.IsOnline;
+            }
+
+            if (IsLifetimeEnding)
+            {
+                return Session.IsOnline;
+            }
+
+            await ReportRuntimeStatusSafeAsync(isOnline, refreshCancellation);
+            if (IsLifetimeEnding)
+            {
+                return Session.IsOnline;
+            }
 
             if (isOnline && autoRetryOrders)
             {
-                await TryAutoRetryPendingOrdersAsync(cancellationToken);
+                await TryAutoRetryPendingOrdersAsync(refreshCancellation);
             }
 
             return isOnline;
+        }
+        catch (OperationCanceledException) when (IsLifetimeEnding)
+        {
+            return Session.IsOnline;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1756,19 +1928,43 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            // API 探测失败只代表当前离线，不能阻断已授权设备继续使用本地缓存收银。
-            ConsoleLog.Write("Connectivity", $"online check failed; fallback offline error={ex.Message}");
-            if (Session.IsOnline)
+            if (IsLifetimeEnding)
             {
-                Session = Session with { IsOnline = false };
+                return Session.IsOnline;
             }
 
-            await ReportRuntimeStatusSafeAsync(false, cancellationToken);
+            // API 探测失败只代表当前离线，不能阻断已授权设备继续使用本地缓存收银。
+            ConsoleLog.Write("Connectivity", $"online check failed; fallback offline error={ex.Message}");
+            if (!TryApplyConnectivityState(false))
+            {
+                return Session.IsOnline;
+            }
+
+            if (IsLifetimeEnding)
+            {
+                return Session.IsOnline;
+            }
+
+            await ReportRuntimeStatusSafeAsync(false, refreshCancellation);
             return false;
         }
-        finally
+    }
+
+    private bool TryApplyConnectivityState(bool isOnline)
+    {
+        lock (_connectivityRefreshSync)
         {
-            _isRefreshingConnectivity = false;
+            if (IsLifetimeEnding)
+            {
+                return false;
+            }
+
+            if (Session.IsOnline != isOnline)
+            {
+                Session = Session with { IsOnline = isOnline };
+            }
+
+            return true;
         }
     }
 
@@ -1874,9 +2070,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         bool forceFullDownload,
         CancellationToken cancellationToken)
     {
-        var compareTotalCount = _priceIndex.Count;
-        var progress = new Progress<CatalogSyncProgress>(
-            value => ApplyCatalogDownloadProgress(value, compareTotalCount));
+        var progress = new Progress<CatalogSyncProgress>(ApplyCatalogDownloadProgress);
         return await _shellCatalogService.SyncCatalogAndReloadAsync(
             Session.StoreCode,
             forceFullDownload,
@@ -1884,7 +2078,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             cancellationToken);
     }
 
-    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress, int compareTotalCount)
+    private void ApplyCatalogDownloadProgress(CatalogSyncProgress progress)
     {
         _catalogDownloadHideTimer.Stop();
         IsCatalogDownloadProgressVisible = true;
@@ -1898,7 +2092,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var stagePercent = CalculateCatalogDownloadStagePercent(progress, compareTotalCount);
+        var stagePercent = CalculateCatalogDownloadStagePercent(progress);
         CatalogDownloadProgressValue = stagePercent;
 
         if (progress.Stage is CatalogSyncProgressStage.Preparing or CatalogSyncProgressStage.Comparing)
@@ -1945,17 +2139,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static int CalculateCatalogDownloadStagePercent(
-        CatalogSyncProgress progress,
-        int compareTotalCount)
+    private static int CalculateCatalogDownloadStagePercent(CatalogSyncProgress progress)
     {
         // 核对和下载分别按当前阶段计算，阶段切换时允许重新从 0% 开始。
         return progress.Stage switch
         {
             CatalogSyncProgressStage.Preparing => 0,
-            CatalogSyncProgressStage.Comparing when compareTotalCount <= 0 => 0,
+            CatalogSyncProgressStage.Comparing when progress.TotalCount <= 0 => 0,
             CatalogSyncProgressStage.Comparing => Math.Clamp(
-                (int)(progress.ComparedCount * 100L / compareTotalCount),
+                (int)(progress.ComparedCount * 100L / progress.TotalCount),
                 0,
                 100),
             CatalogSyncProgressStage.Completed => 100,
@@ -2158,13 +2350,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             : "紧急登录已到期，请重新登录";
     }
 
-    private async void OnConnectivityTimerTick(object? sender, EventArgs e)
+    private void OnConnectivityTimerTick(object? sender, EventArgs e)
     {
-        await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
+        _ = RefreshOnlineStateFromTimerSafeAsync();
     }
 
-    public async Task ReportOfflineForShutdownAsync()
+    private async Task RefreshOnlineStateFromTimerSafeAsync()
     {
+        try
+        {
+            await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
+        }
+        catch (OperationCanceledException) when (IsShutdownRequested)
+        {
+            // 关闭时的预期取消不能返回 Dispatcher。
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError("Connectivity", "connectivity timer refresh failed", null, ex);
+        }
+    }
+
+    public async Task ReportOfflineForShutdownAsync(CancellationToken cancellationToken = default)
+    {
+        BeginShutdown();
         if (!_shutdownLogoutRecorded && Session.CashierSession is not null)
         {
             _shutdownLogoutRecorded = true;
@@ -2176,13 +2385,64 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 reasonCode: "APP_SHUTDOWN");
         }
 
-        await ReportRuntimeStatusSafeAsync(false, CancellationToken.None, clearCashier: true);
+        await ObserveShutdownCancellationAsync(cancellationToken);
+        await ObserveConnectivityRefreshForShutdownAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        await ReportRuntimeStatusSafeAsync(
+            false,
+            cancellationToken,
+            clearCashier: true,
+            throwOnCancellation: true);
     }
+
+    private async Task ObserveShutdownCancellationAsync(CancellationToken cancellationToken)
+    {
+        Task cancellationTask;
+        lock (_connectivityRefreshSync)
+        {
+            cancellationTask = _shutdownCancellationTask;
+        }
+
+        await cancellationTask.WaitAsync(cancellationToken);
+    }
+
+    private async Task ObserveConnectivityRefreshForShutdownAsync(CancellationToken cancellationToken)
+    {
+        Task<bool>? pendingRefresh;
+        lock (_connectivityRefreshSync)
+        {
+            pendingRefresh = _connectivityRefreshTask;
+        }
+
+        if (pendingRefresh is null || pendingRefresh.IsCompleted)
+        {
+            return;
+        }
+
+        try
+        {
+            await pendingRefresh.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError("Connectivity", "closing connectivity refresh failed", null, ex);
+        }
+    }
+
+    private bool IsShutdownRequested => Volatile.Read(ref _shutdownStarted) != 0;
+
+    private bool IsLifetimeEnding =>
+        IsShutdownRequested || Volatile.Read(ref _disposed) != 0;
 
     private async Task ReportRuntimeStatusSafeAsync(
         bool isOnline,
         CancellationToken cancellationToken,
-        bool clearCashier = false)
+        bool clearCashier = false,
+        bool throwOnCancellation = false)
     {
         if (_runtimeStatusApiClient is null)
         {
@@ -2200,9 +2460,74 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     cashier?.CashierName),
                 cancellationToken);
         }
+        catch (OperationCanceledException) when (
+            throwOnCancellation && cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             ConsoleLog.Write("RuntimeStatus", $"runtime status report failed error={ex.Message}");
+        }
+    }
+
+    private static Task CancelForShutdownAsync(
+        CancellationTokenSource cancellation,
+        string stage)
+    {
+        return Task.Run(() =>
+        {
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (Exception ex)
+            {
+                ConsoleLog.WriteError(
+                    "Shutdown",
+                    $"shutdown cancellation failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
+            }
+        });
+    }
+
+    private void DisposeShutdownCancellationWhenSafe()
+    {
+        Task cancellationTask;
+        Task<bool>? connectivityRefreshTask;
+        lock (_connectivityRefreshSync)
+        {
+            cancellationTask = _shutdownCancellationTask;
+            connectivityRefreshTask = _connectivityRefreshTask;
+        }
+
+        _ = DisposeShutdownCancellationWhenSafeAsync(
+            cancellationTask,
+            connectivityRefreshTask);
+    }
+
+    private async Task DisposeShutdownCancellationWhenSafeAsync(
+        Task cancellationTask,
+        Task<bool>? connectivityRefreshTask)
+    {
+        try
+        {
+            await cancellationTask.ConfigureAwait(false);
+            if (connectivityRefreshTask is not null)
+            {
+                await connectivityRefreshTask.ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"shutdown cancellation cleanup wait failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        finally
+        {
+            _shutdownCancellation.Dispose();
         }
     }
 
@@ -2224,64 +2549,140 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e)
+    private void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e) =>
+        _ = HandlePaymentCompletedSafelyAsync(e);
+
+    private async Task HandlePaymentCompletedSafelyAsync(PaymentCompletedEventArgs e)
     {
-        _lastCompletedOrder = e.Order;
-        // 中文注释：先同步切走支付页，避免收据设置和同步状态刷新期间仍可误触支付操作。
-        PaymentSuccess.LoadFromOrder(e.Order);
-        CurrentScreen = PaymentSuccess;
-        // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
-        _userFeedbackService.Play(UserFeedbackCue.Checkout);
-        ShowCashPaymentCommand.NotifyCanExecuteChanged();
-
-        await PaymentSuccess.LoadFromOrderAsync(e.Order);
-        await RefreshPendingSyncAsync();
-        if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
+        try
         {
-            var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
-            var cashDrawerResult = await OpenCashDrawerWithShellPermissionAsync();
-            OperationAuditEvents.RecordAction(
-                _operationAuditLogger,
-                OperationAuditTypes.CashDrawerOpen,
-                cashDrawerResult.Succeeded ? "Succeeded" : drawerPermissionAllowed ? "Failed" : "Denied",
-                Session,
-                reasonCode: "PAYMENT_COMPLETE",
-                safeMessage: cashDrawerResult.Succeeded ? null : cashDrawerResult.Message,
-                paymentMethod: PaymentMethodKind.Cash.ToString(),
-                paymentAmount: e.Order.Payments
-                    .Where(payment => payment.Method == PaymentMethodKind.Cash)
-                    .Sum(payment => payment.Amount),
-                orderGuid: e.Order.OrderGuid.ToString("D"));
-            if (!cashDrawerResult.Succeeded)
-            {
-                StatusMessage = cashDrawerResult.Message;
-            }
+            await HandlePaymentCompletedCoreAsync(e);
         }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 该入口来自同步事件，绝不能把未知后续异常重新抛回 Dispatcher。
+            ConsoleLog.WriteError("PaymentCompleted", "payment follow-up failed outside an isolated stage", null, ex);
+            SetPaymentCompletedWarning();
+        }
+    }
 
-        // 中文注释：普通销售成功后不再自动打印；卡退款仍保留自动收据，便于退款凭证留存。
+    private async Task HandlePaymentCompletedCoreAsync(PaymentCompletedEventArgs e)
+    {
+        // 支付成功页必须优先呈现；其余设备、同步与打印都是不可反向影响收款的后续处理。
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-load-sync",
+            () =>
+            {
+                _lastCompletedOrder = e.Order;
+                PaymentSuccess.HasPostCommitWarning = e.HasPostCommitWarning;
+                PaymentSuccess.LoadFromOrder(e.Order);
+                return Task.CompletedTask;
+            });
+        if (e.HasPostCommitWarning)
+        {
+            SetPaymentCompletedWarning();
+        }
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-navigate",
+            () =>
+            {
+                CurrentScreen = PaymentSuccess;
+                ShowCashPaymentCommand.NotifyCanExecuteChanged();
+                return Task.CompletedTask;
+            });
+        await ExecutePaymentCompletionFollowUpAsync(
+            "payment-feedback",
+            () =>
+            {
+                _userFeedbackService.Play(UserFeedbackCue.Checkout);
+                return Task.CompletedTask;
+            });
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-load",
+            () => PaymentSuccess.LoadFromOrderAsync(e.Order));
+        await ExecutePaymentCompletionFollowUpAsync("pending-sync-refresh", RefreshPendingSyncAsync);
+        await ExecutePaymentCompletionFollowUpAsync("cash-drawer", () => OpenCashDrawerAfterPaymentAsync(e.Order));
+
+        // 普通销售成功后不自动打印；退款和代金券余额的既有打印习惯保持不变。
         if (IsPureVoucherRefund(e.Order))
         {
-            var receipt = ReceiptQueryService.CreateReceipt(e.Order);
-            if (receipt.RefundVoucher is not null)
-            {
-                // 中文注释：发券引用已落库后才自动打印独立券面，打印失败不能回滚已成功的退款。
-                await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
-                return;
-            }
+            await ExecutePaymentCompletionFollowUpAsync(
+                "voucher-refund-print",
+                async () =>
+                {
+                    var receipt = ReceiptQueryService.CreateReceipt(e.Order);
+                    if (receipt.RefundVoucher is not null)
+                    {
+                        await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
+                    }
+                });
+
+            return;
         }
 
         if (MainReceiptCoordinator.ContainsCardPayment(e.Order) && e.Order.ActualAmount < 0m)
         {
-            await PrintReceiptWithShellPermissionAsync(
-                ReceiptQueryService.CreateReceipt(e.Order),
-                ReceiptPrintReason.CardAuto);
+            await ExecutePaymentCompletionFollowUpAsync(
+                "card-refund-print",
+                () => PrintReceiptWithShellPermissionAsync(
+                    ReceiptQueryService.CreateReceipt(e.Order),
+                    ReceiptPrintReason.CardAuto));
             return;
         }
 
         if (e.Order.ActualAmount >= 0m)
         {
-            await PrintVoucherBalancesAsync(e.Order);
+            await ExecutePaymentCompletionFollowUpAsync(
+                "voucher-balance-print",
+                () => PrintVoucherBalancesAsync(e.Order));
         }
+    }
+
+    private async Task OpenCashDrawerAfterPaymentAsync(LocalOrder order)
+    {
+        if (!MainReceiptCoordinator.ContainsCashPayment(order))
+        {
+            return;
+        }
+
+        var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
+        var cashDrawerResult = await OpenCashDrawerWithShellPermissionAsync();
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashDrawerOpen,
+            cashDrawerResult.Succeeded ? "Succeeded" : drawerPermissionAllowed ? "Failed" : "Denied",
+            Session,
+            reasonCode: "PAYMENT_COMPLETE",
+            safeMessage: cashDrawerResult.Succeeded ? null : cashDrawerResult.Message,
+            paymentMethod: PaymentMethodKind.Cash.ToString(),
+            paymentAmount: order.Payments
+                .Where(payment => payment.Method == PaymentMethodKind.Cash)
+                .Sum(payment => payment.Amount),
+            orderGuid: order.OrderGuid.ToString("D"));
+        if (!cashDrawerResult.Succeeded)
+        {
+            SetPaymentCompletedWarning();
+        }
+    }
+
+    private async Task ExecutePaymentCompletionFollowUpAsync(string stage, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.WriteError("PaymentCompleted", $"payment follow-up failed stage={stage}", null, ex);
+            SetPaymentCompletedWarning();
+        }
+    }
+
+    private void SetPaymentCompletedWarning()
+    {
+        // 中文注释：收款已落地后的任何收尾失败都必须在成功页留下可见提示，阻止收银员重复收款。
+        PaymentSuccess.HasPostCommitWarning = true;
+        StatusMessage = _localization.T("payment.status.completedWarning");
     }
 
     private static bool IsPureVoucherRefund(LocalOrder order) =>

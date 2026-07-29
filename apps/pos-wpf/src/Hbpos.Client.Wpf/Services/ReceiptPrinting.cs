@@ -79,6 +79,8 @@ public sealed record ReceiptPreviewRow(
     ReceiptPrintAlignment Alignment = ReceiptPrintAlignment.Left,
     bool IsEmphasized = false)
 {
+    public string? QrCodeValue { get; init; }
+
     public bool IsSeparator => Kind == ReceiptPreviewRowKind.Separator;
 
     public bool IsBarcode => Kind == ReceiptPreviewRowKind.Barcode;
@@ -220,14 +222,19 @@ public sealed class ReceiptPrinterSettingsStore(ILocalAppSettingsRepository sett
 
     public async Task SaveAsync(ReceiptPrinterSettings settings, CancellationToken cancellationToken = default)
     {
-        await settingsRepository.SetValueAsync(PrinterPortKey, NormalizePort(settings.PrinterPort), cancellationToken);
-        await settingsRepository.SetValueAsync(BrandNameKey, NormalizeText(settings.BrandName, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StoreNameKey, NormalizeText(settings.StoreName, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StoreAddressKey, NormalizeText(settings.StoreAddress, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(StorePhoneKey, NormalizeText(settings.StorePhone, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(AbnKey, NormalizeText(settings.Abn, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(ReturnPolicyKey, NormalizeText(settings.ReturnPolicy, string.Empty), cancellationToken);
-        await settingsRepository.SetValueAsync(CutDistanceKey, Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture), cancellationToken);
+        await settingsRepository.SetValuesAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [PrinterPortKey] = NormalizePort(settings.PrinterPort),
+                [BrandNameKey] = NormalizeText(settings.BrandName, string.Empty),
+                [StoreNameKey] = NormalizeText(settings.StoreName, string.Empty),
+                [StoreAddressKey] = NormalizeText(settings.StoreAddress, string.Empty),
+                [StorePhoneKey] = NormalizeText(settings.StorePhone, string.Empty),
+                [AbnKey] = NormalizeText(settings.Abn, string.Empty),
+                [ReturnPolicyKey] = NormalizeText(settings.ReturnPolicy, string.Empty),
+                [CutDistanceKey] = Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture),
+            },
+            cancellationToken);
     }
 
     private static string NormalizePort(string? value)
@@ -633,7 +640,13 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         public void QrCode(string text)
         {
             _elements.Add(new ReceiptPrintElement(ReceiptPrintElementKind.QrCode, text, ReceiptPrintAlignment.Center));
-            _previewRows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.QrCode, $"QR {text}", ReceiptPrintAlignment.Center));
+            _previewRows.Add(new ReceiptPreviewRow(
+                ReceiptPreviewRowKind.QrCode,
+                $"QR {text}",
+                ReceiptPrintAlignment.Center)
+            {
+                QrCodeValue = text
+            });
         }
 
         public ReceiptPrintDocument Build()

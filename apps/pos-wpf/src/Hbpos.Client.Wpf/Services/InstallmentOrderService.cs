@@ -17,6 +17,21 @@ public interface IInstallmentOrderService
 
     Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<InstallmentOperationRecoveryResult>>([]);
+
+    Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    Task<IReadOnlyList<LocalInstallmentRefundStep>> GetRefundStepsForReviewAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<LocalInstallmentRefundStep>>([]);
+
+    Task<bool> ResolveRefundStepAsync(Guid refundStepGuid, InstallmentRefundSupervisorResolution resolution, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
+    Task<InstallmentOrderActionResult> ResumeCancelAfterSupervisorAsync(Guid operationGuid, string installmentNumber, PosSessionState session, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new InstallmentOrderActionResult(false, "未配置主管结案恢复服务。", RequiresReview: true));
+
     Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default);
 
     Task<InstallmentWriteResult<InstallmentAppendPaymentResponse>> AppendPaymentAsync(PosSessionState session, InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default);
@@ -56,7 +71,8 @@ public sealed class InstallmentOrderService(
     IInstallmentApiClient apiClient,
     PosCartService? cart = null,
     ICardTerminalClient? cardTerminalClient = null,
-    IVoucherTenderClient? voucherTenderClient = null) : IInstallmentOrderService
+    IVoucherTenderClient? voucherTenderClient = null,
+    IInstallmentOperationService? installmentOperations = null) : IInstallmentOrderService
 {
     private readonly ICardTerminalClient _cardTerminalClient = cardTerminalClient ?? UnavailableCardTerminalClient.Instance;
     private readonly IVoucherTenderClient _voucherTenderClient = voucherTenderClient ?? UnavailableVoucherTenderClient.Instance;
@@ -87,11 +103,46 @@ public sealed class InstallmentOrderService(
         return localRepository.GetAsync(installmentGuid, cancellationToken);
     }
 
+    public Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+        installmentOperations?.RecoverAsync(session, cancellationToken) ?? Task.FromResult<IReadOnlyList<InstallmentOperationRecoveryResult>>([]);
+
+    public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+        installmentOperations?.GetLockedInstallmentGuidsAsync(session, cancellationToken) ?? Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task<IReadOnlyList<LocalInstallmentRefundStep>> GetRefundStepsForReviewAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
+        installmentOperations?.GetRefundStepsForReviewAsync(installmentGuid, cancellationToken) ?? Task.FromResult<IReadOnlyList<LocalInstallmentRefundStep>>([]);
+
+    public Task<bool> ResolveRefundStepAsync(Guid refundStepGuid, InstallmentRefundSupervisorResolution resolution, CancellationToken cancellationToken = default) =>
+        installmentOperations?.ResolveRefundStepAsync(refundStepGuid, resolution, cancellationToken) ?? Task.FromResult(false);
+
+    public async Task<InstallmentOrderActionResult> ResumeCancelAfterSupervisorAsync(Guid operationGuid, string installmentNumber, PosSessionState session, CancellationToken cancellationToken = default)
+    {
+        if (installmentOperations is null)
+        {
+            return new InstallmentOrderActionResult(false, "未配置主管结案恢复服务。", RequiresReview: true);
+        }
+
+        var result = await installmentOperations.ResumeCancelAfterSupervisorAsync(operationGuid, installmentNumber, session, cancellationToken);
+        return new InstallmentOrderActionResult(result.Succeeded, result.Message ?? "取消恢复未完成。", result.LocalOrder is null ? null : MapSummary(result.LocalOrder), result.RequiresReview);
+    }
+
     public async Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default)
     {
         if (!session.IsOnline)
         {
             return InstallmentWriteResult<InstallmentCreateResponse>.OnlineRequired("OnlineRequired");
+        }
+
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecuteCreateAsync(session, request, authorizeCard: false, cancellationToken);
+            if (!operation.Succeeded || operation.Response is null || operation.LocalOrder is null)
+            {
+                return InstallmentWriteResult<InstallmentCreateResponse>.OnlineRequired(operation.Message ?? "分期创建结果未知，请勿重复收款。");
+            }
+
+            cart?.Clear();
+            return InstallmentWriteResult<InstallmentCreateResponse>.Success(operation.Response, operation.LocalOrder, operation.Message);
         }
 
         var response = await apiClient.CreateAsync(request, cancellationToken);
@@ -105,6 +156,17 @@ public sealed class InstallmentOrderService(
         if (!session.IsOnline)
         {
             return InstallmentWriteResult<InstallmentAppendPaymentResponse>.OnlineRequired("OnlineRequired");
+        }
+
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecuteRepaymentAsync(session, request, authorizeCard: false, cancellationToken);
+            if (!operation.Succeeded || operation.Response is null || operation.LocalOrder is null)
+            {
+                return InstallmentWriteResult<InstallmentAppendPaymentResponse>.OnlineRequired(operation.Message ?? "补款结果未知，请勿重复收款。");
+            }
+
+            return InstallmentWriteResult<InstallmentAppendPaymentResponse>.Success(operation.Response, operation.LocalOrder, operation.Message);
         }
 
         var response = await apiClient.AppendPaymentAsync(request, cancellationToken);
@@ -155,35 +217,21 @@ public sealed class InstallmentOrderService(
             return new InstallmentOrderCreateResult(false, "OnlineRequired");
         }
 
-        var installmentGuid = Guid.NewGuid();
+        // 支付草稿 GUID 在同一页面生命周期内稳定，可作为创建与恢复的幂等锚点。
+        var installmentGuid = request.DownPayment.PaymentGuid;
+        // 分期 GUID、付款 GUID 与幂等键由页面会话稳定持有，失败重试与重启恢复都只能复用原身份。
+        var stableInstallmentGuid = request.InstallmentGuid == Guid.Empty
+            ? request.DownPayment.PaymentGuid
+            : request.InstallmentGuid;
         var payment = request.DownPayment with
         {
-            Amount = Math.Min(request.DownPayment.Amount, request.CartSnapshot.ActualAmount)
+            Amount = Math.Min(request.DownPayment.Amount, request.CartSnapshot.ActualAmount),
+            IdempotencyKey = string.IsNullOrWhiteSpace(request.DownPayment.IdempotencyKey)
+                ? $"{stableInstallmentGuid:D}:create"
+                : request.DownPayment.IdempotencyKey.Trim()
         };
-        if (payment.Method == PaymentMethodKind.Card && !HasExistingCardAuthorization(payment))
-        {
-            // 银行卡首付必须先由终端授权；普通支付页传入已授权 tender 时不可再次请求终端。
-            var authorization = await _cardTerminalClient.AuthorizeAsync(payment.Amount, request.Session, cancellationToken);
-            if (!authorization.Approved)
-            {
-                return new InstallmentOrderCreateResult(false, authorization.Message ?? "银行卡首付未授权，分期单未创建。");
-            }
-
-            payment = payment with
-            {
-                Amount = authorization.AuthorizedAmount ?? payment.Amount,
-                Reference = authorization.Reference ?? payment.Reference,
-                CardTransactions = authorization.CardTransactions ?? payment.CardTransactions
-            };
-        }
-
-        payment = payment with
-        {
-            IdempotencyKey = EnsureIdempotencyKey(payment.IdempotencyKey, installmentGuid)
-        };
-
         var apiRequest = new InstallmentCreateRequest(
-            installmentGuid,
+            stableInstallmentGuid,
             request.Session.StoreCode,
             request.Session.DeviceCode,
             request.Session.CashierId,
@@ -206,6 +254,53 @@ public sealed class InstallmentOrderService(
             request.CustomerName.Trim(),
             request.CustomerPhone.Trim(),
             request.Note.Trim());
+
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecuteCreateAsync(
+                request.Session,
+                apiRequest,
+                payment.Method == PaymentMethodKind.Card && !HasExistingCardAuthorization(payment),
+                cancellationToken);
+            if (!operation.Succeeded && operation.RequiresReview)
+            {
+                return new InstallmentOrderCreateResult(
+                    false,
+                    operation.Message ?? "Installment creation result is unknown. Do not collect payment again.",
+                    RequiresReview: true);
+            }
+
+            if (operation.Succeeded && operation.Response is not null && operation.LocalOrder is not null)
+            {
+                cart?.Clear();
+                return new InstallmentOrderCreateResult(true, operation.Message ?? $"已创建分期单 {operation.LocalOrder.InstallmentNumber}。", MapSummary(operation.LocalOrder));
+            }
+
+            return new InstallmentOrderCreateResult(false, operation.Message ?? "分期创建结果未知，请勿重复收款。");
+        }
+
+        if (payment.Method == PaymentMethodKind.Card && !HasExistingCardAuthorization(payment))
+        {
+            // 银行卡首付必须先由终端授权；普通支付页传入已授权 tender 时不可再次请求终端。
+            var authorization = await _cardTerminalClient.AuthorizeAsync(payment.Amount, request.Session, cancellationToken);
+            if (!authorization.Approved)
+            {
+                return new InstallmentOrderCreateResult(false, authorization.Message ?? "银行卡首付未授权，分期单未创建。");
+            }
+
+            payment = payment with
+            {
+                Amount = authorization.AuthorizedAmount ?? payment.Amount,
+                Reference = authorization.Reference ?? payment.Reference,
+                CardTransactions = authorization.CardTransactions ?? payment.CardTransactions
+            };
+        }
+
+        apiRequest = apiRequest with
+        {
+            DownPaymentAmount = payment.Amount,
+            DownPayment = new InstallmentPaymentCommandDto(payment.PaymentGuid, payment.Method, payment.Amount, payment.Reference, payment.ReservationToken, payment.CardTransactions, payment.IdempotencyKey)
+        };
         var result = await CreateAsync(request.Session, apiRequest, cancellationToken);
         return result.Status == InstallmentWriteStatus.Succeeded && result.LocalOrder is not null
             ? new InstallmentOrderCreateResult(true, result.Message ?? $"已创建分期单 {result.LocalOrder.InstallmentNumber}。", MapSummary(result.LocalOrder))
@@ -233,6 +328,20 @@ public sealed class InstallmentOrderService(
             request.Payment.ReservationToken,
             request.Payment.CardTransactions,
             EnsureIdempotencyKey(request.Payment.IdempotencyKey, request.InstallmentGuid));
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecuteRepaymentAsync(
+                request.Session,
+                apiRequest,
+                request.Payment.Method == PaymentMethodKind.Card && !HasExistingCardAuthorization(request.Payment),
+                cancellationToken);
+            return new InstallmentOrderActionResult(
+                operation.Succeeded,
+                operation.Message ?? (operation.Succeeded ? "补款已记录。" : "补款结果未知，请勿重复收款。"),
+                operation.LocalOrder is null ? null : MapSummary(operation.LocalOrder),
+                operation.RequiresReview);
+        }
+
         var result = await AppendPaymentAsync(request.Session, apiRequest, cancellationToken);
         return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? "补款已记录。", result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
     }
@@ -255,6 +364,16 @@ public sealed class InstallmentOrderService(
         if (local is null)
         {
             return new InstallmentOrderActionResult(false, "未找到本机缓存的分期单。");
+        }
+
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecuteCancelAsync(local, session, cancellationToken: cancellationToken);
+            return new InstallmentOrderActionResult(
+                operation.Succeeded,
+                operation.Message ?? (operation.Succeeded ? "分期单已取消并退款。" : "退款结果未知，已锁定等待处理。"),
+                operation.LocalOrder is null ? null : MapSummary(operation.LocalOrder),
+                operation.RequiresReview);
         }
 
         var refunds = new List<InstallmentRefundPaymentCommandDto>();
@@ -392,19 +511,35 @@ public sealed record InstallmentOrderSummary(Guid OrderId, string OrderNumber, s
 
 public sealed record InstallmentPaymentDraft(Guid PaymentGuid, PaymentMethodKind Method, decimal Amount, string? Reference = null, string? ReservationToken = null, IReadOnlyList<CardTransactionDto>? CardTransactions = null, string? IdempotencyKey = null);
 
-public sealed record InstallmentOrderCreateRequest(PosSessionState Session, PosCartServiceSnapshot CartSnapshot, string CustomerName, string CustomerPhone, decimal DownPaymentAmount, InstallmentPaymentDraft DownPayment, string Note)
+public sealed record InstallmentOrderCreateRequest(
+    PosSessionState Session,
+    PosCartServiceSnapshot CartSnapshot,
+    string CustomerName,
+    string CustomerPhone,
+    decimal DownPaymentAmount,
+    InstallmentPaymentDraft DownPayment,
+    string Note,
+    Guid InstallmentGuid = default)
 {
     public InstallmentOrderCreateRequest(PosSessionState session, PosCartServiceSnapshot cartSnapshot, string customerName, string customerPhone, int installmentMonths, decimal downPaymentAmount, PaymentMethodKind method, string? reference, string? reservationToken, string note)
-        : this(session, cartSnapshot, customerName, customerPhone, downPaymentAmount, new InstallmentPaymentDraft(Guid.NewGuid(), method, downPaymentAmount, reference, reservationToken), note)
+        : this(session, cartSnapshot, customerName, customerPhone, downPaymentAmount, new InstallmentPaymentDraft(Guid.NewGuid(), method, downPaymentAmount, reference, reservationToken), note, Guid.NewGuid())
     {
     }
 }
 
 public sealed record InstallmentOrderRepaymentRequest(Guid InstallmentGuid, PosSessionState Session, InstallmentPaymentDraft Payment);
 
-public sealed record InstallmentOrderCreateResult(bool Succeeded, string Message, InstallmentOrderSummary? Order = null);
+public sealed record InstallmentOrderCreateResult(
+    bool Succeeded,
+    string Message,
+    InstallmentOrderSummary? Order = null,
+    bool RequiresReview = false);
 
-public sealed record InstallmentOrderActionResult(bool Succeeded, string Message, InstallmentOrderSummary? Order = null);
+public sealed record InstallmentOrderActionResult(
+    bool Succeeded,
+    string Message,
+    InstallmentOrderSummary? Order = null,
+    bool RequiresReview = false);
 
 public sealed class InstallmentApiClient(HttpClient httpClient) : IInstallmentApiClient
 {

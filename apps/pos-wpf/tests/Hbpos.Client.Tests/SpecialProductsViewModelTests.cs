@@ -9,6 +9,45 @@ namespace Hbpos.Client.Tests;
 
 public sealed class SpecialProductsViewModelTests
 {
+    [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new SpecialProductsViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            new FakeCatalogRepository(),
+            new FakeSpecialProductService(),
+            Session,
+            localization,
+            () => { });
+        var localizedChangeCount = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(SpecialProductsViewModel.TitleText))
+            {
+                localizedChangeCount++;
+            }
+        };
+
+        try
+        {
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+            Assert.Equal(1, localizedChangeCount);
+
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+
+            Assert.Equal(1, localizedChangeCount);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
     [Theory]
     [InlineData("download", "back")]
     [InlineData("add", "back")]

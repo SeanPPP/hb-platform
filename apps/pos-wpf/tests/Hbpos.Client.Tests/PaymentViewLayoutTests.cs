@@ -86,6 +86,38 @@ public sealed class PaymentViewLayoutTests
             (string?)trigger.Attribute("Value") == "False");
     }
 
+    [Fact]
+    public void Unknown_card_result_keeps_recovery_action_visible_after_dialog_closes()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PaymentView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var recoveryButton = Assert.Single(document.Descendants(presentation + "Button").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "RecoverPreviousCardTransactionButton"));
+        Assert.Equal(
+            "{Binding CardPaymentErrorPrimaryActionCommand}",
+            (string?)recoveryButton.Attribute("Command"));
+
+        var trigger = Assert.Single(recoveryButton.Descendants(presentation + "MultiDataTrigger"));
+        var conditions = trigger.Descendants(presentation + "Condition").ToArray();
+        Assert.Contains(conditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding IsPaymentInteractionLocked}" &&
+            (string?)condition.Attribute("Value") == "True");
+        Assert.Contains(conditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.PrimaryActionKind}" &&
+            (string?)condition.Attribute("Value") ==
+            "{x:Static vm:CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious}");
+        Assert.True(HasSetter(trigger, "Visibility", "Visible"));
+    }
+
     private static bool HasSetter(XElement trigger, string property, string value)
     {
         return trigger.Elements().Any(element =>

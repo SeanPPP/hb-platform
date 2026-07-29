@@ -4,6 +4,7 @@ using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class MainWindowStateTests
 {
     [Theory]
@@ -69,6 +70,169 @@ public sealed class MainWindowStateTests
         Assert.Same(repository.ExceptionToThrow, reportedException);
     }
 
+    [Fact]
+    public async Task WaitForPendingWindowModeSaveAsync_waits_for_latest_queued_save()
+    {
+        var firstSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var latestSave = firstSave.Task;
+        var waitTask = MainWindow.WaitForPendingWindowModeSaveAsync(() => latestSave);
+
+        var secondSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        latestSave = secondSave.Task;
+        firstSave.SetResult();
+
+        Assert.False(waitTask.IsCompleted);
+
+        secondSave.SetResult();
+        await waitTask;
+    }
+
+    [Fact]
+    public async Task WaitForClosePreparationAsync_waits_for_window_save_before_shutdown_steps()
+    {
+        var windowSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = new List<string>();
+        var coordinator = new AppShutdownCoordinator();
+        coordinator.RegisterStep(
+            "host",
+            100,
+            TimeSpan.FromSeconds(1),
+            _ =>
+            {
+                calls.Add("host");
+                return Task.CompletedTask;
+            });
+
+        var waitTask = MainWindow.WaitForClosePreparationAsync(() => windowSave.Task, coordinator);
+
+        Assert.False(coordinator.IsPreparationStarted);
+        Assert.Empty(calls);
+
+        windowSave.SetResult();
+        await waitTask;
+
+        Assert.Equal(["host"], calls);
+        Assert.True(coordinator.IsPrepared);
+    }
+
+    [Fact]
+    public async Task WaitForClosePreparationAsync_does_not_block_shutdown_on_stuck_window_save()
+    {
+        var stuckSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new AppShutdownCoordinator();
+        var shutdownStepCalled = false;
+        coordinator.RegisterStep(
+            "host",
+            100,
+            TimeSpan.FromSeconds(1),
+            _ =>
+            {
+                shutdownStepCalled = true;
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            await MainWindow.WaitForClosePreparationAsync(
+                () => stuckSave.Task,
+                coordinator).WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.True(shutdownStepCalled);
+            Assert.True(coordinator.IsPrepared);
+        }
+        finally
+        {
+            stuckSave.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task WaitForClosePreparationAsync_logs_the_actual_window_save_budget()
+    {
+        var stuckSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new FixedBudgetShutdownCoordinator(TimeSpan.FromMilliseconds(25));
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void CaptureLine(string line) => lines.Enqueue(line);
+
+        ConsoleLog.LineWritten += CaptureLine;
+        try
+        {
+            await MainWindow.WaitForClosePreparationAsync(
+                () => stuckSave.Task,
+                coordinator).WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.Contains(lines, line =>
+                line.Contains(
+                    "window state did not finish within 25ms",
+                    StringComparison.Ordinal));
+            Assert.True(coordinator.PrepareCalled);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= CaptureLine;
+            stuckSave.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public void MainWindow_close_owns_deadline_first_and_closed_does_not_repeat_external_cleanup()
+    {
+        var source = ReadMainWindowSource();
+        var closingBody = Slice(source, "private async void MainWindowClosing", "private IntPtr MainWindowMessageHook");
+        var closedBody = Slice(source, "private void MainWindowClosed", "private async void MainWindowClosing");
+        var firstClosingStatement = closingBody[(closingBody.IndexOf('{') + 1)..]
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .First(line => line is not "}");
+
+        Assert.Equal(
+            "_ = _appShutdownCoordinator.GetOrStartRemainingBudget();",
+            firstClosingStatement);
+        Assert.True(
+            closingBody.IndexOf("_viewModel.BeginShutdown();", StringComparison.Ordinal) <
+            closingBody.IndexOf("_rawScannerService.Stop();", StringComparison.Ordinal));
+        Assert.True(
+            closingBody.IndexOf("_rawScannerService.Stop();", StringComparison.Ordinal) <
+            closingBody.IndexOf("await WaitForClosePreparationAsync", StringComparison.Ordinal));
+        Assert.DoesNotContain("StopExternalInputForShutdownAsync", closingBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_rawScannerService.Stop()", closedBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_viewModel.Dispose()", closedBody, StringComparison.Ordinal);
+    }
+
+    private static string ReadMainWindowSource()
+    {
+        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            var current = new DirectoryInfo(start);
+            while (current is not null)
+            {
+                var path = Path.Combine(
+                    current.FullName,
+                    "apps",
+                    "pos-wpf",
+                    "src",
+                    "Hbpos.Client.Wpf",
+                    "MainWindow.xaml.cs");
+                if (File.Exists(path))
+                {
+                    return File.ReadAllText(path);
+                }
+
+                current = current.Parent;
+            }
+        }
+
+        throw new DirectoryNotFoundException("Unable to locate MainWindow.xaml.cs.");
+    }
+
+    private static string Slice(string source, string startMarker, string endMarker)
+    {
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        return source[start..end];
+    }
+
     private sealed class RecordingSettingsRepository : ILocalAppSettingsRepository
     {
         public Exception? ExceptionToThrow { get; init; }
@@ -90,8 +254,43 @@ public sealed class MainWindowStateTests
                 : Task.FromException(ExceptionToThrow);
         }
 
+        public Task SetValuesAsync(
+            IReadOnlyDictionary<string, string> values,
+            CancellationToken cancellationToken = default)
+        {
+            SetCallCount++;
+            return ExceptionToThrow is null
+                ? Task.CompletedTask
+                : Task.FromException(ExceptionToThrow);
+        }
+
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FixedBudgetShutdownCoordinator(TimeSpan budget) : IAppShutdownCoordinator
+    {
+        public bool IsPreparationStarted => PrepareCalled;
+
+        public bool IsPrepared => PrepareCalled;
+
+        public bool PrepareCalled { get; private set; }
+
+        public TimeSpan GetOrStartRemainingBudget() => budget;
+
+        public void RegisterStep(
+            string name,
+            int order,
+            TimeSpan timeout,
+            Func<CancellationToken, Task> executeAsync)
+        {
+        }
+
+        public Task PrepareAsync(CancellationToken cancellationToken = default)
+        {
+            PrepareCalled = true;
             return Task.CompletedTask;
         }
     }

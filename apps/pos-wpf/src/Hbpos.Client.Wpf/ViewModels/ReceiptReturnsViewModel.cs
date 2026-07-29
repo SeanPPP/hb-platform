@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Security;
@@ -20,6 +21,8 @@ public enum OpenItemKeyboardTarget
 public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScannerInputTarget, IDisposable
 {
     public const string PageId = "ReceiptReturns";
+
+    private bool _disposed;
 
     private const string DefaultStatusMessage = "Scan an order number to start a receipt return.";
     private const string DefaultOrderSummaryText = "No order loaded";
@@ -96,7 +99,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RefreshLocalizedState();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         LookupCommand = new AsyncRelayCommand(LookupAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(ScanText));
@@ -157,8 +160,24 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
         DisposeOpenItemAuthorization();
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RefreshLocalizedState();
     }
 
     public void ResetToDefault()
@@ -180,6 +199,14 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         if (EmergencyLoginTokenCodec.HasSupportedPrefix(normalizedBarcode))
         {
             // 关键逻辑：退货页只消费紧急令牌，不写入订单查询框，也不调用订单查询 API。
+            return true;
+        }
+
+        if (IsBusy)
+        {
+            ConsoleLog.Write(
+                "ReceiptReturns",
+                $"scanner ignored reason=lookup-busy queryLength={normalizedBarcode.Length}");
             return true;
         }
 
@@ -248,18 +275,34 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             return;
         }
 
+        var querySnapshot = ScanText;
+        var isNoReceiptLookup = IsNoReceiptMode;
+        var stopwatch = Stopwatch.StartNew();
         IsBusy = true;
         try
         {
-            if (IsNoReceiptMode)
+            if (isNoReceiptLookup)
             {
-                var querySnapshot = ScanText;
                 await AddNoReceiptProductAsync(querySnapshot);
                 return;
             }
 
-            var result = await _workflowService.LookupOrderAsync(Session, ScanText);
+            StatusMessage = T("returns.status.searching", "Searching for order...");
+            var result = await _workflowService.LookupOrderAsync(Session, querySnapshot);
             ApplyOrderLookupResult(result);
+        }
+        catch (Exception ex)
+        {
+            if (!isNoReceiptLookup)
+            {
+                ClearSelection();
+            }
+
+            StatusMessage = T("returns.status.lookupUnexpectedError", "Order lookup failed. Please retry.");
+            ConsoleLog.Write(
+                "ReceiptReturns",
+                $"lookup failed queryType={GetQueryType(querySnapshot)} queryLength={querySnapshot.Length} " +
+                $"error={ex.GetType().Name} elapsedMs={stopwatch.ElapsedMilliseconds}");
         }
         finally
         {
@@ -729,6 +772,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
             _localization?.CurrentCulture ?? CultureInfo.CurrentCulture,
             _localization?.T(key) ?? fallback,
             args);
+    }
+
+    private static string GetQueryType(string query)
+    {
+        return Guid.TryParse(query, out _) ? "guid" : "keyword";
     }
 
     private static bool TryParsePositiveAmount(string value, out decimal amount)

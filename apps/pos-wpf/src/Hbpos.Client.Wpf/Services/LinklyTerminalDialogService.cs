@@ -154,7 +154,8 @@ public interface ILinklyTerminalDialogPresenter
 public sealed class WpfLinklyTerminalDialogService :
     ObservableObject,
     ILinklyTerminalDialogService,
-    ILinklyTerminalDialogPresenter
+    ILinklyTerminalDialogPresenter,
+    IDisposable
 {
     private readonly ILocalizationService _localization;
     // 这个 CTS 会被 UI 线程和后台轮询线程同时访问，替换必须串行化，避免读到已释放实例。
@@ -172,6 +173,7 @@ public sealed class WpfLinklyTerminalDialogService :
     private bool _isInteractive;
     private bool _isFinal;
     private bool _supportsCancelPayment;
+    private bool _disposed;
     private LinklyTerminalDialogMode _mode = LinklyTerminalDialogMode.CloudBackendInteractive;
 
     public WpfLinklyTerminalDialogService(ILocalizationService localization)
@@ -184,8 +186,19 @@ public sealed class WpfLinklyTerminalDialogService :
             SubmitCancelPayment,
             () => IsCancelPaymentVisible);
         CloseCommand = new AsyncRelayCommand(CloseOrCancelAsync);
-        _localization.CultureChanged += (_, _) => RaiseLocalizedTextChanged();
+        _localization.CultureChanged += OnCultureChanged;
         RaiseLocalizedTextChanged();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _localization.CultureChanged -= OnCultureChanged;
     }
 
     public bool IsOpen
@@ -479,6 +492,11 @@ public sealed class WpfLinklyTerminalDialogService :
         {
             button.RefreshText(_localization);
         }
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedTextChanged();
     }
 
     private void RaiseDialogButtonStateChanged()

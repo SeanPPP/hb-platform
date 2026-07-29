@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Data;
@@ -133,6 +134,88 @@ public sealed class OperationAuditIngestServiceTests
         Assert.Contains("SUPERVISOR", persisted.PropertiesJson ?? string.Empty, StringComparison.Ordinal);
         Assert.Contains("offline-cache", persisted.PropertiesJson ?? string.Empty, StringComparison.Ordinal);
         Assert.DoesNotContain("barcode", persisted.PropertiesJson ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task IngestAsync_accepts_card_payment_supervisor_resolution_and_persists_approved_properties()
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "CARD_PAYMENT_SUPERVISOR_RESOLUTION";
+        request.Events[0].Outcome = "Succeeded";
+        request.Events[0].ReasonCode = "ConfirmNotPaid";
+        request.Events[0].SafeMessage = "Supervisor confirmed no payment.";
+        request.Events[0].Properties = new Dictionary<string, string?>
+        {
+            ["attemptGuid"] = "a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6",
+            ["operationGuid"] = "b1c2d3e4-f5a6-47b8-c9d0-e1f2a3b4c5d6",
+            ["sessionId"] = "SESSION-001",
+            ["evidence"] = "Bank case confirms no charge.",
+            ["financialReference"] = "BANK-REF-001",
+            ["unexpected"] = "must-not-persist"
+        };
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.AcceptedCount);
+        var persisted = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
+        Assert.Equal("CARD_PAYMENT_SUPERVISOR_RESOLUTION", persisted.OperationType);
+        Assert.Equal("Succeeded", persisted.Outcome);
+        Assert.Equal("ConfirmNotPaid", persisted.ReasonCode);
+        Assert.Equal("Supervisor confirmed no payment.", persisted.SafeMessage);
+        using var properties = JsonDocument.Parse(persisted.PropertiesJson!);
+        Assert.Equal("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6", properties.RootElement.GetProperty("attemptGuid").GetString());
+        Assert.Equal("b1c2d3e4-f5a6-47b8-c9d0-e1f2a3b4c5d6", properties.RootElement.GetProperty("operationGuid").GetString());
+        Assert.Equal("SESSION-001", properties.RootElement.GetProperty("sessionId").GetString());
+        Assert.Equal("Bank case confirms no charge.", properties.RootElement.GetProperty("evidence").GetString());
+        Assert.Equal("BANK-REF-001", properties.RootElement.GetProperty("financialReference").GetString());
+        Assert.False(properties.RootElement.TryGetProperty("unexpected", out _));
+    }
+
+    [Theory]
+    [InlineData("ConfirmPaid")]
+    [InlineData("ConfirmNotPaid")]
+    [InlineData("ContinueWaiting")]
+    public async Task IngestAsync_normalizes_legacy_card_payment_supervisor_outcome_to_succeeded(
+        string legacyOutcome)
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "CARD_PAYMENT_SUPERVISOR_RESOLUTION";
+        request.Events[0].Outcome = legacyOutcome;
+        request.Events[0].ReasonCode = legacyOutcome;
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.AcceptedCount);
+        var persisted = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
+        Assert.Equal("Succeeded", persisted.Outcome);
+        Assert.Equal(legacyOutcome, persisted.ReasonCode);
+    }
+
+    [Theory]
+    [InlineData("ConfirmPaid")]
+    [InlineData("ConfirmNotPaid")]
+    [InlineData("ContinueWaiting")]
+    public async Task IngestAsync_rejects_legacy_supervisor_outcome_for_other_operation_types(
+        string legacyOutcome)
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "PAYMENT_CANCEL";
+        request.Events[0].Outcome = legacyOutcome;
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.RejectedCount);
+        Assert.Equal("INVALID_OUTCOME", Assert.Single(result.Results).ErrorCode);
+        Assert.Equal(0, await fixture.PosmDb.Queryable<PosOperationAudit>().CountAsync());
     }
 
     [Fact]

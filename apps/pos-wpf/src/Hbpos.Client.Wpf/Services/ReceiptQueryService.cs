@@ -21,7 +21,9 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
 {
     public Task<IReadOnlyList<LocalOrderSummary>> GetRecentOrdersAsync(int take = 50, CancellationToken cancellationToken = default)
     {
-        return orderRepository.GetRecentOrdersAsync(take, cancellationToken);
+        return Task.Run(
+            () => orderRepository.GetRecentOrdersAsync(take, cancellationToken),
+            cancellationToken);
     }
 
     public Task<IReadOnlyList<LocalOrderSummary>> GetRecentOrdersAsync(
@@ -29,24 +31,34 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
         int take = 50,
         CancellationToken cancellationToken = default)
     {
-        return orderRepository.GetRecentOrdersAsync(query, take, cancellationToken);
+        var querySnapshot = query with { };
+        return Task.Run(
+            () => orderRepository.GetRecentOrdersAsync(querySnapshot, take, cancellationToken),
+            cancellationToken);
     }
 
     public async Task<ReceiptDetails?> GetReceiptAsync(Guid orderGuid, CancellationToken cancellationToken = default)
     {
-        var order = await orderRepository.GetOrderAsync(orderGuid, cancellationToken);
-        return order is null ? null : CreateReceipt(order);
+        return await Task.Run(async () =>
+        {
+            var order = await orderRepository.GetOrderAsync(orderGuid, cancellationToken);
+            return order is null ? null : CreateReceipt(order);
+        }, cancellationToken);
     }
 
     public async Task<ReceiptDetails?> GetLatestReceiptAsync(CancellationToken cancellationToken = default)
     {
-        var latest = (await orderRepository.GetRecentOrdersAsync(1, cancellationToken)).FirstOrDefault();
-        if (latest is null)
+        return await Task.Run(async () =>
         {
-            return null;
-        }
+            var latest = (await orderRepository.GetRecentOrdersAsync(1, cancellationToken)).FirstOrDefault();
+            if (latest is null)
+            {
+                return null;
+            }
 
-        return await GetReceiptAsync(latest.OrderGuid, cancellationToken);
+            var order = await orderRepository.GetOrderAsync(latest.OrderGuid, cancellationToken);
+            return order is null ? null : CreateReceipt(order);
+        }, cancellationToken);
     }
 
     public static ReceiptDetails CreateReceipt(LocalOrder order)

@@ -213,10 +213,11 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
-    public void AsyncIsEnabled_false_defers_source_load_until_reenabled()
+    public async Task AsyncIsEnabled_false_defers_source_load_until_reenabled()
     {
-        var imageBrush = new ImageBrush();
         var sourceText = $"data:image/png;base64,{OnePixelPngBase64}";
+        await ProductThumbnailImageSourceConverter.PreloadAsync([sourceText]);
+        var imageBrush = new ImageBrush();
 
         ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
         ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, sourceText);
@@ -229,10 +230,11 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
-    public void AsyncIsEnabled_false_clears_existing_async_source()
+    public async Task AsyncIsEnabled_false_clears_existing_async_source()
     {
-        var imageBrush = new ImageBrush();
         var sourceText = $"data:image/png;base64,{OnePixelPngBase64}";
+        await ProductThumbnailImageSourceConverter.PreloadAsync([sourceText]);
+        var imageBrush = new ImageBrush();
 
         ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, sourceText);
         Assert.IsType<BitmapImage>(imageBrush.ImageSource);
@@ -261,85 +263,58 @@ public sealed class ProductThumbnailImageSourceConverterTests
     [Fact]
     public void Convert_resolves_root_relative_path_with_default_api_base_url()
     {
-        const string variableName = "HBPOS_API_BASE_URL";
-        var originalValue = Environment.GetEnvironmentVariable(variableName);
         var converter = new ProductThumbnailImageSourceConverter();
         Uri? requestedUri = null;
+        using var apiBaseAddress = ProductThumbnailImageSourceConverter.UseApiBaseAddressProviderForTests(
+            () => new Uri("http://localhost:5159/"));
         using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
         {
             requestedUri = uri;
             return Task.FromResult(OnePixelPngBytes());
         });
 
-        try
-        {
-            Environment.SetEnvironmentVariable(variableName, null);
+        var result = converter.Convert("/images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
 
-            var result = converter.Convert("/images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
-
-            Assert.IsType<BitmapImage>(result);
-            Assert.Equal("http://localhost:5159/images/product.png", requestedUri?.AbsoluteUri);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(variableName, originalValue);
-        }
+        Assert.IsType<BitmapImage>(result);
+        Assert.Equal("http://localhost:5159/images/product.png", requestedUri?.AbsoluteUri);
     }
 
     [Fact]
     public void Convert_resolves_root_relative_path_with_api_base_url()
     {
-        const string variableName = "HBPOS_API_BASE_URL";
-        var originalValue = Environment.GetEnvironmentVariable(variableName);
         var converter = new ProductThumbnailImageSourceConverter();
         Uri? requestedUri = null;
+        using var apiBaseAddress = ProductThumbnailImageSourceConverter.UseApiBaseAddressProviderForTests(
+            () => new Uri("https://cdn.example.test/tenant-a/"));
         using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
         {
             requestedUri = uri;
             return Task.FromResult(OnePixelPngBytes());
         });
 
-        try
-        {
-            Environment.SetEnvironmentVariable(variableName, "https://cdn.example.test/tenant-a");
+        var result = converter.Convert("/images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
 
-            var result = converter.Convert("/images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
-
-            Assert.IsType<BitmapImage>(result);
-            Assert.Equal("https://cdn.example.test/tenant-a/images/product.png", requestedUri?.AbsoluteUri);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(variableName, originalValue);
-        }
+        Assert.IsType<BitmapImage>(result);
+        Assert.Equal("https://cdn.example.test/tenant-a/images/product.png", requestedUri?.AbsoluteUri);
     }
 
     [Fact]
     public void Convert_resolves_relative_path_without_leading_slash_with_api_base_url()
     {
-        const string variableName = "HBPOS_API_BASE_URL";
-        var originalValue = Environment.GetEnvironmentVariable(variableName);
         var converter = new ProductThumbnailImageSourceConverter();
         Uri? requestedUri = null;
+        using var apiBaseAddress = ProductThumbnailImageSourceConverter.UseApiBaseAddressProviderForTests(
+            () => new Uri("https://cdn.example.test/tenant-a/"));
         using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
         {
             requestedUri = uri;
             return Task.FromResult(OnePixelPngBytes());
         });
 
-        try
-        {
-            Environment.SetEnvironmentVariable(variableName, "https://cdn.example.test/tenant-a");
+        var result = converter.Convert("images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
 
-            var result = converter.Convert("images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
-
-            Assert.IsType<BitmapImage>(result);
-            Assert.Equal("https://cdn.example.test/tenant-a/images/product.png", requestedUri?.AbsoluteUri);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(variableName, originalValue);
-        }
+        Assert.IsType<BitmapImage>(result);
+        Assert.Equal("https://cdn.example.test/tenant-a/images/product.png", requestedUri?.AbsoluteUri);
     }
 
     [Fact]
@@ -470,6 +445,99 @@ public sealed class ProductThumbnailImageSourceConverterTests
         Assert.Equal(1, firstPreloadCount);
         Assert.Equal(0, secondPreloadCount);
         Assert.Equal(1, loadCount);
+    }
+
+    [Fact]
+    public async Task PreloadAsync_limits_background_read_and_decode_to_four_concurrent_images()
+    {
+        ClearImageCacheForTests();
+        var activeLoads = 0;
+        var maxConcurrentLoads = 0;
+        var imageUrls = Enumerable.Range(0, 9)
+            .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png")
+            .ToArray();
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(async (_, cancellationToken) =>
+        {
+            var active = Interlocked.Increment(ref activeLoads);
+            while (true)
+            {
+                var currentMaximum = Volatile.Read(ref maxConcurrentLoads);
+                if (active <= currentMaximum || Interlocked.CompareExchange(ref maxConcurrentLoads, active, currentMaximum) == currentMaximum)
+                {
+                    break;
+                }
+            }
+
+            try
+            {
+                await Task.Delay(30, cancellationToken);
+                return OnePixelPngBytes();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref activeLoads);
+            }
+        });
+
+        var preloaded = await ProductThumbnailImageSourceConverter.PreloadAsync(imageUrls);
+
+        Assert.Equal(imageUrls.Length, preloaded);
+        Assert.InRange(maxConcurrentLoads, 1, 4);
+    }
+
+    [Fact]
+    public async Task Async_local_file_read_waits_for_shared_background_gate()
+    {
+        ClearImageCacheForTests();
+        var filePath = CreateTempImageFile();
+        using var remoteLoadsStarted = new ManualResetEventSlim();
+        var startedCount = 0;
+        var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fileMissing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var localImage = new ImageBrush();
+        void HandleLog(string line)
+        {
+            if (line.Contains("[ProductImage]", StringComparison.Ordinal) &&
+                line.Contains("reason=file-missing", StringComparison.Ordinal) &&
+                line.Contains(filePath, StringComparison.OrdinalIgnoreCase))
+            {
+                fileMissing.TrySetResult();
+            }
+        }
+
+        ConsoleLog.LineWritten += HandleLog;
+        try
+        {
+            using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+                async (_, cancellationToken) =>
+                {
+                    if (Interlocked.Increment(ref startedCount) == 4)
+                    {
+                        remoteLoadsStarted.Set();
+                    }
+
+                    return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
+                });
+            var remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+                Enumerable.Range(0, 4)
+                    .Select(_ => $"https://cdn.example.test/images/{Guid.NewGuid():N}/product.png"));
+
+            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+            ProductThumbnailImageSourceConverter.SetAsyncSourceText(localImage, filePath);
+            File.Delete(filePath);
+            releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+
+            await fileMissing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await remotePreload;
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= HandleLog;
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
     }
 
     [Fact]

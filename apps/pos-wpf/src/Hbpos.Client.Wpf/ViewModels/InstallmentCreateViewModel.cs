@@ -22,10 +22,13 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private readonly bool _enforcePermissions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
-    private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
     private object[] _statusResourceArgs = [];
+    private Guid _createInstallmentGuid = Guid.NewGuid();
+    private Guid _createPaymentGuid = Guid.NewGuid();
+    private string _createIdempotencyKey = Guid.NewGuid().ToString("N");
+    private bool _disposed;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -58,6 +61,9 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private bool _isSubmitting;
 
     [ObservableProperty]
+    private bool _isCreateRecoveryRequired;
+
+    [ObservableProperty]
     private string _statusMessage = string.Empty;
 
     public InstallmentCreateViewModel(
@@ -87,8 +93,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
 
         if (_localization is not null)
         {
-            _onCultureChanged = (_, _) => RaiseLocalizedProperties();
-            _localization.CultureChanged += _onCultureChanged;
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         SubmitCommand = new AsyncRelayCommand(SubmitAsync, CanSubmit);
@@ -219,6 +224,11 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         RaiseActionStateChanged();
     }
 
+    partial void OnIsCreateRecoveryRequiredChanged(bool value)
+    {
+        RaiseActionStateChanged();
+    }
+
     public void Prepare(PosSessionState session, PosCartServiceSnapshot? cartSnapshot)
     {
         Session = session;
@@ -277,12 +287,14 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
                 CustomerPhone.Trim(),
                 DownPaymentAmount,
                 new InstallmentPaymentDraft(
-                    Guid.NewGuid(),
+                    _createPaymentGuid,
                     DownPaymentMethod,
                     DownPaymentAmount,
                     NormalizeOptional(DownPaymentReference),
-                    NormalizeOptional(VoucherReservationToken)),
-                Note.Trim());
+                    NormalizeOptional(VoucherReservationToken),
+                    IdempotencyKey: _createIdempotencyKey),
+                Note.Trim(),
+                _createInstallmentGuid);
             var result = await _installmentOrderService.CreateOrderAsync(request);
             SetLiteralStatus(result.Message);
             if (result.Succeeded && result.Order is not null)
@@ -299,9 +311,16 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
                     orderGuid: result.Order.OrderId.ToString("D"));
 
                 await _onCreatedAsync(result.Order);
+                ResetCreateIdentity();
             }
             else
             {
+                if (result.RequiresReview)
+                {
+                    // 结果未知时保留原金融身份并锁定页面，恢复流程只能沿用原 GUID 和幂等键。
+                    IsCreateRecoveryRequired = true;
+                }
+
                 OperationAuditEvents.RecordAction(
                     _operationAuditLogger,
                     OperationAuditTypes.SaleComplete,
@@ -345,6 +364,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private bool CanSubmit()
     {
         return !IsSubmitting &&
+            !IsCreateRecoveryRequired &&
             !IsOffline &&
             CartSnapshot is not null &&
             CartSnapshot.Lines.Count > 0 &&
@@ -374,6 +394,14 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private void BackToCenter()
     {
         _backToCenter();
+    }
+
+    private void ResetCreateIdentity()
+    {
+        _createInstallmentGuid = Guid.NewGuid();
+        _createPaymentGuid = Guid.NewGuid();
+        _createIdempotencyKey = Guid.NewGuid().ToString("N");
+        IsCreateRecoveryRequired = false;
     }
 
     private void RaiseAmountStateChanged()
@@ -416,6 +444,11 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         OnPropertyChanged(nameof(FinancedAmountText));
         OnPropertyChanged(nameof(DownPaymentMethodText));
         OnPropertyChanged(nameof(DownPaymentStatusText));
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 
     private string BuildDownPaymentStatusText()
@@ -564,12 +597,16 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
 
     public void Dispose()
     {
-        if (_localization is not null && _onCultureChanged is not null)
+        if (_disposed)
         {
-            _localization.CultureChanged -= _onCultureChanged;
+            return;
         }
 
-        _onCultureChanged = null;
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
     }
 }
 

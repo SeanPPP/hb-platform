@@ -1,3 +1,4 @@
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -8,6 +9,44 @@ namespace Hbpos.Client.Tests;
 
 public sealed class ReceiptReturnsViewModelTests
 {
+    [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        var viewModel = new ReceiptReturnsViewModel(
+            new FakeReceiptReturnsWorkflowService(),
+            CreateSession(),
+            () => { },
+            localization: localization);
+        var localizedChangeCount = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(ReceiptReturnsViewModel.OrderSummaryText) or
+                nameof(ReceiptReturnsViewModel.StatusMessage))
+            {
+                localizedChangeCount++;
+            }
+        };
+
+        try
+        {
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+            Assert.True(localizedChangeCount > 0);
+
+            viewModel.Dispose();
+            viewModel.Dispose();
+            var countAfterDispose = localizedChangeCount;
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+
+            Assert.Equal(countAfterDispose, localizedChangeCount);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
     [Theory]
     [InlineData("HBPOSE1-K1-AA-BB")]
     [InlineData("HBPOSE2-compact-token")]
@@ -26,6 +65,94 @@ public sealed class ReceiptReturnsViewModelTests
         Assert.Equal(0, workflow.LookupCallCount);
         Assert.Null(workflow.LastOrderQuery);
         Assert.Empty(viewModel.OrderLines);
+    }
+
+    [Fact]
+    public async Task LookupCommand_shows_busy_state_and_ignores_scanner_until_completion()
+    {
+        var lookupStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupCompletion = new TaskCompletionSource<ReceiptReturnLookupResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (_, _) =>
+            {
+                lookupStarted.TrySetResult(true);
+                return lookupCompletion.Task;
+            }
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        var lookupTask = viewModel.LookupCommand.ExecuteAsync(null);
+        await lookupStarted.Task;
+
+        Assert.True(viewModel.IsBusy);
+        Assert.Equal("Searching for order...", viewModel.StatusMessage);
+        Assert.False(viewModel.LookupCommand.CanExecute(null));
+
+        Assert.True(viewModel.ProcessScannerBarcode("ORDER-002", "scanner-device", "raw"));
+        Assert.Equal("ORDER-001", viewModel.ScanText);
+        Assert.Equal(1, workflow.LookupCallCount);
+
+        lookupCompletion.SetResult(CreateLookupResult());
+        await lookupTask;
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Single(viewModel.OrderLines);
+    }
+
+    [Fact]
+    public async Task LookupCommand_maps_unexpected_failure_to_visible_status()
+    {
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (_, _) => Task.FromException<ReceiptReturnLookupResult>(
+                new InvalidOperationException("Unexpected failure."))
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        await viewModel.LookupCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal("Order lookup failed. Please retry.", viewModel.StatusMessage);
+        Assert.Empty(viewModel.OrderLines);
+    }
+
+    [Fact]
+    public async Task LookupCommand_clears_previous_return_state_when_next_lookup_fails()
+    {
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            LookupHandler = (query, _) => query == "ORDER-001"
+                ? Task.FromResult(CreateLookupResult())
+                : Task.FromException<ReceiptReturnLookupResult>(
+                    new InvalidOperationException("Unexpected failure."))
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            ScanText = "ORDER-001"
+        };
+
+        await viewModel.LookupCommand.ExecuteAsync(null);
+        viewModel.AddReceiptLineCommand.Execute(viewModel.OrderLines.Single());
+
+        Assert.Single(viewModel.PendingLines);
+        Assert.True(viewModel.ConfirmToCartCommand.CanExecute(null));
+
+        viewModel.ScanText = "ORDER-002";
+        await viewModel.LookupCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.OrderLines);
+        Assert.Empty(viewModel.PendingLines);
+        Assert.False(viewModel.ReturnRecordsMayBeStale);
+        Assert.Equal("No order loaded", viewModel.OrderSummaryText);
+        Assert.Equal("Order lookup failed. Please retry.", viewModel.StatusMessage);
+        Assert.False(viewModel.ConfirmToCartCommand.CanExecute(null));
     }
 
     [Fact]
@@ -296,6 +423,8 @@ public sealed class ReceiptReturnsViewModelTests
 
         public ReceiptReturnLookupResult LookupResult { get; init; } = new(null, false, false, "");
 
+        public Func<string, CancellationToken, Task<ReceiptReturnLookupResult>>? LookupHandler { get; init; }
+
         public List<PendingReturnLine> AddedLines { get; } = [];
 
         public ReceiptReturnPendingLineResult OpenItemResult { get; init; } = new(null, "");
@@ -307,7 +436,8 @@ public sealed class ReceiptReturnsViewModelTests
         {
             LookupCallCount++;
             LastOrderQuery = orderQuery;
-            return Task.FromResult(LookupResult);
+            return LookupHandler?.Invoke(orderQuery, cancellationToken)
+                ?? Task.FromResult(LookupResult);
         }
 
         public ReceiptReturnProductLookupResult LookupNoReceiptProduct(

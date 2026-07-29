@@ -49,6 +49,26 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public void Card_payment_supervisor_note_is_localized_as_optional()
+    {
+        var localization = new LocalizationService();
+
+        Assert.Equal("Supervisor note (optional)", localization.T("cardRecovery.payment.field.note"));
+        Assert.Contains(
+            "A supervisor note is optional.",
+            localization.T("cardRecovery.payment.section.instructions"),
+            StringComparison.Ordinal);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("主管备注（选填）", localization.T("cardRecovery.payment.field.note"));
+        Assert.Contains(
+            "主管备注可选",
+            localization.T("cardRecovery.payment.section.instructions"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Localization_has_settings_text()
     {
         var localization = new LocalizationService();
@@ -87,6 +107,13 @@ public sealed class LocalizationAndSettingsTests
             "settings.linkly.mode.cloudDirectSync",
             "settings.linkly.mode.cloudBackendAsync",
             "settings.linkly.localIp.title",
+            "settings.linkly.localIp.sandboxSafety",
+            "settings.linkly.localIp.testVirtualTerminal",
+            "settings.linkly.localIp.hostRequired",
+            "settings.linkly.localIp.portInvalid",
+            "settings.linkly.localIp.timeoutInvalid",
+            "settings.linkly.localIp.testing",
+            "settings.linkly.test.configurationChanged",
             "settings.linkly.cloudDirect.title",
             "settings.linkly.cloudBackend.title",
             "settings.linkly.cloudBackend.description",
@@ -346,6 +373,74 @@ public sealed class LocalizationAndSettingsTests
             await settings.SetValueAsync("Language", "zh-CN");
 
             Assert.Equal("zh-CN", await settings.GetValueAsync("Language"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task App_settings_entry_returns_value_and_persisted_update_time()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var settings = new LocalAppSettingsRepository(store);
+            await schema.InitializeAsync();
+
+            await settings.SetValueAsync("VersionedSetting", "current");
+            var entry = await settings.GetEntryAsync("VersionedSetting");
+
+            Assert.NotNull(entry);
+            Assert.Equal("current", entry.Value);
+            Assert.NotNull(entry.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task App_settings_batch_write_rolls_back_all_values_when_second_write_fails()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var settings = new LocalAppSettingsRepository(store);
+            await schema.InitializeAsync();
+            await settings.SetValueAsync("First", "before");
+            await using (var connection = await store.OpenConnectionAsync())
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    CREATE TRIGGER RejectFailSetting
+                    BEFORE INSERT ON AppSettings
+                    WHEN NEW.Key = 'Fail'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated batch write failure');
+                    END;
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["First"] = "after",
+                ["Fail"] = "invalid",
+            };
+
+            await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => settings.SetValuesAsync(values));
+
+            Assert.Equal("before", await settings.GetValueAsync("First"));
+            Assert.Null(await settings.GetValueAsync("Fail"));
         }
         finally
         {

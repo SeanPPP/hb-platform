@@ -114,6 +114,32 @@ public sealed class ConfiguredCardTerminalClientTests
     }
 
     [Fact]
+    public async Task Idempotent_refund_uses_persisted_linkly_refund_txn_ref_without_replacing_original_reference()
+    {
+        var settings = CardTerminalSettings.FromEnvironment() with
+        {
+            Processor = CardProcessorKind.Linkly,
+            LinklyConnectionMode = LinklyConnectionMode.LocalIp
+        };
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(true, "ANZ:REFUND-1", AuthorizedAmount: 6m));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(settings),
+            new HttpClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly);
+
+        var result = await ((IIdempotentCardRefundClient)client).RefundAsync(
+            6m,
+            CreateSession(),
+            "ANZ:ORIGINAL-1",
+            "REFUND-TXN-001");
+
+        Assert.True(result.Approved);
+        Assert.Equal("ANZ:ORIGINAL-1", linkly.LastOriginalReference);
+        Assert.Equal("REFUND-TXN-001", linkly.LastRefundTransactionReference);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_preserves_linkly_backend_async_mode_for_configured_adapter()
     {
         var settings = CardTerminalSettings.FromEnvironment() with
@@ -146,7 +172,9 @@ public sealed class ConfiguredCardTerminalClientTests
                 {
                   "refund": {
                     "id": "refund-1",
-                    "status": "PENDING"
+                    "status": "PENDING",
+                    "payment_id": "payment-1",
+                    "amount_money": { "amount": 1234, "currency": "AUD" }
                   }
                 }
                 """);
@@ -168,6 +196,44 @@ public sealed class ConfiguredCardTerminalClientTests
     }
 
     [Fact]
+    public async Task Installment_refund_uses_the_persisted_square_idempotency_key_in_the_http_body()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = CloneRequestWithBody(request);
+            return JsonResponse("{ \"refund\": { \"id\": \"refund-persisted\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var result = await ((IIdempotentCardRefundClient)client).RefundAsync(
+            12.34m,
+            CreateSession(),
+            "SQ:payment-1",
+            "persisted-installment-key");
+
+        Assert.True(result.Approved);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("persisted-installment-key", ReadJsonString(await capturedRequest!.Content!.ReadAsStringAsync(), "idempotencyKey"));
+    }
+
+    [Fact]
+    public async Task RefundAsync_marks_result_unknown_when_square_refund_amount_does_not_match()
+    {
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) => JsonResponse(
+                "{ \"refund\": { \"id\": \"refund-amount-mismatch\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1233, \"currency\": \"AUD\" } } }"))));
+
+        var result = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
     public async Task RefundAsync_reuses_square_refund_idempotency_key_after_network_failure()
     {
         var capturedRequests = new List<HttpRequestMessage>();
@@ -186,7 +252,9 @@ public sealed class ConfiguredCardTerminalClientTests
                 {
                   "refund": {
                     "id": "refund-retry-1",
-                    "status": "PENDING"
+                    "status": "PENDING",
+                    "payment_id": "payment-1",
+                    "amount_money": { "amount": 1234, "currency": "AUD" }
                   }
                 }
                 """);
@@ -233,7 +301,9 @@ public sealed class ConfiguredCardTerminalClientTests
                 {
                   "refund": {
                     "id": "refund-retry-1",
-                    "status": "PENDING"
+                    "status": "PENDING",
+                    "payment_id": "payment-1",
+                    "amount_money": { "amount": 1234, "currency": "AUD" }
                   }
                 }
                 """);
@@ -426,6 +496,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square checkout did not return a payment id.", result.Message);
     }
 
@@ -451,6 +522,10 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.Equal(
+            !string.Equals(paymentStatus, "CANCELED", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(paymentStatus, "FAILED", StringComparison.OrdinalIgnoreCase),
+            result.ResultUnknown);
         Assert.Equal($"Square payment status is {paymentStatus}.", result.Message);
     }
 
@@ -472,6 +547,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square payment amount did not match the requested amount.", result.Message);
     }
 
@@ -493,11 +569,119 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square payment currency did not match the requested currency.", result.Message);
     }
 
     [Fact]
-    public async Task AuthorizeAsync_returns_square_error_detail_for_failed_payment_lookup()
+    public async Task AuthorizeAsync_marks_attempt_unknown_when_polled_checkout_id_does_not_match_bound_checkout()
+    {
+        var attemptGuid = Guid.NewGuid();
+        var context = new SquarePaymentAttemptContextAccessor();
+        var repository = new RecordingFailureSquarePaymentAttemptRepository();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse("{ \"checkout\": { \"id\": \"checkout-expected\", \"status\": \"PENDING\" } }");
+            }
+
+            return JsonResponse("{ \"checkout\": { \"id\": \"checkout-other\", \"status\": \"PENDING\" } }");
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler),
+            squarePaymentAttemptContextAccessor: context,
+            squarePaymentAttemptRepository: repository);
+
+        PaymentAuthorizationResult result;
+        using (context.Begin(new SquarePaymentAttemptContext(attemptGuid, "bound-checkout-idempotency")))
+        {
+            result = await client.AuthorizeAsync(5m, CreateSession());
+        }
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(1, repository.MarkFailedCount);
+        Assert.Equal(attemptGuid, repository.FailedAttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, repository.FailedStatus);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_returns_unknown_when_payment_body_id_does_not_match_checkout_payment_id()
+    {
+        var handler = CreateCompletedCheckoutThenPaymentHandler(
+            """
+            {
+              "payment": {
+                "id": "payment-other",
+                "status": "COMPLETED",
+                "amount_money": { "amount": 500, "currency": "AUD" }
+              }
+            }
+            """);
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
+
+        var result = await client.AuthorizeAsync(5m, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal("Square payment response does not match the queried payment.", result.Message);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_returns_unknown_when_checkout_post_was_sent_but_times_out_before_response()
+    {
+        var postStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new StubHttpMessageHandler(async (request, cancellationToken) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            postStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable after timeout.");
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings(TimeSpan.FromMilliseconds(50))),
+            CreateApiClient(handler));
+
+        var authorizeTask = client.AuthorizeAsync(5m, CreateSession());
+        await postStarted.Task;
+        var result = await authorizeTask;
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task RecoverSquareAsync_marks_attempt_unknown_when_payment_body_id_does_not_match_query()
+    {
+        var attempt = CreateSquareRecoveryAttempt("checkout-expected");
+        var repository = new RecordingFailureSquarePaymentAttemptRepository();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.Contains("/payments/", StringComparison.Ordinal))
+            {
+                return JsonResponse("{ \"payment\": { \"id\": \"payment-other\", \"status\": \"COMPLETED\", \"amount_money\": { \"amount\": 500, \"currency\": \"AUD\" } } }");
+            }
+
+            return JsonResponse("{ \"checkout\": { \"id\": \"checkout-expected\", \"status\": \"COMPLETED\", \"amount_money\": { \"amount\": 500, \"currency\": \"AUD\" }, \"payment_ids\": [ \"payment-expected\" ] } }");
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler),
+            squarePaymentAttemptRepository: repository);
+
+        var result = await ((IInstallmentTerminalRecoveryClient)client).RecoverSquareAsync(attempt, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(1, repository.MarkFailedCount);
+        Assert.Equal(attempt.AttemptGuid, repository.FailedAttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, repository.FailedStatus);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_marks_result_unknown_for_failed_payment_lookup_after_checkout_is_created()
     {
         var handler = CreateCompletedCheckoutThenPaymentHandler(
             HttpStatusCode.BadRequest,
@@ -516,6 +700,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square payment failed with HTTP 400: BAD_REQUEST: Payment is unavailable.", result.Message);
     }
 
@@ -1153,6 +1338,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square checkout entered unexpected status 'BROKEN'.", result.Message);
     }
 
@@ -1178,6 +1364,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("Square terminal returned an invalid response.", result.Message);
     }
 
@@ -1248,7 +1435,9 @@ public sealed class ConfiguredCardTerminalClientTests
         await getStarted.Task;
         cancellationTokenSource.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
+        var result = await authorizeTask;
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
         Assert.Collection(
             requests,
             create =>
@@ -1447,7 +1636,9 @@ public sealed class ConfiguredCardTerminalClientTests
         await getStarted.Task;
         cancellationTokenSource.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
+        var result = await authorizeTask;
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
         Assert.Equal(0, tokenProvider.ForceRefreshCount);
         Assert.Collection(
             requests,
@@ -1501,6 +1692,15 @@ public sealed class ConfiguredCardTerminalClientTests
             "DEV-1",
             CardTerminalSettings.GetSquareApiBaseUrl(CardTerminalEnvironment.Production),
             terminalTimeout ?? TimeSpan.FromSeconds(10));
+    }
+
+    private static LocalSquarePaymentAttempt CreateSquareRecoveryAttempt(string checkoutId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new LocalSquarePaymentAttempt(
+            Guid.NewGuid(), checkoutId, "square-recovery-idempotency", "DEV-1", "LOC-1", "Production", 5m, 500, "AUD",
+            LocalSquarePaymentAttemptStatus.Unknown, "COMPLETED", null, "{}", "1001", "TERM-1", "C001",
+            null, null, null, null, now, now, null, null, null);
     }
 
     private static HttpResponseMessage JsonResponse(string json)
@@ -1662,6 +1862,8 @@ public sealed class ConfiguredCardTerminalClientTests
 
         public string? LastPurchaseReference { get; private set; }
 
+        public string? LastRefundTransactionReference { get; private set; }
+
         public CardTerminalSettings? LastSettings { get; private set; }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
@@ -1716,6 +1918,21 @@ public sealed class ConfiguredCardTerminalClientTests
         {
             LastRefundAmount = amount;
             LastOriginalReference = originalReference;
+            LastSettings = settings;
+            return Task.FromResult(result);
+        }
+
+        public Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
+            decimal amount,
+            PosSessionState session,
+            CardTerminalSettings settings,
+            string? originalReference,
+            string refundTxnRef,
+            CancellationToken cancellationToken = default)
+        {
+            LastRefundAmount = amount;
+            LastOriginalReference = originalReference;
+            LastRefundTransactionReference = refundTxnRef;
             LastSettings = settings;
             return Task.FromResult(result);
         }
@@ -1816,11 +2033,20 @@ public sealed class ConfiguredCardTerminalClientTests
         public Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
             string storeCode,
             string deviceCode,
-            string cashierId,
+            string? cashierId,
             string environment,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult<LocalSquarePaymentAttempt?>(null);
+        }
+
+        public Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenRefundAttemptsAsync(
+            string storeCode,
+            string deviceCode,
+            string environment,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>([]);
         }
 
         public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)

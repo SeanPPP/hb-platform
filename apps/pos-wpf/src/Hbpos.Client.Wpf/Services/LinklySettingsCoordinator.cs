@@ -89,9 +89,13 @@ public sealed class LinklySettingsCoordinator
                 else if (testMode == LinklySettingsMode.CloudDirectSync)
                     result = await _setup.TestLinklyCloudConnectionAsync(_getEnv());
                 else
+                {
+                    var host = NormalizeHost(s.HostText);
+                    var port = ParsePort(s.PortText);
+                    _setLinklyTestStatus("settings.linkly.localIp.testing", [host, port]);
                     result = await _setup.TestLinklyConnectionAsync(
-                        NormalizeHost(s.HostText), ParsePort(s.PortText),
-                        TimeSpan.FromSeconds(ParseTimeoutSeconds(s.TimeoutSecondsText)));
+                        host, port, TimeSpan.FromSeconds(ParseTimeoutSeconds(s.TimeoutSecondsText)));
+                }
 
                 s.ConnectionSucceeded = result.Succeeded;
                 if (string.IsNullOrWhiteSpace(result.Message))

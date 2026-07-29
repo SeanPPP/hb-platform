@@ -42,7 +42,8 @@ public sealed record HistoryOrderListItem(
     bool CanContinueInstallmentPayment = false,
     bool CanConfirmInstallmentPickup = false,
     string CustomerPhone = "",
-    string SyncStatus = "")
+    string SyncStatus = "",
+    CultureInfo? DisplayCulture = null)
 {
     public RowSelectionState Selection { get; } = new();
 
@@ -57,7 +58,9 @@ public sealed record HistoryOrderListItem(
 
     public string DisplayOrderId => InstallmentOrder?.OrderNumber ?? ShortOrderId;
 
-    public string SoldAtDisplay => OccurredAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", CultureInfo.CurrentCulture);
+    public string SoldAtDisplay => OccurredAt.ToLocalTime().ToString(
+        "MMM dd, yyyy HH:mm",
+        DisplayCulture ?? CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName));
 }
 
 public sealed partial class TransactionHistoryViewModel : ObservableObject, IDisposable
@@ -82,6 +85,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IConfirmationDialogService? _confirmationDialogService;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
+    private bool _disposed;
 
     [ObservableProperty]
     private string _searchText = string.Empty;
@@ -476,7 +480,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 order.LineCount,
                 order.PaymentSummary,
                 order.StatusLabel,
-                SyncStatus: order.SyncStatus))
+                SyncStatus: order.SyncStatus,
+                DisplayCulture: CurrentDisplayCulture))
             .ToList();
     }
 
@@ -650,7 +655,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 T("history.payment.suspended"),
                 T("history.status.pendingRecall"),
                 IsSuspendedOrder: true,
-                CanRecall: true))
+                CanRecall: true,
+                DisplayCulture: CurrentDisplayCulture))
             .ToList();
     }
 
@@ -682,7 +688,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             order.ActualAmount,
             order.LineCount,
             order.PaymentSummary,
-            order.StatusLabel)).ToList();
+            order.StatusLabel,
+            DisplayCulture: CurrentDisplayCulture)).ToList();
     }
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadInstallmentOrdersAsync(CancellationToken cancellationToken)
@@ -711,7 +718,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 order.OutstandingAmount,
                 0,
                 string.Format(
-                    _localization?.CurrentCulture ?? CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName),
+                    CurrentDisplayCulture,
                     "{0}: {1:C2}",
                     T("history.installment.paid"),
                     order.PaidAmount),
@@ -720,7 +727,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 IsInstallmentOrder: true,
                 CanContinueInstallmentPayment: order.CanAddRepayment,
                 CanConfirmInstallmentPickup: order.CanConfirmPickup,
-                CustomerPhone: order.CustomerPhone))
+                CustomerPhone: order.CustomerPhone,
+                DisplayCulture: CurrentDisplayCulture))
             .ToList();
     }
 
@@ -749,7 +757,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 PreviewDiscount = installmentReceipt.DiscountAmount;
                 PreviewTotal = installmentReceipt.ActualAmount;
                 PreviewOrderId = installmentReceipt.TransactionIdDisplay;
-                PreviewSoldAt = installmentReceipt.SoldAtDisplay;
+                PreviewSoldAt = installmentReceipt.SoldAt.ToLocalTime().ToString(
+                    "MMM dd, yyyy HH:mm",
+                    CurrentDisplayCulture);
                 return;
             }
 
@@ -789,7 +799,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         PreviewDiscount = receipt.DiscountAmount;
         PreviewTotal = receipt.ActualAmount;
         PreviewOrderId = receipt.TransactionIdDisplay;
-        PreviewSoldAt = receipt.SoldAtDisplay;
+        PreviewSoldAt = receipt.SoldAt.ToLocalTime().ToString(
+            "MMM dd, yyyy HH:mm",
+            CurrentDisplayCulture);
     }
 
     private async Task<ReceiptDetails?> GetSuspendedReceiptAsync(Guid orderGuid, CancellationToken cancellationToken)
@@ -961,6 +973,16 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(GetPaymentMethodLabel(payment.Method), FormatMoney(payment.Amount))));
             }
         }
+
+        var orderGuid = order.OrderGuid.ToString("D");
+        // 分期本地快照缺失时仍保留完整订单号二维码，确保历史预览可直接扫码退货。
+        rows.Add(new ReceiptPreviewRow(
+            ReceiptPreviewRowKind.QrCode,
+            $"QR {orderGuid}",
+            ReceiptPrintAlignment.Center)
+        {
+            QrCodeValue = orderGuid
+        });
 
         return rows;
     }
@@ -1167,13 +1189,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
 
         var selectedOrderGuid = SelectedOrder?.OrderGuid;
-        Orders.ReplaceWith(Orders.Select(order => order.IsSuspendedOrder
-            ? order with
-            {
-                PaymentSummary = T("history.payment.suspended"),
-                StatusLabel = T("history.status.pendingRecall")
-            }
-            : order).ToList());
+        var displayCulture = CurrentDisplayCulture;
+        Orders.ReplaceWith(Orders.Select(order => order with
+        {
+            DisplayCulture = displayCulture,
+            PaymentSummary = order.IsSuspendedOrder ? T("history.payment.suspended") : order.PaymentSummary,
+            StatusLabel = order.IsSuspendedOrder ? T("history.status.pendingRecall") : order.StatusLabel
+        }).ToList());
         SelectedOrder = selectedOrderGuid is null
             ? Orders.FirstOrDefault()
             : Orders.FirstOrDefault(order => order.OrderGuid == selectedOrderGuid.Value);
@@ -1220,6 +1242,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             _ => key
         };
     }
+
+    private CultureInfo CurrentDisplayCulture =>
+        _localization?.CurrentCulture ??
+        CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName);
 
     private string GetPaymentMethodLabel(PaymentMethodKind method)
     {
@@ -1293,6 +1319,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;

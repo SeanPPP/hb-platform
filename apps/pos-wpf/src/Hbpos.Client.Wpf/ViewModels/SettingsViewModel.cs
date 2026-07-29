@@ -530,6 +530,13 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public bool IsLinklyStandardActionMode => !IsLinklyCloudBackendAsyncMode;
 
+    public bool IsLinklySandboxLocalIpMode =>
+        PrimaryLinklyMode == LinklySettingsMode.LocalIp && IsLinklySandbox;
+
+    public string LinklyTestActionText => IsLinklySandboxLocalIpMode
+        ? T("settings.linkly.localIp.testVirtualTerminal")
+        : T("settings.linkly.test");
+
     public string LinklyCloudSecretStatusText => HasSavedLinklyCloudSecret
         ? T("settings.linkly.cloud.secretStatus.cached")
         : T("settings.linkly.cloud.secretStatus.missing");
@@ -680,9 +687,37 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        if (PrimaryLinklyMode == LinklySettingsMode.LocalIp)
+        {
+            if (string.IsNullOrWhiteSpace(LinklyHostText))
+            {
+                SetLinklyTestValidationStatus("settings.linkly.localIp.hostRequired");
+                return;
+            }
+
+            if (!int.TryParse(LinklyPortText, out var port) || port is <= 0 or > 65535)
+            {
+                SetLinklyTestValidationStatus("settings.linkly.localIp.portInvalid");
+                return;
+            }
+
+            if (!int.TryParse(TimeoutSecondsText, out var timeoutSeconds) || timeoutSeconds <= 0)
+            {
+                SetLinklyTestValidationStatus("settings.linkly.localIp.timeoutInvalid");
+                return;
+            }
+        }
+
+        var testedInputs = CaptureLinklyTestInputs();
         SyncLinklyInputs();
         await _linklyCoordinator.TestAsync(_linklyState);
+        var inputsChangedDuringTest = testedInputs != CaptureLinklyTestInputs();
         SyncLinklyState();
+        if (inputsChangedDuringTest)
+        {
+            ResetLinklyConnectionTest();
+            SetLinklyTestValidationStatus("settings.linkly.test.configurationChanged");
+        }
     }
 
     private void ShowFailedLastTransactionDialogIfNeeded(LinklyConnectionTestResult result)
@@ -1119,6 +1154,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         RaiseActivePaymentProviderProperties();
         OnPropertyChanged(nameof(LinklyCloudSecretStatusText));
         OnPropertyChanged(nameof(LinklyCloudCredentialStatusText));
+        OnPropertyChanged(nameof(LinklyTestActionText));
         OnPropertyChanged(nameof(ReceiptPrinterTitleText));
         OnPropertyChanged(nameof(SquareTokenStatusText));
         OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
@@ -1209,6 +1245,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         RaiseCommandStates();
         OnPropertyChanged(nameof(SelectedLinklyEnvironment));
         OnPropertyChanged(nameof(SelectedEnvironment));
+        RaiseLinklyTestPresentationProperties();
     }
 
     partial void OnHasSavedSquareTokenChanged(bool value)
@@ -1231,6 +1268,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsLinklyCloudDirectSyncMode));
         OnPropertyChanged(nameof(IsLinklyCloudBackendAsyncMode));
         OnPropertyChanged(nameof(IsLinklyStandardActionMode));
+        RaiseLinklyTestPresentationProperties();
     }
 
     private void SelectLinklyPriorityMode(LinklyModePriorityItem? item)
@@ -1552,6 +1590,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _squareState.LoadedConfiguration = _linklyState.LoadedConfiguration;
         _syncingLinkly = false;
         RaiseActivePaymentProviderProperties();
+        RaiseLinklyTestPresentationProperties();
     }
 
     private void SyncLinklyInputs()
@@ -1601,6 +1640,24 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _linklyTestStatusArgs = args;
         _linklyTestStatusOverride = null;
         LinklyTestStatusMessage = Format(key, args);
+    }
+
+    private void SetLinklyTestValidationStatus(string key)
+    {
+        SetStatus(key);
+        SetLinklyTestStatus(key);
+    }
+
+    private (LinklySettingsMode Mode, CardTerminalEnvironment Environment, string Host, string Port, string Timeout)
+        CaptureLinklyTestInputs()
+    {
+        return (PrimaryLinklyMode, SelectedLinklyEnvironment, LinklyHostText, LinklyPortText, TimeoutSecondsText);
+    }
+
+    private void RaiseLinklyTestPresentationProperties()
+    {
+        OnPropertyChanged(nameof(IsLinklySandboxLocalIpMode));
+        OnPropertyChanged(nameof(LinklyTestActionText));
     }
 
     private void SetLinklyTestStatusOverride(string statusText)

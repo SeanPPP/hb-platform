@@ -405,6 +405,29 @@ public sealed class LinklyTerminalDialogServiceTests
     }
 
     [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var service = new WpfLinklyTerminalDialogService(localization);
+        var changeCount = 0;
+        service.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            service.Dispose();
+            service.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
+    [Fact]
     public async Task CloseAsync_hides_presenter_and_clears_state()
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());

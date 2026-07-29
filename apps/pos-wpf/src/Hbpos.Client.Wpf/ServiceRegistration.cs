@@ -44,6 +44,7 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<IAppShutdownCoordinator, AppShutdownCoordinator>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
         services.AddSingleton<IEmergencyLoginPublicKeyCache, EmergencyLoginPublicKeyCache>();
         services.AddHttpClient<IEmergencyLoginPublicKeyApiClient, EmergencyLoginPublicKeyApiClient>(client =>
@@ -138,6 +139,13 @@ public static class ServiceRegistration
         services.AddSingleton<ILocalSquarePaymentAttemptRepository, LocalSquarePaymentAttemptRepository>();
         services.AddSingleton<ISquarePaymentAttemptContextAccessor, SquarePaymentAttemptContextAccessor>();
         services.AddSingleton<ILocalInstallmentOrderRepository, LocalInstallmentOrderRepository>();
+        services.AddSingleton<ILocalInstallmentOperationRepository, LocalInstallmentOperationRepository>();
+        services.AddSingleton<LocalFinancialSupervisorResolutionRepository>();
+        services.AddSingleton(sp => new FinancialSupervisorAuditReplayService(
+            sp.GetRequiredService<LocalFinancialSupervisorResolutionRepository>(),
+            sp.GetRequiredService<ClientLogOutboxStore>()));
+        services.AddSingleton<FinancialSupervisorAuditReplayHostedService>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FinancialSupervisorAuditReplayHostedService>());
         services.AddSingleton<ILocalOrderUploadRepository, LocalOrderUploadRepository>();
         services.AddSingleton<ISuspendedOrderRepository, SuspendedOrderRepository>();
         services.AddSingleton<ISyncQueueRepository, SyncQueueRepository>();
@@ -290,6 +298,9 @@ public static class ServiceRegistration
             sp.GetRequiredService<IDeviceAuthorizationProtector>(),
             sp.GetRequiredService<ILocalizationService>(),
             endpointState: sp.GetRequiredService<ApiRuntimeEndpointState>()));
+        services.AddSingleton<ICardPaymentResultPolicy, LinklyCardPaymentResultPolicy>();
+        services.AddSingleton<ICardPaymentResultPolicy, SquareCardPaymentResultPolicy>();
+        services.AddSingleton<ICardPaymentResultPolicy, FallbackCardPaymentResultPolicy>();
         services.AddSingleton<ICashPaymentWorkflowService, CashPaymentWorkflowService>();
         services.AddSingleton<CardPaymentRecoveryService>();
         services.AddSingleton<ISquarePaymentRecoveryService, SquarePaymentRecoveryService>();
@@ -307,6 +318,7 @@ public static class ServiceRegistration
         services.AddSingleton<IDailyClosePrintService, DailyClosePrintService>();
         services.AddSingleton<IOrderUploadService, OrderUploadService>();
         services.AddSingleton<IOrderUploadExecutionService, OrderUploadExecutionService>();
+        services.AddSingleton<IInstallmentOperationService, InstallmentOperationService>();
         services.AddSingleton<IInstallmentOrderService, InstallmentOrderService>();
         services.AddSingleton<ICardTerminalSettingsStore>(sp => new CardTerminalSettingsStore(
             sp.GetRequiredService<ILocalAppSettingsRepository>(),

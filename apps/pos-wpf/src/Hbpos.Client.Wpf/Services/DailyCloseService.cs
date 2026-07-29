@@ -161,7 +161,11 @@ public sealed class DailyCloseService(
         DateTime businessDate,
         CancellationToken cancellationToken = default)
     {
-        return repository.LoadReportAsync(session, businessDate.Date, cancellationToken);
+        var sessionSnapshot = session with { };
+        var businessDateSnapshot = businessDate.Date;
+        return Task.Run(
+            () => repository.LoadReportAsync(sessionSnapshot, businessDateSnapshot, cancellationToken),
+            cancellationToken);
     }
 
     public async Task<DailyCloseArchive> SaveAsync(
@@ -170,10 +174,18 @@ public sealed class DailyCloseService(
         IReadOnlyList<CashDenominationCount> cashCounts,
         CancellationToken cancellationToken = default)
     {
-        var report = await repository.LoadReportAsync(session, businessDate.Date, cancellationToken);
-        var archive = await repository.SaveAsync(report, NormalizeCounts(cashCounts), cancellationToken);
-        await TryCheckpointWalAfterDailyCloseAsync(cancellationToken);
-        return archive;
+        var sessionSnapshot = session with { };
+        var businessDateSnapshot = businessDate.Date;
+        var cashCountsSnapshot = NormalizeCounts(cashCounts).ToArray();
+
+        return await Task.Run(async () =>
+        {
+            var report = await repository.LoadReportAsync(sessionSnapshot, businessDateSnapshot, cancellationToken);
+            var archive = await repository.SaveAsync(report, cashCountsSnapshot, cancellationToken);
+            // SaveAsync 已提交后不能再把调用方取消报告成“日结未保存”。
+            await TryCheckpointWalAfterDailyCloseAsync(CancellationToken.None);
+            return archive;
+        }, cancellationToken);
     }
 
     public Task<IReadOnlyList<DailyCloseArchive>> GetArchivesAsync(
@@ -181,7 +193,11 @@ public sealed class DailyCloseService(
         DateTime businessDate,
         CancellationToken cancellationToken = default)
     {
-        return repository.GetArchivesAsync(session, businessDate.Date, cancellationToken);
+        var sessionSnapshot = session with { };
+        var businessDateSnapshot = businessDate.Date;
+        return Task.Run(
+            () => repository.GetArchivesAsync(sessionSnapshot, businessDateSnapshot, cancellationToken),
+            cancellationToken);
     }
 
     private async Task TryCheckpointWalAfterDailyCloseAsync(CancellationToken cancellationToken)
@@ -196,7 +212,7 @@ public sealed class DailyCloseService(
             // 日结完成后是低频维护点，checkpoint 失败不能回滚已经保存的日结记录。
             await checkpointService.CheckpointWalAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             ConsoleLog.WriteError(
                 "SQLite",

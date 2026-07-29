@@ -175,6 +175,81 @@ public sealed class SuspendedOrderServiceTests
     }
 
     [Fact]
+    public async Task RecallOrderAsync_finishes_status_commit_when_caller_cancels_after_cart_restore()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+
+            await schema.InitializeAsync();
+            cart.AddItem(CreateItem(productCode: "SKU-CANCEL-RECALL", lookupCode: "cancel-recall", price: 8m));
+            var suspended = await service.SuspendCurrentOrderAsync(CreateSession());
+            using var callerCancellation = new CancellationTokenSource();
+            var interceptingRepository = new InterceptingSuspendedOrderRepository(repository)
+            {
+                BeforeMarkStatus = callerCancellation.Cancel
+            };
+
+            var recalled = await new SuspendedOrderService(interceptingRepository, cart)
+                .RecallOrderAsync(suspended.SuspendedOrderGuid, callerCancellation.Token);
+
+            Assert.True(callerCancellation.IsCancellationRequested);
+            Assert.False(interceptingRepository.MarkStatusTokenCanBeCanceled);
+            Assert.Equal(SuspendedOrderStatus.Recalled, recalled.Status);
+            Assert.Single(cart.Lines);
+            Assert.Equal(
+                SuspendedOrderStatus.Recalled,
+                (await repository.GetAsync(suspended.SuspendedOrderGuid))!.Status);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task RecallOrderAsync_clears_restored_cart_when_status_commit_fails()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+
+            await schema.InitializeAsync();
+            cart.AddItem(CreateItem(productCode: "SKU-FAILED-RECALL", lookupCode: "failed-recall", price: 8m));
+            var suspended = await service.SuspendCurrentOrderAsync(CreateSession());
+            var interceptingRepository = new InterceptingSuspendedOrderRepository(repository)
+            {
+                MarkStatusException = new SqliteException("simulated status write failure", 5)
+            };
+
+            await Assert.ThrowsAsync<SqliteException>(() =>
+                new SuspendedOrderService(interceptingRepository, cart)
+                    .RecallOrderAsync(suspended.SuspendedOrderGuid));
+
+            Assert.True(cart.IsEmpty);
+            Assert.Equal(
+                SuspendedOrderStatus.Pending,
+                (await repository.GetAsync(suspended.SuspendedOrderGuid))!.Status);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task RecallOrderAsync_preserves_automatic_promotion_discount_and_recalculates_after_edit()
     {
         var databasePath = CreateTempDatabasePath();
@@ -418,6 +493,44 @@ public sealed class SuspendedOrderServiceTests
             {
                 File.Delete(path);
             }
+        }
+    }
+
+    private sealed class InterceptingSuspendedOrderRepository(ISuspendedOrderRepository inner)
+        : ISuspendedOrderRepository
+    {
+        public Action? BeforeMarkStatus { get; init; }
+
+        public Exception? MarkStatusException { get; init; }
+
+        public bool MarkStatusTokenCanBeCanceled { get; private set; }
+
+        public Task SaveAsync(SuspendedOrder order, CancellationToken cancellationToken = default) =>
+            inner.SaveAsync(order, cancellationToken);
+
+        public Task<IReadOnlyList<SuspendedOrderSummary>> GetPendingAsync(
+            string storeCode,
+            string? deviceCode = null,
+            string? keyword = null,
+            int take = 100,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPendingAsync(storeCode, deviceCode, keyword, take, cancellationToken);
+
+        public Task<SuspendedOrder?> GetAsync(
+            Guid suspendedOrderGuid,
+            CancellationToken cancellationToken = default) =>
+            inner.GetAsync(suspendedOrderGuid, cancellationToken);
+
+        public Task MarkStatusAsync(
+            Guid suspendedOrderGuid,
+            SuspendedOrderStatus status,
+            CancellationToken cancellationToken = default)
+        {
+            MarkStatusTokenCanBeCanceled = cancellationToken.CanBeCanceled;
+            BeforeMarkStatus?.Invoke();
+            return MarkStatusException is null
+                ? inner.MarkStatusAsync(suspendedOrderGuid, status, cancellationToken)
+                : Task.FromException(MarkStatusException);
         }
     }
 

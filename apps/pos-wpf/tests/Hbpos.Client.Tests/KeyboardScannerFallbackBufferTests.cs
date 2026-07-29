@@ -55,6 +55,7 @@ public sealed class KeyboardScannerFallbackBufferTests
 
         Assert.True(guard.TryAccept("ABC123", "raw", now));
         Assert.False(guard.TryAccept("ABC123", "keyboard-fallback", now.AddMilliseconds(10)));
+        Assert.False(guard.TryAccept("ABC123", "keyboard-fallback", now.AddMilliseconds(180)));
     }
 
     [Fact]
