@@ -28,6 +28,8 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@react-native-community/datetimepicker");
+
 describe("DailyCloseScreen", () => {
   it("英文界面只显示英文日结文案", async () => {
     mockLanguage = "en";
@@ -173,12 +175,13 @@ describe("DailyCloseScreen", () => {
     dismissKeyboard.mockRestore();
   });
 
-  it("iOS 只使用滚动 inset，并把营业日和当前点钞输入滚动到可见区域", async () => {
+  it("营业日打开日期弹层并关闭键盘，只有点钞输入需要滚动到可见区域", async () => {
     const presenter = new ScreenPresenter();
     const revealFocusedInput = jest.spyOn(
       ScrollView.prototype,
       "scrollResponderScrollNativeHandleToKeyboard",
     );
+    const dismissKeyboard = jest.spyOn(Keyboard, "dismiss");
     const screen = await render(<DailyCloseScreen presenter={presenter} />);
 
     expect(DAILY_CLOSE_KEYBOARD_AVOIDER_ENABLED).toBe(Platform.OS !== "ios");
@@ -197,17 +200,47 @@ describe("DailyCloseScreen", () => {
     expect(summaryScroll.props.keyboardDismissMode).toBe("interactive");
     expect(summaryScroll.props.keyboardShouldPersistTaps).toBe("handled");
 
-    await fireEvent(screen.getByTestId("daily-close-business-date"), "focus", {
-      target: 101,
-    });
+    dismissKeyboard.mockClear();
+    await fireEvent.press(screen.getByTestId("daily-close-business-date"));
+    expect(dismissKeyboard).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByTestId("daily-close-business-date-modal"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("daily-close-business-date").props.onChangeText,
+    ).toBeUndefined();
+
     await fireEvent(screen.getByTestId("daily-close-count-10000"), "focus", {
       target: 202,
     });
-    expect(revealFocusedInput).toHaveBeenNthCalledWith(1, 101, 16, true);
-    expect(revealFocusedInput).toHaveBeenNthCalledWith(2, 202, 16, true);
+    expect(revealFocusedInput).toHaveBeenCalledTimes(1);
+    expect(revealFocusedInput).toHaveBeenCalledWith(202, 16, true);
 
     await screen.unmount();
     revealFocusedInput.mockRestore();
+    dismissKeyboard.mockRestore();
+  });
+
+  it("选择营业日后仍由刷新提交并重新加载汇总", async () => {
+    const presenter = new ScreenPresenter();
+    const screen = await render(<DailyCloseScreen presenter={presenter} />);
+    await waitFor(() => expect(presenter.loadCalls).toBe(1));
+
+    await fireEvent.press(screen.getByTestId("daily-close-business-date"));
+    await fireEvent(
+      screen.getByTestId("daily-close-business-date-picker"),
+      "change",
+      { type: "set" },
+      new Date(2026, 6, 27, 12),
+    );
+    await fireEvent.press(
+      screen.getByTestId("daily-close-business-date-confirm"),
+    );
+    expect(presenter.businessDates).toEqual([]);
+
+    await fireEvent.press(screen.getByTestId("daily-close-refresh"));
+    expect(presenter.businessDates).toEqual(["2026-07-27"]);
+    expect(presenter.loadCalls).toBe(2);
   });
 
   it("仅 View 权限隐藏保存和补打，但仍显示汇总与历史归档", async () => {
@@ -226,10 +259,12 @@ describe("DailyCloseScreen", () => {
 });
 
 class ScreenPresenter implements DailyCloseScreenPresenter {
+  public readonly businessDates: string[] = [];
   public readonly counts: {
     denominationCents: number;
     quantity: number;
   }[] = [];
+  public loadCalls = 0;
   public saveCalls = 0;
   private readonly listeners = new Set<() => void>();
   private state: DailyCloseState;
@@ -275,9 +310,12 @@ class ScreenPresenter implements DailyCloseScreenPresenter {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
-  public async load() {}
+  public async load() {
+    this.loadCalls += 1;
+  }
   public destroy() {}
   public setBusinessDate(value: string) {
+    this.businessDates.push(value);
     this.patch({ businessDate: value });
     return true;
   }

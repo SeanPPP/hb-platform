@@ -30,6 +30,8 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@react-native-community/datetimepicker");
+
 function order(
   overrides: Partial<LocalSyncHistoryOrder> = {},
 ): LocalSyncHistoryOrder {
@@ -171,7 +173,75 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+async function chooseDate(
+  screen: Awaited<ReturnType<typeof render>>,
+  testID: string,
+  date: Date,
+) {
+  await fireEvent.press(screen.getByTestId(testID));
+  await fireEvent(
+    screen.getByTestId(`${testID}-picker`),
+    "change",
+    { type: "set" },
+    date,
+  );
+  await fireEvent.press(screen.getByTestId(`${testID}-confirm`));
+}
+
 describe("SyncHistoryScreen", () => {
+  it("空日期保持不限筛选，选择与清除都不暴露文本输入", async () => {
+    const port = new ScreenHistoryPort([order()]);
+    const presenter = screenPresenter(port);
+    const screen = await render(
+      <SyncHistoryScreen
+        onExport={jest.fn<(serializedJson: string) => void>()}
+        presenter={presenter}
+      />,
+    );
+    await screen.findByTestId("sync-history-row-order-100");
+
+    expect(screen.getAllByText("Any date")).toHaveLength(2);
+    expect(
+      screen.getByTestId("sync-history-date-from").props.onChangeText,
+    ).toBeUndefined();
+    expect(
+      screen.getByTestId("sync-history-date-to").props.onChangeText,
+    ).toBeUndefined();
+
+    await fireEvent.press(screen.getByTestId("sync-history-apply-filters"));
+    await waitFor(() => {
+      expect(port.queries.at(-1)?.filters).toMatchObject({
+        dateFromIso: null,
+        dateToIso: null,
+      });
+    });
+
+    await chooseDate(
+      screen,
+      "sync-history-date-from",
+      new Date(2026, 6, 27, 12),
+    );
+    await chooseDate(
+      screen,
+      "sync-history-date-to",
+      new Date(2026, 6, 28, 12),
+    );
+    expect(
+      screen.getByTestId("sync-history-retransmit-range").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+
+    await fireEvent.press(screen.getByTestId("sync-history-date-from"));
+    await fireEvent.press(
+      screen.getByTestId("sync-history-date-from-clear"),
+    );
+    expect(
+      screen.getByTestId("sync-history-retransmit-range").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+    expect(screen.getByText("Any date")).toBeTruthy();
+  });
+
   it("筛选与日期重传共用注入的门店时区业务日 UTC 边界", async () => {
     const port = new ScreenHistoryPort([
       order({
@@ -189,13 +259,15 @@ describe("SyncHistoryScreen", () => {
     );
     await screen.findByTestId("sync-history-row-brisbane-midnight");
 
-    await fireEvent.changeText(
-      screen.getByTestId("sync-history-date-from"),
-      "2026-07-28",
+    await chooseDate(
+      screen,
+      "sync-history-date-from",
+      new Date(2026, 6, 28, 12),
     );
-    await fireEvent.changeText(
-      screen.getByTestId("sync-history-date-to"),
-      "2026-07-28",
+    await chooseDate(
+      screen,
+      "sync-history-date-to",
+      new Date(2026, 6, 28, 12),
     );
     await fireEvent.press(screen.getByTestId("sync-history-apply-filters"));
 
@@ -233,13 +305,15 @@ describe("SyncHistoryScreen", () => {
     await screen.findByTestId("sync-history-row-order-100");
     const initialQueryCount = port.queries.length;
 
-    await fireEvent.changeText(
-      screen.getByTestId("sync-history-date-from"),
-      "2026-07-28",
+    await chooseDate(
+      screen,
+      "sync-history-date-from",
+      new Date(2026, 6, 28, 12),
     );
-    await fireEvent.changeText(
-      screen.getByTestId("sync-history-date-to"),
-      "2026-07-28",
+    await chooseDate(
+      screen,
+      "sync-history-date-to",
+      new Date(2026, 6, 28, 12),
     );
     await fireEvent.press(screen.getByTestId("sync-history-apply-filters"));
 

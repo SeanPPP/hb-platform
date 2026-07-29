@@ -6,7 +6,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type StyleProp,
   type ViewStyle,
@@ -30,6 +29,7 @@ import {
   type SyncHistoryRow,
 } from "./sync-history-presenter";
 
+import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
 import { posColors } from "@/ui/theme";
 
 export const SYNC_HISTORY_MIN_TOUCH_TARGET = 44;
@@ -205,15 +205,15 @@ export function SyncHistoryScreen({
 
           <DateField
             label={t("filters.dateFrom")}
-            onChangeText={setDateFrom}
-            placeholder={t("filters.datePlaceholder")}
+            locale={locale}
+            onChange={setDateFrom}
             testID="sync-history-date-from"
             value={dateFrom}
           />
           <DateField
             label={t("filters.dateTo")}
-            onChangeText={setDateTo}
-            placeholder={t("filters.datePlaceholder")}
+            locale={locale}
+            onChange={setDateTo}
             testID="sync-history-date-to"
             value={dateTo}
           />
@@ -241,8 +241,8 @@ export function SyncHistoryScreen({
             disabled={
               loading ||
               !canManualRetransmit ||
-              !dateFrom.trim() ||
-              !dateTo.trim()
+              !dateFrom ||
+              !dateTo
             }
             label={t("action.retransmitRange")}
             onPress={retransmitDateRange}
@@ -549,31 +549,25 @@ function FilterChip({
 
 function DateField({
   label,
-  onChangeText,
-  placeholder,
+  locale,
+  onChange,
   testID,
   value,
 }: Readonly<{
   label: string;
-  onChangeText(value: string): void;
-  placeholder: string;
+  locale: SyncHistoryLocale;
+  onChange(value: string | null): void;
   testID: string;
-  value: string;
+  value: string | null;
 }>) {
   return (
     <View style={styles.dateField}>
       <Text style={styles.sectionLabel}>{label}</Text>
-      <TextInput
+      <PosDatePickerField
         accessibilityLabel={label}
-        autoCapitalize="none"
-        autoCorrect={false}
-        inputMode="numeric"
-        maxLength={10}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="#7B8793"
-        selectionColor={posColors.orange}
-        style={styles.dateInput}
+        allowClear
+        locale={locale}
+        onChange={onChange}
         testID={testID}
         value={value}
       />
@@ -737,14 +731,14 @@ function gateCopyKey(
 }
 
 function buildFilters(
-  dateFrom: string,
-  dateTo: string,
+  dateFrom: string | null,
+  dateTo: string | null,
   states: readonly LocalSyncHistoryOrderState[],
   businessTimeZone?: string,
 ): LocalSyncHistoryFilters {
   const range = businessDayUtcRange(
-    dateFrom,
-    dateTo,
+    dateFrom ?? "",
+    dateTo ?? "",
     businessTimeZone,
   );
   if (!range) {
@@ -761,8 +755,8 @@ function buildFilters(
   };
 }
 
-function dateInputValue(value: string | null): string {
-  return value?.slice(0, 10) ?? "";
+function dateInputValue(value: string | null): string | null {
+  return value?.slice(0, 10) ?? null;
 }
 
 function formatAud(valueCents: number, locale: SyncHistoryLocale): string {
@@ -880,17 +874,6 @@ const styles = StyleSheet.create({
   },
   dateField: {
     gap: 6,
-  },
-  dateInput: {
-    backgroundColor: posColors.surface,
-    borderColor: posColors.border,
-    borderRadius: 4,
-    borderWidth: 1,
-    color: posColors.ink,
-    fontSize: 15,
-    fontVariant: ["tabular-nums"],
-    minHeight: SYNC_HISTORY_MIN_TOUCH_TARGET,
-    paddingHorizontal: 12,
   },
   deviceLine: {
     color: posColors.mutedInk,

@@ -28,6 +28,7 @@ import type {
   RemoteOrderHistorySummary,
   RemoteOrderPaymentPreview,
 } from "@/core/contracts/remote-history";
+import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
 import { posColors } from "@/ui/theme";
 
 export const REMOTE_HISTORY_MIN_TOUCH_TARGET = 44;
@@ -112,17 +113,25 @@ export function RemoteHistoryScreen({
       </View>
 
       <View style={styles.filters}>
-        <FilterField
+        <DateFilterField
           label={t("filters.from")}
-          onChangeText={setFromDate}
-          placeholder={t("filters.datePlaceholder")}
+          locale={locale}
+          onChange={(value) => {
+            if (!value) return;
+            setFromDate(value);
+            setDateInvalid(false);
+          }}
           testID="remote-history-date-from"
           value={fromDate}
         />
-        <FilterField
+        <DateFilterField
           label={t("filters.to")}
-          onChangeText={setToDate}
-          placeholder={t("filters.datePlaceholder")}
+          locale={locale}
+          onChange={(value) => {
+            if (!value) return;
+            setToDate(value);
+            setDateInvalid(false);
+          }}
           testID="remote-history-date-to"
           value={toDate}
         />
@@ -541,6 +550,33 @@ function FilterField({
         placeholder={placeholder}
         placeholderTextColor={posColors.mutedInk}
         style={styles.input}
+        testID={testID}
+        value={value}
+      />
+    </View>
+  );
+}
+
+function DateFilterField({
+  label,
+  locale,
+  onChange,
+  testID,
+  value,
+}: Readonly<{
+  label: string;
+  locale: RemoteHistoryLocale;
+  onChange(value: string | null): void;
+  testID: string;
+  value: string;
+}>) {
+  return (
+    <View style={styles.filterField}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <PosDatePickerField
+        accessibilityLabel={label}
+        locale={locale}
+        onChange={onChange}
         testID={testID}
         value={value}
       />

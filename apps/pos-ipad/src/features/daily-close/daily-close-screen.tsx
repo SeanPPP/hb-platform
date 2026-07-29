@@ -39,6 +39,7 @@ import type {
   DailyCloseArchive,
   DailyCloseTenderBreakdown,
 } from "@/core/contracts";
+import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
 import { posColors } from "@/ui/theme";
 
 export const DAILY_CLOSE_MIN_TOUCH_TARGET = 44;
@@ -188,16 +189,16 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                   </Text>
                 </View>
                 <View style={styles.dateControls}>
-                  <TextInput
+                  <PosDatePickerField
                     accessibilityLabel={dailyCloseText(
                       locale,
                       "businessDate.accessibility",
                     )}
-                    editable={!state.busy}
-                    onChangeText={setBusinessDate}
-                    onFocus={revealSummaryInput}
-                    placeholder="YYYY-MM-DD"
-                    style={styles.dateInput}
+                    disabled={state.busy}
+                    locale={locale}
+                    onChange={(value) => {
+                      if (value) setBusinessDate(value);
+                    }}
                     testID="daily-close-business-date"
                     value={businessDate}
                   />
@@ -814,18 +815,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  dateInput: {
-    minHeight: DAILY_CLOSE_MIN_TOUCH_TARGET,
-    minWidth: 142,
-    borderColor: posColors.border,
-    borderRadius: 10,
-    borderWidth: 1,
-    color: posColors.ink,
-    fontSize: 15,
-    fontVariant: ["tabular-nums"],
-    paddingHorizontal: 12,
-    paddingVertical: 9,
   },
   tenderCard: {
     borderColor: posColors.border,

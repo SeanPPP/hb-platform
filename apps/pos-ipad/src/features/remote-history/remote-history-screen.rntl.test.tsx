@@ -25,6 +25,8 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@react-native-community/datetimepicker");
+
 const port: RemoteOrderHistoryPort = {
   async list() {
     return [
@@ -151,6 +153,76 @@ test("筛选只提交日期、终端和关键词，可信门店仍由 presenter 
       keyword: "930001",
     }),
   );
+});
+
+test("日期只能通过弹层选择，并按本地自然日边界提交", async () => {
+  const presenter = new RemoteHistoryPresenter({
+    port,
+    trustedStoreCode: "S1",
+    currentDeviceCode: "IPAD-1",
+    online: true,
+    permissionCodes: [REMOTE_HISTORY_VIEW_PERMISSION],
+    now: () => new Date("2026-07-27T05:00:00Z"),
+  });
+  const setFilters = jest.spyOn(presenter, "setFilters");
+  const screen = await render(<RemoteHistoryScreen presenter={presenter} />);
+  await screen.findByTestId("remote-history-list");
+
+  expect(
+    screen.getByTestId("remote-history-date-from").props.onChangeText,
+  ).toBeUndefined();
+  expect(
+    screen.getByTestId("remote-history-date-to").props.onChangeText,
+  ).toBeUndefined();
+
+  await fireEvent.press(screen.getByTestId("remote-history-date-from"));
+  await fireEvent(
+    screen.getByTestId("remote-history-date-from-picker"),
+    "change",
+    { type: "set" },
+    new Date(2026, 6, 26, 12),
+  );
+  await fireEvent.press(
+    screen.getByTestId("remote-history-date-from-confirm"),
+  );
+  await fireEvent.press(screen.getByTestId("remote-history-date-to"));
+  await fireEvent(
+    screen.getByTestId("remote-history-date-to-picker"),
+    "change",
+    { type: "set" },
+    new Date(2026, 6, 28, 12),
+  );
+  await fireEvent.press(
+    screen.getByTestId("remote-history-date-to-confirm"),
+  );
+  await fireEvent.press(
+    screen.getByTestId("remote-history-apply-filters"),
+  );
+
+  expect(setFilters).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      soldFromIso: new Date(2026, 6, 26, 0, 0, 0, 0).toISOString(),
+      soldToIso: new Date(2026, 6, 28, 23, 59, 59, 999).toISOString(),
+    }),
+  );
+
+  await fireEvent.press(screen.getByTestId("remote-history-date-from"));
+  await fireEvent(
+    screen.getByTestId("remote-history-date-from-picker"),
+    "change",
+    { type: "set" },
+    new Date(2026, 6, 29, 12),
+  );
+  await fireEvent.press(
+    screen.getByTestId("remote-history-date-from-confirm"),
+  );
+  setFilters.mockClear();
+  await fireEvent.press(
+    screen.getByTestId("remote-history-apply-filters"),
+  );
+
+  expect(setFilters).not.toHaveBeenCalled();
+  expect(screen.getByTestId("remote-history-date-invalid")).toBeTruthy();
 });
 
 test("离线状态明确说明远程历史只在线可用", async () => {
