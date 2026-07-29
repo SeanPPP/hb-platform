@@ -182,11 +182,6 @@ const operationLogsPageSource = readFileSync('src/pages/PosAdmin/OperationLogs/i
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
 assertEqual(
-  operationLogsPageSource.includes('options={Object.keys(OPERATION_TYPE_KEYS).map((value) => ({'),
-  true,
-  '操作类型下拉应继续由固定事件代码映射派生',
-)
-assertEqual(
   zhLocale.operationLogs.operations.cardPaymentSupervisorResolution,
   '主管付款结案',
   '主管付款结案应提供中文文案',

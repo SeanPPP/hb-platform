@@ -5,9 +5,10 @@
 - 日期：2026-07-29
 - 仓库：`D:\DevRepos\hb-platform`
 - 分支：`main`
-- 当前 HEAD：`080a6da3`
-- 工作区：脏工作区，创建本文档前共 106 个变更项
-- 提交状态：本轮未提交、未推送
+- 云端闭环基线：`bb5ee1b9`，已推送至 `origin/main`
+- 审查修复：本文随本轮后续修复提交更新，具体提交见第 10.3 节
+- 工作区：`AGENTS.md`、`CLAUDE.md` 为未提交的工具规则漂移，不属于本轮修复
+- 提交结构：云端闭环基线、五个审查修复提交，以及本文档与 Web 验证提交
 
 本轮已完成“主管付款结案备注改为选填”的客户端修改与验证。金融安全条件没有放宽：
 
@@ -17,7 +18,7 @@
 - 备注仍限制为最多 500 个字符。
 - 刷卡退款和分期退款的主管原因仍必填。
 
-当前存在一个必须后续处理的跨端兼容缺口：主管付款结案审计会保存到本地并进入上传队列，但会被现有 Hbpos.Api 永久拒绝，因此暂时无法在云端“员工操作日志”查看。
+云端闭环已在基线 `bb5ee1b9` 完成。第 4-8 节保留为实施前诊断快照，当前实现、恢复结果和剩余生产验收统一以第 10 节为准。
 
 ## 2. 本轮已完成内容
 
@@ -112,7 +113,9 @@ apps/pos-wpf/src/Hbpos.Client.Wpf/Services/VoucherApiClient.cs:166
 trailing whitespace
 ```
 
-## 4. 当前审计数据链路
+## 4. 实施前审计数据链路快照
+
+> 本节至第 8 节记录 `bb5ee1b9` 实施前的诊断与待办，不代表当前实现状态。当前结论以第 10 节为准。
 
 主管付款结案成功后：
 
@@ -141,7 +144,7 @@ Properties:
 
 注意：`LocalFinancialSupervisorResolutions.AuditPersistedAt` 只表示 payload 已写入本地 outbox，不表示云端已经接收。
 
-## 5. 已确认的云端审计阻断
+## 5. 实施前已确认的云端审计阻断
 
 服务端文件：
 
@@ -162,7 +165,7 @@ operationType is not supported
 
 客户端随后会将该 outbox 事件标记为 `Rejected`，不会自动重试。即使只放行 operation type，仍会继续遇到 `INVALID_OUTCOME`；即使再修复 outcome，未加入白名单的证据和金融参考号仍会被服务端丢弃。
 
-## 6. 当前在哪里查看
+## 6. 实施前查看路径
 
 ### 6.1 POS 同步中心
 
@@ -257,11 +260,11 @@ Permissions.PosTerminal.Audit.View
 - `apps/web/src/pages/PosAdmin/OperationLogs/operationLogsLogic.ts`
 - `services/backend/BlazorApp.Api/Controllers/React/PosOperationAuditController.cs`
 
-当前由于服务端拒绝，云端页面查不到这些主管付款结案事件。
+实施前由于服务端拒绝，云端页面查不到这些主管付款结案事件。
 
-此外，Web 的 `OPERATION_TYPE_KEYS` 尚未包含新事件类型。即使服务端放行，页面也会显示原始代码 `CARD_PAYMENT_SUPERVISOR_RESOLUTION`，并且操作类型下拉框不能直接选择该类型。
+实施前 Web 的 `OPERATION_TYPE_KEYS` 尚未包含新事件类型。即使服务端放行，页面也会显示原始代码 `CARD_PAYMENT_SUPERVISOR_RESOLUTION`，并且操作类型下拉框不能直接选择该类型。
 
-## 7. 下一步最小修复清单
+## 7. 实施前最小修复清单（已完成）
 
 建议按以下顺序完成，不修改金融状态机：
 
@@ -285,7 +288,7 @@ Permissions.PosTerminal.Audit.View
    - Web 映射、筛选和详情展示测试。
    - 真实 SQLite outbox 从 Pending 到成功确认的集成测试。
 
-## 8. 后续验收标准
+## 8. 实施前验收清单
 
 - [ ] 主管付款结案事件不再出现 `INVALID_OPERATION_TYPE`。
 - [ ] 云端 `pos_operation_audit` 存在对应 `AuditEventId`。
@@ -299,11 +302,10 @@ Permissions.PosTerminal.Audit.View
 
 ## 9. 工作区注意事项
 
-- 当前工作区包含大量其他支付、生命周期、设置和性能修改。
+- `AGENTS.md`、`CLAUDE.md` 是本轮开始前已存在的工具规则漂移，不得纳入修复提交。
 - 不得使用 `git reset --hard`、`git checkout --` 或批量覆盖清理。
-- `LocalFinancialSupervisorResolutionRepository.cs` 及部分相关测试仍为未跟踪文件，是前序金融修复的一部分，不得遗漏。
 - 后续提交必须按任务路径精确暂存，并继续使用中文提交信息和 reasonix。
-- GitNexus 当前索引落后于工作区，曾返回旧的“备注必填”实现。涉及本交接内容时，应以当前源文件和测试结果为准；索引更新后再重新运行影响分析。
+- `.artifacts/**`、`apps/web/tmp/**`、`bin/**`、`obj/**`、本地日志和 SQLite 文件不得提交。
 
 ## 10. 2026-07-29 云端闭环续作
 
@@ -323,20 +325,39 @@ Permissions.PosTerminal.Audit.View
 - 服务端仅针对 `CARD_PAYMENT_SUPERVISOR_RESOLUTION` 兼容旧的三态 Outcome，并在入库时规范化为 `Succeeded`。
 - 不扩大全局 `AllowedOutcomes`，其他 operation type 仍只能使用 `Succeeded`、`Denied`、`Failed`。
 - 不自动修改本机 `hbpos_logs.db`，也不批量重排其他永久拒绝事件。
-- Hbpos.Api 发布后，在 POS“同步中心 -> 审计日志”中手动重试这 3 条记录；服务端会保留原 EventId，并将重复接收按既有幂等逻辑处理。
+- 2026-07-29 本地 API 恢复后已在 POS 中手动重试这 3 条记录；只读复制检查 `hbpos_logs.db` 时，`OperationAuditOutbox` 已清空。
+- POSM 只读精确查询已按原 EventId 找到这 3 条记录：`cb48082e-0745-4ee2-bbcc-81f43a96cff2`、`64cf8c8d-87f3-4591-9bcd-e20939e733b6`、`982a1917-f7d0-4b81-9b9b-670da7c64897`。三条均为 `CARD_PAYMENT_SUPERVISOR_RESOLUTION / Succeeded / ConfirmNotPaid`。
 
 ### 10.3 验证结果
 
+本轮代码审查修复提交：
+
 ```text
-CardPaymentRecoveryServiceTests：73/73 通过
+9190ab6a 修复退出审计与超时日志 reasonix
+05b8dcf5 修复扫码关闭线程归属 reasonix
+5c837727 恢复文件日志瞬时故障写入 reasonix
+d4562ff9 修复 Linkly 回滚凭据判代 reasonix
+c3cbfe58 修复设备注册迟到结果污染 reasonix
+```
+
+```text
+指定 7 组客户端聚焦回归：282/282 通过
+Hbpos.Client.Tests：2013/2013 通过
 OperationAuditIngestServiceTests：16/16 通过
 Web operation-logs 测试：通过
 WPF Release 构建：0 警告，0 错误
-Web production 构建：通过
+Web production 构建：通过（仅在当前进程提供构建校验占位配置，未写入配置文件）
+git diff --check：通过
 ```
 
-生产环境仍需在 Hbpos.Api 发布后完成以下验收：
+补充烟测证据：
 
-- [ ] 手动重试本机 3 条旧事件后，不再出现 `INVALID_OPERATION_TYPE` 或 `INVALID_OUTCOME`。
-- [ ] 云端 `pos_operation_audit` 存在对应原 EventId，Outcome 为 `Succeeded`，ReasonCode 保留主管决定。
-- [ ] Web 可按“主管付款结案”筛选并查看主管身份、备注及安全业务属性。
+- 本地 `OperationAuditOutbox` 只读快照为 0；三个旧 EventId 已在 POSM 中确认，Outcome 和 ReasonCode 均符合预期。
+- Web 浏览器已打开 `/pos-admin/operation-logs`，但当前浏览器会话停在登录页，因此没有绕过认证执行真实下拉交互；代码全集、映射键和中英文文案测试均已通过。
+- 独立只读代码复核发现的“相同时间戳回归缺口”和文档结论冲突均已修复，生产实现无剩余 correctness finding。
+
+本地 API 验证不等同于生产部署。生产环境仍需独立完成以下验收：
+
+- [ ] 发布生产 Hbpos.Api 与 Web，并完成健康检查和回滚路径确认。
+- [ ] 通过生产 API 新增一条主管付款结案事件，确认不再出现 `INVALID_OPERATION_TYPE` 或 `INVALID_OUTCOME`，重复提交原 EventId 为幂等 duplicate。
+- [ ] 在已认证 Web 会话中确认下拉存在“主管付款结案”和“Card Payment Supervisor Resolution”，并可筛选查看安全业务属性。
