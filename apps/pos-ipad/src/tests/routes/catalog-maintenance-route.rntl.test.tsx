@@ -9,6 +9,7 @@ let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockDownloadAndActivate = jest.fn();
 const mockGetCurrentCatalog = jest.fn();
+const mockCatalogRefresh = {};
 const mockInitializeCatalogMaintenance = jest.fn();
 const mockGetDeviceIdentity = jest.fn<
   () => Promise<Readonly<{
@@ -135,6 +136,7 @@ test("具备目录下载权限并复核设备身份后绑定固定门店 Port", 
   const presenter = mockScreenProps.presenter as {
     options: {
       authenticatedStoreCode: string;
+      coordinator: object;
       port: {
         getCurrentCatalog: typeof mockGetCurrentCatalog;
         downloadAndActivate: typeof mockDownloadAndActivate;
@@ -143,6 +145,7 @@ test("具备目录下载权限并复核设备身份后绑定固定门店 Port", 
   };
   expect(presenter.options).toEqual({
     authenticatedStoreCode: "S1",
+    coordinator: mockCatalogRefresh,
     port: {
       getCurrentCatalog: mockGetCurrentCatalog,
       downloadAndActivate: mockDownloadAndActivate,
@@ -198,6 +201,7 @@ function readyRuntime(
     state: { phase: "ready", device: "authorized-online" },
     services: {
       deviceSession,
+      catalogRefresh: mockCatalogRefresh,
       catalog: {
         getCurrentCatalog: mockGetCurrentCatalog,
         downloadAndActivate: mockDownloadAndActivate,

@@ -111,6 +111,7 @@ var P = {
   },
   LocalPurchase: {
     View: "LocalPurchase.View",
+    MobileView: "LocalPurchase.MobileView",
     Edit: "LocalPurchase.Edit",
     PushToHq: "LocalPurchase.PushToHq"
   },
@@ -383,7 +384,8 @@ function buildAccess(currentUser) {
   const isWarehouseStaffOnly = isWarehouseStaff && !isAdmin && !isWarehouseManager && (hasRole("WarehouseStaff") || hasRole("\u4ED3\u5E93\u5458\u5DE5"));
   const isStoreStaff = hasRole("StoreStaff") || hasRole("\u5E97\u94FA\u5458\u5DE5");
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager;
-  const onlyOrder = onlyRole("Order") || hasRole("\u8BA2\u8D27\u5458");
+  const orderRoleNames = currentUser.roleNames ?? [];
+  const onlyOrder = orderRoleNames.length > 0 && orderRoleNames.every((roleName) => ["order", "\u8BA2\u8D27\u5458"].includes(roleName.toLowerCase()));
   const managedStoreCodes = () => {
     if (isAdmin || isWarehouseManager) {
       return null;
@@ -471,7 +473,7 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessAdminShell = hasBackendNavigationAccess({
+  const canAccessAdminShell = !onlyOrder && hasBackendNavigationAccess({
     isAdmin,
     canAccessDashboard,
     canManageWarehouse,
@@ -1395,7 +1397,51 @@ async function main() {
     );
   });
   if (productAutoPricingColumnFailure) failures.push(productAutoPricingColumnFailure);
+  const productBatchBooleanSwitchFailure = await runTest("\u5546\u54C1\u666E\u901A\u6279\u91CF\u7F16\u8F91\u5E94\u4EE5\u5B57\u6BB5\u52FE\u9009\u914D\u5408\u5E03\u5C14\u5F00\u5173\u63D0\u4EA4", () => {
+    const openBatchEditStart = pageSource.indexOf("const openBatchEdit = () => {");
+    const openBatchEditEnd = pageSource.indexOf("\n  const setImageBatchTemplate", openBatchEditStart);
+    const openBatchEditSource = pageSource.slice(openBatchEditStart, openBatchEditEnd);
+    const handleBatchEditStart = pageSource.indexOf("const handleBatchEditSave = async () => {");
+    const handleBatchEditEnd = pageSource.indexOf("\n  const openHqSyncModal", handleBatchEditStart);
+    const handleBatchEditSource = pageSource.slice(handleBatchEditStart, handleBatchEditEnd);
+    const batchEditModalStart = pageSource.indexOf("<Modal\n        open={batchEditVisible}");
+    const batchEditModalEnd = pageSource.indexOf("<Modal\n        open={syncToStoreVisible}", batchEditModalStart);
+    const batchEditModalSource = pageSource.slice(batchEditModalStart, batchEditModalEnd);
+    const autoPricingFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.isAutoPricing', '\u81EA\u52A8\u5B9A\u4EF7')}>");
+    const specialProductFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.isSpecialProduct', '\u7279\u6B8A\u5546\u54C1')}>");
+    const activeFieldStart = batchEditModalSource.indexOf('<Form.Item name="isActive"', specialProductFieldStart);
+    const autoPricingFieldSource = batchEditModalSource.slice(autoPricingFieldStart, specialProductFieldStart);
+    const specialProductFieldSource = batchEditModalSource.slice(specialProductFieldStart, activeFieldStart);
+    assert(
+      openBatchEditSource.includes("batchEditForm.setFieldsValue({") && openBatchEditSource.includes("isAutoPricing: false") && openBatchEditSource.includes("isSpecialProduct: false"),
+      "\u6253\u5F00\u666E\u901A\u6279\u91CF\u7F16\u8F91\u65F6\u5E94\u628A\u4E24\u4E2A\u5E03\u5C14\u503C\u660E\u786E\u521D\u59CB\u5316\u4E3A false"
+    );
+    assert(
+      autoPricingFieldSource.includes('name="updateIsAutoPricing" valuePropName="checked"') && autoPricingFieldSource.includes("<Checkbox>") && autoPricingFieldSource.includes('name="isAutoPricing" valuePropName="checked" initialValue={false}') && autoPricingFieldSource.includes("<Switch") && autoPricingFieldSource.includes("checkedChildren={t('common.yes', '\u662F')}") && autoPricingFieldSource.includes("unCheckedChildren={t('common.no', '\u5426')}") && !autoPricingFieldSource.includes("<Select"),
+      "\u666E\u901A\u6279\u91CF\u7F16\u8F91\u7684\u81EA\u52A8\u5B9A\u4EF7\u5E94\u7531\u5B57\u6BB5\u52FE\u9009\u63A7\u5236\uFF0C\u5E76\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684\u662F/\u5426\u5F00\u5173"
+    );
+    assert(
+      specialProductFieldSource.includes('name="updateIsSpecialProduct" valuePropName="checked"') && specialProductFieldSource.includes("<Checkbox>") && specialProductFieldSource.includes('name="isSpecialProduct" valuePropName="checked" initialValue={false}') && specialProductFieldSource.includes("<Switch") && specialProductFieldSource.includes("checkedChildren={t('common.yes', '\u662F')}") && specialProductFieldSource.includes("unCheckedChildren={t('common.no', '\u5426')}") && !specialProductFieldSource.includes("<Select"),
+      "\u666E\u901A\u6279\u91CF\u7F16\u8F91\u7684\u7279\u6B8A\u5546\u54C1\u5E94\u7531\u5B57\u6BB5\u52FE\u9009\u63A7\u5236\uFF0C\u5E76\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684\u662F/\u5426\u5F00\u5173"
+    );
+    assert(
+      handleBatchEditSource.includes("isAutoPricing: values.updateIsAutoPricing ? !!values.isAutoPricing : undefined") && handleBatchEditSource.includes("isSpecialProduct: values.updateIsSpecialProduct ? !!values.isSpecialProduct : undefined"),
+      "\u666E\u901A\u6279\u91CF\u7F16\u8F91\u672A\u52FE\u9009\u5B57\u6BB5\u65F6\u5E94\u63D0\u4EA4 undefined\uFF0C\u52FE\u9009\u540E\u5173\u95ED/\u6253\u5F00\u5E94\u5206\u522B\u63D0\u4EA4 false/true"
+    );
+  });
+  if (productBatchBooleanSwitchFailure) failures.push(productBatchBooleanSwitchFailure);
   const storeRecordsBatchUpdateFailure = await runTest("\u5206\u5E97\u8BB0\u5F55\u5F39\u7A97\u5E94\u652F\u6301\u6279\u91CF\u4FEE\u6539\u5206\u5E97\u4E1A\u52A1\u5B57\u6BB5", () => {
+    const openBatchEditStart = pageSource.indexOf("const openStoreRecordBatchEdit = () => {");
+    const openBatchEditEnd = pageSource.indexOf("\n  const handleStoreRecordBatchEditSave", openBatchEditStart);
+    const openBatchEditSource = pageSource.slice(openBatchEditStart, openBatchEditEnd);
+    const batchEditModalStart = pageSource.indexOf("<Modal\n        open={storeRecordBatchEditVisible}");
+    const batchEditModalEnd = pageSource.indexOf("<Modal\n        open={setCodeVisible}", batchEditModalStart);
+    const batchEditModalSource = pageSource.slice(batchEditModalStart, batchEditModalEnd);
+    const autoPricingFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.autoPricing', '\u81EA\u52A8\u5B9A\u4EF7')}");
+    const specialProductFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.products.specialProduct', '\u7279\u6B8A\u5546\u54C1')}");
+    const activeFieldStart = batchEditModalSource.indexOf("<Form.Item label={t('posAdmin.cashierUsers.status', '\u72B6\u6001')}", specialProductFieldStart);
+    const autoPricingFieldSource = batchEditModalSource.slice(autoPricingFieldStart, specialProductFieldStart);
+    const specialProductFieldSource = batchEditModalSource.slice(specialProductFieldStart, activeFieldStart);
     assert(
       typeSource.includes("BatchUpdateProductStoreRecordsRequest") && typeSource.includes("BatchUpdateProductStoreRecordsResult") && typeSource.includes("purchasePrice?: number") && typeSource.includes("storeRetailPriceValue?: number") && typeSource.includes("discountRate?: number") && typeSource.includes("isAutoPricing?: boolean") && typeSource.includes("isSpecialProduct?: boolean") && typeSource.includes("isActive?: boolean"),
       "\u7C7B\u578B\u5C42\u5E94\u58F0\u660E\u5206\u5E97\u8BB0\u5F55\u6279\u91CF\u4FEE\u6539\u8BF7\u6C42/\u7ED3\u679C\uFF0C\u4EE5\u53CA\u516D\u4E2A\u53EF\u6539\u5B57\u6BB5"
@@ -1433,8 +1479,24 @@ async function main() {
       "\u6279\u91CF\u4FEE\u6539\u5B50\u5F39\u7A97\u5E94\u5305\u542B\u516D\u4E2A\u4E1A\u52A1\u5B57\u6BB5"
     );
     assert(
-      pageSource.includes("t('posAdmin.products.toggleFieldUpdate', '\u4FEE\u6539\u8BE5\u5B57\u6BB5')") && pageSource.includes("precision={2}") && pageSource.includes("precision={4}") && pageSource.includes("value: true, label: t('common.yes', '\u662F')") && pageSource.includes("value: false, label: t('common.no', '\u5426')"),
-      "\u6BCF\u4E2A\u5B57\u6BB5\u5E94\u7531\u201C\u4FEE\u6539\u8BE5\u5B57\u6BB5\u201D\u63A7\u5236\u7EB3\u5165 changes\uFF0C\u6570\u5B57\u7CBE\u5EA6\u4E0E\u5E03\u5C14\u9009\u9879\u8981\u660E\u786E"
+      pageSource.includes("t('posAdmin.products.toggleFieldUpdate', '\u4FEE\u6539\u8BE5\u5B57\u6BB5')") && pageSource.includes("precision={2}") && pageSource.includes("precision={4}"),
+      "\u6BCF\u4E2A\u5B57\u6BB5\u5E94\u7531\u201C\u4FEE\u6539\u8BE5\u5B57\u6BB5\u201D\u63A7\u5236\u7EB3\u5165 changes\uFF0C\u5E76\u4FDD\u7559\u6570\u5B57\u5B57\u6BB5\u7CBE\u5EA6"
+    );
+    assert(
+      openBatchEditSource.includes("storeRecordBatchEditForm.setFieldsValue({") && openBatchEditSource.includes("isAutoPricing: false") && openBatchEditSource.includes("isSpecialProduct: false"),
+      "\u6253\u5F00\u5206\u5E97\u8BB0\u5F55\u6279\u91CF\u4FEE\u6539\u65F6\u5E94\u628A\u4E24\u4E2A\u5E03\u5C14\u503C\u660E\u786E\u521D\u59CB\u5316\u4E3A false"
+    );
+    assert(
+      autoPricingFieldSource.includes('name="updateIsAutoPricing" valuePropName="checked"') && autoPricingFieldSource.includes('name="isAutoPricing" valuePropName="checked" initialValue={false}') && autoPricingFieldSource.includes("<Switch") && autoPricingFieldSource.includes("checkedChildren={t('common.yes', '\u662F')}") && autoPricingFieldSource.includes("unCheckedChildren={t('common.no', '\u5426')}") && !autoPricingFieldSource.includes("<Select"),
+      "\u5206\u5E97\u8BB0\u5F55\u81EA\u52A8\u5B9A\u4EF7\u5E94\u4FDD\u7559\u5B57\u6BB5\u52FE\u9009\uFF0C\u5E76\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684\u662F/\u5426\u5F00\u5173"
+    );
+    assert(
+      specialProductFieldSource.includes('name="updateIsSpecialProduct" valuePropName="checked"') && specialProductFieldSource.includes('name="isSpecialProduct" valuePropName="checked" initialValue={false}') && specialProductFieldSource.includes("<Switch") && specialProductFieldSource.includes("checkedChildren={t('common.yes', '\u662F')}") && specialProductFieldSource.includes("unCheckedChildren={t('common.no', '\u5426')}") && !specialProductFieldSource.includes("<Select"),
+      "\u5206\u5E97\u8BB0\u5F55\u7279\u6B8A\u5546\u54C1\u5E94\u4FDD\u7559\u5B57\u6BB5\u52FE\u9009\uFF0C\u5E76\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684\u662F/\u5426\u5F00\u5173"
+    );
+    assert(
+      pageSource.includes("{ enabled: !!values.updateIsAutoPricing, field: 'isAutoPricing', value: values.isAutoPricing }") && pageSource.includes("{ enabled: !!values.updateIsSpecialProduct, field: 'isSpecialProduct', value: values.isSpecialProduct }"),
+      "\u5206\u5E97\u8BB0\u5F55\u6279\u91CF\u4FEE\u6539\u5E94\u4EC5\u5728\u5B57\u6BB5\u52FE\u9009\u540E\u63D0\u4EA4\u5F00\u5173\u7684 false/true \u503C"
     );
     assert(
       pageSource.includes("if (!storeRecordSelectedRowKeys.length) {") && pageSource.includes("message.warning(t('posAdmin.products.selectStoreRecordsFirst', '\u8BF7\u5148\u9009\u62E9\u5206\u5E97\u8BB0\u5F55'))") && pageSource.includes("message.warning(t('posAdmin.products.selectAtLeastOneStoreRecordField', '\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u8981\u4FEE\u6539\u7684\u5B57\u6BB5'))") && pageSource.includes("message.warning(t('posAdmin.products.completeStoreRecordFields', '\u8BF7\u586B\u5199\u5DF2\u52FE\u9009\u7684\u5B57\u6BB5\u503C'))"),

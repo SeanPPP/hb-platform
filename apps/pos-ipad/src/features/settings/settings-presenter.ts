@@ -7,6 +7,8 @@ import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
+import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "@/core/security/pos-api-addresses";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 
 export type SettingsPane =
   "general" | "payments" | "peripherals" | "device" | "hardware";
@@ -154,7 +156,16 @@ export type SettingsDangerousActionResult =
 
 export interface SettingsControlPort {
   loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
+  getCatalogRefreshState(): CatalogRefreshState;
+  subscribeCatalogRefresh(listener: () => void): () => void;
   downloadCatalog(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
+  /**
+   * 只探测候选地址，不保存配置、不重载运行时。
+   */
+  testApiAddress(
+    apiBaseUrl: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
   testPaymentProvider(
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
@@ -190,6 +201,7 @@ export interface SettingsControlPort {
 export type SettingsStatusCode =
   | "api-address-saved"
   | "api-health-check-failed"
+  | "api-health-check-passed"
   | "app-restart-requested"
   | "app-update-check-failed"
   | "app-update-checked"
@@ -234,6 +246,7 @@ export type SettingsState = Readonly<{
   appUpdate: SettingsAppUpdateSnapshot;
   busy: boolean;
   catalog: SettingsCatalogSnapshot;
+  catalogRefresh: CatalogRefreshState;
   confirmation: SettingsDangerousConfirmation | null;
   device: SettingsDeviceSnapshot;
   externalDisplay: SettingsExternalDisplaySnapshot;
@@ -264,14 +277,23 @@ export type SettingsPresenterOptions = Readonly<{
 export class SettingsPresenter {
   private readonly listeners = new Set<() => void>();
   private readonly lifetime = new AbortController();
+  private catalogRefreshUnsubscribe: () => void = () => undefined;
   private state: SettingsState;
   private destroyed = false;
   private loadGeneration = 0;
   private actionInFlight: Promise<void> | null = null;
+  private catalogRefreshInFlight: Promise<void> | null = null;
 
   public constructor(private readonly options: SettingsPresenterOptions) {
     const access = resolveSettingsAccess(options.permissions);
-    this.state = initialState(access);
+    this.state = initialState(
+      access,
+      options.port.getCatalogRefreshState(),
+    );
+    this.catalogRefreshUnsubscribe =
+      options.port.subscribeCatalogRefresh(
+        this.handleCatalogRefreshChanged,
+      );
   }
 
   public readonly getState = (): SettingsState => this.state;
@@ -286,6 +308,8 @@ export class SettingsPresenter {
     if (this.destroyed) return;
     this.destroyed = true;
     this.loadGeneration += 1;
+    this.catalogRefreshUnsubscribe();
+    this.catalogRefreshUnsubscribe = () => undefined;
     this.lifetime.abort();
     this.listeners.clear();
   }
@@ -310,7 +334,10 @@ export class SettingsPresenter {
         apiBaseUrl: snapshot.apiBaseUrl,
         apiAddressDraft: snapshot.apiBaseUrl,
         appUpdate: snapshot.appUpdate,
-        catalog: snapshot.catalog,
+        catalog: catalogSnapshotForRefresh(
+          snapshot.catalog,
+          this.state.catalogRefresh,
+        ),
         device: snapshot.device,
         externalDisplay: snapshot.externalDisplay,
         hardware: snapshot.hardware,
@@ -349,6 +376,35 @@ export class SettingsPresenter {
   public setApiAddressDraft(value: string): void {
     if (!this.canEdit()) return;
     this.patch({ apiAddressDraft: value, statusCode: null });
+  }
+
+  public testApiAddress(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return Promise.resolve();
+    }
+    let apiBaseUrl: string;
+    try {
+      apiBaseUrl = normalizeApiAddress(this.state.apiAddressDraft);
+    } catch {
+      this.patch({ statusCode: "invalid-api-address" });
+      return Promise.resolve();
+    }
+    this.patch({ apiAddressDraft: apiBaseUrl });
+    return this.runAction(async () => {
+      try {
+        const reachable = await this.options.port.testApiAddress(
+          apiBaseUrl,
+          this.lifetime.signal,
+        );
+        this.patch({
+          statusCode: reachable
+            ? "api-health-check-passed"
+            : "api-health-check-failed",
+        });
+      } catch {
+        this.patch({ statusCode: "api-health-check-failed" });
+      }
+    });
   }
 
   public setSquareEnvironment(environment: PaymentEnvironment): void {
@@ -443,6 +499,10 @@ export class SettingsPresenter {
   }
 
   public savePaymentSettings(): Promise<void> {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return Promise.resolve();
+    }
     if (!this.requirePermission(this.state.access.canConfigurePayments)) {
       return Promise.resolve();
     }
@@ -654,23 +714,33 @@ export class SettingsPresenter {
   }
 
   public downloadCatalog(): Promise<void> {
-    if (this.actionInFlight) return this.actionInFlight;
+    if (this.catalogRefreshInFlight) return this.catalogRefreshInFlight;
     if (!this.requirePermission(this.state.access.canDownloadCatalog)) {
       return Promise.resolve();
     }
-    return this.runAction(async () => {
+    // 目录任务由应用级协调器持有；页面销毁不能中止其 signal。
+    const signal = new AbortController().signal;
+    const operation = (async () => {
       try {
         const catalog = normalizeCatalog(
-          await this.options.port.downloadCatalog(this.lifetime.signal),
+          await this.options.port.downloadCatalog(signal),
         );
+        if (this.destroyed) return;
         this.patch({
           catalog,
           statusCode: "catalog-downloaded",
         });
       } catch {
+        if (this.destroyed) return;
         this.patch({ statusCode: "catalog-download-failed" });
       }
+    })().finally(() => {
+      if (this.catalogRefreshInFlight === operation) {
+        this.catalogRefreshInFlight = null;
+      }
     });
+    this.catalogRefreshInFlight = operation;
+    return operation;
   }
 
   public checkForAppUpdate(): Promise<void> {
@@ -693,6 +763,10 @@ export class SettingsPresenter {
   }
 
   public requestApiAddressChange(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
     if (!this.requirePermission(this.state.access.canReregisterDevice)) {
       return false;
     }
@@ -710,6 +784,10 @@ export class SettingsPresenter {
   }
 
   public requestCatalogReset(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
     if (!this.requirePermission(this.state.access.canResetCatalog)) {
       return false;
     }
@@ -717,6 +795,10 @@ export class SettingsPresenter {
   }
 
   public requestDeviceReregistration(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
     if (!this.requirePermission(this.state.access.canReregisterDevice)) {
       return false;
     }
@@ -737,6 +819,10 @@ export class SettingsPresenter {
   }
 
   public requestAppRestart(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
     if (!this.requirePermission(this.state.access.canManageAppUpdate)) {
       return false;
     }
@@ -751,6 +837,16 @@ export class SettingsPresenter {
   public confirmDangerousAction(): Promise<void> {
     const confirmation = this.state.confirmation;
     if (!confirmation || this.destroyed) return Promise.resolve();
+    if (
+      this.catalogRefreshRunning() &&
+      conflictsWithCatalogRefresh(confirmation)
+    ) {
+      this.patch({
+        confirmation: null,
+        statusCode: "safety-check-failed",
+      });
+      return Promise.resolve();
+    }
     return this.runAction(async () => {
       try {
         const result = await this.options.port.executeDangerousAction(
@@ -905,6 +1001,22 @@ export class SettingsPresenter {
     this.state = Object.freeze({ ...this.state, ...patch });
     for (const listener of this.listeners) listener();
   }
+
+  private readonly handleCatalogRefreshChanged = (): void => {
+    if (this.destroyed) return;
+    const catalogRefresh = this.options.port.getCatalogRefreshState();
+    this.patch({
+      catalog: catalogSnapshotForRefresh(
+        this.state.catalog,
+        catalogRefresh,
+      ),
+      catalogRefresh,
+    });
+  };
+
+  private catalogRefreshRunning(): boolean {
+    return this.state.catalogRefresh.kind === "running";
+  }
 }
 
 export function normalizeApiAddress(value: string): string {
@@ -918,7 +1030,11 @@ export function normalizeApiAddress(value: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("invalid API scheme");
   }
-  if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+  if (
+    parsed.protocol === "http:" &&
+    !isLoopbackHostname(parsed.hostname) &&
+    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+  ) {
     throw new Error("remote API requires HTTPS");
   }
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
@@ -940,7 +1056,10 @@ export function hasPendingLocalData(
   );
 }
 
-function initialState(access: SettingsAccess): SettingsState {
+function initialState(
+  access: SettingsAccess,
+  catalogRefresh: CatalogRefreshState,
+): SettingsState {
   const printer = Object.freeze({
     ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
   });
@@ -974,6 +1093,7 @@ function initialState(access: SettingsAccess): SettingsState {
       itemCount: 0,
       activatedAt: null,
     }),
+    catalogRefresh,
     confirmation: null,
     device: Object.freeze({
       deviceCode: "",
@@ -1011,6 +1131,26 @@ function initialState(access: SettingsAccess): SettingsState {
     statusCode: access.canView ? null : "permission-required",
     terminalNameDraft: "",
   });
+}
+
+function catalogSnapshotForRefresh(
+  fallback: SettingsCatalogSnapshot,
+  refresh: CatalogRefreshState,
+): SettingsCatalogSnapshot {
+  if (refresh.kind !== "success" && refresh.kind !== "warning") {
+    return fallback;
+  }
+  return normalizeCatalog({
+    snapshotId: refresh.summary.snapshotId,
+    itemCount: refresh.summary.itemCount,
+    activatedAt: refresh.summary.activatedAt,
+  });
+}
+
+function conflictsWithCatalogRefresh(
+  _confirmation: SettingsDangerousConfirmation,
+): boolean {
+  return true;
 }
 
 function normalizeSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {

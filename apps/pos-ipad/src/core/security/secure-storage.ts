@@ -17,6 +17,7 @@ export interface CashierSessionKeyHasher {
 
 const installationIdKey = "hbpos.ipad.installation-id.v1";
 const deviceCredentialsKey = "hbpos.ipad.device-credentials.v1";
+const devicePresentationKey = "hbpos.ipad.device-presentation.v1";
 const pendingDeviceRegistrationKey = "hbpos.ipad.pending-device-registration.v1";
 const deviceLockKey = "hbpos.ipad.device-lock.v1";
 const activeCashierAuthorizationKey = "hbpos.ipad.active-cashier-authorization.v1";
@@ -28,6 +29,17 @@ export type StoredDeviceCredentials = Readonly<{
   hardwareId: string;
   authorizationCode: string;
 }>;
+
+export type DevicePresentationCache = Readonly<{
+  deviceCode: string;
+  storeCode: string;
+  storeName: string;
+}>;
+
+type StoredDevicePresentation = DevicePresentationCache &
+  Readonly<{
+    version: 1;
+  }>;
 
 export type PendingDeviceRegistration = Readonly<{
   deviceCode: string;
@@ -77,6 +89,44 @@ export class DeviceCredentialStore {
 
   public async clear(): Promise<void> {
     await this.secureStore.remove(deviceCredentialsKey);
+  }
+}
+
+/** 展示名称不属于设备凭据；损坏或不可读时只降级为无名称。 */
+export class DevicePresentationStore {
+  public constructor(private readonly secureStore: SecureStorePort) {}
+
+  public async load(): Promise<DevicePresentationCache | null> {
+    try {
+      const raw = await this.secureStore.get(devicePresentationKey);
+      return raw ? parseDevicePresentation(raw) : null;
+    } catch {
+      try {
+        await this.clear();
+      } catch {
+        // 清理失败也不能让非认证展示缓存阻断 POS。
+      }
+      return null;
+    }
+  }
+
+  public async save(
+    presentation: DevicePresentationCache,
+  ): Promise<void> {
+    const normalized = validateDevicePresentation(presentation);
+    const stored: StoredDevicePresentation = {
+      version: 1,
+      ...normalized,
+    };
+    await this.secureStore.set(
+      devicePresentationKey,
+      JSON.stringify(stored),
+      secureThisDeviceOnly,
+    );
+  }
+
+  public clear(): Promise<void> {
+    return this.secureStore.remove(devicePresentationKey);
   }
 }
 
@@ -432,6 +482,46 @@ function validateDeviceCredentials(value: unknown): StoredDeviceCredentials {
     storeCode: storedText(record.storeCode, deviceCredentialsKey),
     hardwareId: storedText(record.hardwareId, deviceCredentialsKey),
     authorizationCode: storedText(record.authorizationCode, deviceCredentialsKey),
+  };
+}
+
+function parseDevicePresentation(
+  raw: string,
+): DevicePresentationCache {
+  return validateDevicePresentation(
+    parseStored<unknown>(raw, devicePresentationKey),
+    true,
+  );
+}
+
+function validateDevicePresentation(
+  value: unknown,
+  requireVersion = false,
+): DevicePresentationCache {
+  const record = storedRecord(value, devicePresentationKey);
+  const expectedKeys = requireVersion
+    ? ["version", "deviceCode", "storeCode", "storeName"]
+    : ["deviceCode", "storeCode", "storeName"];
+  if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !(key in record)) ||
+    (requireVersion && record.version !== 1)
+  ) {
+    throw new Error(`Stored ${devicePresentationKey} is invalid.`);
+  }
+  return {
+    deviceCode: storedText(
+      record.deviceCode,
+      devicePresentationKey,
+    ).trim(),
+    storeCode: storedText(
+      record.storeCode,
+      devicePresentationKey,
+    ).trim(),
+    storeName: storedText(
+      record.storeName,
+      devicePresentationKey,
+    ).trim(),
   };
 }
 

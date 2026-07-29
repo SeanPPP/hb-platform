@@ -5,6 +5,9 @@ import { createConnectedSalesDependencies } from "./connected-sales-runtime";
 
 import type { AuditEventDraft } from "@/core/contracts";
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
+import type {
+  CatalogLookupRevalidationResult,
+} from "@/features/catalog/catalog-lookup-revalidation";
 import { PricingCart } from "@/features/sales/domain";
 import { ActivePricingCartSession } from "@/features/sales/runtime/active-pricing-cart-session";
 
@@ -272,12 +275,182 @@ test("值未改变时不写购物车变更审计，与 WPF HasChanged 规则一�
   assert.equal(harness.audits.length, 0);
 });
 
+test("在线同身份校准使用 system 上下文写价格事件，且不再次请求主管授权", async () => {
+  const harness = connected(new PricingCart(), {
+    revalidationResult: {
+      kind: "found",
+      baseSnapshotId: "snapshot-1",
+      item: {
+        ...CATALOG_ITEM,
+        itemNumber: "NEW-1001",
+        displayName: "Fresh tea",
+        retailPriceCents: 725,
+        priceSource: 2,
+      },
+    },
+  });
+
+  await harness.dependencies.workflow.addByLookupCode("930000000001");
+  await waitFor(
+    () =>
+      harness.dependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+
+  assert.deepEqual(
+    harness.authorizationRequests.map((request) => request.action),
+    ["scan-add-item"],
+  );
+  assert.deepEqual(
+    harness.audits.map((event) => event.eventType),
+    ["CART_ITEM_ADD", "CART_ITEM_PRICE_CHANGE"],
+  );
+  assert.deepEqual(
+    {
+      action: harness.audits[1]?.payload.action,
+      permissionCode: harness.audits[1]?.payload.permissionCode,
+      authorizationMode:
+        harness.audits[1]?.payload.authorizationMode,
+      requestingCashierId:
+        harness.audits[1]?.payload.requestingCashierId,
+      authorizingCashierId:
+        harness.audits[1]?.payload.authorizingCashierId,
+    },
+    {
+      action: "catalog-revalidation",
+      permissionCode: "Permissions.PosTerminal.Sales.AddItem",
+      authorizationMode: "system",
+      requestingCashierId: "CASHIER-1",
+      authorizingCashierId: null,
+    },
+  );
+  assert.equal(harness.audits[0]?.payload.afterActualCents, 500);
+  assert.equal(harness.audits[1]?.payload.beforeActualCents, 500);
+  assert.equal(harness.audits[1]?.payload.afterActualCents, 725);
+  assert.equal(
+    harness.dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents,
+    725,
+  );
+});
+
+test("校准未命中、身份变化或没有差异时不写价格事件，本地 miss 自动加购仍只写 ADD", async () => {
+  const cases: CatalogLookupRevalidationResult[] = [
+    {
+      kind: "not-found",
+      baseSnapshotId: "snapshot-1",
+    },
+    {
+      kind: "found",
+      baseSnapshotId: "snapshot-1",
+      item: {
+        ...CATALOG_ITEM,
+        productCode: "SKU-REPLACED",
+        referenceCode: "REF-REPLACED",
+      },
+    },
+    {
+      kind: "found",
+      baseSnapshotId: "snapshot-1",
+      item: CATALOG_ITEM,
+    },
+  ];
+  for (const revalidationResult of cases) {
+    const harness = connected(new PricingCart(), {
+      revalidationResult,
+    });
+    await harness.dependencies.workflow.addByLookupCode(
+      "930000000001",
+    );
+    await waitFor(
+      () =>
+        harness.dependencies.workflow.getPendingCatalogWorkCount() ===
+        0,
+    );
+    assert.deepEqual(
+      harness.audits.map((event) => event.eventType),
+      ["CART_ITEM_ADD"],
+    );
+  }
+
+  const localMiss = connected(new PricingCart(), {
+    localCatalogItem: null,
+    revalidationResult: {
+      kind: "found",
+      baseSnapshotId: "snapshot-1",
+      item: CATALOG_ITEM,
+    },
+  });
+  await localMiss.dependencies.workflow.addByLookupCode(
+    "930000000001",
+  );
+  await waitFor(
+    () =>
+      localMiss.dependencies.workflow.getPendingCatalogWorkCount() ===
+      0,
+  );
+  assert.deepEqual(
+    localMiss.audits.map((event) => event.eventType),
+    ["CART_ITEM_ADD"],
+  );
+  assert.deepEqual(
+    {
+      action: localMiss.audits[0]?.payload.action,
+      authorizationMode:
+        localMiss.audits[0]?.payload.authorizationMode,
+      permissionCode: localMiss.audits[0]?.payload.permissionCode,
+    },
+    {
+      action: "catalog-revalidation-auto-add",
+      authorizationMode: "system",
+      permissionCode: "Permissions.PosTerminal.Sales.AddItem",
+    },
+  );
+});
+
+test("system 校准的审计仓储、ID 或时钟失败不回滚已更新购物车", async () => {
+  for (const failure of [
+    { auditFails: true },
+    { auditInfrastructureFails: true },
+    { systemActionIdFails: true },
+    { auditIdFails: true },
+    { auditClockFails: true },
+  ]) {
+    const harness = connected(new PricingCart(), {
+      ...failure,
+      revalidationResult: {
+        kind: "found",
+        baseSnapshotId: "snapshot-1",
+        item: {
+          ...CATALOG_ITEM,
+          retailPriceCents: 825,
+        },
+      },
+    });
+    await harness.dependencies.workflow.addByLookupCode(
+      "930000000001",
+    );
+    await waitFor(
+      () =>
+        harness.dependencies.workflow.getPendingCatalogWorkCount() ===
+        0,
+    );
+    assert.equal(
+      harness.dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents,
+      825,
+    );
+  }
+});
+
 function connected(
   cart = new PricingCart(),
   options: Readonly<{
     deny?: boolean;
     auditFails?: boolean;
     auditInfrastructureFails?: boolean;
+    systemActionIdFails?: boolean;
+    auditIdFails?: boolean;
+    auditClockFails?: boolean;
+    localCatalogItem?: LocalCatalogMatch | null;
+    revalidationResult?: CatalogLookupRevalidationResult;
   }> = {},
 ) {
   const authorizationRequests: {
@@ -288,6 +461,7 @@ function connected(
   }[] = [];
   const audits: AuditEventDraft[] = [];
   let nextId = 0;
+  let actionIdCalls = 0;
   let nextLineId = 0;
   const dependencies = createConnectedSalesDependencies({
     activeCartSession: new ActivePricingCartSession(
@@ -299,7 +473,9 @@ function connected(
         const normalized = lookupCode.trim().toUpperCase();
         if (normalized === OPEN_ITEM.lookupCodeNormalized) return OPEN_ITEM;
         if (normalized === CATALOG_ITEM.lookupCodeNormalized) {
-          return CATALOG_ITEM;
+          return options.localCatalogItem === undefined
+            ? CATALOG_ITEM
+            : options.localCatalogItem;
         }
         return null;
       },
@@ -309,6 +485,23 @@ function connected(
           : [];
       },
     },
+    ...(options.revalidationResult === undefined
+      ? {}
+      : {
+          catalogRevalidation: {
+            async revalidate() {
+              return options.revalidationResult!;
+            },
+            async isCurrentBaseSnapshot() {
+              return true;
+            },
+          },
+          catalogWorkScheduler: {
+            async yieldToUi() {},
+            waitForTimeout: () =>
+              new Promise<void>(() => undefined),
+          },
+        }),
     cashCheckout: undefined,
     identity: {
       storeCode: "STORE-1",
@@ -349,15 +542,24 @@ function connected(
           audits.push(...events);
         },
       },
-      createActionId: () => uuid(++nextId),
+      createActionId: () => {
+        actionIdCalls += 1;
+        if (options.systemActionIdFails && actionIdCalls > 1) {
+          throw new Error("system action id unavailable");
+        }
+        return uuid(++nextId);
+      },
       createAuditEventId: () => {
-        if (options.auditInfrastructureFails) {
+        if (
+          options.auditInfrastructureFails ||
+          options.auditIdFails
+        ) {
           throw new Error("audit id unavailable");
         }
         return uuid(++nextId);
       },
       nowIso: () =>
-        options.auditInfrastructureFails
+        options.auditInfrastructureFails || options.auditClockFails
           ? "invalid-clock"
           : "2026-07-29T00:00:00.000Z",
     },
@@ -392,4 +594,12 @@ function hasCode(code: string): (error: unknown) => boolean {
     error !== null &&
     "code" in error &&
     error.code === code;
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempts = 0; attempts < 50; attempts += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("condition was not reached");
 }

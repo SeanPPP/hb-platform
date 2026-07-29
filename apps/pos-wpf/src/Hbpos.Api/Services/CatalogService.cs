@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -27,6 +28,15 @@ public interface ICatalogService
         string? cursor,
         int pageSize,
         CancellationToken cancellationToken);
+
+    Task<CatalogSyncPageResponse?> GetSellableItemsPageAsync(
+        string storeCode,
+        DateTimeOffset? since,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? catalogVersion,
+        int checksumVersion);
 
     Task<CatalogCompareResponse?> CompareSellableItemsAsync(
         CatalogCompareRequest request,
@@ -67,6 +77,16 @@ public sealed record CatalogSpecialProductMarkServiceResult(
         new(false, null, errorCode, message);
 }
 
+public sealed class CatalogSnapshotExpiredException(
+    string storeCode,
+    string catalogVersion)
+    : Exception("The requested catalog snapshot is no longer available.")
+{
+    public string StoreCode { get; } = storeCode;
+
+    public string CatalogVersion { get; } = catalogVersion;
+}
+
 public sealed class CatalogService(
     HbposSqlSugarContext dbContext,
     IPriceIndexBuilder priceIndexBuilder,
@@ -105,8 +125,45 @@ public sealed class CatalogService(
         int pageSize,
         CancellationToken cancellationToken)
     {
-        var index = await BuildSellableIndexAsync(storeCode, since, cancellationToken);
-        return index?.CatalogIndex.GetPage(cursor, pageSize);
+        return await GetSellableItemsPageAsync(
+            storeCode,
+            since,
+            cursor,
+            pageSize,
+            cancellationToken,
+            catalogVersion: null,
+            checksumVersion: 1);
+    }
+
+    public async Task<CatalogSyncPageResponse?> GetSellableItemsPageAsync(
+        string storeCode,
+        DateTimeOffset? since,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? catalogVersion,
+        int checksumVersion)
+    {
+        if (checksumVersion is not 1 and not 2)
+        {
+            throw new ArgumentOutOfRangeException(nameof(checksumVersion));
+        }
+
+        CatalogIndexBuildResult? index;
+        if (string.IsNullOrWhiteSpace(catalogVersion))
+        {
+            index = await BuildSellableIndexAsync(storeCode, since, cancellationToken);
+        }
+        else
+        {
+            index = catalogIndexCache.GetByVersion(storeCode, since, catalogVersion);
+            if (index is null)
+            {
+                throw new CatalogSnapshotExpiredException(storeCode, catalogVersion);
+            }
+        }
+
+        return index?.CatalogIndex.GetPage(cursor, pageSize, checksumVersion);
     }
 
     public async Task<CatalogCompareResponse?> CompareSellableItemsAsync(
@@ -1099,15 +1156,24 @@ public sealed class CatalogService(
 public sealed class CatalogSellableIndex
 {
     private const int MaxPageSize = 5000;
+    private const string CatalogVersionPrefix = "catalog-v1:";
+    private const string PageChecksumV1AlgorithmMarker = "HBPOS-CATALOG-PAGE-CHECKSUM-V1";
+    private const string PageChecksumV1Prefix = "sha256-catalog-page-v1:";
+    private const string PageChecksumV2AlgorithmMarker = "HBPOS-CATALOG-PAGE-CHECKSUM-V2";
+    private const string PageChecksumV2Prefix = "sha256-catalog-page-v2:";
     private readonly IReadOnlyDictionary<string, CatalogLookupItemDto> _itemsByNormalizedLookup;
 
     public CatalogSellableIndex(
         string storeCode,
         DateTimeOffset generatedAt,
-        IEnumerable<SellableItemDto> items)
+        IEnumerable<SellableItemDto> items,
+        string? catalogVersion = null)
     {
         StoreCode = NormalizeStoreCode(storeCode);
         GeneratedAt = generatedAt;
+        CatalogVersion = string.IsNullOrWhiteSpace(catalogVersion)
+            ? string.Concat(CatalogVersionPrefix, Guid.NewGuid().ToString("N"))
+            : catalogVersion.Trim();
 
         Items = items
             .Select(ToLookupItem)
@@ -1130,10 +1196,20 @@ public sealed class CatalogSellableIndex
 
     public DateTimeOffset GeneratedAt { get; }
 
+    public string CatalogVersion { get; }
+
     public IReadOnlyList<CatalogLookupItemDto> Items { get; }
 
-    public CatalogSyncPageResponse GetPage(string? cursor, int pageSize)
+    public CatalogSyncPageResponse GetPage(
+        string? cursor,
+        int pageSize,
+        int checksumVersion = 1)
     {
+        if (checksumVersion is not 1 and not 2)
+        {
+            throw new ArgumentOutOfRangeException(nameof(checksumVersion));
+        }
+
         var normalizedCursor = NormalizeLookupCode(cursor);
         var take = Math.Clamp(pageSize, 1, MaxPageSize);
         var pageCandidates = Items
@@ -1156,7 +1232,9 @@ public sealed class CatalogSellableIndex
             [],
             nextCursor,
             hasMore,
-            Items.Count);
+            Items.Count,
+            CatalogVersion,
+            CreatePageChecksum(pageItems, checksumVersion));
     }
 
     public CatalogCompareResponse Compare(CatalogCompareRequest request)
@@ -1329,6 +1407,68 @@ public sealed class CatalogSellableIndex
         return Convert.ToHexString(hashBytes);
     }
 
+    /// <summary>
+    /// 校验覆盖分页响应中每个 lookup 行的稳定业务字段；字段顺序和长度前缀是跨平台协议的一部分。
+    /// RowVersion 是这些字段的派生值，因此不重复纳入。
+    /// </summary>
+    private static string CreatePageChecksum(
+        IReadOnlyList<CatalogLookupItemDto> items,
+        int checksumVersion)
+    {
+        var builder = new StringBuilder();
+        AppendCanonical(
+            builder,
+            checksumVersion == 1
+                ? PageChecksumV1AlgorithmMarker
+                : PageChecksumV2AlgorithmMarker);
+        AppendCanonical(
+            builder,
+            checksumVersion == 1
+                ? items.Count.ToString(CultureInfo.InvariantCulture)
+                : FormatBinary64(items.Count));
+
+        foreach (var item in items)
+        {
+            AppendCanonical(builder, item.StoreCode);
+            AppendCanonical(builder, item.ProductCode);
+            AppendCanonical(builder, item.ReferenceCode ?? string.Empty);
+            AppendCanonical(builder, item.DisplayName);
+            AppendCanonical(builder, item.LookupCode);
+            AppendCanonical(builder, item.LookupCodeNormalized);
+            AppendCanonical(builder, item.ItemNumber ?? string.Empty);
+            AppendCanonical(builder, item.Barcode ?? string.Empty);
+            AppendCanonical(
+                builder,
+                checksumVersion == 1
+                    ? FormatCatalogNumber(item.RetailPrice)
+                    : FormatBinary64(item.RetailPrice));
+            AppendCanonical(
+                builder,
+                checksumVersion == 1
+                    ? ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture)
+                    : FormatBinary64((int)item.PriceSource));
+            AppendCanonical(builder, item.PriceSourceLabel);
+            AppendCanonical(
+                builder,
+                checksumVersion == 1
+                    ? FormatCatalogNumber(item.QuantityFactor)
+                    : FormatBinary64(item.QuantityFactor));
+            AppendCanonical(builder, FormatCatalogTimestamp(item.UpdatedAt));
+            AppendCanonical(builder, item.ProductImage ?? string.Empty);
+            AppendCanonical(
+                builder,
+                checksumVersion == 1
+                    ? FormatNullableCatalogNumber(item.DiscountRate)
+                    : FormatNullableBinary64(item.DiscountRate));
+            AppendCanonical(builder, item.IsSpecialProduct ? "1" : "0");
+        }
+
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return string.Concat(
+            checksumVersion == 1 ? PageChecksumV1Prefix : PageChecksumV2Prefix,
+            Convert.ToHexString(hashBytes).ToLowerInvariant());
+    }
+
     private static bool HasMatchingVersion(CatalogLocalLookupVersionDto local, CatalogLookupItemDto current)
     {
         var rowVersion = local.RowVersion?.Trim();
@@ -1377,6 +1517,103 @@ public sealed class CatalogSellableIndex
     private static string FormatNullableDecimal(decimal? value)
     {
         return value?.ToString("0.#############################", CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    /// <summary>
+    /// OpenAPI 把 decimal 生成为 TypeScript number；摘要必须以客户端实际能观察到的
+    /// IEEE-754 值为准，避免 JSON 解析舍入后误判合法页面。
+    /// </summary>
+    private static string FormatCatalogNumber(decimal value)
+    {
+        // 先按 JSON 会输出的十进制文本解析为 double；直接 decimal -> double 在部分
+        // 29 位边界值上与 JavaScript JSON.parse 的舍入结果不同。
+        var serializedDecimal = value.ToString(
+            "0.#############################",
+            CultureInfo.InvariantCulture);
+        var javascriptNumber = double.Parse(
+            serializedDecimal,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture);
+        var text = javascriptNumber.ToString("R", CultureInfo.InvariantCulture);
+        if (text is "-0")
+        {
+            return "0";
+        }
+
+        var exponentSeparator = text.IndexOfAny(['e', 'E']);
+        if (exponentSeparator < 0)
+        {
+            return text;
+        }
+
+        var mantissa = text[..exponentSeparator];
+        var exponent = int.Parse(text[(exponentSeparator + 1)..], CultureInfo.InvariantCulture);
+        var isNegative = mantissa.StartsWith("-", StringComparison.Ordinal);
+        var unsignedMantissa = isNegative ? mantissa[1..] : mantissa;
+        var decimalSeparator = unsignedMantissa.IndexOf('.');
+        var whole = decimalSeparator < 0 ? unsignedMantissa : unsignedMantissa[..decimalSeparator];
+        var fraction = decimalSeparator < 0 ? string.Empty : unsignedMantissa[(decimalSeparator + 1)..];
+        var digits = string.Concat(whole, fraction);
+        var decimalIndex = whole.Length + exponent;
+        string expanded;
+
+        if (decimalIndex <= 0)
+        {
+            expanded = string.Concat("0.", new string('0', -decimalIndex), digits);
+        }
+        else if (decimalIndex >= digits.Length)
+        {
+            expanded = string.Concat(digits, new string('0', decimalIndex - digits.Length));
+        }
+        else
+        {
+            expanded = string.Concat(digits[..decimalIndex], ".", digits[decimalIndex..]);
+        }
+
+        return isNegative ? string.Concat("-", expanded) : expanded;
+    }
+
+    private static string FormatNullableCatalogNumber(decimal? value)
+    {
+        return value.HasValue ? FormatCatalogNumber(value.Value) : string.Empty;
+    }
+
+    private static string FormatBinary64(decimal value)
+    {
+        // decimal 先走 JSON 会产生的十进制文本，再转换为客户端实际观察到的 double。
+        var serializedDecimal = value.ToString(
+            "0.#############################",
+            CultureInfo.InvariantCulture);
+        return FormatBinary64(double.Parse(
+            serializedDecimal,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture));
+    }
+
+    private static string FormatBinary64(int value)
+    {
+        return FormatBinary64((double)value);
+    }
+
+    private static string FormatBinary64(double value)
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(
+            bytes,
+            BitConverter.DoubleToInt64Bits(value));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static string FormatNullableBinary64(decimal? value)
+    {
+        return value.HasValue ? FormatBinary64(value.Value) : string.Empty;
+    }
+
+    private static string FormatCatalogTimestamp(DateTimeOffset? value)
+    {
+        return value?.ToUniversalTime().ToString(
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+            CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
     private static string NormalizeStoreCode(string? value)

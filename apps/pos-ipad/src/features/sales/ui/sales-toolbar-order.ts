@@ -3,7 +3,6 @@ export type SalesToolbarActionId =
   | "daily-close"
   | "returns"
   | "remote-history"
-  | "special-products"
   | "installments"
   | "settings"
   | "attendance-audit"
@@ -18,12 +17,11 @@ export const DEFAULT_SALES_TOOLBAR_ORDER = [
   "daily-close",
   "returns",
   "remote-history",
-  "special-products",
   "installments",
-  "settings",
-  "attendance-audit",
   "sync-history",
   "catalog-maintenance",
+  "attendance-audit",
+  "settings",
   "hold",
   "language",
   "lock",

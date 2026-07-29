@@ -16,6 +16,14 @@ type StatusIndicatorProps = {
 type PosStatusStripProps = Readonly<{
   language?: string;
   onSwitchLanguage?: () => void;
+  showTerminalIdentity?: boolean;
+}>;
+
+type StaticIdentityProps = Readonly<{
+  label: string;
+  testID: string;
+  truncate?: boolean;
+  value: string | null | undefined;
 }>;
 
 function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
@@ -35,9 +43,47 @@ function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
   );
 }
 
+function StaticIdentity({
+  label,
+  testID,
+  truncate = false,
+  value,
+}: StaticIdentityProps) {
+  const displayValue = value?.trim() || "—";
+
+  return (
+    <View
+      accessibilityLabel={`${label}: ${displayValue}`}
+      style={[
+        styles.staticIdentity,
+        truncate
+          ? styles.storeIdentity
+          : styles.deviceCodeIdentity,
+      ]}
+      testID={testID}
+    >
+      <Text numberOfLines={1} style={styles.label}>
+        {label}
+      </Text>
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.value,
+          truncate
+            ? styles.storeIdentityValue
+            : styles.deviceCodeIdentityValue,
+        ]}
+      >
+        {displayValue}
+      </Text>
+    </View>
+  );
+}
+
 export function PosStatusStrip({
   language,
   onSwitchLanguage,
+  showTerminalIdentity = false,
 }: PosStatusStripProps = {}) {
   const { i18n, t } = useTranslation();
   const {
@@ -47,6 +93,7 @@ export function PosStatusStrip({
     pendingSyncCount,
     printer,
     scanner,
+    terminalPresentation,
   } = usePosShellStore();
   const currentLanguage =
     language ?? i18n.resolvedLanguage ?? i18n.language;
@@ -63,6 +110,24 @@ export function PosStatusStrip({
         tone={deviceGate === "authorized" ? "good" : deviceGate === "locked" ? "danger" : "warning"}
         value={t(`status.device.${deviceGate}`)}
       />
+      {showTerminalIdentity ? (
+        <View
+          style={styles.terminalIdentity}
+          testID="status-strip-terminal-identity"
+        >
+          <StaticIdentity
+            label={t("status.storeName")}
+            testID="status-strip-store-identity"
+            truncate
+            value={terminalPresentation?.storeName}
+          />
+          <StaticIdentity
+            label={t("status.deviceCode")}
+            testID="status-strip-device-code-identity"
+            value={terminalPresentation?.deviceCode}
+          />
+        </View>
+      ) : null}
       <StatusIndicator
         label={t("status.network")}
         tone={connectivity === "online" ? "good" : connectivity === "offline" ? "danger" : "neutral"}
@@ -152,6 +217,7 @@ const styles = StyleSheet.create({
   },
   languageButton: {
     alignItems: "center",
+    flexShrink: 0,
     justifyContent: "center",
     marginLeft: "auto",
     minHeight: 44,
@@ -170,6 +236,32 @@ const styles = StyleSheet.create({
     color: "#B9C5D1",
     fontSize: 11,
     fontWeight: "700",
+  },
+  staticIdentity: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 4,
+    minWidth: 0,
+  },
+  storeIdentity: {
+    flexShrink: 1,
+  },
+  storeIdentityValue: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  deviceCodeIdentity: {
+    flexShrink: 0,
+  },
+  deviceCodeIdentityValue: {
+    flexShrink: 0,
+  },
+  terminalIdentity: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    gap: 12,
+    minWidth: 0,
   },
   value: {
     color: "#FFFFFF",

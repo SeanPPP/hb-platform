@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -32,6 +33,11 @@ import {
   HidScannerCapture,
   type HidScannerRouter,
 } from "@/core/peripherals/scanner";
+import {
+  DEFAULT_LOCAL_HBPOS_API_BASE_URL,
+  DEFAULT_REMOTE_HBPOS_API_BASE_URL,
+} from "@/core/security/pos-api-addresses";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { posColors } from "@/ui/theme";
 
@@ -69,6 +75,7 @@ export type SettingsScreenPresenter = Pick<
   | "setSquareLocationId"
   | "setTerminalName"
   | "subscribe"
+  | "testApiAddress"
   | "testExternalDisplay"
   | "testPaymentProvider"
   | "testPrinter"
@@ -183,14 +190,29 @@ export function SettingsScreen({
                 tone="nav"
               />
             ))}
-            <View style={styles.deviceBadge}>
+            <View style={styles.deviceBadge} testID="settings-device-badge">
               <Text style={styles.badgeLabel}>
                 {t("device.currentTerminal")}
               </Text>
-              <Text style={styles.badgeValue}>
+              <Text
+                accessibilityLabel={state.device.storeName || "—"}
+                ellipsizeMode="tail"
+                numberOfLines={2}
+                style={styles.badgeValue}
+                testID="settings-device-store-name"
+              >
+                {state.device.storeName || "—"}
+              </Text>
+              <Text
+                style={styles.badgeMeta}
+                testID="settings-device-code"
+              >
                 {state.device.deviceCode || "—"}
               </Text>
-              <Text style={styles.badgeMeta}>
+              <Text
+                style={styles.badgeMeta}
+                testID="settings-device-store-code"
+              >
                 {state.device.storeCode || t("device.unbound")}
               </Text>
             </View>
@@ -233,6 +255,7 @@ export function SettingsScreen({
         <Modal
           animationType="fade"
           onRequestClose={() => presenter.cancelConfirmation()}
+          supportedOrientations={["landscape-left", "landscape-right"]}
           testID="settings-confirmation-modal"
           transparent
           visible={state.confirmation !== null}
@@ -320,7 +343,11 @@ function GeneralPane({
   state: SettingsState;
 }>) {
   const locked = state.busy || state.confirmation !== null;
-  const t = (key: SettingsCopyKey) => settingsText(locale, key);
+  const catalogRefreshRunning = state.catalogRefresh.kind === "running";
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
   return (
     <View testID="settings-pane-content-general">
       <PaneHeading
@@ -343,12 +370,47 @@ function GeneralPane({
           testID="settings-api-address"
           value={state.apiAddressDraft}
         />
-        <ActionButton
-          disabled={locked || !state.access.canReregisterDevice}
-          label={t("general.reviewApiAddress")}
-          onPress={() => presenter.requestApiAddressChange()}
-          testID="settings-api-request-change"
-        />
+        <View style={styles.actionRow} testID="settings-api-actions">
+          <ActionButton
+            disabled={locked || !state.access.canReregisterDevice}
+            label={t("general.useLocalApi")}
+            onPress={() =>
+              presenter.setApiAddressDraft(
+                DEFAULT_LOCAL_HBPOS_API_BASE_URL,
+              )
+            }
+            testID="settings-api-use-local"
+            tone="secondary"
+          />
+          <ActionButton
+            disabled={locked || !state.access.canReregisterDevice}
+            label={t("general.useRemoteApi")}
+            onPress={() =>
+              presenter.setApiAddressDraft(
+                DEFAULT_REMOTE_HBPOS_API_BASE_URL,
+              )
+            }
+            testID="settings-api-use-remote"
+            tone="secondary"
+          />
+          <ActionButton
+            disabled={locked || !state.access.canReregisterDevice}
+            label={t("general.testApiAddress")}
+            onPress={() => void presenter.testApiAddress()}
+            testID="settings-api-test"
+            tone="secondary"
+          />
+          <ActionButton
+            disabled={
+              locked ||
+              catalogRefreshRunning ||
+              !state.access.canReregisterDevice
+            }
+            label={t("general.reviewApiAddress")}
+            onPress={() => presenter.requestApiAddressChange()}
+            testID="settings-api-request-change"
+          />
+        </View>
       </SectionCard>
 
       <SectionCard eyebrow={t("eyebrow.catalog")} title={t("general.catalog")}>
@@ -366,15 +428,31 @@ function GeneralPane({
             value={compactDate(state.catalog.activatedAt)}
           />
         </View>
+        <CatalogRefreshStatus
+          locale={locale}
+          refresh={state.catalogRefresh}
+        />
         <View style={styles.actionRow}>
           <ActionButton
-            disabled={locked || !state.access.canDownloadCatalog}
-            label={t("general.downloadCatalog")}
+            disabled={
+              locked ||
+              catalogRefreshRunning ||
+              !state.access.canDownloadCatalog
+            }
+            label={t(
+              catalogRefreshRunning
+                ? "general.downloadingCatalog"
+                : "general.downloadCatalog",
+            )}
             onPress={() => void presenter.downloadCatalog()}
             testID="settings-catalog-download"
           />
           <ActionButton
-            disabled={locked || !state.access.canResetCatalog}
+            disabled={
+              locked ||
+              catalogRefreshRunning ||
+              !state.access.canResetCatalog
+            }
             label={t("general.resetCatalog")}
             onPress={() => presenter.requestCatalogReset()}
             testID="settings-catalog-reset"
@@ -382,6 +460,9 @@ function GeneralPane({
           />
         </View>
         <Text style={styles.safetyNote}>{t("general.catalogSafety")}</Text>
+        <Text style={styles.backgroundNote}>
+          {t("general.catalogBackground")}
+        </Text>
       </SectionCard>
 
       <SectionCard
@@ -410,6 +491,7 @@ function GeneralPane({
           <ActionButton
             disabled={
               locked ||
+              catalogRefreshRunning ||
               !state.access.canManageAppUpdate ||
               !state.appUpdate.restartAvailable
             }
@@ -420,6 +502,145 @@ function GeneralPane({
           />
         </View>
       </SectionCard>
+    </View>
+  );
+}
+
+function CatalogRefreshStatus({
+  locale,
+  refresh,
+}: Readonly<{
+  locale: SettingsLocale;
+  refresh: CatalogRefreshState;
+}>) {
+  if (refresh.kind === "idle") return null;
+
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
+  const progress = refresh.progress;
+  const preparing =
+    refresh.kind === "running" &&
+    progress.currentStep === "prepare" &&
+    progress.steps[0]?.percent === 0;
+  const currentStep =
+    progress.steps.find((step) => step.step === progress.currentStep) ??
+    progress.steps[0];
+  const details = currentStep
+    ? [
+        currentStep.completedItemCount !== undefined &&
+        currentStep.totalItemCount !== undefined
+          ? t("catalogRefresh.items", {
+              completed: currentStep.completedItemCount,
+              total: currentStep.totalItemCount,
+            })
+          : null,
+        currentStep.completedPageCount !== undefined &&
+        currentStep.totalPageCount !== undefined
+          ? t("catalogRefresh.pages", {
+              completed: currentStep.completedPageCount,
+              total: currentStep.totalPageCount,
+            })
+          : null,
+      ].filter((value): value is string => value !== null)
+    : [];
+  const titleKey: SettingsCopyKey =
+    refresh.kind === "running"
+      ? "catalogRefresh.running"
+      : refresh.kind === "success"
+        ? "catalogRefresh.success"
+        : refresh.kind === "warning"
+          ? "catalogRefresh.warning"
+          : "catalogRefresh.failed";
+
+  return (
+    <View
+      accessibilityRole={
+        refresh.kind === "warning" || refresh.kind === "failed"
+          ? "alert"
+          : undefined
+      }
+      style={[
+        styles.catalogRefreshStatus,
+        refresh.kind === "warning" && styles.catalogRefreshWarning,
+        refresh.kind === "failed" && styles.catalogRefreshFailed,
+      ]}
+      testID="settings-catalog-refresh-state"
+    >
+      <View style={styles.catalogRefreshHeading}>
+        {refresh.kind === "running" ? (
+          <ActivityIndicator color={posColors.orange} size="small" />
+        ) : null}
+        <Text style={styles.catalogRefreshTitle}>{t(titleKey)}</Text>
+      </View>
+      {preparing ? (
+        <Text style={styles.catalogRefreshMeta}>
+          {t("catalogRefresh.preparing")}
+        </Text>
+      ) : null}
+      {!preparing ? (
+        <>
+          <Text style={styles.catalogRefreshMeta}>
+            {t("catalogRefresh.currentStep", {
+              step: t(
+                `catalogRefresh.step.${progress.currentStep}` as SettingsCopyKey,
+              ),
+            })}
+          </Text>
+          <View
+            accessibilityLabel={t("catalogRefresh.progress", {
+              percent: formatPercent(progress.overallPercent),
+            })}
+            accessibilityRole="progressbar"
+            accessibilityValue={{
+              min: 0,
+              max: 100,
+              now: progress.overallPercent,
+            }}
+            style={styles.catalogRefreshTrack}
+            testID="settings-catalog-refresh-progress"
+          >
+            <View
+              style={[
+                styles.catalogRefreshFill,
+                { width: `${progress.overallPercent}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.catalogRefreshMeta}>
+            {t("catalogRefresh.progress", {
+              percent: formatPercent(progress.overallPercent),
+            })}
+          </Text>
+        </>
+      ) : null}
+      <Text
+        style={styles.catalogRefreshMeta}
+        testID="settings-catalog-refresh-elapsed"
+      >
+        {t("catalogRefresh.elapsed", {
+          elapsed: formatElapsedMilliseconds(progress.elapsedMilliseconds),
+        })}
+      </Text>
+      {details.length > 0 ? (
+        <Text
+          style={styles.catalogRefreshMeta}
+          testID="settings-catalog-refresh-detail"
+        >
+          {details.join(" · ")}
+        </Text>
+      ) : null}
+      {refresh.kind === "warning" || refresh.kind === "failed" ? (
+        <Text style={styles.catalogRefreshCode}>
+          {t("catalogRefresh.safeCode", {
+            code:
+              refresh.kind === "warning"
+                ? refresh.warningCode
+                : refresh.errorCode,
+          })}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -438,6 +659,7 @@ function PaymentsPane({
     state.busy ||
     state.confirmation !== null ||
     !state.access.canConfigurePayments;
+  const catalogRefreshRunning = state.catalogRefresh.kind === "running";
   const squareAvailable =
     state.square.available && state.square.blockerCode === null;
   const linklyAvailable =
@@ -565,7 +787,7 @@ function PaymentsPane({
         </SectionCard>
       </View>
       <ActionButton
-        disabled={disabled}
+        disabled={disabled || catalogRefreshRunning}
         label={t("payments.save")}
         onPress={() => void presenter.savePaymentSettings()}
         testID="settings-payment-save"
@@ -778,6 +1000,7 @@ function DevicePane({
   const disabled =
     state.busy ||
     state.confirmation !== null ||
+    state.catalogRefresh.kind === "running" ||
     !state.access.canReregisterDevice;
   const t = (key: SettingsCopyKey) => settingsText(locale, key);
   return (
@@ -1263,6 +1486,7 @@ function statusCopy(
 function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
   return [
     "api-address-saved",
+    "api-health-check-passed",
     "app-restart-requested",
     "app-update-checked",
     "catalog-downloaded",
@@ -1286,6 +1510,23 @@ function compactDate(value: string | null): string {
   return Number.isNaN(parsed.valueOf())
     ? value
     : parsed.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function formatPercent(percent: number): string {
+  return String(Math.round(percent * 100) / 100);
+}
+
+function formatElapsedMilliseconds(elapsedMilliseconds: number): string {
+  const totalSeconds = Math.max(
+    0,
+    Math.floor(elapsedMilliseconds / 1_000),
+  );
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+    2,
+    "0",
+  )}`;
 }
 
 const styles = StyleSheet.create({
@@ -1501,6 +1742,61 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 20,
     marginTop: 12,
+  },
+  backgroundNote: {
+    color: posColors.blue,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  catalogRefreshStatus: {
+    backgroundColor: posColors.blueSoft,
+    borderRadius: 8,
+    marginTop: 12,
+    padding: 12,
+  },
+  catalogRefreshWarning: {
+    backgroundColor: "#FFF5DB",
+  },
+  catalogRefreshFailed: {
+    backgroundColor: posColors.redSoft,
+  },
+  catalogRefreshHeading: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  catalogRefreshTitle: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  catalogRefreshTrack: {
+    backgroundColor: posColors.surface,
+    borderRadius: 999,
+    height: 7,
+    marginTop: 10,
+    overflow: "hidden",
+  },
+  catalogRefreshFill: {
+    backgroundColor: posColors.orange,
+    borderRadius: 999,
+    height: "100%",
+  },
+  catalogRefreshMeta: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  catalogRefreshCode: {
+    color: posColors.red,
+    fontFamily: "Courier",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 6,
   },
   availability: {
     alignSelf: "flex-start",

@@ -591,6 +591,7 @@ var P = {
   },
   LocalPurchase: {
     View: "LocalPurchase.View",
+    MobileView: "LocalPurchase.MobileView",
     Edit: "LocalPurchase.Edit",
     PushToHq: "LocalPurchase.PushToHq"
   },
@@ -863,7 +864,8 @@ function buildAccess(currentUser) {
   const isWarehouseStaffOnly = isWarehouseStaff && !isAdmin && !isWarehouseManager && (hasRole("WarehouseStaff") || hasRole("\u4ED3\u5E93\u5458\u5DE5"));
   const isStoreStaff = hasRole("StoreStaff") || hasRole("\u5E97\u94FA\u5458\u5DE5");
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager;
-  const onlyOrder = onlyRole("Order") || hasRole("\u8BA2\u8D27\u5458");
+  const orderRoleNames = currentUser.roleNames ?? [];
+  const onlyOrder = orderRoleNames.length > 0 && orderRoleNames.every((roleName) => ["order", "\u8BA2\u8D27\u5458"].includes(roleName.toLowerCase()));
   const managedStoreCodes = () => {
     if (isAdmin || isWarehouseManager) {
       return null;
@@ -951,7 +953,7 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessAdminShell = hasBackendNavigationAccess({
+  const canAccessAdminShell = !onlyOrder && hasBackendNavigationAccess({
     isAdmin,
     canAccessDashboard,
     canManageWarehouse,

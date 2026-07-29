@@ -23,6 +23,7 @@ import { PricingCart } from "../../features/sales/domain";
 import { SALES_PERMISSIONS } from "../../features/sales/runtime/sales-operation-security";
 import {
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+  SETTINGS_CATALOG_RESET_PERMISSION,
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type {
@@ -57,6 +58,7 @@ import type {
 import type {
   ActiveCatalogMetadata,
   ActiveCatalogPromotions,
+  LocalCatalogMatch,
 } from "../db/catalog-repository";
 import { PosDatabase } from "../db/pos-database";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
@@ -153,6 +155,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
                   SALES_PERMISSIONS.addItem,
                 ]
               : [
+                  "Permissions.PosTerminal.Receipt.PrintLast",
                   SALES_PERMISSIONS.view,
                   SALES_PERMISSIONS.addItem,
                   SALES_PERMISSIONS.changePrice,
@@ -248,6 +251,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
     storeCode: "S001",
     deviceCode: "IPAD-1",
     permissions: [
+      "Permissions.PosTerminal.Receipt.PrintLast",
       SALES_PERMISSIONS.addItem,
       SALES_PERMISSIONS.changePrice,
       SALES_PERMISSIONS.view,
@@ -312,7 +316,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
   assert.equal(await presenter.addLookupCode(), true);
   assert.equal(presenter.getState().cart.lines.length, 1);
 
-  assert.equal(presenter.openCash(), true);
+  assert.equal(await presenter.openCash(), true);
   presenter.setExactCash();
   assert.equal(await presenter.submitCash(), true);
   assert.equal(durableCommits.length, 1);
@@ -337,7 +341,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
     () => services.sales.createPresenter(),
     /CURRENT_CASHIER_REQUIRED/,
   );
-  assert.equal(presenter.openCash(), true);
+  assert.equal(await presenter.openCash(), false);
   presenter.setExactCash();
   assert.equal(await presenter.submitCash(), false);
   assert.equal(durableCommits.length, 1, "旧 presenter 不得在锁屏后继续收款");
@@ -350,7 +354,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
     1,
     "锁屏后重新认证必须保留当前购物车",
   );
-  assert.equal(unlockedPresenter.openCash(), true);
+  assert.equal(await unlockedPresenter.openCash(), true);
   unlockedPresenter.setExactCash();
   assert.equal(await unlockedPresenter.submitCash(), true);
   assert.equal(durableCommits.length, 2);
@@ -364,12 +368,294 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
   unlockedPresenter.destroy();
 });
 
+test("销售履约 facade 缺少主管服务时按当前收银员权限 fail-closed", async () => {
+  let drawerOpens = 0;
+  const services = createTestComposition(databaseFor([]), {
+    onDrawerOpen() {
+      drawerOpens += 1;
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  assert.deepEqual(
+    await services.fulfilment.openCashDrawer.execute(),
+    {
+      state: "denied",
+      errorCode: "PERMISSION_DENIED",
+    },
+  );
+  assert.equal(drawerOpens, 0);
+});
+
+test("销售履约 facade 复用并发动作的 Promise 和 actionId，并通过主管授权后只触发一次硬件", async () => {
+  let drawerOpens = 0;
+  let printCalls = 0;
+  let settingsReads = 0;
+  const services = createTestComposition(
+    databaseFor([], {
+      lastOrder: lastCashOrder(),
+      onFrozenSettingsRead() {
+        settingsReads += 1;
+      },
+    }),
+    {
+      supervisorPermissions: [
+        "Permissions.PosTerminal.CashDrawer.Open",
+        "Permissions.PosTerminal.Receipt.PrintLast",
+      ],
+      onDrawerOpen() {
+        drawerOpens += 1;
+      },
+      onPrint() {
+        printCalls += 1;
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  if (services.operationAuthorization.status !== "available") {
+    throw new Error("operation authorization must be available");
+  }
+
+  const readsBeforeDrawer = settingsReads;
+  const drawerFirst = services.fulfilment.openCashDrawer.execute();
+  const drawerDuplicate = services.fulfilment.openCashDrawer.execute();
+  assert.strictEqual(
+    drawerDuplicate,
+    drawerFirst,
+    "并发开箱必须复用同一个在途 Promise",
+  );
+  const drawerAuthorization =
+    services.operationAuthorization.getState();
+  assert.equal(drawerAuthorization.kind, "awaiting-supervisor");
+  if (drawerAuthorization.kind !== "awaiting-supervisor") {
+    throw new Error("drawer authorization must be pending");
+  }
+  assert.equal(
+    drawerAuthorization.permissionCode,
+    "Permissions.PosTerminal.CashDrawer.Open",
+  );
+  assert.equal(drawerAuthorization.action, "open-cash-drawer");
+  assert.equal(
+    (
+      await services.operationAuthorization.submitSupervisorBarcode(
+        "supervisor",
+      )
+    ).outcome,
+    "authorized",
+  );
+  assert.deepEqual(await drawerFirst, {
+    state: "Completed",
+    errorCode: null,
+  });
+  assert.deepEqual(await drawerDuplicate, {
+    state: "Completed",
+    errorCode: null,
+  });
+  assert.equal(drawerOpens, 1);
+  assert.equal(
+    settingsReads,
+    readsBeforeDrawer + 1,
+    "单次手动开箱只能读取一次持久设置",
+  );
+
+  const readsBeforeReprint = settingsReads;
+  const reprintFirst = services.fulfilment.reprint.execute();
+  const reprintDuplicate = services.fulfilment.reprint.execute();
+  assert.strictEqual(
+    reprintDuplicate,
+    reprintFirst,
+    "并发重打必须复用同一个在途 Promise",
+  );
+  const reprintAuthorization =
+    services.operationAuthorization.getState();
+  assert.equal(reprintAuthorization.kind, "awaiting-supervisor");
+  if (reprintAuthorization.kind !== "awaiting-supervisor") {
+    throw new Error("reprint authorization must be pending");
+  }
+  assert.equal(
+    reprintAuthorization.permissionCode,
+    "Permissions.PosTerminal.Receipt.PrintLast",
+  );
+  assert.equal(reprintAuthorization.action, "reprint-last-receipt");
+  assert.equal(
+    (
+      await services.operationAuthorization.submitSupervisorBarcode(
+        "supervisor",
+      )
+    ).outcome,
+    "authorized",
+  );
+  assert.deepEqual(await reprintFirst, {
+    state: "Printed",
+    errorCode: null,
+  });
+  assert.deepEqual(await reprintDuplicate, {
+    state: "Printed",
+    errorCode: null,
+  });
+  assert.equal(printCalls, 1);
+  assert.equal(
+    settingsReads,
+    readsBeforeReprint + 1,
+    "单次最后小票重打只能读取一次持久设置",
+  );
+});
+
+test("销售履约把 cashier lease 守卫传入硬件队列，失效后排队开箱不读取设置、不落任务也不发脉冲", async () => {
+  let invalidate!: () => void;
+  let releasePrint!: () => void;
+  const printReleased = new Promise<void>((resolve) => {
+    releasePrint = resolve;
+  });
+  let settingsReads = 0;
+  let printCalls = 0;
+  let drawerOpens = 0;
+  const services = createTestComposition(
+    databaseFor([], {
+      lastOrder: lastCashOrder(),
+      onFrozenSettingsRead() {
+        settingsReads += 1;
+      },
+    }),
+    {
+      cashierPermissions: [
+        "Permissions.PosTerminal.Receipt.PrintLast",
+        "Permissions.PosTerminal.CashDrawer.Open",
+      ],
+      captureInvalidation(listener) {
+        invalidate = listener;
+      },
+      onPrint() {
+        printCalls += 1;
+      },
+      waitForPrint: () => printReleased,
+      onDrawerOpen() {
+        drawerOpens += 1;
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  const readsBeforeReprint = settingsReads;
+
+  const reprint = services.fulfilment.reprint.execute();
+  while (printCalls === 0) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const drawer = services.fulfilment.openCashDrawer.execute();
+  invalidate();
+  releasePrint();
+
+  const settled = await Promise.allSettled([reprint, drawer]);
+  assert.deepEqual(
+    settled.map((result) => result.status),
+    ["fulfilled", "rejected"],
+  );
+  assert.deepEqual(
+    settled[0]?.status === "fulfilled"
+      ? settled[0].value
+      : null,
+    { state: "Printed", errorCode: null },
+  );
+  assert.equal(printCalls, 1);
+  assert.equal(drawerOpens, 0);
+  assert.equal(
+    settingsReads,
+    readsBeforeReprint + 1,
+    "排队开箱在取得 hardwareTail 后先复核 lease，不能读取设置或创建 Requested 事件",
+  );
+});
+
+test("履约硬件与终态已成功后 lease 才失效，facade 保留真实结果且并发调用不创建第二动作", async () => {
+  let invalidate!: () => void;
+  let reprintJobs = 0;
+  let drawerEvents = 0;
+  let printCalls = 0;
+  let drawerOpens = 0;
+  const terminalOrder: ("reprint" | "drawer")[] = [];
+  const services = createTestComposition(
+    databaseFor([], {
+      lastOrder: lastCashOrder(),
+      onReprintPrepared() {
+        reprintJobs += 1;
+      },
+      onManualDrawerCreated() {
+        drawerEvents += 1;
+      },
+      onFulfilmentTerminalPersisted(kind) {
+        terminalOrder.push(kind);
+        invalidate();
+      },
+    }),
+    {
+      cashierPermissions: [
+        "Permissions.PosTerminal.Receipt.PrintLast",
+        "Permissions.PosTerminal.CashDrawer.Open",
+      ],
+      captureInvalidation(listener) {
+        invalidate = listener;
+      },
+      onPrint() {
+        printCalls += 1;
+      },
+      onDrawerOpen() {
+        drawerOpens += 1;
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const reprint = services.fulfilment.reprint.execute();
+  const duplicateReprint = services.fulfilment.reprint.execute();
+  assert.strictEqual(duplicateReprint, reprint);
+  assert.deepEqual(await reprint, {
+    state: "Printed",
+    errorCode: null,
+  });
+  assert.deepEqual(await duplicateReprint, {
+    state: "Printed",
+    errorCode: null,
+  });
+  assert.equal(reprintJobs, 1);
+  assert.equal(printCalls, 1);
+
+  await services.cashierSession.signIn("cashier");
+  const drawer = services.fulfilment.openCashDrawer.execute();
+  const duplicateDrawer =
+    services.fulfilment.openCashDrawer.execute();
+  assert.strictEqual(duplicateDrawer, drawer);
+  assert.deepEqual(await drawer, {
+    state: "Completed",
+    errorCode: null,
+  });
+  assert.deepEqual(await duplicateDrawer, {
+    state: "Completed",
+    errorCode: null,
+  });
+  assert.equal(drawerEvents, 1);
+  assert.equal(drawerOpens, 1);
+  assert.deepEqual(terminalOrder, ["reprint", "drawer"]);
+});
+
 test("生产销售本地目录未命中且在线时使用可信门店做远程精确回退", async () => {
   const requests: HbposTransportRequest[] = [];
   const lookupCode = "930000000999";
+  let markRemoteLookupStarted!: () => void;
+  const remoteLookupStarted = new Promise<void>((resolve) => {
+    markRemoteLookupStarted = resolve;
+  });
+  let releaseRemoteLookup!: () => void;
+  const remoteLookupReleased = new Promise<void>((resolve) => {
+    releaseRemoteLookup = resolve;
+  });
   const transport: HbposTransport = {
     async request<T>(request: HbposTransportRequest) {
       requests.push(request);
+      markRemoteLookupStarted();
+      await remoteLookupReleased;
       return {
         status: 200,
         data: {
@@ -411,7 +697,18 @@ test("生产销售本地目录未命中且在线时使用可信门店做远程�
   const presenter = services.sales.createPresenter();
 
   presenter.setQuery(lookupCode);
-  assert.equal(await presenter.addLookupCode(), true);
+  const addCompletion = presenter.addLookupCode();
+  const firstCompletedPhase = await Promise.race([
+    addCompletion.then(() => "local-cart" as const),
+    remoteLookupStarted.then(() => "remote-lookup" as const),
+  ]);
+  if (firstCompletedPhase === "remote-lookup") {
+    releaseRemoteLookup();
+  }
+  assert.equal(firstCompletedPhase, "local-cart");
+  assert.equal(presenter.getState().query, "");
+  assert.equal(presenter.getState().pendingLookupCount, 1);
+  await remoteLookupStarted;
 
   assert.deepEqual(
     requests.map((request) => ({
@@ -425,13 +722,35 @@ test("生产销售本地目录未命中且在线时使用可信门店做远程�
       },
     ],
   );
+  const catalogWorkSettled = new Promise<void>((resolve) => {
+    let unsubscribe: () => void = () => undefined;
+    const finishIfSettled = () => {
+      const state = presenter.getState();
+      if (
+        state.pendingLookupCount === 0 &&
+        state.cart.lines.length > 0
+      ) {
+        unsubscribe();
+        resolve();
+      }
+    };
+    unsubscribe = presenter.subscribe(finishIfSettled);
+    finishIfSettled();
+  });
+  releaseRemoteLookup();
+  await catalogWorkSettled;
+  const checkoutCart = presenter.getState().cart;
   assert.equal(
-    presenter.getState().cart.lines[0]?.productCode,
+    checkoutCart.lines[0]?.productCode,
     "P-REMOTE",
   );
   assert.equal(
-    presenter.getState().cart.lines[0]?.unitPrice.cents,
+    checkoutCart.lines[0]?.unitPrice.cents,
     250,
+  );
+  assert.equal(
+    (await services.catalog.findExact(lookupCode))?.productCode,
+    "P-REMOTE",
   );
   presenter.destroy();
 });
@@ -686,7 +1005,7 @@ test("RecallActive 启动只建立隐藏门禁，登录后仍需双权限 recove
   });
   assert.equal(recallLoads, 1);
   assert.equal(presenter.getState().cart.lines[0]?.lineId, "recalled-line-1");
-  assert.equal(presenter.openCash(), true);
+  assert.equal(await presenter.openCash(), true);
   presenter.setExactCash();
   assert.equal(await presenter.submitCash(), true);
 
@@ -1189,7 +1508,7 @@ test("生产组合把共享购物车发布到只读客显，支付清车后仍�
     assert.fail("customer display should be available");
   }
   await services.customerDisplay.showPayment();
-  sales.openCash();
+  await sales.openCash();
   sales.setExactCash();
   assert.equal(await sales.submitCash(), true);
   await services.customerDisplay.showSuccess(25);
@@ -1445,7 +1764,7 @@ test("激活后促销快照与目录不一致时返回告警", async () => {
   assert.equal(outcome.warningCode, "catalog-runtime-reload-failed");
 });
 
-test("settings 目录重载缺失、fallback 或快照不一致时保持已切换目录并报告失败", async () => {
+test("settings 与维护页共享目录重载告警，已切换目录保持可用", async () => {
   const cases: readonly Readonly<{
     name: string;
     database: NonNullable<Parameters<typeof databaseFor>[1]>;
@@ -1498,13 +1817,23 @@ test("settings 目录重载缺失、fallback 或快照不一致时保持已切�
     assert.equal(activations, 1, scenario.name);
     assert.equal(
       presenter.getState().statusCode,
-      "catalog-download-failed",
+      "catalog-downloaded",
+      scenario.name,
+    );
+    assert.equal(
+      presenter.getState().catalogRefresh.kind,
+      "warning",
+      scenario.name,
+    );
+    assert.equal(
+      services.catalogRefresh.getState().kind,
+      "warning",
       scenario.name,
     );
   }
 });
 
-test("销毁 settings 下载会在激活前取消，并只清理 staging", async () => {
+test("销毁 settings 页面后目录继续刷新，重新进入仍可读取完成状态", async () => {
   let activateCount = 0;
   let discardCount = 0;
   let promotionsEntered!: () => void;
@@ -1540,11 +1869,191 @@ test("销毁 settings 下载会在激活前取消，并只清理 staging", async
   const download = presenter.downloadCatalog();
   await entered;
   presenter.destroy();
+  assert.equal(services.catalogRefresh.getState().kind, "running");
   releasePromotions();
   await download;
 
+  assert.equal(activateCount, 1);
+  assert.equal(discardCount, 0);
+  assert.equal(services.catalogRefresh.getState().kind, "warning");
+
+  const reopened = services.settings.createPresenter();
+  assert.equal(reopened.getState().catalogRefresh.kind, "warning");
+  await reopened.load();
+  assert.equal(reopened.getState().catalog.snapshotId, "test-id-1");
+  reopened.destroy();
+});
+
+test("设置中确认重置后改由共享后台任务执行，离页不会中止且返回仍见结果", async () => {
+  let activateCount = 0;
+  let discardCount = 0;
+  let promotionsEntered!: () => void;
+  let releasePromotions!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    promotionsEntered = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releasePromotions = resolve;
+  });
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() {
+        activateCount += 1;
+      },
+      onCatalogDiscard() {
+        discardCount += 1;
+      },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_CATALOG_RESET_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: await catalogDownloadTransport({
+        beforePromotions: async () => {
+          promotionsEntered();
+          await release;
+        },
+      }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  assert.equal(presenter.requestCatalogReset(), true);
+  const reset = presenter.confirmDangerousAction();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(services.catalogRefresh.getState().kind, "running");
+  await entered;
+  presenter.destroy();
+
+  releasePromotions();
+  await reset;
+
+  assert.equal(activateCount, 1);
+  assert.equal(discardCount, 0);
+  assert.equal(services.catalogRefresh.getState().kind, "warning");
+  const reopened = services.settings.createPresenter();
+  assert.equal(reopened.getState().catalogRefresh.kind, "warning");
+  await reopened.load();
+  assert.equal(reopened.getState().catalog.snapshotId, "test-id-1");
+  reopened.destroy();
+});
+
+test("settings 与目录维护入口加入同一后台任务且只激活一次", async () => {
+  let activateCount = 0;
+  let promotionsEntered!: () => void;
+  let releasePromotions!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    promotionsEntered = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releasePromotions = resolve;
+  });
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() { activateCount += 1; },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: await catalogDownloadTransport({
+        beforePromotions: async () => {
+          promotionsEntered();
+          await release;
+        },
+      }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const settingsPresenter = services.settings.createPresenter();
+  await settingsPresenter.load();
+
+  const settingsDownload = settingsPresenter.downloadCatalog();
+  await entered;
+  const maintenanceJoin = services.catalogRefresh.start({
+    storeCode: "S001",
+    execute: ({ signal, onProgress }) =>
+      services.catalog.downloadAndActivate({
+        storeCode: "S001",
+        signal,
+        onProgress,
+      }),
+  });
+  assert.equal(services.catalogRefresh.getState().kind, "running");
+
+  releasePromotions();
+  await Promise.all([settingsDownload, maintenanceJoin]);
+
+  assert.equal(activateCount, 1);
+  assert.equal(services.catalogRefresh.getState().kind, "warning");
+  settingsPresenter.destroy();
+});
+
+test("runtime 关闭会取消并等待后台目录清理后再结束", async () => {
+  let activateCount = 0;
+  let discardCount = 0;
+  let promotionsEntered!: () => void;
+  let releasePromotions!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    promotionsEntered = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releasePromotions = resolve;
+  });
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() { activateCount += 1; },
+      onCatalogDiscard() { discardCount += 1; },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: await catalogDownloadTransport({
+        beforePromotions: async () => {
+          promotionsEntered();
+          await release;
+        },
+      }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await entered;
+  let shutdownFinished = false;
+  const shutdown = services.shutdownBackgroundWork().then(() => {
+    shutdownFinished = true;
+  });
+  await Promise.resolve();
+  assert.equal(shutdownFinished, false);
+
+  releasePromotions();
+  await Promise.all([download, shutdown]);
+
   assert.equal(activateCount, 0);
   assert.equal(discardCount, 1);
+  assert.equal(services.catalogRefresh.getState().kind, "idle");
+  presenter.destroy();
 });
 
 test("settings 目录下载绑定原 cashier lease，换班到同店身份也不能激活", async () => {
@@ -1648,6 +2157,8 @@ function createTestComposition(
     customerDisplayAdvertisementCacheRootUri?: string;
     transport?: HbposTransport;
     onPrint?(jobId: string, bytes: Uint8Array): void;
+    waitForPrint?(): Promise<void>;
+    onDrawerOpen?(actionId: string): void;
     installmentBootstrap?: PaymentProviderRuntimeBootstrap;
     settings?: ProductionSettingsRuntimeConfiguration;
   }> = {},
@@ -1678,9 +2189,11 @@ function createTestComposition(
       async connect() {},
       async print(jobId, bytes) {
         options.onPrint?.(jobId, bytes);
+        await options.waitForPrint?.();
         return { status: "printed", errorCode: null } as const;
       },
-      async open() {
+      async open(actionId) {
+        options.onDrawerOpen?.(actionId);
         return { status: "completed", errorCode: null } as const;
       },
     }),
@@ -1864,6 +2377,7 @@ async function catalogDownloadTransport(
   const pageChecksum = await calculateCatalogPageChecksum(
     [item],
     nodeCatalogPageDigest,
+    2,
   );
   return {
     async request<T>(request: HbposTransportRequest) {
@@ -2021,6 +2535,10 @@ function databaseFor(
       printerId: string;
       receiptBytes: Uint8Array;
     }>): void;
+    onManualDrawerCreated?(): void;
+    onFulfilmentTerminalPersisted?(
+      kind: "reprint" | "drawer",
+    ): void;
     heldOrderRecords?: Partial<HeldOrderRecordRepositoryPort>;
     syncHistoryOrders?: readonly LocalSyncHistoryOrder[];
     specialProductItems?: readonly SpecialProductItem[];
@@ -2035,11 +2553,37 @@ function databaseFor(
   }> = {},
 ): PosDatabase {
   let activeCatalogMetadata = options.activeCatalogMetadata ?? null;
+  const lookupOverlays = new Map<string, LocalCatalogMatch | null>();
   let stagingCatalog: Readonly<{
     snapshotId: string;
     catalogVersion: string;
     itemCount: number;
   }> | null = null;
+  const findBaseCatalogMatch = (
+    lookupCode: string,
+  ): LocalCatalogMatch | null =>
+    lookupCode === "930000000001"
+      ? {
+          storeCode: "S001",
+          productCode: "P-1",
+          referenceCode: null,
+          itemNumber: "I-1",
+          displayName: "Milk",
+          barcode: "930000000001",
+          lookupCode: "930000000001",
+          lookupCodeNormalized: "930000000001",
+          retailPriceCents: 100,
+          priceSource: 0,
+          priceSourceLabel: "Retail",
+          quantityFactor: 1,
+          taxRateBasisPoints: 1_000,
+          updatedAtIso: null,
+          rowVersion: "1",
+          productImage: null,
+          discountRate: null,
+          isSpecialProduct: false,
+        }
+      : null;
   const settings = {
     async getReceiptPrinterSettings() {
       options.onFrozenSettingsRead?.();
@@ -2142,31 +2686,74 @@ function databaseFor(
         return options.activeCatalogPromotions ?? null;
       },
       async findExact(lookupCode: string) {
-        return lookupCode === "930000000001"
-          ? {
-              storeCode: "S001",
-              productCode: "P-1",
-              referenceCode: null,
-              itemNumber: "I-1",
-              displayName: "Milk",
-              barcode: "930000000001",
-              lookupCode: "930000000001",
-              lookupCodeNormalized: "930000000001",
-              retailPriceCents: 100,
-              priceSource: 0,
-              priceSourceLabel: "Retail",
-              quantityFactor: 1,
-              taxRateBasisPoints: 1_000,
-              updatedAtIso: null,
-              rowVersion: "1",
-              productImage: null,
-              discountRate: null,
-              isSpecialProduct: false,
-            }
-          : null;
+        return findBaseCatalogMatch(lookupCode);
       },
       async searchByName() {
         return [];
+      },
+    }),
+    catalogLookupOverlay: () => ({
+      async getActiveSnapshotId() {
+        return activeCatalogMetadata?.snapshotId ?? null;
+      },
+      async upsert(input: Readonly<{
+        baseSnapshotId: string | null;
+        item: LocalCatalogMatch;
+      }>) {
+        if (
+          input.baseSnapshotId !==
+          (activeCatalogMetadata?.snapshotId ?? null)
+        ) {
+          return "stale-generation" as const;
+        }
+        lookupOverlays.set(
+          `${input.item.storeCode}\0${input.item.lookupCodeNormalized}`,
+          input.item,
+        );
+        return "applied" as const;
+      },
+      async tombstone(input: Readonly<{
+        baseSnapshotId: string | null;
+        storeCode: string;
+        lookupCodeNormalized: string;
+      }>) {
+        if (
+          input.baseSnapshotId !==
+          (activeCatalogMetadata?.snapshotId ?? null)
+        ) {
+          return "stale-generation" as const;
+        }
+        lookupOverlays.set(
+          `${input.storeCode}\0${input.lookupCodeNormalized}`,
+          null,
+        );
+        return "applied" as const;
+      },
+      async findExact(storeCode: string, lookupCode: string) {
+        const normalized = lookupCode.trim().toUpperCase();
+        const key = `${storeCode}\0${normalized}`;
+        return lookupOverlays.has(key)
+          ? lookupOverlays.get(key) ?? null
+          : findBaseCatalogMatch(normalized);
+      },
+      async searchByName(
+        storeCode: string,
+        query: string,
+        limit: number,
+        offset = 0,
+      ) {
+        const normalizedQuery = query.trim().toLowerCase();
+        return [...lookupOverlays.values()]
+          .filter(
+            (item): item is LocalCatalogMatch =>
+              item !== null &&
+              item.storeCode === storeCode &&
+              item.displayName.toLowerCase().includes(normalizedQuery),
+          )
+          .slice(offset, offset + limit);
+      },
+      async cleanupOldGenerations() {
+        return 0;
       },
     }),
     specialProducts: () => ({
@@ -2185,6 +2772,16 @@ function databaseFor(
     dailyCloses: () =>
       options.dailyClose ?? new MemoryDailyCloseRepository(),
     settings: () => settings,
+    settingsSafety: () => ({
+      async read() {
+        return {
+          pendingDurableWriteCount: 0,
+          pendingReturnCount: 0,
+          pendingSaleCount: 0,
+          unresolvedPaymentCount: 0,
+        };
+      },
+    }),
     offlineReturnCapacity: () => ({
       async hasCapacity() {
         return false;
@@ -2346,10 +2943,51 @@ function reprintStore(
     printerId: string;
     isReprint: true;
     bytes: Uint8Array;
-    state: "Queued";
+    state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous";
+    retryCount: number;
+  }> | null = null;
+  let drawer: Readonly<{
+    eventId: string;
+    orderGuid: null;
+    printerId: string;
+    state: "Requested" | "Completed" | "Failed" | "Unknown";
+    reason: "MANUAL";
     retryCount: number;
   }> | null = null;
   return {
+    async listQueuedPrintJobs() {
+      return [];
+    },
+    async listRequiredDrawerEvents() {
+      return [];
+    },
+    async beginManualDrawerOpen(input: Readonly<{
+      eventId: string;
+      printerId: string;
+      reason: "MANUAL";
+    }>) {
+      if (drawer?.eventId === input.eventId) {
+        return { kind: "existing" as const, event: drawer };
+      }
+      drawer = {
+        ...input,
+        orderGuid: null,
+        state: "Requested",
+        retryCount: 0,
+      };
+      options?.onManualDrawerCreated?.();
+      return { kind: "created" as const, event: drawer };
+    },
+    async finishDrawerEvent(
+      eventId: string,
+      _expected: "Requested",
+      state: "Completed" | "Failed" | "Unknown",
+    ) {
+      if (!drawer || drawer.eventId !== eventId) return false;
+      drawer = { ...drawer, state };
+      options?.onFulfilmentTerminalPersisted?.("drawer");
+      return true;
+    },
     async createLastReceiptReprint(input: Readonly<{
       orderGuid: string;
       printerId: string;
@@ -2368,9 +3006,20 @@ function reprintStore(
       return reprint;
     },
     async claimQueuedPrintJob(jobId: string) {
-      return reprint?.jobId === jobId ? { ...reprint, state: "Sending" as const } : null;
+      if (reprint?.jobId !== jobId || reprint.state !== "Queued") {
+        return null;
+      }
+      reprint = { ...reprint, state: "Sending" };
+      return reprint;
     },
-    async finishPrintJob() {
+    async finishPrintJob(
+      jobId: string,
+      _expected: "Sending",
+      state: "Printed" | "Failed" | "Ambiguous",
+    ) {
+      if (!reprint || reprint.jobId !== jobId) return false;
+      reprint = { ...reprint, state };
+      options?.onFulfilmentTerminalPersisted?.("reprint");
       return true;
     },
   };

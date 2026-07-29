@@ -558,21 +558,29 @@ function normalizeCommand(
     return createCommand(value, action, deviceCode);
   }
   if (value.kind === "repayment") {
-    if (
-      !exact(value, [
-        "deviceCode",
-        "cashierId",
-        "cashierName",
-        "kind",
-        "installmentGuid",
-      ])
-    ) {
+    const legacyKeys = [
+      "deviceCode",
+      "cashierId",
+      "cashierName",
+      "kind",
+      "installmentGuid",
+    ] as const;
+    const hasPaymentSelection =
+      action.method === "card"
+        ? exact(value, [...legacyKeys, "cardProvider"])
+        : action.method === "cash"
+          ? exact(value, [...legacyKeys, "cashTenderedCents"])
+          : false;
+    if (!exact(value, legacyKeys) && !hasPaymentSelection) {
       throw new TypeError("Installment repayment command is invalid.");
     }
     return Object.freeze({
       ...commandIdentity(value, deviceCode),
       kind: "repayment",
       installmentGuid: matchingInstallment(value.installmentGuid, action),
+      ...(hasPaymentSelection
+        ? normalizePaymentSelection(value, action)
+        : {}),
     });
   }
   if (
@@ -608,23 +616,32 @@ function createCommand(
   action: InstallmentPaymentAction,
   deviceCode: string,
 ): Extract<InstallmentActionCommand, { kind: "create" }> {
+  const legacyKeys = [
+    "deviceCode",
+    "cashierId",
+    "cashierName",
+    "kind",
+    "installmentGuid",
+    "createdAtIso",
+    "totalCents",
+    "downPaymentCents",
+    "lines",
+    "customerName",
+    "customerPhone",
+    "note",
+    "cartFingerprint",
+    "draftRevision",
+  ] as const;
+  const hasPaymentSelection = exact(value, [
+    ...legacyKeys,
+    ...(action.method === "card"
+      ? ["cardProvider" as const]
+      : action.method === "cash"
+        ? ["cashTenderedCents" as const]
+        : []),
+  ]) && action.method !== "voucher";
   if (
-    !exact(value, [
-      "deviceCode",
-      "cashierId",
-      "cashierName",
-      "kind",
-      "installmentGuid",
-      "createdAtIso",
-      "totalCents",
-      "downPaymentCents",
-      "lines",
-      "customerName",
-      "customerPhone",
-      "note",
-      "cartFingerprint",
-      "draftRevision",
-    ]) ||
+    (!exact(value, legacyKeys) && !hasPaymentSelection) ||
     !Array.isArray(value.lines) ||
     value.lines.length === 0 ||
     value.lines.length > 1_000
@@ -665,6 +682,49 @@ function createCommand(
       1_048_576,
     ),
     draftRevision: integer(value.draftRevision, "draft revision"),
+    ...(hasPaymentSelection
+      ? normalizePaymentSelection(value, action)
+      : {}),
+  });
+}
+
+function normalizePaymentSelection(
+  value: Record<string, unknown>,
+  action: InstallmentPaymentAction,
+): Readonly<{
+  cardProvider?: "square" | "linkly-cloud";
+  cashTenderedCents?: number;
+}> {
+  if (
+    action.kind === "cancel-refund" ||
+    action.method === null ||
+    action.amountCents === null
+  ) {
+    throw new TypeError("Installment payment selection is invalid.");
+  }
+  if (action.method === "card") {
+    if (
+      (value.cardProvider !== "square" &&
+        value.cardProvider !== "linkly-cloud")
+    ) {
+      throw new TypeError("Installment payment selection is invalid.");
+    }
+    return Object.freeze({
+      cardProvider: value.cardProvider,
+    });
+  }
+  if (action.method !== "cash") {
+    throw new TypeError("Installment payment selection is invalid.");
+  }
+  const cashTenderedCents = positive(
+    value.cashTenderedCents,
+    "cash tendered amount",
+  );
+  if (cashTenderedCents < action.amountCents) {
+    throw new TypeError("Installment payment selection is invalid.");
+  }
+  return Object.freeze({
+    cashTenderedCents,
   });
 }
 

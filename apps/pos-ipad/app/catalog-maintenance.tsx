@@ -68,6 +68,7 @@ export default function CatalogMaintenanceRoute() {
         }
         const presenter = new CatalogMaintenancePresenter({
           authenticatedStoreCode: identity.storeCode,
+          coordinator: services.catalogRefresh,
           port: services.catalog,
         });
         createdPresenter = presenter;

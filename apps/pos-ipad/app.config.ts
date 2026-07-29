@@ -4,7 +4,9 @@ const supportedInterfaceOrientations = [
   "UIInterfaceOrientationLandscapeLeft",
   "UIInterfaceOrientationLandscapeRight",
 ];
+// Expo 配置在独立 Node 上下文中加载，无法直接解析应用源码的 TS 模块。
 const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
+const localHbposApiBaseUrl = "http://192.168.31.246:5159";
 
 function buildHbposApiConfiguration(): Readonly<{
   apiBaseUrl: string;
@@ -15,6 +17,7 @@ function buildHbposApiConfiguration(): Readonly<{
     defaultHbposApiBaseUrl;
   const candidates = [
     apiBaseUrl,
+    localHbposApiBaseUrl,
     ...(process.env.EXPO_PUBLIC_HBPOS_TRUSTED_API_ORIGINS ?? "")
       .split(",")
       .map((value) => value.trim())

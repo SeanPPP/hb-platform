@@ -8,8 +8,18 @@ import {
 } from "@/core/api/hbpos-api";
 import type { components } from "@/generated/hbpos/schema";
 
-const CHECKSUM_MARKER = "HBPOS-CATALOG-PAGE-CHECKSUM-V1";
-const CHECKSUM_PREFIX = "sha256-catalog-page-v1:";
+const CHECKSUM_SPECS = {
+  1: {
+    marker: "HBPOS-CATALOG-PAGE-CHECKSUM-V1",
+    prefix: "sha256-catalog-page-v1:",
+  },
+  2: {
+    marker: "HBPOS-CATALOG-PAGE-CHECKSUM-V2",
+    prefix: "sha256-catalog-page-v2:",
+  },
+} as const;
+
+export type CatalogPageChecksumVersion = keyof typeof CHECKSUM_SPECS;
 
 type GeneratedCatalogPage = components["schemas"]["CatalogSyncPageResponse"] & {
   catalogVersion?: string | null;
@@ -73,6 +83,8 @@ export class HbposCatalogPageApi {
     storeCode: string;
     cursor: string | null;
     pageSize: number;
+    catalogVersion?: string;
+    signal?: AbortSignal;
   }>): Promise<VerifiedCatalogSyncPage> {
     const response = await this.transport.request<HbposEnvelope<GeneratedCatalogPage>>({
       method: "GET",
@@ -81,10 +93,19 @@ export class HbposCatalogPageApi {
         storeCode: input.storeCode,
         cursor: input.cursor ?? undefined,
         pageSize: input.pageSize,
+        catalogVersion: input.catalogVersion ?? undefined,
+        checksumVersion: 2,
       },
+      // WPF 目录下载同样不设隐藏固定超时；页面生命周期信号负责主动取消。
+      timeoutMs: 0,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     const page = normalizePage(unwrapHbposEnvelope(response.data));
-    const calculatedChecksum = await calculateCatalogPageChecksum(page.items, this.digest);
+    const calculatedChecksum = await calculateCatalogPageChecksum(
+      page.items,
+      this.digest,
+      2,
+    );
     if (page.pageChecksum.toLowerCase() !== calculatedChecksum) {
       throw new HbposApiError("Catalog page checksum verification failed.", {
         kind: "envelope",
@@ -100,12 +121,15 @@ export class HbposCatalogPageApi {
    */
   public async getPromotions(input: Readonly<{
     storeCode: string;
+    signal?: AbortSignal;
   }>): Promise<readonly CatalogPromotion[]> {
     const requestedStoreCode = requiredPromotionText(input.storeCode, "requested storeCode");
     const response = await this.transport.request<HbposEnvelope<GeneratedCatalogPromotions>>({
       method: "GET",
       url: "/api/v1/catalog/promotions",
       params: { storeCode: requestedStoreCode },
+      timeoutMs: 0,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     return normalizePromotions(
       unwrapHbposEnvelope(response.data),
@@ -117,13 +141,18 @@ export class HbposCatalogPageApi {
 export async function calculateCatalogPageChecksum(
   items: readonly CatalogLookupItem[],
   digest: CatalogPageDigest = expoSha256,
+  version: CatalogPageChecksumVersion = 1,
 ): Promise<string> {
-  const canonical = buildCanonicalPage(items);
+  const spec = CHECKSUM_SPECS[version];
+  const canonical = buildCanonicalPage(items, version);
   const hex = (await digest(canonical)).trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw new Error("Catalog page digest returned an invalid SHA256 value.");
+    throw new HbposApiError("Catalog page digest returned an invalid SHA256 value.", {
+      kind: "envelope",
+      code: "CATALOG_PAGE_DIGEST_INVALID",
+    });
   }
-  return `${CHECKSUM_PREFIX}${hex}`;
+  return `${spec.prefix}${hex}`;
 }
 
 function normalizePage(page: GeneratedCatalogPage): VerifiedCatalogSyncPage {
@@ -254,8 +283,17 @@ function normalizeDeletedLookup(item: GeneratedDeletedLookup): CatalogDeletedLoo
   };
 }
 
-function buildCanonicalPage(items: readonly CatalogLookupItem[]): string {
-  const values = [CHECKSUM_MARKER, String(items.length)];
+function buildCanonicalPage(
+  items: readonly CatalogLookupItem[],
+  version: CatalogPageChecksumVersion,
+): string {
+  const number = version === 1
+    ? formatCanonicalNumberV1
+    : formatCanonicalNumberV2;
+  const values = [
+    CHECKSUM_SPECS[version].marker,
+    number(items.length),
+  ];
   for (const item of items) {
     values.push(
       item.storeCode,
@@ -266,13 +304,13 @@ function buildCanonicalPage(items: readonly CatalogLookupItem[]): string {
       item.lookupCodeNormalized,
       item.itemNumber ?? "",
       item.barcode ?? "",
-      formatCanonicalNumber(item.retailPrice),
-      String(item.priceSource),
+      number(item.retailPrice),
+      number(item.priceSource),
       item.priceSourceLabel,
-      formatCanonicalNumber(item.quantityFactor),
+      number(item.quantityFactor),
       item.updatedAt ?? "",
       item.productImage ?? "",
-      item.discountRate === null ? "" : formatCanonicalNumber(item.discountRate),
+      item.discountRate === null ? "" : number(item.discountRate),
       item.isSpecialProduct ? "1" : "0",
     );
   }
@@ -285,9 +323,12 @@ async function expoSha256(payload: string): Promise<string> {
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, payload);
 }
 
-function formatCanonicalNumber(value: number): string {
+function formatCanonicalNumberV1(value: number): string {
   if (!Number.isFinite(value)) {
-    throw new Error("Catalog checksum cannot encode a non-finite number.");
+    throw new HbposApiError("Catalog checksum cannot encode a non-finite number.", {
+      kind: "envelope",
+      code: "CATALOG_PAGE_VALUE_INVALID",
+    });
   }
   if (Object.is(value, -0)) {
     return "0";
@@ -311,6 +352,23 @@ function formatCanonicalNumber(value: number): string {
       ? `${digits}${"0".repeat(decimalIndex - digits.length)}`
       : `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
   return negative ? `-${expanded}` : expanded;
+}
+
+function formatCanonicalNumberV2(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new HbposApiError("Catalog checksum cannot encode a non-finite number.", {
+      kind: "envelope",
+      code: "CATALOG_PAGE_VALUE_INVALID",
+    });
+  }
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  // 中文注释：服务端 decimal 没有负零；客户端也统一为正零后再编码。
+  view.setFloat64(0, Object.is(value, -0) ? 0 : value, false);
+  return Array.from(
+    new Uint8Array(buffer),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function requiredText(value: unknown, field: string): string {

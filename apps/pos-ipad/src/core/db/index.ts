@@ -1,4 +1,5 @@
 export * from "./expo-sqlite-driver";
+export * from "./catalog-lookup-overlay-repository";
 export * from "./catalog-repository";
 export * from "./expo-keychain-database-key-provider";
 export * from "./keychain-database-key-provider";

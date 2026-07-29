@@ -9,6 +9,7 @@ import type { ExternalCustomerDisplayPort } from "@/core/contracts/external-disp
 import type {
   ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import type { ActivePricingCartSession } from "@/features/sales/runtime";
 import type {
   SettingsAppUpdateSnapshot,
@@ -51,6 +52,9 @@ export type ProductionSettingsCompositionInput = Readonly<{
   readDevicePresentation(): Promise<SettingsDevicePresentation>;
   catalog: Readonly<{
     getActiveMetadata(): Promise<SettingsCatalogSnapshot | null>;
+    getRefreshState(): CatalogRefreshState;
+    subscribeRefresh(listener: () => void): () => void;
+    runExclusive<T>(operation: () => Promise<T>): Promise<T>;
     download(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
     reset(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
   }>;
@@ -75,6 +79,10 @@ export type ProductionSettingsCompositionInput = Readonly<{
     read(): Promise<Omit<SettingsPendingDataSnapshot, "hasActiveCart">>;
   }>;
   apiConfiguration: Readonly<{
+    /**
+     * 仅允许开发构建在调试 API 时跨过本地待处理门禁。
+     */
+    allowSwitchWithPendingLocalData?: boolean;
     probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
     save(apiBaseUrl: string): Promise<void>;
   }>;
@@ -179,6 +187,9 @@ export function createProductionSettingsComposition(
       } satisfies SettingsSnapshot);
     },
     catalog: {
+      getRefreshState: input.catalog.getRefreshState,
+      subscribeRefresh: input.catalog.subscribeRefresh,
+      runExclusive: input.catalog.runExclusive,
       download: async (signal) => {
         throwIfAborted(signal);
         const result = await input.catalog.download(signal);

@@ -291,6 +291,42 @@ test("确定离线且未创建 attempt 时保留安全改现金入口", async ()
   assert.equal(presenter.getState().phase, "success");
 });
 
+test("首次进入支付页可直接现金结账，超付只提交应收并公开找零", async () => {
+  const runtime = new FakePaymentRuntime();
+  runtime.startCashImpl = async () =>
+    snapshot({
+      status: "completed",
+      remaining: aud(0),
+      tenders: [
+        {
+          tenderGuid: "cash-first-entry",
+          method: "cash",
+          amount: aud(1_000),
+          reversible: false,
+        },
+      ],
+    });
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("20.00");
+
+  assert.equal(await presenter.submitSelected(), true);
+  assert.deepEqual(runtime.startCashCalls, [
+    {
+      checkoutIntentId: "checkout-local-1",
+      expectedCartRevision: 7,
+      actionId: "action-1",
+      amount: aud(2_000),
+    },
+  ]);
+  assert.deepEqual(presenter.getState().checkout.cash, {
+    tenderedCents: 2_000,
+    appliedCents: 1_000,
+    changeCents: 1_000,
+  });
+});
+
 test("Linkly UI 仅发送 attemptId 与枚举安全键，完成后走同一 attempt 恢复", async () => {
   const runtime = new FakePaymentRuntime();
   runtime.recovery = snapshot({
@@ -389,6 +425,7 @@ test("AUD 输入仅接受正数与最多两位小数", () => {
 class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
   public recovery: PaymentCheckoutPublicSnapshot | null = null;
   public readonly startCalls: unknown[] = [];
+  public readonly startCashCalls: unknown[] = [];
   public recoverCalls = 0;
   public readonly retryTenderReversalCalls: unknown[] = [];
   public addCashCalls = 0;
@@ -398,6 +435,12 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
     async () => this.recovery;
   public startImpl: (
     input: Parameters<PaymentCheckoutRuntimePort["start"]>[0],
+  ) => Promise<PaymentCheckoutPublicSnapshot> = async () =>
+    snapshot({ status: "pending" });
+  public startCashImpl: (
+    input: Parameters<
+      NonNullable<PaymentCheckoutRuntimePort["startCash"]>
+    >[0],
   ) => Promise<PaymentCheckoutPublicSnapshot> = async () =>
     snapshot({ status: "pending" });
   public recoverImpl: () => Promise<PaymentCheckoutPublicSnapshot> =
@@ -434,6 +477,15 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
   ): Promise<PaymentCheckoutPublicSnapshot> {
     this.startCalls.push(input);
     return this.startImpl(input);
+  }
+
+  public startCash(
+    input: Parameters<
+      NonNullable<PaymentCheckoutRuntimePort["startCash"]>
+    >[0],
+  ): Promise<PaymentCheckoutPublicSnapshot> {
+    this.startCashCalls.push(input);
+    return this.startCashImpl(input);
   }
 
   public recover(): Promise<PaymentCheckoutPublicSnapshot> {

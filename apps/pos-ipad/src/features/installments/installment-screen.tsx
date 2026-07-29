@@ -60,8 +60,10 @@ export type InstallmentScreenPresenter = Pick<
 > &
   Readonly<{ getState(): InstallmentPresenterState }>;
 
-type InstallmentScreenProps = Readonly<{
+export type InstallmentScreenProps = Readonly<{
   onBack?(): void;
+  onStartCreate?(): void;
+  onStartRepayment?(installmentGuid: string): void;
   presenter: InstallmentScreenPresenter;
 }>;
 
@@ -73,6 +75,8 @@ type ConfirmationKind = "cancel" | "void" | "pickup";
  */
 export function InstallmentScreen({
   onBack,
+  onStartCreate,
+  onStartRepayment,
   presenter,
 }: InstallmentScreenProps) {
   const state = useSyncExternalStore(
@@ -105,7 +109,7 @@ export function InstallmentScreen({
           locale={locale}
           onBack={onBack}
           pane={state.pane}
-          showCreate={presenter.showCreate}
+          showCreate={onStartCreate ?? presenter.showCreate}
           showHistory={presenter.showHistory}
         />
 
@@ -148,6 +152,7 @@ export function InstallmentScreen({
             <DetailsPane
               confirmation={confirmation}
               locale={locale}
+              onStartRepayment={onStartRepayment}
               presenter={presenter}
               setConfirmation={setConfirmation}
               state={state}
@@ -359,12 +364,14 @@ function OrderRow({
 function DetailsPane({
   confirmation,
   locale,
+  onStartRepayment,
   presenter,
   setConfirmation,
   state,
 }: Readonly<{
   confirmation: ConfirmationKind | null;
   locale: InstallmentLocale;
+  onStartRepayment: ((installmentGuid: string) => void) | undefined;
   presenter: InstallmentScreenPresenter;
   setConfirmation(value: ConfirmationKind | null): void;
   state: InstallmentPresenterState;
@@ -482,12 +489,29 @@ function DetailsPane({
       ) : null}
 
       {details.status === "Active" && state.access.canAddRepayment ? (
-        <RepaymentPanel
-          disabled={writeDisabled}
-          locale={locale}
-          presenter={presenter}
-          state={state}
-        />
+        onStartRepayment ? (
+          <View style={styles.actionCard}>
+            <Text style={styles.sectionTitle}>
+              {installmentText(locale, "repayment.title")}
+            </Text>
+            <ActionButton
+              disabled={writeDisabled}
+              label={installmentText(locale, "action.addRepayment")}
+              onPress={() =>
+                onStartRepayment(details.installmentGuid)
+              }
+              testID="installment-continue-to-payment"
+              wide
+            />
+          </View>
+        ) : (
+          <RepaymentPanel
+            disabled={writeDisabled}
+            locale={locale}
+            presenter={presenter}
+            state={state}
+          />
+        )
       ) : null}
 
       {details.status === "Active" && state.access.canCancel ? (

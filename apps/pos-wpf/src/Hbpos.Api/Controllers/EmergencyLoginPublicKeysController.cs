@@ -12,8 +12,12 @@ namespace Hbpos.Api.Controllers;
 [Authorize(AuthenticationSchemes = DeviceAuthConstants.Scheme)]
 [Route("api/v1/emergency-login/public-keys")]
 public sealed class EmergencyLoginPublicKeysController(
-    IEmergencyLoginPublicKeyDistributionService service) : ControllerBase
+    IEmergencyLoginPublicKeyDistributionService service,
+    TimeProvider? timeProvider = null) : ControllerBase
 {
+    private readonly TimeProvider _timeProvider =
+        timeProvider ?? TimeProvider.System;
+
     [HttpGet("")]
     public async Task<ActionResult<EmergencyLoginPublicKeyPackage>> Get(
         CancellationToken cancellationToken)
@@ -51,7 +55,9 @@ public sealed class EmergencyLoginPublicKeysController(
         {
             // 轮换恰好发生在 GET 与 ACK 之间时，明确告知客户端立即拉取当前版本。
             var current = await service.GetAsync(cancellationToken);
-            return Conflict(new EmergencyLoginPublicKeyAckResponse(current.Version));
+            return Conflict(new EmergencyLoginPublicKeyAckResponse(
+                current.Version,
+                _timeProvider.GetUtcNow().UtcDateTime));
         }
 
         return result switch
@@ -62,7 +68,9 @@ public sealed class EmergencyLoginPublicKeysController(
             EmergencyLoginPublicKeyAckResult.DeviceNotFound => Unauthorized(ApiResult<object>.Fail(
                 "DEVICE_AUTH_REQUIRED",
                 "Authenticated device was not found.")),
-            _ => Ok(new EmergencyLoginPublicKeyAckResponse(request.Version))
+            _ => Ok(new EmergencyLoginPublicKeyAckResponse(
+                request.Version,
+                _timeProvider.GetUtcNow().UtcDateTime))
         };
     }
 

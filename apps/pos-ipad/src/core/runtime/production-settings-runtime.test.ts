@@ -93,7 +93,13 @@ test("零参数工厂冻结可信权限，并在每次端口调用前后复核 c
 
   await presenter.load();
   assert.equal(presenter.getState().kind, "ready");
-  assert.deepEqual(events, ["lease:1", "lease:1", "load", "lease:1"]);
+  assert.deepEqual(events, [
+    "lease:1",
+    "lease:1",
+    "lease:1",
+    "load",
+    "lease:1",
+  ]);
 
   epoch = 2;
   await presenter.load();
@@ -156,6 +162,8 @@ function fakeControl(
     throw new Error("not implemented");
   };
   return {
+    getCatalogRefreshState: () => ({ kind: "idle" }),
+    subscribeCatalogRefresh: () => () => undefined,
     loadSnapshot: unavailable,
     downloadCatalog: unavailable,
     testApiAddress: unavailable,

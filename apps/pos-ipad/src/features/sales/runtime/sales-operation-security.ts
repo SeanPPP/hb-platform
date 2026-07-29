@@ -191,6 +191,54 @@ export class AuthorizedSalesOperationExecutor {
     return result.value;
   }
 
+  /**
+   * 已授权动作的可信后续写入不再次请求主管授权，只按调用方声明的动作记录真实差异。
+   * action/audit ID、时钟或仓储异常均在购物车变更后吞掉，不能反向回滚内存状态。
+   */
+  public async runTrustedCartMutation<T>(
+    input: Readonly<{
+      permissionCode: string;
+      action: string;
+      eventType: SalesCartAuditEventType;
+      getCart(): CartSnapshot;
+      operation(): T;
+    }>,
+  ): Promise<T> {
+    this.sessionGuard.assertActive();
+    const before = input.getCart();
+    const value = input.operation();
+    const after = input.getCart();
+    if (!cartChanged(before, after)) return value;
+
+    try {
+      const actionId = requiredText(
+        this.security.createActionId(),
+        "Sales action id",
+      );
+      await this.recordCartAudit({
+        actionId,
+        eventType: input.eventType,
+        action: requiredText(input.action, "Sales action"),
+        outcome: "Succeeded",
+        reason: null,
+        context: {
+          authorizationMode: "system",
+          requestingCashierId: this.identity.cashierId,
+          authorizingCashierId: null,
+          permissionCode: requiredText(
+            input.permissionCode,
+            "Sales permission",
+          ),
+        },
+        before,
+        after,
+      });
+    } catch {
+      // 可信目录回写已完成，任何审计基础设施异常均不能回滚购物车。
+    }
+    return value;
+  }
+
   private authorize<T>(
     permissionCode: string,
     action: string,

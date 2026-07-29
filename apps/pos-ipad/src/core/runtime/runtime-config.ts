@@ -1,3 +1,5 @@
+import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "../security/pos-api-addresses";
+
 export const DEFAULT_HBPOS_API_URL = "https://hotbargain.vip/pos-api";
 
 export function resolveHbposApiUrl(configuredUrl: string | undefined): string {
@@ -12,7 +14,11 @@ export function resolveHbposApiUrl(configuredUrl: string | undefined): string {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("HBPOS API address must use HTTP or HTTPS.");
   }
-  if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+  if (
+    parsed.protocol === "http:" &&
+    !isLoopbackHostname(parsed.hostname) &&
+    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+  ) {
     throw new Error("Remote HBPOS API address requires HTTPS.");
   }
   if (parsed.username || parsed.password) {

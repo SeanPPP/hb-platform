@@ -17,4 +17,6 @@ public sealed record EmergencyLoginPublicKeyPackage(
 
 public sealed record EmergencyLoginPublicKeyAckRequest(long Version);
 
-public sealed record EmergencyLoginPublicKeyAckResponse(long Version);
+public sealed record EmergencyLoginPublicKeyAckResponse(
+    long Version,
+    DateTime ServerTimeUtc);

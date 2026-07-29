@@ -30,9 +30,9 @@ import {
   LINKLY_SAFE_OPERATOR_KEYS,
   canSelectPaymentMethod,
   canSubmitPaymentMethod,
-  type PaymentPresenter,
   type PaymentPresenterState,
   type PaymentPresenterTender,
+  type PaymentScreenPresenter,
   type PaymentUiMethod,
   type PaymentUiPhase,
 } from "./payment-presenter";
@@ -53,7 +53,7 @@ const PAYMENT_METHODS = Object.freeze([
 ] as const satisfies readonly PaymentUiMethod[]);
 
 type PaymentScreenProps = Readonly<{
-  presenter: PaymentPresenter;
+  presenter: PaymentScreenPresenter;
   locale?: PaymentLocale;
   onBack?(): void;
   onComplete?(orderGuid: string): void;
@@ -112,15 +112,6 @@ export function PaymentScreen({
               })}
             </Text>
           ) : null}
-          {onBack ? (
-            <ActionButton
-              disabled={!canLeave}
-              label={t("action.back")}
-              onPress={onBack}
-              testID="payment-back"
-              tone="quiet"
-            />
-          ) : null}
         </View>
       </View>
 
@@ -165,27 +156,22 @@ export function PaymentScreen({
             compact && styles.workspaceCompact,
           ]}
         >
+          <PaymentContextPane
+            canLeave={canLeave}
+            compact={compact}
+            locale={locale}
+            onBack={onBack}
+            presenter={presenter}
+            state={state}
+            t={t}
+          />
           <View
             style={[
               styles.entryPane,
               compact && styles.entryPaneCompact,
             ]}
+            testID="payment-entry-pane"
           >
-            <Text style={styles.sectionTitle}>{t("method.title")}</Text>
-            <View style={styles.methodGrid}>
-              {PAYMENT_METHODS.map((method) => (
-                <PaymentMethodButton
-                  active={state.selectedMethod === method}
-                  disabled={!canSelectPaymentMethod(state, method)}
-                  key={method}
-                  label={t(paymentMethodCopyKey(method))}
-                  onPress={() => presenter.selectMethod(method)}
-                  testID={`payment-method-${method}`}
-                />
-              ))}
-            </View>
-            <ProviderBlockers state={state} t={t} />
-
             {showEntry ? (
               <View style={styles.form} testID="payment-entry-form">
                 <Text style={styles.inputLabel}>{t("amount.label")}</Text>
@@ -197,11 +183,34 @@ export function PaymentScreen({
                   placeholder="0.00"
                   placeholderTextColor="#7B8793"
                   selectionColor={posColors.blue}
+                  showSoftInputOnFocus={false}
                   style={styles.amountInput}
                   testID="payment-amount"
                   value={state.amountText}
                 />
                 <Text style={styles.inputHint}>{t("amount.hint")}</Text>
+                <PaymentKeypad
+                  amountText={state.amountText}
+                  disabled={state.busy}
+                  onChange={presenter.setAmountText}
+                />
+
+                {state.selectedMethod === "cash" ? (
+                  <View style={styles.quickCashRow} testID="payment-cash-quick">
+                    {[5, 10, 20, 50, 100].map((amount) => (
+                      <ActionButton
+                        key={amount}
+                        label={`$${amount}`}
+                        onPress={() =>
+                          presenter.setAmountText(amount.toFixed(2))
+                        }
+                        style={styles.quickCashButton}
+                        testID={`payment-cash-quick-${amount}`}
+                        tone="quiet"
+                      />
+                    ))}
+                  </View>
+                ) : null}
 
                 {state.selectedMethod === "voucher" ? (
                   <View
@@ -247,29 +256,45 @@ export function PaymentScreen({
                   </Text>
                 ) : null}
 
-                <ActionButton
-                  disabled={
-                    !state.selectedMethod ||
-                    !canSubmitPaymentMethod(
-                      state,
-                      state.selectedMethod,
-                    )
-                  }
-                  label={
-                    state.orderGuid
-                      ? t("action.addTender")
-                      : t("action.pay")
-                  }
-                  onPress={() => {
-                    void presenter.submitSelected();
-                  }}
-                  testID="payment-submit"
-                />
+                <View style={styles.formActions}>
+                  <ActionButton
+                    disabled={state.busy}
+                    label={t("action.cancel")}
+                    onPress={() => {
+                      if (state.allowedActions.cancel) {
+                        void presenter.cancel();
+                      } else if (onBack && canLeave) {
+                        onBack();
+                      } else {
+                        presenter.setAmountText("");
+                      }
+                    }}
+                    style={styles.formAction}
+                    testID="payment-entry-cancel"
+                    tone="quiet"
+                  />
+                  <ActionButton
+                    disabled={
+                      !state.selectedMethod ||
+                      !canSubmitPaymentMethod(
+                        state,
+                        state.selectedMethod,
+                      )
+                    }
+                    label={
+                      state.orderGuid
+                        ? t("action.addTender")
+                        : t("action.pay")
+                    }
+                    onPress={() => {
+                      void presenter.submitSelected();
+                    }}
+                    style={styles.formAction}
+                    testID="payment-submit"
+                  />
+                </View>
               </View>
             ) : null}
-
-            <RecoveryActions presenter={presenter} state={state} t={t} />
-            <LinklyControls presenter={presenter} state={state} t={t} />
           </View>
 
           <PaymentSummary
@@ -291,6 +316,173 @@ export function PaymentScreen({
         ) : null}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function PaymentContextPane({
+  canLeave,
+  compact,
+  locale,
+  onBack,
+  presenter,
+  state,
+}: Readonly<{
+  canLeave: boolean;
+  compact: boolean;
+  locale: PaymentLocale;
+  onBack: (() => void) | undefined;
+  presenter: PaymentScreenPresenter;
+  state: PaymentPresenterState;
+  t: Translate;
+}>) {
+  const customer = state.checkout.installmentCustomer;
+  const flowLabel =
+    state.checkout.flow === "installment-create"
+      ? locale === "zh"
+        ? "新建分期"
+        : "New installment"
+      : state.checkout.flow === "installment-repayment"
+        ? locale === "zh"
+          ? "分期还款"
+          : "Installment repayment"
+        : state.checkout.flow === "installment-recovery"
+          ? locale === "zh"
+            ? "恢复分期支付"
+            : "Recover installment"
+          : locale === "zh"
+            ? "当前交易"
+            : "Current transaction";
+  return (
+    <View
+      style={[
+        styles.contextPane,
+        compact && styles.contextPaneCompact,
+      ]}
+      testID="payment-context-pane"
+    >
+      {onBack ? (
+        <ActionButton
+          disabled={!canLeave}
+          label={locale === "zh" ? "返回收银" : "Back to sale"}
+          onPress={onBack}
+          style={styles.contextBack}
+          testID="payment-back"
+          tone="quiet"
+        />
+      ) : null}
+      <Text style={styles.contextEyebrow}>{flowLabel}</Text>
+
+      {customer ? (
+        <View style={styles.customerCard} testID="payment-installment-customer">
+          <View style={styles.customerHeading}>
+            <Text style={styles.customerTitle}>
+              {locale === "zh" ? "分期顾客" : "Installment customer"}
+            </Text>
+            {customer.editable &&
+            presenter.openInstallmentCustomerEditor ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={state.busy}
+                onPress={presenter.openInstallmentCustomerEditor}
+                style={({ pressed }) => [
+                  styles.customerEdit,
+                  pressed && styles.pressed,
+                ]}
+                testID="payment-customer-edit"
+              >
+                <Text style={styles.customerEditText}>
+                  {locale === "zh" ? "编辑" : "Edit"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {customer.installmentNumber ? (
+            <Text style={styles.customerNumber}>
+              {customer.installmentNumber}
+            </Text>
+          ) : null}
+          <Text style={styles.customerValue}>
+            {customer.name || (locale === "zh" ? "未填写姓名" : "Name required")}
+          </Text>
+          <Text style={styles.customerValue}>
+            {customer.phone || (locale === "zh" ? "未填写电话" : "Phone required")}
+          </Text>
+          {customer.editorOpen ? (
+            <View style={styles.customerEditor} testID="payment-customer-editor">
+              <TextInput
+                autoCorrect={false}
+                editable={!state.busy}
+                onChangeText={(value) =>
+                  presenter.setInstallmentCustomerDraftName?.(value)
+                }
+                placeholder={locale === "zh" ? "顾客姓名" : "Customer name"}
+                style={styles.customerInput}
+                testID="payment-customer-name"
+                value={customer.draftName}
+              />
+              <TextInput
+                autoCorrect={false}
+                editable={!state.busy}
+                keyboardType="phone-pad"
+                onChangeText={(value) =>
+                  presenter.setInstallmentCustomerDraftPhone?.(value)
+                }
+                placeholder={locale === "zh" ? "联系电话" : "Phone"}
+                style={styles.customerInput}
+                testID="payment-customer-phone"
+                value={customer.draftPhone}
+              />
+              <View style={styles.customerEditorActions}>
+                <ActionButton
+                  label={locale === "zh" ? "取消" : "Cancel"}
+                  onPress={() =>
+                    presenter.cancelInstallmentCustomerEditor?.()
+                  }
+                  style={styles.customerEditorButton}
+                  testID="payment-customer-cancel"
+                  tone="quiet"
+                />
+                <ActionButton
+                  label={locale === "zh" ? "保存" : "Save"}
+                  onPress={() => presenter.saveInstallmentCustomer?.()}
+                  style={styles.customerEditorButton}
+                  testID="payment-customer-save"
+                />
+              </View>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      <Text style={styles.contextListTitle}>
+        {locale === "zh" ? "商品明细" : "Items"}
+      </Text>
+      <ScrollView
+        nestedScrollEnabled
+        style={styles.contextLines}
+        testID="payment-context-lines"
+      >
+        {state.checkout.lines.length ? (
+          state.checkout.lines.map((line) => (
+            <View key={line.lineKey} style={styles.contextLine}>
+              <View style={styles.contextLineCopy}>
+                <Text numberOfLines={2} style={styles.contextLineName}>
+                  {line.displayName}
+                </Text>
+                <Text style={styles.contextLineQuantity}>× {line.quantity}</Text>
+              </View>
+              <Text style={styles.contextLineAmount}>
+                {formatAud(line.actualAmountCents, locale)}
+              </Text>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.contextEmpty}>
+            {locale === "zh" ? "交易商品由收银页确认" : "Items confirmed at checkout"}
+          </Text>
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -360,7 +552,7 @@ function RecoveryActions({
   state,
   t,
 }: Readonly<{
-  presenter: PaymentPresenter;
+  presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
@@ -400,7 +592,7 @@ function LinklyControls({
   state,
   t,
 }: Readonly<{
-  presenter: PaymentPresenter;
+  presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
@@ -467,7 +659,7 @@ function PaymentSummary({
 }: Readonly<{
   compact: boolean;
   locale: PaymentLocale;
-  presenter: PaymentPresenter;
+  presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
@@ -483,6 +675,21 @@ function PaymentSummary({
       ]}
       testID="payment-summary"
     >
+      <Text style={styles.sectionTitle}>{t("method.title")}</Text>
+      <View style={styles.methodGrid}>
+        {PAYMENT_METHODS.map((method) => (
+          <PaymentMethodButton
+            active={state.selectedMethod === method}
+            disabled={!canSelectPaymentMethod(state, method)}
+            key={method}
+            label={t(paymentMethodCopyKey(method))}
+            onPress={() => presenter.selectMethod(method)}
+            testID={`payment-method-${method}`}
+          />
+        ))}
+      </View>
+      <ProviderBlockers state={state} t={t} />
+      <View style={styles.summarySectionRule} />
       <Text style={styles.sectionTitle}>{t("summary.title")}</Text>
       <SummaryAmount
         label={t("summary.total")}
@@ -502,6 +709,28 @@ function PaymentSummary({
         testID="payment-remaining"
         value={state.remaining.cents}
       />
+      {state.checkout.cash.tenderedCents > 0 ? (
+        <View style={styles.cashSettlement} testID="payment-cash-settlement">
+          <SummaryAmount
+            label={locale === "zh" ? "实收现金" : "Cash tendered"}
+            locale={locale}
+            value={state.checkout.cash.tenderedCents}
+          />
+          <SummaryAmount
+            label={locale === "zh" ? "入账金额" : "Applied"}
+            locale={locale}
+            testID="payment-cash-applied"
+            value={state.checkout.cash.appliedCents}
+          />
+          <SummaryAmount
+            emphasis
+            label={locale === "zh" ? "找零" : "Change"}
+            locale={locale}
+            testID="payment-change"
+            value={state.checkout.cash.changeCents}
+          />
+        </View>
+      ) : null}
 
       <Text style={styles.tenderTitle}>{t("summary.tenders")}</Text>
       {state.tenders.length ? (
@@ -520,6 +749,70 @@ function PaymentSummary({
       ) : (
         <Text style={styles.emptyTenders}>{t("summary.noTenders")}</Text>
       )}
+      {presenter.confirm && state.checkout.canConfirm ? (
+        <ActionButton
+          disabled={state.busy}
+          label={locale === "zh" ? "确认分期付款" : "Confirm installment payment"}
+          onPress={() => {
+            void presenter.confirm?.();
+          }}
+          style={styles.confirmAction}
+          testID="payment-confirm"
+        />
+      ) : null}
+      <RecoveryActions presenter={presenter} state={state} t={t} />
+      <LinklyControls presenter={presenter} state={state} t={t} />
+    </View>
+  );
+}
+
+function PaymentKeypad({
+  amountText,
+  disabled,
+  onChange,
+}: Readonly<{
+  amountText: string;
+  disabled: boolean;
+  onChange(value: string): void;
+}>) {
+  const keys = [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    ".",
+    "0",
+    "backspace",
+  ] as const;
+  return (
+    <View style={styles.keypad} testID="payment-keypad">
+      {keys.map((key) => (
+        <Pressable
+          accessibilityRole="button"
+          disabled={disabled}
+          key={key}
+          onPress={() =>
+            onChange(nextKeypadAmount(amountText, key))
+          }
+          style={({ pressed }) => [
+            styles.keypadKey,
+            disabled && styles.disabled,
+            pressed && !disabled && styles.pressed,
+          ]}
+          testID={`payment-key-${
+            key === "." ? "decimal" : key
+          }`}
+        >
+          <Text style={styles.keypadKeyText}>
+            {key === "backspace" ? "⌫" : key}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -733,6 +1026,21 @@ export function isSafeLinklyUiKey(
   );
 }
 
+export function nextKeypadAmount(
+  current: string,
+  key: "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "." | "backspace",
+): string {
+  if (key === "backspace") return current.slice(0, -1);
+  if (key === ".") {
+    if (current.includes(".")) return current;
+    return current ? `${current}.` : "0.";
+  }
+  const base = /^\d+\.\d{2}$/u.test(current) ? "" : current;
+  const candidate = base === "0" ? key : `${base}${key}`;
+  if (!/^\d{0,9}(?:\.\d{0,2})?$/u.test(candidate)) return current;
+  return candidate;
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -854,12 +1162,145 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: posColors.border,
   },
+  contextPane: {
+    flex: 30,
+    minWidth: 250,
+    padding: 16,
+    borderRightWidth: 1,
+    borderRightColor: posColors.border,
+    backgroundColor: "#FBFAF7",
+  },
+  contextPaneCompact: {
+    minWidth: 0,
+    maxHeight: 420,
+    borderRightWidth: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: posColors.border,
+  },
+  contextBack: {
+    alignSelf: "flex-start",
+    marginTop: 0,
+    marginBottom: 14,
+  },
+  contextEyebrow: {
+    color: posColors.orange,
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  customerCard: {
+    marginTop: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  customerHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  customerTitle: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  customerEdit: {
+    minHeight: PAYMENT_MIN_TOUCH_TARGET,
+    minWidth: PAYMENT_MIN_TOUCH_TARGET,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  customerEditText: {
+    color: posColors.blue,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  customerNumber: {
+    marginTop: 7,
+    color: posColors.orange,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  customerValue: {
+    marginTop: 5,
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  customerEditor: {
+    marginTop: 12,
+    gap: 8,
+  },
+  customerInput: {
+    minHeight: 48,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    color: posColors.ink,
+    fontSize: 15,
+  },
+  customerEditorActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  customerEditorButton: {
+    flex: 1,
+    marginTop: 0,
+  },
+  contextListTitle: {
+    marginTop: 18,
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  contextLines: {
+    marginTop: 8,
+  },
+  contextLine: {
+    minHeight: 58,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: posColors.border,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  contextLineCopy: {
+    flex: 1,
+  },
+  contextLineName: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  contextLineQuantity: {
+    marginTop: 3,
+    color: posColors.mutedInk,
+    fontSize: 12,
+  },
+  contextLineAmount: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  contextEmpty: {
+    paddingVertical: 18,
+    color: posColors.mutedInk,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   workspaceCompact: {
     minHeight: 0,
     flexDirection: "column",
   },
   entryPane: {
-    flex: 1.6,
+    flex: 42,
     padding: 20,
     borderRightWidth: 1,
     borderRightColor: posColors.border,
@@ -870,8 +1311,8 @@ const styles = StyleSheet.create({
     borderBottomColor: posColors.border,
   },
   summaryPane: {
-    flex: 1,
-    minWidth: 320,
+    flex: 28,
+    minWidth: 270,
     padding: 20,
     backgroundColor: "#FBFAF7",
   },
@@ -891,7 +1332,9 @@ const styles = StyleSheet.create({
   },
   methodButton: {
     minHeight: 52,
-    minWidth: 120,
+    minWidth: 100,
+    flexGrow: 1,
+    flexBasis: "46%",
     paddingHorizontal: 18,
     borderWidth: 1,
     borderColor: posColors.border,
@@ -943,6 +1386,40 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontVariant: ["tabular-nums"],
   },
+  keypad: {
+    marginTop: 14,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  keypadKey: {
+    minHeight: 54,
+    flexBasis: "30%",
+    flexGrow: 1,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  keypadKeyText: {
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  quickCashRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  quickCashButton: {
+    flexGrow: 1,
+    minWidth: 62,
+    marginTop: 0,
+    paddingHorizontal: 9,
+  },
   voucherInputGroup: {
     marginTop: 16,
   },
@@ -973,6 +1450,15 @@ const styles = StyleSheet.create({
     color: posColors.red,
     fontSize: 14,
     fontWeight: "700",
+  },
+  formActions: {
+    marginTop: 12,
+    flexDirection: "row",
+    gap: 10,
+  },
+  formAction: {
+    flex: 1,
+    marginTop: 0,
   },
   recoveryActions: {
     marginTop: 16,
@@ -1023,6 +1509,17 @@ const styles = StyleSheet.create({
   remainingRule: {
     height: 1,
     marginVertical: 8,
+    backgroundColor: posColors.border,
+  },
+  cashSettlement: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: posColors.border,
+  },
+  summarySectionRule: {
+    height: 1,
+    marginVertical: 16,
     backgroundColor: posColors.border,
   },
   tenderTitle: {
@@ -1101,6 +1598,9 @@ const styles = StyleSheet.create({
   completeAction: {
     alignSelf: "flex-end",
     minWidth: 240,
+  },
+  confirmAction: {
+    marginTop: 20,
   },
   disabled: {
     opacity: 0.42,

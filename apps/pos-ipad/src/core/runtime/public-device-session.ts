@@ -1,5 +1,6 @@
 import type { DeviceRegistrationStore } from "../api/hbpos-api";
 import type {
+  DevicePresentation,
   DeviceSessionCoordinator,
   DeviceSessionState,
 } from "../security/device-session";
@@ -18,6 +19,7 @@ export type PosDeviceSessionRuntimeService = Readonly<{
     deviceCode: string;
     storeCode: string;
   }> | null>;
+  getDevicePresentation(): Promise<DevicePresentation | null>;
 }>;
 
 /**
@@ -36,5 +38,7 @@ export function createPublicDeviceSession(
     poll: () => coordinator.poll(),
     reregister: (input) => coordinator.reregister(input),
     getDeviceIdentity: () => coordinator.getDeviceIdentity(),
+    getDevicePresentation: () =>
+      coordinator.getDevicePresentation(),
   });
 }

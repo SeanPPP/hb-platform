@@ -32,6 +32,14 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
       calls.push("identity");
       return { deviceCode: "IPAD-1", storeCode: "S001" };
     },
+    async getDevicePresentation() {
+      calls.push("presentation");
+      return {
+        deviceCode: "IPAD-1",
+        storeCode: "S001",
+        storeName: "Chermside",
+      };
+    },
     async getRequestHeaders() {
       return { Authorization: "Bearer device-secret" };
     },
@@ -60,10 +68,22 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
     deviceCode: "IPAD-1",
     storeCode: "S001",
   });
+  assert.deepEqual(await service.getDevicePresentation(), {
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    storeName: "Chermside",
+  });
 
-  assert.deepEqual(calls, ["register", "poll", "reregister", "identity"]);
+  assert.deepEqual(calls, [
+    "register",
+    "poll",
+    "reregister",
+    "identity",
+    "presentation",
+  ]);
   assert.deepEqual(Object.keys(service).sort(), [
     "getDeviceIdentity",
+    "getDevicePresentation",
     "listRegistrationStores",
     "poll",
     "register",

@@ -58,6 +58,7 @@ class ScreenCatalogMaintenancePort implements CatalogMaintenancePort {
     kind: "complete",
     summary: replacementSummary,
   };
+  public progressListener: ((event: CatalogRefreshProgressEvent) => void) | undefined;
 
   public async getCurrentCatalog() {
     return this.currentSummary;
@@ -69,6 +70,7 @@ class ScreenCatalogMaintenancePort implements CatalogMaintenancePort {
     signal?: AbortSignal;
   }>) {
     this.calls += 1;
+    this.progressListener = input.onProgress;
     for (const event of this.progressEvents) input.onProgress?.(event);
     await this.hold;
     if (this.failure) throw new Error("HTTP 401 Bearer should-not-appear");
@@ -105,6 +107,7 @@ async function renderInitialized(
 afterEach(() => {
   for (const presenter of presenters.splice(0)) presenter.destroy();
   jest.restoreAllMocks();
+  jest.useRealTimers();
 });
 
 describe("CatalogMaintenanceScreen", () => {
@@ -120,6 +123,11 @@ describe("CatalogMaintenanceScreen", () => {
     expect(screen.getByText("42")).toBeTruthy();
     expect(screen.getByText("snapshot-ui-1")).toBeTruthy();
     expect(screen.getByText("2026-07-28T04:10Z")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "可离开本页，目录会在应用内继续刷新；返回后仍显示相同进度。",
+      ),
+    ).toBeTruthy();
     expect(
       StyleSheet.flatten(
         screen.getByTestId("catalog-maintenance-refresh").props.style,
@@ -175,6 +183,65 @@ describe("CatalogMaintenanceScreen", () => {
       screen.getByTestId("catalog-maintenance-refresh").props
         .accessibilityState,
     ).toEqual({ disabled: false });
+  });
+
+  it("首批等待显示活动和真实耗时，首批返回后才显示数量、页数与真实百分比", async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const port = new ScreenCatalogMaintenancePort();
+    port.progressEvents = [];
+    port.completionProgressEvents = [
+      { step: "products", percent: 100 },
+      { step: "promotions", percent: 100 },
+      { step: "activate", percent: 100 },
+    ];
+    port.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const screen = await renderInitialized(createPresenter(port), "zh");
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("catalog-maintenance-refresh"));
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("catalog-maintenance-preparing")).toBeTruthy();
+    expect(screen.getByText("已用时：00:00")).toBeTruthy();
+    expect(screen.queryByTestId("catalog-maintenance-overall-progress")).toBeNull();
+    expect(screen.queryByText("总进度：0%")).toBeNull();
+
+    await act(async () => {
+      jest.advanceTimersByTime(16_000);
+    });
+    expect(screen.getByText("已用时：00:16")).toBeTruthy();
+    expect(screen.queryByTestId("catalog-maintenance-overall-progress")).toBeNull();
+    expect(screen.queryByText("总进度：0%")).toBeNull();
+
+    await act(async () => {
+      port.progressListener?.({
+        step: "prepare",
+        percent: 100,
+        elapsedMilliseconds: 16_000,
+      });
+      port.progressListener?.({
+        step: "products",
+        percent: 25,
+        completedItemCount: 500,
+        totalItemCount: 2_000,
+        completedPageCount: 1,
+        totalPageCount: 4,
+        elapsedMilliseconds: 16_000,
+      });
+    });
+    expect(screen.queryByTestId("catalog-maintenance-preparing")).toBeNull();
+    expect(screen.getByText("500 / 2000 · 1 / 4 页")).toBeTruthy();
+    expect(screen.getByTestId("catalog-maintenance-overall-progress")).toBeTruthy();
+    expect(screen.getByText("总进度：31.25%")).toBeTruthy();
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    await screen.findByTestId("catalog-maintenance-success");
   });
 
   it("warning 显示新 active 摘要与准确运行时提示，而非旧目录连续性文案", async () => {

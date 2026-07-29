@@ -55,6 +55,8 @@ type PreparedFinalCash = Readonly<{
 type CashActionRow = Readonly<{
   order_guid: unknown;
   amount_cents: unknown;
+  tendered_cents: unknown;
+  change_cents: unknown;
   tender_guid: unknown;
 }>;
 
@@ -96,6 +98,20 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
     const actionId = strictId(command.actionId, "cash action id");
     const orderGuid = strictId(command.orderGuid, "cash order guid");
     const amountCents = positiveAud(command.amount);
+    const tenderedCents = command.tenderedAmount
+      ? positiveAud(command.tenderedAmount)
+      : amountCents;
+    const changeCents = command.change
+      ? nonNegativeAud(command.change)
+      : tenderedCents - amountCents;
+    if (
+      tenderedCents < amountCents ||
+      changeCents !== tenderedCents - amountCents
+    ) {
+      throw new TypeError(
+        "Mixed cash tendered, applied and change amounts are inconsistent.",
+      );
+    }
     const observed = await new SqliteMixedPaymentOrderTruthStore(
       this.connection,
     ).getPaymentTruth(orderGuid);
@@ -132,7 +148,8 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
 
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const replay = await transaction.getFirst<CashActionRow>(
-        `SELECT order_guid, amount_cents, tender_guid
+        `SELECT order_guid, amount_cents, tendered_cents,
+           change_cents, tender_guid
          FROM mixed_cash_tender_actions
          WHERE order_guid = ? AND action_id = ?`,
         [orderGuid, actionId],
@@ -143,9 +160,34 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           replay.amount_cents,
           "cash action amount",
         );
+        const legacySettlement =
+          replay.tendered_cents === null &&
+          replay.change_cents === null;
+        if (
+          !legacySettlement &&
+          (replay.tendered_cents === null ||
+            replay.change_cents === null)
+        ) {
+          throw new Error(
+            "Persisted mixed cash settlement is incomplete.",
+          );
+        }
+        const replayTenderedCents = legacySettlement
+          ? replayAmountCents
+          : integer(
+              replay.tendered_cents,
+              "cash action tendered amount",
+            );
+        const replayChangeCents = legacySettlement
+          ? 0
+          : integer(replay.change_cents, "cash action change");
         if (
           replayOrderGuid !== orderGuid ||
-          replayAmountCents !== amountCents
+          replayAmountCents !== amountCents ||
+          replayTenderedCents !== tenderedCents ||
+          replayChangeCents !== changeCents ||
+          replayTenderedCents - replayAmountCents !==
+            replayChangeCents
         ) {
           throw new Error(
             "Mixed cash action was replayed with different immutable content.",
@@ -235,20 +277,25 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           actionId,
           JSON.stringify({
             action: "mixed-cash-tender-appended",
-            amountCents,
+            appliedCents: amountCents,
+            tenderedCents,
+            changeCents,
             tenderGuid,
           }),
         ],
       );
       await transaction.run(
         `INSERT INTO mixed_cash_tender_actions (
-          action_id, order_guid, amount_cents, tender_guid,
+          action_id, order_guid, amount_cents, tendered_cents,
+          change_cents, tender_guid,
           audit_event_id, created_at_iso
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           actionId,
           orderGuid,
           amountCents,
+          tenderedCents,
+          changeCents,
           tenderGuid,
           auditEventId,
           now,
@@ -710,6 +757,17 @@ function positiveAud(amount: MixedCashTenderCommand["amount"]): number {
     amount.cents <= 0
   ) {
     throw new TypeError("Mixed cash tender must be positive AUD cents.");
+  }
+  return amount.cents;
+}
+
+function nonNegativeAud(amount: Money): number {
+  if (
+    amount.currency !== "AUD" ||
+    !Number.isSafeInteger(amount.cents) ||
+    amount.cents < 0
+  ) {
+    throw new TypeError("Mixed cash change must be non-negative AUD cents.");
   }
   return amount.cents;
 }

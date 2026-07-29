@@ -25,6 +25,7 @@ import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 
 const allPermissions = [
   SETTINGS_VIEW_PERMISSION,
@@ -442,12 +443,42 @@ test("API 地址拒绝凭据、query 与 fragment，且不会打开确认框", a
     assert.equal(presenter.getState().confirmation, null);
   }
 
-  presenter.setApiAddressDraft("http://localhost:5159/pos-api/");
+  presenter.setApiAddressDraft("http://192.168.31.246:5159/pos-api/");
   assert.equal(presenter.requestApiAddressChange(), true);
   assert.deepEqual(presenter.getState().confirmation, {
     kind: "change-api-address",
-    apiBaseUrl: "http://localhost:5159/pos-api",
+    apiBaseUrl: "http://192.168.31.246:5159/pos-api",
   });
+});
+
+test("测试候选 API 只检查规范地址并显示结果，不切换当前地址", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("http://192.168.31.246:5159/");
+  await presenter.testApiAddress();
+
+  assert.deepEqual(port.apiAddressTests, ["http://192.168.31.246:5159"]);
+  assert.deepEqual(port.apiAddressChanges, []);
+  assert.equal(
+    presenter.getState().apiBaseUrl,
+    "https://hotbargain.vip/pos-api",
+  );
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "http://192.168.31.246:5159",
+  );
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "api-health-check-passed");
+
+  port.failApiHealth = true;
+  await presenter.testApiAddress();
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "http://192.168.31.246:5159",
+  );
+  assert.equal(presenter.getState().statusCode, "api-health-check-failed");
 });
 
 test("候选 API 健康检查失败时保留旧地址", async () => {
@@ -509,6 +540,144 @@ test("目录下载、硬件测试与客显开关使用单航班并返回安全�
   assert.equal(presenter.getState().externalDisplay.enabled, true);
 });
 
+test("设置呈现器立即恢复共享目录进度，销毁只退订且不取消刷新", async () => {
+  let releaseCatalog!: () => void;
+  const port = new FakeSettingsPort();
+  port.catalogHold = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress({
+      currentStep: "products",
+      elapsedMilliseconds: 76_000,
+      overallPercent: 35,
+      steps: [
+        { step: "prepare", percent: 100 },
+        {
+          step: "products",
+          percent: 25,
+          completedItemCount: 500,
+          totalItemCount: 2_000,
+          completedPageCount: 1,
+          totalPageCount: 4,
+        },
+        { step: "promotions", percent: 0 },
+        { step: "activate", percent: 0 },
+      ],
+    }),
+  });
+  const presenter = createPresenter(port);
+
+  const recoveredRefresh = presenter.getState().catalogRefresh;
+  assert.equal(recoveredRefresh.kind, "running");
+  assert.equal(
+    recoveredRefresh.kind === "running"
+      ? recoveredRefresh.progress.elapsedMilliseconds
+      : null,
+    76_000,
+  );
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await Promise.resolve();
+  presenter.destroy();
+
+  assert.equal(port.catalogRefreshListenerCount, 0);
+  assert.equal(port.catalogDownloadSignal?.aborted, false);
+  releaseCatalog();
+  await download;
+});
+
+test("共享目录刷新状态持续同步；成功更新摘要，失败只暴露稳定安全码", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  port.publishCatalogRefresh({
+    kind: "success",
+    storeCode: "BNE-01",
+    summary: {
+      snapshotId: "catalog-background",
+      catalogVersion: "v-background",
+      itemCount: 81,
+      activatedAt: "2026-07-29T01:00:00.000Z",
+    },
+    progress: catalogProgress({
+      currentStep: "activate",
+      elapsedMilliseconds: 91_000,
+      overallPercent: 100,
+      steps: [
+        { step: "prepare", percent: 100 },
+        { step: "products", percent: 100 },
+        { step: "promotions", percent: 100 },
+        { step: "activate", percent: 100 },
+      ],
+    }),
+  });
+
+  assert.equal(presenter.getState().catalog.snapshotId, "catalog-background");
+  assert.equal(presenter.getState().catalog.itemCount, 81);
+  assert.equal(presenter.getState().catalogRefresh.kind, "success");
+
+  port.publishCatalogRefresh({
+    kind: "failed",
+    storeCode: "BNE-01",
+    errorCode: "catalog-refresh-network-failed",
+    progress: catalogProgress({
+      elapsedMilliseconds: 94_000,
+    }),
+  });
+  assert.equal(presenter.getState().catalogRefresh.kind, "failed");
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("Bearer secret"),
+    false,
+  );
+});
+
+test("目录刷新中阻断所有会重绑运行时的危险操作，但不锁定页签", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress(),
+  });
+
+  presenter.setApiAddressDraft("https://next.example.test/pos-api");
+  assert.equal(presenter.requestApiAddressChange(), false);
+  assert.equal(presenter.requestCatalogReset(), false);
+  await presenter.savePaymentSettings();
+  presenter.setReregisterStoreCode("BNE-02");
+  assert.equal(presenter.requestDeviceReregistration(), false);
+  assert.equal(presenter.requestAppRestart(), false);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.selectPane("payments"), true);
+  assert.equal(port.dangerousActionCalls, 0);
+});
+
+test("确认后目录刷新才开始时，执行前再次 fail closed", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setApiAddressDraft("https://next.example.test/pos-api");
+  assert.equal(presenter.requestApiAddressChange(), true);
+
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress(),
+  });
+  await presenter.confirmDangerousAction();
+
+  assert.equal(port.dangerousActionCalls, 0);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
+});
+
 test("缺少细分权限时写操作 fail closed", async () => {
   const port = new FakeSettingsPort();
   const presenter = new SettingsPresenter({
@@ -561,6 +730,10 @@ class FakeSettingsPort implements SettingsControlPort {
   public displayTestCalls = 0;
   public restartCalls = 0;
   public catalogHold: Promise<void> | null = null;
+  public catalogDownloadSignal: AbortSignal | null = null;
+  public catalogRefreshListenerCount = 0;
+  private catalogRefreshState: CatalogRefreshState = { kind: "idle" };
+  private readonly catalogRefreshListeners = new Set<() => void>();
   public failSafety = false;
   public failApiHealth = false;
   public pending = safePending();
@@ -568,6 +741,7 @@ class FakeSettingsPort implements SettingsControlPort {
   public holdScannerUntilAbort = false;
   public scannerAbortObserved = false;
   public readonly apiAddressChanges: string[] = [];
+  public readonly apiAddressTests: string[] = [];
   public readonly savedPayments: SettingsPaymentSettingsInput[] = [];
   public readonly paymentTests: Readonly<{
     provider: "square" | "linkly";
@@ -583,6 +757,31 @@ class FakeSettingsPort implements SettingsControlPort {
   public async loadSnapshot(): Promise<SettingsSnapshot> {
     this.loadCalls += 1;
     return this.snapshotValue ?? snapshot();
+  }
+
+  public getCatalogRefreshState() {
+    return this.catalogRefreshState;
+  }
+
+  public subscribeCatalogRefresh(listener: () => void): () => void {
+    this.catalogRefreshListeners.add(listener);
+    this.catalogRefreshListenerCount = this.catalogRefreshListeners.size;
+    return () => {
+      this.catalogRefreshListeners.delete(listener);
+      this.catalogRefreshListenerCount = this.catalogRefreshListeners.size;
+    };
+  }
+
+  public publishCatalogRefresh(
+    state: CatalogRefreshState,
+  ): void {
+    this.catalogRefreshState = state;
+    for (const listener of this.catalogRefreshListeners) listener();
+  }
+
+  public async testApiAddress(apiBaseUrl: string): Promise<boolean> {
+    this.apiAddressTests.push(apiBaseUrl);
+    return !this.failApiHealth;
   }
 
   public async executeDangerousAction(
@@ -644,8 +843,9 @@ class FakeSettingsPort implements SettingsControlPort {
     return { status: "completed" as const, kind: action.kind };
   }
 
-  public async downloadCatalog() {
+  public async downloadCatalog(signal: AbortSignal) {
     this.catalogDownloadCalls += 1;
+    this.catalogDownloadSignal = signal;
     await this.catalogHold;
     return {
       snapshotId: "catalog-new",
@@ -711,6 +911,28 @@ class FakeSettingsPort implements SettingsControlPort {
       restartAvailable: true,
     };
   }
+}
+
+function catalogProgress(
+  patch: Partial<
+    Extract<
+      ReturnType<SettingsControlPort["getCatalogRefreshState"]>,
+      { kind: "running" }
+    >["progress"]
+  > = {},
+) {
+  return {
+    currentStep: "prepare" as const,
+    overallPercent: 0,
+    elapsedMilliseconds: 0,
+    steps: [
+      { step: "prepare" as const, percent: 0 },
+      { step: "products" as const, percent: 0 },
+      { step: "promotions" as const, percent: 0 },
+      { step: "activate" as const, percent: 0 },
+    ],
+    ...patch,
+  };
 }
 
 function snapshot(): SettingsSnapshot {

@@ -9,16 +9,43 @@ export type FulfilmentPrintJob = Readonly<{
   bytes: Uint8Array;
   state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous";
   retryCount: number;
+  /** 最后小票重打从首份耐久授权审计恢复；普通打印与历史页重打没有该字段。 */
+  authorization?: FulfilmentAuthorizationContext;
 }>;
 
 export type FulfilmentDrawerEvent = Readonly<{
   eventId: string;
-  orderGuid: string;
+  orderGuid: string | null;
   /** 钱箱脉冲必须通过订单提交时冻结的芯烨打印机发送。 */
   printerId: string;
   state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown";
   reason: string;
   retryCount: number;
+}>;
+
+export type FulfilmentAuthorizationContext = Readonly<{
+  /** 由授权服务创建的一次动作稳定标识，不得使用条码或授权票据。 */
+  actionId: string;
+  permissionCode: string;
+  authorizationMode: "current-cashier" | "offline-cache" | "online";
+  requestingCashierId: string;
+  authorizingCashierId: string | null;
+}>;
+
+export type FulfilmentLeaseGuard = () => void;
+
+export type PreparedManualDrawerOpen = Readonly<{
+  /** 组合根从持久设置读取并冻结，UI 不得选择或覆盖。 */
+  printerId: string;
+}>;
+
+export type ManualDrawerOpenBeginResult =
+  | Readonly<{ kind: "created"; event: FulfilmentDrawerEvent }>
+  | Readonly<{ kind: "existing"; event: FulfilmentDrawerEvent }>;
+
+export type FulfilmentInitialAuthorization = Readonly<{
+  context: FulfilmentAuthorizationContext;
+  audit: FulfilmentAuditEvent;
 }>;
 
 /** receipt domain 已生成的重打小票；bytes 必须含有 WPF 对齐的“重打”标记。 */
@@ -49,6 +76,11 @@ export interface FulfilmentStore {
   ): Promise<boolean>;
   claimRequiredDrawerEvent(eventId: string): Promise<FulfilmentDrawerEvent | null>;
   beginManualDrawerRetry(eventId: string): Promise<FulfilmentDrawerEvent | null>;
+  beginManualDrawerOpen(input: Readonly<{
+    eventId: string;
+    printerId: string;
+    reason: "MANUAL";
+  }>, authorization: FulfilmentInitialAuthorization): Promise<ManualDrawerOpenBeginResult>;
   finishDrawerEvent(
     eventId: string,
     expected: "Requested",
@@ -60,14 +92,17 @@ export interface FulfilmentStore {
    * 原子地写入一份新作业；必须使用 input.orderGuid，不得查询历史 Printed job
    * 推断订单；调用方同时提供 receipt domain 预渲染的真实重打字节。
    */
-  createLastReceiptReprint(input: PreparedLastReceiptReprint): Promise<FulfilmentPrintJob | null>;
+  createLastReceiptReprint(
+    input: PreparedLastReceiptReprint,
+    authorization?: FulfilmentInitialAuthorization,
+  ): Promise<FulfilmentPrintJob | null>;
 }
 
 export type FulfilmentAuditEvent = Readonly<{
   eventId: string;
   eventType: string;
   occurredAtIso: string;
-  orderGuid: string;
+  orderGuid: string | null;
   correlationId: string;
   payload: Readonly<Record<string, string | number | null>>;
 }>;
@@ -85,6 +120,8 @@ export type FulfilmentServiceOptions = Readonly<{
   prepareReceiptReprint?(
     orderGuid: string,
   ): Promise<PreparedLastReceiptReprint | null>;
+  /** 每次手动开箱只读一次当前持久设置，并冻结该动作使用的打印机。 */
+  prepareManualDrawerOpen?(): Promise<PreparedManualDrawerOpen | null>;
 }>;
 
 export type FulfilmentActionResult = Readonly<{
@@ -113,8 +150,22 @@ export class FulfilmentService {
     return this.serializeHardware(() => this.retryFailedDrawerUnsafe(eventId));
   }
 
-  public async reprintLastReceipt(): Promise<FulfilmentActionResult> {
-    return this.serializeHardware(() => this.reprintLastReceiptUnsafe());
+  public async reprintLastReceipt(
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
+    const trustedAuthorization = normalizeAuthorization(
+      authorization,
+      "Permissions.PosTerminal.Receipt.PrintLast",
+    );
+    return this.serializeHardware(
+      () =>
+        this.reprintLastReceiptUnsafe(
+          trustedAuthorization,
+          assertActive,
+        ),
+      assertActive,
+    );
   }
 
   public async reprintReceipt(
@@ -124,6 +175,24 @@ export class FulfilmentService {
     if (!normalized) return { state: "not-found", errorCode: null };
     return this.serializeHardware(() =>
       this.reprintReceiptUnsafe(normalized),
+    );
+  }
+
+  public async openDrawerManually(
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
+    const trustedAuthorization = normalizeAuthorization(
+      authorization,
+      "Permissions.PosTerminal.CashDrawer.Open",
+    );
+    return this.serializeHardware(
+      () =>
+        this.openDrawerManuallyUnsafe(
+          trustedAuthorization,
+          assertActive,
+        ),
+      assertActive,
     );
   }
 
@@ -160,12 +229,39 @@ export class FulfilmentService {
     return this.sendClaimedDrawer(event, true);
   }
 
-  private async reprintLastReceiptUnsafe(): Promise<FulfilmentActionResult> {
+  private async reprintLastReceiptUnsafe(
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
     // 中文注释：先由 receipt domain 生成带“重打”标记的真实 ESC/POS 字节，不能让存储层复制原小票。
     const prepared = await this.options.prepareLastReceiptReprint();
     if (!prepared) return { state: "not-found", errorCode: null };
+    // 准备器可能跨越 SQLite/设置异步边界；首个耐久写入前必须再次确认原收银员 lease。
+    assertActive();
 
-    return this.createAndSendReprint(prepared, "last-receipt");
+    const initialAuthorization = {
+      context: authorization,
+      audit: this.createAuditEvent(
+        "RECEIPT_REPRINT",
+        prepared.orderGuid,
+        authorization.actionId,
+        {
+          action: "reprint-last-receipt",
+          status: "Authorized",
+          reason: "last-receipt",
+          source: "sales",
+          outcome: "Succeeded",
+          printerId: safeAuditText(prepared.printerId),
+          errorCode: null,
+          ...authorizationAuditPayload(authorization),
+        },
+      ),
+    } satisfies FulfilmentInitialAuthorization;
+    return this.createAndSendReprint(
+      prepared,
+      "last-receipt",
+      initialAuthorization,
+    );
   }
 
   private async reprintReceiptUnsafe(
@@ -184,11 +280,23 @@ export class FulfilmentService {
   private async createAndSendReprint(
     prepared: PreparedLastReceiptReprint,
     source: "last-receipt" | "remote-history",
+    authorization?: FulfilmentInitialAuthorization,
   ): Promise<FulfilmentActionResult> {
-    const job = await this.options.store.createLastReceiptReprint(prepared);
+    const job = await this.options.store.createLastReceiptReprint(
+      prepared,
+      authorization,
+    );
     if (!job) return { state: "not-found", errorCode: null };
 
-    return this.sendQueuedPrint(job.jobId, true, source);
+    if (job.state === "Queued") {
+      return this.sendQueuedPrint(
+        job.jobId,
+        true,
+        source,
+      );
+    }
+    if (job.state === "Sending") return recoveryRequired();
+    return { state: job.state, errorCode: null };
   }
 
   private async sendQueuedPrint(
@@ -198,7 +306,11 @@ export class FulfilmentService {
   ): Promise<FulfilmentActionResult> {
     const job = await this.options.store.claimQueuedPrintJob(jobId);
     if (!job) return { state: "not-retryable", errorCode: null };
-    return this.sendClaimedPrint(job, manual, reprintSource);
+    return this.sendClaimedPrint(
+      job,
+      manual,
+      reprintSource,
+    );
   }
 
   private async sendClaimedPrint(
@@ -229,19 +341,25 @@ export class FulfilmentService {
     if (shouldAuditAsReprint) {
       try {
         // 中文注释：审计必须在原子 finish 前构造，并描述本次真实硬件终态；CAS 失败时不得补写另一份。
-        audit = this.createAuditEvent("RECEIPT_REPRINT", job.orderGuid, {
-          action: job.isReprint
-            ? source === "remote-history"
-              ? "reprint-history-receipt"
-              : "reprint-last-receipt"
-            : "retry-failed-print",
-          status: state,
-          reason: safeAuditText(result.errorCode) ?? (job.isReprint ? "last-receipt" : "manual-retry"),
-          source,
-          outcome: state === "Printed" ? "Succeeded" : "Failed",
-          printerId: safeAuditText(job.printerId),
-          errorCode: safeAuditText(result.errorCode),
-        });
+        audit = this.createAuditEvent(
+          "RECEIPT_REPRINT",
+          job.orderGuid,
+          job.jobId,
+          {
+            action: job.isReprint
+              ? source === "remote-history"
+                ? "reprint-history-receipt"
+                : "reprint-last-receipt"
+              : "retry-failed-print",
+            status: state,
+            reason: safeAuditText(result.errorCode) ?? (job.isReprint ? "last-receipt" : "manual-retry"),
+            source,
+            outcome: state === "Printed" ? "Succeeded" : "Failed",
+            printerId: safeAuditText(job.printerId),
+            errorCode: safeAuditText(result.errorCode),
+            ...authorizationAuditPayload(job.authorization),
+          },
+        );
       } catch {
         return recoveryRequired();
       }
@@ -262,9 +380,64 @@ export class FulfilmentService {
     return this.sendClaimedDrawer(event, manual);
   }
 
+  private async openDrawerManuallyUnsafe(
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
+    const prepare = this.options.prepareManualDrawerOpen;
+    if (!prepare) return { state: "not-found", errorCode: null };
+    const prepared = await prepare();
+    if (!prepared) return { state: "not-found", errorCode: null };
+    // 持久设置读取结束后、Requested 事件落库前复核，避免失效页面留下可执行钱箱任务。
+    assertActive();
+
+    const begun = await this.options.store.beginManualDrawerOpen(
+      {
+        eventId: authorization.actionId,
+        printerId: prepared.printerId,
+        reason: "MANUAL",
+      },
+      {
+        context: authorization,
+        audit: this.createAuditEvent(
+          "CASH_DRAWER_OPEN",
+          null,
+          authorization.actionId,
+          {
+            action: "open-cash-drawer",
+            status: "Authorized",
+            reason: "MANUAL",
+            source: "sales",
+            outcome: "Succeeded",
+            printerId: safeAuditText(prepared.printerId),
+            errorCode: null,
+            ...authorizationAuditPayload(authorization),
+          },
+        ),
+      },
+    );
+    if (begun.kind === "existing") {
+      if (begun.event.state === "Requested") return recoveryRequired();
+      if (
+        begun.event.state === "Completed" ||
+        begun.event.state === "Failed" ||
+        begun.event.state === "Unknown"
+      ) {
+        return { state: begun.event.state, errorCode: null };
+      }
+      throw new Error("Manual drawer action conflict.");
+    }
+    return this.sendClaimedDrawer(
+      begun.event,
+      false,
+      authorization,
+    );
+  }
+
   private async sendClaimedDrawer(
     event: FulfilmentDrawerEvent,
     manual: boolean,
+    authorization?: FulfilmentAuthorizationContext,
   ): Promise<FulfilmentActionResult> {
     let result: DrawerResult;
     const connectionErrorCode = await this.connectPersistedPrinter(event.printerId);
@@ -284,15 +457,25 @@ export class FulfilmentService {
     let audit: FulfilmentAuditEvent;
     try {
       // 所有钱箱动作都有 WPF 白名单审计，且必须和 Requested -> 终态 CAS 在同一存储事务提交。
-      audit = this.createAuditEvent("CASH_DRAWER_OPEN", event.orderGuid, {
-        action: "open",
-        status: state,
-        reason: safeAuditText(event.reason),
-        source: manual ? "manual-retry" : "automatic",
-        outcome: state === "Completed" ? "Succeeded" : "Failed",
-        printerId: safeAuditText(event.printerId),
-        errorCode: safeAuditText(result.errorCode),
-      });
+      audit = this.createAuditEvent(
+        "CASH_DRAWER_OPEN",
+        event.orderGuid,
+        event.eventId,
+        {
+          action: authorization ? "open-cash-drawer" : "open",
+          status: state,
+          reason: safeAuditText(event.reason),
+          source: authorization
+            ? "sales"
+            : manual
+              ? "manual-retry"
+              : "automatic",
+          outcome: state === "Completed" ? "Succeeded" : "Failed",
+          printerId: safeAuditText(event.printerId),
+          errorCode: safeAuditText(result.errorCode),
+          ...authorizationAuditPayload(authorization),
+        },
+      );
     } catch {
       return recoveryRequired();
     }
@@ -320,7 +503,8 @@ export class FulfilmentService {
 
   private createAuditEvent(
     eventType: string,
-    orderGuid: string,
+    orderGuid: string | null,
+    correlationId: string,
     payload: Readonly<Record<string, string | number | null>>,
   ): FulfilmentAuditEvent {
     return {
@@ -328,13 +512,24 @@ export class FulfilmentService {
       eventType,
       occurredAtIso: this.options.nowIso(),
       orderGuid,
-      correlationId: this.options.createCorrelationId(),
+      correlationId,
       payload,
     };
   }
 
-  private serializeHardware<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.hardwareTail.then(operation, operation);
+  private serializeHardware<T>(
+    operation: () => Promise<T>,
+    assertActive?: FulfilmentLeaseGuard,
+  ): Promise<T> {
+    const guardedOperation = () => {
+      // 授权动作必须在真正取得 BLE 队列所有权时复核，而不是只在排队前检查。
+      assertActive?.();
+      return operation();
+    };
+    const next = this.hardwareTail.then(
+      guardedOperation,
+      guardedOperation,
+    );
     // 中文注释：无论一次作业成败，后续手动动作仍可继续，不让 rejected Promise 卡死 BLE 队列。
     this.hardwareTail = next.then(
       () => undefined,
@@ -360,6 +555,63 @@ function safeAuditText(value: string | null): string | null {
   if (value === null) return null;
   const normalized = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 128);
   return normalized || null;
+}
+
+function normalizeAuthorization(
+  input: FulfilmentAuthorizationContext,
+  expectedPermissionCode: string,
+): FulfilmentAuthorizationContext {
+  const actionId = requiredAuditText(input.actionId, "Fulfilment action id");
+  const permissionCode = requiredAuditText(
+    input.permissionCode,
+    "Fulfilment permission",
+  );
+  if (permissionCode !== expectedPermissionCode) {
+    throw new Error("Fulfilment authorization permission mismatch.");
+  }
+  const requestingCashierId = requiredAuditText(
+    input.requestingCashierId,
+    "Requesting cashier id",
+  );
+  const authorizingCashierId = input.authorizingCashierId === null
+    ? null
+    : requiredAuditText(
+        input.authorizingCashierId,
+        "Authorizing cashier id",
+      );
+  if (
+    (input.authorizationMode === "current-cashier" &&
+      authorizingCashierId !== null) ||
+    (input.authorizationMode !== "current-cashier" &&
+      authorizingCashierId === null)
+  ) {
+    throw new Error("Fulfilment authorization identity is inconsistent.");
+  }
+  return {
+    actionId,
+    permissionCode,
+    authorizationMode: input.authorizationMode,
+    requestingCashierId,
+    authorizingCashierId,
+  };
+}
+
+function authorizationAuditPayload(
+  authorization?: FulfilmentAuthorizationContext,
+): Readonly<Record<string, string | null>> {
+  if (!authorization) return {};
+  return {
+    requestingCashierId: authorization.requestingCashierId,
+    authorizingCashierId: authorization.authorizingCashierId,
+    permissionCode: authorization.permissionCode,
+    authorizationMode: authorization.authorizationMode,
+  };
+}
+
+function requiredAuditText(value: string, name: string): string {
+  const normalized = safeAuditText(value);
+  if (!normalized) throw new Error(`${name} is required.`);
+  return normalized;
 }
 
 async function finishOrFalse(operation: () => Promise<boolean>): Promise<boolean> {

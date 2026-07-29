@@ -6,7 +6,12 @@ import {
 } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
-import { PaymentPresenter } from "./payment-presenter";
+import {
+  PaymentPresenter,
+  type PaymentPresenterState,
+  type PaymentScreenPresenter,
+  type PaymentUiMethod,
+} from "./payment-presenter";
 import {
   PAYMENT_MIN_TOUCH_TARGET,
   PaymentScreen,
@@ -252,6 +257,385 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
     screen.getByTestId("payment-linkly-authorise").props.accessibilityState,
   ).toEqual({ disabled: true });
 });
+
+test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额", async () => {
+  const { presenter, spies } = createUiPresenter({
+    selectedMethod: "cash",
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-context-pane").props.style)
+      .flex,
+  ).toBe(30);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-entry-pane").props.style)
+      .flex,
+  ).toBe(42);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-summary").props.style).flex,
+  ).toBe(28);
+  expect(screen.getByTestId("payment-keypad")).toBeTruthy();
+  for (const key of [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "decimal",
+    "0",
+    "backspace",
+  ]) {
+    expect(screen.getByTestId(`payment-key-${key}`)).toBeTruthy();
+  }
+  expect(screen.getByTestId("payment-amount").props.showSoftInputOnFocus)
+    .toBe(false);
+
+  for (const amount of [5, 10, 20, 50, 100]) {
+    expect(
+      screen.getByTestId(`payment-cash-quick-${amount}`),
+    ).toBeTruthy();
+  }
+  expect(screen.queryByText(/exacta?/i)).toBeNull();
+
+  await fireEvent.press(screen.getByTestId("payment-key-1"));
+  expect(spies.setAmountText).toHaveBeenCalledWith("1");
+  await fireEvent.press(screen.getByTestId("payment-cash-quick-50"));
+  expect(spies.setAmountText).toHaveBeenCalledWith("50.00");
+  await screen.unmount();
+});
+
+test("分期现金超付显示入账与找零，并可确认付款", async () => {
+  const { presenter, spies } = createUiPresenter(
+    {
+      checkout: {
+        flow: "installment-create",
+        lines: [
+          {
+            lineKey: "line-ui-1",
+            displayName: "Tea",
+            quantity: "1",
+            actualAmountCents: 5_000,
+          },
+        ],
+        installmentCustomer: {
+          name: "Bob",
+          phone: "0400000000",
+          editable: true,
+          editorOpen: false,
+          draftName: "Bob",
+          draftPhone: "0400000000",
+          installmentNumber: null,
+        },
+        cash: {
+          tenderedCents: 0,
+          appliedCents: 0,
+          changeCents: 0,
+        },
+        canConfirm: false,
+      },
+      selectedMethod: "cash",
+      total: aud(5_000),
+      remaining: aud(5_000),
+    },
+    (state) => ({
+      ...state,
+      remaining: aud(0),
+      tenders: [
+        {
+          tenderGuid: "cash-ui-1",
+          method: "cash",
+          amount: aud(5_000),
+          reversible: true,
+        },
+      ],
+      allowedActions: actions(),
+      checkout: {
+        ...state.checkout,
+        cash: {
+          tenderedCents: 6_000,
+          appliedCents: 5_000,
+          changeCents: 1_000,
+        },
+        canConfirm: true,
+      },
+    }),
+  );
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await fireEvent.changeText(screen.getByTestId("payment-amount"), "60.00");
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-cash-applied")).toHaveTextContent(
+      formatAud(5_000, "en"),
+    ),
+  );
+  expect(screen.getByTestId("payment-change")).toHaveTextContent(
+    formatAud(1_000, "en"),
+  );
+  await fireEvent.press(screen.getByTestId("payment-confirm"));
+  expect(spies.confirm).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("新建分期顾客可编辑，续付顾客只读且已选 provider 冻结", async () => {
+  const create = createUiPresenter({
+    checkout: {
+      flow: "installment-create",
+      lines: [],
+      installmentCustomer: {
+        name: "Bob",
+        phone: "0400000000",
+        editable: true,
+        editorOpen: false,
+        draftName: "Bob",
+        draftPhone: "0400000000",
+        installmentNumber: null,
+      },
+      cash: {
+        tenderedCents: 0,
+        appliedCents: 0,
+        changeCents: 0,
+      },
+      canConfirm: false,
+    },
+  });
+  const createScreen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={create.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await fireEvent.press(createScreen.getByTestId("payment-customer-edit"));
+  await fireEvent.changeText(
+    createScreen.getByTestId("payment-customer-name"),
+    "Alice",
+  );
+  await fireEvent.changeText(
+    createScreen.getByTestId("payment-customer-phone"),
+    "0411111111",
+  );
+  await fireEvent.press(createScreen.getByTestId("payment-customer-save"));
+  expect(create.spies.setInstallmentCustomerDraftName).toHaveBeenCalledWith(
+    "Alice",
+  );
+  expect(create.spies.setInstallmentCustomerDraftPhone).toHaveBeenCalledWith(
+    "0411111111",
+  );
+  expect(create.spies.saveInstallmentCustomer).toHaveBeenCalledTimes(1);
+  await createScreen.unmount();
+
+  const repayment = createUiPresenter({
+    allowedActions: actions(),
+    selectedMethod: "linkly-cloud",
+    provider: "linkly-cloud",
+    tenders: [
+      {
+        tenderGuid: "card-ui-1",
+        method: "card",
+        amount: aud(1_000),
+        reversible: false,
+        provider: "linkly-cloud",
+      },
+    ],
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: {
+        name: "Bob",
+        phone: "0400000000",
+        editable: false,
+        editorOpen: false,
+        draftName: "Bob",
+        draftPhone: "0400000000",
+        installmentNumber: "IP-0001",
+      },
+      cash: {
+        tenderedCents: 0,
+        appliedCents: 0,
+        changeCents: 0,
+      },
+      canConfirm: true,
+    },
+  });
+  const repaymentScreen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={repayment.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(repaymentScreen.queryByTestId("payment-customer-edit")).toBeNull();
+  expect(repaymentScreen.queryByTestId("payment-customer-name")).toBeNull();
+  expect(
+    repaymentScreen.getByTestId("payment-method-square").props
+      .accessibilityState,
+  ).toEqual({ disabled: true, selected: false });
+  expect(
+    repaymentScreen.getByTestId("payment-method-linkly-cloud").props
+      .accessibilityState,
+  ).toEqual({ disabled: true, selected: true });
+  await fireEvent.press(
+    repaymentScreen.getByTestId("payment-method-square"),
+  );
+  expect(repayment.spies.selectMethod).not.toHaveBeenCalled();
+  await repaymentScreen.unmount();
+});
+
+function createUiPresenter(
+  override: Partial<PaymentPresenterState> = {},
+  applySubmittedState?: (
+    state: PaymentPresenterState,
+  ) => PaymentPresenterState,
+) {
+  let state: PaymentPresenterState = {
+    phase: "ready",
+    busy: false,
+    initialized: true,
+    providers: [
+      providerAvailability("square"),
+      providerAvailability("linkly-cloud"),
+      providerAvailability("voucher"),
+    ],
+    selectedMethod: "square",
+    amountText: "10.00",
+    voucherCaptured: false,
+    sensitiveInputRevision: 0,
+    fieldIssue: null,
+    runtimeErrorCode: null,
+    orderGuid: null,
+    total: aud(1_000),
+    remaining: aud(1_000),
+    tenders: [],
+    attemptId: null,
+    provider: null,
+    runtimeStatus: null,
+    allowedActions: actions({
+      start: true,
+      changeProvider: true,
+      cancel: true,
+      addCash: true,
+    }),
+    tenderReversalRecovery: null,
+    checkout: {
+      flow: "regular",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 0,
+        appliedCents: 0,
+        changeCents: 0,
+      },
+      canConfirm: false,
+    },
+    linkly: {
+      status: null,
+      errorCode: null,
+      allowedKeys: [],
+    },
+    ...override,
+  };
+  const listeners = new Set<() => void>();
+  const publish = (next: PaymentPresenterState) => {
+    state = next;
+    listeners.forEach((listener) => listener());
+  };
+  const patchCustomer = (
+    update: (
+      customer: NonNullable<
+        PaymentPresenterState["checkout"]["installmentCustomer"]
+      >,
+    ) => NonNullable<
+      PaymentPresenterState["checkout"]["installmentCustomer"]
+    >,
+  ) => {
+    const customer = state.checkout.installmentCustomer;
+    if (!customer) return;
+    publish({
+      ...state,
+      checkout: {
+        ...state.checkout,
+        installmentCustomer: update(customer),
+      },
+    });
+  };
+  const spies = {
+    selectMethod: jest.fn((method: PaymentUiMethod) => {
+      publish({ ...state, selectedMethod: method });
+      return true;
+    }),
+    setAmountText: jest.fn((value: string) => {
+      publish({ ...state, amountText: value });
+    }),
+    setVoucherCode: jest.fn((_value: string) => undefined),
+    dismissError: jest.fn(() => undefined),
+    submitSelected: jest.fn(async () => {
+      if (applySubmittedState) publish(applySubmittedState(state));
+      return true;
+    }),
+    recover: jest.fn(async () => true),
+    cancel: jest.fn(async () => true),
+    removeTender: jest.fn(async (_tenderGuid: string) => true),
+    sendLinklyKey: jest.fn(async (_key: LinklySafeOperatorKey) => true),
+    markLinklyReceiptPrinted: jest.fn(async () => true),
+    acknowledgeLinkly: jest.fn(async () => true),
+    confirm: jest.fn(async () => true),
+    openInstallmentCustomerEditor: jest.fn(() => {
+      patchCustomer((customer) => ({
+        ...customer,
+        editorOpen: customer.editable,
+      }));
+    }),
+    setInstallmentCustomerDraftName: jest.fn((value: string) => {
+      patchCustomer((customer) => ({ ...customer, draftName: value }));
+    }),
+    setInstallmentCustomerDraftPhone: jest.fn((value: string) => {
+      patchCustomer((customer) => ({ ...customer, draftPhone: value }));
+    }),
+    saveInstallmentCustomer: jest.fn(() => {
+      patchCustomer((customer) => ({
+        ...customer,
+        name: customer.draftName,
+        phone: customer.draftPhone,
+        editorOpen: false,
+      }));
+    }),
+    cancelInstallmentCustomerEditor: jest.fn(() => {
+      patchCustomer((customer) => ({ ...customer, editorOpen: false }));
+    }),
+  };
+  const presenter: PaymentScreenPresenter = {
+    getState: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    initialize: async () => true,
+    destroy: () => listeners.clear(),
+    ...spies,
+  };
+  return { presenter, spies };
+}
 
 class ScreenPaymentRuntime implements PaymentCheckoutRuntimePort {
   public recovery: PaymentCheckoutPublicSnapshot | null = null;

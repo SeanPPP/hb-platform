@@ -88,6 +88,345 @@ describe("SettingsScreen", () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
+  it("当前终端卡片按分店名称、设备代码、分店代码展示完整身份", async () => {
+    const storeName = "Brisbane Central Shopping Centre Flagship Store";
+    const port = new ScreenSettingsPort();
+    port.snapshotValue = {
+      ...snapshot(),
+      device: {
+        ...snapshot().device,
+        storeName,
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    const card = screen.getByTestId("settings-device-badge");
+    expect(
+      card.children
+        .slice(1)
+        .map((child) => typeof child === "string" ? child : child.props.testID),
+    ).toEqual([
+      "settings-device-store-name",
+      "settings-device-code",
+      "settings-device-store-code",
+    ]);
+    expect(
+      screen.getByTestId("settings-device-store-name").props,
+    ).toEqual(
+      expect.objectContaining({
+        accessibilityLabel: storeName,
+        ellipsizeMode: "tail",
+        numberOfLines: 2,
+      }),
+    );
+    expect(screen.getByTestId("settings-device-code").props.children).toBe(
+      "POS-01",
+    );
+    expect(screen.getByTestId("settings-device-store-code").props.children).toBe(
+      "BNE-01",
+    );
+  });
+
+  it("当前终端缺少分店名称时显示占位符且不拿分店代码回退", async () => {
+    const port = new ScreenSettingsPort();
+    port.snapshotValue = {
+      ...snapshot(),
+      device: {
+        ...snapshot().device,
+        storeName: "",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    expect(
+      screen.getByTestId("settings-device-store-name").props.children,
+    ).toBe("—");
+    expect(
+      screen.getByTestId("settings-device-store-name").props.children,
+    ).not.toBe("BNE-01");
+    expect(screen.getByTestId("settings-device-store-code").props.children).toBe(
+      "BNE-01",
+    );
+  });
+
+  it("本地后端快捷按钮只填入开发地址，仍需显式申请切换", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-api-use-local"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-api-address").props.value).toBe(
+        "http://192.168.31.246:5159",
+      ),
+    );
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-api-use-local").props.style,
+      ).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    expect(
+      StyleSheet.flatten(screen.getByTestId("settings-api-actions").props.style)
+        .flexWrap,
+    ).toBe("wrap");
+    expect(port.apiAddresses).toEqual([]);
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+    expect(screen.getByText(/http:\/\/192\.168\.31\.246:5159/)).toBeTruthy();
+    expect(port.apiAddresses).toEqual([]);
+  });
+
+  it("远程后端快捷按钮只填入生产地址，仍需显式申请切换", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-api-use-remote"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-api-address").props.value).toBe(
+        "https://hotbargain.vip/pos-api",
+      ),
+    );
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-api-use-remote").props.style,
+      ).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    expect(port.apiAddresses).toEqual([]);
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+    expect(screen.getByText(/https:\/\/hotbargain\.vip\/pos-api/)).toBeTruthy();
+    expect(port.apiAddresses).toEqual([]);
+  });
+
+  it("测试连接按钮检查候选地址并保留当前后端", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-api-use-local"));
+    await fireEvent.press(screen.getByTestId("settings-api-test"));
+
+    await waitFor(() =>
+      expect(port.apiAddressTests).toEqual(["http://192.168.31.246:5159"]),
+    );
+    expect(screen.getByText(/连接成功/)).toBeTruthy();
+    expect(port.apiAddresses).toEqual([]);
+    expect(presenter.getState().apiBaseUrl).toBe(
+      "https://hotbargain.vip/pos-api",
+    );
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+  });
+
+  it("危险操作确认弹窗只声明应用支持的横屏方向", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.changeText(
+      screen.getByTestId("settings-api-address"),
+      "http://localhost:5159",
+    );
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+
+    await screen.findByTestId("settings-confirmation");
+    expect(
+      screen.getByTestId("settings-confirmation-modal").props
+        .supportedOrientations,
+    ).toEqual(["landscape-left", "landscape-right"]);
+  });
+
+  it("设置目录卡片恢复共享真实进度，刷新中可返回但阻断下载、重置与 API 切换", async () => {
+    const port = new ScreenSettingsPort();
+    port.publishCatalogRefresh({
+      kind: "running",
+      storeCode: "BNE-01",
+      progress: {
+        currentStep: "products",
+        overallPercent: 35,
+        elapsedMilliseconds: 116_000,
+        steps: [
+          { step: "prepare", percent: 100 },
+          {
+            step: "products",
+            percent: 25,
+            completedItemCount: 500,
+            totalItemCount: 2_000,
+            completedPageCount: 1,
+            totalPageCount: 4,
+          },
+          { step: "promotions", percent: 0 },
+          { step: "activate", percent: 0 },
+        ],
+      },
+    });
+    port.snapshotValue = {
+      ...snapshot(),
+      appUpdate: {
+        ...snapshot().appUpdate,
+        restartAvailable: true,
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const onBack = jest.fn();
+    const screen = await render(
+      <SettingsScreen locale="zh" onBack={onBack} presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    expect(screen.getByTestId("settings-catalog-refresh-state")).toBeTruthy();
+    expect(
+      screen.getByTestId("settings-catalog-refresh-progress").props
+        .accessibilityValue,
+    ).toEqual({ min: 0, max: 100, now: 35 });
+    expect(screen.getByText("当前步骤：下载并校验商品")).toBeTruthy();
+    expect(screen.getByText("已用时：01:56")).toBeTruthy();
+    expect(screen.getByText(/500 \/ 2000/)).toBeTruthy();
+    expect(screen.getByText(/1 \/ 4 页/)).toBeTruthy();
+    expect(screen.getByText(/可离开本页.*应用内继续刷新/)).toBeTruthy();
+    expect(
+      screen.getByTestId("settings-catalog-download").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-catalog-reset").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-api-request-change").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-update-restart").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-back").props.accessibilityState.disabled,
+    ).toBe(false);
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await screen.findByTestId("settings-pane-content-payments");
+    expect(
+      screen.getByTestId("settings-payment-save").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await screen.findByTestId("settings-pane-content-device");
+    expect(
+      screen.getByTestId("settings-reregister-request").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+
+    await fireEvent.press(screen.getByTestId("settings-back"));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("重新进入设置后显示共享目录完成摘要与安全告警码", async () => {
+    const port = new ScreenSettingsPort();
+    port.publishCatalogRefresh({
+      kind: "warning",
+      storeCode: "BNE-01",
+      summary: {
+        snapshotId: "catalog-background",
+        catalogVersion: "v-background",
+        itemCount: 63,
+        activatedAt: "2026-07-29T02:00:00.000Z",
+      },
+      warningCode: "catalog-runtime-reload-failed",
+      progress: {
+        currentStep: "activate",
+        overallPercent: 100,
+        elapsedMilliseconds: 121_000,
+        steps: [
+          { step: "prepare", percent: 100 },
+          { step: "products", percent: 100 },
+          { step: "promotions", percent: 100 },
+          { step: "activate", percent: 100 },
+        ],
+      },
+    });
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    expect(screen.getByText("catalog-background")).toBeTruthy();
+    expect(screen.getByText("63")).toBeTruthy();
+    expect(screen.getByText(/目录已启用，但有安全警告/)).toBeTruthy();
+    expect(
+      screen.getByText(/catalog-runtime-reload-failed/),
+    ).toBeTruthy();
+  });
+
+  it("重新进入设置后显示共享目录失败摘要，保留旧目录且不泄露异常详情", async () => {
+    const port = new ScreenSettingsPort();
+    port.publishCatalogRefresh({
+      kind: "failed",
+      storeCode: "BNE-01",
+      errorCode: "catalog-refresh-network-failed",
+      progress: {
+        currentStep: "prepare",
+        overallPercent: 0,
+        elapsedMilliseconds: 14_000,
+        steps: [
+          { step: "prepare", percent: 0 },
+          { step: "products", percent: 0 },
+          { step: "promotions", percent: 0 },
+          { step: "activate", percent: 0 },
+        ],
+      },
+    });
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    expect(screen.getByText("catalog-current")).toBeTruthy();
+    expect(screen.getByText(/目录刷新未完成，旧目录仍可用/)).toBeTruthy();
+    expect(
+      screen.getByText(/catalog-refresh-network-failed/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Bearer|https?:\/\//)).toBeNull();
+  });
+
   it("支付页只编辑公开 Square/Linkly 选择，不出现 token、secret 或密码输入", async () => {
     const port = new ScreenSettingsPort();
     port.snapshotValue = { ...snapshot(), paymentProvider: null };
@@ -300,15 +639,36 @@ function createPresenter(port: ScreenSettingsPort): SettingsPresenter {
 
 class ScreenSettingsPort implements SettingsControlPort {
   public readonly apiAddresses: string[] = [];
+  public readonly apiAddressTests: string[] = [];
   public readonly connectedPrinters: string[] = [];
   public readonly savedPayments: SettingsPaymentSettingsInput[] = [];
   public printerTests = 0;
   public scannerTests = 0;
   public displayTests = 0;
   public snapshotValue: SettingsSnapshot | null = null;
+  private catalogRefreshState: ReturnType<
+    SettingsControlPort["getCatalogRefreshState"]
+  > = { kind: "idle" };
+  private readonly catalogRefreshListeners = new Set<() => void>();
 
   public async loadSnapshot(): Promise<SettingsSnapshot> {
     return this.snapshotValue ?? snapshot();
+  }
+
+  public getCatalogRefreshState() {
+    return this.catalogRefreshState;
+  }
+
+  public subscribeCatalogRefresh(listener: () => void): () => void {
+    this.catalogRefreshListeners.add(listener);
+    return () => this.catalogRefreshListeners.delete(listener);
+  }
+
+  public publishCatalogRefresh(
+    state: ReturnType<SettingsControlPort["getCatalogRefreshState"]>,
+  ): void {
+    this.catalogRefreshState = state;
+    for (const listener of this.catalogRefreshListeners) listener();
   }
 
   public async downloadCatalog() {
@@ -317,6 +677,11 @@ class ScreenSettingsPort implements SettingsControlPort {
       itemCount: 20,
       activatedAt: "2026-07-28T03:00:00.000Z",
     };
+  }
+
+  public async testApiAddress(apiBaseUrl: string): Promise<boolean> {
+    this.apiAddressTests.push(apiBaseUrl);
+    return true;
   }
 
   public async executeDangerousAction(

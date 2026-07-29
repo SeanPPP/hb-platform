@@ -181,6 +181,13 @@ function createWorkflow(
     async addProduct() {},
     async addByLookupCode() {},
     async addOpenItem() {},
+    getPendingCatalogWorkCount: () => 0,
+    subscribePendingCatalogWork: () => () => undefined,
+    async settlePendingCatalogWork() {
+      return { timedOut: false };
+    },
+    disposePendingCatalogWork() {},
+    releasePreparedCheckout() {},
     completeCash,
     async holdCart() {},
     async lockTerminal() {},
@@ -221,12 +228,12 @@ function createPresenter(
   };
 }
 
-test("空购物车禁止进入现金结账，未接入能力不会伪造成功", () => {
+test("空购物车禁止进入现金结账，未接入能力不会伪造成功", async () => {
   const { presenter } = createPresenter({
     cart: new MemoryCartPort(EMPTY_SALE_CART),
   });
 
-  assert.equal(presenter.openCash(), false);
+  assert.equal(await presenter.openCash(), false);
   assert.equal(presenter.getState().phase, "selling");
   assert.equal(presenter.getState().errorCode, "empty-cart");
 
@@ -243,7 +250,7 @@ test("未接入的生产路由 presenter 明确禁用全部能力且绝不进入
     hold: false,
     lock: false,
   });
-  assert.equal(presenter.openCash(), false);
+  assert.equal(await presenter.openCash(), false);
   assert.equal(await presenter.submitCash(), false);
   assert.equal(presenter.getState().phase, "selling");
   assert.equal(presenter.getState().success, null);
@@ -293,7 +300,7 @@ test("重复点击现金确认共享同一个 Promise，底层只提交一次", 
     }),
   });
 
-  assert.equal(presenter.openCash(), true);
+  assert.equal(await presenter.openCash(), true);
   presenter.setCashTenderedText("10.00");
   const first = presenter.submitCash();
   const duplicate = presenter.submitCash();
@@ -338,7 +345,7 @@ test("只有交易提交成功后才发出清空购物车信号并进入成功�
     }),
   });
 
-  presenter.openCash();
+  await presenter.openCash();
   presenter.setCashTenderedText("10");
   assert.equal(await presenter.submitCash(), true);
 
@@ -362,7 +369,7 @@ test("订单已提交但清空信号失败时仍显示成功，并阻止开始�
   };
   const { presenter } = createPresenter({ cart });
 
-  presenter.openCash();
+  await presenter.openCash();
   presenter.setExactCash();
   assert.equal(await presenter.submitCash(), true);
 
@@ -411,7 +418,7 @@ test("更新门禁关闭后禁止空车加入商品和开始下一单，但不�
     cart: new MemoryCartPort(saleCart()),
     canStartNewTransaction: () => canStartNewTransaction,
   });
-  assert.equal(committedPresenter.openCash(), true);
+  assert.equal(await committedPresenter.openCash(), true);
   committedPresenter.setExactCash();
   assert.equal(await committedPresenter.submitCash(), true);
   canStartNewTransaction = false;
@@ -424,6 +431,348 @@ test("更新门禁关闭后禁止空车加入商品和开始下一单，但不�
   );
 
   committedPresenter.destroy();
+});
+
+test("扫码提交立即清空输入，连续扫码不等待前一次在线查询", async () => {
+  const lookups: string[] = [];
+  const completions: (() => void)[] = [];
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-scan",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      addByLookupCode(lookupCode) {
+        lookups.push(lookupCode);
+        return new Promise<void>((resolve) => {
+          completions.push(resolve);
+        });
+      },
+    },
+  });
+
+  presenter.setQuery("930000000001");
+  const first = presenter.addLookupCode();
+  assert.equal(presenter.getState().query, "");
+
+  presenter.setQuery("930000000002");
+  const second = presenter.addLookupCode();
+  assert.equal(presenter.getState().query, "");
+  assert.deepEqual(lookups, ["930000000001", "930000000002"]);
+
+  completions.forEach((complete) => complete());
+  assert.equal(await first, true);
+  assert.equal(await second, true);
+  presenter.destroy();
+});
+
+test("扫码后台未找到或网络失败不弹出噪声错误", async () => {
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-scan-failure",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      async addByLookupCode() {
+        throw new Error("remote lookup unavailable");
+      },
+    },
+  });
+
+  presenter.setQuery("930000000099");
+  assert.equal(await presenter.addLookupCode(), false);
+  assert.equal(presenter.getState().query, "");
+  assert.equal(presenter.getState().errorCode, null);
+  presenter.destroy();
+});
+
+test("Presenter 订阅目录核验数量并在销毁时解除订阅", () => {
+  let pendingCount = 2;
+  const listeners = new Set<() => void>();
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-pending",
+      cashDueCents: 995,
+      changeCents: 5,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    getPendingCatalogWorkCount: () => pendingCount,
+    subscribePendingCatalogWork(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async settlePendingCatalogWork() {
+      return { timedOut: false };
+    },
+  };
+  const { presenter } = createPresenter({ workflow });
+  const pendingFromState = () =>
+    (presenter.getState() as unknown as { pendingLookupCount?: number })
+      .pendingLookupCount;
+
+  assert.equal(pendingFromState(), 2);
+  pendingCount = 1;
+  listeners.forEach((listener) => listener());
+  assert.equal(pendingFromState(), 1);
+
+  presenter.destroy();
+  assert.equal(listeners.size, 0);
+});
+
+test("Presenter 销毁时先 fence 待处理目录任务，再解除 pending 订阅", () => {
+  const events: string[] = [];
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-dispose",
+      cashDueCents: 995,
+      changeCents: 5,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    subscribePendingCatalogWork: () => () => {
+      events.push("unsubscribe-pending");
+    },
+    disposePendingCatalogWork() {
+      events.push("dispose");
+    },
+    releasePreparedCheckout() {},
+  };
+  const { presenter } = createPresenter({ workflow });
+
+  presenter.destroy();
+  assert.deepEqual(events, ["dispose", "unsubscribe-pending"]);
+});
+
+test("Presenter 销毁后丢弃迟到的在线结账准备结果", async () => {
+  let resolveSettlement:
+    | ((result: Readonly<{ timedOut: boolean }>) => void)
+    | undefined;
+  const settlement = new Promise<Readonly<{ timedOut: boolean }>>((resolve) => {
+    resolveSettlement = resolve;
+  });
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-destroyed-prepare",
+      cashDueCents: 995,
+      changeCents: 5,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    settlePendingCatalogWork: () => settlement,
+  };
+  const { presenter } = createPresenter({ workflow });
+
+  const preparation = presenter.prepareOnlineCheckout();
+  presenter.destroy();
+  resolveSettlement?.({ timedOut: false });
+
+  assert.equal(await preparation, null);
+});
+
+test("空车但存在待处理扫码时仍等待核验，远程命中自动加购后进入现金结账", async () => {
+  let pendingCount = 1;
+  let settleCalls = 0;
+  const cart = new MemoryCartPort(EMPTY_SALE_CART);
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-pending-miss",
+      cashDueCents: 725,
+      changeCents: 0,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    getPendingCatalogWorkCount: () => pendingCount,
+    subscribePendingCatalogWork: () => () => undefined,
+    async settlePendingCatalogWork() {
+      settleCalls += 1;
+      cart.snapshot = {
+        ...saleCart(725),
+        revision: 1,
+      };
+      pendingCount = 0;
+      return { timedOut: false };
+    },
+  };
+  const { presenter } = createPresenter({ cart, workflow });
+
+  const opening = presenter.openCash();
+  assert.equal(presenter.getState().phase, "verifying-checkout");
+  assert.equal(await opening, true);
+  assert.equal(settleCalls, 1);
+  assert.equal(presenter.getState().phase, "cash");
+  assert.equal(presenter.getState().cart.actualAmount.cents, 725);
+  presenter.destroy();
+});
+
+test("目录核验与在线准备期间拒绝行编辑、清车、挂单和重复准备", async () => {
+  let resolveSettlement:
+    | ((result: Readonly<{ timedOut: boolean }>) => void)
+    | undefined;
+  const settlement = new Promise<Readonly<{ timedOut: boolean }>>((resolve) => {
+    resolveSettlement = resolve;
+  });
+  let holdCalls = 0;
+  let releaseCalls = 0;
+  const cart = new MemoryCartPort(saleCart());
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-frozen",
+      cashDueCents: 995,
+      changeCents: 5,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    getPendingCatalogWorkCount: () => 1,
+    subscribePendingCatalogWork: () => () => undefined,
+    settlePendingCatalogWork: () => settlement,
+    disposePendingCatalogWork() {},
+    releasePreparedCheckout() {
+      releaseCalls += 1;
+    },
+    async holdCart() {
+      holdCalls += 1;
+    },
+  };
+  const { presenter } = createPresenter({ cart, workflow });
+
+  const preparation = presenter.prepareOnlineCheckout();
+  assert.equal(presenter.getState().phase, "verifying-checkout");
+  assert.equal(await presenter.setLineQuantity("line-1", 2), false);
+  assert.equal(await presenter.clearCart(), false);
+  assert.equal(await presenter.holdCart(), false);
+  assert.deepEqual(cart.mutations, []);
+  assert.equal(holdCalls, 0);
+
+  resolveSettlement?.({ timedOut: false });
+  const prepared = await preparation;
+  assert.equal(prepared?.revision, 1);
+  assert.equal(presenter.getState().phase, "verifying-checkout");
+  assert.equal(await presenter.prepareOnlineCheckout(), null);
+  assert.equal(await presenter.setLineQuantity("line-1", 3), false);
+  assert.deepEqual(cart.mutations, []);
+  assert.equal(releaseCalls, 0);
+  presenter.destroy();
+});
+
+test("现金取消释放 prepared checkout 后才恢复销售态", async () => {
+  let releaseCalls = 0;
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-cash-cancel",
+      cashDueCents: 995,
+      changeCents: 5,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    disposePendingCatalogWork() {},
+    releasePreparedCheckout() {
+      releaseCalls += 1;
+    },
+  };
+  const { presenter } = createPresenter({ workflow });
+
+  assert.equal(await presenter.openCash(), true);
+  assert.equal(presenter.getState().phase, "cash");
+  assert.equal(presenter.closeCash(), true);
+  assert.equal(releaseCalls, 1);
+  assert.equal(presenter.getState().phase, "selling");
+  presenter.destroy();
+});
+
+test("现金结账等待目录核验、阻止重复结账，并使用最新购物车金额", async () => {
+  let resolveSettlement:
+    | ((result: Readonly<{ timedOut: boolean }>) => void)
+    | undefined;
+  const settlement = new Promise<Readonly<{ timedOut: boolean }>>((resolve) => {
+    resolveSettlement = resolve;
+  });
+  const settleCalls: number[] = [];
+  const cart = new MemoryCartPort(saleCart(995));
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-prepare-cash",
+      cashDueCents: 1_250,
+      changeCents: 0,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    getPendingCatalogWorkCount: () => 1,
+    subscribePendingCatalogWork: () => () => undefined,
+    settlePendingCatalogWork(input: Readonly<{ timeoutMs: number }>) {
+      settleCalls.push(input.timeoutMs);
+      return settlement;
+    },
+  };
+  const { presenter } = createPresenter({ cart, workflow });
+
+  const opening = Promise.resolve(presenter.openCash());
+  assert.equal(presenter.getState().phase, "verifying-checkout");
+  await Promise.resolve();
+  assert.deepEqual(settleCalls, [2_000]);
+  assert.equal(await Promise.resolve(presenter.openCash()), false);
+
+  cart.snapshot = {
+    ...saleCart(1_250),
+    revision: 2,
+  };
+  resolveSettlement?.({ timedOut: false });
+  assert.equal(await opening, true);
+  assert.equal(presenter.getState().phase, "cash");
+  assert.equal(presenter.getState().cart.revision, 2);
+  assert.equal(presenter.getState().cart.actualAmount.cents, 1_250);
+  assert.equal(presenter.getState().cashTenderedText, "");
+  presenter.destroy();
+});
+
+test("在线支付准备与现金共用核验门禁，超时或失败仍按最新本地金额继续", async () => {
+  const cart = new MemoryCartPort(saleCart(995));
+  const workflow = {
+    ...createWorkflow(async () => ({
+      completed: true as const,
+      canClearCart: true as const,
+      orderGuid: "order-prepare-online",
+      cashDueCents: 1_500,
+      changeCents: 0,
+      postCommit: { drawerDisposition: "queued" as const },
+    })),
+    getPendingCatalogWorkCount: () => 1,
+    subscribePendingCatalogWork: () => () => undefined,
+    async settlePendingCatalogWork() {
+      cart.snapshot = {
+        ...saleCart(1_500),
+        revision: 3,
+      };
+      throw new Error("timeout fence established");
+    },
+  };
+  const { presenter } = createPresenter({ cart, workflow });
+  const prepareOnlineCheckout = (
+    presenter as unknown as {
+      prepareOnlineCheckout(): Promise<CartSnapshot | null>;
+    }
+  ).prepareOnlineCheckout;
+
+  const prepared = await prepareOnlineCheckout.call(presenter);
+  assert.equal(prepared?.revision, 3);
+  assert.equal(prepared?.actualAmount.cents, 1_500);
+  assert.equal(presenter.getState().phase, "verifying-checkout");
+  presenter.destroy();
 });
 
 test("OPENITEM 只接受正整数分币，并透传给独立商品工作流", async () => {

@@ -4,11 +4,13 @@ import {
   type InstallmentsAccess,
 } from "./installment-authorization";
 import type {
+  InstallmentCardProvider,
   InstallmentDetails,
   InstallmentPaymentMethod,
 } from "./installment-models";
 
 import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
+import type { PaymentProviderAvailability } from "@/features/payments/runtime/payment-provider-registry";
 
 export const INSTALLMENT_MINIMUM_TOTAL_CENTS = 5_000;
 export const INSTALLMENT_MINIMUM_DOWN_PAYMENT_CENTS = 2_000;
@@ -40,6 +42,10 @@ export type InstallmentWorkflowCreateInput = Readonly<{
   method: InstallmentPaymentMethod;
   voucherReference: string | null;
   voucherReservationToken: null;
+  /** 旧管理页调用可省略；统一支付页的银行卡必须显式冻结 provider。 */
+  cardProvider?: InstallmentCardProvider;
+  /** 现金可超付；服务端分期金额仍只接收 downPaymentCents。 */
+  cashTenderedCents?: number;
 }>;
 
 export type InstallmentWorkflowRepaymentInput = Readonly<{
@@ -48,6 +54,8 @@ export type InstallmentWorkflowRepaymentInput = Readonly<{
   method: InstallmentPaymentMethod;
   voucherReference: string | null;
   voucherReservationToken: null;
+  cardProvider?: InstallmentCardProvider;
+  cashTenderedCents?: number;
 }>;
 
 /**
@@ -55,6 +63,9 @@ export type InstallmentWorkflowRepaymentInput = Readonly<{
  * 活动购物车 revision、支付 attempt 与 Unknown 恢复；Presenter 的检查只负责 UX。
  */
 export interface InstallmentWorkflowPort {
+  listPaymentProviderAvailability?(): Promise<
+    readonly PaymentProviderAvailability[]
+  >;
   list(input: Readonly<{
     keyword: string | null;
     online: boolean;

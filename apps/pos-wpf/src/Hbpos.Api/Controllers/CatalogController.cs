@@ -54,7 +54,9 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         [FromQuery] DateTimeOffset? since,
         [FromQuery] string? cursor,
         [FromQuery] int pageSize = 500,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        [FromQuery] string? catalogVersion = null,
+        [FromQuery] int checksumVersion = 1)
     {
         if (string.IsNullOrWhiteSpace(storeCode))
         {
@@ -66,23 +68,54 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             return BadRequest(ApiResult<CatalogSyncPageResponse>.Fail("PAGE_SIZE_INVALID", $"pageSize must be between 1 and {MaxPageSize}"));
         }
 
+        if (checksumVersion is not 1 and not 2)
+        {
+            return BadRequest(ApiResult<CatalogSyncPageResponse>.Fail(
+                "CATALOG_CHECKSUM_VERSION_UNSUPPORTED",
+                "checksumVersion must be 1 or 2"));
+        }
+
+        if (checksumVersion == 2 &&
+            !string.IsNullOrWhiteSpace(cursor) &&
+            string.IsNullOrWhiteSpace(catalogVersion))
+        {
+            return BadRequest(ApiResult<CatalogSyncPageResponse>.Fail(
+                "CATALOG_VERSION_REQUIRED",
+                "catalogVersion is required for checksum v2 continuation pages"));
+        }
+
         if (!this.IsDeviceScopeAllowed(storeCode))
         {
             return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogSyncPageResponse>("Device is not authorized for this store.");
         }
 
         var stopwatch = Stopwatch.StartNew();
-        Log($"page request store={storeCode} cursor={cursor ?? "<start>"} pageSize={pageSize}");
-        var response = await catalogService.GetSellableItemsPageAsync(
-            storeCode,
-            since,
-            cursor,
-            pageSize,
-            cancellationToken);
+        Log($"page request store={storeCode} continuation={!string.IsNullOrWhiteSpace(cursor)} pinned={!string.IsNullOrWhiteSpace(catalogVersion)} pageSize={pageSize} checksumVersion={checksumVersion}");
+        CatalogSyncPageResponse? response;
+        try
+        {
+            response = await catalogService.GetSellableItemsPageAsync(
+                storeCode,
+                since,
+                cursor,
+                pageSize,
+                cancellationToken,
+                catalogVersion,
+                checksumVersion);
+        }
+        catch (CatalogSnapshotExpiredException)
+        {
+            stopwatch.Stop();
+            Log($"page response store={storeCode} status=409 reason=snapshot-expired elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return Conflict(ApiResult<CatalogSyncPageResponse>.Fail(
+                "CATALOG_SNAPSHOT_EXPIRED",
+                "catalog snapshot expired; restart the download"));
+        }
+
         stopwatch.Stop();
         Log(response is null
             ? $"page response store={storeCode} status=404 elapsedMs={stopwatch.ElapsedMilliseconds}"
-            : $"page response store={response.StoreCode} status=200 items={response.Items.Count} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} next={response.NextCursor ?? "<end>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            : $"page response store={response.StoreCode} status=200 items={response.Items.Count} deletedLookups={response.DeletedLookups.Count} hasMore={response.HasMore} continuation={response.NextCursor is not null} elapsedMs={stopwatch.ElapsedMilliseconds}");
 
         return response is null
             ? NotFound(ApiResult<CatalogSyncPageResponse>.Fail("STORE_NOT_FOUND", "store was not found or inactive"))

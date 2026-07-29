@@ -6,11 +6,14 @@ import type {
   CatalogRefreshProgressEvent,
   CatalogSummary,
 } from "../catalog-refresh-contract";
+import { CatalogRefreshCoordinator } from "../catalog-refresh-coordinator";
 
 import {
   CatalogMaintenancePresenter,
   type CatalogMaintenancePort,
 } from "./catalog-maintenance-presenter";
+
+import { HbposApiError } from "@/core/api";
 
 const originalSummary: CatalogSummary = {
   snapshotId: "catalog-20260728-1",
@@ -31,6 +34,7 @@ class MemoryCatalogMaintenancePort implements CatalogMaintenancePort {
   public currentSummary: CatalogSummary | null = originalSummary;
   public currentFailure: unknown = null;
   public downloadFailure: unknown = null;
+  public metadataHold: Promise<void> | null = null;
   public hold: Promise<void> | null = null;
   public readonly progressEvents: CatalogRefreshProgressEvent[] = [];
   public readonly completionProgressEvents: CatalogRefreshProgressEvent[] = [];
@@ -39,10 +43,13 @@ class MemoryCatalogMaintenancePort implements CatalogMaintenancePort {
     summary: replacementSummary,
   };
   public receivedSignal: AbortSignal | undefined;
+  public progressListener: ((event: CatalogRefreshProgressEvent) => void) | undefined;
 
   public async getCurrentCatalog() {
     if (this.currentFailure) throw this.currentFailure;
-    return this.currentSummary;
+    const summary = this.currentSummary;
+    await this.metadataHold;
+    return summary;
   }
 
   public async downloadAndActivate(input: Readonly<{
@@ -52,6 +59,7 @@ class MemoryCatalogMaintenancePort implements CatalogMaintenancePort {
   }>) {
     this.storeCodes.push(input.storeCode);
     this.receivedSignal = input.signal;
+    this.progressListener = input.onProgress;
     for (const event of this.progressEvents) input.onProgress?.(event);
     await this.hold;
     if (this.downloadFailure) throw this.downloadFailure;
@@ -203,6 +211,68 @@ test("底层刷新异常被收敛为稳定安全错误码，并复读真实 acti
   }
 });
 
+test("稳定传输、API 与目录校验错误分别映射为安全错误码", async () => {
+  const cases = [
+    [
+      new HbposApiError("https://api.example.test bearer secret", { kind: "transport" }),
+      "catalog-refresh-network-failed",
+    ],
+    [
+      new HbposApiError("HTTP 503 from https://api.example.test", { kind: "http", status: 503 }),
+      "catalog-refresh-api-rejected",
+    ],
+    [
+      new HbposApiError("checksum details must remain private", {
+        kind: "envelope",
+        code: "CATALOG_PAGE_CHECKSUM_MISMATCH",
+      }),
+      "catalog-refresh-verification-failed",
+    ],
+    [
+      new HbposApiError("service rejected this request", {
+        kind: "envelope",
+        code: "STORE_NOT_FOUND",
+      }),
+      "catalog-refresh-api-rejected",
+    ],
+  ] as const;
+
+  for (const [downloadFailure, errorCode] of cases) {
+    const port = new MemoryCatalogMaintenancePort();
+    port.downloadFailure = downloadFailure;
+    const presenter = new CatalogMaintenancePresenter({
+      authenticatedStoreCode: "BNE-01",
+      port,
+    });
+
+    await presenter.refresh();
+
+    const refresh = presenter.getState().refresh;
+    assert.equal(refresh.kind, "failed");
+    if (refresh.kind === "failed") assert.equal(refresh.errorCode, errorCode);
+  }
+});
+
+test("取消只结束本次刷新并保留旧目录，不发布失败错误码", async () => {
+  const port = new MemoryCatalogMaintenancePort();
+  port.downloadFailure = new HbposApiError("request aborted", {
+    kind: "transport",
+    code: "REQUEST_ABORTED",
+  });
+  const presenter = new CatalogMaintenancePresenter({
+    authenticatedStoreCode: "BNE-01",
+    port,
+  });
+  await presenter.initialize();
+
+  await presenter.refresh();
+
+  assert.deepEqual(presenter.getState(), {
+    catalog: { kind: "ready", summary: originalSummary },
+    refresh: { kind: "idle" },
+  });
+});
+
 test("已激活但后续运行时未完成时保留新摘要并进入 warning，而非普通失败", async () => {
   const port = new MemoryCatalogMaintenancePort();
   port.outcome = {
@@ -229,14 +299,16 @@ test("已激活但后续运行时未完成时保留新摘要并进入 warning，
   }
 });
 
-test("销毁 presenter 会中止在途刷新，离页后不发布完成状态", async () => {
+test("销毁 presenter 只退订共享刷新，返回后恢复同一完成状态", async () => {
   let release!: () => void;
   const port = new MemoryCatalogMaintenancePort();
+  const coordinator = new CatalogRefreshCoordinator();
   port.hold = new Promise<void>((resolve) => {
     release = resolve;
   });
   const presenter = new CatalogMaintenancePresenter({
     authenticatedStoreCode: "BNE-01",
+    coordinator,
     port,
   });
 
@@ -244,11 +316,53 @@ test("销毁 presenter 会中止在途刷新，离页后不发布完成状态", 
   await Promise.resolve();
   const stateBeforeDestroy = presenter.getState();
   presenter.destroy();
-  assert.equal(port.receivedSignal?.aborted, true);
+  assert.equal(port.receivedSignal?.aborted, false);
 
   release();
   await refreshing;
   assert.deepEqual(presenter.getState(), stateBeforeDestroy);
+
+  const restored = new CatalogMaintenancePresenter({
+    authenticatedStoreCode: "BNE-01",
+    coordinator,
+    port,
+  });
+  assert.deepEqual(restored.getState().catalog, {
+    kind: "ready",
+    summary: replacementSummary,
+  });
+  assert.equal(restored.getState().refresh.kind, "success");
+});
+
+test("返回时旧 metadata 读取晚到也不能覆盖共享刷新完成摘要", async () => {
+  let releaseMetadata!: () => void;
+  let releaseDownload!: () => void;
+  const port = new MemoryCatalogMaintenancePort();
+  const coordinator = new CatalogRefreshCoordinator();
+  port.metadataHold = new Promise<void>((resolve) => {
+    releaseMetadata = resolve;
+  });
+  port.hold = new Promise<void>((resolve) => {
+    releaseDownload = resolve;
+  });
+  const presenter = new CatalogMaintenancePresenter({
+    authenticatedStoreCode: "BNE-01",
+    coordinator,
+    port,
+  });
+
+  const initialize = presenter.initialize();
+  await Promise.resolve();
+  const refresh = presenter.refresh();
+  await Promise.resolve();
+  releaseDownload();
+  await refresh;
+  assert.equal(presenter.getState().catalog.summary, replacementSummary);
+
+  releaseMetadata();
+  await initialize;
+  assert.equal(presenter.getState().catalog.summary, replacementSummary);
+  assert.equal(presenter.getState().refresh.kind, "success");
 });
 
 test("初始元数据读取失败只显示稳定码，仍允许后续刷新", async () => {

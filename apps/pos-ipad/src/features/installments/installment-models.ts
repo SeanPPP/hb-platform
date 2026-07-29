@@ -2,6 +2,7 @@ import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
 import type { components } from "@/generated/hbpos/schema";
 
 export type InstallmentPaymentMethod = "cash" | "card" | "voucher";
+export type InstallmentCardProvider = "square" | "linkly-cloud";
 export type InstallmentPaymentStatus = "Recorded" | "Voided";
 
 export type InstallmentLine = Readonly<{

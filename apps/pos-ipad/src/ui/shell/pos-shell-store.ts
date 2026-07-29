@@ -10,6 +10,11 @@ export type DeviceGateStatus =
   | "authorized"
   | "locked";
 
+export type TerminalPresentation = Readonly<{
+  storeName: string | null;
+  deviceCode: string;
+}>;
+
 type PosShellState = {
   connectivity: ConnectivityStatus;
   deviceGate: DeviceGateStatus;
@@ -17,12 +22,16 @@ type PosShellState = {
   printer: PrinterStatus;
   scanner: ScannerCaptureStatus;
   display: DisplayStatus;
+  terminalPresentation: TerminalPresentation | null;
   setConnectivity(status: ConnectivityStatus): void;
   setDeviceGate(status: DeviceGateStatus): void;
   setPendingSyncCount(count: number): void;
   setPrinter(status: PrinterStatus): void;
   setScanner(status: ScannerCaptureStatus): void;
   setDisplay(status: DisplayStatus): void;
+  setTerminalPresentation(
+    terminalPresentation: TerminalPresentation | null,
+  ): void;
   reset(): void;
 };
 
@@ -33,6 +42,7 @@ const initialStatus = {
   printer: "disconnected",
   scanner: "inactive",
   display: "disconnected",
+  terminalPresentation: null,
 } as const;
 
 export const usePosShellStore = create<PosShellState>((set) => ({
@@ -48,5 +58,7 @@ export const usePosShellStore = create<PosShellState>((set) => ({
   setPrinter: (printer) => set({ printer }),
   setScanner: (scanner) => set({ scanner }),
   setDisplay: (display) => set({ display }),
+  setTerminalPresentation: (terminalPresentation) =>
+    set({ terminalPresentation }),
   reset: () => set(initialStatus),
 }));

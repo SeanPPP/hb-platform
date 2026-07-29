@@ -4148,6 +4148,129 @@ BEGIN
 END;
 `;
 
+const M23 = `
+-- 在线精确查询只写增量覆盖，不修改带校验和的不可变 active 快照。
+-- base_snapshot_id 也允许保存无 active 快照时的内部代次哨兵。
+CREATE TABLE catalog_lookup_overlays (
+  base_snapshot_id TEXT NOT NULL CHECK (TRIM(base_snapshot_id) <> ''),
+  store_code TEXT NOT NULL CHECK (TRIM(store_code) <> ''),
+  lookup_code_normalized TEXT NOT NULL CHECK (
+    TRIM(lookup_code_normalized) <> ''
+    AND lookup_code_normalized = UPPER(TRIM(lookup_code_normalized))
+  ),
+  record_kind TEXT NOT NULL CHECK (
+    record_kind IN ('item', 'tombstone')
+  ),
+  product_code TEXT NULL,
+  reference_code TEXT NULL,
+  item_number TEXT NULL,
+  display_name TEXT NULL,
+  barcode TEXT NULL,
+  lookup_code TEXT NULL,
+  retail_price_cents INTEGER NULL,
+  price_source INTEGER NULL,
+  price_source_label TEXT NULL,
+  quantity_factor TEXT NULL,
+  tax_rate_basis_points INTEGER NULL,
+  updated_at_iso TEXT NULL,
+  row_version TEXT NULL,
+  product_image TEXT NULL,
+  discount_rate TEXT NULL,
+  is_special_product INTEGER NULL CHECK (
+    is_special_product IS NULL OR is_special_product IN (0, 1)
+  ),
+  verified_at_iso TEXT NOT NULL CHECK (TRIM(verified_at_iso) <> ''),
+  PRIMARY KEY (
+    base_snapshot_id,
+    store_code,
+    lookup_code_normalized
+  ),
+  CHECK (
+    (
+      record_kind = 'tombstone'
+      AND product_code IS NULL
+      AND reference_code IS NULL
+      AND item_number IS NULL
+      AND display_name IS NULL
+      AND barcode IS NULL
+      AND lookup_code IS NULL
+      AND retail_price_cents IS NULL
+      AND price_source IS NULL
+      AND price_source_label IS NULL
+      AND quantity_factor IS NULL
+      AND tax_rate_basis_points IS NULL
+      AND updated_at_iso IS NULL
+      AND row_version IS NULL
+      AND product_image IS NULL
+      AND discount_rate IS NULL
+      AND is_special_product IS NULL
+    )
+    OR
+    (
+      record_kind = 'item'
+      AND product_code IS NOT NULL
+      AND TRIM(product_code) <> ''
+      AND display_name IS NOT NULL
+      AND TRIM(display_name) <> ''
+      AND lookup_code IS NOT NULL
+      AND TRIM(lookup_code) <> ''
+      AND typeof(retail_price_cents) = 'integer'
+      AND price_source IN (0, 1, 2, 3, 4)
+      AND price_source_label IS NOT NULL
+      AND TRIM(price_source_label) <> ''
+      AND quantity_factor IS NOT NULL
+      AND is_special_product IN (0, 1)
+    )
+  )
+);
+CREATE INDEX ix_catalog_lookup_overlays_search
+  ON catalog_lookup_overlays (
+    base_snapshot_id,
+    store_code,
+    record_kind,
+    display_name COLLATE NOCASE,
+    item_number COLLATE NOCASE,
+    lookup_code_normalized
+  );
+`;
+
+const M24 = `
+-- mixed cash action 同时冻结入账、实收和找零；M23 及更早的历史行保持
+-- nullable，并由读取层按 tendered=amount/change=0 兼容。
+ALTER TABLE mixed_cash_tender_actions
+  ADD COLUMN tendered_cents INTEGER NULL CHECK (
+    tendered_cents IS NULL
+    OR (
+      typeof(tendered_cents) = 'integer'
+      AND tendered_cents BETWEEN 1 AND 9007199254740991
+      AND tendered_cents >= amount_cents
+    )
+  );
+
+ALTER TABLE mixed_cash_tender_actions
+  ADD COLUMN change_cents INTEGER NULL CHECK (
+    change_cents IS NULL
+    OR (
+      typeof(change_cents) = 'integer'
+      AND change_cents BETWEEN 0 AND 9007199254740991
+    )
+  );
+
+-- 升级不会改写旧的不可变 action；升级后的新 action 必须持久化完整三值，
+-- 不能依赖审计 JSON 或 UI 内存重新推导支付事实。
+CREATE TRIGGER trg_mixed_cash_tender_action_amounts_insert
+BEFORE INSERT ON mixed_cash_tender_actions
+FOR EACH ROW
+WHEN
+  NEW.tendered_cents IS NULL
+  OR NEW.change_cents IS NULL
+  OR NEW.tendered_cents < NEW.amount_cents
+  OR NEW.tendered_cents - NEW.amount_cents != NEW.change_cents
+BEGIN
+  SELECT RAISE(ABORT, 'MIXED_CASH_ACTION_AMOUNTS_INVALID');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -4171,6 +4294,8 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 20, name: "M20_installment_action_ledger", sql: M20 },
   { version: 21, name: "M21_installment_action_guards", sql: M21 },
   { version: 22, name: "M22_installment_payment_ledger", sql: M22 },
+  { version: 23, name: "M23_catalog_lookup_overlays", sql: M23 },
+  { version: 24, name: "M24_mixed_cash_amount_facts", sql: M24 },
 ];
 
 export async function applyMigrations(

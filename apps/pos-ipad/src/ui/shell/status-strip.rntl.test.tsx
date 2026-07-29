@@ -16,10 +16,18 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
     en: {
       "status.languageSwitchHint": "Show all interface text in Chinese.",
       "status.languageSwitchLabel": "Switch interface language to Chinese",
+      "status.device": "Device",
+      "status.device.authorized": "Authorized",
+      "status.deviceCode": "Device code",
+      "status.storeName": "Branch name",
     },
     zh: {
       "status.languageSwitchHint": "将所有界面文字显示为英文。",
       "status.languageSwitchLabel": "将界面语言切换为英文",
+      "status.device": "设备",
+      "status.device.authorized": "已授权",
+      "status.deviceCode": "设备代码",
+      "status.storeName": "分店名称",
     },
   };
 
@@ -42,6 +50,79 @@ test("没有切换回调时不显示语言入口", async () => {
   const screen = await render(<PosStatusStrip language="zh" />);
 
   expect(screen.queryByTestId("status-strip-language-switch")).toBeNull();
+});
+
+test("终端身份默认关闭，即使 shell 已有展示身份也不影响其他调用方", async () => {
+  usePosShellStore.getState().setTerminalPresentation({
+    storeName: "Brisbane CBD",
+    deviceCode: "IPAD-07",
+  });
+
+  const screen = await render(<PosStatusStrip language="zh" />);
+
+  expect(screen.queryByTestId("status-strip-terminal-identity")).toBeNull();
+});
+
+test("开启后按分店名称、设备代码展示静态身份，并保留设备授权状态", async () => {
+  usePosShellStore.getState().setDeviceGate("authorized");
+  usePosShellStore.getState().setTerminalPresentation({
+    storeName: "Brisbane Central Superstore With A Long Name",
+    deviceCode: "IPAD-07",
+  });
+  const screen = await render(
+    <PosStatusStrip
+      language="zh"
+      onSwitchLanguage={jest.fn()}
+      showTerminalIdentity
+    />,
+  );
+
+  const group = screen.getByTestId("status-strip-terminal-identity");
+  expect(group.children).toHaveLength(2);
+  expect(
+    screen.getByTestId("status-strip-store-identity").props.accessibilityLabel,
+  ).toBe(
+    "分店名称: Brisbane Central Superstore With A Long Name",
+  );
+  expect(
+    screen.getByTestId("status-strip-device-code-identity").props
+      .accessibilityLabel,
+  ).toBe("设备代码: IPAD-07");
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("status-strip-store-identity").props.style,
+    ).flexShrink,
+  ).toBe(1);
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("status-strip-device-code-identity").props.style,
+    ).flexShrink,
+  ).toBe(0);
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("status-strip-language-switch").props.style,
+    ).flexShrink,
+  ).toBe(0);
+  expect(screen.getByLabelText("设备: 已授权")).toBeTruthy();
+});
+
+test("终端身份空值显示破折号，且绝不以 storeCode 冒充分店名称", async () => {
+  usePosShellStore.getState().setTerminalPresentation({
+    storeName: null,
+    deviceCode: "",
+    storeCode: "S001",
+  } as Parameters<
+    ReturnType<typeof usePosShellStore.getState>["setTerminalPresentation"]
+  >[0]);
+
+  const screen = await render(
+    <PosStatusStrip language="zh" showTerminalIdentity />,
+  );
+
+  expect(screen.getAllByText("—")).toHaveLength(2);
+  expect(screen.queryByText("S001")).toBeNull();
+  expect(screen.getByLabelText("分店名称: —")).toBeTruthy();
+  expect(screen.getByLabelText("设备代码: —")).toBeTruthy();
 });
 
 test("中文界面显示目标 EN 图标，并保留完整无障碍文案和 44pt 触控目标", async () => {

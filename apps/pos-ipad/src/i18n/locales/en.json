@@ -55,6 +55,8 @@
   "status.device.pending-approval": "Pending",
   "status.device.authorized": "Authorized",
   "status.device.locked": "Locked",
+  "status.storeName": "Branch name",
+  "status.deviceCode": "Device code",
   "status.network": "Network",
   "status.network.checking": "Checking",
   "status.network.online": "Online",

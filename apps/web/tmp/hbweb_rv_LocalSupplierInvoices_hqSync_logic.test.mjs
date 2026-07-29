@@ -471,6 +471,37 @@ function assertApiSuccess(response, fallbackMessage) {
     throw new RequestError(response.message || fallbackMessage, 200, response);
   }
 }
+function getExistingUpdateHqProductsJobId(error) {
+  if (!(error instanceof RequestError) || error.status !== 409) return void 0;
+  const payload = error.payload;
+  if (!payload?.data || typeof payload.data !== "object") return void 0;
+  const data = payload.data;
+  const jobId = data.existingJobId ?? data.ExistingJobId;
+  return typeof jobId === "string" && jobId.trim() ? jobId.trim() : void 0;
+}
+function hasUpdateHqProductsResultStatistics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value;
+  return [
+    "total",
+    "updated",
+    "failed",
+    "skipped",
+    "hqExisting",
+    "hbwebCreated",
+    "hqCreated",
+    "hqSynced",
+    "hqPurchasePricesUpdated",
+    "hqRetailPricesUpdated",
+    "hqAutoPricingUpdated",
+    "hqSpecialProductsUpdated",
+    "hqDiscountRatesUpdated",
+    "hqProductSetCodesCreated",
+    "hqProductSetCodesUpdated",
+    "hqStoreMultiCodesCreated",
+    "hqStoreMultiCodesUpdated"
+  ].some((field) => typeof candidate[field] === "number" && Number.isFinite(candidate[field]));
+}
 async function batchUpsertDetails(invoiceGuid, items) {
   const response = await request_default.post(
     `${API_BASE}/${invoiceGuid}/details/batch-upsert`,
@@ -533,6 +564,27 @@ async function updateHqProducts(invoiceGuid, data) {
     data
   );
   assertApiSuccess(response, "\u66F4\u65B0HQ\u5546\u54C1\u5931\u8D25");
+  return unwrapApiData(response);
+}
+async function startUpdateHqProductsJob(invoiceGuid, data) {
+  try {
+    const response = await request_default.post(
+      `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs`,
+      data
+    );
+    assertApiSuccess(response, "\u521B\u5EFA\u66F4\u65B0HQ\u5546\u54C1\u4EFB\u52A1\u5931\u8D25");
+    return unwrapApiData(response);
+  } catch (error) {
+    const existingJobId = getExistingUpdateHqProductsJobId(error);
+    if (!existingJobId) throw error;
+    return getUpdateHqProductsJob(invoiceGuid, existingJobId);
+  }
+}
+async function getUpdateHqProductsJob(invoiceGuid, jobId) {
+  const response = await request_default.get(
+    `${API_BASE}/${invoiceGuid}/details/update-hq-products/jobs/${encodeURIComponent(jobId)}`
+  );
+  assertApiSuccess(response, "\u67E5\u8BE2\u66F4\u65B0HQ\u5546\u54C1\u4EFB\u52A1\u5931\u8D25");
   return unwrapApiData(response);
 }
 async function batchUpdateDetails(invoiceGuid, items, editFields) {
@@ -1390,6 +1442,33 @@ async function main() {
     assert(editPageSource.includes("hqUpdateIdempotencyKeyRef.current"), "\u66F4\u65B0HQ\u5546\u54C1\u5E94\u5728\u8BF7\u6C42\u5468\u671F\u5185\u590D\u7528\u7A33\u5B9A idempotencyKey");
   });
   if (editPageButtonFailure) failures.push(editPageButtonFailure);
+  const updateHqConflictDisplayFailure = await runTest("\u66F4\u65B0HQ\u5546\u54C1\u91CD\u590D\u4EFB\u52A1\u51B2\u7A81\u4E0D\u5E94\u663E\u793A\u5168\u96F6\u5931\u8D25\u7EDF\u8BA1", () => {
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ existingJobId: "hq-job-running" }),
+      false,
+      "\u4EC5\u5305\u542B existingJobId \u7684\u51B2\u7A81 payload \u4E0D\u662F HQ \u66F4\u65B0\u7EDF\u8BA1"
+    );
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ errors: ["\u666E\u901A\u6821\u9A8C\u9519\u8BEF"] }),
+      false,
+      "\u4EC5\u5305\u542B\u9519\u8BEF\u5217\u8868\u7684\u666E\u901A\u5931\u8D25 payload \u4E0D\u662F HQ \u66F4\u65B0\u7EDF\u8BA1"
+    );
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ failed: "0" }),
+      false,
+      "\u7EDF\u8BA1\u8BA1\u6570\u5B57\u6BB5\u7C7B\u578B\u9519\u8BEF\u65F6\u4E0D\u80FD\u4F2A\u9020\u6210 HQ \u66F4\u65B0\u7EDF\u8BA1"
+    );
+    assertEqual(
+      hasUpdateHqProductsResultStatistics({ total: 0, updated: 0, failed: 0, errors: [] }),
+      true,
+      "\u540E\u7AEF\u771F\u5B9E\u8FD4\u56DE\u5168\u96F6\u7EDF\u8BA1\u65F6\u4ECD\u5E94\u8BC6\u522B\u4E3A HQ \u66F4\u65B0\u7EDF\u8BA1"
+    );
+    assert(
+      editPageSource.includes("if (!hasUpdateHqProductsResultStatistics(candidate)) return undefined"),
+      "409 \u4EC5\u8FD4\u56DE existingJobId \u65F6\u5E94\u4FDD\u7559\u540E\u7AEF\u51B2\u7A81\u6D88\u606F\uFF0C\u4E0D\u80FD\u4F2A\u9020\u6210\u5931\u8D25 0 \u6761"
+    );
+  });
+  if (updateHqConflictDisplayFailure) failures.push(updateHqConflictDisplayFailure);
   const editPageImportFailure = await runTest("\u7F16\u8F91\u9875\u4E0D\u5E94\u52A8\u6001\u5BFC\u5165\u5DF2\u9759\u6001\u4F7F\u7528\u7684\u672C\u5730\u4F9B\u5E94\u5546\u8FDB\u8D27\u5355\u670D\u52A1", () => {
     assert(
       !editPageSource.includes("await import('../../../../services/localSupplierInvoiceService')"),
@@ -1474,6 +1553,43 @@ async function main() {
     );
   });
   if (batchEditPersistFailure) failures.push(batchEditPersistFailure);
+  const batchEditBooleanSwitchFailure = await runTest("\u65B0\u65E7\u8FDB\u8D27\u5355\u6279\u91CF\u7F16\u8F91\u7684\u81EA\u52A8\u5B9A\u4EF7\u548C\u7279\u6B8A\u5546\u54C1\u5E94\u4F7F\u7528\u5E03\u5C14\u5F00\u5173", () => {
+    const pageSources = [
+      ["\u5F53\u524D\u8FDB\u8D27\u5355\u7F16\u8F91\u9875", editPageSource],
+      ["\u65E7\u8FDB\u8D27\u5355\u8BE6\u60C5\u9875", detailPageSource]
+    ];
+    for (const [pageName, pageSource2] of pageSources) {
+      const batchEditModalStart = pageSource2.indexOf("{/* \u6279\u91CF\u7F16\u8F91 Modal");
+      const batchEditModalEnd = pageSource2.indexOf("</Modal>", batchEditModalStart);
+      const batchEditModalSource = pageSource2.slice(batchEditModalStart, batchEditModalEnd);
+      assert(batchEditModalStart >= 0 && batchEditModalEnd > batchEditModalStart, `${pageName}\u5E94\u4FDD\u7559\u6279\u91CF\u7F16\u8F91\u5F39\u7A97`);
+      assert(
+        /name="isAutoPricing"[\s\S]*?valuePropName="checked"[\s\S]*?initialValue=\{false\}[\s\S]*?<Switch/.test(batchEditModalSource),
+        `${pageName}\u81EA\u52A8\u5B9A\u4EF7\u503C\u5E94\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684 Switch`
+      );
+      assert(
+        /name="isSpecialProduct"[\s\S]*?valuePropName="checked"[\s\S]*?initialValue=\{false\}[\s\S]*?<Switch/.test(batchEditModalSource),
+        `${pageName}\u7279\u6B8A\u5546\u54C1\u503C\u5E94\u4F7F\u7528\u9ED8\u8BA4\u5173\u95ED\u7684 Switch`
+      );
+      assertEqual(
+        (batchEditModalSource.match(/checkedChildren=\{t\('posAdmin\.invoiceDetail\.yes', '是'\)\}/g) ?? []).length,
+        2,
+        `${pageName}\u4E24\u4E2A\u5E03\u5C14\u5F00\u5173\u90FD\u5E94\u663E\u793A\u201C\u662F\u201D\u6587\u6848`
+      );
+      assertEqual(
+        (batchEditModalSource.match(/unCheckedChildren=\{t\('posAdmin\.invoiceDetail\.no', '否'\)\}/g) ?? []).length,
+        2,
+        `${pageName}\u4E24\u4E2A\u5E03\u5C14\u5F00\u5173\u90FD\u5E94\u663E\u793A\u201C\u5426\u201D\u6587\u6848`
+      );
+      assert(batchEditModalSource.includes('name="updateIsAutoPricing" valuePropName="checked"'), `${pageName}\u5E94\u4FDD\u7559\u81EA\u52A8\u5B9A\u4EF7\u5B57\u6BB5\u9009\u62E9 Checkbox`);
+      assert(batchEditModalSource.includes('name="updateIsSpecialProduct" valuePropName="checked"'), `${pageName}\u5E94\u4FDD\u7559\u7279\u6B8A\u5546\u54C1\u5B57\u6BB5\u9009\u62E9 Checkbox`);
+      assert(!/name="isAutoPricing"[\s\S]*?<Select/.test(batchEditModalSource), `${pageName}\u81EA\u52A8\u5B9A\u4EF7\u503C\u4E0D\u5E94\u7EE7\u7EED\u4F7F\u7528 Select`);
+      assert(!/name="isSpecialProduct"[\s\S]*?<Select/.test(batchEditModalSource), `${pageName}\u7279\u6B8A\u5546\u54C1\u503C\u4E0D\u5E94\u7EE7\u7EED\u4F7F\u7528 Select`);
+      assert(pageSource2.includes("isAutoPricing: values.updateIsAutoPricing ? values.isAutoPricing : undefined"), `${pageName}\u672A\u9009\u62E9\u81EA\u52A8\u5B9A\u4EF7\u5B57\u6BB5\u65F6\u4E0D\u5E94\u63D0\u4EA4\u503C`);
+      assert(pageSource2.includes("isSpecialProduct: values.updateIsSpecialProduct ? values.isSpecialProduct : undefined"), `${pageName}\u672A\u9009\u62E9\u7279\u6B8A\u5546\u54C1\u5B57\u6BB5\u65F6\u4E0D\u5E94\u63D0\u4EA4\u503C`);
+    }
+  });
+  if (batchEditBooleanSwitchFailure) failures.push(batchEditBooleanSwitchFailure);
   const updateToStoreHqFailure = await runTest("\u66F4\u65B0\u5230\u5206\u5E97\u5E94\u79FB\u9664\u540C\u6B65HQ\u8026\u5408\u5E76\u4FDD\u7559\u72EC\u7ACBHQ\u5F39\u7A97", () => {
     const storeModalStart = editPageSource.indexOf("{/* \u66F4\u65B0\u5230\u5206\u5E97\u4EF7\u683C Modal");
     const hqModalStart = editPageSource.indexOf("{/* \u66F4\u65B0 HQ \u5546\u54C1 Modal");
@@ -2329,6 +2445,66 @@ async function main() {
     assertEqual(result.hqRetailPricesUpdated, 2, "\u5B57\u6BB5\u7EA7\u66F4\u65B0 HQ \u5E94\u4FDD\u7559\u96F6\u552E\u4EF7\u66F4\u65B0\u7EDF\u8BA1");
   });
   if (updateHqProductsPayloadFailure) failures.push(updateHqProductsPayloadFailure);
+  const updateHqProductsConflictJobFailure = await runTest("\u66F4\u65B0HQ\u5546\u54C1\u9047\u5230\u8FD0\u884C\u4E2D\u4EFB\u52A1\u65F6\u5E94\u63A5\u7BA1 existingJobId", async () => {
+    const requests = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({ url, method });
+      if (method === "POST") {
+        return new Response(JSON.stringify({
+          success: false,
+          message: "\u540C\u4E00\u5F20\u672C\u5730\u8FDB\u8D27\u5355\u5DF2\u6709\u540C\u7C7B\u540E\u53F0\u4EFB\u52A1\u6B63\u5728\u6267\u884C\uFF0C\u8BF7\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u63D0\u4EA4\u65B0\u7684\u6279\u91CF\u5199\u5165",
+          data: { existingJobId: "hq-job-running" }
+        }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: "hq-job-running",
+          invoiceGuid: "invoice-1",
+          operationId: "hq-operation-running",
+          status: "Running",
+          targetStoreCodes: ["1033"]
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    };
+    const job = await startUpdateHqProductsJob("invoice-1", {
+      detailGuids: ["detail-1"],
+      targetStoreCodes: ["1033"],
+      updateFields: {
+        updatePurchasePrice: true,
+        updateRetailPrice: false,
+        updateIsAutoPricing: false,
+        updateIsSpecialProduct: false,
+        updateDiscountRate: false
+      },
+      idempotencyKey: "new-attempt"
+    });
+    assertDeepEqual(
+      requests,
+      [
+        {
+          url: "/api/react/v1/local-supplier-invoices/invoice-1/details/update-hq-products/jobs",
+          method: "POST"
+        },
+        {
+          url: "/api/react/v1/local-supplier-invoices/invoice-1/details/update-hq-products/jobs/hq-job-running",
+          method: "GET"
+        }
+      ],
+      "\u51B2\u7A81\u540E\u5E94\u67E5\u8BE2\u5E76\u63A5\u7BA1\u540E\u7AEF\u8FD4\u56DE\u7684 existingJobId"
+    );
+    assertEqual(job.jobId, "hq-job-running", "\u5E94\u8FD4\u56DE\u6B63\u5728\u8FD0\u884C\u7684\u539F\u4EFB\u52A1\u4F9B\u9875\u9762\u7EE7\u7EED\u8F6E\u8BE2");
+    assertEqual(job.status, "Running", "\u63A5\u7BA1\u4EFB\u52A1\u5E94\u4FDD\u7559\u5F53\u524D\u8FD0\u884C\u72B6\u6001");
+  });
+  if (updateHqProductsConflictJobFailure) failures.push(updateHqProductsConflictJobFailure);
   const pasteDetailsJobServiceFailure = await runTest("pasteDetails \u540E\u53F0 Job \u63A5\u53E3\u5E94\u8C03\u7528\u4EFB\u52A1\u521B\u5EFA\u548C\u67E5\u8BE2\u5730\u5740", async () => {
     globalThis.fetch = async (input, init) => {
       capturedUrl = String(input);

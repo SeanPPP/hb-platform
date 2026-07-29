@@ -75,6 +75,47 @@ test("重复点击共享同一 action，provider/completion/clear 各执行一�
   ]);
 });
 
+test("首次现金支付先耐久同一 draft，再原子写入现金 tender 并完成清车", async () => {
+  const harness = createHarness();
+  harness.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-first",
+    remaining: aud(0),
+  });
+  harness.drafts.afterCash = draft({
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "cash-first",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: false,
+      },
+    ],
+  });
+  const runtime = harness.runtime();
+  const input = {
+    checkoutIntentId: "checkout-intent-1",
+    expectedCartRevision: 7,
+    actionId: "cash-action-first",
+    amount: aud(1_500),
+  };
+
+  const first = runtime.startCash(input);
+  const duplicate = runtime.startCash(input);
+  assert.strictEqual(first, duplicate);
+  assert.equal((await first).status, "completed");
+  assert.equal(harness.drafts.createCalls, 1);
+  assert.equal(harness.mixed.cashCalls, 1);
+  assert.equal(harness.mixed.lastCashInput?.amount.cents, 1_000);
+  assert.equal(
+    harness.mixed.lastCashInput?.tenderedAmount?.cents,
+    1_500,
+  );
+  assert.equal(harness.mixed.lastCashInput?.change?.cents, 500);
+  assert.equal(harness.lease.clearCalls, 1);
+});
+
 test("配置缺失在 draft/lease/provider 边界前 fail closed，保留稳定 blocker", async () => {
   const harness = createHarness();
   harness.providers.block("square", "SQUARE_CONFIGURATION_MISSING");
@@ -972,6 +1013,13 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     provider: PaymentProvider;
     amount: ReturnType<typeof aud>;
   } | null = null;
+  public lastCashInput: {
+    actionId: string;
+    orderGuid: string;
+    amount: ReturnType<typeof aud>;
+    tenderedAmount?: ReturnType<typeof aud>;
+    change?: ReturnType<typeof aud>;
+  } | null = null;
   public onlineResult = mixed("recovery-required", {
     errorCode: "ONLINE_REQUIRED",
   });
@@ -998,12 +1046,15 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     return this.onlineResult;
   }
 
-  public async addCashTender(_input: {
+  public async addCashTender(input: {
     actionId: string;
     orderGuid: string;
     amount: ReturnType<typeof aud>;
+    tenderedAmount?: ReturnType<typeof aud>;
+    change?: ReturnType<typeof aud>;
   }): Promise<ReturnType<typeof mixed>> {
     this.cashCalls += 1;
+    this.lastCashInput = input;
     if (this.drafts.afterCash) {
       this.drafts.current = this.drafts.afterCash;
       this.drafts.afterCash = null;

@@ -55,6 +55,23 @@ export type AddOpenItemInput = Readonly<{
   syncProvenance: LineSyncProvenance;
 }>;
 
+export type RefreshCatalogItemInput = Readonly<{
+  expected: Readonly<{
+    productCode: string;
+    referenceCode: string | null;
+    lookupCode: string;
+  }>;
+  item: Readonly<{
+    productCode: string;
+    referenceCode: string | null;
+    itemNumber: string | null;
+    lookupCode: string;
+    displayName: string;
+    retailPriceCents: number;
+    priceSource: LineSyncProvenance["priceSource"];
+  }>;
+}>;
+
 export type PricingCartOptions = Readonly<{
   mode?: CartMode;
   asOfIso?: string;

@@ -74,7 +74,10 @@ test("M22 原子建立独立分期支付、券和退款来源账本，失败不�
     );
 
     await applyMigrations(connection, () => NOW);
-    assert.equal(await schemaVersion(connection), 22);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
     for (const tableName of [
       "installment_voucher_intents",
       "installment_provider_plans",

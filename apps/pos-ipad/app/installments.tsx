@@ -14,6 +14,7 @@ import {
   resolveInstallmentsRuntimeFactory,
   type InstallmentPresenter,
 } from "@/features/installments";
+import { installmentRepaymentPaymentEntry } from "@/features/payments/ui";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type InstallmentsBinding = Readonly<{
@@ -142,10 +143,51 @@ export default function InstallmentsRoute() {
     return <BootstrapScreen />;
   }
 
+  const startCreatePayment = access.canCreate && factory
+    ? () => {
+        try {
+          const entry = factory.prepareCreateCheckout();
+          router.push({
+            pathname: "/payment",
+            params: {
+              flow: entry.kind,
+              checkoutIntentId: entry.checkoutIntentId,
+              revision: String(entry.expectedCartRevision),
+            },
+          } as Href);
+        } catch {
+          // 购物车、权限和 cashier lease 由 factory 复核；失败时留在管理页。
+        }
+      }
+    : undefined;
+  const startRepayment = access.canAddRepayment
+    ? (installmentGuid: string) => {
+        try {
+          const entry =
+            installmentRepaymentPaymentEntry(installmentGuid);
+          router.push({
+            pathname: "/payment",
+            params: {
+              flow: entry.kind,
+              installmentGuid: entry.installmentGuid,
+            },
+          } as Href);
+        } catch {
+          // 拒绝任何非 UUID 的详情参数，避免把不可信输入带进支付路由。
+        }
+      }
+    : undefined;
+
   return (
     <InstallmentScreen
       onBack={() => router.replace("/sales" as Href)}
       presenter={presenter}
+      {...(startCreatePayment
+        ? { onStartCreate: startCreatePayment }
+        : {})}
+      {...(startRepayment
+        ? { onStartRepayment: startRepayment }
+        : {})}
     />
   );
 }

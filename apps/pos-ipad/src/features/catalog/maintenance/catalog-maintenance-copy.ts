@@ -8,6 +8,8 @@ export const catalogMaintenanceEnglishCopy = {
   "action.title": "Safe activation",
   "action.copy":
     "Your current catalog remains available during download, validation, or failure.",
+  "action.background":
+    "You can leave this page; the catalog continues refreshing inside the app, and the same progress is shown when you return.",
   "action.refresh": "Refresh now",
   "action.refreshing": "Refreshing catalog…",
   "action.footnote":
@@ -28,6 +30,9 @@ export const catalogMaintenanceEnglishCopy = {
   "metric.items": "Items",
   "metric.activated": "Activated",
   "progress.total": "Overall progress: {{percent}}%",
+  "progress.elapsed": "Elapsed: {{elapsed}}",
+  "progress.preparing": "Waiting for catalog preparation",
+  "progress.pages": "{{completed}} / {{total}} pages",
   "progress.currentStep": "Current step: {{step}}",
   "progress.accessibility": "Catalog refresh progress, {{percent}} percent",
   "progress.stepAccessibility": "{{step}}, {{percent}} percent complete",
@@ -52,6 +57,8 @@ export const catalogMaintenanceChineseCopy = {
   "status.panelLabel": "当前本地目录",
   "action.title": "安全切换",
   "action.copy": "当前旧目录在下载、校验或失败时都可继续使用。",
+  "action.background":
+    "可离开本页，目录会在应用内继续刷新；返回后仍显示相同进度。",
   "action.refresh": "立即刷新目录",
   "action.refreshing": "正在刷新目录…",
   "action.footnote": "此页面不提供目录重置或 API 地址设置。",
@@ -71,6 +78,9 @@ export const catalogMaintenanceChineseCopy = {
   "metric.items": "商品数",
   "metric.activated": "启用时间",
   "progress.total": "总进度：{{percent}}%",
+  "progress.elapsed": "已用时：{{elapsed}}",
+  "progress.preparing": "正在等待目录准备",
+  "progress.pages": "{{completed}} / {{total}} 页",
   "progress.currentStep": "当前步骤：{{step}}",
   "progress.accessibility": "目录刷新进度，{{percent}}%",
   "progress.stepAccessibility": "{{step}}，已完成 {{percent}}%",

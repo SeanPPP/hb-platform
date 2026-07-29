@@ -110,6 +110,163 @@ function getWarehouseProductCategoryTooltip(record, lookup, language) {
 var CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = "__ALL_CONTAINER_DETAIL_CATEGORIES__";
 var CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = "__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__";
 var DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3;
+var CONTAINER_DETAIL_ENGLISH_NAME_FIELD = "\u82F1\u6587\u540D\u79F0";
+function hasPendingContainerDetailFields(patch) {
+  return patch.\u8FDB\u53E3\u4EF7\u683C != null || patch.\u8D34\u724C\u4EF7\u683C != null || patch.\u82F1\u6587\u540D\u79F0 !== void 0 || patch.ClearEnglishName === true;
+}
+function mergePendingContainerDetailPatch(current, patch) {
+  const key = patch.hguid;
+  const nextPatch = {
+    ...current[key] ?? { hguid: patch.hguid }
+  };
+  if ("\u8FDB\u53E3\u4EF7\u683C" in patch) {
+    if (patch.\u8FDB\u53E3\u4EF7\u683C == null) delete nextPatch.\u8FDB\u53E3\u4EF7\u683C;
+    else nextPatch.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C;
+  }
+  if ("\u8D34\u724C\u4EF7\u683C" in patch) {
+    if (patch.\u8D34\u724C\u4EF7\u683C == null) delete nextPatch.\u8D34\u724C\u4EF7\u683C;
+    else nextPatch.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C;
+  }
+  if ("\u82F1\u6587\u540D\u79F0" in patch) {
+    nextPatch.\u82F1\u6587\u540D\u79F0 = patch.\u82F1\u6587\u540D\u79F0;
+    delete nextPatch.ClearEnglishName;
+  }
+  if (patch.ClearEnglishName === true) {
+    nextPatch.ClearEnglishName = true;
+    delete nextPatch.\u82F1\u6587\u540D\u79F0;
+  }
+  const next = { ...current };
+  if (hasPendingContainerDetailFields(nextPatch)) next[key] = nextPatch;
+  else delete next[key];
+  return next;
+}
+function applyPendingContainerDetailPatches(rows2, pendingPatches) {
+  return rows2.map((row) => {
+    const pendingPatch = pendingPatches[row.hguid];
+    if (!pendingPatch) return row;
+    const visiblePatch = {};
+    if ("\u8FDB\u53E3\u4EF7\u683C" in pendingPatch) visiblePatch.\u8FDB\u53E3\u4EF7\u683C = pendingPatch.\u8FDB\u53E3\u4EF7\u683C;
+    if ("\u8D34\u724C\u4EF7\u683C" in pendingPatch) {
+      visiblePatch.\u8D34\u724C\u4EF7\u683C = pendingPatch.\u8D34\u724C\u4EF7\u683C;
+      if (!row.\u662F\u5426\u65B0\u5546\u54C1) {
+        visiblePatch.warehouseOEMPrice = pendingPatch.\u8D34\u724C\u4EF7\u683C;
+        visiblePatch.WarehouseOEMPrice = pendingPatch.\u8D34\u724C\u4EF7\u683C;
+      }
+    }
+    if (pendingPatch.ClearEnglishName === true) {
+      visiblePatch.\u82F1\u6587\u540D\u79F0 = void 0;
+    } else if ("\u82F1\u6587\u540D\u79F0" in pendingPatch) {
+      visiblePatch.\u82F1\u6587\u540D\u79F0 = pendingPatch.\u82F1\u6587\u540D\u79F0;
+    }
+    return mergeContainerDetailPatch(row, visiblePatch);
+  });
+}
+function buildPendingContainerDetailSavePlan(pendingPatches) {
+  const localValidationErrors = [];
+  const detailUpdates = pendingPatches.map((patch) => {
+    const update = { hguid: patch.hguid };
+    if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C;
+    if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C;
+    if (patch.ClearEnglishName === true) {
+      update.ClearEnglishName = true;
+    } else if (patch.\u82F1\u6587\u540D\u79F0 !== void 0) {
+      const englishName = patch.\u82F1\u6587\u540D\u79F0.trim();
+      if (englishName) {
+        update.\u82F1\u6587\u540D\u79F0 = englishName;
+      } else {
+        localValidationErrors.push({
+          hguid: patch.hguid,
+          field: CONTAINER_DETAIL_ENGLISH_NAME_FIELD,
+          code: "EMPTY_ENGLISH_NAME",
+          message: "\u82F1\u6587\u540D\u79F0\u4E3A\u7A7A\u65F6\u4E0D\u4F1A\u4FDD\u5B58\uFF0C\u5982\u9700\u6E05\u7A7A\u8BF7\u4F7F\u7528\u201C\u6E05\u9664\u82F1\u6587\u540D\u79F0\u201D"
+        });
+      }
+    }
+    return update;
+  }).filter((update) => update.\u8FDB\u53E3\u4EF7\u683C != null || update.\u8D34\u724C\u4EF7\u683C != null || update.\u82F1\u6587\u540D\u79F0 !== void 0 || update.ClearEnglishName === true);
+  return {
+    pendingPatches,
+    detailUpdates,
+    localValidationErrors,
+    importPriceCount: pendingPatches.filter((patch) => patch.\u8FDB\u53E3\u4EF7\u683C != null).length,
+    retailPriceCount: pendingPatches.filter((patch) => patch.\u8D34\u724C\u4EF7\u683C != null).length,
+    englishNameCount: pendingPatches.filter((patch) => patch.\u82F1\u6587\u540D\u79F0 !== void 0).length,
+    clearEnglishNameCount: pendingPatches.filter((patch) => patch.ClearEnglishName === true).length
+  };
+}
+function hasValidationError(validationErrors, hguid, field) {
+  return validationErrors.some((error) => error.hguid === hguid && (error.field === field || error.field === "*"));
+}
+function removeSavedPendingField(currentPatch, submittedPatch, field) {
+  if (!(field in submittedPatch)) return;
+  if (field === "\u82F1\u6587\u540D\u79F0") {
+    if (currentPatch.\u82F1\u6587\u540D\u79F0?.trim() === submittedPatch.\u82F1\u6587\u540D\u79F0) delete currentPatch.\u82F1\u6587\u540D\u79F0;
+    return;
+  }
+  if (currentPatch[field] === submittedPatch[field]) delete currentPatch[field];
+}
+function clearSavedPendingContainerDetailFields(current, submittedUpdates, validationErrors) {
+  const next = { ...current };
+  submittedUpdates.forEach((submittedPatch) => {
+    const currentPatch = next[submittedPatch.hguid];
+    if (!currentPatch) return;
+    const remainingPatch = { ...currentPatch };
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, "\u8FDB\u53E3\u4EF7\u683C")) {
+      removeSavedPendingField(remainingPatch, submittedPatch, "\u8FDB\u53E3\u4EF7\u683C");
+    }
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, "\u8D34\u724C\u4EF7\u683C")) {
+      removeSavedPendingField(remainingPatch, submittedPatch, "\u8D34\u724C\u4EF7\u683C");
+    }
+    if (!hasValidationError(validationErrors, submittedPatch.hguid, CONTAINER_DETAIL_ENGLISH_NAME_FIELD)) {
+      removeSavedPendingField(remainingPatch, submittedPatch, "\u82F1\u6587\u540D\u79F0");
+      removeSavedPendingField(remainingPatch, submittedPatch, "ClearEnglishName");
+    }
+    if (hasPendingContainerDetailFields(remainingPatch)) next[submittedPatch.hguid] = remainingPatch;
+    else delete next[submittedPatch.hguid];
+  });
+  return next;
+}
+function getSubmittedContainerDetailFields(update) {
+  const fields = [];
+  if ("\u8FDB\u53E3\u4EF7\u683C" in update) fields.push("\u8FDB\u53E3\u4EF7\u683C");
+  if ("\u8D34\u724C\u4EF7\u683C" in update) fields.push("\u8D34\u724C\u4EF7\u683C");
+  if ("\u82F1\u6587\u540D\u79F0" in update || update.ClearEnglishName === true) {
+    fields.push(CONTAINER_DETAIL_ENGLISH_NAME_FIELD);
+  }
+  return fields;
+}
+function countSuccessfullySavedContainerDetailRows(submittedUpdates, validationErrors) {
+  return new Set(
+    submittedUpdates.filter((update) => getSubmittedContainerDetailFields(update).some((field) => !hasValidationError(validationErrors, update.hguid, field))).map((update) => update.hguid)
+  ).size;
+}
+function shouldInvalidateContainerDetailLoadAfterSave({
+  saveContainerGuid,
+  currentContainerGuid,
+  detailRequestIdAtSaveStart,
+  currentDetailRequestId,
+  isSameAbortController
+}) {
+  return saveContainerGuid === currentContainerGuid && detailRequestIdAtSaveStart === currentDetailRequestId && isSameAbortController;
+}
+async function settleScopedContainerDetailSave(request, snapshot, getCurrentContext) {
+  const result = await request;
+  const currentContext = getCurrentContext();
+  const isCurrentContainer = snapshot.saveContainerGuid === currentContext.containerGuid;
+  const isSameDetailLoad = snapshot.detailRequestIdAtSaveStart === currentContext.detailRequestId && snapshot.abortControllerTokenAtSaveStart === currentContext.abortControllerToken;
+  return {
+    result,
+    isCurrentContainer,
+    shouldInvalidateDetailLoad: shouldInvalidateContainerDetailLoadAfterSave({
+      saveContainerGuid: snapshot.saveContainerGuid,
+      currentContainerGuid: currentContext.containerGuid,
+      detailRequestIdAtSaveStart: snapshot.detailRequestIdAtSaveStart,
+      currentDetailRequestId: currentContext.detailRequestId,
+      isSameAbortController: snapshot.abortControllerTokenAtSaveStart === currentContext.abortControllerToken
+    }),
+    shouldReloadCurrentDetail: isCurrentContainer && !isSameDetailLoad
+  };
+}
 function calculateContainerDetailTableScrollY({
   viewportHeight,
   toolbarHeight,
@@ -127,6 +284,68 @@ function calculateContainerDetailTableScrollY({
   const hardMinScrollY = isSmallLandscape ? 96 : isSmallPortrait ? 112 : 220;
   const availableHeight = safeViewportHeight - stableContentTop - bottomInset - safeToolbarHeight - contentGap - safeTableChromeHeight;
   return Math.max(hardMinScrollY, Math.min(maxScrollY, availableHeight));
+}
+function shouldLoadNextContainerDetailChunk({
+  scrollTop,
+  clientHeight,
+  scrollHeight
+}) {
+  const safeScrollTop = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
+  const safeClientHeight = Math.max(0, Number.isFinite(clientHeight) ? clientHeight : 0);
+  const safeScrollHeight = Math.max(0, Number.isFinite(scrollHeight) ? scrollHeight : 0);
+  const preloadDistance = Math.max(600, safeClientHeight);
+  const remainingDistance = safeScrollHeight - safeScrollTop - safeClientHeight;
+  return remainingDistance <= preloadDistance;
+}
+function startContainerDetailAppendRequest(activeRequest, requestKey, controller = new AbortController()) {
+  if (activeRequest) {
+    return {
+      request: activeRequest,
+      started: false
+    };
+  }
+  return {
+    request: {
+      key: requestKey,
+      controller
+    },
+    started: true
+  };
+}
+function cancelContainerDetailAppendRequest(request) {
+  request?.controller.abort();
+}
+function finishContainerDetailAppendRequest(activeRequest, finishedRequest) {
+  return activeRequest === finishedRequest ? null : activeRequest;
+}
+function startContainerDetailReadAheadRequest(activeRequest, requestKey, pageNumber, load) {
+  if (activeRequest?.key === requestKey) {
+    return {
+      request: activeRequest,
+      started: false
+    };
+  }
+  activeRequest?.controller.abort();
+  const controller = new AbortController();
+  const promise = load(controller.signal).then(
+    (result) => ({ status: "success", result }),
+    (error) => ({ status: "failure", error })
+  );
+  return {
+    request: {
+      key: requestKey,
+      pageNumber,
+      controller,
+      promise
+    },
+    started: true
+  };
+}
+function cancelContainerDetailReadAheadRequest(request) {
+  request?.controller.abort();
+}
+function finishContainerDetailReadAheadRequest(activeRequest, finishedRequest) {
+  return activeRequest === finishedRequest ? null : activeRequest;
 }
 function getUpdateFieldSelectionState(selectedFields, allFields) {
   const fieldSet = new Set(allFields);
@@ -208,6 +427,12 @@ function containsChineseText(value) {
 }
 function isValidContainerDetailEnglishTranslation(value) {
   return Boolean(value?.trim()) && !containsChineseText(value);
+}
+function getPendingContainerDetailEnglishNameError(patch) {
+  if (patch?.ClearEnglishName === true || patch?.\u82F1\u6587\u540D\u79F0 === void 0) return void 0;
+  if (!patch.\u82F1\u6587\u540D\u79F0.trim()) return "EMPTY_ENGLISH_NAME";
+  if (containsChineseText(patch.\u82F1\u6587\u540D\u79F0)) return "CONTAINS_CHINESE";
+  return void 0;
 }
 function isContainerDetailSortField(value) {
   return typeof value === "string" && containerDetailSortFields.has(value);
@@ -558,11 +783,19 @@ function mergeContainerDetailPatch(row, patch) {
   return next;
 }
 function buildContainerDetailSaveFailureKeys(rowKey, patch) {
-  const fields = Object.keys(patch).filter((key) => key !== "hguid").sort();
+  const fields = Array.from(new Set(
+    Object.keys(patch).filter((key) => key !== "hguid").map((field) => field === "ClearEnglishName" ? CONTAINER_DETAIL_ENGLISH_NAME_FIELD : field)
+  )).sort();
   if (!fields.length) {
     return [`${rowKey}:__row__`];
   }
   return fields.map((field) => `${rowKey}:${field}`);
+}
+function reconcilePendingContainerDetailSaveFailureKeys(failedKeys, pendingPatches) {
+  const currentKeys = new Set(
+    Object.values(pendingPatches).flatMap((patch) => buildContainerDetailSaveFailureKeys(patch.hguid, patch))
+  );
+  return Array.from(failedKeys).filter((key) => currentKeys.has(key)).sort();
 }
 function matchesContainerDetailTagFilter(row, filter) {
   if (filter === "new") return Boolean(row.\u662F\u5426\u65B0\u5546\u54C1);
@@ -1411,6 +1644,183 @@ assertEqual(
   96,
   "\u5C0F\u5C4F\u6A2A\u5C4F\u8868\u683C\u9AD8\u5EA6\u4E0D\u8DB3\u65F6\u5E94\u53EA\u4FDD\u7559\u53EF\u64CD\u4F5C\u786C\u4E0B\u9650"
 );
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1e3,
+    clientHeight: 500,
+    scrollHeight: 2101
+  }),
+  false,
+  "\u8DDD\u5E95\u90E8\u8D85\u8FC7 600px \u65F6\u4E0D\u5E94\u63D0\u524D\u52A0\u8F7D\u4E0B\u4E00\u5757"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1e3,
+    clientHeight: 500,
+    scrollHeight: 2100
+  }),
+  true,
+  "\u684C\u9762\u8868\u683C\u8DDD\u5E95\u90E8 600px \u65F6\u5E94\u5F00\u59CB\u9884\u52A0\u8F7D\u4E0B\u4E00\u5757"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1e3,
+    clientHeight: 800,
+    scrollHeight: 2601
+  }),
+  false,
+  "\u5927\u8868\u683C\u8DDD\u5E95\u90E8\u8D85\u8FC7\u4E00\u4E2A\u53EF\u89C6\u533A\u65F6\u4E0D\u5E94\u9884\u52A0\u8F7D\u4E0B\u4E00\u5757"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 1e3,
+    clientHeight: 800,
+    scrollHeight: 2600
+  }),
+  true,
+  "\u5927\u8868\u683C\u5E94\u4F7F\u7528\u4E00\u4E2A\u5B8C\u6574\u53EF\u89C6\u533A\u4F5C\u4E3A\u9884\u52A0\u8F7D\u8DDD\u79BB"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: Number.NaN,
+    clientHeight: Number.NaN,
+    scrollHeight: 1201
+  }),
+  false,
+  "\u65E0\u6548\u6EDA\u52A8\u4F4D\u7F6E\u548C\u9AD8\u5EA6\u5E94\u5B89\u5168\u5F52\u96F6\uFF0C\u4E14\u4E0D\u80FD\u8BEF\u89E6\u53D1\u8FDC\u8DDD\u79BB\u9884\u52A0\u8F7D"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: -100,
+    clientHeight: -20,
+    scrollHeight: 500
+  }),
+  true,
+  "\u8D1F\u6570\u6EDA\u52A8\u6307\u6807\u5E94\u5B89\u5168\u5F52\u96F6\uFF0C\u5E76\u6309\u6700\u5C0F 600px \u9608\u503C\u5224\u65AD"
+);
+assertEqual(
+  shouldLoadNextContainerDetailChunk({
+    scrollTop: 0,
+    clientHeight: 800,
+    scrollHeight: 500
+  }),
+  true,
+  "\u5185\u5BB9\u4E0D\u8DB3\u4E00\u4E2A\u53EF\u89C6\u533A\u65F6\u5E94\u5141\u8BB8\u52A0\u8F7D\u4E0B\u4E00\u5757\u586B\u6EE1\u8868\u683C"
+);
+var firstAppendStart = startContainerDetailAppendRequest(null, "container-a:query-a:2");
+assertEqual(firstAppendStart.started, true, "\u6CA1\u6709\u8FFD\u52A0\u8BF7\u6C42\u5728\u9014\u65F6\u5E94\u5141\u8BB8\u5F00\u59CB\u4E0B\u4E00\u5757");
+var repeatedAppendStart = startContainerDetailAppendRequest(
+  firstAppendStart.request,
+  "container-a:query-a:2"
+);
+assertEqual(repeatedAppendStart.started, false, "\u540C\u4E00\u8FFD\u52A0\u8BF7\u6C42\u5728\u9014\u65F6\u5E94\u540C\u6B65\u963B\u6B62\u91CD\u590D\u8BF7\u6C42");
+assertEqual(
+  repeatedAppendStart.request,
+  firstAppendStart.request,
+  "\u91CD\u590D\u89E6\u53D1\u5FC5\u987B\u4FDD\u7559\u539F\u8BF7\u6C42 token"
+);
+var competingAppendStart = startContainerDetailAppendRequest(
+  firstAppendStart.request,
+  "container-a:query-a:3"
+);
+assertEqual(competingAppendStart.started, false, "\u4EFB\u4E00\u8FFD\u52A0\u8BF7\u6C42\u5728\u9014\u65F6\u90FD\u4E0D\u5E94\u5E76\u53D1\u5F00\u59CB\u53E6\u4E00\u9875");
+cancelContainerDetailAppendRequest(firstAppendStart.request);
+assertEqual(firstAppendStart.request.controller.signal.aborted, true, "\u91CD\u7F6E\u67E5\u8BE2\u65F6\u5E94\u53D6\u6D88\u5728\u9014\u8FFD\u52A0\u8BF7\u6C42");
+var replacementAppendStart = startContainerDetailAppendRequest(null, "container-b:query-b:2");
+assertEqual(
+  finishContainerDetailAppendRequest(replacementAppendStart.request, firstAppendStart.request),
+  replacementAppendStart.request,
+  "\u65E7\u8BF7\u6C42\u7ED3\u675F\u65F6\u4E0D\u5F97\u91CA\u653E\u65B0\u67E5\u8BE2\u7684\u8FFD\u52A0 token"
+);
+var releasedAppendRequest = finishContainerDetailAppendRequest(
+  replacementAppendStart.request,
+  replacementAppendStart.request
+);
+assertEqual(releasedAppendRequest, null, "\u8BF7\u6C42\u6240\u6709\u8005\u7ED3\u675F\u65F6\u5E94\u91CA\u653E\u8FFD\u52A0 token");
+assertEqual(
+  startContainerDetailAppendRequest(releasedAppendRequest, "container-b:query-b:2").started,
+  true,
+  "\u8FFD\u52A0\u8BF7\u6C42\u7ED3\u675F\u91CA\u653E token \u540E\u5E94\u5141\u8BB8\u91CD\u8BD5\u540C\u4E00\u9875"
+);
+var prefetchedPageController = new AbortController();
+assertEqual(
+  startContainerDetailAppendRequest(
+    null,
+    "container-a:query-a:2",
+    prefetchedPageController
+  ).request.controller,
+  prefetchedPageController,
+  "\u6D88\u8D39\u524D\u8BFB\u7F13\u5B58\u65F6\u8FFD\u52A0 token \u5E94\u63A5\u7BA1\u540C\u4E00\u4E2A controller"
+);
+var resolveReadAheadPage;
+var readAheadLoadCount = 0;
+var firstReadAheadStart = startContainerDetailReadAheadRequest(
+  null,
+  "container-a:query-a:2",
+  2,
+  async () => {
+    readAheadLoadCount += 1;
+    return await new Promise((resolve) => {
+      resolveReadAheadPage = resolve;
+    });
+  }
+);
+var repeatedReadAheadStart = startContainerDetailReadAheadRequest(
+  firstReadAheadStart.request,
+  "container-a:query-a:2",
+  2,
+  async () => {
+    readAheadLoadCount += 1;
+    return "duplicate-page-2";
+  }
+);
+assertEqual(repeatedReadAheadStart.started, false, "\u540C\u4E00\u4E0B\u4E00\u9875\u5728\u9014\u6216\u5DF2\u7F13\u5B58\u65F6\u4E0D\u5E94\u91CD\u590D\u9884\u53D6");
+assertEqual(repeatedReadAheadStart.request, firstReadAheadStart.request, "\u91CD\u590D\u9884\u53D6\u5E94\u590D\u7528\u540C\u4E00 promise");
+assertEqual(readAheadLoadCount, 1, "\u9AD8\u9891\u9884\u53D6\u89E6\u53D1\u53EA\u80FD\u53D1\u51FA\u4E00\u4E2A\u76F8\u540C\u9875\u8BF7\u6C42");
+resolveReadAheadPage?.("page-2");
+assertDeepEqual(
+  await firstReadAheadStart.request.promise,
+  { status: "success", result: "page-2" },
+  "\u9884\u53D6\u5B8C\u6210\u540E\u5E94\u628A\u4E0B\u4E00\u9875\u7ED3\u679C\u4FDD\u5B58\u5728\u53EF\u91CD\u590D\u6D88\u8D39\u7684 promise \u4E2D"
+);
+assertEqual(
+  readAheadLoadCount,
+  1,
+  "\u6D88\u8D39\u5DF2\u7ECF\u5B8C\u6210\u7684\u524D\u8BFB\u7F13\u5B58\u4E0D\u5F97\u91CD\u65B0\u8BF7\u6C42\u76F8\u540C\u9875"
+);
+var nextReadAheadStart = startContainerDetailReadAheadRequest(
+  firstReadAheadStart.request,
+  "container-a:query-a:3",
+  3,
+  async () => "page-3"
+);
+assertEqual(firstReadAheadStart.request.controller.signal.aborted, true, "\u66FF\u6362\u524D\u8BFB\u9875\u65F6\u5E94\u53D6\u6D88\u65E7\u9875 controller");
+assertEqual(nextReadAheadStart.started, true, "\u6D88\u8D39\u7B2C 2 \u9875\u540E\u5E94\u5141\u8BB8\u5F00\u59CB\u9884\u53D6\u7B2C 3 \u9875");
+assertEqual(
+  finishContainerDetailReadAheadRequest(nextReadAheadStart.request, firstReadAheadStart.request),
+  nextReadAheadStart.request,
+  "\u65E7\u524D\u8BFB\u8BF7\u6C42\u7ED3\u675F\u65F6\u4E0D\u5F97\u91CA\u653E\u7B2C 3 \u9875\u7F13\u5B58"
+);
+assertEqual(
+  finishContainerDetailReadAheadRequest(nextReadAheadStart.request, nextReadAheadStart.request),
+  null,
+  "\u5F53\u524D\u524D\u8BFB\u8BF7\u6C42\u88AB\u6D88\u8D39\u540E\u5E94\u91CA\u653E\u7F13\u5B58\u69FD"
+);
+cancelContainerDetailReadAheadRequest(nextReadAheadStart.request);
+assertEqual(nextReadAheadStart.request.controller.signal.aborted, true, "\u91CD\u7F6E\u6216 KeepAlive \u5207\u51FA\u65F6\u5E94\u53D6\u6D88\u524D\u8BFB\u8BF7\u6C42");
+var failedReadAheadStart = startContainerDetailReadAheadRequest(
+  null,
+  "container-a:query-a:4",
+  4,
+  async () => {
+    throw new Error("prefetch failed");
+  }
+);
+assertEqual(
+  (await failedReadAheadStart.request.promise).status,
+  "failure",
+  "\u540E\u53F0\u9884\u53D6\u5931\u8D25\u5E94\u8F6C\u4E3A\u53EF\u6D88\u8D39\u7ED3\u679C\uFF0C\u907F\u514D\u4EA7\u751F\u672A\u5904\u7406 Promise \u62D2\u7EDD"
+);
 var exportRow = buildContainerDetailExportRow({
   id: 101,
   hguid: "export-101",
@@ -1821,6 +2231,21 @@ assertDeepEqual(
   "\u540C\u4E00\u884C\u5907\u6CE8\u4FDD\u5B58\u5E94\u4F7F\u7528\u72EC\u7ACB\u5931\u8D25 key\uFF0C\u4E0D\u80FD\u6E05\u9664\u5546\u54C1\u540D\u79F0\u4FDD\u5B58\u5931\u8D25\u72B6\u6001"
 );
 assertDeepEqual(
+  buildContainerDetailSaveFailureKeys("row-1", { ClearEnglishName: true }),
+  ["row-1:\u82F1\u6587\u540D\u79F0"],
+  "\u6E05\u9664\u82F1\u6587\u540D\u79F0\u548C\u4FEE\u6539\u82F1\u6587\u540D\u79F0\u5FC5\u987B\u5171\u7528\u5931\u8D25 key\uFF0C\u907F\u514D\u5207\u6362\u610F\u56FE\u540E\u9057\u7559\u65E7\u5931\u8D25\u72B6\u6001"
+);
+assertDeepEqual(
+  reconcilePendingContainerDetailSaveFailureKeys(
+    /* @__PURE__ */ new Set(["detail-1:\u82F1\u6587\u540D\u79F0", "detail-1:\u8FDB\u53E3\u4EF7\u683C", "detail-2:\u82F1\u6587\u540D\u79F0"]),
+    {
+      "detail-1": { hguid: "detail-1", ClearEnglishName: true }
+    }
+  ),
+  ["detail-1:\u82F1\u6587\u540D\u79F0"],
+  "\u5F85\u4FDD\u5B58\u5185\u5BB9\u53D8\u5316\u540E\u5E94\u53EA\u4FDD\u7559\u4ECD\u5BF9\u5E94\u5F53\u524D\u8349\u7A3F\u5B57\u6BB5\u7684\u5931\u8D25 key"
+);
+assertDeepEqual(
   buildContainerDetailTranslationUpdates(rows, {
     \u660E\u7EC6\u5927\u8349\u8393: "Large Strawberry",
     TPR\u9CA8\u9C7C: "TPR Shark Toy"
@@ -1904,6 +2329,284 @@ var clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 ]);
 assertEqual(clearedRows[0].\u82F1\u6587\u540D\u79F0, void 0, "\u6E05\u9664\u540E\u672C\u5730\u884C\u660E\u7EC6\u7EA7\u82F1\u6587\u540D\u79F0\u5E94\u4E3A\u7A7A");
 assertEqual(clearedRows[0].\u5546\u54C1\u4FE1\u606F?.\u82F1\u6587\u540D\u79F0, void 0, "\u6E05\u9664\u540E\u672C\u5730\u884C\u5546\u54C1\u4FE1\u606F\u82F1\u6587\u540D\u79F0\u5E94\u4E3A\u7A7A");
+var pendingDetailPatches = {};
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-1",
+  \u8FDB\u53E3\u4EF7\u683C: 3.2
+});
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-1",
+  \u82F1\u6587\u540D\u79F0: "Large \u8349\u8393"
+});
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-2",
+  \u82F1\u6587\u540D\u79F0: "  Valid English Name  "
+});
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-3",
+  \u82F1\u6587\u540D\u79F0: "   "
+});
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-4",
+  \u82F1\u6587\u540D\u79F0: "Temporary Name"
+});
+pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
+  hguid: "detail-4",
+  ClearEnglishName: true
+});
+assertDeepEqual(
+  pendingDetailPatches["detail-1"],
+  { hguid: "detail-1", \u8FDB\u53E3\u4EF7\u683C: 3.2, \u82F1\u6587\u540D\u79F0: "Large \u8349\u8393" },
+  "\u540C\u4E00\u660E\u7EC6\u7684\u4EF7\u683C\u548C\u82F1\u6587\u540D\u79F0\u5E94\u5408\u5E76\u5230\u4E00\u4E2A\u5F85\u4FDD\u5B58\u8865\u4E01"
+);
+assertDeepEqual(
+  pendingDetailPatches["detail-4"],
+  { hguid: "detail-4", ClearEnglishName: true },
+  "\u660E\u786E\u6E05\u7A7A\u82F1\u6587\u540D\u79F0\u5E94\u8986\u76D6\u540C\u4E00\u660E\u7EC6\u672A\u4FDD\u5B58\u7684\u82F1\u6587\u540D\u79F0"
+);
+var reloadedPendingRows = applyPendingContainerDetailPatches(
+  [
+    {
+      id: 1,
+      hguid: "detail-1",
+      \u662F\u5426\u65B0\u5546\u54C1: false,
+      \u8FDB\u53E3\u4EF7\u683C: 1,
+      \u8D34\u724C\u4EF7\u683C: 2,
+      warehouseOEMPrice: 2,
+      WarehouseOEMPrice: 2,
+      \u82F1\u6587\u540D\u79F0: "Server English",
+      \u5546\u54C1\u4FE1\u606F: { \u82F1\u6587\u540D\u79F0: "Server English" }
+    },
+    {
+      id: 4,
+      hguid: "detail-4",
+      \u662F\u5426\u65B0\u5546\u54C1: true,
+      \u82F1\u6587\u540D\u79F0: "Server English 2",
+      \u5546\u54C1\u4FE1\u606F: { \u82F1\u6587\u540D\u79F0: "Server English 2" }
+    }
+  ],
+  {
+    ...pendingDetailPatches,
+    "detail-1": { ...pendingDetailPatches["detail-1"], \u8D34\u724C\u4EF7\u683C: 4 }
+  }
+);
+assertEqual(reloadedPendingRows[0].\u8FDB\u53E3\u4EF7\u683C, 3.2, "\u91CD\u8F7D\u540E\u5E94\u4FDD\u7559\u5F85\u4FDD\u5B58\u8FDB\u53E3\u4EF7\u683C");
+assertEqual(reloadedPendingRows[0].warehouseOEMPrice, 4, "\u91CD\u8F7D\u540E\u5DF2\u6709\u5546\u54C1\u5E94\u4FDD\u7559\u5F85\u4FDD\u5B58\u5B9E\u65F6\u96F6\u552E\u4EF7\u5C55\u793A");
+assertEqual(reloadedPendingRows[0].\u82F1\u6587\u540D\u79F0, "Large \u8349\u8393", "\u91CD\u8F7D\u540E\u5E94\u4FDD\u7559\u5F85\u4FDD\u5B58\u82F1\u6587\u540D\u79F0");
+assertEqual(reloadedPendingRows[0].\u5546\u54C1\u4FE1\u606F?.\u82F1\u6587\u540D\u79F0, "Large \u8349\u8393", "\u91CD\u8F7D\u540E\u5546\u54C1\u4FE1\u606F\u82F1\u6587\u540D\u79F0\u5C55\u793A\u4E5F\u5E94\u4FDD\u7559\u8349\u7A3F");
+assertEqual(reloadedPendingRows[1].\u82F1\u6587\u540D\u79F0, void 0, "\u91CD\u8F7D\u540E\u5E94\u4FDD\u7559\u660E\u786E\u6E05\u7A7A\u82F1\u6587\u540D\u79F0\u7684\u672C\u5730\u5C55\u793A");
+assertEqual(reloadedPendingRows[1].\u5546\u54C1\u4FE1\u606F?.\u82F1\u6587\u540D\u79F0, void 0, "\u91CD\u8F7D\u540E\u5546\u54C1\u4FE1\u606F\u4E5F\u5E94\u4FDD\u7559\u660E\u786E\u6E05\u7A7A\u72B6\u6001");
+assertEqual(
+  getPendingContainerDetailEnglishNameError(pendingDetailPatches["detail-1"]),
+  "CONTAINS_CHINESE",
+  "\u5F85\u4FDD\u5B58\u82F1\u6587\u540D\u79F0\u5305\u542B\u4E2D\u6587\u65F6\u5E94\u6807\u8BB0\u9519\u8BEF"
+);
+assertEqual(
+  getPendingContainerDetailEnglishNameError(pendingDetailPatches["detail-3"]),
+  "EMPTY_ENGLISH_NAME",
+  "\u5F85\u4FDD\u5B58\u82F1\u6587\u540D\u79F0\u4E3A\u7A7A\u65F6\u5E94\u6807\u8BB0\u4E3A\u4E0D\u4FDD\u5B58"
+);
+var pendingDetailSavePlan = buildPendingContainerDetailSavePlan(Object.values(pendingDetailPatches));
+assertDeepEqual(
+  pendingDetailSavePlan.detailUpdates,
+  [
+    { hguid: "detail-1", \u8FDB\u53E3\u4EF7\u683C: 3.2, \u82F1\u6587\u540D\u79F0: "Large \u8349\u8393" },
+    { hguid: "detail-2", \u82F1\u6587\u540D\u79F0: "Valid English Name" },
+    { hguid: "detail-4", ClearEnglishName: true }
+  ],
+  "\u4FDD\u5B58\u8BA1\u5212\u5E94\u63D0\u4EA4\u6709\u6548\u4EF7\u683C\u3001\u975E\u7A7A\u82F1\u6587\u540D\u79F0\u548C\u660E\u786E\u6E05\u7A7A\uFF0C\u540C\u65F6\u4FDD\u7559\u542B\u4E2D\u6587\u540D\u79F0\u4F9B\u540E\u7AEF\u9010\u5B57\u6BB5\u62D2\u7EDD"
+);
+assertDeepEqual(
+  {
+    rows: pendingDetailSavePlan.pendingPatches.length,
+    importPriceCount: pendingDetailSavePlan.importPriceCount,
+    englishNameCount: pendingDetailSavePlan.englishNameCount,
+    clearEnglishNameCount: pendingDetailSavePlan.clearEnglishNameCount,
+    localValidationCodes: pendingDetailSavePlan.localValidationErrors.map((error) => error.code)
+  },
+  {
+    rows: 4,
+    importPriceCount: 1,
+    englishNameCount: 3,
+    clearEnglishNameCount: 1,
+    localValidationCodes: ["EMPTY_ENGLISH_NAME"]
+  },
+  "\u4FDD\u5B58\u8BA1\u5212\u5E94\u6309\u660E\u7EC6\u53BB\u91CD\u7EDF\u8BA1\uFF0C\u5E76\u628A\u7A7A\u767D\u82F1\u6587\u540D\u79F0\u4FDD\u7559\u4E3A\u672C\u5730\u6821\u9A8C\u9519\u8BEF"
+);
+var remainingPendingDetailPatches = clearSavedPendingContainerDetailFields(
+  pendingDetailPatches,
+  pendingDetailSavePlan.detailUpdates,
+  [{
+    hguid: "detail-1",
+    field: "\u82F1\u6587\u540D\u79F0",
+    code: "CONTAINS_CHINESE",
+    message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
+  }]
+);
+assertDeepEqual(
+  remainingPendingDetailPatches,
+  {
+    "detail-1": { hguid: "detail-1", \u82F1\u6587\u540D\u79F0: "Large \u8349\u8393" },
+    "detail-3": { hguid: "detail-3", \u82F1\u6587\u540D\u79F0: "   " }
+  },
+  "\u90E8\u5206\u4FDD\u5B58\u6210\u529F\u540E\u53EA\u5E94\u6E05\u9664\u5DF2\u4FDD\u5B58\u5B57\u6BB5\uFF0C\u5E76\u4FDD\u7559\u4E2D\u6587\u548C\u7A7A\u767D\u82F1\u6587\u540D\u79F0\u4F9B\u4FEE\u6B63\u91CD\u8BD5"
+);
+var wildcardFailurePendingPatches = clearSavedPendingContainerDetailFields(
+  {
+    "missing-detail": {
+      hguid: "missing-detail",
+      \u8FDB\u53E3\u4EF7\u683C: 1.25,
+      \u82F1\u6587\u540D\u79F0: "Missing detail"
+    }
+  },
+  [{
+    hguid: "missing-detail",
+    \u8FDB\u53E3\u4EF7\u683C: 1.25,
+    \u82F1\u6587\u540D\u79F0: "Missing detail"
+  }],
+  [{
+    hguid: "missing-detail",
+    field: "*",
+    code: "DETAIL_NOT_FOUND",
+    message: "\u8D27\u67DC\u660E\u7EC6\u4E0D\u5B58\u5728"
+  }]
+);
+assertDeepEqual(
+  wildcardFailurePendingPatches,
+  {
+    "missing-detail": {
+      hguid: "missing-detail",
+      \u8FDB\u53E3\u4EF7\u683C: 1.25,
+      \u82F1\u6587\u540D\u79F0: "Missing detail"
+    }
+  },
+  "\u540E\u7AEF\u8FD4\u56DE\u6574\u884C\u5931\u8D25\u65F6\u5E94\u4FDD\u7559\u8BE5\u884C\u5168\u90E8\u5F85\u4FDD\u5B58\u5B57\u6BB5"
+);
+assertEqual(
+  countSuccessfullySavedContainerDetailRows(
+    [
+      { hguid: "partial-row", \u8FDB\u53E3\u4EF7\u683C: 2.5, \u82F1\u6587\u540D\u79F0: "\u6709\u6548\u540D\u79F0" },
+      { hguid: "missing-row", \u8D34\u724C\u4EF7\u683C: 4.99 }
+    ],
+    [
+      {
+        hguid: "partial-row",
+        field: "\u82F1\u6587\u540D\u79F0",
+        code: "CONTAINS_CHINESE",
+        message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
+      },
+      {
+        hguid: "missing-row",
+        field: "*",
+        code: "DETAIL_NOT_FOUND",
+        message: "\u8D27\u67DC\u660E\u7EC6\u4E0D\u5B58\u5728"
+      }
+    ]
+  ),
+  1,
+  "\u540C\u4E00\u884C\u90E8\u5206\u5B57\u6BB5\u6210\u529F\u5E94\u8BA1\u4E3A\u5DF2\u4FDD\u5B58\uFF0C\u6574\u884C\u5931\u8D25\u4E0D\u5E94\u663E\u793A\u4E3A\u6210\u529F"
+);
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: "container-a",
+    currentContainerGuid: "container-a",
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 12,
+    isSameAbortController: true
+  }),
+  true,
+  "\u4FDD\u5B58\u5B8C\u6210\u65F6\u53EA\u6709\u4FDD\u5B58\u524D\u7684\u65E7\u67E5\u8BE2\u4ECD\u4E3A\u5F53\u524D\u67E5\u8BE2\u624D\u5E94\u5E9F\u5F03"
+);
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: "container-a",
+    currentContainerGuid: "container-a",
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 13,
+    isSameAbortController: false
+  }),
+  false,
+  "\u4FDD\u5B58\u671F\u95F4\u542F\u52A8\u7684\u65B0\u7B5B\u9009\u67E5\u8BE2\u4E0D\u80FD\u88AB\u65E7\u4FDD\u5B58\u54CD\u5E94\u4E2D\u6B62"
+);
+assertEqual(
+  shouldInvalidateContainerDetailLoadAfterSave({
+    saveContainerGuid: "container-a",
+    currentContainerGuid: "container-b",
+    detailRequestIdAtSaveStart: 12,
+    currentDetailRequestId: 12,
+    isSameAbortController: true
+  }),
+  false,
+  "\u5207\u6362\u8D27\u67DC\u540E\u65E7\u4FDD\u5B58\u54CD\u5E94\u4E0D\u80FD\u4FEE\u6539\u65B0\u8D27\u67DC\u7684\u67E5\u8BE2\u72B6\u6001"
+);
+var resolveLateContainerDetailSave;
+var lateContainerDetailSavePromise = new Promise((resolve) => {
+  resolveLateContainerDetailSave = resolve;
+});
+var lateSaveCurrentContext = {
+  containerGuid: "container-a",
+  detailRequestId: 12,
+  abortControllerToken: "controller-a"
+};
+var lateContainerDetailSave = settleScopedContainerDetailSave(
+  lateContainerDetailSavePromise,
+  {
+    saveContainerGuid: "container-a",
+    detailRequestIdAtSaveStart: 12,
+    abortControllerTokenAtSaveStart: "controller-a"
+  },
+  () => lateSaveCurrentContext
+);
+lateSaveCurrentContext = {
+  containerGuid: "container-a",
+  detailRequestId: 13,
+  abortControllerToken: "controller-b"
+};
+resolveLateContainerDetailSave?.({ totalUpdated: 1 });
+assertDeepEqual(
+  await lateContainerDetailSave,
+  {
+    result: { totalUpdated: 1 },
+    isCurrentContainer: true,
+    shouldInvalidateDetailLoad: false,
+    shouldReloadCurrentDetail: true
+  },
+  "\u53EF\u63A7\u7684\u65E7\u4FDD\u5B58\u54CD\u5E94\u5230\u8FBE\u65F6\u4E0D\u5F97\u6CBF\u7528\u540E\u6765\u67E5\u8BE2\u7684\u65E7\u5FEB\u7167\uFF0C\u5E94\u89E6\u53D1\u5F53\u524D\u6761\u4EF6\u4E0B\u7684\u65B0\u67E5\u8BE2"
+);
+var resolveOldContainerSave;
+var oldContainerSavePromise = new Promise((resolve) => {
+  resolveOldContainerSave = resolve;
+});
+lateSaveCurrentContext = {
+  containerGuid: "container-a",
+  detailRequestId: 21,
+  abortControllerToken: "controller-a"
+};
+var oldContainerSave = settleScopedContainerDetailSave(
+  oldContainerSavePromise,
+  {
+    saveContainerGuid: "container-a",
+    detailRequestIdAtSaveStart: 21,
+    abortControllerTokenAtSaveStart: "controller-a"
+  },
+  () => lateSaveCurrentContext
+);
+lateSaveCurrentContext = {
+  containerGuid: "container-b",
+  detailRequestId: 1,
+  abortControllerToken: "controller-b"
+};
+resolveOldContainerSave?.("saved");
+assertDeepEqual(
+  await oldContainerSave,
+  {
+    result: "saved",
+    isCurrentContainer: false,
+    shouldInvalidateDetailLoad: false,
+    shouldReloadCurrentDetail: false
+  },
+  "\u53EF\u63A7\u7684\u65E7\u8D27\u67DC\u4FDD\u5B58\u54CD\u5E94\u5230\u8FBE\u65F6\u4E0D\u5F97\u8FDB\u5165\u65B0\u8D27\u67DC\u7684\u540E\u7EED\u72B6\u6001\u5904\u7406"
+);
 var editableRowKeys = ["row-1", "row-2", "row-3"];
 var defaultPageColumnOrder = [
   "index",
@@ -2332,6 +3035,37 @@ assertDeepEqual(
   ["\u65E0 GUID \u65E7\u884C", "\u65E0 GUID \u65B0\u884C"],
   "\u7F3A\u5C11 hguid \u7684\u660E\u7EC6\u4E0D\u80FD\u88AB\u8BEF\u5224\u4E3A\u540C\u4E00\u884C"
 );
+var firstContainerDetailChunk = Array.from({ length: 50 }, (_, index) => ({
+  id: index + 1,
+  hguid: `paged-${index + 1}`
+}));
+var secondContainerDetailChunk = Array.from({ length: 50 }, (_, index) => ({
+  id: index + 51,
+  hguid: `paged-${index + 51}`
+}));
+var finalContainerDetailChunk = Array.from({ length: 40 }, (_, index) => ({
+  id: index + 101,
+  hguid: `paged-${index + 101}`
+}));
+var loadedContainerDetailChunks = mergeContainerDetailLoadedItems(
+  mergeContainerDetailLoadedItems(firstContainerDetailChunk, secondContainerDetailChunk),
+  finalContainerDetailChunk
+);
+assertDeepEqual(
+  {
+    loadedCount: loadedContainerDetailChunks.length,
+    uniqueCount: new Set(loadedContainerDetailChunks.map((row) => row.hguid)).size,
+    firstGuid: loadedContainerDetailChunks[0]?.hguid,
+    lastGuid: loadedContainerDetailChunks[loadedContainerDetailChunks.length - 1]?.hguid
+  },
+  {
+    loadedCount: 140,
+    uniqueCount: 140,
+    firstGuid: "paged-1",
+    lastGuid: "paged-140"
+  },
+  "\u4E09\u6279\u8D27\u67DC\u660E\u7EC6\u5E94\u6309 50\u3001100\u3001140 \u7A33\u5B9A\u8FFD\u52A0\u4E14\u4E0D\u4EA7\u751F\u91CD\u590D\u884C"
+);
 assertDeepEqual(
   getContainerDetailRemoteQueryResetState({ selectedRowKeys: ["a", "b"] }),
   {
@@ -2515,6 +3249,7 @@ assertEqual(
 var pageSource = readFileSync("src/pages/Warehouse/ContainerDetail/index.tsx", "utf8");
 var tagFiltersSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerTagFilters.tsx", "utf8");
 var columnsSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerDetailColumns.tsx", "utf8");
+var categoryManageSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.tsx", "utf8");
 var setCodeHookSource = readFileSync("src/pages/Warehouse/ContainerDetail/useContainerSetCode.tsx", "utf8");
 var pageStyleSource = readFileSync("src/pages/Warehouse/ContainerDetail/index.css", "utf8");
 var mobileLayoutSource = readFileSync("src/layout/MobileLayout.tsx", "utf8");
@@ -2556,17 +3291,24 @@ var requiredContainerI18nKeys = [
   "containers.text.createProductsJobSummary",
   "containers.text.skippedRows",
   "containers.text.failedRows",
-  "containers.modals.savePendingPriceDetailsTitle",
-  "containers.modals.savePendingPriceDetailsUpdateTitle",
-  "containers.modals.savePendingPriceDetailsSummary",
-  "containers.modals.savePendingPriceDetailsExistingRetailHint",
-  "containers.modals.savePendingPriceDetailsNewRetailHint",
-  "containers.modals.savePendingPriceDetailsRetryHint",
+  "containers.modals.savePendingDetailsTitle",
+  "containers.modals.savePendingDetailsUpdateTitle",
+  "containers.modals.savePendingDetailsSummary",
+  "containers.modals.savePendingDetailsExistingRetailHint",
+  "containers.modals.savePendingDetailsNewRetailHint",
+  "containers.modals.savePendingDetailsInvalidEnglishHint",
+  "containers.modals.savePendingDetailsRetryHint",
   "containers.messages.selectedRowsHidden",
-  "containers.messages.savePendingPriceDetailsFirst",
+  "containers.messages.savePendingDetailsFirst",
   "containers.messages.detailSaveFailed",
-  "containers.messages.noPendingPriceDetails",
-  "containers.messages.detailPricesSaved",
+  "containers.messages.noPendingDetails",
+  "containers.messages.detailsSaved",
+  "containers.messages.detailFieldsNotSaved",
+  "containers.messages.englishNameContainsChinese",
+  "containers.messages.emptyEnglishNameNotSaved",
+  "containers.messages.namesTranslatedPending",
+  "containers.messages.englishNamesPending",
+  "containers.messages.englishNamesClearPending",
   "containers.messages.selectBatchProducts",
   "containers.messages.noMatchableDetails",
   "containers.messages.missingMatchableProductIdentity",
@@ -3133,9 +3875,14 @@ assertEqual(
   "\u5339\u914D\u56FD\u5185\u6570\u636E\u68C0\u6D4B\u8BF7\u6C42\u5E94\u4F7F\u7528\u884C\u4F9B\u5E94\u5546\u7F16\u7801\u4E14\u4E0D\u518D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
 );
 assertEqual(
-  pageSource.includes("void reconcileLoadedMatchStatus(result.items, currentRequestId)") && pageSource.includes("products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))") && pageSource.includes("buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)") && pageSource.includes("\u52A0\u8F7D\u6001\u53EA\u6821\u6B63\u8868\u683C\u5C55\u793A\u72B6\u6001\uFF0C\u4E0D\u5199\u5E93"),
+  pageSource.includes("void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)") && pageSource.includes("products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))") && pageSource.includes("buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)") && pageSource.includes("\u52A0\u8F7D\u6001\u53EA\u6821\u6B63\u8868\u683C\u5C55\u793A\u72B6\u6001\uFF0C\u4E0D\u5199\u5E93"),
   true,
   "\u9875\u9762\u52A0\u8F7D\u540E\u5E94\u5BF9\u5F53\u524D\u61D2\u52A0\u8F7D\u5757\u53EA\u8BFB\u6821\u6B63\u5339\u914D\u72B6\u6001\uFF0C\u907F\u514D\u65E7\u9519\u8BEF MatchType \u7559\u5728\u8868\u683C\u4E2D\u4E14\u907F\u514D\u5199\u5E93"
+);
+assertEqual(
+  pageSource.includes("const containerDetailReconcileGenerationRef = useRef(0)") && pageSource.includes("const currentReconcileGeneration = containerDetailReconcileGenerationRef.current") && pageSource.includes("if (containerDetailReconcileGenerationRef.current !== reconcileGeneration)") && !pageSource.includes("containerDetailLoadRequestIdRef.current !== requestId)"),
+  true,
+  "\u8FFD\u52A0\u9875\u4E4B\u95F4\u5E94\u5171\u4EAB\u5339\u914D\u6821\u6B63 generation\uFF1B\u53EA\u6709\u91CD\u7F6E\u3001\u5207\u6362\u6216\u79BB\u5F00\u9875\u9762\u624D\u80FD\u4F7F\u65E7\u6821\u6B63\u7ED3\u679C\u5931\u6548"
 );
 assertEqual(
   pageSource.includes("SkipRelatedProductSync: true"),
@@ -3161,6 +3908,11 @@ assertEqual(
   pageSource.includes("autoSize={{ minRows: 1, maxRows: 2 }}"),
   true,
   "\u82F1\u6587\u540D\u79F0\u8F93\u5165\u6846\u81EA\u52A8\u6362\u884C\u6700\u591A\u663E\u793A 2 \u884C"
+);
+assertEqual(
+  pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })}") && !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })") && pageSource.includes("status={validationError ? 'error' : undefined}"),
+  true,
+  "\u5355\u884C\u82F1\u6587\u540D\u79F0\u5E94\u8FDB\u5165\u4FDD\u5B58\u660E\u7EC6\u961F\u5217\uFF0C\u4E0D\u518D\u5931\u7126\u81EA\u52A8\u4FDD\u5B58\uFF0C\u5E76\u4E3A\u4E2D\u6587\u6216\u7A7A\u767D\u8349\u7A3F\u663E\u793A\u9519\u8BEF\u72B6\u6001"
 );
 assertEqual(
   pageSource.includes("setSelectedRowKeys([])"),
@@ -3536,7 +4288,7 @@ var pushToHqHandlerSource = pageSource.slice(
   pageSource.indexOf("const renderCreateProductResultItems = (items: ContainerProductCreationResultItem[]) => {")
 );
 assertEqual(
-  pushToHqHandlerSource.includes("if (!ensureNoPendingPriceDetails()) return") && pushToHqHandlerSource.indexOf("if (!ensureNoPendingPriceDetails()) return") < pushToHqHandlerSource.indexOf("const selection = buildContainerDetailHqPushSelection(selectedRows)"),
+  pushToHqHandlerSource.includes("if (!ensureNoPendingDetails()) return") && pushToHqHandlerSource.indexOf("if (!ensureNoPendingDetails()) return") < pushToHqHandlerSource.indexOf("const selection = buildContainerDetailHqPushSelection(selectedRows)"),
   true,
   "\u53D1\u9001\u5230 HQ \u524D\u5E94\u963B\u6B62\u672A\u4FDD\u5B58\u7684\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u7EE7\u7EED\u6D41\u8F6C"
 );
@@ -3560,7 +4312,7 @@ var createNewProductsHandlerSource = pageSource.slice(
   pageSource.indexOf("const updateExistingPurchase = async () => {")
 );
 assertEqual(
-  createNewProductsHandlerSource.includes("if (!ensureNoPendingPriceDetails()) return") && createNewProductsHandlerSource.indexOf("if (!ensureNoPendingPriceDetails()) return") < createNewProductsHandlerSource.indexOf("const scopedRows = await confirmBatchRows"),
+  createNewProductsHandlerSource.includes("if (!ensureNoPendingDetails()) return") && createNewProductsHandlerSource.indexOf("if (!ensureNoPendingDetails()) return") < createNewProductsHandlerSource.indexOf("const scopedRows = await confirmBatchRows"),
   true,
   "\u521B\u5EFA\u65B0\u5546\u54C1\u524D\u5E94\u63D0\u793A\u5148\u4FDD\u5B58\u660E\u7EC6\u4EF7\u683C\uFF0C\u907F\u514D\u540E\u53F0 job \u8BFB\u53D6\u65E7\u4EF7\u683C"
 );
@@ -3620,7 +4372,7 @@ var updateExistingPurchaseHandlerSource = pageSource.slice(
   pageSource.indexOf("const deleteSelected = () => {")
 );
 assertEqual(
-  updateExistingPurchaseHandlerSource.includes("if (!ensureNoPendingPriceDetails()) return") && updateExistingPurchaseHandlerSource.indexOf("if (!ensureNoPendingPriceDetails()) return") < updateExistingPurchaseHandlerSource.indexOf("const confirmed = await confirmBatchRowsWithUpdateFields"),
+  updateExistingPurchaseHandlerSource.includes("if (!ensureNoPendingDetails()) return") && updateExistingPurchaseHandlerSource.indexOf("if (!ensureNoPendingDetails()) return") < updateExistingPurchaseHandlerSource.indexOf("const confirmed = await confirmBatchRowsWithUpdateFields"),
   true,
   "\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u524D\u5E94\u963B\u6B62\u672A\u4FDD\u5B58\u7684\u624B\u52A8\u4EF7\u683C\u76F4\u63A5\u5199\u5165\u5546\u54C1\u548C\u5206\u5E97\u4EF7\u683C"
 );
@@ -4110,33 +4862,33 @@ assertEqual(
   "\u5355\u4EF6\u88C5\u7BB1\u6570\u548C\u5355\u4EF6\u4F53\u79EF\u6E05\u7A7A\u65F6\u5E94\u56DE\u6EDA\u5F53\u524D\u503C\uFF0C\u7CFB\u7EDF\u91CD\u7B97\u8FDB\u8D27\u4EF7\u4E0D\u80FD\u540C\u6B65\u4ED3\u5E93\u8868"
 );
 assertEqual(
-  pageSource.includes("type PendingContainerDetailPricePatch =") && pageSource.includes("const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})") && pageSource.includes("const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)") && pageSource.includes("const markPendingPricePatch = (row: ContainerDetail") && pageSource.includes("const buildPendingPriceSavePlan = (): PendingContainerDetailPriceSavePlan | null => {") && pageSource.includes("const confirmSavePendingPriceDetails = (plan: PendingContainerDetailPriceSavePlan) => new Promise<boolean>") && pageSource.includes("const executePendingPriceSavePlan = async (plan: PendingContainerDetailPriceSavePlan) => {") && pageSource.includes("const savePendingPriceDetails = async () => {"),
+  containerDetailLogicSource.includes("export type PendingContainerDetailPatch =") && pageSource.includes("const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})") && pageSource.includes("const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)") && pageSource.includes("const markPendingDetailPatch = (") && pageSource.includes("const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {") && pageSource.includes("const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>") && pageSource.includes("const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {") && pageSource.includes("const savePendingDetails = async () => {"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u7EF4\u62A4\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u7684\u624B\u52A8\u5F85\u4FDD\u5B58\u72B6\u6001"
+  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u7EDF\u4E00\u7EF4\u62A4\u4EF7\u683C\u548C\u82F1\u6587\u540D\u79F0\u7684\u624B\u52A8\u5F85\u4FDD\u5B58\u72B6\u6001"
 );
 assertEqual(
-  pageSource.includes("const update: UpdateContainerDetailRequest = { hguid: patch.hguid }") && pageSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && pageSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && pageSource.includes("await trackDetailSavePromise(plan.saveKeys, batchUpdateDetails(plan.detailUpdates))") && !pageSource.includes("await batchUpdateWarehouseProducts(plan.warehouseUpdates)") && !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") && pageSource.includes("const confirmed = await confirmSavePendingPriceDetails(savePlan)") && pageSource.includes("await executePendingPriceSavePlan(savePlan)") && pageSource.includes("setPendingPricePatches((current) => {") && pageSource.includes("t('containers.messages.detailPricesSaved'"),
+  containerDetailLogicSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && containerDetailLogicSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && containerDetailLogicSource.includes("update.\u82F1\u6587\u540D\u79F0 = englishName") && containerDetailLogicSource.includes("update.ClearEnglishName = true") && pageSource.includes("batchUpdateDetails(plan.detailUpdates),") && pageSource.includes("failedPendingDetailSaveKeysRef.current,") && !pageSource.includes("await batchUpdateWarehouseProducts(plan.warehouseUpdates)") && !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") && pageSource.includes("const confirmed = await confirmSavePendingDetails(savePlan)") && pageSource.includes("await executePendingDetailSavePlan(savePlan)") && pageSource.includes("clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)") && pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
-  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u53EA\u53D1\u660E\u7EC6\u4E8B\u52A1\u63A5\u53E3\uFF0C\u7531\u540E\u7AEF\u7EDF\u4E00\u540C\u6B65\u5DF2\u6709\u5546\u54C1\u5173\u8054\u4EF7\u683C"
+  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u7EDF\u4E00\u63D0\u4EA4\u4EF7\u683C\u548C\u82F1\u6587\u540D\u79F0\uFF0C\u5E76\u6309\u540E\u7AEF\u5B57\u6BB5\u6821\u9A8C\u7ED3\u679C\u4EC5\u6E05\u9664\u5DF2\u4FDD\u5B58\u5185\u5BB9"
 );
 assertEqual(
-  pageSource.includes("Modal.confirm({") && pageSource.includes("t('containers.modals.savePendingPriceDetailsTitle', '\u786E\u8BA4\u4FDD\u5B58\u660E\u7EC6\u4EF7\u683C')") && pageSource.includes("t('containers.modals.savePendingPriceDetailsUpdateTitle', '\u66F4\u65B0\u8BF4\u660E')") && pageSource.includes("'containers.modals.savePendingPriceDetailsSummary'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsExistingRetailHint'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsNewRetailHint'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsRetryHint'"),
+  pageSource.includes("Modal.confirm({") && pageSource.includes("t('containers.modals.savePendingDetailsTitle', '\u786E\u8BA4\u4FDD\u5B58\u660E\u7EC6')") && pageSource.includes("t('containers.modals.savePendingDetailsUpdateTitle', '\u66F4\u65B0\u8BF4\u660E')") && pageSource.includes("'containers.modals.savePendingDetailsSummary'") && pageSource.includes("t('containers.modals.savePendingDetailsExistingRetailHint'") && pageSource.includes("'containers.modals.savePendingDetailsInvalidEnglishHint'") && pageSource.includes("t('containers.modals.savePendingDetailsRetryHint'"),
   true,
-  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u5728\u843D\u5E93\u524D\u5F39\u51FA\u4E8C\u6B21\u786E\u8BA4\uFF0C\u5E76\u5C55\u793A\u66F4\u65B0\u8BF4\u660E"
+  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u5728\u843D\u5E93\u524D\u5C55\u793A\u4EF7\u683C\u3001\u82F1\u6587\u540D\u79F0\u548C\u65E0\u6548\u82F1\u6587\u540D\u8BF4\u660E"
 );
 assertEqual(
-  pageSource.includes("icon={<SaveOutlined />}") && pageSource.includes("loading={priceDetailsSaving}") && pageSource.includes("disabled={!pendingPricePatchCount || priceDetailsSaving}") && pageSource.includes("onClick={() => void savePendingPriceDetails()}") && pageSource.includes("t('containers.actions.saveDetails', '\u4FDD\u5B58\u660E\u7EC6')"),
+  pageSource.includes("icon={<SaveOutlined />}") && pageSource.includes("loading={detailSaveSubmitting}") && pageSource.includes("disabled={!pendingDetailPatchCount || detailSaveSubmitting}") && pageSource.includes("onClick={() => void savePendingDetails()}") && pageSource.includes("t('containers.actions.saveDetails', '\u4FDD\u5B58\u660E\u7EC6')"),
   true,
-  "\u6279\u91CF\u4EF7\u683C\u64CD\u4F5C\u533A\u5E94\u63D0\u4F9B\u4FDD\u5B58\u660E\u7EC6\u6309\u94AE\uFF0C\u4E14\u65E0\u5F85\u4FDD\u5B58\u4EF7\u683C\u65F6\u7981\u7528"
+  "\u6279\u91CF\u64CD\u4F5C\u533A\u5E94\u63D0\u4F9B\u4FDD\u5B58\u660E\u7EC6\u6309\u94AE\uFF0C\u4E14\u65E0\u5F85\u4FDD\u5B58\u660E\u7EC6\u65F6\u7981\u7528"
 );
-var pendingPriceGuardSource = pageSource.slice(
-  pageSource.indexOf("const ensureNoPendingPriceDetails = () => {"),
+var pendingDetailGuardSource = pageSource.slice(
+  pageSource.indexOf("const ensureNoPendingDetails = () => {"),
   pageSource.indexOf("const patchRow = (key: string, patch: Partial<ContainerDetail>) => {")
 );
 assertEqual(
-  pendingPriceGuardSource.includes("if (!pendingPricePatchCount) return true") && pendingPriceGuardSource.includes("t('containers.messages.savePendingPriceDetailsFirst', '\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u8FDB\u53E3\u4EF7\u683C/\u96F6\u552E\u4EF7')") && pendingPriceGuardSource.includes("return false"),
+  pendingDetailGuardSource.includes("if (!pendingDetailPatchCount) return true") && pendingDetailGuardSource.includes("t('containers.messages.savePendingDetailsFirst', '\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u5F85\u63D0\u4EA4\u7684\u660E\u7EC6\u4FEE\u6539')") && pendingDetailGuardSource.includes("return false"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u63D0\u4F9B\u672A\u4FDD\u5B58\u4EF7\u683C\u62E6\u622A\u63D0\u793A\uFF0C\u8981\u6C42\u7528\u6237\u5148\u70B9\u4FDD\u5B58\u660E\u7EC6"
+  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u963B\u6B62\u5E26\u7740\u672A\u4FDD\u5B58\u4EF7\u683C\u6216\u82F1\u6587\u540D\u79F0\u7EE7\u7EED\u8DE8\u5E93\u64CD\u4F5C"
 );
 assertEqual(
   columnsSource.includes("function renderOemPriceCell(row: ContainerDetail)") && columnsSource.includes("formatCurrency(getContainerDetailVisibleOemPrice(row), '$')") && columnsSource.includes("function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)") && pageSource.includes("renderImportPriceCell(row, (") && pageSource.includes(": renderImportPriceCell(row)") && pageSource.includes("formatCurrency(v, '\xA5')") && pageSource.includes('prefix="$"'),
@@ -4144,7 +4896,7 @@ assertEqual(
   "\u4EF7\u683C\u5217\u5E94\u6309\u56FD\u5185\u4EF7\u683C\u4EBA\u6C11\u5E01\u3001\u5176\u5B83\u4EF7\u683C\u7F8E\u5143\u663E\u793A\u8D27\u5E01\u7B26\u53F7"
 );
 assertEqual(
-  containerDetailLogicSource.includes("return currentImportPrice > realtimeImportPrice ? 'up' : 'down'") && columnsSource.includes("getContainerDetailImportPriceTrend(row)") && columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") && columnsSource.includes("return <Icon className={className} />") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8FDB\u53E3\u4EF7\u683C: value == null ? undefined : Number(value) })") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8D34\u724C\u4EF7\u683C: value == null ? undefined : Number(value) })") && !pageSource.includes("saveRowPatch(row, { \u8FDB\u53E3\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && !pageSource.includes("saveRowPatch(row, { \u8D34\u724C\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && pageStyleSource.includes(".container-detail-import-price-trend-up") && pageStyleSource.includes("color: #52c41a") && pageStyleSource.includes(".container-detail-import-price-trend-down") && pageStyleSource.includes("color: #ff4d4f"),
+  containerDetailLogicSource.includes("return currentImportPrice > realtimeImportPrice ? 'up' : 'down'") && columnsSource.includes("getContainerDetailImportPriceTrend(row)") && columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") && columnsSource.includes("return <Icon className={className} />") && pageSource.includes("onChange={(value) => markPendingDetailPatch(row, { \u8FDB\u53E3\u4EF7\u683C: value == null ? undefined : Number(value) })") && pageSource.includes("onChange={(value) => markPendingDetailPatch(row, { \u8D34\u724C\u4EF7\u683C: value == null ? undefined : Number(value) })") && !pageSource.includes("saveRowPatch(row, { \u8FDB\u53E3\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && !pageSource.includes("saveRowPatch(row, { \u8D34\u724C\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && pageStyleSource.includes(".container-detail-import-price-trend-up") && pageStyleSource.includes("color: #52c41a") && pageStyleSource.includes(".container-detail-import-price-trend-down") && pageStyleSource.includes("color: #ff4d4f"),
   true,
   "\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u5E94\u6539\u4E3A\u624B\u52A8\u4FDD\u5B58\u660E\u7EC6\uFF0C\u4E0D\u80FD\u518D\u5931\u7126\u81EA\u52A8\u843D\u5E93"
 );
@@ -4216,6 +4968,38 @@ assertDeepEqual(
   ].filter((snippet) => !pageSource.includes(snippet)),
   [],
   "\u5199\u5165\u7C7B\u6279\u91CF\u64CD\u4F5C\u5E94\u7EDF\u4E00\u7ECF\u8FC7\u786E\u8BA4\u5F39\u7A97\u6216\u8F93\u5165\u786E\u8BA4\u5F39\u7A97"
+);
+var translateNamesSource = pageSource.slice(
+  pageSource.indexOf("const translateNames = async () => {"),
+  pageSource.indexOf("const openBatchEditEnglishName = async () => {")
+);
+var batchEnglishNameSource = pageSource.slice(
+  pageSource.indexOf("const submitBatchEditEnglishName = async () => {"),
+  pageSource.indexOf("const clearEnglishNames = async () => {")
+);
+var clearEnglishNameSource = pageSource.slice(
+  pageSource.indexOf("const clearEnglishNames = async () => {"),
+  pageSource.indexOf("const showHqTranslationResult =")
+);
+assertEqual(
+  translateNamesSource.includes("queuePendingDetailUpdates(updates)") && !translateNamesSource.includes("await batchUpdateDetails(updates)") && batchEnglishNameSource.includes("queuePendingDetailUpdates(updates)") && !batchEnglishNameSource.includes("await batchUpdateDetails(updates)") && clearEnglishNameSource.includes("queuePendingDetailUpdates(updates)") && !clearEnglishNameSource.includes("await batchUpdateDetails(updates)"),
+  true,
+  "\u672C\u9875\u6279\u91CF\u7FFB\u8BD1\u3001\u6279\u91CF\u4FEE\u6539\u548C\u6279\u91CF\u6E05\u9664\u82F1\u6587\u540D\u79F0\u90FD\u5E94\u8FDB\u5165\u4FDD\u5B58\u660E\u7EC6\u961F\u5217\uFF0C\u4E0D\u80FD\u7ACB\u5373\u843D\u5E93"
+);
+assertEqual(
+  pageSource.includes("applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)") && pageSource.includes("pendingDetailContainerGuidRef.current !== containerGuid") && !pageSource.includes("setPendingDetailPatches({})"),
+  true,
+  "\u540C\u4E00\u8D27\u67DC\u5237\u65B0\u6216\u7B5B\u9009\u91CD\u8F7D\u5E94\u91CD\u65B0\u8986\u76D6\u672A\u4FDD\u5B58\u8349\u7A3F\uFF0C\u4EC5\u5207\u6362\u8D27\u67DC\u65F6\u6E05\u7A7A\u65E7\u8349\u7A3F"
+);
+assertEqual(
+  pageSource.includes("settleScopedContainerDetailSave(") && pageSource.includes("detailRequestIdAtSaveStart") && pageSource.includes("abortControllerToken: detailAbortControllerRef.current") && pageSource.includes("scopedSave.shouldInvalidateDetailLoad") && pageSource.includes("scopedSave.shouldReloadCurrentDetail") && pageSource.includes("await reloadCurrentDetailRef.current()") && pageSource.includes("detailControllerAtSaveStart?.abort()") && pageSource.includes("containerDetailLoadRequestIdRef.current += 1"),
+  true,
+  "\u4FDD\u5B58\u6210\u529F\u540E\u5E94\u5E9F\u5F03\u4FDD\u5B58\u524D\u7684\u65E7\u67E5\u8BE2\uFF1B\u82E5\u671F\u95F4\u542F\u52A8\u8FC7\u65B0\u67E5\u8BE2\uFF0C\u5219\u6309\u5F53\u524D\u6761\u4EF6\u91CD\u8F7D\u907F\u514D\u65E7\u5FEB\u7167\u8986\u76D6"
+);
+assertEqual(
+  pageSource.includes("failedPendingDetailSaveKeysRef") && pageSource.includes("reconcilePendingContainerDetailSaveFailureKeys(") && pageSource.includes("failedPendingDetailSaveKeysRef.current.size > 0") && pageSource.includes("pendingDetailSavePromisesRef.current.clear()") && pageSource.includes("currentContainerGuidRef.current === saveContainerGuid"),
+  true,
+  "\u7EDF\u4E00\u4FDD\u5B58\u5931\u8D25\u72B6\u6001\u5E94\u6309\u5F53\u524D\u8349\u7A3F\u5B57\u6BB5\u53CA\u8D27\u67DC\u4F5C\u7528\u57DF\u6E05\u7406\uFF0C\u4E0D\u80FD\u6C61\u67D3\u540E\u7EED\u610F\u56FE\u6216\u65B0\u8D27\u67DC"
 );
 assertEqual(
   pageSource.includes("const resolveBatchActionTargetRows = async () => {") && pageSource.includes("return await fetchAllRowsForCurrentQuery()") && pageSource.includes("const scopedRows = await resolveBatchActionTargetRows()") && pageSource.includes("renderBatchActionContent(batchModalTargetCount)") && pageSource.includes("const [batchModalScopeRows, setBatchModalScopeRows] = useState<ContainerDetail[]>([])") && pageSource.includes("setBatchModalScopeRows(scopedRows)") && pageSource.includes("buildDetailBatchScope(batchModalScopeRows)") && pageSource.includes("selectedHguids: getRowsHguids(scopeRows)") && pageSource.includes("t('containers.modals.batchActionAllHint'"),
@@ -4407,6 +5191,38 @@ assertEqual(
   "\u5355\u884C\u76EE\u6807\u5206\u7C7B\u4FEE\u6539\u5F39\u7A97\u5E94\u53EA\u63D0\u4EA4\u5F53\u524D\u884C ProductCategoryGUID\uFF0C\u5E76\u5728\u4FDD\u5B58\u540E\u53EA\u66F4\u65B0\u5F53\u524D\u5DF2\u52A0\u8F7D\u884C"
 );
 assertEqual(
+  pageSource.includes("access.canManageWarehouseCategories ? (") && pageSource.includes("<ContainerCategoryManageModal") && pageSource.includes("onMutationCommitted={handleCategoryMutationCommitted}") && pageSource.includes("onCategoriesChanged={handleCategoriesChanged}") && pageSource.includes("resolveContainerCategorySelectionAfterRefresh("),
+  true,
+  "\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u6309\u5206\u7C7B\u7BA1\u7406\u6743\u9650\u6302\u8F7D\uFF0C\u5E76\u534F\u8C03\u5237\u65B0\u540E\u7684\u76EE\u6807\u5206\u7C7B"
+);
+var batchActionsButtonIndex = pageSource.indexOf(`<Button size="small">{t('containers.actions.batchActions')}</Button>`);
+var manageCategoriesButtonIndex = pageSource.indexOf("onClick={() => openCategoryManageModal('batch')}");
+var deleteDetailsButtonIndex = pageSource.indexOf("onClick={deleteSelected}>{t('containers.actions.deleteDetails')");
+var batchCategoryModalSource = pageSource.slice(
+  pageSource.indexOf("title={t('containers.modals.batchCategoryTitle'"),
+  pageSource.indexOf("title={t('containers.modals.rowCategoryTitle'")
+);
+assertEqual(
+  batchActionsButtonIndex >= 0 && manageCategoriesButtonIndex > batchActionsButtonIndex && deleteDetailsButtonIndex > manageCategoriesButtonIndex && !batchCategoryModalSource.includes("manageCategories") && !rowCategoryModalSource.includes("manageCategories") && pageSource.includes("setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID)"),
+  true,
+  "\u7BA1\u7406\u5206\u7C7B\u5165\u53E3\u5E94\u4F4D\u4E8E\u4E3B\u5DE5\u5177\u680F\u6279\u91CF\u64CD\u4F5C\u6309\u94AE\u4E4B\u540E\uFF0C\u5E76\u4FDD\u7559\u6709\u6548\u7684\u6279\u91CF\u76EE\u6807\u5206\u7C7B"
+);
+assertEqual(
+  categoryManageSource.includes("createWarehouseCategory") && categoryManageSource.includes("updateWarehouseCategory") && categoryManageSource.includes("deleteWarehouseCategory") && categoryManageSource.includes("getCategoryTree") && categoryManageSource.includes("<Popconfirm") && categoryManageSource.includes("formMode === 'create'") && categoryManageSource.includes("executeContainerCategoryMutation(") && categoryManageSource.includes("refreshAfterMutationFailed") && categoryManageSource.includes("handleRetryRefresh") && categoryManageSource.includes("t('common.retry', '\u91CD\u8BD5')") && categoryManageSource.includes("buildContainerCategoryParentOptions("),
+  true,
+  "\u8D27\u67DC\u660E\u7EC6\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u590D\u7528\u4ED3\u5E93\u5206\u7C7B CRUD\uFF0C\u5E76\u4FDD\u62A4\u65B0\u589E\u72B6\u6001\u548C\u5220\u9664\u786E\u8BA4"
+);
+assertEqual(
+  pageStyleSource.includes(".container-category-manage-grid") && pageStyleSource.includes("grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)") && pageStyleSource.includes("@media (max-width: 760px)") && pageStyleSource.includes("grid-template-columns: minmax(0, 1fr)"),
+  true,
+  "\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u5728\u684C\u9762\u4F7F\u7528\u7D27\u51D1\u53CC\u680F\uFF0C\u5E76\u5728\u7A84\u5C4F\u5207\u6362\u4E3A\u5355\u680F"
+);
+assertEqual(
+  zhLocale.containers.actions.manageCategories === "\u7BA1\u7406\u5206\u7C7B" && enLocale.containers.actions.manageCategories === "Manage Categories" && zhLocale.containers.modals.categoryManageTitle === "\u7BA1\u7406\u5206\u7C7B" && enLocale.containers.modals.categoryManageTitle === "Manage Categories",
+  true,
+  "\u5206\u7C7B\u7BA1\u7406\u5165\u53E3\u548C\u5F39\u7A97\u6807\u9898\u5E94\u5177\u5907\u4E2D\u82F1\u6587\u6587\u6848"
+);
+assertEqual(
   pageSource.includes("t('common.copyValue'") && pageSource.includes("t('containers.setCode.pricesTitle'") && pageSource.includes("okText={t('common.save')}") && !pageSource.includes(">\u91CD\u7B97\u6210\u672C</Button>") && !pageSource.includes(">\u5339\u914D\u56FD\u5185\u6570\u636E</Button>"),
   true,
   "\u8D27\u67DC\u660E\u7EC6\u590D\u5236\u3001\u91CD\u7B97\u3001\u5339\u914D\u548C\u5957\u88C5\u591A\u7801\u5F39\u7A97\u5E94\u4F7F\u7528 i18n \u6587\u6848"
@@ -4441,9 +5257,62 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6 Tab \u5207\u56DE\u65F6\u5E94\u91CD\u6302\u8F7D AntD \u865A\u62DF\u8868\u683C\u5E76\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E\uFF0C\u907F\u514D KeepAlive \u9690\u85CF\u540E body \u7A7A\u767D"
 );
 assertEqual(
-  pageSource.includes("lastDetailTableScrollTopRef.current = target.scrollTop") && pageSource.includes("target.scrollTop + target.clientHeight >= target.scrollHeight - 96") && pageSource.includes("void loadNextDetailChunk()"),
+  pageSource.includes("lastDetailTableScrollTopRef.current = target.scrollTop") && pageSource.includes("shouldLoadNextContainerDetailChunk({") && pageSource.includes("void loadNextDetailChunk()"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u6EDA\u52A8\u5904\u7406\u5E94\u540C\u65F6\u4FDD\u5B58\u6EDA\u52A8\u4F4D\u7F6E\u5E76\u4FDD\u7559\u89E6\u5E95\u52A0\u8F7D\u4E0B\u4E00\u5757"
+  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u6EDA\u52A8\u5904\u7406\u5E94\u4FDD\u5B58\u6EDA\u52A8\u4F4D\u7F6E\uFF0C\u5E76\u5728\u8FDB\u5165\u9884\u52A0\u8F7D\u533A\u65F6\u52A0\u8F7D\u4E0B\u4E00\u5757"
+);
+assertEqual(
+  pageSource.includes("const detailAppendRequestRef = useRef<") && pageSource.includes("const detailResetRequestRef = useRef<") && pageSource.includes("startContainerDetailAppendRequest(") && pageSource.includes("cancelContainerDetailAppendRequest(detailAppendRequestRef.current)") && pageSource.includes("finishContainerDetailAppendRequest(") && pageSource.includes("detailAppendRequestRef.current = appendStart.request") && pageSource.includes("|| detailResetRequestRef.current"),
+  true,
+  "\u8D27\u67DC\u660E\u7EC6\u8FFD\u52A0\u52A0\u8F7D\u5E94\u540C\u6B65\u9632\u91CD\u5165\u3001\u907F\u8BA9\u91CD\u7F6E\u8BF7\u6C42\uFF0C\u5E76\u53EA\u5141\u8BB8\u8BF7\u6C42\u6240\u6709\u8005\u91CA\u653E token"
+);
+assertEqual(
+  pageSource.includes("const detailReadAheadRequestRef = useRef<") && pageSource.includes("const startDetailReadAhead = (pageNumber: number) =>") && pageSource.includes("startContainerDetailReadAheadRequest(") && pageSource.includes("resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)") && pageSource.includes("detailReadAheadRequestRef.current?.key === requestKey") && pageSource.includes("await readAheadRequest.promise") && pageSource.includes("startDetailReadAhead(result.pageNumber + 1)") && pageSource.includes("startDetailReadAhead(detailPageNumber + 1)") && pageSource.includes("cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)"),
+  true,
+  "\u8D27\u67DC\u660E\u7EC6\u5E94\u53EA\u4FDD\u7559\u4E0B\u4E00\u9875\u524D\u8BFB\u7F13\u5B58\uFF0C\u6EDA\u52A8\u6D88\u8D39\u540E\u63A5\u7EED\u9884\u53D6\u5E76\u5728\u5931\u6548\u65F6\u53D6\u6D88"
+);
+assertEqual(
+  (() => {
+    const readAheadStart = pageSource.indexOf("const startDetailReadAhead = (pageNumber: number) =>");
+    const readAheadEnd = pageSource.indexOf("const loadDetailChunk = async", readAheadStart);
+    const readAheadSource = pageSource.slice(readAheadStart, readAheadEnd);
+    return readAheadStart >= 0 && readAheadEnd > readAheadStart && readAheadSource.includes("pageSize: CONTAINER_DETAIL_PAGE_SIZE") && readAheadSource.includes("includeTotal: false") && readAheadSource.includes("includeStats: false");
+  })(),
+  true,
+  "\u524D\u8BFB\u9875\u5FC5\u987B\u4FDD\u6301 50 \u6761\uFF0C\u5E76\u8DF3\u8FC7 total \u4E0E\u6807\u7B7E\u7EDF\u8BA1"
+);
+assertEqual(
+  (() => {
+    const firstPageStart = pageSource.indexOf("const resultPromise = queryContainerProducts(");
+    const secondPageStart = pageSource.indexOf(
+      "resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)",
+      firstPageStart
+    );
+    const firstPageAwait = pageSource.indexOf("result = await resultPromise", secondPageStart);
+    return firstPageStart >= 0 && secondPageStart > firstPageStart && firstPageAwait > secondPageStart;
+  })(),
+  true,
+  "\u91CD\u7F6E\u67E5\u8BE2\u5E94\u5148\u542F\u52A8\u9996\u5C4F\u8BF7\u6C42\uFF0C\u518D\u5E76\u53D1\u7B2C 2 \u9875\u5E76\u7B49\u5F85\u9996\u5C4F\u7ED3\u679C"
+);
+assertEqual(
+  pageSource.includes("void loadNextDetailChunk('auto')") && pageSource.includes("source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey") && pageSource.includes("detailResetRequestRef.current = null") && pageSource.includes("setDetailLoadingMore(false)"),
+  true,
+  "\u6807\u7B7E\u81EA\u52A8\u8865\u9F50\u5931\u8D25\u540E\u5E94\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF0C\u6E05\u7406\u65F6\u5E94\u540C\u6B65\u91CA\u653E\u52A0\u8F7D\u72B6\u6001"
+);
+var detailQueryAutoReloadIndex = pageSource.indexOf("requestedDetailQueryKey: activeLoadQueryKey");
+var detailLoadEffectIndex = pageSource.lastIndexOf("useEffect(() => {", detailQueryAutoReloadIndex);
+var detailLoadCancellationIndex = pageSource.indexOf(
+  "const cancelDetailLoads = () =>",
+  detailLoadEffectIndex
+);
+var skipDetailAutoReloadIndex = pageSource.lastIndexOf(
+  "if (shouldSkipDetailAutoReload({",
+  detailQueryAutoReloadIndex
+);
+assertEqual(
+  detailLoadEffectIndex >= 0 && detailLoadCancellationIndex >= detailLoadEffectIndex && detailLoadCancellationIndex < skipDetailAutoReloadIndex && pageSource.indexOf("return cancelDetailLoads", skipDetailAutoReloadIndex) >= 0,
+  true,
+  "KeepAlive \u547D\u4E2D\u7F13\u5B58\u8DF3\u8FC7\u91CD\u8F7D\u65F6\u4E5F\u5FC5\u987B\u6CE8\u518C\u8FFD\u52A0\u8BF7\u6C42\u53D6\u6D88\u51FD\u6570"
 );
 assertEqual(
   pageStyleSource.includes(".container-detail-table .ant-table-thead > tr > th"),
@@ -4471,9 +5340,20 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u9694\u884C\u8272\u5E94\u4FDD\u7559 hover \u53CD\u9988"
 );
 assertEqual(
-  pageSource.includes('className="container-detail-nowrap container-detail-copyable"'),
+  pageSource.includes('<span className="container-detail-nowrap container-detail-copyable">'),
   true,
-  "\u8D27\u53F7\u590D\u5236\u533A\u57DF\u5E94\u4F7F\u7528\u4E13\u5C5E nowrap \u6837\u5F0F\u4FDD\u6301\u5355\u884C\u7D27\u51D1\u663E\u793A"
+  "\u8D27\u53F7\u590D\u5236\u533A\u57DF\u5E94\u4F7F\u7528\u65E0\u989D\u5916\u5305\u88C5\u5C42\u7684\u4E13\u5C5E nowrap \u5F39\u6027\u5BB9\u5668"
+);
+assertEqual(
+  pageSource.includes("<CopyableText value={getContainerDetailItemNumber(row)} />") && !pageSource.includes("<CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />") && pageStyleSource.includes([
+    ".container-detail-copyable .ant-typography {",
+    "  min-width: 0;",
+    "  flex: 1 1 auto;",
+    "  line-height: 1.2;",
+    "}"
+  ].join("\n")),
+  true,
+  "\u8D27\u53F7\u6587\u672C\u5BBD\u5EA6\u5E94\u8DDF\u968F\u62D6\u62FD\u540E\u7684\u5217\u5BBD\uFF0C\u4E0D\u5F97\u88AB\u56FA\u5B9A\u6700\u5927\u5BBD\u5EA6\u6301\u7EED\u622A\u65AD"
 );
 assertEqual(
   pageSource.includes('className="container-detail-copy-button"'),

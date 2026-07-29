@@ -9,6 +9,7 @@ import {
 import {
   createConnectedSalesDependencies,
   createConnectedSalesPresenter,
+  SALES_CHECKOUT_PREPARED,
   SALES_NEW_TRANSACTIONS_DISABLED,
   PricingCartSalesAdapter,
   type DurableCashCheckoutPort,
@@ -20,6 +21,10 @@ import {
 } from "./sales-operation-security";
 
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
+import type {
+  CatalogLookupRevalidationPort,
+  CatalogLookupRevalidationResult,
+} from "@/features/catalog/catalog-lookup-revalidation";
 import { PricingCart } from "@/features/sales/domain";
 
 const item = (overrides: Partial<LocalCatalogMatch> = {}): LocalCatalogMatch => ({
@@ -434,6 +439,528 @@ test("旧 presenter 提交现金时不会同步抛异常，而是以 rejected Pr
   );
 });
 
+test("本地命中先发布购物车并释放扫码，远程查询与回写分别等待 UI yield", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const firstYield = deferred<void>();
+  const applyYield = deferred<void>();
+  const events: string[] = [];
+  let yieldCount = 0;
+  const dependencies = connected({
+    catalog: {
+      async findExact() {
+        events.push("local");
+        return item();
+      },
+      async searchByName() {
+        return [];
+      },
+    },
+    catalogRevalidation: {
+      revalidate() {
+        events.push("remote");
+        return remote.promise;
+      },
+      async isCurrentBaseSnapshot() {
+        events.push("generation-check");
+        return true;
+      },
+    },
+    catalogWorkScheduler: {
+      yieldToUi() {
+        yieldCount += 1;
+        events.push(`yield-${yieldCount}`);
+        return yieldCount === 1 ? firstYield.promise : applyYield.promise;
+      },
+      waitForTimeout: () => new Promise(() => undefined),
+    },
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001");
+
+  assert.deepEqual(events, ["local", "yield-1"]);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 1);
+
+  firstYield.resolve();
+  await Promise.resolve();
+  assert.deepEqual(events, ["local", "yield-1", "remote"]);
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({
+      itemNumber: "NEW-100",
+      displayName: "Fresh tea",
+      retailPriceCents: 725,
+      priceSource: 1,
+    }),
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(events, ["local", "yield-1", "remote", "yield-2"]);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+
+  applyYield.resolve();
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.deepEqual(events, [
+    "local",
+    "yield-1",
+    "remote",
+    "yield-2",
+    "generation-check",
+  ]);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 725);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.displayName, "Fresh tea");
+});
+
+test("本地命中先完成 ADD 审计，再把远程校准排入后台", async () => {
+  const auditRelease = deferred<void>();
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const events: string[] = [];
+  let nextId = 0;
+  const dependencies = connected({
+    catalog: {
+      async findExact() {
+        events.push("local");
+        return item();
+      },
+      async searchByName() {
+        return [];
+      },
+    },
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: {
+      async yieldToUi() {
+        events.push("remote-yield");
+      },
+      waitForTimeout: () => new Promise<void>(() => undefined),
+    },
+    operationSecurity: {
+      authorization: {
+        async authorizeAndRun(input, operation) {
+          return {
+            authorized: true as const,
+            value: await operation({
+              authorizationMode: "current-cashier",
+              requestingCashierId: "C1",
+              authorizingCashierId: null,
+              permissionCode: input.permissionCode,
+            }),
+          };
+        },
+      },
+      audit: {
+        async append() {
+          events.push("add-audit");
+          await auditRelease.promise;
+        },
+      },
+      createActionId: () => uuid(++nextId),
+      createAuditEventId: () => uuid(++nextId),
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+    },
+  });
+
+  const adding = dependencies.workflow.addByLookupCode("930000000001");
+  await waitFor(() => events.length >= 2);
+
+  assert.deepEqual(events, ["local", "add-audit"]);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 0);
+
+  auditRelease.resolve();
+  await adding;
+
+  assert.deepEqual(events, ["local", "add-audit", "remote-yield"]);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 1);
+  remote.resolve({ kind: "unavailable" });
+  await waitFor(
+    () => dependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+});
+
+test("本地命中已加购但 ADD 审计暂停时，结账返回后不得再登记远程改价", async () => {
+  const auditEntered = deferred<void>();
+  const auditRelease = deferred<void>();
+  let remoteCalls = 0;
+  let nextId = 0;
+  const dependencies = connected({
+    catalogRevalidation: {
+      async revalidate() {
+        remoteCalls += 1;
+        return {
+          kind: "found" as const,
+          baseSnapshotId: "snapshot-1",
+          item: item({ retailPriceCents: 725 }),
+        };
+      },
+      async isCurrentBaseSnapshot() {
+        return true;
+      },
+    },
+    catalogWorkScheduler: immediateScheduler(),
+    operationSecurity: {
+      authorization: {
+        async authorizeAndRun(input, operation) {
+          return {
+            authorized: true as const,
+            value: await operation({
+              authorizationMode: "current-cashier",
+              requestingCashierId: "C1",
+              authorizingCashierId: null,
+              permissionCode: input.permissionCode,
+            }),
+          };
+        },
+      },
+      audit: {
+        async append() {
+          auditEntered.resolve();
+          await auditRelease.promise;
+        },
+      },
+      createActionId: () => uuid(++nextId),
+      createAuditEventId: () => uuid(++nextId),
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+    },
+  });
+
+  const adding = dependencies.workflow.addByLookupCode("930000000001");
+  await auditEntered.promise;
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 0);
+
+  assert.deepEqual(
+    await dependencies.workflow.settlePendingCatalogWork({
+      timeoutMs: 2_000,
+    }),
+    { timedOut: false },
+  );
+  auditRelease.resolve();
+  await adding;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(remoteCalls, 0);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 0);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+});
+
+test("本地 miss 授权暂停跨越结账边界时，不得登记远程自动加购", async () => {
+  const authorizationEntered = deferred<void>();
+  const authorizationRelease = deferred<void>();
+  let remoteCalls = 0;
+  let nextId = 0;
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: {
+      async revalidate() {
+        remoteCalls += 1;
+        return {
+          kind: "found" as const,
+          baseSnapshotId: "snapshot-1",
+          item: item(),
+        };
+      },
+      async isCurrentBaseSnapshot() {
+        return true;
+      },
+    },
+    catalogWorkScheduler: immediateScheduler(),
+    operationSecurity: {
+      authorization: {
+        async authorizeAndRun(input, operation) {
+          authorizationEntered.resolve();
+          await authorizationRelease.promise;
+          return {
+            authorized: true as const,
+            value: await operation({
+              authorizationMode: "current-cashier",
+              requestingCashierId: "C1",
+              authorizingCashierId: null,
+              permissionCode: input.permissionCode,
+            }),
+          };
+        },
+      },
+      audit: { append: async () => undefined },
+      createActionId: () => uuid(++nextId),
+      createAuditEventId: () => uuid(++nextId),
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+    },
+  });
+
+  const adding = dependencies.workflow.addByLookupCode("930000000001");
+  await authorizationEntered.promise;
+  assert.deepEqual(
+    await dependencies.workflow.settlePendingCatalogWork({
+      timeoutMs: 2_000,
+    }),
+    { timedOut: false },
+  );
+  authorizationRelease.resolve();
+
+  await assert.rejects(adding, hasCode(SALES_CHECKOUT_PREPARED));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(remoteCalls, 0);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 0);
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+});
+
+test("本地 miss 立即释放连续扫码；共享远程结果仍按每次扫码自动加购", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const revalidation = new SharedRevalidation(remote.promise);
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: revalidation,
+    catalogWorkScheduler: immediateScheduler(),
+  });
+
+  await Promise.all([
+    dependencies.workflow.addByLookupCode("930000000001"),
+    dependencies.workflow.addByLookupCode(" 930000000001 "),
+  ]);
+
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 2);
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item(),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.quantity, "2");
+});
+
+test("结账准备允许既有校准收敛到最终购物车，返回后仍冻结新写入", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const dependencies = connected({
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001");
+  const settlement = dependencies.workflow.settlePendingCatalogWork({
+    timeoutMs: 2_000,
+  });
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({ retailPriceCents: 725 }),
+  });
+
+  assert.deepEqual(await settlement, { timedOut: false });
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.unitPrice.cents, 725);
+  await assert.rejects(
+    () => dependencies.cart.increaseLine("line-1"),
+    hasCode(SALES_CHECKOUT_PREPARED),
+  );
+
+  dependencies.workflow.releasePreparedCheckout();
+  await dependencies.cart.increaseLine("line-1");
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.quantity, "2");
+});
+
+test("结账等待超时会 fence 迟到购物车写入，但远程目录任务仍可自行完成", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const timeout = deferred<void>();
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: {
+      yieldToUi: async () => undefined,
+      waitForTimeout: () => timeout.promise,
+    },
+  });
+  let pendingNotifications = 0;
+  dependencies.workflow.subscribePendingCatalogWork(() => {
+    pendingNotifications += 1;
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001");
+  const settlement = dependencies.workflow.settlePendingCatalogWork({
+    timeoutMs: 2_000,
+  });
+  timeout.resolve();
+
+  assert.deepEqual(await settlement, { timedOut: true });
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item(),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+  assert.ok(pendingNotifications >= 2);
+  await assert.rejects(
+    () => dependencies.workflow.addByLookupCode("930000000001"),
+    hasCode(SALES_CHECKOUT_PREPARED),
+  );
+});
+
+test("页面销毁同步清空 pending 观察者并 fence 迟到目录结果", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  let notifications = 0;
+  dependencies.workflow.subscribePendingCatalogWork(() => {
+    notifications += 1;
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001");
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 1);
+  dependencies.workflow.disposePendingCatalogWork();
+  const notificationsAfterDispose = notifications;
+  assert.equal(dependencies.workflow.getPendingCatalogWorkCount(), 0);
+
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item(),
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+  assert.equal(notifications, notificationsAfterDispose);
+});
+
+test("结账准备同步冻结延迟授权中的写入，显式释放后才允许继续销售", async () => {
+  const authorizationRelease = deferred<void>();
+  const authorizationEntered = deferred<void>();
+  let nextId = 0;
+  const dependencies = connected({
+    operationSecurity: {
+      authorization: {
+        async authorizeAndRun(input, operation) {
+          authorizationEntered.resolve();
+          await authorizationRelease.promise;
+          return {
+            authorized: true as const,
+            value: await operation({
+              authorizationMode: "current-cashier",
+              requestingCashierId: "C1",
+              authorizingCashierId: null,
+              permissionCode: input.permissionCode,
+            }),
+          };
+        },
+      },
+      audit: { append: async () => undefined },
+      createActionId: () => uuid(++nextId),
+      createAuditEventId: () => uuid(++nextId),
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+    },
+  });
+
+  const delayedAdd =
+    dependencies.workflow.addByLookupCode("930000000001");
+  await authorizationEntered.promise;
+  const settlement = dependencies.workflow.settlePendingCatalogWork({
+    timeoutMs: 2_000,
+  });
+  authorizationRelease.resolve();
+
+  assert.deepEqual(await settlement, { timedOut: false });
+  await assert.rejects(delayedAdd, hasCode(SALES_CHECKOUT_PREPARED));
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+
+  dependencies.workflow.releasePreparedCheckout();
+  await dependencies.workflow.addByLookupCode("930000000001");
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 1);
+});
+
+test("远程身份变化只更新目录，不改写本次交易的现有行", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const sharedCart = activeCart();
+  const dependencies = connected({
+    activeCartSession: sharedCart,
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001");
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({
+      productCode: "P-REPLACED",
+      referenceCode: "REF-REPLACED",
+      retailPriceCents: 999,
+    }),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  const line = sharedCart.getSnapshot().lines[0];
+  assert.equal(line?.productCode, "P-TEA");
+  assert.equal(line?.unitPrice.cents, 500);
+});
+
+test("远程明确不存在保留已加购行，会话失效后迟到结果也不能注入购物车", async () => {
+  const notFound = deferred<CatalogLookupRevalidationResult>();
+  const first = connected({
+    catalogRevalidation: new SharedRevalidation(notFound.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  await first.workflow.addByLookupCode("930000000001");
+  notFound.resolve({
+    kind: "not-found",
+    baseSnapshotId: "snapshot-1",
+  });
+  await waitFor(() => first.workflow.getPendingCatalogWorkCount() === 0);
+  assert.equal(first.cart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+
+  const sessionGuard = new SessionGuard();
+  const late = deferred<CatalogLookupRevalidationResult>();
+  const sharedCart = activeCart();
+  const second = connected({
+    activeCartSession: sharedCart,
+    sessionGuard,
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(late.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  await second.workflow.addByLookupCode("930000000001");
+  sessionGuard.invalidate();
+  late.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item(),
+  });
+  await waitFor(() => second.workflow.getPendingCatalogWorkCount() === 0);
+  assert.equal(sharedCart.getSnapshot().lines.length, 0);
+});
+
+test("支付 exclusive lease 期间迟到校准只保留本地行，不竞争共享购物车", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const releaseLease = deferred<void>();
+  const sharedCart = activeCart();
+  const dependencies = connected({
+    activeCartSession: sharedCart,
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  await dependencies.workflow.addByLookupCode("930000000001");
+  const exclusive = sharedCart.runExclusive(async () => {
+    await releaseLease.promise;
+  });
+
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({ displayName: "Fresh tea", retailPriceCents: 725 }),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.equal(sharedCart.getSnapshot().lines[0]?.displayName, "Tea");
+  assert.equal(sharedCart.getSnapshot().lines[0]?.unitPrice.cents, 500);
+  releaseLease.resolve();
+  await exclusive;
+});
+
 function connected(overrides: Partial<Parameters<typeof createConnectedSalesDependencies>[0]> = {}) {
   return createConnectedSalesDependencies({
     activeCartSession: activeCart(),
@@ -478,6 +1005,35 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+class SharedRevalidation implements CatalogLookupRevalidationPort {
+  public constructor(
+    private readonly result: Promise<CatalogLookupRevalidationResult>,
+  ) {}
+
+  public revalidate(): Promise<CatalogLookupRevalidationResult> {
+    return this.result;
+  }
+
+  public async isCurrentBaseSnapshot(): Promise<boolean> {
+    return true;
+  }
+}
+
+function immediateScheduler() {
+  return {
+    yieldToUi: async () => undefined,
+    waitForTimeout: () => new Promise<void>(() => undefined),
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempts = 0; attempts < 50; attempts += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("condition was not reached");
 }
 
 function hasCode(code: string): (error: unknown) => boolean {

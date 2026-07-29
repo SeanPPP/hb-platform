@@ -5,6 +5,7 @@ import {
   CashierAuthorizationStore,
   CashierSessionCache,
   DeviceCredentialStore,
+  DevicePresentationStore,
   InMemorySecureStore,
   PendingDeviceRegistrationStore,
   type CashierSessionKeyHasher,
@@ -58,6 +59,76 @@ test("设备凭据保存和读取保持设备、门店、安装 UUID 与授权�
 
   assert.deepEqual(await credentials.load(), expected);
   assert.deepEqual(secureStore.lastWriteOptions, localOnly);
+});
+
+test("设备展示缓存使用独立 v1 Key 保存脱敏名称且仅限本机", async () => {
+  const secureStore = new InMemorySecureStore();
+  const presentation = new DevicePresentationStore(secureStore);
+
+  await presentation.save({
+    deviceCode: "POS-1",
+    storeCode: "S1",
+    storeName: "Chermside",
+  });
+
+  assert.deepEqual(await presentation.load(), {
+    deviceCode: "POS-1",
+    storeCode: "S1",
+    storeName: "Chermside",
+  });
+  assert.equal(
+    await secureStore.get("hbpos.ipad.device-presentation.v1"),
+    JSON.stringify({
+      version: 1,
+      deviceCode: "POS-1",
+      storeCode: "S1",
+      storeName: "Chermside",
+    }),
+  );
+  assert.equal(
+    await secureStore.get("hbpos.ipad.device-credentials.v1"),
+    null,
+  );
+  assert.deepEqual(secureStore.lastWriteOptions, localOnly);
+});
+
+test("损坏的设备展示缓存按无缓存处理并最佳努力清理", async () => {
+  const key = "hbpos.ipad.device-presentation.v1";
+  const secureStore = new InMemorySecureStore();
+  const presentation = new DevicePresentationStore(secureStore);
+
+  for (const raw of [
+    "not-json",
+    JSON.stringify({
+      version: 2,
+      deviceCode: "POS-1",
+      storeCode: "S1",
+      storeName: "Chermside",
+    }),
+    JSON.stringify({
+      version: 1,
+      deviceCode: "POS-1",
+      storeCode: "S1",
+      storeName: " ",
+    }),
+  ]) {
+    await secureStore.set(key, raw, localOnly);
+    assert.equal(await presentation.load(), null);
+    assert.equal(await secureStore.get(key), null);
+  }
+
+  class FailingRemoveSecureStore extends InMemorySecureStore {
+    public override async remove(): Promise<void> {
+      throw new Error("Keychain remove failed.");
+    }
+  }
+  const failingStore = new FailingRemoveSecureStore();
+  await failingStore.set(key, "not-json", localOnly);
+
+  assert.equal(
+    await new DevicePresentationStore(failingStore).load(),
+    null,
+  );
 });
 
 test("待审批记录缺少设备或门店时不得进入本地 pending 状态", async () => {

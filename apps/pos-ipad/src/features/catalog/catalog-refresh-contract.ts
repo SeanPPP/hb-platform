@@ -16,8 +16,14 @@ export type CatalogRefreshStep =
 export type CatalogRefreshProgressEvent = Readonly<{
   step: CatalogRefreshStep;
   percent: number;
+  /** 从本次刷新开始到该事实发生时的真实耗时，不用于推算百分比。 */
+  elapsedMilliseconds?: number;
   completedItemCount?: number;
   totalItemCount?: number;
+  /** 已完整校验并写入 staging 的服务端页数。 */
+  completedPageCount?: number;
+  /** 按服务端声明总数与本次请求 pageSize 得出的固定分页总数。 */
+  totalPageCount?: number;
 }>;
 
 export type CatalogRefreshProgressObserver = (

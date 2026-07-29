@@ -147,6 +147,68 @@ test("生产支付只公开 presenter/恢复布尔值，启动前和无可信收
   );
 });
 
+test("普通支付展示行只投影可信活动购物车，忽略路由伪造明细", async () => {
+  const cart = pricedCart();
+  const activeCart = new ActivePricingCartSession(
+    cart,
+    () => new PricingCart(),
+  );
+  const snapshot = activeCart.getSnapshot();
+  const runtime = createProductionPaymentRuntime({
+    database: database(),
+    repositories: repositories(),
+    encryptor,
+    activeCart,
+    currentCashier: activeCashier(),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: {
+      now: () => new Date("2026-07-28T00:00:00.000Z"),
+      nowIso: () => "2026-07-28T00:00:00.000Z",
+    },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: bootstrap(() => undefined),
+    async drainFulfilment() {},
+  });
+  await runtime.initializeRecovery();
+  const service = runtime.service;
+  assert.equal(service.status, "available");
+  if (service.status !== "available") return;
+
+  const presenter = service.createPresenter({
+    checkoutIntentId: "checkout-1",
+    expectedCartRevision: snapshot.revision,
+    total: snapshot.actualAmount,
+    lines: [{
+      lineKey: "forged-line",
+      displayName: "Forged item",
+      quantity: "99",
+      actualAmountCents: 1,
+    }],
+  });
+  assert.deepEqual(presenter.getState().checkout.lines, [{
+    lineKey: "line-1",
+    displayName: "Tea",
+    quantity: "1",
+    actualAmountCents: 1_000,
+  }]);
+  presenter.destroy();
+
+  const stalePresenter = service.createPresenter({
+    checkoutIntentId: "checkout-stale",
+    expectedCartRevision: snapshot.revision + 1,
+    total: snapshot.actualAmount,
+    lines: [{
+      lineKey: "forged-line",
+      displayName: "Forged item",
+      quantity: "99",
+      actualAmountCents: 1,
+    }],
+  });
+  assert.deepEqual(stalePresenter.getState().checkout.lines, []);
+  stalePresenter.destroy();
+});
+
 test("生产 reversal router 只把现金和礼券交给各自实现，银行卡始终失败关闭且零 provider 调用", async () => {
   const truth = mixedTruth();
   const cashCalls: string[] = [];

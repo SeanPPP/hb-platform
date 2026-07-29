@@ -22,16 +22,32 @@ test("销售工具栏顺序会去除未知和重复 ID，并补齐默认项", ()
       "daily-close",
       "returns",
       "remote-history",
-      "special-products",
       "installments",
-      "settings",
-      "attendance-audit",
       "sync-history",
       "catalog-maintenance",
+      "attendance-audit",
+      "settings",
       "hold",
       "language",
     ],
   );
+});
+
+test("默认顺序与当前顶部按钮顺序一致", () => {
+  assert.deepEqual(DEFAULT_SALES_TOOLBAR_ORDER, [
+    "held-orders",
+    "daily-close",
+    "returns",
+    "remote-history",
+    "installments",
+    "sync-history",
+    "catalog-maintenance",
+    "attendance-audit",
+    "settings",
+    "hold",
+    "language",
+    "lock",
+  ]);
 });
 
 test("空的持久化值会恢复完整默认顺序", () => {
@@ -52,6 +68,27 @@ test("缺失的新操作会补回其默认相邻操作之间", () => {
   );
 });
 
+test("旧持久化顺序会移除特殊商品并保留其余操作的相对顺序", () => {
+  assert.deepEqual(
+    reconcileSalesToolbarOrder([
+      "held-orders",
+      "daily-close",
+      "returns",
+      "special-products",
+      "remote-history",
+      "installments",
+      "sync-history",
+      "catalog-maintenance",
+      "attendance-audit",
+      "settings",
+      "hold",
+      "language",
+      "lock",
+    ]),
+    [...DEFAULT_SALES_TOOLBAR_ORDER],
+  );
+});
+
 test("重排可见操作时，隐藏操作保留其原来的槽位", () => {
   assert.deepEqual(
     mergeVisibleSalesToolbarOrder(DEFAULT_SALES_TOOLBAR_ORDER, [
@@ -64,12 +101,11 @@ test("重排可见操作时，隐藏操作保留其原来的槽位", () => {
       "daily-close",
       "held-orders",
       "remote-history",
-      "special-products",
       "installments",
-      "settings",
-      "attendance-audit",
       "sync-history",
       "catalog-maintenance",
+      "attendance-audit",
+      "settings",
       "hold",
       "language",
       "lock",
@@ -90,12 +126,11 @@ test("可见顺序中的无效或重复值不会挤占有效操作槽位", () =>
       "daily-close",
       "returns",
       "remote-history",
-      "special-products",
       "installments",
-      "settings",
-      "attendance-audit",
       "sync-history",
       "catalog-maintenance",
+      "attendance-audit",
+      "settings",
       "held-orders",
       "language",
       "lock",

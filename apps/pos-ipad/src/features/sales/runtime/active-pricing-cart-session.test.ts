@@ -241,6 +241,7 @@ test("启动 RecallActive 只安装隐藏恢复围栏，不向快照泄漏 bindi
 
   assert.deepEqual(activeCart.read(), {
     sessionRevision: 1,
+    transactionEpoch: 0,
     pricingState: activeCart.read().pricingState,
     cart: activeCart.read().cart,
     recallBinding: null,
@@ -349,6 +350,99 @@ test("同车释放 active binding 在 lease 内递增 revision，过期 lease �
     () => retainedLease?.setRecallBinding(null),
     hasCode(ACTIVE_PRICING_CART_STALE_LEASE),
   );
+});
+
+test("目录行校准先在副本更新再单次发布，并以交易代次隔离清车后的迟到结果", () => {
+  const activeCart = session(cartWithLine());
+  let notifications = 0;
+  activeCart.subscribe(() => {
+    notifications += 1;
+  });
+  const transactionEpoch = activeCart.read().transactionEpoch;
+
+  const updated = activeCart.refreshCatalogItem(
+    {
+      expected: {
+        productCode: "P1",
+        referenceCode: null,
+        lookupCode: "1",
+      },
+      item: {
+        productCode: "P1",
+        referenceCode: null,
+        itemNumber: "NEW-1",
+        lookupCode: "1",
+        displayName: "Fresh tea",
+        retailPriceCents: 700,
+        priceSource: 1,
+      },
+    },
+    transactionEpoch,
+  );
+
+  assert.deepEqual(updated, ["line-1"]);
+  assert.equal(activeCart.getSnapshot().lines[0]?.unitPrice.cents, 700);
+  assert.equal(notifications, 1);
+
+  activeCart.clearManually();
+  assert.equal(activeCart.read().transactionEpoch, transactionEpoch + 1);
+  assert.deepEqual(
+    activeCart.refreshCatalogItem(
+      {
+        expected: {
+          productCode: "P1",
+          referenceCode: null,
+          lookupCode: "1",
+        },
+        item: {
+          productCode: "P1",
+          referenceCode: null,
+          itemNumber: "LATE",
+          lookupCode: "1",
+          displayName: "Late tea",
+          retailPriceCents: 900,
+          priceSource: 1,
+        },
+      },
+      transactionEpoch,
+    ),
+    [],
+  );
+  assert.equal(notifications, 2);
+});
+
+test("目录校准无真实差异时不交换购物车且不发布", () => {
+  const activeCart = session(cartWithLine());
+  const snapshotBefore = activeCart.read();
+  let notifications = 0;
+  activeCart.subscribe(() => {
+    notifications += 1;
+  });
+
+  const updated = activeCart.refreshCatalogItem(
+    {
+      expected: {
+        productCode: "P1",
+        referenceCode: null,
+        lookupCode: "1",
+      },
+      item: {
+        productCode: "p1",
+        referenceCode: null,
+        itemNumber: null,
+        lookupCode: " 1 ",
+        displayName: "Tea",
+        retailPriceCents: 500,
+        priceSource: 0,
+      },
+    },
+    snapshotBefore.transactionEpoch,
+  );
+
+  assert.deepEqual(updated, []);
+  assert.equal(activeCart.read(), snapshotBefore);
+  assert.equal(activeCart.read().pricingState.revision, snapshotBefore.pricingState.revision);
+  assert.equal(notifications, 0);
 });
 
 function session(initial = new PricingCart()): ActivePricingCartSession {

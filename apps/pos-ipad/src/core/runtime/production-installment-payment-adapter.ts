@@ -20,6 +20,7 @@ import type {
   InstallmentRefundCommand,
 } from "@/features/installments/installment-models";
 import type { PaymentProviderRegistryPort } from "@/features/payments/payment-attempt-service";
+import type { PaymentProviderAvailability } from "@/features/payments/runtime/payment-provider-registry";
 
 export type InstallmentCardProvider = Extract<
   PaymentProvider,
@@ -270,6 +271,30 @@ export class ProductionInstallmentPaymentAdapter
     return this.run(persistedActionId);
   }
 
+  public async listProviderAvailability(): Promise<
+    readonly PaymentProviderAvailability[]
+  > {
+    let enabledCards: readonly InstallmentCardProvider[] = [];
+    try {
+      enabledCards =
+        await this.options.cardProviderSelection.loadEnabledProviders();
+    } catch {
+      // 配置读取失败时三种在线方式全部失败关闭；UI 不得猜测默认卡通道。
+    }
+    return Object.freeze(
+      (["square", "linkly-cloud", "voucher"] as const).map((provider) => {
+        const configured =
+          provider === "voucher" || enabledCards.includes(provider);
+        const available = configured && this.providerExists(provider);
+        return Object.freeze({
+          provider,
+          available,
+          blocker: available ? null : "PAYMENT_PROVIDER_UNKNOWN",
+        });
+      }),
+    );
+  }
+
   private run(rawActionId: string): Promise<PaymentAdapterResult> {
     const actionId = requiredText(rawActionId, "persisted action id");
     const existing = this.inflight.get(actionId);
@@ -371,7 +396,11 @@ export class ProductionInstallmentPaymentAdapter
     const provider =
       method === "voucher"
         ? "voucher"
-        : await this.resolveNewCardProvider();
+        : await this.resolveNewCardProvider(
+            action.command.kind === "cancel-refund"
+              ? undefined
+              : action.command.cardProvider,
+          );
     const record = this.createProviderRecord({
       action,
       paymentGuid,
@@ -513,7 +542,23 @@ export class ProductionInstallmentPaymentAdapter
     });
   }
 
-  private async resolveNewCardProvider(): Promise<InstallmentCardProvider> {
+  private async resolveNewCardProvider(
+    selected: InstallmentCardProvider | undefined,
+  ): Promise<InstallmentCardProvider> {
+    if (selected !== undefined) {
+      if (
+        (selected !== "square" && selected !== "linkly-cloud") ||
+        !this.providerExists(selected)
+      ) {
+        throw adapterError(
+          "INSTALLMENT_CARD_PROVIDER_SELECTION_INVALID",
+          "The frozen installment card provider is unavailable.",
+        );
+      }
+      // 新版 action 已在耐久 envelope 冻结 provider；恢复时不得被后续配置变更改写。
+      return selected;
+    }
+
     let configured: readonly InstallmentCardProvider[];
     try {
       configured =
@@ -544,6 +589,15 @@ export class ProductionInstallmentPaymentAdapter
     }
     this.requireProvider(unique[0]);
     return unique[0];
+  }
+
+  private providerExists(provider: PaymentProvider): boolean {
+    try {
+      this.requireProvider(provider);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async executePurchasePlan(

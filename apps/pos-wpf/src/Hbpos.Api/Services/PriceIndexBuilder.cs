@@ -173,12 +173,18 @@ public sealed class PriceIndexBuilder : IPriceIndexBuilder
         bool isSpecialProduct)
     {
         var trimmedLookupCode = lookupCode.Trim();
+        // 商品名缺失时优先使用货号，货号也缺失才继续回退商品编码。
+        var displayName = HasText(product?.DisplayName)
+            ? product!.DisplayName!
+            : HasText(product?.ItemNumber)
+                ? product!.ItemNumber!
+                : productCode ?? product?.ProductCode ?? trimmedLookupCode;
 
         return new SellableItemDto(
             storeCode,
             productCode ?? product?.ProductCode ?? string.Empty,
             NormalizeReferenceCode(referenceCode),
-            product?.DisplayName ?? productCode ?? lookupCode,
+            displayName,
             trimmedLookupCode,
             product?.ItemNumber,
             product?.Barcode,

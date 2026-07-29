@@ -12,6 +12,7 @@ export const MIN_TOUCH_TARGET = 44;
 
 export type SalesUiPhase =
   | "selling"
+  | "verifying-checkout"
   | "cash"
   | "submitting-cash"
   | "success"
@@ -79,6 +80,7 @@ export type SalesPresenterState = Readonly<{
   query: string;
   searchStatus: SalesSearchStatus;
   searchResults: readonly SalesProductSearchItem[];
+  pendingLookupCount: number;
   cashTenderedText: string;
   errorCode: SalesErrorCode | null;
   success: SalesSuccessState | null;
@@ -128,6 +130,13 @@ export interface SalesWorkflowPort {
   addProduct(product: SalesProductSearchItem): Promise<void>;
   addByLookupCode(lookupCode: string): Promise<void>;
   addOpenItem(unitPriceCents: number): Promise<void>;
+  getPendingCatalogWorkCount(): number;
+  subscribePendingCatalogWork(listener: () => void): () => void;
+  settlePendingCatalogWork(
+    input: Readonly<{ timeoutMs: number }>,
+  ): Promise<Readonly<{ timedOut: boolean }>>;
+  disposePendingCatalogWork(): void;
+  releasePreparedCheckout(): void;
   completeCash(input: Readonly<{
     checkoutIntentId: string;
     cart: CartSnapshot;
@@ -180,9 +189,12 @@ export class SalesPresenter {
   private state: SalesPresenterState;
   private readonly listeners = new Set<() => void>();
   private readonly unsubscribeCart: () => void;
+  private readonly unsubscribePendingCatalogWork: () => void;
   private cashIntentId: string | null = null;
   private cashSubmission: Promise<boolean> | null = null;
+  private checkoutPreparation: Promise<CartSnapshot | null> | null = null;
   private searchGeneration = 0;
+  private destroyed = false;
 
   public constructor(private readonly dependencies: SalesPresenterDependencies) {
     this.state = {
@@ -191,6 +203,7 @@ export class SalesPresenter {
       query: "",
       searchStatus: "idle",
       searchResults: [],
+      pendingLookupCount: dependencies.workflow.getPendingCatalogWorkCount(),
       cashTenderedText: "",
       errorCode: null,
       success: null,
@@ -199,6 +212,13 @@ export class SalesPresenter {
     this.unsubscribeCart = dependencies.cart.subscribe(() => {
       this.patchState({ cart: dependencies.cart.getSnapshot() });
     });
+    this.unsubscribePendingCatalogWork =
+      dependencies.workflow.subscribePendingCatalogWork(() => {
+        this.patchState({
+          pendingLookupCount:
+            dependencies.workflow.getPendingCatalogWorkCount(),
+        });
+      });
   }
 
   public readonly getState = (): SalesPresenterState => this.state;
@@ -209,8 +229,17 @@ export class SalesPresenter {
   };
 
   public destroy(): void {
-    this.unsubscribeCart();
-    this.listeners.clear();
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.searchGeneration += 1;
+    try {
+      // 先 fence 迟到的目录任务，之后才拆除视图订阅，避免销毁窗口注入购物车。
+      this.dependencies.workflow.disposePendingCatalogWork();
+    } finally {
+      this.unsubscribeCart();
+      this.unsubscribePendingCatalogWork();
+      this.listeners.clear();
+    }
   }
 
   public setQuery(query: string): void {
@@ -283,9 +312,28 @@ export class SalesPresenter {
       return Promise.resolve(false);
     }
 
-    return this.runProductMutation(() =>
-      this.dependencies.workflow.addByLookupCode(lookupCode),
-    );
+    // 扫码输入属于高频主路径：先释放输入框，远程校准和本地 miss 回查在后台完成。
+    this.patchState({
+      query: "",
+      searchStatus: "idle",
+      searchResults: [],
+      errorCode: null,
+    });
+    return this.dependencies.workflow
+      .addByLookupCode(lookupCode)
+      .then(() => {
+        this.patchState({ cart: this.dependencies.cart.getSnapshot() });
+        return true;
+      })
+      .catch((error: unknown) => {
+        if (hasErrorCode(error, "NEW_TRANSACTIONS_DISABLED")) {
+          this.patchState({ errorCode: "new-transactions-disabled" });
+        } else if (hasErrorCode(error, "SALES_OPERATION_NOT_AUTHORIZED")) {
+          this.patchState({ errorCode: "authorization-denied" });
+        }
+        // 未找到、离线和远程超时均保留当前交易，不用噪声错误打断收银。
+        return false;
+      });
   }
 
   public addProduct(product: SalesProductSearchItem): Promise<boolean> {
@@ -466,6 +514,9 @@ export class SalesPresenter {
   }
 
   public clearCart(): Promise<boolean> {
+    if (this.state.phase !== "selling") {
+      return Promise.resolve(false);
+    }
     if (this.state.cart.lines.length === 0) {
       this.patchState({ errorCode: "empty-cart" });
       return Promise.resolve(false);
@@ -475,18 +526,19 @@ export class SalesPresenter {
     );
   }
 
-  public openCash(): boolean {
+  public async openCash(): Promise<boolean> {
     if (!this.dependencies.capabilities.cashCheckout) {
       this.patchState({ errorCode: "runtime-unavailable" });
       return false;
     }
-    if (this.state.cart.lines.length === 0) {
-      this.patchState({ errorCode: "empty-cart" });
+    const cart = await this.prepareCheckout();
+    if (!cart) {
       return false;
     }
 
     this.cashIntentId = this.dependencies.createCheckoutIntentId();
     this.patchState({
+      cart,
       phase: "cash",
       cashTenderedText: "",
       errorCode: null,
@@ -495,10 +547,27 @@ export class SalesPresenter {
     return true;
   }
 
+  public prepareOnlineCheckout(): Promise<CartSnapshot | null> {
+    return this.prepareCheckout();
+  }
+
+  public releasePreparedCheckout(): void {
+    if (this.destroyed) return;
+    this.dependencies.workflow.releasePreparedCheckout();
+    if (this.state.phase === "verifying-checkout") {
+      this.patchState({
+        phase: "selling",
+        pendingLookupCount:
+          this.dependencies.workflow.getPendingCatalogWorkCount(),
+      });
+    }
+  }
+
   public closeCash(): boolean {
     if (this.state.phase === "submitting-cash") {
       return false;
     }
+    this.releasePreparedCheckout();
     this.cashIntentId = null;
     this.patchState({
       phase: "selling",
@@ -640,6 +709,7 @@ export class SalesPresenter {
       this.patchState({ errorCode: "new-transactions-disabled" });
       return false;
     }
+    this.releasePreparedCheckout();
     this.patchState({
       phase: "selling",
       query: "",
@@ -654,6 +724,9 @@ export class SalesPresenter {
   }
 
   public holdCart(): Promise<boolean> {
+    if (this.state.phase !== "selling") {
+      return Promise.resolve(false);
+    }
     if (!this.dependencies.capabilities.hold) {
       this.patchState({ errorCode: "runtime-unavailable" });
       return Promise.resolve(false);
@@ -722,7 +795,73 @@ export class SalesPresenter {
       });
   }
 
+  private prepareCheckout(): Promise<CartSnapshot | null> {
+    if (
+      this.destroyed ||
+      this.state.phase !== "selling" ||
+      this.checkoutPreparation
+    ) {
+      return Promise.resolve(null);
+    }
+    const pendingLookupCount =
+      this.dependencies.workflow.getPendingCatalogWorkCount();
+    if (
+      this.state.cart.lines.length === 0 &&
+      pendingLookupCount <= 0
+    ) {
+      this.patchState({ errorCode: "empty-cart" });
+      return Promise.resolve(null);
+    }
+
+    this.patchState({
+      phase: "verifying-checkout",
+      pendingLookupCount,
+      cashTenderedText: "",
+      errorCode: null,
+    });
+    const preparation = Promise.resolve()
+      .then(() =>
+        this.dependencies.workflow.settlePendingCatalogWork({
+          timeoutMs: 2_000,
+        }),
+      )
+      .catch(() => ({ timedOut: true }))
+      .then(() => {
+        const cart = this.dependencies.cart.getSnapshot();
+        if (this.destroyed || this.state.phase !== "verifying-checkout") {
+          return null;
+        }
+        if (cart.lines.length === 0) {
+          this.releasePreparedCheckout();
+          this.patchState({
+            phase: "selling",
+            cart,
+            pendingLookupCount:
+              this.dependencies.workflow.getPendingCatalogWorkCount(),
+            errorCode: "empty-cart",
+          });
+          return null;
+        }
+        this.patchState({
+          cart,
+          pendingLookupCount:
+            this.dependencies.workflow.getPendingCatalogWorkCount(),
+        });
+        return cart;
+      })
+      .finally(() => {
+        if (this.checkoutPreparation === preparation) {
+          this.checkoutPreparation = null;
+        }
+      });
+    this.checkoutPreparation = preparation;
+    return preparation;
+  }
+
   private canMutateNewTransaction(): boolean {
+    if (this.state.phase !== "selling") {
+      return false;
+    }
     if (
       this.state.cart.lines.length === 0 &&
       !this.dependencies.canStartNewTransaction()
@@ -734,6 +873,9 @@ export class SalesPresenter {
   }
 
   private runCartMutation(operation: () => Promise<void>): Promise<boolean> {
+    if (this.state.phase !== "selling") {
+      return Promise.resolve(false);
+    }
     if (!this.dependencies.capabilities.cartEditing) {
       this.patchState({ errorCode: "runtime-unavailable" });
       return Promise.resolve(false);
@@ -760,6 +902,7 @@ export class SalesPresenter {
   }
 
   private patchState(patch: Partial<SalesPresenterState>): void {
+    if (this.destroyed) return;
     this.state = {
       ...this.state,
       ...patch,
@@ -885,6 +1028,11 @@ export function createDisconnectedSalesPresenter(): SalesPresenter {
     addProduct: unavailable,
     addByLookupCode: unavailable,
     addOpenItem: unavailable,
+    getPendingCatalogWorkCount: () => 0,
+    subscribePendingCatalogWork: () => () => undefined,
+    settlePendingCatalogWork: async () => ({ timedOut: false }),
+    disposePendingCatalogWork: () => undefined,
+    releasePreparedCheckout: () => undefined,
     completeCash: unavailable,
     holdCart: unavailable,
     lockTerminal: unavailable,

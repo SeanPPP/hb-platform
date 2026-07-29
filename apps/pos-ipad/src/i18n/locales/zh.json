@@ -55,6 +55,8 @@
   "status.device.pending-approval": "待审批",
   "status.device.authorized": "已授权",
   "status.device.locked": "已锁定",
+  "status.storeName": "分店名称",
+  "status.deviceCode": "设备代码",
   "status.network": "网络",
   "status.network.checking": "检测中",
   "status.network.online": "在线",

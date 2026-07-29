@@ -35,6 +35,7 @@ import type {
   InstallmentPresenter,
   InstallmentWorkflowPort,
 } from "@/features/installments/installment-presenter";
+import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
 
 const STORE_CODE = "STORE-1";
 const DEVICE_CODE = "IPAD-1";
@@ -44,12 +45,22 @@ const ALL_PERMISSIONS = Object.freeze([
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
+  PAYMENT_PERMISSION.view,
+  PAYMENT_PERMISSION.takeCash,
+  PAYMENT_PERMISSION.takeCard,
+  PAYMENT_PERMISSION.takeVoucher,
+  PAYMENT_PERMISSION.confirm,
 ]);
 
-test("公开服务只提供零参数 presenter 工厂，在线列表成功后增量写入门店快照", async () => {
+test("公开服务提供管理、统一支付与恢复工厂，在线列表成功后增量写入门店快照", async () => {
   const harness = createHarness();
 
-  assert.deepEqual(Object.keys(harness.runtime), ["createPresenter"]);
+  assert.deepEqual(Object.keys(harness.runtime), [
+    "createPresenter",
+    "prepareCreateCheckout",
+    "createCheckoutPresenter",
+    "hasRecoveryRequired",
+  ]);
   const presenter = harness.runtime.createPresenter();
   await presenter.load();
 

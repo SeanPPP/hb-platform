@@ -15,6 +15,13 @@ export type HbposTransportRequest = Readonly<{
   data?: unknown;
   params?: Readonly<Record<string, string | number | boolean | undefined>>;
   headers?: Readonly<Record<string, string>>;
+  /** 请求级取消信号；页面离开时用于中止仍在等待的目录下载。 */
+  signal?: AbortSignal;
+  /**
+   * 请求级超时覆盖。0 表示不设置固定超时，适用于可由用户主动取消的长目录下载；
+   * 未提供时继续使用 transport 的全局默认值。
+   */
+  timeoutMs?: number;
   /**
    * Axios 默认只接受 2xx；条件 GET 的 304 与幂等冲突的 409 必须由领域
    * 适配器读取并恢复，不能提前折叠成通用传输异常。

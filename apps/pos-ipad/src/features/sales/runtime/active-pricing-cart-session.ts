@@ -9,6 +9,7 @@ import {
   PricingCart,
   type AddCartItemInput,
   type AddOpenItemInput,
+  type RefreshCatalogItemInput,
 } from "@/features/sales/domain";
 
 export const ACTIVE_PRICING_CART_BUSY = "ACTIVE_PRICING_CART_BUSY";
@@ -23,6 +24,7 @@ const DEFAULT_COMMITTED_ORDER_TOMBSTONE_LIMIT = 128;
 
 export type ActivePricingCartSessionSnapshot = Readonly<{
   sessionRevision: number;
+  transactionEpoch: number;
   pricingState: PricingCartStateSnapshot;
   cart: CartSnapshot;
   recallBinding: RecallActiveBinding | null;
@@ -69,6 +71,7 @@ export class ActivePricingCartSession {
   private pendingRecallRecovery: RecallActiveBinding | null = null;
   private recallBinding: RecallActiveBinding | null = null;
   private sessionRevision = 0;
+  private transactionEpoch = 0;
   private current: ActivePricingCartSessionSnapshot;
 
   public constructor(
@@ -129,6 +132,23 @@ export class ActivePricingCartSession {
     const lineId = this.cart.addOpenItem(input);
     this.commitCurrentCartMutation();
     return lineId;
+  }
+
+  /**
+   * 远程校准在克隆车上完成全部领域重算，确认仍是扫码开始时的交易后才单次交换。
+   */
+  public refreshCatalogItem(
+    input: RefreshCatalogItemInput,
+    expectedTransactionEpoch: number,
+  ): readonly string[] {
+    this.assertIdle();
+    this.assertTerminalRecoveryResolved();
+    if (expectedTransactionEpoch !== this.transactionEpoch) return [];
+    const replacement = cloneCart(this.cart);
+    const updatedLineIds = replacement.refreshCatalogItem(input);
+    if (updatedLineIds.length === 0) return [];
+    this.swapCart(replacement);
+    return updatedLineIds;
   }
 
   public increaseLine(lineId: string): boolean {
@@ -251,11 +271,13 @@ export class ActivePricingCartSession {
     if (pricingState.revision >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError("Pricing cart revision is exhausted.");
     }
-    this.cart = PricingCart.restore({
+    const replacement = PricingCart.restore({
       ...pricingState,
       revision: pricingState.revision + 1,
       lines: [],
     });
+    this.advanceTransactionEpoch();
+    this.cart = replacement;
     this.commitCurrentCartMutation();
     return true;
   }
@@ -271,7 +293,7 @@ export class ActivePricingCartSession {
     this.assertIdle();
     this.assertReplacementBindingAllowed(recallBinding);
     const replacement = PricingCart.restore(pricingState);
-    return this.swapCart(replacement, recallBinding);
+    return this.replaceForNewTransaction(replacement, recallBinding);
   }
 
   /**
@@ -345,7 +367,7 @@ export class ActivePricingCartSession {
         this.assertLease(token);
         this.assertReplacementBindingAllowed(recallBinding);
         const replacement = PricingCart.restore(pricingState);
-        return this.swapCart(replacement, recallBinding);
+        return this.replaceForNewTransaction(replacement, recallBinding);
       },
       setRecallBinding: (recallBinding: RecallActiveBinding | null) => {
         this.assertLease(token);
@@ -376,6 +398,7 @@ export class ActivePricingCartSession {
     }
 
     this.assertCanAdvance();
+    this.advanceTransactionEpoch();
     this.cart = emptyCart;
     this.recallBinding = null;
     this.commitCurrentCartMutation();
@@ -396,6 +419,20 @@ export class ActivePricingCartSession {
     this.pendingRecallRecovery = null;
     this.commitCurrentCartMutation();
     return this.current;
+  }
+
+  private replaceForNewTransaction(
+    replacement: PricingCart,
+    recallBinding: RecallActiveBinding | null,
+  ): ActivePricingCartSessionSnapshot {
+    const previousEpoch = this.transactionEpoch;
+    this.advanceTransactionEpoch();
+    try {
+      return this.swapCart(replacement, recallBinding);
+    } catch (error) {
+      this.transactionEpoch = previousEpoch;
+      throw error;
+    }
   }
 
   private blockForRecallRecoveryInternal(
@@ -462,6 +499,7 @@ export class ActivePricingCartSession {
   private buildSnapshot(): ActivePricingCartSessionSnapshot {
     return deepFreeze({
       sessionRevision: this.sessionRevision,
+      transactionEpoch: this.transactionEpoch,
       pricingState: this.cart.stateSnapshot(),
       cart: this.cart.snapshot(),
       recallBinding: cloneRecallBinding(this.recallBinding),
@@ -513,6 +551,13 @@ export class ActivePricingCartSession {
     if (this.sessionRevision >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError("Active pricing cart revision is exhausted.");
     }
+  }
+
+  private advanceTransactionEpoch(): void {
+    if (this.transactionEpoch >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("Active cart transaction epoch is exhausted.");
+    }
+    this.transactionEpoch += 1;
   }
 
   private assertReplacementBindingAllowed(

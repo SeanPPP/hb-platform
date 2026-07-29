@@ -17,6 +17,7 @@ import type {
 } from "../contracts/repositories";
 import type { TerminalCartFence } from "../contracts/terminal-cart";
 
+import { SqliteCatalogLookupOverlayRepository } from "./catalog-lookup-overlay-repository";
 import { SqliteCatalogSnapshotRepository } from "./catalog-repository";
 import { applyMigrations } from "./migrations";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
@@ -185,6 +186,14 @@ export class PosDatabase implements DatabasePort {
   /** 目录仅经此仓储访问，feature 层不持有裸 SQLite connection。 */
   public catalogSnapshots(): SqliteCatalogSnapshotRepository {
     return new SqliteCatalogSnapshotRepository(this.connection);
+  }
+
+  /** 在线扫码只取得按目录代次隔离的增量覆盖层，不可修改完整目录快照。 */
+  public catalogLookupOverlay(): SqliteCatalogLookupOverlayRepository {
+    return new SqliteCatalogLookupOverlayRepository(
+      this.connection,
+      this.nowIso,
+    );
   }
 
   /** 日结汇总与冻结归档只经专用 facade 访问，feature 不取得审计表或裸连接。 */

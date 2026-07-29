@@ -32,3 +32,20 @@ test("shell store rejects invalid pending sync counts", () => {
   );
   usePosShellStore.getState().reset();
 });
+
+test("shell store keeps the public terminal presentation and reset clears it", () => {
+  usePosShellStore.getState().reset();
+  assert.equal(usePosShellStore.getState().terminalPresentation, null);
+
+  usePosShellStore.getState().setTerminalPresentation({
+    storeName: "Brisbane CBD",
+    deviceCode: "IPAD-07",
+  });
+  assert.deepEqual(usePosShellStore.getState().terminalPresentation, {
+    storeName: "Brisbane CBD",
+    deviceCode: "IPAD-07",
+  });
+
+  usePosShellStore.getState().reset();
+  assert.equal(usePosShellStore.getState().terminalPresentation, null);
+});

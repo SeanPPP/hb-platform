@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "../security/pos-api-addresses";
+
 import {
   DEFAULT_HBPOS_API_URL,
   resolveHbposApiUrl,
@@ -33,5 +35,20 @@ test("runtime normalizes an explicit API address without accepting credentials o
   assert.equal(
     resolveHbposApiUrl("http://127.0.0.1:5003/pos-api/"),
     "http://127.0.0.1:5003/pos-api",
+  );
+  assert.equal(
+    resolveHbposApiUrl(DEFAULT_LOCAL_HBPOS_API_BASE_URL),
+    DEFAULT_LOCAL_HBPOS_API_BASE_URL,
+  );
+});
+
+test("runtime accepts the exact build-declared LAN API address over HTTP", () => {
+  assert.equal(
+    resolveHbposApiUrl(`${DEFAULT_LOCAL_HBPOS_API_BASE_URL}/`),
+    DEFAULT_LOCAL_HBPOS_API_BASE_URL,
+  );
+  assert.throws(
+    () => resolveHbposApiUrl("http://192.168.31.247:5159"),
+    /HTTPS/i,
   );
 });

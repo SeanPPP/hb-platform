@@ -19,6 +19,7 @@ import type {
   PromotionDefinition,
   PromotionProduct,
   QuickDiscountBasisPoints,
+  RefreshCatalogItemInput,
 } from "./types";
 
 type MutablePricingLine = {
@@ -484,6 +485,76 @@ export class PricingCart {
     });
     this.finishMutation();
     return input.lineId;
+  }
+
+  /**
+   * 仅更新扫码时已确认的同身份销售行。手工价属于收银员决策，只同步目录元数据；
+   * catalog 价则按服务端分币更新，并由 finishMutation 统一重算折扣与促销。
+   */
+  refreshCatalogItem(input: RefreshCatalogItemInput): readonly string[] {
+    const expectedLookup = normalizeLookupCode(input.expected.lookupCode);
+    const nextLookup = normalizeLookupCode(input.item.lookupCode);
+    if (
+      normalizeProductCode(input.expected.productCode) !==
+        normalizeProductCode(input.item.productCode) ||
+      input.expected.referenceCode !== input.item.referenceCode ||
+      expectedLookup !== nextLookup ||
+      expectedLookup.length === 0
+    ) {
+      return [];
+    }
+    assertNonBlank(input.item.displayName, "catalog display name");
+    assertSafeInteger(input.item.retailPriceCents, "catalog retail price");
+    if (input.item.retailPriceCents < 0) {
+      throw new RangeError("catalog retail price must not be negative");
+    }
+
+    const updatedLineIds: string[] = [];
+    for (const line of this.lines) {
+      if (
+        line.kind !== "sale" ||
+        line.basePriceSource === "open-item" ||
+        normalizeLookupCode(line.lookupCode) !== expectedLookup ||
+        normalizeProductCode(line.productCode) !==
+          normalizeProductCode(input.expected.productCode) ||
+        line.syncProvenance?.referenceCode !==
+          input.expected.referenceCode
+      ) {
+        continue;
+      }
+
+      const metadataChanged =
+        line.itemNumber !== input.item.itemNumber ||
+        normalizeLookupCode(line.lookupCode) !== nextLookup ||
+        line.displayName !== input.item.displayName ||
+        line.syncProvenance?.priceSource !== input.item.priceSource;
+      const catalogPriceChanged =
+        line.basePriceSource === "catalog" &&
+        line.unitPriceCents !== input.item.retailPriceCents;
+      if (!metadataChanged && !catalogPriceChanged) {
+        continue;
+      }
+
+      if (metadataChanged) {
+        line.productCode = input.item.productCode;
+        line.itemNumber = input.item.itemNumber;
+        line.lookupCode = input.item.lookupCode;
+        line.displayName = input.item.displayName;
+        line.syncProvenance = normalizeLineSyncProvenance({
+          referenceCode: input.item.referenceCode,
+          priceSource: input.item.priceSource,
+        });
+      }
+      if (catalogPriceChanged) {
+        this.assertGrossSafe(line.quantity, input.item.retailPriceCents);
+        line.unitPriceCents = input.item.retailPriceCents;
+        this.normalizeDiscountAfterGrossChange(line);
+      }
+      updatedLineIds.push(line.lineId);
+    }
+
+    if (updatedLineIds.length > 0) this.finishMutation();
+    return updatedLineIds;
   }
 
   removeLine(lineId: string): boolean {

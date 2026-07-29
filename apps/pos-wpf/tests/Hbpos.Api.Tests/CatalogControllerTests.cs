@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
@@ -55,7 +56,143 @@ public sealed class CatalogControllerTests
         var apiResult = Assert.IsType<ApiResult<CatalogSyncPageResponse>>(ok.Value);
         Assert.True(apiResult.Success);
         Assert.Same(expected, apiResult.Data);
-        Assert.Equal(("S01", DateTimeOffset.UnixEpoch, "cursor-1", 100), service.LastPageRequest);
+        Assert.Equal(
+            ("S01", DateTimeOffset.UnixEpoch, "cursor-1", 100, null, 1),
+            service.LastPageRequest);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsPage_ForwardsPinnedVersionAndChecksumVersion()
+    {
+        var expected = new CatalogSyncPageResponse("S01", DateTimeOffset.UnixEpoch, null, [], [], null, false, 0);
+        var service = new FakeCatalogService { PageResponse = expected };
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetSellableItemsPage(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            "cursor-1",
+            100,
+            CancellationToken.None,
+            catalogVersion: "catalog-v1:pinned",
+            checksumVersion: 2);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        Assert.Equal(
+            ("S01", DateTimeOffset.UnixEpoch, "cursor-1", 100, "catalog-v1:pinned", 2),
+            service.LastPageRequest);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsPage_RejectsUnsupportedChecksumVersion()
+    {
+        var service = new FakeCatalogService();
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetSellableItemsPage(
+            "S01",
+            since: null,
+            cursor: null,
+            pageSize: 100,
+            CancellationToken.None,
+            checksumVersion: 3);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogSyncPageResponse>>(badRequest.Value);
+        Assert.Equal("CATALOG_CHECKSUM_VERSION_UNSUPPORTED", apiResult.ErrorCode);
+        Assert.Null(service.LastPageRequest);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsPage_V2ContinuationRequiresCatalogVersion()
+    {
+        var service = new FakeCatalogService();
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetSellableItemsPage(
+            "S01",
+            since: null,
+            cursor: "cursor-1",
+            pageSize: 100,
+            CancellationToken.None,
+            checksumVersion: 2);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogSyncPageResponse>>(badRequest.Value);
+        Assert.Equal("CATALOG_VERSION_REQUIRED", apiResult.ErrorCode);
+        Assert.Null(service.LastPageRequest);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsPage_ReturnsConflictWhenPinnedSnapshotExpired()
+    {
+        var service = new FakeCatalogService { ThrowSnapshotExpired = true };
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetSellableItemsPage(
+            "S01",
+            since: null,
+            cursor: "cursor-1",
+            pageSize: 100,
+            CancellationToken.None,
+            catalogVersion: "catalog-v1:expired",
+            checksumVersion: 2);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogSyncPageResponse>>(conflict.Value);
+        Assert.Equal("CATALOG_SNAPSHOT_EXPIRED", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public void CatalogSyncPageResponse_keeps_old_constructor_and_json_clients_compatible()
+    {
+        var constructedByLegacySource = new CatalogSyncPageResponse(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            null,
+            [],
+            [],
+            null,
+            false,
+            0);
+        var current = new CatalogSyncPageResponse(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            null,
+            [],
+            [],
+            null,
+            false,
+            0,
+            CatalogVersion: "catalog-v1:test",
+            PageChecksum: "sha256-catalog-page-v1:test");
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        var legacyClient = JsonSerializer.Deserialize<LegacyCatalogSyncPageResponse>(
+            JsonSerializer.Serialize(current, options),
+            options);
+        var currentClientFromLegacyJson = JsonSerializer.Deserialize<CatalogSyncPageResponse>(
+            """
+            {
+              "storeCode": "S01",
+              "generatedAt": "1970-01-01T00:00:00+00:00",
+              "cursor": null,
+              "items": [],
+              "deletedLookups": [],
+              "nextCursor": null,
+              "hasMore": false,
+              "totalCount": 0
+            }
+            """,
+            options);
+
+        Assert.Equal(string.Empty, constructedByLegacySource.CatalogVersion);
+        Assert.Equal(string.Empty, constructedByLegacySource.PageChecksum);
+        Assert.NotNull(legacyClient);
+        Assert.Equal("S01", legacyClient.StoreCode);
+        Assert.NotNull(currentClientFromLegacyJson);
+        Assert.Equal(string.Empty, currentClientFromLegacyJson.CatalogVersion);
+        Assert.Equal(string.Empty, currentClientFromLegacyJson.PageChecksum);
     }
 
     [Fact]
@@ -317,7 +454,15 @@ public sealed class CatalogControllerTests
 
         public CatalogPromotionsResponse? PromotionRulesResponse { get; init; }
 
-        public (string StoreCode, DateTimeOffset? Since, string? Cursor, int PageSize)? LastPageRequest { get; private set; }
+        public bool ThrowSnapshotExpired { get; init; }
+
+        public (
+            string StoreCode,
+            DateTimeOffset? Since,
+            string? Cursor,
+            int PageSize,
+            string? CatalogVersion,
+            int ChecksumVersion)? LastPageRequest { get; private set; }
 
         public CatalogCompareRequest? LastCompareRequest { get; private set; }
 
@@ -351,8 +496,24 @@ public sealed class CatalogControllerTests
             int pageSize,
             CancellationToken cancellationToken)
         {
-            LastPageRequest = (storeCode, since, cursor, pageSize);
+            LastPageRequest = (storeCode, since, cursor, pageSize, null, 1);
             return Task.FromResult(PageResponse);
+        }
+
+        public Task<CatalogSyncPageResponse?> GetSellableItemsPageAsync(
+            string storeCode,
+            DateTimeOffset? since,
+            string? cursor,
+            int pageSize,
+            CancellationToken cancellationToken,
+            string? catalogVersion,
+            int checksumVersion)
+        {
+            LastPageRequest = (storeCode, since, cursor, pageSize, catalogVersion, checksumVersion);
+            return ThrowSnapshotExpired
+                ? Task.FromException<CatalogSyncPageResponse?>(
+                    new CatalogSnapshotExpiredException(storeCode, catalogVersion ?? string.Empty))
+                : Task.FromResult(PageResponse);
         }
 
         public Task<CatalogCompareResponse?> CompareSellableItemsAsync(
@@ -406,4 +567,14 @@ public sealed class CatalogControllerTests
                 [])));
         }
     }
+
+    private sealed record LegacyCatalogSyncPageResponse(
+        string StoreCode,
+        DateTimeOffset GeneratedAt,
+        string? Cursor,
+        IReadOnlyList<CatalogLookupItemDto> Items,
+        IReadOnlyList<DeletedLookupDto> DeletedLookups,
+        string? NextCursor,
+        bool HasMore,
+        int TotalCount);
 }

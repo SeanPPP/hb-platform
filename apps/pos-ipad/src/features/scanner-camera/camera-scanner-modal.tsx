@@ -177,6 +177,7 @@ export function CameraScannerModal({
       onRequestClose={close}
       presentationStyle="overFullScreen"
       statusBarTranslucent
+      supportedOrientations={["landscape-left", "landscape-right"]}
       transparent
       visible={visible}
     >

@@ -607,6 +607,63 @@ public sealed class CatalogServiceTests
             ["SetItemNumber", "SetPurchasePrice", "SetQuantity", "SetType", "CreatedBy", "UpdatedBy"]);
     }
 
+    [Fact]
+    public async Task GetSellableItemsPageAsync_UsesPinnedSnapshotAfterActiveInvalidation()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        var cache = new CatalogIndexCache();
+        var index = new CatalogSellableIndex(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            [],
+            catalogVersion: "catalog-v1:pinned");
+        var completed = new CatalogIndexBuildResult(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            [],
+            index);
+        await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(completed),
+            CancellationToken.None);
+        cache.InvalidateStore("S01");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), cache);
+
+        var response = await service.GetSellableItemsPageAsync(
+            "S01",
+            since: null,
+            cursor: null,
+            pageSize: 100,
+            CancellationToken.None,
+            catalogVersion: "catalog-v1:pinned",
+            checksumVersion: 2);
+
+        Assert.NotNull(response);
+        Assert.Equal("catalog-v1:pinned", response!.CatalogVersion);
+        Assert.StartsWith("sha256-catalog-page-v2:", response.PageChecksum, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsPageAsync_ThrowsWhenPinnedSnapshotIsMissing()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        var service = new CatalogService(
+            fixture.DbContext,
+            new PriceIndexBuilder(),
+            new CatalogIndexCache());
+
+        await Assert.ThrowsAsync<CatalogSnapshotExpiredException>(
+            () => service.GetSellableItemsPageAsync(
+                "S01",
+                since: null,
+                cursor: "cursor-1",
+                pageSize: 100,
+                CancellationToken.None,
+                catalogVersion: "catalog-v1:missing",
+                checksumVersion: 2));
+    }
+
     private static void AssertLookupItem(
         IReadOnlyList<CatalogLookupItemDto> items,
         string lookupCode,

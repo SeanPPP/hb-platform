@@ -12,22 +12,27 @@ import { Linking } from "react-native";
 
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import type { PosAuthorizedFulfilmentActionResult } from "@/core/runtime/production-pos-service-composition";
 import {
   resolveProtectedSalesRouteGate,
   useCashierLoginStore,
 } from "@/features/cashier-login";
 import { canDownloadCatalog } from "@/features/catalog/maintenance";
 import { DAILY_CLOSE_VIEW_PERMISSION } from "@/features/daily-close";
-import { INSTALLMENTS_VIEW_PERMISSION } from "@/features/installments";
+import {
+  INSTALLMENTS_VIEW_PERMISSION,
+  resolveInstallmentsRuntimeFactory,
+} from "@/features/installments";
 import { REMOTE_HISTORY_VIEW_PERMISSION } from "@/features/remote-history";
+import { resolveTrustedProductImageUri } from "@/features/sales/runtime/trusted-product-image-uri";
 import {
   resolveSalesLocale,
   type SalesPresenter,
   SalesScreen,
   type SalesToolbarActionId,
+  type SalesUtilityActionResult,
 } from "@/features/sales/ui";
 import { reconcileSalesToolbarOrder } from "@/features/sales/ui/sales-toolbar-order";
-import { CameraScannerModal } from "@/features/scanner-camera";
 import { SETTINGS_VIEW_PERMISSION } from "@/features/settings";
 import { SPECIAL_PRODUCTS_VIEW_PERMISSION } from "@/features/special-products";
 import { toggleAppLanguage } from "@/i18n";
@@ -75,7 +80,6 @@ export default function SalesRoute() {
     getUpdateGate,
   );
   const [binding, setBinding] = useState<SalesPresenterBinding | null>(null);
-  const [cameraScannerVisible, setCameraScannerVisible] = useState(false);
   const [manualInputActive, setManualInputActive] = useState(false);
   const [toolbarOrder, setToolbarOrder] = useState<
     readonly SalesToolbarActionId[]
@@ -108,15 +112,14 @@ export default function SalesRoute() {
       ? binding.presenter
       : null;
   const addScannedProduct = useCallback(
-    async (barcode: string) => {
-      if (!presenter) return;
+    (barcode: string) => {
+      if (!presenter || presenter.getState().phase !== "selling") return;
       // presenter 在同步 setQuery 后立即读取查询值，连续扫码不会把前一条码拼入下一条。
       presenter.setQuery(barcode);
-      await presenter.addLookupCode();
+      void presenter.addLookupCode();
     },
     [presenter],
   );
-  const scanner = runtime.services?.scanner.router ?? null;
   const handleToolbarOrderChange = useCallback(
     (nextOrder: readonly SalesToolbarActionId[]) => {
       const reconciledOrder = reconcileSalesToolbarOrder(nextOrder);
@@ -128,22 +131,20 @@ export default function SalesRoute() {
   const handleSwitchLanguage = useCallback(() => {
     void toggleAppLanguage();
   }, []);
-
-  useEffect(() => {
-    if (!scanner || !presenter) {
-      setCameraScannerVisible(false);
-    }
-  }, [presenter, scanner]);
+  const resolveCartProductImage = useCallback(
+    async (input: Readonly<{ productCode: string; lookupCode: string }>) => {
+      const services = runtime.services;
+      if (!services) return null;
+      return resolveTrustedCartProductImage({
+        ...input,
+        apiBaseUrl: services.apiBaseUrl,
+        findExact: services.catalog.findExact,
+      });
+    },
+    [runtime.services],
+  );
 
   useEffect(() => clearHidRestoreTimer, [clearHidRestoreTimer]);
-
-  useEffect(() => {
-    if (!cameraScannerVisible || !scanner || !presenter) {
-      return undefined;
-    }
-    // 相机和 HID 复用同一商品上下文；租约防止异步弹窗切换造成串码。
-    return scanner.acquireContext("product");
-  }, [cameraScannerVisible, presenter, scanner]);
 
   useEffect(() => {
     if (
@@ -178,27 +179,34 @@ export default function SalesRoute() {
       }
     };
 
-    // 支付恢复优先于新销售 presenter：遗留支付会持有同一购物车租约，不能短暂开放编辑。
-    if (services.payments.status === "available") {
-      void services.payments.hasRecoveryRequired().then(
-        (required) => {
-          if (cancelled) return;
-          if (required) {
-            replace("/payment" as Href);
-            return;
-          }
-          createSalesPresenter();
-        },
-        () => {
-          if (!cancelled) {
-            clearActiveCashier();
-            setPresenterCreationFailed(true);
-          }
-        },
-      );
-    } else {
-      createSalesPresenter();
-    }
+    // 两套支付账本都可能持有活动购物车或外部授权。普通支付先检查并拥有
+    // 恢复优先权；只有确认其稳定后才读取分期账本，期间绝不短暂开放销售编辑。
+    void (async () => {
+      try {
+        if (
+          services.payments.status === "available" &&
+          await services.payments.hasRecoveryRequired()
+        ) {
+          if (!cancelled) replace("/payment" as Href);
+          return;
+        }
+        const installmentFactory =
+          resolveInstallmentsRuntimeFactory(services);
+        if (
+          installmentFactory &&
+          await installmentFactory.hasRecoveryRequired()
+        ) {
+          if (!cancelled) replace("/payment" as Href);
+          return;
+        }
+        if (!cancelled) createSalesPresenter();
+      } catch {
+        if (!cancelled) {
+          clearActiveCashier();
+          setPresenterCreationFailed(true);
+        }
+      }
+    })();
     return () => {
       cancelled = true;
       createdPresenter?.destroy();
@@ -225,7 +233,7 @@ export default function SalesRoute() {
     <>
       <RouteHidScannerCapture
         context="product"
-        enabled={!cameraScannerVisible && !manualInputActive}
+        enabled={!manualInputActive}
         onScan={addScannedProduct}
         path="/sales"
       />
@@ -233,6 +241,7 @@ export default function SalesRoute() {
         locale={resolveSalesLocale(i18n.resolvedLanguage ?? i18n.language)}
         newTransactionGate={updateGate}
         onManualInputFocusChange={handleManualInputFocusChange}
+        resolveCartProductImage={resolveCartProductImage}
         onSwitchLanguage={handleSwitchLanguage}
         onToolbarOrderChange={handleToolbarOrderChange}
         {...(appStoreUrl
@@ -272,13 +281,12 @@ export default function SalesRoute() {
             }
           : {})}
         onOpenAttendanceAudit={() => push("/attendance-audit" as Href)}
-        {...(scanner
-          ? {
-              onOpenCameraScanner: () => setCameraScannerVisible(true),
-            }
-          : {})}
-        onOpenPayment={() => {
-          const cart = presenter.getState().cart;
+        onOpenCashDrawer={async () =>
+          mapSalesUtilityResult(
+            await services.fulfilment.openCashDrawer.execute(),
+          )
+        }
+        onOpenPayment={(cart) => {
           if (
             cart.lines.length === 0 ||
             !Number.isSafeInteger(cart.revision) ||
@@ -286,17 +294,27 @@ export default function SalesRoute() {
             !Number.isSafeInteger(cart.actualAmount.cents) ||
             cart.actualAmount.cents <= 0
           ) {
+            presenter.releasePreparedCheckout();
             return;
           }
-          push({
-            pathname: "/payment",
-            params: {
-              checkoutIntentId: Crypto.randomUUID(),
-              revision: String(cart.revision),
-              totalCents: String(cart.actualAmount.cents),
-            },
-          } as unknown as Href);
+          try {
+            push({
+              pathname: "/payment",
+              params: {
+                checkoutIntentId: Crypto.randomUUID(),
+                revision: String(cart.revision),
+                totalCents: String(cart.actualAmount.cents),
+              },
+            } as unknown as Href);
+          } catch {
+            presenter.releasePreparedCheckout();
+          }
         }}
+        onReprintReceipt={async () =>
+          mapSalesUtilityResult(
+            await services.fulfilment.reprint.execute(),
+          )
+        }
         onOpenSyncHistory={() => push("/sync-history" as Href)}
         presenter={presenter}
         toolbarOrder={toolbarOrder}
@@ -307,15 +325,70 @@ export default function SalesRoute() {
             }
           : {})}
       />
-      {scanner ? (
-        <CameraScannerModal
-          context="product"
-          onClose={() => setCameraScannerVisible(false)}
-          onScan={addScannedProduct}
-          scanner={scanner}
-          visible={cameraScannerVisible}
-        />
-      ) : null}
     </>
   );
+}
+
+function mapSalesUtilityResult(
+  result: PosAuthorizedFulfilmentActionResult,
+): SalesUtilityActionResult {
+  switch (result.state) {
+    case "Printed":
+    case "Completed":
+      return { kind: "completed" };
+    case "not-found":
+      return { kind: "not-found" };
+    case "denied":
+      return { kind: "denied" };
+    case "not-retryable":
+      return { kind: "unavailable" };
+    case "Ambiguous":
+    case "Unknown":
+    case "recovery-required":
+      return { kind: "unknown" };
+    case "Failed":
+    default:
+      return { kind: "failed" };
+  }
+}
+
+async function resolveTrustedCartProductImage(input: Readonly<{
+  productCode: string;
+  lookupCode: string;
+  apiBaseUrl: string;
+  findExact(lookupCode: string): Promise<
+    | Readonly<{
+        productCode: string;
+        lookupCode: string;
+        productImage: string | null;
+      }>
+    | null
+  >;
+}>): Promise<string | null> {
+  const productCode = normalizeCatalogIdentity(input.productCode);
+  const lookupCode = normalizeCatalogIdentity(input.lookupCode);
+  if (!productCode || !lookupCode) return null;
+
+  const match = await input.findExact(lookupCode);
+  if (
+    !match ||
+    match.productCode.trim() !== productCode ||
+    match.lookupCode.trim() !== lookupCode
+  ) {
+    return null;
+  }
+
+  return resolveTrustedProductImageUri(match.productImage, input.apiBaseUrl);
+}
+
+function normalizeCatalogIdentity(value: string): string | null {
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > 256 ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
 }

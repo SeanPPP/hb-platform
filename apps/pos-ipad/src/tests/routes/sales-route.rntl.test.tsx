@@ -6,7 +6,6 @@ import SalesRoute from "../../../app/sales";
 let mockRuntime: any;
 let mockActiveCashier: any;
 let mockSalesScreenProps: any;
-let mockCameraScannerProps: any;
 let mockRouteCaptureProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
@@ -16,13 +15,17 @@ const mockDestroyPresenter = jest.fn();
 const mockRouterPush = jest.fn();
 const mockRouterReplace = jest.fn();
 const mockHasRecoveryRequired = jest.fn<() => Promise<boolean>>();
+const mockInstallmentHasRecoveryRequired =
+  jest.fn<() => Promise<boolean>>();
 const mockRandomUUID = jest.fn();
 const mockAddLookupCode = jest.fn<() => Promise<boolean>>();
+const mockPrepareOnlineCheckout = jest.fn<() => Promise<any>>();
+const mockReleasePreparedCheckout = jest.fn();
+const mockCatalogFindExact =
+  jest.fn<(lookupCode: string) => Promise<any>>();
+const mockReprintReceipt = jest.fn<() => Promise<any>>();
+const mockOpenCashDrawer = jest.fn<() => Promise<any>>();
 const mockSetQuery = jest.fn();
-const mockReleaseCameraContext = jest.fn();
-const mockAcquireScannerContext = jest.fn(
-  (_context: string) => mockReleaseCameraContext,
-);
 const mockToggleAppLanguage = jest.fn<() => Promise<"en" | "zh">>();
 const mockReadSalesToolbarOrder = jest.fn<() => string[] | null>();
 const mockSaveSalesToolbarOrder =
@@ -105,22 +108,6 @@ jest.mock("@/ui/preferences/terminal-ui-preferences", () => ({
     mockSaveSalesToolbarOrder(order),
 }));
 
-jest.mock("@/features/scanner-camera", () => {
-  const React = jest.requireActual<typeof import("react")>("react");
-  const { Text } =
-    jest.requireActual<typeof import("react-native")>("react-native");
-  return {
-    CameraScannerModal: (props: unknown) => {
-      mockCameraScannerProps = props;
-      return React.createElement(
-        Text,
-        { testID: "camera-scanner-modal-mock" },
-        String((props as { visible: boolean }).visible),
-      );
-    },
-  };
-});
-
 jest.mock("@/ui/scanner/scanner-route-bridge", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text } =
@@ -155,10 +142,24 @@ jest.mock("@/ui/screens/bootstrap-screen", () => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSalesScreenProps = null;
-  mockCameraScannerProps = null;
   mockRouteCaptureProps = null;
   mockHasRecoveryRequired.mockResolvedValue(false);
+  mockInstallmentHasRecoveryRequired.mockResolvedValue(false);
   mockAddLookupCode.mockResolvedValue(true);
+  mockPrepareOnlineCheckout.mockResolvedValue({
+    revision: 7,
+    lines: [{ lineId: "line-1" }],
+    actualAmount: { currency: "AUD", cents: 1_250 },
+  });
+  mockCatalogFindExact.mockResolvedValue(null);
+  mockReprintReceipt.mockResolvedValue({
+    state: "Printed",
+    errorCode: null,
+  });
+  mockOpenCashDrawer.mockResolvedValue({
+    state: "Completed",
+    errorCode: null,
+  });
   mockRandomUUID.mockReturnValue("123e4567-e89b-42d3-a456-426614174000");
   mockToggleAppLanguage.mockResolvedValue("zh");
   mockReadSalesToolbarOrder.mockReturnValue(null);
@@ -186,12 +187,15 @@ beforeEach(() => {
     addLookupCode: mockAddLookupCode,
     destroy: mockDestroyPresenter,
     getState: () => ({
+      phase: "selling",
       cart: {
         revision: 7,
         lines: [{ lineId: "line-1" }],
         actualAmount: { currency: "AUD", cents: 1_250 },
       },
     }),
+    prepareOnlineCheckout: mockPrepareOnlineCheckout,
+    releasePreparedCheckout: mockReleasePreparedCheckout,
     setQuery: mockSetQuery,
   });
   mockUpdateGate = {
@@ -240,7 +244,12 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
   expect(mockRouterPush).toHaveBeenCalledWith("/settings");
   mockSalesScreenProps.onOpenSyncHistory();
   expect(mockRouterPush).toHaveBeenCalledWith("/sync-history");
-  mockSalesScreenProps.onOpenPayment();
+  mockSalesScreenProps.onOpenPayment({
+    revision: 7,
+    lines: [{ lineId: "line-1" }],
+    actualAmount: { currency: "AUD", cents: 1_250 },
+  });
+  expect(mockPrepareOnlineCheckout).not.toHaveBeenCalled();
   expect(mockRouterPush).toHaveBeenCalledWith({
     pathname: "/payment",
     params: {
@@ -256,6 +265,165 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("销售功能按钮只调用受保护履约 facade，并完整映射终态", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+
+  const cases = [
+    ["Printed", "completed"],
+    ["Completed", "completed"],
+    ["not-found", "not-found"],
+    ["denied", "denied"],
+    ["not-retryable", "unavailable"],
+    ["Ambiguous", "unknown"],
+    ["Unknown", "unknown"],
+    ["recovery-required", "unknown"],
+    ["Failed", "failed"],
+  ] as const;
+  for (const [state, kind] of cases) {
+    mockReprintReceipt.mockResolvedValueOnce({
+      state,
+      errorCode: state === "denied" ? "PERMISSION_DENIED" : null,
+    });
+    assertUtilityResult(
+      await mockSalesScreenProps.onReprintReceipt(),
+      kind,
+    );
+  }
+  assertUtilityResult(
+    await mockSalesScreenProps.onOpenCashDrawer(),
+    "completed",
+  );
+  expect(mockReprintReceipt).toHaveBeenCalledTimes(cases.length);
+  expect(mockOpenCashDrawer).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("购物车图片接受目录复核后的相对地址和外部 HTTPS 地址", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+  const identity = {
+    productCode: "P-1",
+    lookupCode: "930000000001",
+  };
+  mockCatalogFindExact.mockResolvedValue({
+    ...identity,
+    productImage: "/media/products/milk.png",
+  });
+
+  await expect(
+    mockSalesScreenProps.resolveCartProductImage(identity),
+  ).resolves.toBe(
+    "https://pos.example.test/media/products/milk.png",
+  );
+  expect(mockCatalogFindExact).toHaveBeenLastCalledWith(
+    identity.lookupCode,
+  );
+
+  mockCatalogFindExact.mockResolvedValue({
+    ...identity,
+    productImage: "https://cdn.example.test/milk.png",
+  });
+  await expect(
+    mockSalesScreenProps.resolveCartProductImage(identity),
+  ).resolves.toBe("https://cdn.example.test/milk.png");
+
+  mockCatalogFindExact.mockResolvedValue({
+    ...identity,
+    productImage:
+      "https://user:password@pos.example.test/milk.png",
+  });
+  await expect(
+    mockSalesScreenProps.resolveCartProductImage(identity),
+  ).resolves.toBeNull();
+
+  mockCatalogFindExact.mockResolvedValue({
+    ...identity,
+    productCode: "P-OTHER",
+    productImage: "/media/products/other.png",
+  });
+  await expect(
+    mockSalesScreenProps.resolveCartProductImage(identity),
+  ).resolves.toBeNull();
+
+  mockCatalogFindExact.mockClear();
+  await expect(
+    mockSalesScreenProps.resolveCartProductImage({
+      productCode: " ",
+      lookupCode: identity.lookupCode,
+    }),
+  ).resolves.toBeNull();
+  expect(mockCatalogFindExact).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("销售页只结算一次，路由直接使用已核验快照且不重复调用 Presenter", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+
+  mockSalesScreenProps.onOpenPayment({
+    revision: 9,
+    lines: [{ lineId: "line-latest" }],
+    actualAmount: { currency: "AUD", cents: 1_875 },
+  });
+
+  expect(mockPrepareOnlineCheckout).not.toHaveBeenCalled();
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    pathname: "/payment",
+    params: {
+      checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+      revision: "9",
+      totalCents: "1875",
+    },
+  });
+  await screen.unmount();
+});
+
+test("已核验快照失效时释放结账租约且不进入支付页", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+
+  mockSalesScreenProps.onOpenPayment({
+    revision: 9,
+    lines: [],
+    actualAmount: { currency: "AUD", cents: 0 },
+  });
+
+  expect(mockReleasePreparedCheckout).toHaveBeenCalledTimes(1);
+  expect(mockRouterPush).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("HID 扫码回调不等待后台在线查询，连续扫码可立即进入 Presenter", async () => {
+  mockAddLookupCode.mockImplementation(
+    () => new Promise<boolean>(() => undefined),
+  );
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+
+  const firstResult = mockRouteCaptureProps.onScan("930000000001");
+  const secondResult = mockRouteCaptureProps.onScan("930000000002");
+
+  expect(firstResult).toBeUndefined();
+  expect(secondResult).toBeUndefined();
+  expect(mockSetQuery.mock.calls).toEqual([
+    ["930000000001"],
+    ["930000000002"],
+  ]);
+  expect(mockAddLookupCode).toHaveBeenCalledTimes(2);
+  await screen.unmount();
 });
 
 test("销售工具栏同步读取已保存顺序，先更新页面再异步持久化", async () => {
@@ -290,35 +458,14 @@ test("销售工具栏同步读取已保存顺序，先更新页面再异步持�
   await screen.unmount();
 });
 
-test("相机扫码复用商品上下文，打开期间停用 HID 且只触发一次加购", async () => {
+test("销售路由不再注入相机扫码入口，HID 默认保持可用", async () => {
   const screen = await render(<SalesRoute />);
 
   await waitFor(() => {
     expect(screen.getByTestId("sales-screen")).toBeTruthy();
   });
-  expect(mockCameraScannerProps.visible).toBe(false);
+  expect(mockSalesScreenProps.onOpenCameraScanner).toBeUndefined();
   expect(mockRouteCaptureProps.enabled).toBe(true);
-
-  await act(async () => {
-    mockSalesScreenProps.onOpenCameraScanner();
-  });
-
-  expect(mockCameraScannerProps.visible).toBe(true);
-  expect(mockRouteCaptureProps.enabled).toBe(false);
-  expect(mockAcquireScannerContext).toHaveBeenCalledWith("product");
-
-  await act(async () => {
-    await mockCameraScannerProps.onScan(" 9300000000012 ");
-  });
-  expect(mockSetQuery).toHaveBeenCalledWith(" 9300000000012 ");
-  expect(mockAddLookupCode).toHaveBeenCalledTimes(1);
-
-  await act(async () => {
-    mockCameraScannerProps.onClose();
-  });
-  expect(mockCameraScannerProps.visible).toBe(false);
-  expect(mockRouteCaptureProps.enabled).toBe(true);
-  expect(mockReleaseCameraContext).toHaveBeenCalledTimes(1);
 });
 
 test("手动输入失焦后延后恢复 HID，焦点交接会取消恢复", async () => {
@@ -350,32 +497,6 @@ test("手动输入失焦后延后恢复 HID，焦点交接会取消恢复", asyn
     await act(async () => {
       mockSalesScreenProps.onManualInputFocusChange(false);
       jest.runOnlyPendingTimers();
-    });
-    expect(mockRouteCaptureProps.enabled).toBe(true);
-  } finally {
-    jest.useRealTimers();
-  }
-});
-
-test("相机扫码期间不恢复 HID，关闭后才恢复", async () => {
-  const screen = await render(<SalesRoute />);
-
-  await waitFor(() => {
-    expect(screen.getByTestId("sales-screen")).toBeTruthy();
-  });
-  jest.useFakeTimers();
-  try {
-    await act(async () => {
-      mockSalesScreenProps.onManualInputFocusChange(true);
-      mockSalesScreenProps.onManualInputFocusChange(false);
-      mockSalesScreenProps.onOpenCameraScanner();
-      jest.runOnlyPendingTimers();
-    });
-    expect(mockCameraScannerProps.visible).toBe(true);
-    expect(mockRouteCaptureProps.enabled).toBe(false);
-
-    await act(async () => {
-      mockCameraScannerProps.onClose();
     });
     expect(mockRouteCaptureProps.enabled).toBe(true);
   } finally {
@@ -460,6 +581,20 @@ test("检测到冷恢复时先转到支付页，不创建销售 presenter", asyn
     expect(mockRouterReplace).toHaveBeenCalledWith("/payment");
   });
   expect(mockCreatePresenter).not.toHaveBeenCalled();
+  expect(mockInstallmentHasRecoveryRequired).not.toHaveBeenCalled();
+  expect(screen.getByTestId("bootstrap")).toBeTruthy();
+});
+
+test("普通支付稳定后检测到分期恢复时转到统一支付页", async () => {
+  mockInstallmentHasRecoveryRequired.mockResolvedValue(true);
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(mockRouterReplace).toHaveBeenCalledWith("/payment");
+  });
+  expect(mockHasRecoveryRequired).toHaveBeenCalledTimes(1);
+  expect(mockInstallmentHasRecoveryRequired).toHaveBeenCalledTimes(1);
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
   expect(screen.getByTestId("bootstrap")).toBeTruthy();
 });
 
@@ -467,16 +602,36 @@ function readyRuntime() {
   return {
     state: { phase: "ready", device: "authorized-online" },
     services: {
+      apiBaseUrl: "https://pos.example.test/api",
+      catalog: {
+        findExact: mockCatalogFindExact,
+      },
+      fulfilment: {
+        reprint: {
+          status: "available",
+          execute: mockReprintReceipt,
+        },
+        openCashDrawer: {
+          status: "available",
+          execute: mockOpenCashDrawer,
+        },
+      },
       sales: { createPresenter: mockCreatePresenter },
       payments: {
         status: "available",
         createPresenter: jest.fn(),
         hasRecoveryRequired: mockHasRecoveryRequired,
       },
+      installments: {
+        createPresenter: jest.fn(),
+        prepareCreateCheckout: jest.fn(),
+        createCheckoutPresenter: jest.fn(),
+        hasRecoveryRequired: mockInstallmentHasRecoveryRequired,
+      },
       scanner: {
         router: {
           acceptCameraText: jest.fn(),
-          acquireContext: mockAcquireScannerContext,
+          acquireContext: jest.fn(() => () => undefined),
           startCamera: jest.fn(),
           stopCamera: jest.fn(),
         },
@@ -491,4 +646,11 @@ function readyRuntime() {
       },
     },
   };
+}
+
+function assertUtilityResult(
+  result: Readonly<{ kind: string }>,
+  expectedKind: string,
+): void {
+  expect(result).toEqual({ kind: expectedKind });
 }

@@ -74,6 +74,15 @@ function securedSettingsPort(
   };
 
   const secured: SettingsControlPort = {
+    getCatalogRefreshState: () => {
+      assertSameSession(lease.get(), identity);
+      return input.control.getCatalogRefreshState();
+    },
+    subscribeCatalogRefresh: (listener) =>
+      input.control.subscribeCatalogRefresh(() => {
+        assertSameSession(lease.get(), identity);
+        listener();
+      }),
     loadSnapshot: (signal) =>
       run(async () => {
         const snapshot = await input.control.loadSnapshot(signal);

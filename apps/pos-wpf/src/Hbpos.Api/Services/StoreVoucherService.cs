@@ -936,13 +936,20 @@ public sealed class SqlSugarStoreVoucherReservationService(
             .Where(x => x.StoreCode == normalizedStoreCode)
             .Where(x => x.VoucherCode == normalizedVoucherCode)
             .ExecuteCommandAsync(cancellationToken);
+        // 同一锁定已被本次或上一次相同请求释放时，安全地确认成功；绝不将已核销、错门店或错券码视为已释放。
+        var released = affectedRows == 1 || await dbContext.PosmDb.Queryable<StoreVoucherReservationEntity>()
+            .Where(x => x.Token == normalizedToken)
+            .Where(x => x.StoreCode == normalizedStoreCode)
+            .Where(x => x.VoucherCode == normalizedVoucherCode)
+            .Where(x => x.Status == ReleasedStatus)
+            .AnyAsync();
         logger?.LogInformation(
             "Voucher reservation release token={ReservationToken} store={StoreCode} voucher={VoucherCode} released={Released}",
             ShortToken(normalizedToken),
             normalizedStoreCode,
             normalizedVoucherCode,
-            affectedRows == 1);
-        return affectedRows == 1;
+            released);
+        return released;
     }
 
     private async Task EnsureTableAsync(CancellationToken cancellationToken)

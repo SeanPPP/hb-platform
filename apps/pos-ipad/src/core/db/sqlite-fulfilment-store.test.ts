@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   SqliteFulfilmentStore,
   type FulfilmentAuditEvent,
+  type FulfilmentInitialAuthorization,
   type PersistedDrawerEventInput,
   type PersistedPrintJobInput,
 } from "./sqlite-fulfilment-store";
@@ -15,6 +16,7 @@ type DrawerRow = Record<string, SqlValue>;
 class FulfilmentConnection implements SqliteConnectionPort {
   public readonly printJobs = new Map<string, PrintRow>();
   public readonly drawerEvents = new Map<string, DrawerRow>();
+  public readonly auditEvents = new Map<string, Record<string, SqlValue>>();
   public readonly runs: { sql: string; parameters: readonly SqlValue[] }[] = [];
   public transactions = 0;
 
@@ -22,12 +24,49 @@ class FulfilmentConnection implements SqliteConnectionPort {
 
   public async run(sql: string, parameters: readonly SqlValue[] = []): Promise<SqlRunResult> {
     this.runs.push({ sql, parameters });
+    if (sql.includes("INSERT INTO audit_events")) {
+      const eventId = parameter(parameters, 0);
+      this.auditEvents.set(string(eventId), {
+        event_id: eventId,
+        event_type: parameter(parameters, 1),
+        occurred_at_iso: parameter(parameters, 2),
+        order_guid: parameter(parameters, 3),
+        correlation_id: parameter(parameters, 4),
+        payload_json: parameter(parameters, 5),
+      });
+      return { changes: 1, lastInsertRowId: 0 };
+    }
     if (sql.includes("INSERT INTO print_jobs")) {
       const jobId = parameter(parameters, 0); const orderGuid = parameter(parameters, 1); const printerId = parameter(parameters, 2);
       const ciphertext = parameter(parameters, 3); const isReprint = parameter(parameters, 4); const createdAt = parameter(parameters, 5);
       this.printJobs.set(string(jobId), {
         job_id: jobId, order_guid: orderGuid, state: "Queued", printer_id: printerId, receipt_ciphertext: ciphertext,
         is_reprint: isReprint, retry_count: 0, last_error_code: null, created_at_iso: createdAt, updated_at_iso: createdAt,
+      });
+      return { changes: 1, lastInsertRowId: 0 };
+    }
+    if (
+      sql.includes("INSERT INTO drawer_events") &&
+      sql.includes("'Requested'")
+    ) {
+      const eventId = parameter(parameters, 0);
+      const printerId = parameter(parameters, 1);
+      const requestedAt = parameter(parameters, 2);
+      const createdAt = parameter(parameters, 3);
+      const updatedAt = parameter(parameters, 4);
+      this.drawerEvents.set(string(eventId), {
+        event_id: eventId,
+        order_guid: null,
+        printer_id: printerId,
+        print_job_id: null,
+        state: "Requested",
+        reason: "MANUAL",
+        retry_count: 0,
+        requested_at_iso: requestedAt,
+        completed_at_iso: null,
+        last_error_code: null,
+        created_at_iso: createdAt,
+        updated_at_iso: updatedAt,
       });
       return { changes: 1, lastInsertRowId: 0 };
     }
@@ -98,7 +137,19 @@ class FulfilmentConnection implements SqliteConnectionPort {
     return null;
   }
 
-  public async getAll<T extends object>(sql: string): Promise<readonly T[]> {
+  public async getAll<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<readonly T[]> {
+    if (sql.includes("FROM audit_events")) {
+      const correlationId = parameter(parameters, 0);
+      const eventType = parameter(parameters, 1);
+      return [...this.auditEvents.values()].filter(
+        (row) =>
+          row.correlation_id === correlationId &&
+          row.event_type === eventType,
+      ) as T[];
+    }
     if (sql.includes("FROM print_jobs")) return [...this.printJobs.values()].filter((row) => row.state === "Queued") as T[];
     if (sql.includes("FROM drawer_events")) return [...this.drawerEvents.values()].filter((row) => row.state === "Required") as T[];
     return [];
@@ -148,12 +199,57 @@ function drawerAudit(
     eventType: "CASH_DRAWER_OPEN",
     occurredAtIso: "2026-07-28T03:00:00.000Z",
     orderGuid: "order-1",
-    correlationId: "order-1",
+    correlationId: "drawer-1",
     payload: {
       action: "open",
       status,
       outcome: status === "Completed" ? "Succeeded" : "Failed",
       printerId: "XP-1",
+    },
+  };
+}
+
+function initialAuthorization(
+  input: Readonly<{
+    actionId: string;
+    eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
+    orderGuid: string | null;
+    printerId: string;
+  }>,
+): FulfilmentInitialAuthorization {
+  const isReprint = input.eventType === "RECEIPT_REPRINT";
+  const context = {
+    actionId: input.actionId,
+    permissionCode: isReprint
+      ? "Permissions.PosTerminal.Receipt.PrintLast"
+      : "Permissions.PosTerminal.CashDrawer.Open",
+    authorizationMode: "online" as const,
+    requestingCashierId: "cashier-1",
+    authorizingCashierId: "supervisor-1",
+  };
+  return {
+    context,
+    audit: {
+      eventId: `audit-${input.actionId}`,
+      eventType: input.eventType,
+      occurredAtIso: "2026-07-28T03:00:00.000Z",
+      orderGuid: input.orderGuid,
+      correlationId: input.actionId,
+      payload: {
+        action: isReprint
+          ? "reprint-last-receipt"
+          : "open-cash-drawer",
+        status: "Authorized",
+        reason: isReprint ? "last-receipt" : "MANUAL",
+        source: "sales",
+        outcome: "Succeeded",
+        printerId: input.printerId,
+        errorCode: null,
+        requestingCashierId: context.requestingCashierId,
+        authorizingCashierId: context.authorizingCashierId,
+        permissionCode: context.permissionCode,
+        authorizationMode: context.authorizationMode,
+      },
     },
   };
 }
@@ -192,6 +288,103 @@ test("重启后自动队列仍只返回 Queued/Required，Sending、Ambiguous、
   assert.deepEqual(
     (await restarted.listRequiredDrawerEvents()).map((event) => [event.eventId, event.printerId]),
     [["drawer-required", "XP-1"]],
+  );
+});
+
+test("手动开箱事件直接以 Requested 和空订单写入；同 actionId 幂等且不会进入自动队列", async () => {
+  const { connection, store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "manual-action-1",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-MANUAL",
+  });
+
+  const first = await store.beginManualDrawerOpen({
+    eventId: "manual-action-1",
+    printerId: "XP-MANUAL",
+    reason: "MANUAL",
+  }, authorization);
+  const replay = await store.beginManualDrawerOpen({
+    eventId: "manual-action-1",
+    printerId: "XP-MANUAL",
+    reason: "MANUAL",
+  }, authorization);
+
+  assert.deepEqual(first, {
+    kind: "created",
+    event: {
+      eventId: "manual-action-1",
+      orderGuid: null,
+      printerId: "XP-MANUAL",
+      state: "Requested",
+      reason: "MANUAL",
+      retryCount: 0,
+    },
+  });
+  assert.deepEqual(replay, {
+    kind: "existing",
+    event: {
+      eventId: "manual-action-1",
+      orderGuid: null,
+      printerId: "XP-MANUAL",
+      state: "Requested",
+      reason: "MANUAL",
+      retryCount: 0,
+    },
+  });
+  assert.equal(connection.drawerEvents.get("manual-action-1")?.order_guid, null);
+  assert.equal(connection.drawerEvents.get("manual-action-1")?.state, "Requested");
+  assert.equal(connection.auditEvents.size, 1);
+  assert.deepEqual(await store.listRequiredDrawerEvents(), []);
+});
+
+test("手动开箱同 actionId 改绑打印机或碰撞订单事件时必须 fail-closed", async () => {
+  const { store } = createStore();
+  await store.beginManualDrawerOpen({
+    eventId: "manual-action-conflict",
+    printerId: "XP-FIRST",
+    reason: "MANUAL",
+  }, initialAuthorization({
+    actionId: "manual-action-conflict",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-FIRST",
+  }));
+
+  await assert.rejects(
+    store.beginManualDrawerOpen({
+      eventId: "manual-action-conflict",
+      printerId: "XP-SECOND",
+      reason: "MANUAL",
+    }, initialAuthorization({
+      actionId: "manual-action-conflict",
+      eventType: "CASH_DRAWER_OPEN",
+      orderGuid: null,
+      printerId: "XP-SECOND",
+    })),
+    /manual drawer action conflict/i,
+  );
+
+  await store.enqueueDrawerEvent({
+    eventId: "automatic-event",
+    orderGuid: "order-1",
+    printerId: "XP-FIRST",
+    printJobId: null,
+    reason: "cash-sale",
+  });
+  await assert.rejects(
+    store.beginManualDrawerOpen({
+      eventId: "automatic-event",
+      printerId: "XP-FIRST",
+      reason: "MANUAL",
+    }, initialAuthorization({
+      actionId: "automatic-event",
+      eventType: "CASH_DRAWER_OPEN",
+      orderGuid: null,
+      printerId: "XP-FIRST",
+    })),
+    /manual drawer action conflict/i,
   );
 });
 

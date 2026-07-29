@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using BlazorApp.Shared.DTOs;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
+using Hbpos.Contracts.OperationAudits;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,6 +16,58 @@ public sealed class OperationAuditsController(IOperationAuditIngestService inges
 {
     internal const int MaximumBatchSize = 100;
     internal const long MaximumRequestBytes = 4L * 1024 * 1024;
+
+    [HttpGet]
+    [Authorize(Policy = CashierAuthorizationPolicies.OperationAuditView)]
+    public async Task<ActionResult<OperationAuditReadListDto>> List(
+        [FromQuery] string? keyword,
+        [FromQuery] int limit,
+        [FromServices] IOperationAuditReadService readService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetDeviceScope(out var storeCode, out var deviceCode))
+        {
+            return Unauthorized(new
+            {
+                code = "DEVICE_AUTH_REQUIRED",
+                message = "Device scope claims are required."
+            });
+        }
+
+        var result = await readService.ListAsync(
+            storeCode,
+            deviceCode,
+            keyword,
+            Math.Clamp(limit <= 0 ? MaximumBatchSize : limit, 1, MaximumBatchSize),
+            cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpGet("{eventId:guid}")]
+    [Authorize(Policy = CashierAuthorizationPolicies.OperationAuditView)]
+    public async Task<ActionResult<OperationAuditReadRecordDto>> Detail(
+        Guid eventId,
+        [FromServices] IOperationAuditReadService readService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetDeviceScope(out var storeCode, out var deviceCode))
+        {
+            return Unauthorized(new
+            {
+                code = "DEVICE_AUTH_REQUIRED",
+                message = "Device scope claims are required."
+            });
+        }
+
+        var result = await readService.GetAsync(
+            storeCode,
+            deviceCode,
+            eventId,
+            cancellationToken);
+        return result is null
+            ? NotFound(new { code = "AUDIT_NOT_FOUND", message = "Operation audit was not found." })
+            : Ok(result);
+    }
 
     [HttpPost("batch")]
     [RequestSizeLimit(MaximumRequestBytes)]
@@ -71,5 +125,14 @@ public sealed class OperationAuditsController(IOperationAuditIngestService inges
             deviceCode,
             cancellationToken);
         return Ok(result);
+    }
+
+    private bool TryGetDeviceScope(out string storeCode, out string deviceCode)
+    {
+        storeCode = User.FindFirstValue(DeviceAuthConstants.StoreCodeClaim) ?? string.Empty;
+        deviceCode = User.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim) ?? string.Empty;
+        return User.Identity?.IsAuthenticated == true
+            && !string.IsNullOrWhiteSpace(storeCode)
+            && !string.IsNullOrWhiteSpace(deviceCode);
     }
 }

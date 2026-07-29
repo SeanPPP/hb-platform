@@ -200,6 +200,240 @@ test("真实 SQLite：createIfNone 原子保留 terminal 唯一 blocking，冻�
   });
 });
 
+test("真实 SQLite：旧 V1 密文缺少支付选择字段仍按原形恢复", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const legacy = createCandidate();
+    const ciphertext = new Uint8Array([71]);
+    const plaintext = JSON.stringify({
+      format: "hb-pos-installment-action-v1",
+      aad: {
+        revision: 1,
+        storeCode: STORE,
+        deviceCode: DEVICE,
+        actionId: ACTION_A,
+      },
+      action: legacy.action,
+      command: legacy.command,
+      intentFingerprint: legacy.intentFingerprint,
+    });
+    await connection.run(
+      `INSERT INTO installment_actions (
+        action_id, store_code, device_code, installment_guid,
+        action_kind, idempotency_key, payment_guid, payment_method,
+        amount_cents, state, resolution, payload_revision,
+        command_ciphertext, created_at_iso, updated_at_iso,
+        resolved_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ACTION_A,
+        STORE,
+        DEVICE,
+        INSTALLMENT,
+        "create",
+        ACTION_A,
+        PAYMENT,
+        "card",
+        2_000,
+        "Created",
+        null,
+        1,
+        ciphertext,
+        NOW,
+        NOW,
+        null,
+      ],
+    );
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new FixtureDecryptor(ciphertext, plaintext),
+      () => NOW,
+    );
+
+    const restored = await store.loadBlocking({
+      storeCode: STORE,
+      deviceCode: DEVICE,
+    });
+
+    assert.deepEqual(restored, legacy);
+    assert.ok(restored?.command.kind === "create");
+    assert.equal(
+      Object.hasOwn(restored.command, "cardProvider"),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(restored.command, "cashTenderedCents"),
+      false,
+    );
+  });
+});
+
+test("真实 SQLite：V1 方法特定字段只保留 card provider 或现金实收", async () => {
+  const cases = [
+    paymentSelectionCandidate(createCandidate(), {
+      method: "card",
+      selection: {
+        cardProvider: "square",
+      },
+    }),
+    paymentSelectionCandidate(
+      repaymentCandidate({ actionId: ACTION_B }),
+      {
+        method: "card",
+        selection: {
+          cardProvider: "linkly-cloud",
+        },
+      },
+    ),
+    paymentSelectionCandidate(
+      repaymentCandidate({ actionId: ACTION_B }),
+      {
+        method: "cash",
+        selection: {
+          cashTenderedCents: 800,
+        },
+      },
+    ),
+    paymentSelectionCandidate(
+      repaymentCandidate({ actionId: ACTION_B }),
+      {
+        method: "voucher",
+        selection: {},
+      },
+    ),
+  ] as const;
+
+  for (const candidate of cases) {
+    await withMigratedDatabase(async (connection) => {
+      const encryptor = new RecordingEncryptor();
+      const store = new SqliteInstallmentActionStore(
+        connection,
+        encryptor,
+        () => NOW,
+      );
+
+      assert.deepEqual(await store.createIfNone(candidate), {
+        created: true,
+        action: candidate,
+      });
+      assert.deepEqual(
+        await store.loadBlocking({
+          storeCode: STORE,
+          deviceCode: DEVICE,
+        }),
+        candidate,
+      );
+      const envelope = JSON.parse(
+        encryptor.encryptedPlaintexts[0] ?? "",
+      ) as {
+        command?: unknown;
+      };
+      assert.deepEqual(envelope.command, candidate.command);
+      assert.equal(
+        (
+          await connection.getFirst<{ payload_revision: unknown }>(
+            `SELECT payload_revision
+             FROM installment_actions
+             WHERE action_id = ?`,
+            [candidate.action.actionId],
+          )
+        )?.payload_revision,
+        1,
+      );
+    });
+  }
+});
+
+test("真实 SQLite：拒绝不完整、越界或与支付方式冲突的新支付选择", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const card = createCandidate();
+    const cash = repaymentCandidate({ actionId: ACTION_B });
+    const invalidCandidates = [
+      paymentSelectionCandidate(card, {
+        method: "card",
+        selection: { cashTenderedCents: 2_000 },
+      }),
+      paymentSelectionCandidate(card, {
+        method: "card",
+        selection: {
+          cardProvider: null,
+        },
+      }),
+      paymentSelectionCandidate(card, {
+        method: "card",
+        selection: {
+          cardProvider: "adyen",
+        },
+      }),
+      paymentSelectionCandidate(card, {
+        method: "card",
+        selection: {
+          cardProvider: "square",
+          cashTenderedCents: 2_001,
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "cash",
+        selection: {
+          cashTenderedCents: 499,
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "cash",
+        selection: {
+          cashTenderedCents: Number.MAX_SAFE_INTEGER + 1,
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "cash",
+        selection: {
+          cardProvider: "square",
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "cash",
+        selection: {
+          cardProvider: null,
+          cashTenderedCents: 500,
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "voucher",
+        selection: {
+          cashTenderedCents: 501,
+        },
+      }),
+      paymentSelectionCandidate(cash, {
+        method: "voucher",
+        selection: {
+          cardProvider: "linkly-cloud",
+        },
+      }),
+      cancelCandidateWithPaymentSelection(),
+    ];
+
+    for (const candidate of invalidCandidates) {
+      await assert.rejects(
+        () => store.createIfNone(candidate),
+        /command|payment selection|cash tendered/i,
+      );
+    }
+    assert.equal(encryptor.encryptedPlaintexts.length, 0);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM installment_actions",
+      ),
+      0,
+    );
+  });
+});
+
 test("真实 SQLite：坏 blocking 密文使 createIfNone fail closed 且不插候选", async () => {
   await withMigratedDatabase(async (connection) => {
     const encryptor = new RecordingEncryptor();
@@ -598,6 +832,78 @@ function repaymentCandidate(
     state: "Created" as const,
     storeCode: STORE,
   });
+}
+
+function paymentSelectionCandidate(
+  candidate: PersistedInstallmentAction,
+  input: Readonly<{
+    method: "cash" | "card" | "voucher";
+    selection: Readonly<Record<string, unknown>>;
+  }>,
+): PersistedInstallmentAction {
+  if (
+    candidate.action.kind === "cancel-refund" ||
+    candidate.command.kind === "cancel-refund"
+  ) {
+    throw new Error("Test payment candidate must be payable.");
+  }
+  return Object.freeze({
+    ...candidate,
+    action: Object.freeze({
+      ...candidate.action,
+      method: input.method,
+    }),
+    command: Object.freeze({
+      ...candidate.command,
+      ...input.selection,
+    }),
+  }) as unknown as PersistedInstallmentAction;
+}
+
+function cancelCandidateWithPaymentSelection(): PersistedInstallmentAction {
+  return Object.freeze({
+    action: Object.freeze({
+      actionId: ACTION_C,
+      idempotencyKey: ACTION_C,
+      kind: "cancel-refund",
+      installmentGuid: INSTALLMENT,
+      paymentGuid: null,
+      method: null,
+      amountCents: null,
+    }),
+    command: Object.freeze({
+      deviceCode: DEVICE,
+      cashierId: "cashier-1",
+      cashierName: "Alice",
+      kind: "cancel-refund",
+      installmentGuid: INSTALLMENT,
+      cancelledAtIso: NOW,
+      reason: null,
+      idempotencyKey: ACTION_C,
+      cardProvider: null,
+      cashTenderedCents: 1,
+    }),
+    deviceCode: DEVICE,
+    intentFingerprint: '{"kind":"cancel-refund"}',
+    state: "Created",
+    storeCode: STORE,
+  }) as unknown as PersistedInstallmentAction;
+}
+
+class FixtureDecryptor implements SensitivePayloadEncryptor {
+  public constructor(
+    private readonly ciphertext: Uint8Array,
+    private readonly plaintext: string,
+  ) {}
+
+  public encrypt(): Promise<Uint8Array> {
+    throw new Error("Fixture encryptor is read-only.");
+  }
+
+  public async decrypt(ciphertext: Uint8Array): Promise<string> {
+    assert.deepEqual(ciphertext, this.ciphertext);
+    return this.plaintext;
+  }
 }
 
 class RecordingEncryptor implements SensitivePayloadEncryptor {

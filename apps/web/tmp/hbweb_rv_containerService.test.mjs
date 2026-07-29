@@ -579,7 +579,13 @@ async function batchUpdateDetails(updates) {
   ensureSuccess(response.success, response.message, "\u6279\u91CF\u66F4\u65B0\u8D27\u67DC\u660E\u7EC6\u5931\u8D25");
   return {
     totalUpdated: response.data?.totalUpdated ?? updates.length,
-    totalRequested: response.data?.totalRequested ?? updates.length
+    totalRequested: response.data?.totalRequested ?? updates.length,
+    validationErrors: (response.data?.validationErrors ?? []).filter((error) => Boolean(error.hguid && error.field && error.code && error.message)).map((error) => ({
+      hguid: error.hguid,
+      field: error.field,
+      code: error.code,
+      message: error.message
+    }))
   };
 }
 function normalizeAlignDomesticProductCodeResult(result) {
@@ -757,7 +763,19 @@ try {
   globalThis.fetch = async (input, init) => {
     capturedUrl = String(input);
     capturedInit = init;
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        totalUpdated: 1,
+        totalRequested: 1,
+        validationErrors: [{
+          hguid: "D-CLEAR-EN",
+          field: "\u82F1\u6587\u540D\u79F0",
+          code: "CONTAINS_CHINESE",
+          message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
+        }]
+      }
+    }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -771,7 +789,7 @@ try {
       SkipRelatedProductSync: true
     }
   ];
-  await batchUpdateDetails(detailUpdates);
+  const detailUpdateResult = await batchUpdateDetails(detailUpdates);
   assertEqual(
     capturedUrl,
     "/api/react/v1/containers/batch-update-details",
@@ -782,6 +800,16 @@ try {
     JSON.parse(String(capturedInit?.body)),
     [{ HGUID: "D-CLEAR-EN", ClearEnglishName: true, ProductCategoryGUID: "CAT-TARGET", \u4E2D\u5305\u6570: 12, SkipRelatedProductSync: true }],
     "batchUpdateDetails should send explicit fields including the related-product sync guard"
+  );
+  assertDeepEqual(
+    detailUpdateResult.validationErrors,
+    [{
+      hguid: "D-CLEAR-EN",
+      field: "\u82F1\u6587\u540D\u79F0",
+      code: "CONTAINS_CHINESE",
+      message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
+    }],
+    "batchUpdateDetails should preserve structured validation errors for field-level retry"
   );
   globalThis.fetch = async (input, init) => {
     capturedUrl = String(input);

@@ -105,6 +105,38 @@ public sealed class PriceIndexBuilderTests
         Assert.All(items, item => Assert.True(item.IsSpecialProduct));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Build_FallsBackToItemNumberWhenDisplayNameIsBlank(string displayName)
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", displayName, "ITEM01", "BAR01", 10m, null)],
+            [],
+            [],
+            [],
+            []));
+
+        var item = Assert.Single(items, x => x.LookupCode == "BAR01");
+        Assert.Equal("ITEM01", item.DisplayName);
+    }
+
+    [Fact]
+    public void Build_FallsBackToProductCodeWhenDisplayNameAndItemNumberAreBlank()
+    {
+        var items = _builder.Build("S01", new PriceIndexInput(
+            null,
+            [new ProductPriceRecord("P01", "   ", null, "BAR01", 10m, null)],
+            [],
+            [],
+            [],
+            []));
+
+        var item = Assert.Single(items);
+        Assert.Equal("P01", item.DisplayName);
+    }
+
     [Fact]
     public void Build_FallsBackToProductBasePriceWhenStoreRetailPriceMissing()
     {

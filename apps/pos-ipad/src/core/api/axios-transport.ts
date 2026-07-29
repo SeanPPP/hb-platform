@@ -69,6 +69,12 @@ export function createAxiosHbposTransport(
           throw new HbposApiError("Hbpos transport failed.", { kind: "transport" });
         }
 
+        if (error.code === "ERR_CANCELED") {
+          throw new HbposApiError("Hbpos request was cancelled.", {
+            kind: "transport",
+            code: "REQUEST_ABORTED",
+          });
+        }
         const payload = error.response?.data as { errorCode?: string; message?: string } | undefined;
         if (!error.response) {
           throw new HbposApiError("Hbpos transport failed.", { kind: "transport" });
@@ -119,6 +125,8 @@ function toAxiosRequest(request: HbposTransportRequest): AxiosRequestConfig {
     ...("data" in request ? { data: request.data } : {}),
     ...(request.params ? { params: request.params } : {}),
     ...(request.headers ? { headers: request.headers } : {}),
+    ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
     ...(acceptedStatuses.size > 0
       ? {
           validateStatus: (status: number) =>

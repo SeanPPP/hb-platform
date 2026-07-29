@@ -96,7 +96,9 @@ public sealed record CatalogSyncPageResponse(
     IReadOnlyList<DeletedLookupDto> DeletedLookups,
     string? NextCursor,
     bool HasMore,
-    int TotalCount);
+    int TotalCount,
+    string CatalogVersion = "",
+    string PageChecksum = "");
 
 public sealed record CatalogPromotionProductDto(
     string ProductCode,

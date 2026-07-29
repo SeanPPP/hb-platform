@@ -177,6 +177,26 @@ public sealed class StoreVoucherServiceTests
     }
 
     [Fact]
+    public async Task Reservation_ReleaseAsync_IsIdempotentOnlyForTheSameReleasedReservation()
+    {
+        await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();
+        var timeProvider = new MutableFakeTimeProvider(DateTimeOffset.Parse("2026-05-26T10:00:00Z"));
+        await fixture.SeedVoucherAsync(CreateVoucher(remainingAmount: 10m));
+        var service = new SqlSugarStoreVoucherReservationService(fixture.DbContext, timeProvider);
+
+        var released = await service.ReserveAsync("S01", "V001", 5m, 10m, CancellationToken.None);
+        Assert.True(await service.ReleaseAsync(released.Token, "S01", "V001", CancellationToken.None));
+        Assert.True(await service.ReleaseAsync(released.Token, "S01", "V001", CancellationToken.None));
+        Assert.False(await service.ReleaseAsync(released.Token, "S02", "V001", CancellationToken.None));
+        Assert.False(await service.ReleaseAsync(released.Token, "S01", "V002", CancellationToken.None));
+        Assert.False(await service.ReleaseAsync("missing-token", "S01", "V001", CancellationToken.None));
+
+        var consumed = await service.ReserveAsync("S01", "V001", 5m, 10m, CancellationToken.None);
+        await service.ConsumeAsync(consumed.Token, CancellationToken.None);
+        Assert.False(await service.ReleaseAsync(consumed.Token, "S01", "V001", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Reservation_ConsumeAsync_MarksConsumedAndIsIdempotent()
     {
         await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();

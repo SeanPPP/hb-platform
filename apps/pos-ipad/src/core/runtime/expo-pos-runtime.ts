@@ -117,6 +117,31 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     scanner: Readonly<{ router: HidScannerRouter }>;
   }>;
 
+type ExpoSettingsDevicePresentation = Readonly<{
+  deviceCode: string;
+  storeCode: string;
+  storeName: string;
+  terminalName: string;
+}>;
+
+export async function readSettingsDevicePresentation(
+  deviceSession: Pick<
+    PosDeviceSessionRuntimeService,
+    "getDevicePresentation"
+  >,
+): Promise<ExpoSettingsDevicePresentation> {
+  const presentation = await deviceSession.getDevicePresentation();
+  if (!presentation) {
+    throw new Error("SETTINGS_DEVICE_IDENTITY_REQUIRED");
+  }
+  return Object.freeze({
+    deviceCode: presentation.deviceCode,
+    storeCode: presentation.storeCode,
+    storeName: presentation.storeName ?? "",
+    terminalName: "",
+  });
+}
+
 class ExpoNetworkStatus {
   private online = false;
 
@@ -552,20 +577,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         appVersion,
         updateChannel,
         printer,
-        readDevicePresentation: async () => {
-          const identity = await deviceSession.getDeviceIdentity();
-          if (!identity) {
-            throw new Error("SETTINGS_DEVICE_IDENTITY_REQUIRED");
-          }
-          const receipt =
-            await database.settings().getReceiptPrinterSettings();
-          return Object.freeze({
-            deviceCode: identity.deviceCode,
-            storeCode: identity.storeCode,
-            storeName: receipt.storeName || identity.storeCode,
-            terminalName: "",
-          });
-        },
+        readDevicePresentation: () =>
+          readSettingsDevicePresentation(publicDeviceSession),
         paymentConfiguration: {
           current: currentPaymentSettings,
           availability: {
@@ -593,6 +606,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
             publicConfigurationStore.savePayments(configuration),
         },
         apiConfiguration: {
+          allowSwitchWithPendingLocalData: __DEV__,
           probe: probeApiHealth,
           save: (nextApiBaseUrl) =>
             publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
@@ -644,7 +658,11 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       // 公钥同步失败只关闭紧急登录；普通在线/离线收银登录保持原有路径。
       void emergencyCashier?.syncPublicKeys();
     }
-    const { initialize: _initialize, ...services } = composition;
+    const {
+      initialize: _initialize,
+      shutdownBackgroundWork,
+      ...services
+    } = composition;
     void _initialize;
 
     return {
@@ -664,6 +682,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
             .catch(() => undefined);
         }
         cashierSessionInvalidation.notify("manual-lock");
+        // 页面离开不会取消目录刷新；只有 runtime 关闭会先中止并等待 staging 清理。
+        await shutdownBackgroundWork();
         await database.close();
       },
       backend: startupGate.backend,

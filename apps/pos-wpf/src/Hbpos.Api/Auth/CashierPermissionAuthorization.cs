@@ -25,6 +25,7 @@ public static class CashierAuthorizationPolicies
     public const string SpecialProductsView = "Cashier.SpecialProductsView";
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
     public const string DeviceRegistration = "Cashier.DeviceRegistration";
+    public const string OperationAuditView = "Cashier.OperationAuditView";
 
     public static void AddPolicies(AuthorizationOptions options)
     {
@@ -47,6 +48,7 @@ public static class CashierAuthorizationPolicies
         Add(options, SpecialProductsView, Permissions.PosTerminal.SpecialProducts.View);
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);
         Add(options, DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration);
+        Add(options, OperationAuditView, Permissions.PosTerminal.Audit.View);
     }
 
     private static void Add(AuthorizationOptions options, string name, params string[] permissions)

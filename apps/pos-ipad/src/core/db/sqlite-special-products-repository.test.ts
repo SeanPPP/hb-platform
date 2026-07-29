@@ -147,7 +147,10 @@ test("已记录 M2 的早期目录窄表可原子升级到当前 schema，且保
 
     await applyMigrations(connection, () => T1);
 
-    assert.equal(await schemaVersion(connection), 22);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
     assert.deepEqual(
       (
         await connection.getAll<{ name: unknown }>(
@@ -238,7 +241,10 @@ test("已记录 M2 的早期目录窄表可原子升级到当前 schema，且保
     );
 
     await applyMigrations(connection, () => T1);
-    assert.equal(await schemaVersion(connection), 22);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
   });
 });
 
@@ -259,7 +265,10 @@ test("模拟器已确认的快照复合键旧 M2 可升级并清空可下载缓�
 
     await applyMigrations(connection, () => T1);
 
-    assert.equal(await schemaVersion(connection), 22);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
     assert.equal(
       await scalar(
         connection,

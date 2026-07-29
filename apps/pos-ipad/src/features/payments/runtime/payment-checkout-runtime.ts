@@ -277,6 +277,15 @@ export type CancelPaymentCheckoutInput = RecoverPaymentCheckoutInput;
 export type AddPaymentCashInput = Readonly<{
   orderGuid: string;
   actionId: string;
+  /** 顾客实收；运行时按可信 remaining 计算入账与找零。 */
+  amount: Money;
+}>;
+
+export type StartCashPaymentCheckoutInput = Readonly<{
+  checkoutIntentId: string;
+  expectedCartRevision: number;
+  actionId: string;
+  /** 顾客实收；运行时在可信 draft 上按 min(实收, remaining) 原子入账。 */
   amount: Money;
 }>;
 
@@ -294,6 +303,9 @@ export interface PaymentCheckoutRuntimePort {
     preparedInput?: ResumePreparedPaymentInput,
   ): Promise<PaymentCheckoutPublicSnapshot | null>;
   start(input: StartPaymentCheckoutInput): Promise<PaymentCheckoutPublicSnapshot>;
+  startCash?(
+    input: StartCashPaymentCheckoutInput,
+  ): Promise<PaymentCheckoutPublicSnapshot>;
   recover(
     input: RecoverPaymentCheckoutInput,
   ): Promise<PaymentCheckoutPublicSnapshot>;
@@ -443,6 +455,72 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     }
 
     const promise = Promise.resolve().then(() => this.startOnce(input));
+    const flight = { signature, promise };
+    this.checkoutFlights.set(checkoutIntentId, flight);
+    promise.then(
+      () => this.deleteFlight(checkoutIntentId, flight),
+      () => this.deleteFlight(checkoutIntentId, flight),
+    );
+    return promise;
+  }
+
+  public startCash(
+    input: StartCashPaymentCheckoutInput,
+  ): Promise<PaymentCheckoutPublicSnapshot> {
+    const checkoutIntentId = requiredText(
+      input.checkoutIntentId,
+      "PAYMENT_DRAFT_CONFLICT",
+    );
+    const signature = JSON.stringify({
+      kind: "cash",
+      checkoutIntentId,
+      expectedCartRevision: input.expectedCartRevision,
+      actionId: input.actionId,
+      amount: input.amount,
+    });
+    const existing = this.checkoutFlights.get(checkoutIntentId);
+    if (existing) {
+      if (existing.signature === signature) return existing.promise;
+      return Promise.reject(
+        new PaymentCheckoutRuntimeError("PAYMENT_ACTION_IN_FLIGHT"),
+      );
+    }
+    const promise = Promise.resolve().then(async () => {
+      await this.assertCashAction();
+      assertPositiveAud(input.amount);
+      const lease = await this.options.cartLease.acquireExact({
+        checkoutIntentId,
+        expectedRevision: input.expectedCartRevision,
+      });
+      assertLease(lease, checkoutIntentId, input.expectedCartRevision);
+      await this.assertCashAction();
+      await this.assertExact(lease);
+      const draft = await this.options.drafts.createOrReuse({
+        checkoutIntentId,
+        lease,
+      });
+      await this.assertCashAction();
+      await this.assertExact(lease);
+      assertDraftMatchesLease(draft, lease);
+      assertNoActiveTenderMethod(draft, "cash");
+      const appliedAmount =
+        input.amount.cents > draft.remaining.cents
+          ? draft.remaining
+          : input.amount;
+      const result = await this.options.mixed.addCashTender({
+        actionId: input.actionId,
+        orderGuid: draft.orderGuid,
+        amount: appliedAmount,
+        tenderedAmount: input.amount,
+        change: Object.freeze({
+          currency: "AUD",
+          cents: input.amount.cents - appliedAmount.cents,
+        }),
+      });
+      await this.assertCashAction();
+      await this.assertExact(lease);
+      return this.finishMixedResult(draft, lease, result, null);
+    });
     const flight = { signature, promise };
     this.checkoutFlights.set(checkoutIntentId, flight);
     promise.then(
@@ -625,13 +703,23 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
   ): Promise<PaymentCheckoutPublicSnapshot> {
     const draft = await this.requireDraft(input.orderGuid);
     await this.assertCashAction();
+    assertPositiveAud(input.amount);
     assertNoActiveTenderMethod(draft, "cash");
     const lease = await this.acquireDraftLease(draft);
     await this.assertExact(lease);
+    const appliedAmount =
+      input.amount.cents > draft.remaining.cents
+        ? draft.remaining
+        : input.amount;
     const result = await this.options.mixed.addCashTender({
       actionId: input.actionId,
       orderGuid: draft.orderGuid,
-      amount: input.amount,
+      amount: appliedAmount,
+      tenderedAmount: input.amount,
+      change: Object.freeze({
+        currency: "AUD",
+        cents: input.amount.cents - appliedAmount.cents,
+      }),
     });
     await this.assertCashAction();
     await this.assertExact(lease);

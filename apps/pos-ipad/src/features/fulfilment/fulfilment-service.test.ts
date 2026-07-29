@@ -3,8 +3,11 @@ import test from "node:test";
 
 import {
   FulfilmentService,
+  type FulfilmentAuthorizationContext,
   type FulfilmentAuditEvent,
+  type FulfilmentInitialAuthorization,
   type FulfilmentStore,
+  type PreparedManualDrawerOpen,
   type PreparedLastReceiptReprint,
 } from "./fulfilment-service";
 
@@ -13,8 +16,8 @@ type PreparedReprintHasRequiredOrderGuid =
 const preparedReprintHasRequiredOrderGuid: PreparedReprintHasRequiredOrderGuid = true;
 
 class MemoryStore implements FulfilmentStore {
-  public readonly printJobs = new Map<string, { jobId: string; orderGuid: string; printerId: string; isReprint: boolean; bytes: Uint8Array; state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous"; retryCount: number }>();
-  public readonly drawerEvents = new Map<string, { eventId: string; orderGuid: string; printerId: string; state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown"; reason: string; retryCount: number }>();
+  public readonly printJobs = new Map<string, { jobId: string; orderGuid: string; printerId: string; isReprint: boolean; bytes: Uint8Array; state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous"; retryCount: number; authorization?: FulfilmentAuthorizationContext }>();
+  public readonly drawerEvents = new Map<string, { eventId: string; orderGuid: string | null; printerId: string; state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown"; reason: string; retryCount: number }>();
   public readonly reprintInputs: PreparedLastReceiptReprint[] = [];
   public readonly audits: FulfilmentAuditEvent[] = [];
   public readonly printFinishCalls: {
@@ -55,6 +58,35 @@ class MemoryStore implements FulfilmentStore {
   }
   public async claimRequiredDrawerEvent(eventId: string) { return this.claimDrawer(eventId, "Required", false); }
   public async beginManualDrawerRetry(eventId: string) { return this.claimDrawer(eventId, "Failed", true); }
+  public async beginManualDrawerOpen(input: Readonly<{
+    eventId: string;
+    printerId: string;
+    reason: "MANUAL";
+  }>, authorization: FulfilmentInitialAuthorization) {
+    const existing = this.drawerEvents.get(input.eventId);
+    if (existing) {
+      if (
+        existing.orderGuid !== null ||
+        existing.printerId !== input.printerId ||
+        existing.reason !== "MANUAL" ||
+        existing.state === "Required"
+      ) {
+        throw new Error("Manual drawer action conflict.");
+      }
+      return { kind: "existing" as const, event: existing };
+    }
+    const event = {
+      eventId: input.eventId,
+      orderGuid: null,
+      printerId: input.printerId,
+      state: "Requested" as const,
+      reason: "MANUAL",
+      retryCount: 0,
+    };
+    this.drawerEvents.set(input.eventId, event);
+    this.audits.push(authorization.audit);
+    return { kind: "created" as const, event };
+  }
   public async finishDrawerEvent(
     eventId: string,
     expected: "Requested",
@@ -70,18 +102,25 @@ class MemoryStore implements FulfilmentStore {
     this.audits.push(audit);
     return true;
   }
-  public async createLastReceiptReprint(input: PreparedLastReceiptReprint) {
+  public async createLastReceiptReprint(
+    input: PreparedLastReceiptReprint,
+    authorization?: FulfilmentInitialAuthorization,
+  ) {
     this.reprintInputs.push(input);
     const copy = {
-      jobId: `reprint-${input.orderGuid}`,
+      jobId: authorization?.context.actionId ?? `reprint-${input.orderGuid}`,
       orderGuid: input.orderGuid,
       printerId: input.printerId,
       bytes: input.receiptBytes,
       isReprint: true,
       state: "Queued" as const,
       retryCount: 0,
+      ...(authorization
+        ? { authorization: authorization.context }
+        : {}),
     };
     this.printJobs.set(copy.jobId, copy);
+    if (authorization) this.audits.push(authorization.audit);
     return copy;
   }
 
@@ -128,6 +167,7 @@ function setup(overrides: Readonly<{
   prepareReceiptReprint?: (
     orderGuid: string,
   ) => Promise<PreparedLastReceiptReprint | null>;
+  prepareManualDrawerOpen?: () => Promise<PreparedManualDrawerOpen | null>;
 }> = {}) {
   const store = new MemoryStore();
   const hardwareTrace: string[] = [];
@@ -145,12 +185,34 @@ function setup(overrides: Readonly<{
       receiptBytes: Uint8Array.of(29, 33, 82),
       printerId: "XP-REPRINT",
     })),
+    prepareManualDrawerOpen:
+      overrides.prepareManualDrawerOpen ?? (async () => ({
+        printerId: "XP-MANUAL-DRAWER",
+      })),
     ...(overrides.prepareReceiptReprint
       ? { prepareReceiptReprint: overrides.prepareReceiptReprint }
       : {}),
   });
   return { store, printer, drawer, audit: store.audits, hardwareTrace, service };
 }
+
+const reprintAuthorization: FulfilmentAuthorizationContext = {
+  actionId: "action-reprint-last",
+  permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+  authorizationMode: "online",
+  requestingCashierId: "cashier-1",
+  authorizingCashierId: "supervisor-1",
+};
+
+const drawerAuthorization: FulfilmentAuthorizationContext = {
+  actionId: "action-open-drawer",
+  permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+  authorizationMode: "offline-cache",
+  requestingCashierId: "cashier-1",
+  authorizingCashierId: "supervisor-1",
+};
+
+const activeLease = () => undefined;
 
 test("自动队列只认 Queued/Required；终态、Sending、Ambiguous、Requested、Unknown 一律不重放", async () => {
   assert.equal(preparedReprintHasRequiredOrderGuid, true);
@@ -249,21 +311,337 @@ test("最后小票重打必须使用订单账本选定的 orderGuid，不得回�
   });
   store.printJobs.set("old-source", { jobId: "old-source", orderGuid: "ORDER-OLD", printerId: "XP-SOURCE", isReprint: false, bytes: Uint8Array.of(1), state: "Printed", retryCount: 0 });
 
-  const result = await service.reprintLastReceipt();
+  const result = await service.reprintLastReceipt(
+    reprintAuthorization,
+    activeLease,
+  );
 
   assert.equal(result.state, "Printed");
   assert.equal(store.printJobs.get("old-source")?.state, "Printed");
-  assert.equal(store.printJobs.get("reprint-ORDER-CURRENT")?.state, "Printed");
-  assert.equal(store.printJobs.get("reprint-ORDER-CURRENT")?.orderGuid, "ORDER-CURRENT");
-  assert.equal(store.printJobs.get("reprint-ORDER-CURRENT")?.isReprint, true);
+  assert.equal(store.printJobs.get(reprintAuthorization.actionId)?.state, "Printed");
+  assert.equal(store.printJobs.get(reprintAuthorization.actionId)?.orderGuid, "ORDER-CURRENT");
+  assert.equal(store.printJobs.get(reprintAuthorization.actionId)?.isReprint, true);
   assert.deepEqual(store.reprintInputs, [prepared]);
-  assert.deepEqual(printer.calls, ["reprint-ORDER-CURRENT"]);
+  assert.deepEqual(printer.calls, [reprintAuthorization.actionId]);
   assert.deepEqual(printer.connectCalls, ["XP-REPRINT"]);
   assert.deepEqual(printer.byteCalls, [prepared.receiptBytes]);
   assert.deepEqual(
     audit.map((event) => ({ eventType: event.eventType, outcome: event.payload.outcome })),
-    [{ eventType: "RECEIPT_REPRINT", outcome: "Succeeded" }],
+    [
+      { eventType: "RECEIPT_REPRINT", outcome: "Succeeded" },
+      { eventType: "RECEIPT_REPRINT", outcome: "Succeeded" },
+    ],
   );
+});
+
+test("最后小票重打把授权审计与首个任务原子创建，并让终态沿用 actionId 关联", async () => {
+  const { store, audit, service } = setup();
+
+  assert.equal(
+    (
+      await service.reprintLastReceipt(
+        reprintAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Printed",
+  );
+  assert.equal(store.printJobs.get(reprintAuthorization.actionId)?.state, "Printed");
+  assert.deepEqual(
+    audit.map((event) => ({
+      status: event.payload.status,
+      outcome: event.payload.outcome,
+      correlationId: event.correlationId,
+      requestingCashierId: event.payload.requestingCashierId,
+      authorizingCashierId: event.payload.authorizingCashierId,
+      permissionCode: event.payload.permissionCode,
+      authorizationMode: event.payload.authorizationMode,
+    })),
+    [
+      {
+        status: "Authorized",
+        outcome: "Succeeded",
+        correlationId: reprintAuthorization.actionId,
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+        authorizationMode: "online",
+      },
+      {
+        status: "Printed",
+        outcome: "Succeeded",
+        correlationId: reprintAuthorization.actionId,
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+        authorizationMode: "online",
+      },
+    ],
+  );
+});
+
+test("手动开箱把授权审计与 Requested 事件原子创建，并与终态审计共用 actionId", async () => {
+  const { store, printer, drawer, audit, service } = setup({
+    prepareManualDrawerOpen: async () => ({ printerId: "XP-FROZEN-MANUAL" }),
+  });
+
+  const result = await service.openDrawerManually(
+    drawerAuthorization,
+    activeLease,
+  );
+
+  assert.deepEqual(result, { state: "Completed", errorCode: null });
+  assert.deepEqual(printer.connectCalls, ["XP-FROZEN-MANUAL"]);
+  assert.deepEqual(drawer.calls, ["action-open-drawer"]);
+  assert.deepEqual(store.drawerEvents.get("action-open-drawer"), {
+    eventId: "action-open-drawer",
+    orderGuid: null,
+    printerId: "XP-FROZEN-MANUAL",
+    state: "Completed",
+    reason: "MANUAL",
+    retryCount: 0,
+  });
+  assert.deepEqual(
+    audit.map((event) => ({
+      eventType: event.eventType,
+      orderGuid: event.orderGuid,
+      status: event.payload.status,
+      outcome: event.payload.outcome,
+      correlationId: event.correlationId,
+      action: event.payload.action,
+      source: event.payload.source,
+      reason: event.payload.reason,
+      requestingCashierId: event.payload.requestingCashierId,
+      authorizingCashierId: event.payload.authorizingCashierId,
+      permissionCode: event.payload.permissionCode,
+      authorizationMode: event.payload.authorizationMode,
+    })),
+    [
+      {
+        eventType: "CASH_DRAWER_OPEN",
+        orderGuid: null,
+        status: "Authorized",
+        outcome: "Succeeded",
+        correlationId: drawerAuthorization.actionId,
+        action: "open-cash-drawer",
+        source: "sales",
+        reason: "MANUAL",
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+        authorizationMode: "offline-cache",
+      },
+      {
+        eventType: "CASH_DRAWER_OPEN",
+        orderGuid: null,
+        status: "Completed",
+        outcome: "Succeeded",
+        correlationId: drawerAuthorization.actionId,
+        action: "open-cash-drawer",
+        source: "sales",
+        reason: "MANUAL",
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+        authorizationMode: "offline-cache",
+      },
+    ],
+  );
+});
+
+test("手动开箱同 actionId 幂等；Completed、Unknown 和未收口 Requested 都不重放", async () => {
+  const completed = setup();
+  assert.equal(
+    (
+      await completed.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Completed",
+  );
+  assert.equal(
+    (
+      await completed.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Completed",
+  );
+  assert.deepEqual(completed.drawer.calls, ["action-open-drawer"]);
+
+  const unknown = setup();
+  unknown.drawer.result = { status: "unknown", errorCode: "PULSE_TIMEOUT" };
+  assert.equal(
+    (
+      await unknown.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Unknown",
+  );
+  assert.equal(
+    (
+      await unknown.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Unknown",
+  );
+  assert.deepEqual(unknown.drawer.calls, ["action-open-drawer"]);
+
+  const requested = setup();
+  requested.store.drawerFinishSucceeds = false;
+  assert.equal(
+    (
+      await requested.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "recovery-required",
+  );
+  assert.equal(
+    (
+      await requested.service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "recovery-required",
+  );
+  assert.deepEqual(requested.drawer.calls, ["action-open-drawer"]);
+});
+
+test("手动开箱同 actionId 改绑打印机必须 fail-closed，不能向第二台外设发脉冲", async () => {
+  let printerId = "XP-FIRST";
+  const { printer, drawer, service } = setup({
+    prepareManualDrawerOpen: async () => ({ printerId }),
+  });
+  assert.equal(
+    (
+      await service.openDrawerManually(
+        drawerAuthorization,
+        activeLease,
+      )
+    ).state,
+    "Completed",
+  );
+
+  printerId = "XP-SECOND";
+  await assert.rejects(
+    service.openDrawerManually(drawerAuthorization, activeLease),
+    /manual drawer action conflict/i,
+  );
+  assert.deepEqual(printer.connectCalls, ["XP-FIRST"]);
+  assert.deepEqual(drawer.calls, ["action-open-drawer"]);
+});
+
+test("手动履约权限上下文不匹配时 fail-closed，不能创建任务或触发硬件", async () => {
+  const { store, printer, drawer, service } = setup();
+
+  await assert.rejects(
+    service.openDrawerManually(
+      {
+        ...drawerAuthorization,
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+      },
+      activeLease,
+    ),
+    /permission mismatch/i,
+  );
+  await assert.rejects(
+    service.reprintLastReceipt(
+      {
+        ...reprintAuthorization,
+        permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+      },
+      activeLease,
+    ),
+    /permission mismatch/i,
+  );
+  assert.equal(store.drawerEvents.size, 0);
+  assert.equal(store.printJobs.size, 0);
+  assert.deepEqual(printer.connectCalls, []);
+  assert.deepEqual(drawer.calls, []);
+});
+
+test("最后小票重打与手动开箱共用同一 hardwareTail，打印未完成前不能发钱箱脉冲", async () => {
+  const { printer, drawer, hardwareTrace, service } = setup();
+  let release!: () => void;
+  printer.hold = new Promise<void>((resolve) => { release = resolve; });
+
+  const reprint = service.reprintLastReceipt(
+    reprintAuthorization,
+    activeLease,
+  );
+  const openDrawer = service.openDrawerManually(
+    drawerAuthorization,
+    activeLease,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(drawer.calls, []);
+  assert.deepEqual(hardwareTrace, [
+    "connect:XP-REPRINT",
+    `print:${reprintAuthorization.actionId}`,
+  ]);
+
+  release();
+  await Promise.all([reprint, openDrawer]);
+  assert.deepEqual(hardwareTrace, [
+    "connect:XP-REPRINT",
+    `print:${reprintAuthorization.actionId}`,
+    "connect:XP-MANUAL-DRAWER",
+    "drawer:action-open-drawer",
+  ]);
+});
+
+test("授权动作到达硬件队列头时租约已失效，不创建重打或开箱任务也不触发对应硬件", async () => {
+  const { store, printer, drawer, service } = setup();
+  store.printJobs.set("queue-blocker", {
+    jobId: "queue-blocker",
+    orderGuid: "ORDER-BLOCKER",
+    printerId: "XP-BLOCKER",
+    isReprint: false,
+    bytes: Uint8Array.of(1),
+    state: "Queued",
+    retryCount: 0,
+  });
+  let release!: () => void;
+  printer.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error("CURRENT_CASHIER_REQUIRED");
+  };
+
+  const blocker = service.drainAutomaticQueue();
+  await new Promise((resolve) => setImmediate(resolve));
+  const reprint = service.reprintLastReceipt(
+    reprintAuthorization,
+    assertActive,
+  );
+  const openDrawer = service.openDrawerManually(
+    drawerAuthorization,
+    assertActive,
+  );
+  active = false;
+  release();
+
+  await blocker;
+  const results = await Promise.allSettled([reprint, openDrawer]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "rejected"],
+  );
+  assert.deepEqual(printer.calls, ["queue-blocker"]);
+  assert.deepEqual(drawer.calls, []);
+  assert.deepEqual(store.reprintInputs, []);
+  assert.equal(store.drawerEvents.size, 0);
 });
 
 test("没有任何历史 Printed job 时仍可为调用方指定订单创建重打任务", async () => {
@@ -276,10 +654,16 @@ test("没有任何历史 Printed job 时仍可为调用方指定订单创建重�
     prepareLastReceiptReprint: async () => prepared,
   });
 
-  const result = await service.reprintLastReceipt();
+  const result = await service.reprintLastReceipt(
+    reprintAuthorization,
+    activeLease,
+  );
 
   assert.equal(result.state, "Printed");
-  assert.equal(store.printJobs.get("reprint-ORDER-CASH-WITHOUT-PRINT-HISTORY")?.orderGuid, prepared.orderGuid);
+  assert.equal(
+    store.printJobs.get(reprintAuthorization.actionId)?.orderGuid,
+    prepared.orderGuid,
+  );
   assert.deepEqual(store.reprintInputs, [prepared]);
   assert.deepEqual(printer.connectCalls, ["XP-CASH"]);
 });

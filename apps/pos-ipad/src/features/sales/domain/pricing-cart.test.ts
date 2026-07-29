@@ -214,3 +214,168 @@ test("zero-price lines remain representable without floating point coercion", ()
   assert.equal(cart.snapshot().actualAmount.cents, 0);
   assert.equal(cart.snapshot().lines[0]!.priceSource, "open-item");
 });
+
+test("在线目录校准更新全部同身份销售行，保留手工价并跳过退货与 open item", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(
+    item("catalog", {
+      productCode: "P-TEA",
+      lookupCode: "930000000001",
+      unitPrice: createAud(500),
+      syncProvenance: { referenceCode: "REF-TEA", priceSource: 0 },
+    }),
+  );
+  source.addItem(
+    item("manual", {
+      productCode: "P-OTHER",
+      lookupCode: "OTHER",
+      unitPrice: createAud(650),
+      syncProvenance: { referenceCode: "REF-OTHER", priceSource: 0 },
+    }),
+  );
+  source.setLineUnitPrice("manual", createAud(675));
+  source.addOpenItem({
+    lineId: "open",
+    productCode: "P-TEA",
+    itemNumber: null,
+    lookupCode: "930000000001",
+    displayName: "Open tea",
+    unitPrice: createAud(999),
+    syncProvenance: { referenceCode: "REF-TEA", priceSource: 0 },
+  });
+  const state = source.stateSnapshot();
+  const catalogLine = state.lines[0]!;
+  const manualLine = state.lines[1]!;
+  const cart = PricingCart.restore({
+    ...state,
+    lines: [
+      catalogLine,
+      {
+        ...manualLine,
+        productCode: "P-TEA",
+        lookupCode: "930000000001",
+        syncProvenance: { referenceCode: "REF-TEA", priceSource: 0 },
+      },
+      {
+        ...catalogLine,
+        lineId: "return",
+        kind: "return",
+        originalOrderGuid: "order-1",
+        originalOrderDetailGuid: "detail-1",
+        returnSourceKey: "order-1:detail-1",
+      },
+      state.lines[2]!,
+    ],
+  });
+
+  const updatedLineIds = cart.refreshCatalogItem({
+    expected: {
+      productCode: "P-TEA",
+      referenceCode: "REF-TEA",
+      lookupCode: "930000000001",
+    },
+    item: {
+      productCode: "P-TEA",
+      referenceCode: "REF-TEA",
+      itemNumber: "NEW-100",
+      lookupCode: "930000000001",
+      displayName: "Fresh tea",
+      retailPriceCents: 725,
+      priceSource: 1,
+    },
+  });
+
+  const snapshot = cart.snapshot();
+  assert.deepEqual(updatedLineIds, ["catalog", "manual"]);
+  assert.deepEqual(
+    snapshot.lines.slice(0, 2).map((line) => ({
+      lineId: line.lineId,
+      displayName: line.displayName,
+      itemNumber: line.itemNumber,
+      unitPriceCents: line.unitPrice.cents,
+      priceSource: line.priceSource,
+      syncProvenance: line.syncProvenance,
+    })),
+    [
+      {
+        lineId: "catalog",
+        displayName: "Fresh tea",
+        itemNumber: "NEW-100",
+        unitPriceCents: 725,
+        priceSource: "catalog",
+        syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 },
+      },
+      {
+        lineId: "manual",
+        displayName: "Fresh tea",
+        itemNumber: "NEW-100",
+        unitPriceCents: 675,
+        priceSource: "manual",
+        syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 },
+      },
+    ],
+  );
+  assert.equal(snapshot.lines[2]?.displayName, "Item catalog");
+  assert.equal(snapshot.lines[3]?.displayName, "Open tea");
+});
+
+test("在线目录校准遇到完全相同数据时不递增 revision，手工价不因目录价差异触发更新", () => {
+  const cart = new PricingCart({ asOfIso });
+  cart.addItem(
+    item("catalog", {
+      productCode: "P-TEA",
+      itemNumber: "TEA-1",
+      lookupCode: " tea-1 ",
+      displayName: "Fresh tea",
+      unitPrice: createAud(725),
+      syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 },
+    }),
+  );
+  cart.addItem(
+    item("manual", {
+      productCode: "P-OTHER",
+      lookupCode: "OTHER",
+      unitPrice: createAud(650),
+      syncProvenance: { referenceCode: "REF-OTHER", priceSource: 0 },
+    }),
+  );
+  cart.setLineUnitPrice("manual", createAud(675));
+  const state = cart.stateSnapshot();
+  const manualLine = state.lines[1]!;
+  const restored = PricingCart.restore({
+    ...state,
+    lines: [
+      state.lines[0]!,
+      {
+        ...manualLine,
+        productCode: "P-TEA",
+        itemNumber: "TEA-1",
+        lookupCode: "TEA-1",
+        displayName: "Fresh tea",
+        syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 },
+      },
+    ],
+  });
+  const revisionBefore = restored.stateSnapshot().revision;
+
+  const updatedLineIds = restored.refreshCatalogItem({
+    expected: {
+      productCode: "P-TEA",
+      referenceCode: "REF-TEA",
+      lookupCode: "TEA-1",
+    },
+    item: {
+      productCode: "p-tea",
+      referenceCode: "REF-TEA",
+      itemNumber: "TEA-1",
+      lookupCode: " tea-1 ",
+      displayName: "Fresh tea",
+      retailPriceCents: 725,
+      priceSource: 1,
+    },
+  });
+
+  assert.deepEqual(updatedLineIds, []);
+  assert.equal(restored.stateSnapshot().revision, revisionBefore);
+  assert.equal(restored.snapshot().lines[1]?.unitPrice.cents, 675);
+});

@@ -334,6 +334,22 @@
               "format": "int32",
               "default": 500
             }
+          },
+          {
+            "name": "catalogVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "checksumVersion",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
           }
         ],
         "responses": {

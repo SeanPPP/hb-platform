@@ -50,7 +50,12 @@ export type MixedApprovedPaymentCompletionPort = Pick<
 export type MixedCashTenderCommand = Readonly<{
   actionId: string;
   orderGuid: string;
+  /** 实际计入订单 tender 的金额。 */
   amount: Money;
+  /** 新版调用显式冻结顾客实收；旧 action 缺失时等同 amount。 */
+  tenderedAmount?: Money;
+  /** 必须严格等于 tenderedAmount - amount。 */
+  change?: Money;
 }>;
 
 export type MixedCashTenderMutation = Readonly<{

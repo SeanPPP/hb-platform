@@ -10,7 +10,11 @@ import {
   type CatalogLookupItem,
 } from "./hbpos-catalog-remote";
 
-import type { HbposTransport, HbposTransportRequest } from "@/core/api";
+import {
+  HbposApiError,
+  type HbposTransport,
+  type HbposTransportRequest,
+} from "@/core/api";
 
 const digest: CatalogPageDigest = async (payload) =>
   createHash("sha256").update(payload, "utf8").digest("hex");
@@ -64,6 +68,52 @@ test("checksum 以 JavaScript 可观测数值为协议表示，避免 decimal �
   );
 });
 
+test("TypeScript 与服务端共享 IEEE-754 SHA256 v2 测试向量", async () => {
+  assert.equal(
+    await calculateCatalogPageChecksum([canonicalItem], digest, 2),
+    "sha256-catalog-page-v2:22181273b9791ad9664ad4f30ca2cddd3916ad9a012851490db28f7e1b229c27",
+  );
+  assert.equal(
+    await calculateCatalogPageChecksum([{
+      ...canonicalItem,
+      productCode: "P-HIGH",
+      referenceCode: null,
+      displayName: "精度",
+      lookupCode: "HIGH",
+      lookupCodeNormalized: "HIGH",
+      itemNumber: null,
+      barcode: null,
+      retailPrice: 0.1000000000000000000000000001,
+      quantityFactor: 12345678901234567890.123456789,
+      updatedAt: null,
+      productImage: null,
+      discountRate: 0.3333333333333333333333333333,
+      isSpecialProduct: false,
+    }], digest, 2),
+    "sha256-catalog-page-v2:d93e540bfb88bafc7735c24ec747537e9f1de0cf4f0d38a6c5d763e552f7486b",
+  );
+});
+
+test("checksum digest 与 canonical 数值异常返回稳定目录校验码", async () => {
+  await assert.rejects(
+    () => calculateCatalogPageChecksum([canonicalItem], async () => "invalid"),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "envelope"
+      && error.code === "CATALOG_PAGE_DIGEST_INVALID",
+  );
+  await assert.rejects(
+    () => calculateCatalogPageChecksum([{
+      ...canonicalItem,
+      retailPrice: Number.POSITIVE_INFINITY,
+    }], digest),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "envelope"
+      && error.code === "CATALOG_PAGE_VALUE_INVALID",
+  );
+});
+
 test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", async () => {
   const calls: HbposTransportRequest[] = [];
   const transport: HbposTransport = {
@@ -83,17 +133,19 @@ test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", asyn
             hasMore: true,
             totalCount: 2,
             catalogVersion: "catalog-v1:server",
-            pageChecksum: "sha256-catalog-page-v1:4eb87e036003575ca8b8e9961ab6c21dbe63ed6d18482886f1da92e8f4165530",
+            pageChecksum: "sha256-catalog-page-v2:22181273b9791ad9664ad4f30ca2cddd3916ad9a012851490db28f7e1b229c27",
           },
         } as T,
       };
     },
   };
 
+  const controller = new AbortController();
   const page = await new HbposCatalogPageApi(transport, digest).getPage({
     storeCode: "S01",
     cursor: null,
     pageSize: 500,
+    signal: controller.signal,
   });
 
   assert.deepEqual(page, {
@@ -106,7 +158,7 @@ test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", asyn
     hasMore: true,
     totalCount: 2,
     catalogVersion: "catalog-v1:server",
-    pageChecksum: "sha256-catalog-page-v1:4eb87e036003575ca8b8e9961ab6c21dbe63ed6d18482886f1da92e8f4165530",
+    pageChecksum: "sha256-catalog-page-v2:22181273b9791ad9664ad4f30ca2cddd3916ad9a012851490db28f7e1b229c27",
   });
   assert.deepEqual(calls, [{
     method: "GET",
@@ -115,7 +167,11 @@ test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", asyn
       storeCode: "S01",
       cursor: undefined,
       pageSize: 500,
+      catalogVersion: undefined,
+      checksumVersion: 2,
     },
+    signal: controller.signal,
+    timeoutMs: 0,
   }]);
 });
 
@@ -127,7 +183,7 @@ test("Hbpos catalog adapter 接受服务端可选字段的空字符串并规范�
     barcode: null,
     productImage: null,
   };
-  const pageChecksum = await calculateCatalogPageChecksum([normalizedItem], digest);
+  const pageChecksum = await calculateCatalogPageChecksum([normalizedItem], digest, 2);
   const transport: HbposTransport = {
     async request<T>() {
       return {
@@ -205,7 +261,7 @@ test("Hbpos catalog adapter 在落库前拒绝被篡改的页面", async () => {
             totalCount: 1,
             catalogVersion: "catalog-v1:server",
             // 使用未篡改 canonicalItem 的合法摘要，确保拒绝原因确实是响应内容被改写。
-            pageChecksum: "sha256-catalog-page-v1:4eb87e036003575ca8b8e9961ab6c21dbe63ed6d18482886f1da92e8f4165530",
+            pageChecksum: "sha256-catalog-page-v2:22181273b9791ad9664ad4f30ca2cddd3916ad9a012851490db28f7e1b229c27",
           },
         } as T,
       };
@@ -259,8 +315,10 @@ test("Hbpos catalog adapter 将完整促销合同稳定白名单序列化给快�
     },
   };
 
+  const controller = new AbortController();
   const promotions = await new HbposCatalogPageApi(transport, digest).getPromotions({
     storeCode: "S01",
+    signal: controller.signal,
   });
 
   const expected: CatalogPromotion[] = [{
@@ -275,6 +333,8 @@ test("Hbpos catalog adapter 将完整促销合同稳定白名单序列化给快�
     method: "GET",
     url: "/api/v1/catalog/promotions",
     params: { storeCode: "S01" },
+    signal: controller.signal,
+    timeoutMs: 0,
   }]);
 });
 

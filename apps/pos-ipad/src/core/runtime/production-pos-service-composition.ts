@@ -1,11 +1,18 @@
 import type { AppUpdateRestartSafetySnapshot } from "../../features/app-updates";
 import type { AttendanceAuditRuntimeFactory } from "../../features/attendance-audit/attendance-audit-runtime";
 import { CashierLockService } from "../../features/cashier-lock";
+import {
+  RemoteCatalogLookupRevalidationService,
+} from "../../features/catalog/catalog-lookup-revalidation";
 import type {
   CatalogRefreshOutcome,
   CatalogRefreshProgressObserver,
   CatalogSummary,
 } from "../../features/catalog/catalog-refresh-contract";
+import {
+  CatalogRefreshCoordinator,
+  type CatalogRefreshState,
+} from "../../features/catalog/catalog-refresh-coordinator";
 import {
   CatalogSnapshotService,
   type CatalogActivationResult,
@@ -15,10 +22,7 @@ import {
   type CatalogPageDigest,
 } from "../../features/catalog/hbpos-catalog-remote";
 import { CATALOG_DOWNLOAD_PERMISSION } from "../../features/catalog/maintenance/catalog-maintenance-authorization";
-import {
-  HbposCatalogLookupApi,
-  RemoteFallbackLocalCatalogPort,
-} from "../../features/catalog/remote-catalog-fallback";
+import { HbposCatalogLookupApi } from "../../features/catalog/remote-catalog-fallback";
 import { DurableCashCheckoutService } from "../../features/checkout/cash";
 import {
   CustomerDisplayAdvertisementPlayback,
@@ -35,6 +39,7 @@ import type { DailyCloseRuntimeFactory } from "../../features/daily-close/daily-
 import {
   FulfilmentService,
   type FulfilmentActionResult,
+  type FulfilmentAuthorizationContext,
 } from "../../features/fulfilment";
 import {
   type ActivePricingCartPort,
@@ -203,6 +208,8 @@ export type PosCatalogRuntimeService = Readonly<{
       signal?: AbortSignal | undefined;
     }>,
   ): Promise<CatalogSummary | null>;
+  getRefreshState(): CatalogRefreshState;
+  subscribeRefresh(listener: () => void): () => void;
   downloadAndActivate(
     input: Readonly<{
       storeCode: string;
@@ -217,14 +224,24 @@ export type PosReceiptSettingsService = Readonly<{
   save(input: ReceiptPrinterSettings): Promise<ReceiptPrinterSettings>;
 }>;
 
+export type PosAuthorizedFulfilmentActionResult =
+  | FulfilmentActionResult
+  | Readonly<{
+      state: "denied";
+      errorCode: string | null;
+    }>;
+
+export type PosAuthorizedFulfilmentAction = Readonly<{
+  status: "available";
+  execute(): Promise<PosAuthorizedFulfilmentActionResult>;
+}>;
+
 export type PosFulfilmentRuntimeService = Readonly<{
   drainAutomaticQueue(): Promise<Readonly<{ printed: number; drawersOpened: number }>>;
   retryFailedPrint(jobId: string): Promise<FulfilmentActionResult>;
   retryFailedDrawer(eventId: string): Promise<FulfilmentActionResult>;
-  reprint: Readonly<{
-    status: "available";
-    execute(): Promise<FulfilmentActionResult>;
-  }>;
+  reprint: PosAuthorizedFulfilmentAction;
+  openCashDrawer: PosAuthorizedFulfilmentAction;
 }>;
 
 export type PosSalesRuntimeService = Readonly<{
@@ -330,6 +347,7 @@ export type ProductionPosRuntimeServices = Readonly<{
   }>;
   attendanceAudit: PosAttendanceAuditRuntimeService;
   catalog: PosCatalogRuntimeService;
+  catalogRefresh: CatalogRefreshCoordinator;
   receiptSettings: PosReceiptSettingsService;
   fulfilment: PosFulfilmentRuntimeService;
   sync: Readonly<{
@@ -356,7 +374,10 @@ export type ProductionPosRuntimeServices = Readonly<{
 
 /** 仅组合根持有；initialize 完成后才能把 services 交给 React route。 */
 export type ProductionPosRuntimeComposition = ProductionPosRuntimeServices &
-  Readonly<{ initialize(): Promise<void> }>;
+  Readonly<{
+    initialize(): Promise<void>;
+    shutdownBackgroundWork(): Promise<void>;
+  }>;
 
 export type RuntimeClock = Readonly<{
   now(): Date;
@@ -554,6 +575,25 @@ export function createProductionPosRuntimeServices(
     () => new PricingCart(),
   );
   const catalogRepository = input.database.catalogSnapshots();
+  const catalogLookupOverlay = input.database.catalogLookupOverlay();
+  const localSalesCatalog = {
+    findExact: (lookupCode: string) =>
+      catalogLookupOverlay.findExact(
+        input.auditMetadata.storeCode,
+        lookupCode,
+      ),
+    searchByName: (
+      query: string,
+      limit: number,
+      offset?: number,
+    ) =>
+      catalogLookupOverlay.searchByName(
+        input.auditMetadata.storeCode,
+        query,
+        limit,
+        offset,
+      ),
+  };
   const promotionSnapshotLoader = new ActivePromotionSnapshotLoader(
     activePricingCart,
     {
@@ -605,10 +645,12 @@ export function createProductionPosRuntimeServices(
       return summary;
     },
   };
-  const salesCatalogRepository = new RemoteFallbackLocalCatalogPort({
+  const catalogRevalidation =
+    new RemoteCatalogLookupRevalidationService({
     storeCode: input.auditMetadata.storeCode,
-    local: catalogRepository,
+    local: localSalesCatalog,
     remote: new HbposCatalogLookupApi(input.transport),
+    overlay: catalogLookupOverlay,
     isOnline: () => input.connectivity.isOnline(),
   });
   const specialProductsRepository = input.database.specialProducts();
@@ -660,6 +702,60 @@ export function createProductionPosRuntimeServices(
       nowIso: input.clock.nowIso,
     },
   );
+  const catalogRefreshCoordinator = new CatalogRefreshCoordinator();
+  const executeCatalogDownload = (
+    cashierLease: TrustedCashierLease,
+    requestedStoreCode: string,
+    signal: AbortSignal,
+    observer: CatalogRefreshProgressObserver,
+  ) => {
+    requireCatalogDownloadLease(
+      cashierLease,
+      input.auditMetadata,
+      requestedStoreCode,
+    );
+    return downloadRuntimeCatalog(
+      catalogue,
+      catalogRepository,
+      promotionSnapshotLoader,
+      cashierLease,
+      input.auditMetadata,
+      input.clock.nowIso,
+      signal,
+      observer,
+    ).then((outcome) => {
+      void catalogLookupOverlay
+        .cleanupOldGenerations()
+        .catch(() => undefined);
+      return outcome;
+    });
+  };
+  const startCatalogRefresh = (
+    requestedStoreCode: string,
+    callerSignal?: AbortSignal | undefined,
+    observer?: CatalogRefreshProgressObserver | undefined,
+  ) => {
+    throwIfCatalogRequestAborted(callerSignal);
+    const cashierLease = currentCashier.createLease();
+    const session = requireCatalogDownloadLease(
+      cashierLease,
+      input.auditMetadata,
+      requestedStoreCode,
+    );
+    return catalogRefreshCoordinator.start({
+      storeCode: session.storeCode,
+      execute: ({ signal, onProgress }) =>
+        executeCatalogDownload(
+          cashierLease,
+          session.storeCode,
+          signal,
+          (event) => {
+            onProgress(event);
+            observer?.(event);
+          },
+        ),
+    });
+  };
   const specialProducts: SpecialProductsRuntimeFactory = {
     createPresenter: () => {
       const cashierLease = currentCashier.createLease();
@@ -810,6 +906,17 @@ export function createProductionPosRuntimeServices(
     prepareLastReceiptReprint: () => receiptReprint.prepareLast(),
     prepareReceiptReprint: (orderGuid) =>
       receiptReprint.prepareCurrent(orderGuid),
+    prepareManualDrawerOpen: async () => {
+      // 手动动作只能使用本次从持久设置读取并冻结的外设；配置损坏或禁用时不猜测。
+      const current = await settingsRepository.getReceiptPrinterSettings();
+      if (
+        !current.drawerEnabled ||
+        !isValidPeripheralId(current.peripheralId)
+      ) {
+        return null;
+      }
+      return Object.freeze({ printerId: current.peripheralId });
+    },
   });
   const remoteHistory = createHbposRemoteHistoryPresenterFactory(
     input.transport,
@@ -870,10 +977,67 @@ export function createProductionPosRuntimeServices(
       createCashCheckout(cashierLease),
       () => fulfilment.drainAutomaticQueue(),
     );
-  const reprint = {
-    status: "available" as const,
-    execute: () => fulfilment.reprintLastReceipt(),
+  const createTerminalActionAuthorization = () => {
+    const cashierLease = currentCashier.createLease();
+    trustedSalesSession(cashierLease, input.auditMetadata);
+    return Object.freeze({
+      authorization:
+        operationAuthorization ??
+        createCurrentCashierSalesAuthorization(
+          cashierLease,
+          input.auditMetadata,
+        ),
+      assertActive: () => {
+        trustedSalesSession(cashierLease, input.auditMetadata);
+      },
+    });
   };
+  const startCatalogReset = (callerSignal: AbortSignal) => {
+    throwIfCatalogRequestAborted(callerSignal);
+    const cashierLease = currentCashier.createLease();
+    const session = requireSettingsCatalogSession(
+      cashierLease,
+      input.auditMetadata,
+      input.auditMetadata.storeCode,
+      SETTINGS_CATALOG_RESET_PERMISSION,
+    );
+    return catalogRefreshCoordinator.start({
+      storeCode: session.storeCode,
+      execute: async ({ signal, onProgress }) => {
+        const outcome = await downloadSettingsCatalog(
+          catalogue,
+          catalogRepository,
+          promotionSnapshotLoader,
+          cashierLease,
+          input.auditMetadata,
+          input.clock.nowIso,
+          true,
+          signal,
+          onProgress,
+        );
+        void catalogLookupOverlay
+          .cleanupOldGenerations()
+          .catch(() => undefined);
+        return outcome;
+      },
+    });
+  };
+  const reprint = createAuthorizedFulfilmentAction({
+    permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+    action: "reprint-last-receipt",
+    createActionId: input.createId,
+    createAuthorization: createTerminalActionAuthorization,
+    execute: (authorization, assertActive) =>
+      fulfilment.reprintLastReceipt(authorization, assertActive),
+  });
+  const openCashDrawer = createAuthorizedFulfilmentAction({
+    permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+    action: "open-cash-drawer",
+    createActionId: input.createId,
+    createAuthorization: createTerminalActionAuthorization,
+    execute: (authorization, assertActive) =>
+      fulfilment.openDrawerManually(authorization, assertActive),
+  });
 
   const paymentRuntime = createProductionPaymentRuntime({
     database: input.database,
@@ -982,28 +1146,19 @@ export function createProductionPosRuntimeServices(
         catalog: {
           getActiveMetadata: () =>
             catalogRepository.getActiveMetadata(),
-          download: (signal) =>
-            downloadSettingsCatalog(
-              catalogue,
-              catalogRepository,
-              promotionSnapshotLoader,
-              currentCashier,
-              input.auditMetadata,
-              input.clock.nowIso,
-              false,
-              signal,
-            ),
-          reset: (signal) =>
-            downloadSettingsCatalog(
-              catalogue,
-              catalogRepository,
-              promotionSnapshotLoader,
-              currentCashier,
-              input.auditMetadata,
-              input.clock.nowIso,
-              true,
-              signal,
-            ),
+          getRefreshState: catalogRefreshCoordinator.getState,
+          subscribeRefresh: catalogRefreshCoordinator.subscribe,
+          runExclusive: (operation) =>
+            catalogRefreshCoordinator.runExclusive(operation),
+          download: async (signal) =>
+            (
+              await startCatalogRefresh(
+                input.auditMetadata.storeCode,
+                signal,
+              )
+            ).summary,
+          reset: async (signal) =>
+            (await startCatalogReset(signal)).summary,
         },
         receiptSettings,
         pendingData: {
@@ -1123,9 +1278,9 @@ export function createProductionPosRuntimeServices(
 
   const catalog: PosCatalogRuntimeService = {
     findExact: (lookupCode) =>
-      salesCatalogRepository.findExact(lookupCode),
+      localSalesCatalog.findExact(lookupCode),
     searchByName: (query, limit, offset) =>
-      salesCatalogRepository.searchByName(query, limit, offset),
+      localSalesCatalog.searchByName(query, limit, offset),
     getCurrentCatalog: async (request) => {
       throwIfCatalogRequestAborted(request.signal);
       requireCatalogDownloadSession(
@@ -1137,86 +1292,23 @@ export function createProductionPosRuntimeServices(
       throwIfCatalogRequestAborted(request.signal);
       return summary;
     },
-    downloadAndActivate: async (request) => {
+    getRefreshState: catalogRefreshCoordinator.getState,
+    subscribeRefresh: catalogRefreshCoordinator.subscribe,
+    downloadAndActivate: (request) => {
       throwIfCatalogRequestAborted(request.signal);
-      const session = requireCatalogDownloadSession(
-        currentCashier,
-        input.auditMetadata,
+      const cashierLease = currentCashier.createLease();
+      return executeCatalogDownload(
+        cashierLease,
         request.storeCode,
+        request.signal ?? new AbortController().signal,
+        request.onProgress ?? (() => undefined),
       );
-      let outcome: CatalogRefreshOutcome | null = null;
-      const result = await catalogue.downloadAndActivate({
-        storeCode: session.storeCode,
-        ...(request.onProgress
-          ? { onProgress: request.onProgress }
-          : {}),
-        ...(request.signal ? { signal: request.signal } : {}),
-        beforeActivate: () => {
-          throwIfCatalogRequestAborted(request.signal);
-          requireCatalogDownloadSession(
-            currentCashier,
-            input.auditMetadata,
-            request.storeCode,
-          );
-        },
-        afterActivate: async (activation) => {
-          const fallback = catalogSummaryFromActivation(activation);
-          let active: CatalogSummary;
-          try {
-            const verified = await catalogRepository.getActiveMetadata();
-            if (!matchesActivation(verified, activation)) {
-              outcome = {
-                kind: "activated-with-warning",
-                summary: fallback,
-                warningCode: "catalog-activation-verification-failed",
-              };
-              return;
-            }
-            active = verified;
-          } catch {
-            outcome = {
-              kind: "activated-with-warning",
-              summary: fallback,
-              warningCode: "catalog-activation-verification-failed",
-            };
-            return;
-          }
-          try {
-            const after = requireCatalogDownloadSession(
-              currentCashier,
-              input.auditMetadata,
-              request.storeCode,
-            );
-            const promotionReload = await promotionSnapshotLoader.load({
-              storeCode: after.storeCode,
-              asOfIso: input.clock.nowIso(),
-            });
-            if (
-              promotionReload.status !== "loaded" ||
-              promotionReload.snapshotId !== active.snapshotId
-            ) {
-              throw new Error("Catalog promotion runtime reload failed.");
-            }
-            outcome = { kind: "complete", summary: active };
-          } catch {
-            outcome = {
-              kind: "activated-with-warning",
-              summary: active,
-              warningCode: "catalog-runtime-reload-failed",
-            };
-          }
-        },
-      });
-      return outcome ?? {
-        kind: "activated-with-warning",
-        summary: catalogSummaryFromActivation(result),
-        warningCode: "catalog-activation-verification-failed",
-      };
     },
   };
 
   return {
     initialize,
+    shutdownBackgroundWork: () => catalogRefreshCoordinator.shutdown(),
     attendanceAudit,
     appUpdateSafety: {
       getSnapshot: async () => {
@@ -1253,12 +1345,14 @@ export function createProductionPosRuntimeServices(
       },
     },
     catalog,
+    catalogRefresh: catalogRefreshCoordinator,
     receiptSettings,
     fulfilment: {
       drainAutomaticQueue: () => fulfilment.drainAutomaticQueue(),
       retryFailedPrint: (jobId) => fulfilment.retryFailedPrint(jobId),
       retryFailedDrawer: (eventId) => fulfilment.retryFailedDrawer(eventId),
       reprint,
+      openCashDrawer,
     },
     sync: {
       requestDrain: () => coordinator.requestDrain(),
@@ -1485,6 +1579,7 @@ export function createProductionPosRuntimeServices(
         return createConnectedSalesPresenter({
           activeCartSession: activePricingCart,
           catalog,
+          catalogRevalidation,
           cashCheckout: createSalesCashCheckout(cashierLease),
           identity: session,
           sessionGuard: {
@@ -1581,18 +1676,94 @@ function createCurrentCashierSalesAuthorization(
   });
 }
 
+function createAuthorizedFulfilmentAction(input: Readonly<{
+  permissionCode: string;
+  action: string;
+  createActionId(): string;
+  createAuthorization(): Readonly<{
+    authorization: SalesOperationAuthorizationPort;
+    assertActive(): void;
+  }>;
+  execute(
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: () => void,
+  ): Promise<FulfilmentActionResult>;
+}>): PosAuthorizedFulfilmentAction {
+  let inFlight: Promise<PosAuthorizedFulfilmentActionResult> | null = null;
+
+  return Object.freeze({
+    status: "available" as const,
+    execute(): Promise<PosAuthorizedFulfilmentActionResult> {
+      // 同一 UI 动作在完成前复用同一 Promise 和 actionId，避免双击绕过履约幂等。
+      if (inFlight) return inFlight;
+
+      let started: Promise<PosAuthorizedFulfilmentActionResult>;
+      try {
+        const authorization = input.createAuthorization();
+        const actionId = input.createActionId();
+        started = authorization.authorization
+          .authorizeAndRun(
+            {
+              actionId,
+              permissionCode: input.permissionCode,
+              screen: "sales",
+              action: input.action,
+            },
+            async (context) => {
+              authorization.assertActive();
+              const result = await input.execute(
+                {
+                  actionId,
+                  permissionCode: context.permissionCode,
+                  authorizationMode: context.authorizationMode,
+                  requestingCashierId: context.requestingCashierId,
+                  authorizingCashierId: context.authorizingCashierId,
+                },
+                authorization.assertActive,
+              );
+              // 履约终态已与审计原子落库后必须返回真实结果；此处再查旧 lease
+              // 只会把不可撤销的成功伪装成失败，并诱发新 actionId 重复硬件动作。
+              return result;
+            },
+          )
+          .then((result) =>
+            result.authorized
+              ? result.value
+              : Object.freeze({
+                  state: "denied" as const,
+                  errorCode: result.reason,
+                }),
+          );
+      } catch {
+        started = Promise.resolve(
+          Object.freeze({
+            state: "denied" as const,
+            errorCode: "NO_ACTIVE_CASHIER",
+          }),
+        );
+      }
+
+      const tracked = started.finally(() => {
+        if (inFlight === tracked) inFlight = null;
+      });
+      inFlight = tracked;
+      return tracked;
+    },
+  });
+}
+
 async function downloadSettingsCatalog(
   service: CatalogSnapshotService,
   repository: ReturnType<PosDatabase["catalogSnapshots"]>,
   promotionSnapshotLoader: ActivePromotionSnapshotLoader,
-  currentCashier: CurrentCashierSession,
+  cashierLease: TrustedCashierLease,
   terminal: HbposAuditMetadata,
   nowIso: () => string,
   reset: boolean,
   signal: AbortSignal,
-) {
+  onProgress?: CatalogRefreshProgressObserver | undefined,
+): Promise<CatalogRefreshOutcome> {
   throwIfCatalogRequestAborted(signal);
-  const cashierLease = currentCashier.createLease();
   const permissionCode = reset
     ? SETTINGS_CATALOG_RESET_PERMISSION
     : SETTINGS_CATALOG_DOWNLOAD_PERMISSION;
@@ -1602,10 +1773,11 @@ async function downloadSettingsCatalog(
     terminal.storeCode,
     permissionCode,
   );
-  let active: CatalogSummary | null = null;
+  let outcome: CatalogRefreshOutcome | null = null;
   const request = {
     storeCode: session.storeCode,
     signal,
+    ...(onProgress ? { onProgress } : {}),
     beforeActivate: () => {
       requireSettingsCatalogSession(
         cashierLease,
@@ -1615,42 +1787,155 @@ async function downloadSettingsCatalog(
       );
     },
     afterActivate: async (activation: CatalogActivationResult) => {
-      const verified = await repository.getActiveMetadata();
-      const after = requireSettingsCatalogSession(
+      const fallback = catalogSummaryFromActivation(activation);
+      let active: CatalogSummary;
+      try {
+        const verified = await repository.getActiveMetadata();
+        if (!matchesActivation(verified, activation)) {
+          outcome = {
+            kind: "activated-with-warning",
+            summary: fallback,
+            warningCode: "catalog-activation-verification-failed",
+          };
+          return;
+        }
+        active = verified;
+      } catch {
+        outcome = {
+          kind: "activated-with-warning",
+          summary: fallback,
+          warningCode: "catalog-activation-verification-failed",
+        };
+        return;
+      }
+      try {
+        const after = requireSettingsCatalogSession(
+          cashierLease,
+          terminal,
+          session.storeCode,
+          permissionCode,
+        );
+        const promotionReload = await promotionSnapshotLoader.load({
+          storeCode: after.storeCode,
+          asOfIso: nowIso(),
+        });
+        if (
+          promotionReload.status !== "loaded" ||
+          promotionReload.snapshotId !== active.snapshotId
+        ) {
+          throw new Error("Catalog promotion runtime reload failed.");
+        }
+        outcome = { kind: "complete", summary: active };
+      } catch {
+        outcome = {
+          kind: "activated-with-warning",
+          summary: active,
+          warningCode: "catalog-runtime-reload-failed",
+        };
+      }
+    },
+  };
+  let activation: CatalogActivationResult;
+  if (reset) {
+    activation = await service.resetAndRedownload(request);
+  } else {
+    activation = await service.downloadAndActivate(request);
+  }
+  // 中文注释：目录一旦激活，后续验证/重载异常必须显示安全告警，不能误报为旧目录仍在使用。
+  return (
+    outcome ?? {
+      kind: "activated-with-warning",
+      summary: catalogSummaryFromActivation(activation),
+      warningCode: "catalog-activation-verification-failed",
+    }
+  );
+}
+
+/**
+ * 普通目录下载统一走 runtime 级 single-flight；发起时冻结 cashier lease，并在
+ * 激活前及运行时促销重载时复核，页面离开不会改变该安全边界。
+ */
+async function downloadRuntimeCatalog(
+  service: CatalogSnapshotService,
+  repository: ReturnType<PosDatabase["catalogSnapshots"]>,
+  promotionSnapshotLoader: ActivePromotionSnapshotLoader,
+  cashierLease: TrustedCashierLease,
+  terminal: HbposAuditMetadata,
+  nowIso: () => string,
+  signal: AbortSignal,
+  onProgress: CatalogRefreshProgressObserver,
+): Promise<CatalogRefreshOutcome> {
+  const session = requireCatalogDownloadLease(
+    cashierLease,
+    terminal,
+    terminal.storeCode,
+  );
+  let outcome: CatalogRefreshOutcome | null = null;
+  const result = await service.downloadAndActivate({
+    storeCode: session.storeCode,
+    signal,
+    onProgress,
+    beforeActivate: () => {
+      throwIfCatalogRequestAborted(signal);
+      requireCatalogDownloadLease(
         cashierLease,
         terminal,
         session.storeCode,
-        permissionCode,
       );
-      if (!matchesActivation(verified, activation)) {
-        throw new Error("SETTINGS_CATALOG_ACTIVATION_NOT_CONFIRMED");
-      }
-      const promotionReload = await promotionSnapshotLoader.load({
-        storeCode: after.storeCode,
-        asOfIso: nowIso(),
-      });
-      if (
-        promotionReload.status !== "loaded" ||
-        promotionReload.snapshotId !== verified.snapshotId
-      ) {
-        throw Object.assign(
-          new Error("SETTINGS_CATALOG_RUNTIME_RELOAD_NOT_CONFIRMED"),
-          { code: "SETTINGS_CATALOG_RUNTIME_RELOAD_NOT_CONFIRMED" },
-        );
-      }
-      active = verified;
     },
+    afterActivate: async (activation) => {
+      const fallback = catalogSummaryFromActivation(activation);
+      let active: CatalogSummary;
+      try {
+        const verified = await repository.getActiveMetadata();
+        if (!matchesActivation(verified, activation)) {
+          outcome = {
+            kind: "activated-with-warning",
+            summary: fallback,
+            warningCode: "catalog-activation-verification-failed",
+          };
+          return;
+        }
+        active = verified;
+      } catch {
+        outcome = {
+          kind: "activated-with-warning",
+          summary: fallback,
+          warningCode: "catalog-activation-verification-failed",
+        };
+        return;
+      }
+      try {
+        const after = requireCatalogDownloadLease(
+          cashierLease,
+          terminal,
+          session.storeCode,
+        );
+        const promotionReload = await promotionSnapshotLoader.load({
+          storeCode: after.storeCode,
+          asOfIso: nowIso(),
+        });
+        if (
+          promotionReload.status !== "loaded" ||
+          promotionReload.snapshotId !== active.snapshotId
+        ) {
+          throw new Error("Catalog promotion runtime reload failed.");
+        }
+        outcome = { kind: "complete", summary: active };
+      } catch {
+        outcome = {
+          kind: "activated-with-warning",
+          summary: active,
+          warningCode: "catalog-runtime-reload-failed",
+        };
+      }
+    },
+  });
+  return outcome ?? {
+    kind: "activated-with-warning",
+    summary: catalogSummaryFromActivation(result),
+    warningCode: "catalog-activation-verification-failed",
   };
-  if (reset) {
-    await service.resetAndRedownload(request);
-  } else {
-    await service.downloadAndActivate(request);
-  }
-  if (!active) {
-    throw new Error("SETTINGS_CATALOG_ACTIVATION_NOT_CONFIRMED");
-  }
-  // 中文注释：afterActivate 已在同一目录刷新串行临界区内验证并重载运行时促销。
-  return active;
 }
 
 function createAvailableReturnRuntime(input: Readonly<{
@@ -1930,6 +2215,25 @@ function requireCatalogDownloadSession(
   requestedStoreCode: string,
 ): TrustedCashierSession {
   const session = currentCashier.require();
+  assertTrustedCashierScope(session, metadata);
+  if (!session.permissionCodes.includes(CATALOG_DOWNLOAD_PERMISSION)) {
+    throw Object.assign(
+      new Error("Catalog download permission is required."),
+      { code: "CATALOG_DOWNLOAD_PERMISSION_REQUIRED" },
+    );
+  }
+  if (requestedStoreCode.trim() !== session.storeCode) {
+    throw new Error("Catalog download store does not match the current cashier.");
+  }
+  return session;
+}
+
+function requireCatalogDownloadLease(
+  cashierLease: TrustedCashierLease,
+  metadata: HbposAuditMetadata,
+  requestedStoreCode: string,
+): TrustedCashierSession {
+  const session = cashierLease.get();
   assertTrustedCashierScope(session, metadata);
   if (!session.permissionCodes.includes(CATALOG_DOWNLOAD_PERMISSION)) {
     throw Object.assign(

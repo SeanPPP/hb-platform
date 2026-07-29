@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using Hbpos.Api.Auth;
@@ -161,7 +162,8 @@ public sealed class LinklyController(
                 scope.DeviceCode!,
                 request,
                 cancellationToken);
-            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(
+                LinklyCardTransactionSanitizer.Attach(response)));
         }
         catch (LinklyCloudBackendActiveTransactionException ex)
         {
@@ -427,7 +429,8 @@ public sealed class LinklyController(
                 ? NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
                     CloudBackendNotFoundCode,
                     "Linkly Cloud backend session was not found."))
-                : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+                : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(
+                    LinklyCardTransactionSanitizer.Attach(response)));
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -494,7 +497,8 @@ public sealed class LinklyController(
                 sessionId,
                 request,
                 cancellationToken);
-            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(
+                LinklyCardTransactionSanitizer.Attach(response)));
         }
         catch (LinklyCloudBackendSessionNotFoundException)
         {
@@ -822,5 +826,300 @@ public sealed class LinklyController(
     private static string LogValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? "<null>" : value.Trim();
+    }
+}
+
+internal static class LinklyCardTransactionSanitizer
+{
+    private const int MaxTxnRefLength = 64;
+    private const int MaxRfnLength = 128;
+    private const int MaxAuthCodeLength = 32;
+    private const int MaxCardTypeLength = 48;
+    private const int MaxMerchantIdLength = 64;
+    private const int MaxResponseCodeLength = 16;
+    private const int MaxResponseTextLength = 160;
+    private const int MaxStanLength = 32;
+    private const long MaxAmountCents = 999_999_999;
+    private const string IdentifierPunctuation = "-_./:";
+    private const string TextPunctuation = " -_./:,;()[]'&+#%!?=@";
+
+    internal static LinklyCloudBackendSessionResponse Attach(
+        LinklyCloudBackendSessionResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        return response with { CardTransaction = Sanitize(response) };
+    }
+
+    internal static LinklyCloudBackendCardTransactionDto? Sanitize(
+        LinklyCloudBackendSessionResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        foreach (var notification in (response.Notifications ?? []).Reverse())
+        {
+            if (!string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(notification.PayloadJson))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(notification.PayloadJson);
+                var root = document.RootElement;
+                var providerResponse = ReadResponse(root);
+                if (!MatchesProtectedResult(response, providerResponse))
+                {
+                    continue;
+                }
+
+                // 安全边界：只从固定白名单字段构造新合同，绝不复制原始 notification、receipt 或 token。
+                return new LinklyCloudBackendCardTransactionDto(
+                    SanitizeIdentifier(
+                        ReadScalar(providerResponse, "TxnRef") ?? response.TxnRef,
+                        MaxTxnRefLength),
+                    SanitizeIdentifier(ReadRfn(root, providerResponse), MaxRfnLength),
+                    SanitizeIdentifier(ReadScalar(providerResponse, "AuthCode"), MaxAuthCodeLength),
+                    SanitizeText(ReadScalar(providerResponse, "CardType"), MaxCardTypeLength),
+                    MaskPan(ReadScalar(providerResponse, "Pan")),
+                    SanitizeIdentifier(ReadScalar(providerResponse, "Caid"), MaxMerchantIdLength),
+                    SanitizeIdentifier(
+                        response.ResponseCode ?? ReadScalar(providerResponse, "ResponseCode"),
+                        MaxResponseCodeLength),
+                    SanitizeText(
+                        response.ResponseText ?? ReadScalar(providerResponse, "ResponseText"),
+                        MaxResponseTextLength),
+                    SanitizeIdentifier(ReadScalar(providerResponse, "Stan"), MaxStanLength),
+                    ReadBankDateTime(providerResponse),
+                    ReadAbsoluteAmountCents(providerResponse));
+            }
+            catch (JsonException)
+            {
+                // 损坏的历史 notification 不得阻止状态/恢复接口返回；证据保持 null。
+            }
+        }
+
+        return null;
+    }
+
+    private static bool MatchesProtectedResult(
+        LinklyCloudBackendSessionResponse response,
+        JsonElement providerResponse)
+    {
+        var protectedCode = NormalizeForComparison(response.ResponseCode);
+        if (protectedCode is not null &&
+            !string.Equals(
+                protectedCode,
+                NormalizeForComparison(ReadScalar(providerResponse, "ResponseCode")),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var protectedText = NormalizeForComparison(response.ResponseText);
+        return protectedText is null ||
+            string.Equals(
+                protectedText,
+                NormalizeForComparison(ReadScalar(providerResponse, "ResponseText")),
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ReadRfn(JsonElement root, JsonElement providerResponse)
+    {
+        var purchaseAnalysisData = ReadValue(providerResponse, "PurchaseAnalysisData");
+        return ReadScalar(purchaseAnalysisData, "RFN") ??
+            ReadScalar(providerResponse, "RFN") ??
+            ReadScalar(root, "RFN");
+    }
+
+    private static DateTimeOffset? ReadBankDateTime(JsonElement providerResponse)
+    {
+        var value = ReadScalar(providerResponse, "BankDateTime");
+        if (value is null || value.Length > 64 || !HasExplicitOffset(value))
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces,
+            out var parsed)
+                ? parsed
+                : null;
+    }
+
+    private static bool HasExplicitOffset(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.EndsWith('Z') || trimmed.EndsWith('z'))
+        {
+            return true;
+        }
+
+        var timeSeparator = Math.Max(
+            trimmed.IndexOf('T', StringComparison.Ordinal),
+            trimmed.IndexOf(' ', StringComparison.Ordinal));
+        return timeSeparator >= 0 &&
+            (trimmed.IndexOf('+', timeSeparator) >= 0 ||
+                trimmed.IndexOf('-', timeSeparator) >= 0);
+    }
+
+    private static long? ReadAbsoluteAmountCents(JsonElement providerResponse)
+    {
+        var amount = ReadInt64(providerResponse, "AmtPurchase");
+        if (amount is null || amount == long.MinValue)
+        {
+            return null;
+        }
+
+        var absolute = Math.Abs(amount.Value);
+        return absolute <= MaxAmountCents ? absolute : null;
+    }
+
+    private static long? ReadInt64(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var numeric))
+        {
+            return numeric;
+        }
+
+        return value.ValueKind == JsonValueKind.String &&
+            long.TryParse(
+                value.GetString(),
+                NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture,
+                out numeric)
+                    ? numeric
+                    : null;
+    }
+
+    private static string? MaskPan(string? pan)
+    {
+        var value = NormalizeForComparison(pan);
+        if (value is null)
+        {
+            return null;
+        }
+
+        var compact = new string(value
+            .Where(character => character is not ' ' and not '-')
+            .ToArray());
+        if (compact.Length is < 8 or > 19 ||
+            compact.Any(character =>
+                !char.IsAsciiDigit(character) &&
+                character is not '*' &&
+                character is not 'x' &&
+                character is not 'X') ||
+            compact[^4..].Any(character => !char.IsAsciiDigit(character)))
+        {
+            return null;
+        }
+
+        var hasMask = compact.Any(character => character is '*' or 'x' or 'X');
+        if (!hasMask && compact.Length < 12)
+        {
+            return null;
+        }
+
+        var visiblePrefixLength = compact.Length >= 12 ? Math.Min(6, compact.Length - 4) : 0;
+        var suffixStart = compact.Length - 4;
+        var masked = compact
+            .Select((character, index) =>
+                char.IsAsciiDigit(character) &&
+                (index < visiblePrefixLength || index >= suffixStart)
+                    ? character
+                    : '*')
+            .ToArray();
+        return new string(masked);
+    }
+
+    private static string? SanitizeIdentifier(string? value, int maxLength)
+    {
+        var normalized = NormalizeForComparison(value);
+        if (normalized is null ||
+            normalized.Length > maxLength ||
+            normalized.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) &&
+                !IdentifierPunctuation.Contains(character)))
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    private static string? SanitizeText(string? value, int maxLength)
+    {
+        var normalized = NormalizeForComparison(value);
+        if (normalized is null ||
+            normalized.Length > maxLength ||
+            normalized.Any(character =>
+                !char.IsLetterOrDigit(character) &&
+                !TextPunctuation.Contains(character)))
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeForComparison(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static JsonElement ReadResponse(JsonElement root)
+    {
+        return TryGetProperty(root, "Response", out var response) &&
+            response.ValueKind == JsonValueKind.Object
+                ? response
+                : root;
+    }
+
+    private static JsonElement ReadValue(JsonElement element, string propertyName)
+    {
+        return TryGetProperty(element, propertyName, out var value) ? value : default;
+    }
+
+    private static string? ReadScalar(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => NormalizeForComparison(value.GetString()),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null
+        };
+    }
+
+    private static bool TryGetProperty(
+        JsonElement element,
+        string propertyName,
+        out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
     }
 }

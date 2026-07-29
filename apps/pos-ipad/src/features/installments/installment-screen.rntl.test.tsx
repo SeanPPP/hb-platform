@@ -84,6 +84,46 @@ test("缺少 Create 权限时不显示新建入口", async () => {
   await screen.unmount();
 });
 
+test("传入新建支付回调时跳转统一支付且不打开旧内联表单", async () => {
+  const onStartCreate = jest.fn();
+  const { presenter, spies } = createPresenter({});
+  const screen = await render(
+    <InstallmentScreen
+      onStartCreate={onStartCreate}
+      presenter={presenter}
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("installments-create-tab"));
+  expect(onStartCreate).toHaveBeenCalledTimes(1);
+  expect(spies.showCreate).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("installment-create-workspace")).toBeNull();
+  await screen.unmount();
+});
+
+test("传入续付支付回调时携带分期号跳转且不显示旧内联续付表单", async () => {
+  const onStartRepayment = jest.fn();
+  const { presenter, spies } = createPresenter({
+    details: details("Active"),
+    selectedGuid: GUID,
+  });
+  const screen = await render(
+    <InstallmentScreen
+      onStartRepayment={onStartRepayment}
+      presenter={presenter}
+    />,
+  );
+
+  expect(screen.queryByTestId("installment-repayment-amount")).toBeNull();
+  expect(screen.queryByTestId("installment-add-repayment")).toBeNull();
+  await fireEvent.press(
+    screen.getByTestId("installment-continue-to-payment"),
+  );
+  expect(onStartRepayment).toHaveBeenCalledWith(GUID);
+  expect(spies.addRepayment).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
 test("创建页只收集券码并说明在线 query+lock，不显示 reservation token 输入", async () => {
   const { presenter, spies } = createPresenter({
     pane: "create",
@@ -103,6 +143,7 @@ test("创建页只收集券码并说明在线 query+lock，不显示 reservation
   });
   const screen = await render(<InstallmentScreen presenter={presenter} />);
 
+  expect(screen.getByTestId("installment-create-workspace")).toBeTruthy();
   expect(screen.getByText("Tea")).toBeTruthy();
   await fireEvent.changeText(
     screen.getByTestId("installment-create-customer-name"),
@@ -177,6 +218,7 @@ test("Active 详情显示补款、退款取消与作废，破坏性操作必须�
   });
   const screen = await render(<InstallmentScreen presenter={presenter} />);
 
+  expect(screen.getByTestId("installment-repayment-amount")).toBeTruthy();
   await fireEvent.changeText(
     screen.getByTestId("installment-repayment-amount"),
     "80.00",

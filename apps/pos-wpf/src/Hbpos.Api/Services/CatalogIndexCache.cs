@@ -11,6 +11,11 @@ public interface ICatalogIndexCache
         Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
         CancellationToken cancellationToken);
 
+    CatalogIndexBuildResult? GetByVersion(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion);
+
     void InvalidateStore(string storeCode);
 }
 
@@ -23,19 +28,61 @@ public sealed record CatalogIndexBuildResult(
 public sealed class CatalogIndexCache : ICatalogIndexCache
 {
     private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan DefaultSnapshotTtl = TimeSpan.FromMinutes(30);
+    private const int DefaultMaxSnapshotsPerStore = 2;
     private readonly ConcurrentDictionary<CatalogIndexCacheKey, CacheEntry> _entries = new();
+    private readonly Dictionary<CatalogSnapshotCacheKey, SnapshotEntry> _snapshots = [];
+    private readonly object _snapshotGate = new();
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _ttl;
+    private readonly TimeSpan _snapshotTtl;
+    private readonly int _maxSnapshotsPerStore;
+    private long _snapshotSequence;
 
     public CatalogIndexCache()
-        : this(TimeProvider.System, DefaultTtl)
+        : this(
+            TimeProvider.System,
+            DefaultTtl,
+            DefaultSnapshotTtl,
+            DefaultMaxSnapshotsPerStore)
     {
     }
 
     public CatalogIndexCache(TimeProvider timeProvider, TimeSpan ttl)
+        : this(
+            timeProvider,
+            ttl,
+            DefaultSnapshotTtl,
+            DefaultMaxSnapshotsPerStore)
     {
+    }
+
+    public CatalogIndexCache(
+        TimeProvider timeProvider,
+        TimeSpan ttl,
+        TimeSpan snapshotTtl,
+        int maxSnapshotsPerStore)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        if (ttl <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ttl));
+        }
+
+        if (snapshotTtl <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(snapshotTtl));
+        }
+
+        if (maxSnapshotsPerStore <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxSnapshotsPerStore));
+        }
+
         _timeProvider = timeProvider;
         _ttl = ttl;
+        _snapshotTtl = snapshotTtl;
+        _maxSnapshotsPerStore = maxSnapshotsPerStore;
     }
 
     public async Task<CatalogIndexBuildResult?> GetOrBuildAsync(
@@ -87,6 +134,33 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         }
     }
 
+    public CatalogIndexBuildResult? GetByVersion(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeCode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogVersion);
+
+        var key = new CatalogSnapshotCacheKey(
+            NormalizeStoreCode(storeCode),
+            since,
+            catalogVersion.Trim());
+        lock (_snapshotGate)
+        {
+            var now = _timeProvider.GetUtcNow();
+            PruneExpiredSnapshots(now);
+            if (_snapshots.TryGetValue(key, out var snapshot))
+            {
+                Log($"snapshot hit store={key.StoreCode} since={FormatSince(key.Since)}");
+                return snapshot.Result;
+            }
+        }
+
+        Log($"snapshot miss store={key.StoreCode} since={FormatSince(key.Since)}");
+        return null;
+    }
+
     public void InvalidateStore(string storeCode)
     {
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
@@ -118,6 +192,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             else if (!allowWaitCancellation)
             {
                 // 仅 build owner 从成功完成时起算 TTL；等待者不得延长缓存寿命。
+                PinCompletedSnapshot(key, result);
                 var completedEntry = entry with { ExpiresAt = _timeProvider.GetUtcNow().Add(_ttl) };
                 _entries.TryUpdate(key, completedEntry, entry);
             }
@@ -133,6 +208,62 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             }
 
             throw;
+        }
+    }
+
+    private void PinCompletedSnapshot(
+        CatalogIndexCacheKey activeKey,
+        CatalogIndexBuildResult result)
+    {
+        var catalogVersion = result.CatalogIndex.CatalogVersion;
+        if (string.IsNullOrWhiteSpace(catalogVersion))
+        {
+            return;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        var snapshotKey = new CatalogSnapshotCacheKey(
+            activeKey.StoreCode,
+            activeKey.Since,
+            catalogVersion.Trim());
+        lock (_snapshotGate)
+        {
+            PruneExpiredSnapshots(now);
+            if (!_snapshots.ContainsKey(snapshotKey))
+            {
+                _snapshots.Add(
+                    snapshotKey,
+                    new SnapshotEntry(
+                        result,
+                        now.Add(_snapshotTtl),
+                        Interlocked.Increment(ref _snapshotSequence)));
+            }
+
+            var overflow = _snapshots
+                .Where(pair => string.Equals(
+                    pair.Key.StoreCode,
+                    activeKey.StoreCode,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(pair => pair.Value.Sequence)
+                .Skip(_maxSnapshotsPerStore)
+                .Select(pair => pair.Key)
+                .ToArray();
+            foreach (var key in overflow)
+            {
+                _snapshots.Remove(key);
+            }
+        }
+    }
+
+    private void PruneExpiredSnapshots(DateTimeOffset now)
+    {
+        var expired = _snapshots
+            .Where(pair => pair.Value.ExpiresAt <= now)
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var key in expired)
+        {
+            _snapshots.Remove(key);
         }
     }
 
@@ -160,7 +291,17 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         DateTimeOffset ExpiresAt,
         Lazy<Task<CatalogIndexBuildResult?>> BuildTask);
 
+    private sealed record SnapshotEntry(
+        CatalogIndexBuildResult Result,
+        DateTimeOffset ExpiresAt,
+        long Sequence);
+
     private sealed record CatalogIndexCacheKey(
         string StoreCode,
         DateTimeOffset? Since);
+
+    private sealed record CatalogSnapshotCacheKey(
+        string StoreCode,
+        DateTimeOffset? Since,
+        string CatalogVersion);
 }

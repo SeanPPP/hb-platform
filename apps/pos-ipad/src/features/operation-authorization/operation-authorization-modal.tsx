@@ -272,6 +272,7 @@ export function OperationAuthorizationModal({
       onRequestClose={cancel}
       presentationStyle="overFullScreen"
       statusBarTranslucent
+      supportedOrientations={["landscape-left", "landscape-right"]}
       transparent
       visible
     >

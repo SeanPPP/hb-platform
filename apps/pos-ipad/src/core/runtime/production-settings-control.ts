@@ -1,4 +1,8 @@
 import {
+  CatalogRefreshCoordinatorError,
+  type CatalogRefreshState,
+} from "../../features/catalog/catalog-refresh-coordinator";
+import {
   hasPendingLocalData,
   type SettingsAppUpdateSnapshot,
   type SettingsCatalogSnapshot,
@@ -16,6 +20,9 @@ import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
 export type ProductionSettingsControlDependencies = Readonly<{
   readSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
   catalog: Readonly<{
+    getRefreshState(): CatalogRefreshState;
+    subscribeRefresh(listener: () => void): () => void;
+    runExclusive<T>(operation: () => Promise<T>): Promise<T>;
     download(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
     reset(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
   }>;
@@ -60,6 +67,10 @@ export type ProductionSettingsControlDependencies = Readonly<{
     read(signal: AbortSignal): Promise<SettingsPendingDataSnapshot>;
   }>;
   apiConfiguration: Readonly<{
+    /**
+     * 仅供本机开发构建切换调试后端；生产组合根必须保持 false/undefined。
+     */
+    allowSwitchWithPendingLocalData?: boolean;
     probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
     save(apiBaseUrl: string): Promise<void>;
   }>;
@@ -88,10 +99,30 @@ export class ProductionSettingsControl implements SettingsControlPort {
     return abortChecked(signal, () => this.input.readSnapshot(signal));
   }
 
+  public getCatalogRefreshState(): CatalogRefreshState {
+    return this.input.catalog.getRefreshState();
+  }
+
+  public subscribeCatalogRefresh(listener: () => void): () => void {
+    return this.input.catalog.subscribeRefresh(listener);
+  }
+
   public downloadCatalog(
     signal: AbortSignal,
   ): Promise<SettingsCatalogSnapshot> {
     return abortChecked(signal, () => this.input.catalog.download(signal));
+  }
+
+  public testApiAddress(
+    apiBaseUrl: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return abortChecked(signal, () =>
+      this.input.apiConfiguration.probe(
+        `${apiBaseUrl}/api/v1/health`,
+        signal,
+      ),
+    );
   }
 
   public testPaymentProvider(
@@ -162,14 +193,47 @@ export class ProductionSettingsControl implements SettingsControlPort {
     signal: AbortSignal,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
+    if (action.kind === "reset-catalog") {
+      return this.executeDangerousActionGuarded(action, signal);
+    }
+    try {
+      return await this.input.catalog.runExclusive(() =>
+        this.executeDangerousActionGuarded(action, signal),
+      );
+    } catch (error) {
+      if (
+        error instanceof CatalogRefreshCoordinatorError &&
+        (error.code === "CATALOG_REFRESH_OPERATION_CONFLICT" ||
+          error.code === "CATALOG_REFRESH_COORDINATOR_SHUTDOWN")
+      ) {
+        return safetyBlocked();
+      }
+      throw error;
+    }
+  }
+
+  private async executeDangerousActionGuarded(
+    action: SettingsDangerousConfirmation,
+    signal: AbortSignal,
+  ): Promise<SettingsDangerousActionResult> {
+    throwIfAborted(signal);
+    if (this.catalogRefreshBlocks()) {
+      return safetyBlocked();
+    }
     const pending = await abortChecked(signal, () =>
       this.input.pendingData.read(signal),
     );
-    if (hasPendingLocalData(pending)) {
+    const mayBypassPendingData =
+      action.kind === "change-api-address" &&
+      this.input.apiConfiguration.allowSwitchWithPendingLocalData === true;
+    if (hasPendingLocalData(pending) && !mayBypassPendingData) {
       return Object.freeze({
         status: "blocked",
         reason: "pending-local-data",
       });
+    }
+    if (this.catalogRefreshBlocks()) {
+      return safetyBlocked();
     }
 
     switch (action.kind) {
@@ -183,6 +247,9 @@ export class ProductionSettingsControl implements SettingsControlPort {
             status: "blocked",
             reason: "candidate-unreachable",
           });
+        }
+        if (this.catalogRefreshBlocks()) {
+          return safetyBlocked();
         }
         await abortChecked(signal, () =>
           this.input.apiConfiguration.save(action.apiBaseUrl),
@@ -201,6 +268,9 @@ export class ProductionSettingsControl implements SettingsControlPort {
         );
         return completed(action.kind);
       case "reset-catalog": {
+        if (this.catalogRefreshBlocks()) {
+          return safetyBlocked();
+        }
         const catalog = await abortChecked(signal, () =>
           this.input.catalog.reset(signal),
         );
@@ -239,6 +309,10 @@ export class ProductionSettingsControl implements SettingsControlPort {
       }
     }
   }
+
+  private catalogRefreshBlocks(): boolean {
+    return this.input.catalog.getRefreshState().kind === "running";
+  }
 }
 
 function completed(
@@ -248,6 +322,13 @@ function completed(
   >,
 ): SettingsDangerousActionResult {
   return Object.freeze({ status: "completed", kind });
+}
+
+function safetyBlocked(): SettingsDangerousActionResult {
+  return Object.freeze({
+    status: "blocked",
+    reason: "safety-check-failed",
+  });
 }
 
 async function abortChecked<T>(

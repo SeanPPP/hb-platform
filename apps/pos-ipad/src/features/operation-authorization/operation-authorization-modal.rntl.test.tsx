@@ -98,6 +98,12 @@ test("仅在待授权时显示，中英双语且输入与按钮满足安全和�
     await Promise.resolve();
   });
 
+  expect(screen.toJSON()).toMatchObject({
+    props: {
+      supportedOrientations: ["landscape-left", "landscape-right"],
+    },
+    type: "Modal",
+  });
   expect(screen.getByText("此操作需要主管批准")).toBeTruthy();
   expect(screen.getByText("申请操作：change-price")).toBeTruthy();
   const input = screen.getByTestId("operation-authorization-barcode");

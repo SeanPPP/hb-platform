@@ -158,7 +158,24 @@ public sealed record LinklyCloudBackendSessionResponse(
     DateTimeOffset? ClientAcknowledgedAt,
     int? LastHttpStatus,
     IReadOnlyList<LinklyCloudBackendNotificationDto> Notifications,
-    bool? TransactionSuccess = null);
+    bool? TransactionSuccess = null)
+{
+    public LinklyCloudBackendCardTransactionDto? CardTransaction { get; init; }
+}
+
+public sealed record LinklyCloudBackendCardTransactionDto(
+    string? TxnRef,
+    string? Rfn,
+    string? AuthCode,
+    string? CardType,
+    string? MaskedCardNumber,
+    string? MerchantId,
+    string? ResponseCode,
+    string? ResponseText,
+    string? Stan,
+    DateTimeOffset? BankDateTime,
+    // Linkly 金额使用整数分币并始终返回绝对值；购买/退款方向由调用方已有支付操作决定。
+    long? AmountCents);
 
 public sealed record LinklyCloudBackendNotificationDto(
     string Type,

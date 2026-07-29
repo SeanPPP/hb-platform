@@ -147,7 +147,7 @@ test("打印与外屏测试只使用已配置外设和无敏感字段的只读�
   ]);
 });
 
-test("销毁 settings presenter 会把目录下载的 AbortSignal 传到底层", async () => {
+test("销毁 settings presenter 只退订页面，不中止应用级目录下载", async () => {
   let receivedSignal: AbortSignal | null = null;
   let releaseDownload!: () => void;
   let downloadEntered!: () => void;
@@ -162,6 +162,9 @@ test("销毁 settings presenter 会把目录下载的 AbortSignal 传到底层",
           itemCount: 2,
           activatedAt: NOW,
         }),
+        getRefreshState: () => ({ kind: "idle" }),
+        subscribeRefresh: () => () => undefined,
+        runExclusive: (operation) => operation(),
         download: async (signal) => {
           receivedSignal = signal;
           downloadEntered();
@@ -182,7 +185,7 @@ test("销毁 settings presenter 会把目录下载的 AbortSignal 传到底层",
   const download = presenter.downloadCatalog();
   await entered;
   presenter.destroy();
-  assert.equal((receivedSignal as unknown as AbortSignal).aborted, true);
+  assert.equal((receivedSignal as unknown as AbortSignal).aborted, false);
   releaseDownload();
   await download;
 });
@@ -247,6 +250,9 @@ function dependencies(
         itemCount: 2,
         activatedAt: NOW,
       }),
+      getRefreshState: () => ({ kind: "idle" }),
+      subscribeRefresh: () => () => undefined,
+      runExclusive: (operation) => operation(),
       download: async () => ({
         snapshotId: "catalog-2",
         itemCount: 3,

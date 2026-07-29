@@ -107,6 +107,7 @@ var P = {
   },
   LocalPurchase: {
     View: "LocalPurchase.View",
+    MobileView: "LocalPurchase.MobileView",
     Edit: "LocalPurchase.Edit",
     PushToHq: "LocalPurchase.PushToHq"
   },
@@ -239,6 +240,9 @@ function hasBackendNavigationAccess(access) {
   return access.isAdmin || ADMIN_ENTRY_RULES.some((rule) => rule.canAccess(access));
 }
 function getDefaultWebPath(access) {
+  if (access.onlyOrder) {
+    return "/shop";
+  }
   const adminEntry = ADMIN_ENTRY_RULES.find((rule) => rule.canAccess(access));
   if (adminEntry) {
     return adminEntry.defaultPath;
@@ -251,6 +255,9 @@ function getDefaultWebPath(access) {
 function resolveAuthorizedWebTarget(target, access) {
   if (!target || !target.startsWith("/") || target.startsWith("//") || target === "/login") {
     return void 0;
+  }
+  if (access.onlyOrder) {
+    return /^\/shop(?:\/|[?#]|$)/.test(target) ? target : "/shop";
   }
   if (target === "/") {
     return target;
@@ -417,7 +424,8 @@ function buildAccess(currentUser) {
   const isWarehouseStaffOnly = isWarehouseStaff && !isAdmin && !isWarehouseManager && (hasRole("WarehouseStaff") || hasRole("\u4ED3\u5E93\u5458\u5DE5"));
   const isStoreStaff = hasRole("StoreStaff") || hasRole("\u5E97\u94FA\u5458\u5DE5");
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager;
-  const onlyOrder = onlyRole("Order") || hasRole("\u8BA2\u8D27\u5458");
+  const orderRoleNames = currentUser.roleNames ?? [];
+  const onlyOrder = orderRoleNames.length > 0 && orderRoleNames.every((roleName) => ["order", "\u8BA2\u8D27\u5458"].includes(roleName.toLowerCase()));
   const managedStoreCodes = () => {
     if (isAdmin || isWarehouseManager) {
       return null;
@@ -505,7 +513,7 @@ function buildAccess(currentUser) {
   const canViewPosProducts = isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage);
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage);
   const canAccessDashboard = isAdmin || hasPermission(P.Dashboard.View);
-  const canAccessAdminShell = hasBackendNavigationAccess({
+  const canAccessAdminShell = !onlyOrder && hasBackendNavigationAccess({
     isAdmin,
     canAccessDashboard,
     canManageWarehouse,
@@ -692,7 +700,12 @@ var EXPO_APP_MENU_DEFINITIONS = [
     routeName: "orders",
     titleKey: "tabs.orders",
     icon: "clipboard-list",
-    permissionCodes: [P.Orders.View],
+    permissionCodes: [
+      P.OrderFront.View,
+      P.Orders.View,
+      P.Warehouse.ManageOrders,
+      P.Warehouse.Manage
+    ],
     order: 20,
     ...ROUTE_LABELS.orders
   },
@@ -724,7 +737,7 @@ var EXPO_APP_MENU_DEFINITIONS = [
     routeName: "local-supplier-invoices",
     titleKey: "tabs.localSupplierInvoices",
     icon: "receipt-text-outline",
-    permissionCodes: [P.LocalPurchase.View, "LocalInvocie.View"],
+    permissionCodes: [P.LocalPurchase.MobileView, P.LocalPurchase.View, "LocalInvocie.View"],
     order: 46,
     ...ROUTE_LABELS["local-supplier-invoices"]
   },
@@ -1375,6 +1388,67 @@ assertEqual(
   WEB_NO_ACCESS_PATH,
   "Users without Web portal permissions should keep the access denied landing page"
 );
+var pureOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["Order"],
+    permissions: [P.OrderFront.View, P.Dashboard.View]
+  })
+);
+assertEqual(pureOrderAccess.onlyOrder, true, "Only the Order role should be treated as a pure order role");
+assertEqual(
+  pureOrderAccess.canAccessOrderFront,
+  true,
+  "A pure Order role should retain OrderFront access"
+);
+assertEqual(
+  pureOrderAccess.canAccessAdminShell,
+  false,
+  "A pure Order role must not enter the admin shell even with a backend permission"
+);
+assertEqual(
+  getDefaultWebPath(pureOrderAccess),
+  "/shop",
+  "A pure Order role should always default to the shop"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/dashboard", pureOrderAccess),
+  "/shop",
+  "A pure Order role should send a historical admin redirect to the shop"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/warehouse/store-orders", pureOrderAccess),
+  "/shop",
+  "A pure Order role must not bypass the shop boundary with a direct admin address"
+);
+assertEqual(
+  resolveAuthorizedWebTarget("/shop/orders", pureOrderAccess),
+  "/shop/orders",
+  "A pure Order role should retain authorized shop subpaths"
+);
+var pureChineseOrderAccess = buildAccess(createCurrentUser({ roleNames: ["\u8BA2\u8D27\u5458"] }));
+assertEqual(pureChineseOrderAccess.onlyOrder, true, "Only the \u8BA2\u8D27\u5458 alias should be treated as a pure order role");
+var pureOrderAliasAccess = buildAccess(createCurrentUser({ roleNames: ["Order", "\u8BA2\u8D27\u5458"] }));
+assertEqual(
+  pureOrderAliasAccess.onlyOrder,
+  true,
+  "Both Order aliases together should still be treated as a pure order role"
+);
+var multiRoleOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["Order", "WarehouseStaff"],
+    permissions: [P.Dashboard.View]
+  })
+);
+assertEqual(
+  multiRoleOrderAccess.onlyOrder,
+  false,
+  "Order plus any non-order role must not be treated as a pure order role"
+);
+assertEqual(
+  multiRoleOrderAccess.canAccessAdminShell,
+  true,
+  "A multi-role Order user should retain the normal backend permission behavior"
+);
 var backendNavigationEntryCases = [
   [P.Dashboard.View, "/dashboard"],
   [P.Warehouse.ManageOrders, "/warehouse/store-orders"],
@@ -1726,6 +1800,116 @@ assertEqual(
   filterExpoRoutesByVisibility(orderCreatorExpoPreview.allRoutes, "all").length,
   orderCreatorExpoPreview.allRoutes.length,
   "All HbwebExpo filter should keep the complete route permission list"
+);
+for (const permissionCode of [
+  P.OrderFront.View,
+  P.Orders.View,
+  P.Warehouse.ManageOrders,
+  P.Warehouse.Manage
+]) {
+  const preview = buildExpoRoleMenuPreview(
+    buildRolePreviewAccess({
+      roleGuid: `expo-orders-${permissionCode}`,
+      roleName: "PdaOrdersRole",
+      isSuperAdmin: false,
+      implicitAllPermissions: false,
+      explicitPermissionCodes: [permissionCode],
+      effectivePermissionCodes: [permissionCode]
+    }),
+    translate,
+    { explicitPermissionCodes: [permissionCode] }
+  );
+  assertEqual(
+    preview.visibleRoutes.some((route) => route.routeName === "orders"),
+    true,
+    `${permissionCode} should show the PDA orders tab`
+  );
+}
+var mobileLocalPurchaseAccess = buildAccess(
+  createCurrentUser({ permissions: [P.LocalPurchase.MobileView] })
+);
+assertEqual(
+  mobileLocalPurchaseAccess.canManageLocalPurchase,
+  false,
+  "LocalPurchase.MobileView must not unlock desktop local purchase pages"
+);
+assertEqual(
+  mobileLocalPurchaseAccess.canViewSalesIntelligence,
+  false,
+  "LocalPurchase.MobileView must not unlock the desktop purchase dashboard"
+);
+assertEqual(
+  mobileLocalPurchaseAccess.canReadOrder,
+  false,
+  "LocalPurchase.MobileView must not unlock desktop cashier records"
+);
+var mobileLocalPurchaseExpoPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: "mobile-local-purchase-role",
+    roleName: "MobileLocalPurchaseRole",
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.LocalPurchase.MobileView],
+    effectivePermissionCodes: [P.LocalPurchase.MobileView]
+  }),
+  translate,
+  { explicitPermissionCodes: [P.LocalPurchase.MobileView] }
+);
+assertEqual(
+  mobileLocalPurchaseExpoPreview.visibleRoutes.some((route) => route.routeName === "local-supplier-invoices"),
+  true,
+  "LocalPurchase.MobileView should show \u6FB3\u6D32\u8FDB\u8D27 in the PDA menu"
+);
+var missingLocalPurchaseExpoPreview = buildExpoRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: "missing-local-purchase-role",
+    roleName: "MissingLocalPurchaseRole",
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [],
+    effectivePermissionCodes: []
+  }),
+  translate
+);
+var missingLocalPurchaseExpoRoute = missingLocalPurchaseExpoPreview.allRoutes.find(
+  (route) => route.routeName === "local-supplier-invoices"
+);
+assertEqual(
+  missingLocalPurchaseExpoRoute?.addPermissionCodes.join(","),
+  P.LocalPurchase.MobileView,
+  "Adding \u6FB3\u6D32\u8FDB\u8D27 should grant the dedicated PDA permission first"
+);
+var mobileLocalPurchaseWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: "mobile-local-purchase-web-role",
+    roleName: "MobileLocalPurchaseWebRole",
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.LocalPurchase.MobileView],
+    effectivePermissionCodes: [P.LocalPurchase.MobileView]
+  }),
+  translate,
+  { includeHidden: true }
+);
+assertEqual(
+  filterWebMenuNodesByVisibility(mobileLocalPurchaseWebPreview, "visible").length,
+  0,
+  "LocalPurchase.MobileView should leave the desktop menu empty"
+);
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, "/pos-admin/local-supplier-invoices")?.visible,
+  false,
+  "LocalPurchase.MobileView must not show the desktop \u6FB3\u6D32\u8FDB\u8D27 page"
+);
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, "/executive-sales-intelligence/purchase-amount-dashboard")?.visible,
+  false,
+  "LocalPurchase.MobileView must not show the desktop purchase dashboard"
+);
+assertEqual(
+  findWebMenuNode(mobileLocalPurchaseWebPreview, "/pos-admin/sales-orders")?.visible,
+  false,
+  "LocalPurchase.MobileView must not show desktop cashier records"
 );
 var attendanceExpoPreview = buildExpoRoleMenuPreview(
   buildRolePreviewAccess({

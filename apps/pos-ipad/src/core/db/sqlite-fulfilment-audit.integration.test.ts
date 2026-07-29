@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
+import { FulfilmentService } from "../../features/fulfilment/fulfilment-service";
+
 import { POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
   SqliteFulfilmentStore,
   type FulfilmentAuditEvent,
+  type FulfilmentInitialAuthorization,
 } from "./sqlite-fulfilment-store";
 import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
 
@@ -169,14 +172,60 @@ function audit(
     outcome: "Succeeded",
     printerId: "XP-1",
   },
+  correlationId = "order-1",
 ): FulfilmentAuditEvent {
   return {
     eventId,
     eventType,
     occurredAtIso: "2026-07-28T04:00:00.000Z",
     orderGuid: "order-1",
-    correlationId: "order-1",
+    correlationId,
     payload,
+  };
+}
+
+function initialAuthorization(
+  input: Readonly<{
+    actionId: string;
+    eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
+    orderGuid: string | null;
+    printerId: string;
+  }>,
+): FulfilmentInitialAuthorization {
+  const isReprint = input.eventType === "RECEIPT_REPRINT";
+  const context = {
+    actionId: input.actionId,
+    permissionCode: isReprint
+      ? "Permissions.PosTerminal.Receipt.PrintLast"
+      : "Permissions.PosTerminal.CashDrawer.Open",
+    authorizationMode: "online" as const,
+    requestingCashierId: "cashier-1",
+    authorizingCashierId: "supervisor-1",
+  };
+  return {
+    context,
+    audit: {
+      eventId: `audit-authorized-${input.actionId}`,
+      eventType: input.eventType,
+      occurredAtIso: "2026-07-28T04:00:00.000Z",
+      orderGuid: input.orderGuid,
+      correlationId: input.actionId,
+      payload: {
+        action: isReprint
+          ? "reprint-last-receipt"
+          : "open-cash-drawer",
+        status: "Authorized",
+        reason: isReprint ? "last-receipt" : "MANUAL",
+        source: "sales",
+        outcome: "Succeeded",
+        printerId: input.printerId,
+        errorCode: null,
+        requestingCashierId: context.requestingCashierId,
+        authorizingCashierId: context.authorizingCashierId,
+        permissionCode: context.permissionCode,
+        authorizationMode: context.authorizationMode,
+      },
+    },
   };
 }
 
@@ -197,7 +246,7 @@ test("真实 SQLite：打印和钱箱终态 CAS 与对应审计在同一事务�
         status: "Printed",
         outcome: "Succeeded",
         printerId: "XP-1",
-      }),
+      }, "print-success"),
     ),
     true,
   );
@@ -207,7 +256,12 @@ test("真实 SQLite：打印和钱箱终态 CAS 与对应审计在同一事务�
       "Requested",
       "Completed",
       null,
-      audit("audit-drawer-success", "CASH_DRAWER_OPEN"),
+      audit(
+        "audit-drawer-success",
+        "CASH_DRAWER_OPEN",
+        undefined,
+        "drawer-success",
+      ),
     ),
     true,
   );
@@ -229,6 +283,292 @@ test("真实 SQLite：打印和钱箱终态 CAS 与对应审计在同一事务�
   });
 });
 
+test("真实 SQLite：手动开箱直接 Requested、orderGuid 为空、幂等重入且终态与审计原子收口", async () => {
+  const { connection, store } = createHarness();
+  await seedOrder(connection);
+  const authorization = initialAuthorization({
+    actionId: "manual-drawer-action",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-MANUAL",
+  });
+
+  const first = await store.beginManualDrawerOpen({
+    eventId: "manual-drawer-action",
+    printerId: "XP-MANUAL",
+    reason: "MANUAL",
+  }, authorization);
+  const replay = await store.beginManualDrawerOpen({
+    eventId: "manual-drawer-action",
+    printerId: "XP-MANUAL",
+    reason: "MANUAL",
+  }, authorization);
+  assert.equal(first.kind, "created");
+  assert.equal(replay.kind, "existing");
+  assert.deepEqual(await store.listRequiredDrawerEvents(), []);
+
+  assert.equal(
+    await store.finishDrawerEvent(
+      "manual-drawer-action",
+      "Requested",
+      "Completed",
+      null,
+      {
+        eventId: "audit-manual-drawer",
+        eventType: "CASH_DRAWER_OPEN",
+        occurredAtIso: "2026-07-28T04:00:00.000Z",
+        orderGuid: null,
+        correlationId: "manual-drawer-action",
+        payload: {
+          action: "open-cash-drawer",
+          status: "Completed",
+          reason: "MANUAL",
+          source: "sales",
+          outcome: "Succeeded",
+          printerId: "XP-MANUAL",
+          requestingCashierId: "cashier-1",
+          authorizingCashierId: "supervisor-1",
+          permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+          authorizationMode: "online",
+        },
+      },
+    ),
+    true,
+  );
+
+  const row = await connection.getFirst<{
+    orderGuid: string | null;
+    state: string;
+    reason: string;
+    audits: number;
+  }>(
+    `SELECT order_guid AS orderGuid, state, reason,
+      (SELECT COUNT(*) FROM audit_events WHERE event_id = 'audit-manual-drawer') AS audits
+     FROM drawer_events WHERE event_id = 'manual-drawer-action'`,
+  );
+  assert.deepEqual({ ...row }, {
+    orderGuid: null,
+    state: "Completed",
+    reason: "MANUAL",
+    audits: 1,
+  });
+});
+
+test("真实 SQLite：授权重打与首份审计同事务，崩溃恢复终态仍关联原 actionId 和授权身份", async () => {
+  const { connection, store } = createHarness();
+  await seedOrder(connection, "order-authorized-reprint");
+  const authorization = initialAuthorization({
+    actionId: "action-authorized-reprint",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "order-authorized-reprint",
+    printerId: "XP-AUTHORIZED",
+  });
+  const created = await store.createLastReceiptReprint(
+    {
+      orderGuid: "order-authorized-reprint",
+      receiptBytes: Uint8Array.of(29, 33, 82),
+      printerId: "XP-AUTHORIZED",
+    },
+    authorization,
+  );
+  assert.equal(created?.jobId, authorization.context.actionId);
+  assert.equal(created?.state, "Queued");
+
+  const beforeRecovery = await connection.getFirst<{
+    jobs: number;
+    audits: number;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM print_jobs WHERE job_id = 'action-authorized-reprint') AS jobs,
+      (SELECT COUNT(*) FROM audit_events WHERE correlation_id = 'action-authorized-reprint') AS audits`,
+  );
+  assert.deepEqual({ ...beforeRecovery }, { jobs: 1, audits: 1 });
+
+  const printed: string[] = [];
+  const restarted = new FulfilmentService({
+    store,
+    printer: {
+      async connect() {},
+      async print(jobId) {
+        printed.push(jobId);
+        return { status: "printed", errorCode: null };
+      },
+    },
+    drawer: {
+      async open() {
+        throw new Error("drawer must not be called");
+      },
+    },
+    nowIso: () => "2026-07-28T04:01:00.000Z",
+    createAuditId: () => "audit-terminal-authorized-reprint",
+    createCorrelationId: () => "must-not-be-used",
+    async prepareLastReceiptReprint() {
+      throw new Error("recovery must not prepare another receipt");
+    },
+  });
+
+  assert.deepEqual(await restarted.drainAutomaticQueue(), {
+    printed: 1,
+    drawersOpened: 0,
+  });
+  assert.deepEqual(printed, ["action-authorized-reprint"]);
+  const audits = await connection.getAll<{
+    correlationId: string;
+    payloadJson: string;
+  }>(
+    `SELECT correlation_id AS correlationId, payload_json AS payloadJson
+     FROM audit_events
+     WHERE correlation_id = 'action-authorized-reprint'
+     ORDER BY rowid ASC`,
+  );
+  assert.deepEqual(
+    audits.map((row) => {
+      const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+      return {
+        correlationId: row.correlationId,
+        status: payload.status,
+        requestingCashierId: payload.requestingCashierId,
+        authorizingCashierId: payload.authorizingCashierId,
+        permissionCode: payload.permissionCode,
+        authorizationMode: payload.authorizationMode,
+      };
+    }),
+    [
+      {
+        correlationId: "action-authorized-reprint",
+        status: "Authorized",
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+        authorizationMode: "online",
+      },
+      {
+        correlationId: "action-authorized-reprint",
+        status: "Printed",
+        requestingCashierId: "cashier-1",
+        authorizingCashierId: "supervisor-1",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+        authorizationMode: "online",
+      },
+    ],
+  );
+});
+
+test("真实 SQLite：Requested 手动开箱不在重启后补脉冲，首份授权审计仍保留", async () => {
+  const { connection, store } = createHarness();
+  await seedOrder(connection);
+  const authorization = initialAuthorization({
+    actionId: "action-requested-drawer",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-MANUAL",
+  });
+  await store.beginManualDrawerOpen(
+    {
+      eventId: authorization.context.actionId,
+      printerId: "XP-MANUAL",
+      reason: "MANUAL",
+    },
+    authorization,
+  );
+  let drawerCalls = 0;
+  const restarted = new FulfilmentService({
+    store,
+    printer: {
+      async connect() {},
+      async print() {
+        return { status: "printed", errorCode: null };
+      },
+    },
+    drawer: {
+      async open() {
+        drawerCalls += 1;
+        return { status: "completed", errorCode: null };
+      },
+    },
+    nowIso: () => "2026-07-28T04:01:00.000Z",
+    createAuditId: () => "unused-terminal-audit",
+    createCorrelationId: () => "must-not-be-used",
+    async prepareLastReceiptReprint() {
+      return null;
+    },
+  });
+
+  assert.deepEqual(await restarted.drainAutomaticQueue(), {
+    printed: 0,
+    drawersOpened: 0,
+  });
+  assert.equal(drawerCalls, 0);
+  const row = await connection.getFirst<{
+    state: string;
+    audits: number;
+    status: string;
+  }>(
+    `SELECT state,
+      (SELECT COUNT(*) FROM audit_events WHERE correlation_id = 'action-requested-drawer') AS audits,
+      (SELECT json_extract(payload_json, '$.status') FROM audit_events
+       WHERE correlation_id = 'action-requested-drawer' LIMIT 1) AS status
+     FROM drawer_events WHERE event_id = 'action-requested-drawer'`,
+  );
+  assert.deepEqual({ ...row }, {
+    state: "Requested",
+    audits: 1,
+    status: "Authorized",
+  });
+});
+
+test("真实 SQLite：首次授权审计插入失败时重打 job 与手动开箱 event 都整体回滚", async () => {
+  const { connection, store } = createHarness();
+  await seedOrder(connection, "order-atomic-authorization");
+  connection.failNextAuditInsert = true;
+  await assert.rejects(
+    store.createLastReceiptReprint(
+      {
+        orderGuid: "order-atomic-authorization",
+        receiptBytes: Uint8Array.of(29, 33, 82),
+        printerId: "XP-AUTHORIZED",
+      },
+      initialAuthorization({
+        actionId: "action-atomic-reprint",
+        eventType: "RECEIPT_REPRINT",
+        orderGuid: "order-atomic-authorization",
+        printerId: "XP-AUTHORIZED",
+      }),
+    ),
+    /simulated audit insert failure/,
+  );
+  connection.failNextAuditInsert = true;
+  await assert.rejects(
+    store.beginManualDrawerOpen(
+      {
+        eventId: "action-atomic-drawer",
+        printerId: "XP-MANUAL",
+        reason: "MANUAL",
+      },
+      initialAuthorization({
+        actionId: "action-atomic-drawer",
+        eventType: "CASH_DRAWER_OPEN",
+        orderGuid: null,
+        printerId: "XP-MANUAL",
+      }),
+    ),
+    /simulated audit insert failure/,
+  );
+  const row = await connection.getFirst<{
+    jobs: number;
+    drawers: number;
+    audits: number;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM print_jobs WHERE job_id = 'action-atomic-reprint') AS jobs,
+      (SELECT COUNT(*) FROM drawer_events WHERE event_id = 'action-atomic-drawer') AS drawers,
+      (SELECT COUNT(*) FROM audit_events WHERE correlation_id IN (
+        'action-atomic-reprint', 'action-atomic-drawer'
+      )) AS audits`,
+  );
+  assert.deepEqual({ ...row }, { jobs: 0, drawers: 0, audits: 0 });
+});
+
 test("真实 SQLite：重复审计 eventId 使打印状态回滚到 Sending", async () => {
   const { connection, store } = createHarness();
   await seedOrder(connection);
@@ -248,7 +588,7 @@ test("真实 SQLite：重复审计 eventId 使打印状态回滚到 Sending", as
         status: "Printed",
         outcome: "Succeeded",
         printerId: "XP-1",
-      }),
+      }, "print-duplicate"),
     ),
     /UNIQUE constraint failed/i,
   );
@@ -270,7 +610,12 @@ test("真实 SQLite：模拟钱箱审计插入失败时状态回滚到 Requested
       "Requested",
       "Completed",
       null,
-      audit("audit-drawer-failure", "CASH_DRAWER_OPEN"),
+      audit(
+        "audit-drawer-failure",
+        "CASH_DRAWER_OPEN",
+        undefined,
+        "drawer-audit-failure",
+      ),
     ),
     /simulated audit insert failure/,
   );

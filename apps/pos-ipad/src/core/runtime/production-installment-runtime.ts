@@ -20,6 +20,7 @@ import {
   INSTALLMENTS_CREATE_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
 } from "@/features/installments/installment-authorization";
+import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
 import type {
   InstallmentAppendPaymentCommand,
   InstallmentCancelCommand,
@@ -28,6 +29,7 @@ import type {
   InstallmentLine,
   InstallmentPaymentCommand,
   InstallmentPaymentMethod,
+  InstallmentCardProvider,
   InstallmentPickupCommand,
   InstallmentRefundCommand,
   InstallmentsRemotePort,
@@ -43,6 +45,12 @@ import {
   type InstallmentWorkflowRepaymentInput,
 } from "@/features/installments/installment-presenter";
 import type { InstallmentsRuntimeFactory } from "@/features/installments/installment-runtime";
+import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
+import {
+  installmentCreatePaymentEntry,
+  type InstallmentCreatePaymentEntry,
+  type InstallmentRepaymentPaymentEntry,
+} from "@/features/payments/ui/unified-payment-entry";
 import type {
   ActivePricingCartSession,
   ActivePricingCartLease,
@@ -112,13 +120,19 @@ type InstallmentCreateActionCommand = Omit<
     kind: "create";
     cartFingerprint: string;
     draftRevision: number;
+    cardProvider?: InstallmentCardProvider;
+    cashTenderedCents?: number;
   }>;
 
 type InstallmentRepaymentActionCommand = Omit<
   InstallmentAppendPaymentCommand,
   "payment"
 > &
-  Readonly<{ kind: "repayment" }>;
+  Readonly<{
+    kind: "repayment";
+    cardProvider?: InstallmentCardProvider;
+    cashTenderedCents?: number;
+  }>;
 
 type InstallmentCancelActionCommand = Omit<
   InstallmentCancelCommand,
@@ -185,6 +199,9 @@ export type InstallmentApprovedRefund = Readonly<{
  * action 已由 InstallmentActionStorePort 持久化，因此这里只接受 persistedActionId。
  */
 export interface InstallmentMutationPaymentPort {
+  listProviderAvailability?(): Promise<
+    readonly import("@/features/payments/runtime/payment-provider-registry").PaymentProviderAvailability[]
+  >;
   beginOrRecover(
     persistedActionId: string,
   ): Promise<
@@ -250,6 +267,47 @@ export function createProductionInstallmentRuntime(
         workflow,
       });
     },
+    prepareCreateCheckout(): InstallmentCreatePaymentEntry {
+      const session = requireScopedLease(
+        input.currentCashier.createLease(),
+        terminal,
+      );
+      requirePermission(session, INSTALLMENTS_CREATE_PERMISSION);
+      const draft = createDraft(input.activeCart.read());
+      if (!draft || draft.lines.length === 0) {
+        throw workflowError("conflict", "Installment cart is empty.");
+      }
+      return installmentCreatePaymentEntry({
+        checkoutIntentId: runtimeId(input),
+        expectedCartRevision: draft.revision,
+      });
+    },
+    createCheckoutPresenter(
+      entry: InstallmentCreatePaymentEntry | InstallmentRepaymentPaymentEntry | null,
+    ): InstallmentCheckoutPresenter {
+      const lease = input.currentCashier.createLease();
+      const session = requireScopedLease(lease, terminal);
+      const workflow = new LeaseBoundInstallmentWorkflow({
+        input,
+        lease,
+        terminal,
+      });
+      return new InstallmentCheckoutPresenter({
+        entry,
+        createDrafts: new ActiveCartInstallmentDraftPort(input.activeCart),
+        initialOnline: true,
+        permissions: session.permissionCodes,
+        workflow,
+        createTenderId: input.createId,
+      });
+    },
+    async hasRecoveryRequired(): Promise<boolean> {
+      const lease = input.currentCashier.createLease();
+      requireScopedLease(lease, terminal);
+      const blocking = await input.actionStore.loadBlocking(terminal);
+      requireScopedLease(lease, terminal);
+      return blocking !== null;
+    },
   });
 }
 
@@ -273,6 +331,14 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       terminal: TerminalScope;
     }>,
   ) {}
+
+  public async listPaymentProviderAvailability() {
+    requireScopedLease(this.context.lease, this.context.terminal);
+    const availability =
+      await this.context.input.payments.listProviderAvailability?.();
+    requireScopedLease(this.context.lease, this.context.terminal);
+    return Object.freeze([...(availability ?? [])]);
+  }
 
   public async list(input: Readonly<{
     keyword: string | null;
@@ -362,6 +428,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
         return this.executePersistedAction(blocking, cartLease);
       }
       this.requireCurrentPermission(INSTALLMENTS_CREATE_PERMISSION);
+      this.requireTenderPermissions(input.method);
       const cart = cartLease.read();
       if (
         cart.cart.revision !== input.draftRevision ||
@@ -384,6 +451,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     const blocking = await this.loadBlockingAction();
     if (blocking) return this.executePersistedAction(blocking);
     this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
+    this.requireTenderPermissions(input.method);
     const candidate = await this.createRepaymentAction(input);
     const persisted = await this.persistCandidate(candidate);
     return this.executePersistedAction(persisted);
@@ -480,6 +548,23 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     requirePermission(session, permission);
   }
 
+  private requireTenderPermissions(method: InstallmentPaymentMethod): void {
+    const session = requireScopedLease(
+      this.context.lease,
+      this.context.terminal,
+    );
+    requirePermission(session, PAYMENT_PERMISSION.view);
+    requirePermission(session, PAYMENT_PERMISSION.confirm);
+    requirePermission(
+      session,
+      method === "cash"
+        ? PAYMENT_PERMISSION.takeCash
+        : method === "voucher"
+          ? PAYMENT_PERMISSION.takeVoucher
+          : PAYMENT_PERMISSION.takeCard,
+    );
+  }
+
   private async loadBlockingAction(): Promise<PersistedInstallmentAction | null> {
     const action = await this.context.input.actionStore.loadBlocking(
       this.context.terminal,
@@ -551,6 +636,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       note: input.note,
       cartFingerprint: fingerprint,
       draftRevision: input.draftRevision,
+      ...paymentCommandMetadata(input),
     });
     return this.createActionCandidate({
       action,
@@ -580,6 +666,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       ...identityFor(this.context.lease, this.context.terminal),
       kind: "repayment",
       installmentGuid,
+      ...paymentCommandMetadata(input),
     });
     return this.createActionCandidate({
       action,
@@ -675,6 +762,9 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     );
     await this.assertOnlineAndScoped();
     this.requireCurrentPermission(permissionForAction(persisted.action.kind));
+    if (persisted.action.method) {
+      this.requireTenderPermissions(persisted.action.method);
+    }
 
     let result: Awaited<
       ReturnType<InstallmentMutationPaymentPort["beginOrRecover"]>
@@ -819,14 +909,26 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     refunds: readonly InstallmentRefundCommand[] | null,
   ): Promise<InstallmentDetails> {
     if (persisted.command.kind === "create" && payment) {
-      const { kind: _kind, cartFingerprint: _cartFingerprint, draftRevision: _draftRevision, ...command } =
+      const {
+        kind: _kind,
+        cartFingerprint: _cartFingerprint,
+        draftRevision: _draftRevision,
+        cardProvider: _cardProvider,
+        cashTenderedCents: _cashTenderedCents,
+        ...command
+      } =
         persisted.command;
       return this.context.input.api.create(
         Object.freeze({ ...command, downPayment: payment }),
       );
     }
     if (persisted.command.kind === "repayment" && payment) {
-      const { kind: _kind, ...command } = persisted.command;
+      const {
+        kind: _kind,
+        cardProvider: _cardProvider,
+        cashTenderedCents: _cashTenderedCents,
+        ...command
+      } = persisted.command;
       return this.context.input.api.appendPayment(
         Object.freeze({ ...command, payment }),
       );
@@ -1060,6 +1162,25 @@ function validatePersistedAction(
     recoveryUuid(action.paymentGuid, "persisted payment guid");
     if (!Number.isSafeInteger(action.amountCents) || action.amountCents <= 0) {
       throw paymentRecoveryError("Persisted payment amount is invalid.");
+    }
+    const command = persisted.command;
+    const validSelection =
+      action.method === "card"
+        ? command.cashTenderedCents === undefined &&
+          (command.cardProvider === undefined ||
+            command.cardProvider === "square" ||
+            command.cardProvider === "linkly-cloud")
+        : action.method === "cash"
+          ? command.cardProvider === undefined &&
+            (command.cashTenderedCents === undefined ||
+              (Number.isSafeInteger(command.cashTenderedCents) &&
+                command.cashTenderedCents >= action.amountCents))
+          : command.cardProvider === undefined &&
+            command.cashTenderedCents === undefined;
+    if (!validSelection) {
+      throw paymentRecoveryError(
+        "Persisted payment selection is invalid.",
+      );
     }
   }
   return persisted;
@@ -1581,6 +1702,59 @@ function paymentRecoveryError(message: string): InstallmentWorkflowError {
   return workflowError("payment-recovery-required", message);
 }
 
+function paymentCommandMetadata(
+  input: Pick<
+    InstallmentWorkflowCreateInput,
+    "method" | "downPaymentCents" | "cardProvider" | "cashTenderedCents"
+  > |
+    Pick<
+      InstallmentWorkflowRepaymentInput,
+      "method" | "amountCents" | "cardProvider" | "cashTenderedCents"
+    >,
+): Readonly<{
+  cardProvider?: InstallmentCardProvider;
+  cashTenderedCents?: number;
+}> {
+  const amountCents =
+    "downPaymentCents" in input
+      ? input.downPaymentCents
+      : input.amountCents;
+  if (input.method === "card") {
+    if (
+      input.cashTenderedCents !== undefined ||
+      (input.cardProvider !== undefined &&
+        input.cardProvider !== "square" &&
+        input.cardProvider !== "linkly-cloud")
+    ) {
+      throw workflowError("conflict", "Installment card provider is invalid.");
+    }
+    return input.cardProvider === undefined
+      ? Object.freeze({})
+      : Object.freeze({ cardProvider: input.cardProvider });
+  }
+  if (input.method === "cash") {
+    if (input.cardProvider !== undefined) {
+      throw workflowError("conflict", "Installment cash selection is invalid.");
+    }
+    if (input.cashTenderedCents === undefined) return Object.freeze({});
+    const cashTenderedCents = positiveInteger(
+      input.cashTenderedCents,
+      "cash tendered amount",
+    );
+    if (cashTenderedCents < amountCents) {
+      throw workflowError("conflict", "Installment cash amount is invalid.");
+    }
+    return Object.freeze({ cashTenderedCents });
+  }
+  if (
+    input.cardProvider !== undefined ||
+    input.cashTenderedCents !== undefined
+  ) {
+    throw workflowError("conflict", "Installment voucher selection is invalid.");
+  }
+  return Object.freeze({});
+}
+
 function createActionKey(
   input: InstallmentWorkflowCreateInput,
   fingerprint: string,
@@ -1594,6 +1768,8 @@ function createActionKey(
     note: input.note,
     downPaymentCents: input.downPaymentCents,
     method: input.method,
+    cardProvider: input.cardProvider,
+    cashTenderedCents: input.cashTenderedCents,
   });
 }
 
@@ -1603,6 +1779,8 @@ function repaymentActionKey(input: InstallmentWorkflowRepaymentInput): string {
     installmentGuid: input.installmentGuid,
     amountCents: input.amountCents,
     method: input.method,
+    cardProvider: input.cardProvider,
+    cashTenderedCents: input.cashTenderedCents,
   });
 }
 

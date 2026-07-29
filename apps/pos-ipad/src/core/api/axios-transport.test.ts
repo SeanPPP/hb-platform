@@ -4,7 +4,7 @@ import test from "node:test";
 import { AxiosError, create, type AxiosRequestConfig } from "axios";
 
 import { createAxiosHbposTransport } from "./axios-transport";
-import { HbposCashierApi } from "./hbpos-api";
+import { HbposApiError, HbposCashierApi } from "./hbpos-api";
 
 test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证头", async () => {
   let request: AxiosRequestConfig | undefined;
@@ -332,4 +332,85 @@ test("非条码登录请求的 401 仍触发默认全局认证失效处理", asy
 
   await assert.rejects(() => transport.request({ method: "GET", url: "/api/v1/orders" }), /login again/);
   assert.deepEqual(calls, ["401"]);
+});
+
+test("目录请求可单独关闭超时并透传取消信号，普通请求仍保留实例默认超时", async () => {
+  const requests: AxiosRequestConfig[] = [];
+  const instance = create({
+    timeout: 15_000,
+    adapter: async (config) => {
+      requests.push(config);
+      return {
+        config,
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        data: { success: true },
+      };
+    },
+  });
+  const transport = createAxiosHbposTransport(
+    "https://hbpos.example",
+    { async getCredentials() { return {}; } },
+    instance,
+  );
+  const controller = new AbortController();
+
+  await transport.request({
+    method: "GET",
+    url: "/api/v1/catalog/sellable-items/page",
+    timeoutMs: 0,
+    signal: controller.signal,
+  });
+  await transport.request({
+    method: "GET",
+    url: "/api/v1/orders",
+  });
+
+  assert.equal(requests[0]?.timeout, 0);
+  assert.equal(requests[0]?.signal, controller.signal);
+  assert.equal(requests[1]?.timeout, 15_000);
+  assert.equal(requests[1]?.signal, undefined);
+});
+
+test("主动取消保留可识别错误且不得触发认证失效处理", async () => {
+  const authenticationFailures: string[] = [];
+  const instance = create({
+    adapter: async (config) => {
+      throw new AxiosError(
+        "canceled",
+        "ERR_CANCELED",
+        config,
+      );
+    },
+  });
+  const transport = createAxiosHbposTransport(
+    "https://hbpos.example",
+    { async getCredentials() { return {}; } },
+    instance,
+    {
+      async onUnauthorized() {
+        authenticationFailures.push("401");
+      },
+      async onForbidden() {
+        authenticationFailures.push("403");
+      },
+    },
+  );
+  const controller = new AbortController();
+
+  await assert.rejects(
+    () => transport.request({
+      method: "GET",
+      url: "/api/v1/catalog/sellable-items/page",
+      signal: controller.signal,
+      timeoutMs: 0,
+    }),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "transport"
+      && error.code === "REQUEST_ABORTED"
+      && /cancel/i.test(error.message),
+  );
+  assert.deepEqual(authenticationFailures, []);
 });

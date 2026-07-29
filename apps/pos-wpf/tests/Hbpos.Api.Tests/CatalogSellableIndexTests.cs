@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.Json;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
 
@@ -173,6 +175,228 @@ public sealed class CatalogSellableIndexTests
         Assert.False(secondPage.HasMore);
         Assert.Null(secondPage.NextCursor);
         Assert.Equal(3, secondPage.TotalCount);
+    }
+
+    [Fact]
+    public void GetPage_keeps_one_catalog_version_for_all_pages_in_the_same_index()
+    {
+        var index = CreateIndex(
+            CreateItem("P01", "a-code", "A item", 1m),
+            CreateItem("P02", "b-code", "B item", 2m),
+            CreateItem("P03", "c-code", "C item", 3m));
+
+        var firstPage = index.GetPage(cursor: null, pageSize: 2);
+        var secondPage = index.GetPage(firstPage.NextCursor, pageSize: 2);
+
+        Assert.StartsWith("catalog-v1:", firstPage.CatalogVersion, StringComparison.Ordinal);
+        Assert.Equal(firstPage.CatalogVersion, secondPage.CatalogVersion);
+        Assert.StartsWith("sha256-catalog-page-v1:", firstPage.PageChecksum, StringComparison.Ordinal);
+        Assert.StartsWith("sha256-catalog-page-v1:", secondPage.PageChecksum, StringComparison.Ordinal);
+        Assert.NotEqual(firstPage.PageChecksum, secondPage.PageChecksum);
+    }
+
+    [Fact]
+    public void Rebuilt_index_gets_a_new_catalog_version_even_when_content_is_unchanged()
+    {
+        var item = CreateItem("P01", "a-code", "A item", 1m);
+
+        var first = CreateIndex(item).GetPage(cursor: null, pageSize: 10);
+        var rebuilt = CreateIndex(item).GetPage(cursor: null, pageSize: 10);
+
+        Assert.NotEqual(first.CatalogVersion, rebuilt.CatalogVersion);
+        Assert.Equal(first.PageChecksum, rebuilt.PageChecksum);
+    }
+
+    [Fact]
+    public void Changed_item_changes_catalog_version_and_page_checksum()
+    {
+        var first = CreateIndex(CreateItem("P01", "a-code", "A item", 1m))
+            .GetPage(cursor: null, pageSize: 10);
+        var changed = CreateIndex(CreateItem("P01", "a-code", "Changed item", 1m))
+            .GetPage(cursor: null, pageSize: 10);
+
+        Assert.NotEqual(first.CatalogVersion, changed.CatalogVersion);
+        Assert.NotEqual(first.PageChecksum, changed.PageChecksum);
+    }
+
+    [Fact]
+    public void Page_checksum_uses_the_cross_platform_canonical_v1_vector()
+    {
+        var index = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt,
+            [
+                new SellableItemDto(
+                    "S01",
+                    "P-001",
+                    ReferenceCode: null,
+                    "牛奶🥛",
+                    "930000000001",
+                    ItemNumber: "I-001",
+                    Barcode: "source-barcode-is-not-the-offline-lookup",
+                    RetailPrice: 12.34m,
+                    PriceSourceKind.ProductBase,
+                    "product",
+                    QuantityFactor: 1m,
+                    UpdatedAt: new DateTimeOffset(2026, 7, 28, 1, 2, 3, 456, TimeSpan.Zero),
+                    ProductImage: null,
+                    DiscountRate: null,
+                    IsSpecialProduct: true)
+            ]);
+
+        var page = index.GetPage(cursor: null, pageSize: 10);
+
+        Assert.Equal(
+            "sha256-catalog-page-v1:4eb87e036003575ca8b8e9961ab6c21dbe63ed6d18482886f1da92e8f4165530",
+            page.PageChecksum);
+    }
+
+    [Fact]
+    public void Page_checksum_uses_the_JavaScript_observable_number_representation()
+    {
+        var index = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt,
+            [
+                new SellableItemDto(
+                    "S01",
+                    "P-HIGH",
+                    ReferenceCode: string.Empty,
+                    "精度",
+                    "HIGH",
+                    ItemNumber: string.Empty,
+                    Barcode: string.Empty,
+                    RetailPrice: 0.1000000000000000000000000001m,
+                    PriceSourceKind.ProductBase,
+                    "product",
+                    QuantityFactor: 12345678901234567890.123456789m,
+                    UpdatedAt: null,
+                    ProductImage: string.Empty,
+                    DiscountRate: 0.3333333333333333333333333333m,
+                    IsSpecialProduct: false)
+            ]);
+
+        var page = index.GetPage(cursor: null, pageSize: 10);
+
+        Assert.Equal(
+            "sha256-catalog-page-v1:86178b9aa03175a4dc97d8c61fa8db018507d0c29d60b43a5d65b47106681e44",
+            page.PageChecksum);
+    }
+
+    [Fact]
+    public void Page_checksum_v2_uses_binary64_big_endian_cross_platform_vector()
+    {
+        var index = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt,
+            [
+                new SellableItemDto(
+                    "S01",
+                    "P-001",
+                    ReferenceCode: null,
+                    "牛奶🥛",
+                    "930000000001",
+                    ItemNumber: "I-001",
+                    Barcode: "source-barcode-is-not-the-offline-lookup",
+                    RetailPrice: 12.34m,
+                    PriceSourceKind.ProductBase,
+                    "product",
+                    QuantityFactor: 1m,
+                    UpdatedAt: new DateTimeOffset(2026, 7, 28, 1, 2, 3, 456, TimeSpan.Zero),
+                    ProductImage: null,
+                    DiscountRate: null,
+                    IsSpecialProduct: true)
+            ]);
+
+        var page = index.GetPage(cursor: null, pageSize: 10, checksumVersion: 2);
+
+        Assert.Equal(
+            "sha256-catalog-page-v2:22181273b9791ad9664ad4f30ca2cddd3916ad9a012851490db28f7e1b229c27",
+            page.PageChecksum);
+    }
+
+    [Fact]
+    public void Page_checksum_v2_stabilizes_large_small_and_high_precision_numbers()
+    {
+        var index = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt,
+            [
+                new SellableItemDto(
+                    "S01",
+                    "P-EDGE",
+                    ReferenceCode: string.Empty,
+                    "边界",
+                    "EDGE",
+                    ItemNumber: string.Empty,
+                    Barcode: string.Empty,
+                    RetailPrice: decimal.MaxValue,
+                    PriceSourceKind.ProductBase,
+                    "product",
+                    QuantityFactor: 0.0000000000000000000000000001m,
+                    UpdatedAt: null,
+                    ProductImage: string.Empty,
+                    DiscountRate: 0.1000000000000000000000000001m,
+                    IsSpecialProduct: false)
+            ]);
+
+        var page = index.GetPage(cursor: null, pageSize: 10, checksumVersion: 2);
+
+        Assert.Equal(
+            "sha256-catalog-page-v2:c0b3e647f427c35d369335b42c512dc1b1e56fb31c1abc4154bfc1fc2498afba",
+            page.PageChecksum);
+    }
+
+    [Fact]
+    public void Binary64_formatter_matches_SystemTextJson_then_JavaScript_number_bits()
+    {
+        var formatter = typeof(CatalogSellableIndex).GetMethod(
+            "FormatBinary64",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(decimal)],
+            modifiers: null);
+        Assert.NotNull(formatter);
+
+        decimal[] values =
+        [
+            12.340000m,
+            decimal.MaxValue,
+            0.0000000000000000000000000001m,
+            0.1000000000000000000000000001m,
+            -123456789.987654321m
+        ];
+        foreach (var value in values)
+        {
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(value));
+            var javascriptNumber = json.RootElement.GetDouble();
+            var expected = unchecked((ulong)BitConverter.DoubleToInt64Bits(javascriptNumber))
+                .ToString("x16");
+
+            Assert.Equal(expected, formatter!.Invoke(null, [value]));
+        }
+    }
+
+    [Fact]
+    public void GetPage_rejects_unsupported_checksum_version()
+    {
+        var index = CreateIndex(CreateItem("P01", "a-code", "A item", 1m));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => index.GetPage(cursor: null, pageSize: 10, checksumVersion: 3));
+    }
+
+    [Fact]
+    public void Page_checksum_changes_when_page_boundaries_change()
+    {
+        var index = CreateIndex(
+            CreateItem("P01", "a-code", "A item", 1m),
+            CreateItem("P02", "b-code", "B item", 2m));
+
+        var oneItemPage = index.GetPage(cursor: null, pageSize: 1);
+        var twoItemPage = index.GetPage(cursor: null, pageSize: 2);
+
+        Assert.NotEqual(oneItemPage.PageChecksum, twoItemPage.PageChecksum);
     }
 
     [Fact]

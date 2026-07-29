@@ -15,7 +15,7 @@ import {
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import { ProductionReturnRefundAdapter } from "./production-return-refund-adapter";
 
-import type { Money, OrderTender } from "@/core/contracts";
+import type { CartSnapshot, Money, OrderTender } from "@/core/contracts";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
   PaymentDraftRecovery,
@@ -343,7 +343,7 @@ export function createProductionPaymentRuntime(
           ...(context.linkly
             ? { linklyOperator: context.linkly }
             : {}),
-          entry: normalizeEntry(entry),
+          entry: normalizeEntry(entry, input.activeCart.getSnapshot()),
           createActionId: input.createId,
         });
       },
@@ -696,6 +696,14 @@ function withPersistedVoucherTenderReversalRecovery(
       await assertNoScopedBlocking();
       return options.runtime.start(request);
     },
+    ...(options.runtime.startCash
+      ? {
+          async startCash(request) {
+            await assertNoScopedBlocking();
+            return options.runtime.startCash!(request);
+          },
+        }
+      : {}),
     async recover(request) {
       await assertNoBlocking(request.orderGuid);
       return options.runtime.recover(request);
@@ -859,6 +867,12 @@ function withPostCommitFulfilment(
     resumeCurrent: (prepared) =>
       after(runtime.resumeCurrent(prepared)),
     start: (request) => after(runtime.start(request)).then(requireSnapshot),
+    ...(runtime.startCash
+      ? {
+          startCash: (request) =>
+            after(runtime.startCash!(request)).then(requireSnapshot),
+        }
+      : {}),
     recover: (request) =>
       after(runtime.recover(request)).then(requireSnapshot),
     cancel: (request) =>
@@ -966,6 +980,7 @@ function normalizeScope(
 
 function normalizeEntry(
   entry: PaymentCheckoutEntryContext | null,
+  activeCart: CartSnapshot,
 ): PaymentCheckoutEntryContext | null {
   if (!entry) return null;
   const checkoutIntentId = requiredText(entry.checkoutIntentId);
@@ -980,10 +995,28 @@ function normalizeEntry(
       "PAYMENT_DRAFT_CONFLICT",
     );
   }
+  // 路由只携带定位字段；展示明细必须来自组合根当前持有的可信购物车。
+  // revision 或金额已变化时不展示可能过期的行，后续独占 lease 仍会失败关闭。
+  const trustedLines =
+    activeCart.revision === entry.expectedCartRevision &&
+    activeCart.actualAmount.currency === entry.total.currency &&
+    activeCart.actualAmount.cents === entry.total.cents
+      ? activeCart.lines
+      : [];
   return Object.freeze({
     checkoutIntentId,
     expectedCartRevision: entry.expectedCartRevision,
     total: copyMoney(entry.total),
+    lines: Object.freeze(
+      trustedLines.map((line) =>
+        Object.freeze({
+          lineKey: requiredText(line.lineId),
+          displayName: requiredText(line.displayName),
+          quantity: requiredText(line.quantity),
+          actualAmountCents: line.actualAmount.cents,
+        }),
+      ),
+    ),
   });
 }
 

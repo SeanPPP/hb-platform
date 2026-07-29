@@ -60,6 +60,42 @@ export type PaymentPresenterTender = Readonly<{
   method: TenderMethod;
   amount: Money;
   reversible: boolean;
+  provider?: PaymentProvider | null;
+}>;
+
+export type PaymentCheckoutFlow =
+  | "regular"
+  | "installment-create"
+  | "installment-repayment"
+  | "installment-recovery";
+
+export type PaymentCheckoutLine = Readonly<{
+  lineKey: string;
+  displayName: string;
+  quantity: string;
+  actualAmountCents: number;
+}>;
+
+export type InstallmentCustomerPresentation = Readonly<{
+  name: string;
+  phone: string;
+  editable: boolean;
+  editorOpen: boolean;
+  draftName: string;
+  draftPhone: string;
+  installmentNumber: string | null;
+}>;
+
+export type PaymentCheckoutPresentation = Readonly<{
+  flow: PaymentCheckoutFlow;
+  lines: readonly PaymentCheckoutLine[];
+  installmentCustomer: InstallmentCustomerPresentation | null;
+  cash: Readonly<{
+    tenderedCents: number;
+    appliedCents: number;
+    changeCents: number;
+  }>;
+  canConfirm: boolean;
 }>;
 
 export type PaymentPresenterState = Readonly<{
@@ -82,6 +118,7 @@ export type PaymentPresenterState = Readonly<{
   runtimeStatus: PaymentCheckoutStatus | null;
   allowedActions: PaymentCheckoutAllowedActions;
   tenderReversalRecovery: PaymentCheckoutTenderReversalRecovery | null;
+  checkout: PaymentCheckoutPresentation;
   linkly: Readonly<{
     status: LinklyOperatorStatus | null;
     errorCode: LinklyOperatorErrorCode | null;
@@ -89,10 +126,39 @@ export type PaymentPresenterState = Readonly<{
   }>;
 }>;
 
+/**
+ * PaymentScreen 只依赖这层公开 facade。普通 PaymentPresenter 与分期 checkout
+ * presenter 都实现同一交互面，页面无需接触任一耐久账本。
+ */
+export interface PaymentScreenPresenter {
+  getState(): PaymentPresenterState;
+  subscribe(listener: () => void): () => void;
+  initialize(): Promise<boolean>;
+  destroy(): void;
+  selectMethod(method: PaymentUiMethod): boolean;
+  setAmountText(value: string): void;
+  setVoucherCode(value: string): void;
+  dismissError(): void;
+  submitSelected(): Promise<boolean>;
+  recover(): Promise<boolean>;
+  cancel(): Promise<boolean>;
+  removeTender(tenderGuid: string): Promise<boolean>;
+  sendLinklyKey(key: LinklySafeOperatorKey): Promise<boolean>;
+  markLinklyReceiptPrinted(): Promise<boolean>;
+  acknowledgeLinkly(): Promise<boolean>;
+  confirm?(): Promise<boolean>;
+  openInstallmentCustomerEditor?(): void;
+  setInstallmentCustomerDraftName?(value: string): void;
+  setInstallmentCustomerDraftPhone?(value: string): void;
+  saveInstallmentCustomer?(): void;
+  cancelInstallmentCustomerEditor?(): void;
+}
+
 export type PaymentCheckoutEntryContext = Readonly<{
   checkoutIntentId: string;
   expectedCartRevision: number;
   total: Money;
+  lines?: readonly PaymentCheckoutLine[];
 }>;
 
 export type PaymentPresenterDependencies = Readonly<{
@@ -119,6 +185,44 @@ const EMPTY_ALLOWED_ACTIONS: PaymentCheckoutAllowedActions = Object.freeze({
 });
 
 const ZERO_AUD: Money = Object.freeze({ currency: "AUD", cents: 0 });
+
+function emptyRegularCheckout(
+  lines: readonly PaymentCheckoutLine[] = [],
+): PaymentCheckoutPresentation {
+  return Object.freeze({
+    flow: "regular",
+    lines: Object.freeze(
+      lines.map((line) => Object.freeze({ ...line })),
+    ),
+    installmentCustomer: null,
+    cash: Object.freeze({
+      tenderedCents: 0,
+      appliedCents: 0,
+      changeCents: 0,
+    }),
+    canConfirm: false,
+  });
+}
+
+function resetCashPresentation(
+  checkout: PaymentCheckoutPresentation,
+): PaymentCheckoutPresentation {
+  if (
+    checkout.cash.tenderedCents === 0 &&
+    checkout.cash.appliedCents === 0 &&
+    checkout.cash.changeCents === 0
+  ) {
+    return checkout;
+  }
+  return Object.freeze({
+    ...checkout,
+    cash: Object.freeze({
+      tenderedCents: 0,
+      appliedCents: 0,
+      changeCents: 0,
+    }),
+  });
+}
 
 /**
  * Presenter 的公开状态仅保留运行时已经脱敏的本地标识与金额。
@@ -161,8 +265,12 @@ export class PaymentPresenter {
       allowedActions: Object.freeze({
         ...EMPTY_ALLOWED_ACTIONS,
         start: dependencies.entry !== null,
+        addCash:
+          dependencies.entry !== null &&
+          typeof dependencies.runtime.startCash === "function",
       }),
       tenderReversalRecovery: null,
+      checkout: emptyRegularCheckout(dependencies.entry?.lines),
       linkly: emptyLinklyState(),
     };
   }
@@ -194,6 +302,9 @@ export class PaymentPresenter {
           allowedActions: Object.freeze({
             ...EMPTY_ALLOWED_ACTIONS,
             start: this.dependencies.entry !== null,
+            addCash:
+              this.dependencies.entry !== null &&
+              typeof this.dependencies.runtime.startCash === "function",
           }),
         });
       }
@@ -237,6 +348,10 @@ export class PaymentPresenter {
       selectedMethod: method,
       fieldIssue: null,
       runtimeErrorCode: null,
+      checkout:
+        method === "cash"
+          ? this.state.checkout
+          : resetCashPresentation(this.state.checkout),
     });
     return true;
   }
@@ -287,7 +402,10 @@ export class PaymentPresenter {
       this.patch({ fieldIssue: "amount-invalid" });
       return Promise.resolve(false);
     }
-    if (amount.cents > this.state.remaining.cents) {
+    if (
+      method !== "cash" &&
+      amount.cents > this.state.remaining.cents
+    ) {
       this.patch({ fieldIssue: "amount-exceeds-remaining" });
       return Promise.resolve(false);
     }
@@ -303,21 +421,35 @@ export class PaymentPresenter {
         fieldIssue: null,
       });
       const actionId = this.dependencies.createActionId();
+      const appliedAmount =
+        method === "cash" && amount.cents > this.state.remaining.cents
+          ? copyMoney(this.state.remaining)
+          : amount;
       let snapshot: PaymentCheckoutPublicSnapshot | null;
       try {
         if (method === "cash") {
           const orderGuid = this.state.orderGuid;
           if (!orderGuid) {
-            this.patchIfCurrent(revision, {
-              fieldIssue: "checkout-unavailable",
+            const entry = this.dependencies.entry;
+            if (!entry || !this.dependencies.runtime.startCash) {
+              this.patchIfCurrent(revision, {
+                fieldIssue: "checkout-unavailable",
+              });
+              return false;
+            }
+            snapshot = await this.dependencies.runtime.startCash({
+              checkoutIntentId: entry.checkoutIntentId,
+              expectedCartRevision: entry.expectedCartRevision,
+              actionId,
+              amount,
             });
-            return false;
+          } else {
+            snapshot = await this.dependencies.runtime.addCash({
+              actionId,
+              orderGuid,
+              amount,
+            });
           }
-          snapshot = await this.dependencies.runtime.addCash({
-            actionId,
-            orderGuid,
-            amount,
-          });
         } else if (
           this.state.runtimeStatus === "draft-prepared" &&
           this.state.orderGuid
@@ -354,6 +486,24 @@ export class PaymentPresenter {
       }
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      if (method === "cash") {
+        const committedCents =
+          snapshot.tenders.find((tender) => tender.method === "cash")
+            ?.amount.cents ?? appliedAmount.cents;
+        this.patchIfCurrent(revision, {
+          checkout: Object.freeze({
+            ...this.state.checkout,
+            cash: Object.freeze({
+              tenderedCents: amount.cents,
+              appliedCents: committedCents,
+              changeCents: Math.max(
+                0,
+                amount.cents - committedCents,
+              ),
+            }),
+          }),
+        });
+      }
       return snapshot.status === "completed" || snapshot.status === "partial";
     });
   }
@@ -657,9 +807,14 @@ export function canSelectPaymentMethod(
 ): boolean {
   if (state.busy) return false;
   const activeMethods = state.tenders.map((tender) => tender.method);
+  if (state.checkout.flow !== "regular") {
+    if (!state.allowedActions.start || activeMethods.length > 0) return false;
+    return method === "cash"
+      ? state.allowedActions.addCash
+      : providerAvailable(state.providers, method);
+  }
   if (method === "cash") {
     return (
-      state.orderGuid !== null &&
       state.allowedActions.addCash &&
       !activeMethods.includes("cash")
     );

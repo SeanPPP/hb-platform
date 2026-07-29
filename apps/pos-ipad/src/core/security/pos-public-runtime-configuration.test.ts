@@ -65,6 +65,25 @@ test("局部保存不会覆盖另一组公开配置", async () => {
   });
 });
 
+test("已确认的 API 地址会被下一次启动创建的新配置仓库读取", async () => {
+  const secureStore = new InMemorySecureStore();
+  const trustedOrigins = ["http://192.168.31.246:5159"];
+  const currentLaunch = new PosPublicRuntimeConfigurationStore(
+    secureStore,
+    trustedOrigins,
+  );
+  await currentLaunch.saveApiBaseUrl("http://192.168.31.246:5159");
+
+  const nextLaunch = new PosPublicRuntimeConfigurationStore(
+    secureStore,
+    trustedOrigins,
+  );
+  assert.equal(
+    (await nextLaunch.load()).apiBaseUrl,
+    "http://192.168.31.246:5159",
+  );
+});
+
 test("损坏、越权字段或不安全远程 HTTP 配置失败关闭", async () => {
   const secureStore = new InMemorySecureStore();
   const subject = new PosPublicRuntimeConfigurationStore(

@@ -9,6 +9,7 @@ let mockScreenProps: any;
 let mockUnavailableProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
+const mockPrepareCreateCheckout = jest.fn();
 const mockDestroyPresenter = jest.fn();
 const mockSetOnline = jest.fn();
 const mockSetCreateVoucherReference = jest.fn();
@@ -20,6 +21,7 @@ const mockGetDeviceIdentity = jest.fn<
   }> | null>
 >();
 const mockRouterReplace = jest.fn();
+const mockRouterPush = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -28,7 +30,10 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({
+      push: mockRouterPush,
+      replace: mockRouterReplace,
+    }),
   };
 });
 
@@ -137,6 +142,11 @@ beforeEach(() => {
     setCreateVoucherReference: mockSetCreateVoucherReference,
     setRepaymentVoucherReference: mockSetRepaymentVoucherReference,
   });
+  mockPrepareCreateCheckout.mockReturnValue({
+    kind: "installment-create",
+    checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+    expectedCartRevision: 7,
+  });
   mockRuntime = readyRuntime();
 });
 
@@ -158,11 +168,64 @@ test("复核设备身份后零参数创建 code-only presenter，路由不注入
   expect(
     "setRepaymentVoucherReservationToken" in mockScreenProps.presenter,
   ).toBe(false);
+  expect(mockScreenProps.onStartCreate).toBeUndefined();
+  expect(mockScreenProps.onStartRepayment).toBeUndefined();
 
   mockScreenProps.onBack();
   expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("具备权限时新建和续付都跳转统一支付路由", async () => {
+  mockActiveCashier.permissions = [
+    "Permissions.PosTerminal.Installments.View",
+    "Permissions.PosTerminal.Installments.Create",
+    "Permissions.PosTerminal.Installments.AddRepayment",
+  ];
+  const screen = await render(<InstallmentsRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("installments-screen")).toBeTruthy();
+  });
+  mockScreenProps.onStartCreate();
+  expect(mockPrepareCreateCheckout).toHaveBeenCalledTimes(1);
+  expect(mockRouterPush).toHaveBeenNthCalledWith(1, {
+    pathname: "/payment",
+    params: {
+      flow: "installment-create",
+      checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+      revision: "7",
+    },
+  });
+
+  mockScreenProps.onStartRepayment(
+    "223e4567-e89b-42d3-a456-426614174000",
+  );
+  expect(mockRouterPush).toHaveBeenNthCalledWith(2, {
+    pathname: "/payment",
+    params: {
+      flow: "installment-repayment",
+      installmentGuid: "223e4567-e89b-42d3-a456-426614174000",
+    },
+  });
+  await screen.unmount();
+});
+
+test("分期跳转入口继续执行权限和 UUID 门禁", async () => {
+  mockActiveCashier.permissions = [
+    "Permissions.PosTerminal.Installments.View",
+    "Permissions.PosTerminal.Installments.AddRepayment",
+  ];
+  const screen = await render(<InstallmentsRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("installments-screen")).toBeTruthy();
+  });
+  expect(mockScreenProps.onStartCreate).toBeUndefined();
+  mockScreenProps.onStartRepayment("../../payment");
+  expect(mockRouterPush).not.toHaveBeenCalled();
+  await screen.unmount();
 });
 
 test("离线授权设备可浏览本地分期，但 presenter 收到离线状态", async () => {
@@ -240,7 +303,12 @@ function readyRuntime(
   return {
     services: {
       deviceSession: { getDeviceIdentity: mockGetDeviceIdentity },
-      installments: { createPresenter: mockCreatePresenter },
+      installments: {
+        createPresenter: mockCreatePresenter,
+        prepareCreateCheckout: mockPrepareCreateCheckout,
+        createCheckoutPresenter: jest.fn(),
+        hasRecoveryRequired: jest.fn(async () => false),
+      },
     },
     state: {
       backend: "reachable",

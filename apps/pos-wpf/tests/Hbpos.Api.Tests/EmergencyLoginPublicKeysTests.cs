@@ -143,6 +143,27 @@ public sealed class EmergencyLoginPublicKeysTests
         var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
         var response = Assert.IsType<EmergencyLoginPublicKeyAckResponse>(conflict.Value);
         Assert.Equal(8, response.Version);
+        Assert.Equal(
+            DateTime.Parse("2026-07-15T02:00:00Z").ToUniversalTime(),
+            response.ServerTimeUtc);
+    }
+
+    [Fact]
+    public async Task Ack_success_returns_current_server_time_anchor()
+    {
+        var service = new StubService(CreatePackage(7));
+        var controller = CreateController(service);
+
+        var result = await controller.Acknowledge(
+            new EmergencyLoginPublicKeyAckRequest(7),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<EmergencyLoginPublicKeyAckResponse>(ok.Value);
+        Assert.Equal(7, response.Version);
+        Assert.Equal(
+            DateTime.Parse("2026-07-15T02:00:00Z").ToUniversalTime(),
+            response.ServerTimeUtc);
     }
 
     [Fact]
@@ -371,7 +392,9 @@ public sealed class EmergencyLoginPublicKeysTests
     private static EmergencyLoginPublicKeysController CreateController(
         IEmergencyLoginPublicKeyDistributionService service)
     {
-        var controller = new EmergencyLoginPublicKeysController(service)
+        var controller = new EmergencyLoginPublicKeysController(
+            service,
+            new FixedTimeProvider())
         {
             ControllerContext = new ControllerContext
             {

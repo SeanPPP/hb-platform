@@ -83,6 +83,55 @@ test("银行卡 provider 必须显式且唯一配置；缺失或多选均在持�
   }
 });
 
+test("新版 action 已冻结 Linkly 时，重启后配置切为 Square 仍绑定并执行原 adapter", async () => {
+  const store = new MemoryAttemptStore(
+    paymentAction("card", "linkly-cloud"),
+  );
+  const square = new ScriptedProvider("square");
+  const linkly = new ScriptedProvider("linkly-cloud");
+  linkly.submitResults.push(
+    approvedCardResult(
+      "linkly-cloud",
+      { sessionId: "SESSION-PROTECTED", txnRef: "TXN-LINKLY" },
+      cardEvidence("linkly-cloud", "purchase", 2_500),
+    ),
+  );
+  const adapter = createAdapter({
+    store,
+    configuredCardProviders: ["square"],
+    providers: new ProviderRegistry(square, linkly),
+  });
+
+  assert.equal((await adapter.beginOrRecover(ACTION_ID)).kind, "approved");
+  assert.equal(square.calls.length, 0);
+  assert.equal(linkly.calls.length, 1);
+  assert.equal(
+    store.plans.get(ACTION_ID)?.attempts[0]?.attempt.provider,
+    "linkly-cloud",
+  );
+});
+
+test("新版 action 冻结的 card provider adapter 缺失时失败关闭且不绑定 plan", async () => {
+  const store = new MemoryAttemptStore(
+    paymentAction("card", "linkly-cloud"),
+  );
+  const square = new ScriptedProvider("square");
+  const adapter = createAdapter({
+    store,
+    configuredCardProviders: ["square"],
+    providers: new ProviderRegistry(square),
+  });
+
+  await assert.rejects(
+    () => adapter.beginOrRecover(ACTION_ID),
+    (error) =>
+      error instanceof InstallmentPaymentAdapterError &&
+      error.code === "INSTALLMENT_CARD_PROVIDER_SELECTION_INVALID",
+  );
+  assert.equal(store.plans.size, 0);
+  assert.equal(square.calls.length, 0);
+});
+
 test("Square 扣款在 Submitted CAS 后执行，批准证据加密写入后映射 WPF payment command", async () => {
   const store = new MemoryAttemptStore(paymentAction("card"));
   const square = new ScriptedProvider("square");
@@ -772,6 +821,7 @@ class StableIds {
 
 function paymentAction(
   method: "cash" | "card" | "voucher",
+  cardProvider?: "square" | "linkly-cloud",
 ): PersistedInstallmentAction {
   return Object.freeze({
     action: Object.freeze({
@@ -789,6 +839,11 @@ function paymentAction(
       deviceCode: DEVICE_CODE,
       cashierId: "cashier-1",
       cashierName: "Alice",
+      ...(cardProvider
+        ? {
+            cardProvider,
+          }
+        : {}),
     }),
     deviceCode: DEVICE_CODE,
     intentFingerprint: `{"method":"${method}"}`,

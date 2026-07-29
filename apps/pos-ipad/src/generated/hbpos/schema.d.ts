@@ -300,6 +300,8 @@ export interface paths {
                     since?: string;
                     cursor?: string;
                     pageSize?: number;
+                    catalogVersion?: string;
+                    checksumVersion?: number;
                 };
                 header?: never;
                 path?: never;

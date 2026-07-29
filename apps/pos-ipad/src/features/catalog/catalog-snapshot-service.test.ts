@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CatalogSnapshotFailure,
   CatalogSnapshotService,
   mapCatalogLookupToStagedItem,
   type CatalogSnapshotStoragePort,
@@ -12,6 +13,8 @@ import type {
   CatalogLookupItem,
   VerifiedCatalogSyncPage,
 } from "./hbpos-catalog-remote";
+
+import { HbposApiError } from "@/core/api/hbpos-api";
 
 const item = (
   lookupCode: string,
@@ -61,6 +64,7 @@ const page = (input: Readonly<{
 class MemoryCatalogStorage implements CatalogSnapshotStoragePort {
   public readonly active = new Map<string, readonly CatalogStagedItem[]>();
   public readonly staged = new Map<string, readonly CatalogStagedItem[]>();
+  public readonly appendBatchSizes: number[] = [];
   public activated: string | null = null;
 
   public async beginStaging(snapshot: { snapshotId: string }): Promise<void> {
@@ -68,6 +72,7 @@ class MemoryCatalogStorage implements CatalogSnapshotStoragePort {
   }
 
   public async appendPage(snapshotId: string, items: readonly CatalogStagedItem[]): Promise<void> {
+    this.appendBatchSizes.push(items.length);
     this.staged.set(snapshotId, [...(this.staged.get(snapshotId) ?? []), ...items]);
   }
 
@@ -168,6 +173,118 @@ test("固定 lookup 快照分页下载，显式转整数分后才原子切换 ac
   );
 });
 
+test("第一页省略版本，后续分页固定使用首包 catalogVersion", async () => {
+  const calls: Readonly<{
+    storeCode: string;
+    cursor: string | null;
+    pageSize: number;
+    catalogVersion?: string;
+  }>[] = [];
+  const pages = [
+    page({
+      cursor: null,
+      nextCursor: "c2",
+      items: [item("A")],
+      totalCount: 2,
+      catalogVersion: "catalog-v1:pinned",
+    }),
+    page({
+      cursor: "c2",
+      nextCursor: null,
+      items: [item("B")],
+      totalCount: 2,
+      catalogVersion: "catalog-v1:pinned",
+    }),
+  ] as const;
+  const service = new CatalogSnapshotService(
+    new MemoryCatalogStorage(),
+    {
+      async getPage(input) {
+        calls.push(input);
+        const result = pages.find((candidate) => candidate.cursor === input.cursor);
+        if (!result) throw new Error("unexpected cursor");
+        return result;
+      },
+    },
+    { createSnapshotId: () => "pinned-version" },
+  );
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal("catalogVersion" in (calls[0] ?? {}), false);
+  assert.equal(calls[1]?.catalogVersion, "catalog-v1:pinned");
+});
+
+test("按 WPF 的 5000 条网络页下载，整页验证后最多每 500 条写入并报告真实页数与耗时", async () => {
+  const storage = new MemoryCatalogStorage();
+  const requestedPages: Parameters<CatalogSyncRemotePort["getPage"]>[0][] = [];
+  const controller = new AbortController();
+  let nowMilliseconds = 1_000;
+  const items = Array.from({ length: 1_201 }, (_, index) => item(`ITEM-${index}`));
+  const events: {
+    step: string;
+    percent: number;
+    elapsedMilliseconds?: number;
+    completedItemCount?: number;
+    completedPageCount?: number;
+    totalPageCount?: number;
+  }[] = [];
+  const service = new CatalogSnapshotService(
+    storage,
+    {
+      async getPage(input) {
+        requestedPages.push(input);
+        nowMilliseconds += 250;
+        return page({
+          cursor: null,
+          nextCursor: null,
+          items,
+          totalCount: items.length,
+        });
+      },
+    },
+    {
+      createSnapshotId: () => "wpf-page-size",
+      nowMilliseconds: () => nowMilliseconds,
+    },
+  );
+
+  await service.downloadAndActivate({
+    storeCode: "S1",
+    signal: controller.signal,
+    onProgress: (event) => events.push(event),
+  });
+
+  assert.equal(requestedPages.length, 1);
+  assert.equal(requestedPages[0]?.pageSize, 5_000);
+  assert.equal(requestedPages[0]?.signal, controller.signal);
+  assert.deepEqual(storage.appendBatchSizes, [500, 500, 201]);
+  const productEvents = events.filter((event) => event.step === "products");
+  assert.deepEqual(
+    productEvents.map((event) => ({
+      percent: event.percent,
+      completedItemCount: event.completedItemCount,
+      completedPageCount: event.completedPageCount,
+      totalPageCount: event.totalPageCount,
+    })),
+    [
+      { percent: 0, completedItemCount: 0, completedPageCount: 0, totalPageCount: 1 },
+      { percent: 41, completedItemCount: 500, completedPageCount: 0, totalPageCount: 1 },
+      { percent: 83, completedItemCount: 1_000, completedPageCount: 0, totalPageCount: 1 },
+      { percent: 100, completedItemCount: 1_201, completedPageCount: 1, totalPageCount: 1 },
+    ],
+  );
+  assert.equal(events[0]?.step, "prepare");
+  assert.equal(events[0]?.percent, 0);
+  assert.equal(events[0]?.elapsedMilliseconds, 0);
+  assert.equal(
+    events.every((event, index) =>
+      index === 0
+      || (event.elapsedMilliseconds ?? 0) >= (events[index - 1]?.elapsedMilliseconds ?? 0)),
+    true,
+  );
+});
+
 test("空目录在验证并写入暂存后将商品步骤真实推进到百分之百", async () => {
   const events: { step: string; percent: number }[] = [];
   const service = new CatalogSnapshotService(
@@ -208,7 +325,7 @@ test("远端目录版本在开始暂存前严格拒绝空白、控制字符与�
 
     await assert.rejects(
       () => service.downloadAndActivate({ storeCode: "S1" }),
-      /snapshot version|catalog/i,
+      catalogError("CATALOG_SNAPSHOT_VERSION_INVALID"),
     );
     assert.equal(storage.staged.size, 0);
   }
@@ -243,6 +360,31 @@ test("未闭合分页即使已达到 total 也不报告商品步骤百分之百"
   );
 });
 
+test("最终页数量与服务端 total 不闭合时不报告商品步骤百分之百", async () => {
+  const productPercents: number[] = [];
+  const service = new CatalogSnapshotService(
+    new MemoryCatalogStorage(),
+    remote([page({
+      cursor: null,
+      nextCursor: null,
+      items: [item("A")],
+      totalCount: 2,
+    })]),
+    { createSnapshotId: () => "mismatched-final-count" },
+  );
+
+  await assert.rejects(
+    () => service.downloadAndActivate({
+      storeCode: "S1",
+      onProgress: (event) => {
+        if (event.step === "products") productPercents.push(event.percent);
+      },
+    }),
+    catalogError("CATALOG_ITEM_COUNT_MISMATCH"),
+  );
+  assert.deepEqual(productPercents, [0]);
+});
+
 test("取消在暂存后只清理 staging，既有 active 目录保持可用", async () => {
   const controller = new AbortController();
   const storage = new MemoryCatalogStorage();
@@ -265,6 +407,69 @@ test("取消在暂存后只清理 staging，既有 active 目录保持可用", a
   );
   assert.equal(storage.active.has("old"), true);
   assert.equal(storage.staged.has("cancelled"), false);
+});
+
+test("同一取消信号穿透所有分页请求，在途取消后清理 staging 并释放串行队列", async () => {
+  const controller = new AbortController();
+  const secondPageStarted = deferred<void>();
+  const capturedSignals: (AbortSignal | undefined)[] = [];
+  let calls = 0;
+  let nextId = 0;
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("old", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  const service = new CatalogSnapshotService(
+    storage,
+    {
+      async getPage(input) {
+        calls += 1;
+        capturedSignals.push(input.signal);
+        if (calls === 1) {
+          return page({
+            cursor: null,
+            nextCursor: "c2",
+            items: [item("A")],
+            totalCount: 2,
+          });
+        }
+        if (calls === 2) {
+          secondPageStarted.resolve();
+          return new Promise<VerifiedCatalogSyncPage>((_resolve, reject) => {
+            input.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("Catalog request cancelled.")),
+              { once: true },
+            );
+          });
+        }
+        return page({
+          cursor: null,
+          nextCursor: null,
+          items: [item("RECOVERED")],
+          totalCount: 1,
+        });
+      },
+    },
+    { createSnapshotId: () => `cancel-in-flight-${++nextId}` },
+  );
+
+  const cancelled = service.downloadAndActivate({
+    storeCode: "S1",
+    signal: controller.signal,
+  });
+  await secondPageStarted.promise;
+  controller.abort();
+  await assert.rejects(() => cancelled, /cancel/i);
+
+  assert.deepEqual(capturedSignals.slice(0, 2), [
+    controller.signal,
+    controller.signal,
+  ]);
+  assert.equal(storage.active.has("old"), true);
+  assert.equal(storage.staged.has("cancel-in-flight-1"), false);
+
+  const recovered = await service.downloadAndActivate({ storeCode: "S1" });
+  assert.equal(recovered.snapshotId, "cancel-in-flight-2");
+  assert.equal(storage.activated, "cancel-in-flight-2");
 });
 
 test("beginStaging 成功瞬间取消仍会清理 staging", async () => {
@@ -385,28 +590,166 @@ test("后置回调失败不会把已提交 active 当作切换前失败清理", 
   );
 });
 
-test("分页总数、版本、门店或 continuation 不一致时保留旧 active 并清理 staging", async () => {
-  const cases: readonly VerifiedCatalogSyncPage[][] = [
-    [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 2 })],
-    [
-      page({ cursor: null, nextCursor: "c2", items: [item("A")], totalCount: 2 }),
-      page({ cursor: "c2", nextCursor: null, items: [item("B")], totalCount: 2, catalogVersion: "catalog-v3" }),
-    ],
-    [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, storeCode: "OTHER" })],
-    [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, hasMore: true })],
+test("分页总数、版本、门店或 continuation 不一致时返回稳定校验码并清理 staging", async () => {
+  const cases: readonly Readonly<{
+    pages: readonly VerifiedCatalogSyncPage[];
+    code: string;
+  }>[] = [
+    {
+      pages: [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 2 })],
+      code: "CATALOG_ITEM_COUNT_MISMATCH",
+    },
+    {
+      pages: [
+        page({ cursor: null, nextCursor: "c2", items: [item("A")], totalCount: 2 }),
+        page({ cursor: "c2", nextCursor: null, items: [item("B")], totalCount: 2, catalogVersion: "catalog-v3" }),
+      ],
+      code: "CATALOG_SNAPSHOT_VERSION_CHANGED",
+    },
+    {
+      pages: [
+        page({ cursor: null, nextCursor: "c2", items: [item("A")], totalCount: 2 }),
+        page({ cursor: "c2", nextCursor: null, items: [item("B")], totalCount: 3 }),
+      ],
+      code: "CATALOG_SNAPSHOT_TOTAL_CHANGED",
+    },
+    {
+      pages: [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, storeCode: "OTHER" })],
+      code: "CATALOG_STORE_MISMATCH",
+    },
+    {
+      pages: [page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, hasMore: true })],
+      code: "CATALOG_PAGINATION_INVALID",
+    },
+    {
+      pages: [
+        page({ cursor: null, nextCursor: "c2", items: [item("A")], totalCount: 3 }),
+        page({ cursor: "c2", nextCursor: "c2", items: [item("B")], totalCount: 3 }),
+      ],
+      code: "CATALOG_CURSOR_REPEATED",
+    },
   ];
 
-  for (const [index, pages] of cases.entries()) {
+  for (const [index, entry] of cases.entries()) {
     const storage = new MemoryCatalogStorage();
     storage.active.set("old", [mapCatalogLookupToStagedItem(item("OLD"))]);
-    const service = new CatalogSnapshotService(storage, remote(pages), {
+    const service = new CatalogSnapshotService(storage, remote(entry.pages), {
       createSnapshotId: () => `failed-${index}`,
     });
 
-    await assert.rejects(() => service.downloadAndActivate({ storeCode: "S1" }));
+    await assert.rejects(
+      () => service.downloadAndActivate({ storeCode: "S1" }),
+      catalogError(entry.code),
+    );
     assert.equal(storage.active.has("old"), true);
     assert.equal(storage.staged.has(`failed-${index}`), false);
   }
+});
+
+test("服务端页 cursor 与请求不一致时返回稳定校验码且不开始 staging", async () => {
+  const storage = new MemoryCatalogStorage();
+  const service = new CatalogSnapshotService(
+    storage,
+    {
+      async getPage() {
+        return page({
+          cursor: "unexpected",
+          nextCursor: null,
+          items: [item("A")],
+          totalCount: 1,
+        });
+      },
+    },
+    { createSnapshotId: () => "cursor-mismatch" },
+  );
+
+  await assert.rejects(
+    () => service.downloadAndActivate({ storeCode: "S1" }),
+    catalogError("CATALOG_CURSOR_MISMATCH"),
+  );
+  assert.equal(storage.staged.size, 0);
+});
+
+test("目录校验异常携带安全分页上下文且仍清理 staging", async () => {
+  const storage = new MemoryCatalogStorage();
+  const service = new CatalogSnapshotService(
+    storage,
+    remote([
+      page({
+        cursor: null,
+        nextCursor: "c2",
+        items: [item("A")],
+        totalCount: 2,
+      }),
+      page({
+        cursor: "c2",
+        nextCursor: null,
+        items: [item("B")],
+        totalCount: 2,
+        catalogVersion: "catalog-v3",
+      }),
+    ]),
+    { createSnapshotId: () => "diagnostic" },
+  );
+
+  await assert.rejects(
+    () => service.downloadAndActivate({ storeCode: "S1" }),
+    (error: unknown) => {
+      assert.ok(error instanceof CatalogSnapshotFailure);
+      assert.deepEqual(error.context, {
+        code: "CATALOG_SNAPSHOT_VERSION_CHANGED",
+        pageNumber: 2,
+        completedItemCount: 1,
+        totalItemCount: 2,
+      });
+      return true;
+    },
+  );
+  assert.equal(storage.staged.has("diagnostic"), false);
+});
+
+test("固定快照过期保留服务端精确错误码、HTTP 状态和已完成位置", async () => {
+  const storage = new MemoryCatalogStorage();
+  let requestCount = 0;
+  const service = new CatalogSnapshotService(
+    storage,
+    {
+      async getPage() {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return page({
+            cursor: null,
+            nextCursor: "c2",
+            items: [item("A")],
+            totalCount: 2,
+          });
+        }
+        throw new HbposApiError("response body must not enter diagnostics", {
+          kind: "envelope",
+          code: "CATALOG_SNAPSHOT_EXPIRED",
+          status: 409,
+        });
+      },
+    },
+    { createSnapshotId: () => "expired-diagnostic" },
+  );
+
+  await assert.rejects(
+    () => service.downloadAndActivate({ storeCode: "S1" }),
+    (error: unknown) => {
+      assert.ok(error instanceof CatalogSnapshotFailure);
+      assert.deepEqual(error.context, {
+        code: "CATALOG_SNAPSHOT_EXPIRED",
+        pageNumber: 2,
+        completedItemCount: 1,
+        totalItemCount: 2,
+        httpStatus: 409,
+      });
+      assert.equal(error.message.includes("response body"), false);
+      return true;
+    },
+  );
+  assert.equal(storage.staged.has("expired-diagnostic"), false);
 });
 
 class RecordingActivationStorage extends MemoryCatalogStorage {
@@ -464,7 +807,7 @@ test("同商品可保留多条售卖码，但重复规范化 lookup 在落库前
 
   await assert.rejects(
     () => service.downloadAndActivate({ storeCode: "S1" }),
-    /duplicate lookup code/i,
+    catalogError("CATALOG_DUPLICATE_LOOKUP"),
   );
   assert.equal(storage.active.has("old"), true);
 });
@@ -472,10 +815,17 @@ test("同商品可保留多条售卖码，但重复规范化 lookup 在落库前
 test("超过两位小数或超出安全整数范围的远端售价不会进入 SQLCipher", () => {
   assert.throws(
     () => mapCatalogLookupToStagedItem(item("A", { retailPrice: 1.001 })),
-    /integer cents/i,
+    catalogError("CATALOG_PRICE_INVALID"),
   );
   assert.throws(
     () => mapCatalogLookupToStagedItem(item("B", { retailPrice: Number.MAX_SAFE_INTEGER })),
-    /integer cents/i,
+    catalogError("CATALOG_PRICE_INVALID"),
   );
 });
+
+function catalogError(code: string): (error: unknown) => boolean {
+  return (error: unknown) =>
+    error instanceof HbposApiError
+    && error.kind === "envelope"
+    && error.code === code;
+}

@@ -24,6 +24,26 @@ jest.doMock("expo-camera", () => {
 const { CameraScannerModal } = require("./camera-scanner-modal") as typeof import("./camera-scanner-modal");
 type CameraScannerPort = import("./camera-scanner-modal").CameraScannerPort;
 
+test("相机弹窗只声明应用支持的横屏方向", async () => {
+  const rendered = await render(
+    <CameraScannerModal
+      context="product"
+      onClose={jest.fn()}
+      onScan={jest.fn()}
+      scanner={new CameraScannerPortStub()}
+      visible
+    />,
+  );
+
+  expect(rendered.toJSON()).toMatchObject({
+    props: {
+      supportedOrientations: ["landscape-left", "landscape-right"],
+    },
+    type: "Modal",
+  });
+  await rendered.unmount();
+});
+
 test("只交付一次规范化条码，并立即关闭相机会话", async () => {
   const scanner = new CameraScannerPortStub();
   const onScan = jest.fn();

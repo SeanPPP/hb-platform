@@ -2769,6 +2769,8 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
       actionId: "cash-action",
       orderGuid: "order-mixed",
       amount: { currency: "AUD", cents: 400 } as const,
+      tenderedAmount: { currency: "AUD", cents: 500 } as const,
+      change: { currency: "AUD", cents: 100 } as const,
     };
     const [one, two] = await Promise.all([
       store.appendCashTenderAtomically(command),
@@ -2800,8 +2802,35 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
       () => store.appendCashTenderAtomically({
         ...command,
         amount: { currency: "AUD", cents: 401 },
+        change: { currency: "AUD", cents: 99 },
+      }),
+      /different immutable content|tender/i,
+    );
+    await assert.rejects(
+      () => store.appendCashTenderAtomically({
+        ...command,
+        tenderedAmount: { currency: "AUD", cents: 600 },
+        change: { currency: "AUD", cents: 200 },
       }),
       /different immutable content/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT tendered_cents AS count
+         FROM mixed_cash_tender_actions
+         WHERE order_guid = 'order-mixed' AND action_id = 'cash-action'`,
+      ),
+      500,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT change_cents AS count
+         FROM mixed_cash_tender_actions
+         WHERE order_guid = 'order-mixed' AND action_id = 'cash-action'`,
+      ),
+      100,
     );
 
     const reversed = await store.reverseTender({
@@ -2909,6 +2938,82 @@ test("真实 SQLite：reversal action 以 order+action 查询，两订单同 act
       ),
       0,
     );
+  });
+});
+
+test("真实 SQLite：M23 旧现金 action 升级 M24 后按实收等于入账、找零为零重放", async () => {
+  await withDatabase("mixed-cash-m24-upgrade", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter(
+        (migration) => migration.version <= 23,
+      ),
+    );
+    await insertOrder(connection, {
+      orderGuid: "order-mixed-legacy",
+      sequence: 1,
+      storeCode: "S-MIX",
+      deviceCode: "D-MIX",
+      cashierId: "C-MIX",
+      amountCents: 1_000,
+      state: "Completing",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await connection.run(
+      `INSERT INTO order_tenders (
+        tender_guid, order_guid, method, amount_cents,
+        payment_attempt_id, created_at_iso
+      ) VALUES ('tender-mixed-legacy', 'order-mixed-legacy',
+        'cash', 400, NULL, ?)`,
+      [T0],
+    );
+    await connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid,
+        correlation_id, payload_json, uploaded_at_iso
+      ) VALUES ('audit-mixed-legacy', 'MIXED_CASH_TENDER_APPENDED',
+        ?, 'order-mixed-legacy', 'cash-action-legacy',
+        '{"action":"mixed-cash-tender-appended","amountCents":400,"tenderGuid":"tender-mixed-legacy"}',
+        NULL)`,
+      [T0],
+    );
+    await connection.run(
+      `INSERT INTO mixed_cash_tender_actions (
+        action_id, order_guid, amount_cents, tender_guid,
+        audit_event_id, created_at_iso
+      ) VALUES ('cash-action-legacy', 'order-mixed-legacy', 400,
+        'tender-mixed-legacy', 'audit-mixed-legacy', ?)`,
+      [T0],
+    );
+
+    await applyMigrations(connection, () => T1);
+    const upgraded = await connection.getFirst<{
+      tendered_cents: unknown;
+      change_cents: unknown;
+    }>(
+      `SELECT tendered_cents, change_cents
+       FROM mixed_cash_tender_actions
+       WHERE action_id = 'cash-action-legacy'`,
+    );
+    assert.equal(upgraded?.tendered_cents, null);
+    assert.equal(upgraded?.change_cents, null);
+
+    const store = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: () => "unused-tender",
+        createAuditEventId: () => "unused-audit",
+      },
+      () => T1,
+    );
+    const replay = await store.appendCashTenderAtomically({
+      actionId: "cash-action-legacy",
+      orderGuid: "order-mixed-legacy",
+      amount: { currency: "AUD", cents: 400 },
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.tenderGuid, "tender-mixed-legacy");
   });
 });
 
