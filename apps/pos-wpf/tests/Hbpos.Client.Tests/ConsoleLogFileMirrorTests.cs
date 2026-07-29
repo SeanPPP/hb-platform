@@ -6,6 +6,69 @@ namespace Hbpos.Client.Tests;
 public sealed class ConsoleLogFileMirrorTests
 {
     [Fact]
+    public async Task File_mirror_continues_after_one_write_failure_and_flush_marker_completes()
+    {
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic;
+        var workerType = typeof(ConsoleLog).GetNestedType(
+            "FileLogWorker",
+            System.Reflection.BindingFlags.NonPublic)!;
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"hbpos-file-log-recovery-{Guid.NewGuid():N}");
+        var blockedDirectory = Path.Combine(tempRoot, "blocked");
+        var logPath = Path.Combine(blockedDirectory, "client.log");
+        var droppedCount = 0;
+        object? worker = null;
+
+        try
+        {
+            Directory.CreateDirectory(tempRoot);
+            await File.WriteAllTextAsync(blockedDirectory, "blocks directory creation");
+            worker = Activator.CreateInstance(
+                workerType,
+                flags,
+                binder: null,
+                args: [logPath, (Action)(() => Interlocked.Increment(ref droppedCount))],
+                culture: null)!;
+            var tryWrite = workerType.GetMethod("TryWrite", flags)!;
+            var flushAsync = workerType.GetMethod("FlushAsync", flags)!;
+
+            Assert.True((bool)tryWrite.Invoke(worker, ["first"])!);
+            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
+            }
+            Assert.Equal(1, Volatile.Read(ref droppedCount));
+
+            File.Delete(blockedDirectory);
+            Directory.CreateDirectory(blockedDirectory);
+            Assert.True((bool)tryWrite.Invoke(worker, ["second"])!);
+            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
+            }
+
+            Assert.Equal(["second"], await File.ReadAllLinesAsync(logPath));
+        }
+        finally
+        {
+            if (worker is not null)
+            {
+                var stopAsync = workerType.GetMethod("StopAsync", flags)!;
+                await (Task)stopAsync.Invoke(worker, [CancellationToken.None])!;
+            }
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task File_mirror_does_not_recreate_worker_after_stop_wins_the_gate()
     {
         const System.Reflection.BindingFlags flags =

@@ -214,7 +214,6 @@ internal static class ConsoleLog
         private readonly string _logPath;
         private readonly Action _recordDrop;
         private readonly Task _consumerTask;
-        private int _faulted;
         private int _stopped;
 
         public FileLogWorker(string logPath, Action recordDrop)
@@ -226,7 +225,7 @@ internal static class ConsoleLog
 
         public bool TryWrite(string line)
         {
-            if (Volatile.Read(ref _faulted) != 0 || Volatile.Read(ref _stopped) != 0)
+            if (Volatile.Read(ref _stopped) != 0)
             {
                 return false;
             }
@@ -236,7 +235,7 @@ internal static class ConsoleLog
 
         public async Task FlushAsync(CancellationToken cancellationToken)
         {
-            if (Volatile.Read(ref _faulted) != 0 || Volatile.Read(ref _stopped) != 0)
+            if (Volatile.Read(ref _stopped) != 0)
             {
                 return;
             }
@@ -275,12 +274,6 @@ internal static class ConsoleLog
                         continue;
                     }
 
-                    if (Volatile.Read(ref _faulted) != 0)
-                    {
-                        _recordDrop();
-                        continue;
-                    }
-
                     try
                     {
                         var logDirectory = Path.GetDirectoryName(_logPath);
@@ -293,8 +286,7 @@ internal static class ConsoleLog
                     }
                     catch (Exception)
                     {
-                        // 文件镜像失败后停止写入，避免错误日志反向递归或阻塞收银线程。
-                        Volatile.Write(ref _faulted, 1);
+                        // 单条文件镜像失败只丢弃当前项，后续日志和 flush 标记仍继续消费。
                         _recordDrop();
                     }
                 }
