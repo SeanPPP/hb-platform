@@ -46,6 +46,7 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
         var deviceCode = User?.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
         var storeCode = User?.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
         var hardwareId = User?.FindFirstValue(DeviceAuthConstants.HardwareIdClaim);
+        var deviceSystem = User?.FindFirstValue(DeviceAuthConstants.DeviceSystemClaim);
         if (string.IsNullOrWhiteSpace(deviceCode)
             || string.IsNullOrWhiteSpace(storeCode)
             || string.IsNullOrWhiteSpace(hardwareId))
@@ -57,7 +58,7 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
 
         var response = await deviceService.ReregisterAsync(
             request,
-            new DeviceReregisterContext(deviceCode, storeCode, hardwareId),
+            new DeviceReregisterContext(deviceCode, storeCode, hardwareId, deviceSystem ?? DeviceSystems.Windows),
             cancellationToken);
         return Ok(ApiResult<DeviceReregisterResponse>.Ok(response));
     }

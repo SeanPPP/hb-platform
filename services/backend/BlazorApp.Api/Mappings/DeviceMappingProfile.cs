@@ -19,7 +19,13 @@ namespace BlazorApp.Api.Mappings
                 .ForMember(dest => dest.AuthCode, opt => opt.MapFrom(src => src.设备授权码))
                 .ForMember(dest => dest.Status, opt => opt.MapFrom(src => src.设备状态))
                 .ForMember(dest => dest.DeviceType, opt => opt.MapFrom(src => src.设备类型))
-                .ForMember(dest => dest.DeviceSystem, opt => opt.MapFrom(src => src.设备系统))
+                .ForMember(
+                    dest => dest.DeviceSystem,
+                    opt =>
+                        opt.MapFrom(src =>
+                            DeviceRegistrationDeviceSystems.NormalizeForDisplay(src.设备系统)
+                        )
+                )
                 .ForMember(dest => dest.StoreCode, opt => opt.MapFrom(src => src.分店代码))
                 .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => src.创建时间))
                 .ForMember(dest => dest.UpdatedAt, opt => opt.MapFrom(src => src.最后修改时间 ?? src.创建时间));
@@ -38,7 +44,13 @@ namespace BlazorApp.Api.Mappings
                 .ForMember(dest => dest.HardwareId, opt => opt.MapFrom(src => src.设备硬件识别码))
                 .ForMember(dest => dest.SystemDeviceNumber, opt => opt.MapFrom(src => src.系统设备编号))
                 .ForMember(dest => dest.DeviceType, opt => opt.MapFrom(src => src.设备类型))
-                .ForMember(dest => dest.DeviceSystem, opt => opt.MapFrom(src => src.设备系统))
+                .ForMember(
+                    dest => dest.DeviceSystem,
+                    opt =>
+                        opt.MapFrom(src =>
+                            DeviceRegistrationDeviceSystems.NormalizeForDisplay(src.设备系统)
+                        )
+                )
                 .ForMember(dest => dest.StoreCode, opt => opt.MapFrom(src => src.分店代码))
                 .ForMember(dest => dest.Status, opt => opt.MapFrom(src => src.设备状态))
                 .ForMember(dest => dest.StatusDescription, opt => opt.MapFrom(src => GetStatusDescription(src.设备状态)))

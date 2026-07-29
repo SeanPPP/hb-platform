@@ -80,7 +80,8 @@ public interface IDeviceRegistrationRepository
 public sealed record DeviceReregisterContext(
     string DeviceCode,
     string StoreCode,
-    string HardwareId);
+    string HardwareId,
+    string DeviceSystem = DeviceSystems.Windows);
 
 public sealed record DeviceStoreInfo(
     string StoreCode,
@@ -99,6 +100,8 @@ public sealed class DeviceRegistrationRecord
     public int DeviceStatus { get; set; }
 
     public string? AuthorizationCode { get; set; }
+
+    public string? DeviceSystem { get; set; }
 }
 
 public sealed class DeviceRegistrationDisableRequest
@@ -152,6 +155,8 @@ public sealed class DeviceRegistrationResetForReregisterRequest
     public string AuthorizationCode { get; init; } = string.Empty;
 
     public string RemarkSuffix { get; init; } = string.Empty;
+
+    public string DeviceSystem { get; init; } = DeviceSystems.Windows;
 
     public DateTime ModifiedAt { get; init; }
 
@@ -208,6 +213,10 @@ public sealed class DeviceService : IDeviceService
         var storeCode = Normalize(request.StoreCode);
         var hardwareId = Normalize(request.HardwareId);
         var terminalName = Normalize(request.TerminalName);
+        if (!DeviceSystems.TryNormalize(request.DeviceSystem, out var deviceSystem))
+        {
+            return CreateRegisterResponse(string.Empty, storeCode, string.Empty, UnregisteredStatus, "deviceSystem is invalid");
+        }
 
         if (string.IsNullOrEmpty(storeCode))
         {
@@ -253,6 +262,33 @@ public sealed class DeviceService : IDeviceService
 
                 var targetRegistration = registrations.FirstOrDefault(registration =>
                     string.Equals(registration.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+
+                var targetDeviceSystem = deviceSystem;
+                if (targetRegistration is not null)
+                {
+                    if (!DeviceSystems.TryNormalize(targetRegistration.DeviceSystem, out targetDeviceSystem))
+                    {
+                        response = CreateRegisterResponse(
+                            targetRegistration.DeviceCode ?? string.Empty,
+                            storeCode,
+                            store.StoreName,
+                            targetRegistration.DeviceStatus,
+                            "Registered device system is invalid.");
+                        return;
+                    }
+
+                    // 关键逻辑：匿名客户端只能重用同平台记录，不能把 pending/disabled/unregistered 跨平台覆盖。
+                    if (!string.Equals(targetDeviceSystem, deviceSystem, StringComparison.Ordinal))
+                    {
+                        response = CreateRegisterResponse(
+                            targetRegistration.DeviceCode ?? string.Empty,
+                            storeCode,
+                            store.StoreName,
+                            targetRegistration.DeviceStatus,
+                            "Device system does not match existing registration.");
+                        return;
+                    }
+                }
 
                 // 关键逻辑：所有目标状态与设备号校验必须先于任何写入，拒绝请求不得顺带清理其他待确认记录。
                 if (targetRegistration is not null
@@ -328,6 +364,7 @@ public sealed class DeviceService : IDeviceService
                             ExpectedAuthorizationCode = targetRegistration.AuthorizationCode,
                             AuthorizationCode = authorizationCode,
                             RemarkSuffix = $" | Reset by anonymous registration at {now:O}",
+                            DeviceSystem = targetDeviceSystem,
                             ModifiedAt = now,
                             ModifiedBy = "HBPOS_CLIENT"
                         },
@@ -352,7 +389,8 @@ public sealed class DeviceService : IDeviceService
                     hardwareId,
                     storeCode,
                     terminalName,
-                    now);
+                    now,
+                    deviceSystem: deviceSystem);
                 await deviceRegistrationRepository.CreateRegistrationAsync(newRegistration, token);
                 response = new DeviceRegisterResponse(
                     newRegistration.DeviceCode,
@@ -375,6 +413,10 @@ public sealed class DeviceService : IDeviceService
         var deviceCode = Normalize(request.DeviceCode);
         var storeCode = Normalize(request.StoreCode);
         var hardwareId = Normalize(request.HardwareId);
+        if (!DeviceSystems.TryNormalize(request.DeviceSystem, out var submittedDeviceSystem))
+        {
+            return CreateVerifyResponse(deviceCode, storeCode, string.Empty, UnregisteredStatus, "deviceSystem is invalid");
+        }
 
         var store = await loadStoreAsync(storeCode, cancellationToken);
         if (store is null)
@@ -388,8 +430,26 @@ public sealed class DeviceService : IDeviceService
             return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, UnregisteredStatus, "Device is not registered.");
         }
 
-        if (!string.IsNullOrWhiteSpace(hardwareId)
-            && !string.Equals(device.HardwareId, hardwareId, StringComparison.OrdinalIgnoreCase))
+        if (!DeviceSystems.TryNormalize(device.DeviceSystem, out var registeredDeviceSystem))
+        {
+            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Registered device system is invalid.");
+        }
+
+        if (!string.Equals(submittedDeviceSystem, registeredDeviceSystem, StringComparison.Ordinal))
+        {
+            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device system does not match existing registration.");
+        }
+
+        if (DeviceSystems.IsIpadOs(registeredDeviceSystem)
+            && string.IsNullOrWhiteSpace(hardwareId))
+        {
+            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device hardware id is required for iPadOS.");
+        }
+
+        if (!DeviceAuthorizationPlatformPolicy.IsHardwareIdAccepted(
+                registeredDeviceSystem,
+                device.HardwareId,
+                hardwareId))
         {
             return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device hardware id does not match.");
         }
@@ -415,6 +475,16 @@ public sealed class DeviceService : IDeviceService
         var currentStoreCode = Normalize(currentDevice.StoreCode);
         var currentHardwareId = Normalize(currentDevice.HardwareId);
         var terminalName = Normalize(request.TerminalName);
+
+        if (!DeviceSystems.TryNormalize(currentDevice.DeviceSystem, out var currentDeviceSystem))
+        {
+            return CreateReregisterResponse(
+                currentDeviceCode,
+                currentStoreCode,
+                string.Empty,
+                DisabledStatus,
+                "Current device system is invalid.");
+        }
 
         if (string.IsNullOrEmpty(targetStoreCode))
         {
@@ -482,6 +552,8 @@ public sealed class DeviceService : IDeviceService
                             ExpectedAuthorizationCode = targetRegistration.AuthorizationCode,
                             AuthorizationCode = authorizationCode,
                             RemarkSuffix = resetRemark,
+                            // 关键逻辑：平台只继承已认证设备的服务端记录，重新注册请求不可覆盖它。
+                            DeviceSystem = currentDeviceSystem,
                             ModifiedAt = now,
                             ModifiedBy = "HBPOS_CLIENT"
                         },
@@ -501,7 +573,8 @@ public sealed class DeviceService : IDeviceService
                     targetStoreCode,
                     terminalName,
                     now,
-                    authorizationCode);
+                    authorizationCode,
+                    currentDeviceSystem);
                 await deviceRegistrationRepository.CreateRegistrationAsync(pendingRegistration, token);
                 deviceCode = pendingRegistration.DeviceCode;
             },
@@ -571,7 +644,8 @@ public sealed class DeviceService : IDeviceService
         string storeCode,
         string terminalName,
         DateTime createdAt,
-        string? authorizationCode = null)
+        string? authorizationCode = null,
+        string deviceSystem = DeviceSystems.Windows)
     {
         return new DeviceRegistrationCreateRequest
         {
@@ -584,7 +658,8 @@ public sealed class DeviceService : IDeviceService
                 ? "HBPOS client registration"
                 : $"HBPOS client registration: {terminalName}",
             CreatedAt = createdAt,
-            CreatedBy = "HBPOS_CLIENT"
+            CreatedBy = "HBPOS_CLIENT",
+            DeviceSystem = deviceSystem
         };
     }
 
@@ -652,7 +727,8 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             [分店代码] AS StoreCode,
             [设备硬件识别码] AS HardwareId,
             [设备状态] AS DeviceStatus,
-            [设备授权码] AS AuthorizationCode
+            [设备授权码] AS AuthorizationCode,
+            [设备系统] AS DeviceSystem
         FROM [POSM_设备注册信息表] WITH (UPDLOCK, HOLDLOCK)
         WHERE [设备硬件识别码] = @HardwareId
         ORDER BY [ID] DESC;
@@ -665,7 +741,8 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             [分店代码] AS StoreCode,
             [设备硬件识别码] AS HardwareId,
             [设备状态] AS DeviceStatus,
-            [设备授权码] AS AuthorizationCode
+            [设备授权码] AS AuthorizationCode,
+            [设备系统] AS DeviceSystem
         FROM [POSM_设备注册信息表] WITH (UPDLOCK, HOLDLOCK)
         WHERE [设备硬件识别码] = @HardwareId
           AND [分店代码] = @StoreCode
@@ -676,6 +753,7 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
         UPDATE [POSM_设备注册信息表]
         SET [设备状态] = @PendingStatus,
             [设备授权码] = @AuthorizationCode,
+            [设备系统] = @DeviceSystem,
             [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix),
             [最后修改时间] = @ModifiedAt,
             [最后修改人] = @ModifiedBy,
@@ -705,7 +783,8 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
                 [分店代码] AS StoreCode,
                 [设备硬件识别码] AS HardwareId,
                 [设备状态] AS DeviceStatus,
-                [设备授权码] AS AuthorizationCode
+                [设备授权码] AS AuthorizationCode,
+                [设备系统] AS DeviceSystem
             FROM [POSM_设备注册信息表]
             WHERE [设备硬件识别码] = @HardwareId
             ORDER BY [ID] DESC;
@@ -729,7 +808,8 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
                 [分店代码] AS StoreCode,
                 [设备硬件识别码] AS HardwareId,
                 [设备状态] AS DeviceStatus,
-                [设备授权码] AS AuthorizationCode
+                [设备授权码] AS AuthorizationCode,
+                [设备系统] AS DeviceSystem
             FROM [POSM_设备注册信息表]
             WHERE [系统设备编号] = @DeviceCode
               AND [分店代码] = @StoreCode;
@@ -753,7 +833,8 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
                 [分店代码] AS StoreCode,
                 [设备硬件识别码] AS HardwareId,
                 [设备状态] AS DeviceStatus,
-                [设备授权码] AS AuthorizationCode
+                [设备授权码] AS AuthorizationCode,
+                [设备系统] AS DeviceSystem
             FROM [POSM_设备注册信息表]
             WHERE [设备硬件识别码] = @HardwareId
               AND [设备状态] IN (1, 2)
@@ -848,6 +929,7 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             ResetRegistrationForReregisterSql,
             new SugarParameter("@PendingStatus", -1),
             new SugarParameter("@AuthorizationCode", request.AuthorizationCode),
+            new SugarParameter("@DeviceSystem", request.DeviceSystem),
             new SugarParameter("@RemarkSuffix", request.RemarkSuffix),
             new SugarParameter("@ModifiedAt", request.ModifiedAt),
             new SugarParameter("@ModifiedBy", request.ModifiedBy),

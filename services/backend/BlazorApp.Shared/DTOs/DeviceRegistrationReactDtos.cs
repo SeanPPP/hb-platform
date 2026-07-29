@@ -38,7 +38,7 @@ namespace BlazorApp.Shared.DTOs
         public string 设备类型 { get; set; } = string.Empty;
 
         /// <summary>
-        /// 设备系统：Android/iOS/Mac/Windows
+        /// 设备系统：Android/iOS/iPadOS/Mac/Windows；未知非空平台原样返回
         /// </summary>
         public string 设备系统 { get; set; } = string.Empty;
 
@@ -109,7 +109,7 @@ namespace BlazorApp.Shared.DTOs
         public string 设备类型 { get; set; } = string.Empty;
 
         /// <summary>
-        /// 设备系统：Android/iOS/Mac/Windows
+        /// 设备系统：Android/iOS/iPadOS/Mac/Windows；未知非空平台原样返回
         /// </summary>
         public string 设备系统 { get; set; } = string.Empty;
 
@@ -160,7 +160,7 @@ namespace BlazorApp.Shared.DTOs
         public string? 设备类型 { get; set; }
 
         /// <summary>
-        /// 设备系统：Android/iOS/Mac/Windows
+        /// 设备系统：Android/iOS/iPadOS/Mac/Windows
         /// </summary>
         public string? 设备系统 { get; set; }
 

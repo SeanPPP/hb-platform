@@ -2817,6 +2817,7 @@
       "hardwareId": "硬件标识",
       "deviceType": "设备类型",
       "deviceSystem": "系统",
+      "deviceSystemOther": "其他",
       "onlineStatus": "在线状态",
       "online": "在线",
       "offline": "离线",

@@ -118,6 +118,14 @@ function asBoolean(value: unknown, fallback = false) {
   return fallback
 }
 
+export function normalizeRegisteredDeviceSystem(value: unknown) {
+  if (typeof value !== 'string') {
+    return 'Windows'
+  }
+  const normalized = value.trim()
+  return normalized || 'Windows'
+}
+
 function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
   return {
     id: Number(raw.id ?? raw.Id ?? 0),
@@ -131,7 +139,7 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
           : null,
     storeName: getNullableString(raw, 'storeName', 'StoreName'),
     deviceType: String(raw.deviceType ?? raw.DeviceType ?? ''),
-    deviceSystem: String(raw.deviceSystem ?? raw.DeviceSystem ?? ''),
+    deviceSystem: normalizeRegisteredDeviceSystem(raw.deviceSystem ?? raw.DeviceSystem),
     status: Number(raw.status ?? raw.Status ?? -1),
     statusDescription: String(raw.statusDescription ?? raw.StatusDescription ?? ''),
     remark: getNullableString(raw, 'remark', 'remarks', 'Remark', 'Remarks'),
@@ -272,7 +280,9 @@ export function normalizeDeviceRegistrationDetail(
     storeCode: getNullableString(raw, 'storeCode', '分店代码', 'StoreCode'),
     storeName: getNullableString(raw, 'storeName', '分店名称', 'StoreName'),
     deviceType: String(raw.deviceType ?? raw.设备类型 ?? raw.DeviceType ?? ''),
-    deviceSystem: String(raw.deviceSystem ?? raw.设备系统 ?? raw.DeviceSystem ?? ''),
+    deviceSystem: normalizeRegisteredDeviceSystem(
+      raw.deviceSystem ?? raw.设备系统 ?? raw.DeviceSystem
+    ),
     status: Number(raw.status ?? raw.设备状态 ?? raw.Status ?? -1),
     statusDescription: String(
       raw.statusDescription ?? raw.设备状态描述 ?? raw.StatusDescription ?? ''

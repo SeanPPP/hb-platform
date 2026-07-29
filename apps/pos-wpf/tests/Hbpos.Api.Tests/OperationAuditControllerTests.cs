@@ -6,6 +6,7 @@ using Hbpos.Api;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
@@ -156,6 +157,33 @@ public sealed class OperationAuditControllerTests
         Assert.Equal("POS-1", service.DeviceCode);
     }
 
+    [Fact]
+    public async Task Batch_http_pipeline_returns_structured_device_disabled_code()
+    {
+        var service = new RecordingOperationAuditIngestService();
+        await using var factory = new OperationAuditApiFactory(service);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/operation-audits/batch")
+        {
+            Content = JsonContent.Create(CreateRequest())
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "disabled-device-token");
+        request.Headers.Add(DeviceAuthConstants.StoreCodeHeader, "STORE-1");
+        request.Headers.Add(DeviceAuthConstants.DeviceCodeHeader, "POS-1");
+        request.Headers.Add(DeviceAuthConstants.HardwareIdHeader, "HW-1");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ApiResult<object>>();
+        Assert.NotNull(payload);
+        Assert.False(payload!.Success);
+        Assert.Equal(DeviceAuthorizationFailureCodes.DeviceDisabled, payload.ErrorCode);
+        Assert.Null(service.Request);
+    }
+
     private static OperationAuditsController CreateController(
         IOperationAuditIngestService service,
         string? storeCode = null,
@@ -261,20 +289,25 @@ public sealed class OperationAuditControllerTests
 
     private sealed class TestDeviceAuthorizationService : IDeviceAuthorizationService
     {
-        public Task<DeviceAuthorizationResult?> ValidateAsync(
+        public Task<DeviceAuthorizationValidationResult> ValidateAsync(
             string authorizationCode,
             string deviceCode,
             string storeCode,
             string? hardwareId,
             CancellationToken cancellationToken)
         {
-            DeviceAuthorizationResult? result =
-                authorizationCode == "valid-device-token" &&
+            var result =
+                authorizationCode == "disabled-device-token"
+                    ? DeviceAuthorizationValidationResult.Failed(
+                        DeviceAuthorizationFailureCodes.DeviceDisabled)
+                    : authorizationCode == "valid-device-token" &&
                 deviceCode == "POS-1" &&
                 storeCode == "STORE-1" &&
                 hardwareId == "HW-1"
-                    ? new DeviceAuthorizationResult(deviceCode, storeCode, hardwareId)
-                    : null;
+                    ? DeviceAuthorizationValidationResult.Authorized(
+                        new DeviceAuthorizationResult(deviceCode, storeCode, hardwareId))
+                    : DeviceAuthorizationValidationResult.Failed(
+                        DeviceAuthorizationFailureCodes.Invalid);
             return Task.FromResult(result);
         }
     }

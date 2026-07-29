@@ -1,11 +1,12 @@
 using Hbpos.Api.Data;
+using Hbpos.Contracts.Devices;
 using SqlSugar;
 
 namespace Hbpos.Api.Services;
 
 public interface IDeviceAuthorizationService
 {
-    Task<DeviceAuthorizationResult?> ValidateAsync(
+    Task<DeviceAuthorizationValidationResult> ValidateAsync(
         string authorizationCode,
         string deviceCode,
         string storeCode,
@@ -17,7 +18,22 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
 {
     private const int EnabledStatus = 1;
 
-    public async Task<DeviceAuthorizationResult?> ValidateAsync(
+    internal const string AuthorizationSql = """
+        SELECT TOP 1
+            [系统设备编号] AS DeviceCode,
+            [分店代码] AS StoreCode,
+            [设备硬件识别码] AS HardwareId,
+            [设备状态] AS DeviceStatus,
+            [设备授权码] AS AuthorizationCode,
+            [设备系统] AS DeviceSystem
+        FROM [POSM_设备注册信息表]
+        WHERE [设备授权码] = @AuthorizationCode
+          AND [系统设备编号] = @DeviceCode
+          AND [分店代码] = @StoreCode
+        ORDER BY [ID] DESC;
+        """;
+
+    public async Task<DeviceAuthorizationValidationResult> ValidateAsync(
         string authorizationCode,
         string deviceCode,
         string storeCode,
@@ -33,44 +49,50 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
             || string.IsNullOrEmpty(normalizedDeviceCode)
             || string.IsNullOrEmpty(normalizedStoreCode))
         {
-            return null;
+            return DeviceAuthorizationValidationResult.Failed(
+                DeviceAuthorizationFailureCodes.Invalid);
         }
 
-        const string sql = """
-            SELECT TOP 1
-                [系统设备编号] AS DeviceCode,
-                [分店代码] AS StoreCode,
-                [设备硬件识别码] AS HardwareId,
-                [设备状态] AS DeviceStatus,
-                [设备授权码] AS AuthorizationCode
-            FROM [POSM_设备注册信息表]
-            WHERE [设备授权码] = @AuthorizationCode
-              AND [系统设备编号] = @DeviceCode
-              AND [分店代码] = @StoreCode
-            ORDER BY [ID] DESC;
-            """;
-
         var device = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<DeviceAuthorizationRow>(
-            sql,
+            AuthorizationSql,
             new SugarParameter("@AuthorizationCode", normalizedAuthorizationCode),
             new SugarParameter("@DeviceCode", normalizedDeviceCode),
             new SugarParameter("@StoreCode", normalizedStoreCode));
 
-        if (device is null || device.DeviceStatus != EnabledStatus)
+        if (device is null)
         {
-            return null;
+            return DeviceAuthorizationValidationResult.Failed(
+                DeviceAuthorizationFailureCodes.Invalid);
         }
 
-        if (!string.IsNullOrWhiteSpace(normalizedHardwareId)
-            && !string.Equals(device.HardwareId, normalizedHardwareId, StringComparison.OrdinalIgnoreCase))
+        if (device.DeviceStatus != EnabledStatus)
         {
-            return null;
+            return DeviceAuthorizationValidationResult.Failed(
+                DeviceAuthorizationFailureCodes.DeviceDisabled);
         }
 
-        return new DeviceAuthorizationResult(
-            device.DeviceCode ?? normalizedDeviceCode,
-            device.StoreCode ?? normalizedStoreCode,
-            device.HardwareId ?? string.Empty);
+        if (!DeviceSystems.TryNormalize(device.DeviceSystem, out var deviceSystem))
+        {
+            return DeviceAuthorizationValidationResult.Failed(
+                DeviceAuthorizationFailureCodes.Invalid);
+        }
+
+        // 关键逻辑：Windows 继续兼容旧客户端可缺失的硬件头；iPadOS 已登记设备必须逐次提交并精确匹配。
+        if (!DeviceAuthorizationPlatformPolicy.IsHardwareIdAccepted(
+                deviceSystem,
+                device.HardwareId,
+                normalizedHardwareId))
+        {
+            return DeviceAuthorizationValidationResult.Failed(
+                DeviceAuthorizationFailureCodes.Invalid);
+        }
+
+        return DeviceAuthorizationValidationResult.Authorized(
+            new DeviceAuthorizationResult(
+                device.DeviceCode ?? normalizedDeviceCode,
+                device.StoreCode ?? normalizedStoreCode,
+                device.HardwareId ?? string.Empty,
+                deviceSystem));
     }
 
     private static string Normalize(string? value)
@@ -89,10 +111,36 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
         public int DeviceStatus { get; set; }
 
         public string? AuthorizationCode { get; set; }
+
+        public string? DeviceSystem { get; set; }
     }
 }
 
 public sealed record DeviceAuthorizationResult(
     string DeviceCode,
     string StoreCode,
-    string HardwareId);
+    string HardwareId,
+    string DeviceSystem = DeviceSystems.Windows);
+
+public static class DeviceAuthorizationFailureCodes
+{
+    public const string Invalid = "DEVICE_AUTH_INVALID";
+
+    public const string DeviceDisabled = "DEVICE_DISABLED";
+}
+
+public sealed record DeviceAuthorizationValidationResult(
+    DeviceAuthorizationResult? Device,
+    string? FailureCode)
+{
+    public static DeviceAuthorizationValidationResult Authorized(
+        DeviceAuthorizationResult device)
+    {
+        return new DeviceAuthorizationValidationResult(device, null);
+    }
+
+    public static DeviceAuthorizationValidationResult Failed(string failureCode)
+    {
+        return new DeviceAuthorizationValidationResult(null, failureCode);
+    }
+}

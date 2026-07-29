@@ -44,7 +44,7 @@ namespace BlazorApp.Shared.Models.POSM
         public string 设备类型 { get; set; } = string.Empty;
 
         /// <summary>
-        /// 设备系统：Android/iOS/Mac/Windows
+        /// 设备系统：Android/iOS/iPadOS/Mac/Windows
         /// 设备运行的操作系统
         /// </summary>
         [SugarColumn(Length = 20, IsNullable = false)]
@@ -244,6 +244,11 @@ public enum DeviceSystem
     /// iOS系统
     /// </summary>
     iOS,
+
+    /// <summary>
+    /// iPadOS系统
+    /// </summary>
+    iPadOS,
     
     /// <summary>
     /// Mac系统

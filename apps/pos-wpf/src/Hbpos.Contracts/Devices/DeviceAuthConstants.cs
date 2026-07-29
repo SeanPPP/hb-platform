@@ -12,4 +12,5 @@ public static class DeviceAuthConstants
     public const string DeviceCodeClaim = "hbpos_device_code";
     public const string StoreCodeClaim = "hbpos_store_code";
     public const string HardwareIdClaim = "hbpos_hardware_id";
+    public const string DeviceSystemClaim = "hbpos_device_system";
 }

@@ -20,7 +20,14 @@ namespace BlazorApp.Api.Services.React
         private static readonly HashSet<string> AllowedDeviceTypes =
             new(StringComparer.OrdinalIgnoreCase) { "PDA", "Mobile", "POS", "Admin" };
         private static readonly HashSet<string> AllowedDeviceSystems =
-            new(StringComparer.OrdinalIgnoreCase) { "Android", "iOS", "Mac", "Windows" };
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "Android",
+                "iOS",
+                DeviceRegistrationDeviceSystems.IpadOs,
+                "Mac",
+                DeviceRegistrationDeviceSystems.Windows,
+            };
 
         private readonly POSMSqlSugarContext _posmDb;
         private readonly SqlSugarContext _mainDb;
@@ -98,7 +105,47 @@ namespace BlazorApp.Api.Services.React
                                     break;
                                 case "设备系统":
                                     if (op == "equals")
-                                        baseQuery = baseQuery.Where(d => d.设备系统 == v);
+                                    {
+                                        if (
+                                            string.Equals(
+                                                v,
+                                                DeviceRegistrationDeviceSystems.Windows,
+                                                StringComparison.OrdinalIgnoreCase
+                                            )
+                                        )
+                                        {
+                                            baseQuery = baseQuery.Where(d =>
+                                                d.设备系统 == null
+                                                || d.设备系统.Trim() == string.Empty
+                                                || d.设备系统.Trim()
+                                                    == DeviceRegistrationDeviceSystems.Windows
+                                            );
+                                        }
+                                        else if (
+                                            string.Equals(
+                                                v,
+                                                DeviceRegistrationDeviceSystems.Other,
+                                                StringComparison.OrdinalIgnoreCase
+                                            )
+                                        )
+                                        {
+                                            baseQuery = baseQuery.Where(d =>
+                                                d.设备系统 != null
+                                                && d.设备系统.Trim() != string.Empty
+                                                && d.设备系统.Trim()
+                                                    != DeviceRegistrationDeviceSystems.Windows
+                                                && d.设备系统.Trim()
+                                                    != DeviceRegistrationDeviceSystems.IpadOs
+                                            );
+                                        }
+                                        else
+                                        {
+                                            baseQuery = baseQuery.Where(d =>
+                                                d.设备系统 != null
+                                                && d.设备系统.Trim() == v
+                                            );
+                                        }
+                                    }
                                     break;
                                 case "设备状态":
                                     if (int.TryParse(v, out var statusValue))
@@ -194,7 +241,7 @@ namespace BlazorApp.Api.Services.React
                         系统设备编号 = d.系统设备编号,
                         分店代码 = d.分店代码,
                         设备类型 = d.设备类型,
-                        设备系统 = d.设备系统,
+                        设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(d.设备系统),
                         设备状态 = d.设备状态,
                         设备状态描述 = GetStatusDescription(d.设备状态),
                         备注 = d.备注,
@@ -273,7 +320,7 @@ namespace BlazorApp.Api.Services.React
                     分店代码 = entity.分店代码,
                     分店名称 = storeName,
                     设备类型 = entity.设备类型,
-                    设备系统 = entity.设备系统,
+                    设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(entity.设备系统),
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
                     备注 = entity.备注,
@@ -313,28 +360,67 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<DeviceRegistrationDetailDto>.Error("设备不存在");
                 }
 
+                var requestedDeviceType = dto.设备类型?.Trim();
                 if (
-                    !string.IsNullOrWhiteSpace(dto.设备类型)
-                    && !AllowedDeviceTypes.Contains(dto.设备类型.Trim())
+                    !string.IsNullOrWhiteSpace(requestedDeviceType)
+                    && !AllowedDeviceTypes.Contains(requestedDeviceType)
                 )
                 {
                     return ApiResponse<DeviceRegistrationDetailDto>.Error("设备类型无效");
                 }
+                var requestedDeviceSystem = dto.设备系统?.Trim();
                 if (
-                    !string.IsNullOrWhiteSpace(dto.设备系统)
-                    && !AllowedDeviceSystems.Contains(dto.设备系统.Trim())
+                    !string.IsNullOrWhiteSpace(requestedDeviceSystem)
+                    && !AllowedDeviceSystems.Contains(requestedDeviceSystem)
                 )
                 {
                     return ApiResponse<DeviceRegistrationDetailDto>.Error("设备系统无效");
                 }
-
-                if (!string.IsNullOrWhiteSpace(dto.设备类型))
+                var currentDeviceSystem =
+                    DeviceRegistrationDeviceSystems.NormalizeForDisplay(entity.设备系统);
+                var currentDeviceType = entity.设备类型?.Trim() ?? string.Empty;
+                var effectiveRequestedDeviceType = string.IsNullOrWhiteSpace(requestedDeviceType)
+                    ? currentDeviceType
+                    : requestedDeviceType;
+                // 历史 iPad 曾写入 iOS；该等价值只允许单向规范化，不能借此切换认证平台。
+                var isLegacyIosCanonicalization =
+                    entity.设备状态 == (int)DeviceStatus.启用
+                    && string.Equals(currentDeviceType, "POS", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(
+                        effectiveRequestedDeviceType,
+                        "POS",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && string.Equals(currentDeviceSystem, "iOS", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(
+                        requestedDeviceSystem,
+                        DeviceRegistrationDeviceSystems.IpadOs,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+                if (
+                    !string.IsNullOrWhiteSpace(requestedDeviceSystem)
+                    && !string.Equals(
+                        currentDeviceSystem,
+                        requestedDeviceSystem,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && entity.设备状态 != (int)DeviceStatus.待确认
+                    && !isLegacyIosCanonicalization
+                )
                 {
-                    entity.设备类型 = dto.设备类型.Trim();
+                    // 关键逻辑：平台决定设备认证强度；获批后禁止保留授权码跨平台改写。
+                    return ApiResponse<DeviceRegistrationDetailDto>.Error(
+                        "仅待确认设备或已启用的旧 iPad POS 可修改设备系统"
+                    );
                 }
-                if (!string.IsNullOrWhiteSpace(dto.设备系统))
+
+                if (!string.IsNullOrWhiteSpace(requestedDeviceType))
                 {
-                    entity.设备系统 = dto.设备系统.Trim();
+                    entity.设备类型 = requestedDeviceType;
+                }
+                if (!string.IsNullOrWhiteSpace(requestedDeviceSystem))
+                {
+                    entity.设备系统 = requestedDeviceSystem;
                 }
                 entity.备注 = dto.备注 ?? string.Empty;
                 entity.最后修改人 = updatedBy;
@@ -359,8 +445,8 @@ namespace BlazorApp.Api.Services.React
                     系统设备编号 = entity.系统设备编号,
                     分店代码 = entity.分店代码,
                     分店名称 = storeName,
-                    设备类型 = entity.设备类型,
-                    设备系统 = entity.设备系统,
+                    设备类型 = entity.设备类型 ?? string.Empty,
+                    设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(entity.设备系统),
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
                     备注 = entity.备注,

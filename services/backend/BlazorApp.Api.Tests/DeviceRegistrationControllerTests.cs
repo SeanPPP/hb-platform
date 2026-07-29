@@ -396,6 +396,82 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetDevicesPagedAsync_WindowsFilterIncludesLegacyBlankSystems()
+        {
+            await _db.Insertable(new[]
+            {
+                CreateDevice("hbmobile-windows", "PDA_1004_1432", "1004", "Windows"),
+                CreateDevice("hbmobile-legacy-empty", "PDA_1004_1433", "1004", ""),
+                CreateDevice("hbmobile-legacy-blank", "PDA_1004_1434", "1004", " "),
+                CreateDevice("hbmobile-ipados", "PDA_1004_1435", "1004", "iPadOS"),
+                CreateDevice("hbmobile-windows-spaced", "PDA_1004_1436", "1004", " Windows "),
+            }).ExecuteCommandAsync();
+
+            var (devices, total) = await CreateService().GetDevicesPagedAsync(
+                page: 1,
+                pageSize: 20,
+                deviceSystem: "Windows"
+            );
+
+            Assert.Equal(4, total);
+            Assert.Equal(
+                new[]
+                {
+                    "hbmobile-legacy-blank",
+                    "hbmobile-legacy-empty",
+                    "hbmobile-windows",
+                    "hbmobile-windows-spaced",
+                },
+                devices.Select(device => device.设备硬件识别码).OrderBy(value => value)
+            );
+        }
+
+        [Fact]
+        public async Task GetDevicesPagedAsync_IpadOsAndOtherFiltersUsePlatformCategories()
+        {
+            await _db.Insertable(new[]
+            {
+                CreateDevice("hbmobile-windows", "PDA_1004_1432", "1004", "Windows"),
+                CreateDevice("hbmobile-ipados", "PDA_1004_1433", "1004", "iPadOS"),
+                CreateDevice("hbmobile-android", "PDA_1004_1434", "1004", "Android"),
+                CreateDevice("hbmobile-unknown", "PDA_1004_1435", "1004", "VisionOS"),
+                CreateDevice("hbmobile-legacy-blank", "PDA_1004_1436", "1004", ""),
+                CreateDevice("hbmobile-ipados-spaced", "PDA_1004_1437", "1004", " iPadOS "),
+                CreateDevice("hbmobile-windows-spaced", "PDA_1004_1438", "1004", " Windows "),
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var (ipadDevices, ipadTotal) = await service.GetDevicesPagedAsync(
+                page: 1,
+                pageSize: 20,
+                deviceSystem: "iPadOS"
+            );
+            var (otherDevices, otherTotal) = await service.GetDevicesPagedAsync(
+                page: 1,
+                pageSize: 20,
+                deviceSystem: "Other"
+            );
+            var (unknownDevices, unknownTotal) = await service.GetDevicesPagedAsync(
+                page: 1,
+                pageSize: 20,
+                deviceSystem: "VisionOS"
+            );
+
+            Assert.Equal(2, ipadTotal);
+            Assert.Equal(
+                new[] { "hbmobile-ipados", "hbmobile-ipados-spaced" },
+                ipadDevices.Select(device => device.设备硬件识别码).OrderBy(value => value)
+            );
+            Assert.Equal(2, otherTotal);
+            Assert.Equal(
+                new[] { "Android", "VisionOS" },
+                otherDevices.Select(device => device.设备系统).OrderBy(value => value)
+            );
+            Assert.Equal(1, unknownTotal);
+            Assert.Equal("VisionOS", Assert.Single(unknownDevices).设备系统);
+        }
+
+        [Fact]
         public async Task UpdateRuntimeStatusAsync_KeepsCashierLoginTimeForSameCashierAndClearsWhenEmpty()
         {
             await _db.Insertable(new POSM_设备注册信息表

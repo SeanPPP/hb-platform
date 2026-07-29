@@ -50,6 +50,13 @@ import type {
   UpdateDeviceRegistrationPayload,
 } from '../../../types/deviceRegistration'
 import { useAuthStore } from '../../../store/auth'
+import {
+  APP_DEVICE_SYSTEM_OPTIONS,
+  canEditRegisteredDeviceSystem,
+  getRegisteredDeviceSystemEditOptions,
+  isEnabledLegacyIosPos,
+  REGISTERED_DEVICE_SYSTEM_OPTIONS,
+} from './deviceSystemOptions'
 
 const STATUS_COLOR_MAP: Record<number, string> = {
   [-1]: 'gold',
@@ -60,7 +67,6 @@ const STATUS_COLOR_MAP: Record<number, string> = {
 }
 
 const DEVICE_TYPE_OPTIONS = ['Mobile', 'PDA', 'POS', 'Admin']
-const DEVICE_SYSTEM_OPTIONS = ['Android', 'iOS', 'Windows', 'Mac']
 const APP_ONLINE_STATE_OPTIONS: AppDeviceOnlineState[] = ['all', 'online', 'offline']
 const APP_USAGE_PAGE_SIZE = 200
 const EMPTY_VALUE = '--'
@@ -77,6 +83,7 @@ const DEVICE_TYPE_COLOR_MAP: Record<string, string> = {
 const DEVICE_SYSTEM_COLOR_MAP: Record<string, string> = {
   android: 'green',
   ios: 'magenta',
+  ipados: 'purple',
   windows: 'geekblue',
   mac: 'cyan',
 }
@@ -752,7 +759,10 @@ export default function DeviceRegistrationPage() {
           <Space wrap>
             <Segmented<DeviceRegistrationViewMode>
               value={viewMode}
-              onChange={setViewMode}
+              onChange={(nextViewMode) => {
+                setSelectedDeviceSystem(undefined)
+                setViewMode(nextViewMode)
+              }}
               options={[
                 { label: t('posAdmin.devices.viewRegistered'), value: 'registered' },
                 { label: t('posAdmin.devices.viewAppUsage'), value: 'appUsage' },
@@ -788,8 +798,14 @@ export default function DeviceRegistrationPage() {
               style={{ width: 160 }}
               value={selectedDeviceSystem}
               onChange={(value) => setSelectedDeviceSystem(value)}
-              options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
-                label: renderDeviceSystemTag(deviceSystem),
+              options={(viewMode === 'registered'
+                ? REGISTERED_DEVICE_SYSTEM_OPTIONS
+                : APP_DEVICE_SYSTEM_OPTIONS
+              ).map((deviceSystem) => ({
+                label:
+                  deviceSystem === 'Other'
+                    ? <Tag>{t('posAdmin.devices.deviceSystemOther')}</Tag>
+                    : renderDeviceSystemTag(deviceSystem),
                 value: deviceSystem,
               }))}
             />
@@ -933,6 +949,11 @@ export default function DeviceRegistrationPage() {
                 rules={[{ required: true, message: t('posAdmin.devices.deviceTypeRequired') }]}
               >
                 <Select
+                  disabled={isEnabledLegacyIosPos(
+                    editingDevice.status,
+                    editingDevice.deviceSystem,
+                    editingDevice.deviceType,
+                  )}
                   options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
                     label: renderDeviceTypeTag(deviceType),
                     value: deviceType,
@@ -945,7 +966,18 @@ export default function DeviceRegistrationPage() {
                 rules={[{ required: true, message: t('posAdmin.devices.deviceSystemRequired') }]}
               >
                 <Select
-                  options={DEVICE_SYSTEM_OPTIONS.map((deviceSystem) => ({
+                  disabled={
+                    !canEditRegisteredDeviceSystem(
+                      editingDevice.status,
+                      editingDevice.deviceSystem,
+                      editingDevice.deviceType,
+                    )
+                  }
+                  options={getRegisteredDeviceSystemEditOptions(
+                    editingDevice.status,
+                    editingDevice.deviceSystem,
+                    editingDevice.deviceType,
+                  ).map((deviceSystem) => ({
                     label: renderDeviceSystemTag(deviceSystem),
                     value: deviceSystem,
                   }))}

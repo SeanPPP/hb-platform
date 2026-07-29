@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Mappings;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -54,6 +56,60 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
     }
 
     [Fact]
+    public void DeviceMappingProfile_UsesWindowsForLegacyBlankAndPreservesUnknownSystems()
+    {
+        var mapper = new MapperConfiguration(
+            config => config.AddProfile<DeviceMappingProfile>(),
+            NullLoggerFactory.Instance
+        ).CreateMapper();
+
+        var legacy = mapper.Map<DeviceListItemDto>(new POSM_设备注册信息表
+        {
+            设备系统 = " ",
+        });
+        var unknown = mapper.Map<DeviceListItemDto>(new POSM_设备注册信息表
+        {
+            设备系统 = " VisionOS ",
+        });
+
+        Assert.Equal("Windows", legacy.DeviceSystem);
+        Assert.Equal("VisionOS", unknown.DeviceSystem);
+    }
+
+    [Fact]
+    public async Task GetGridDataAsync_FiltersPlatformCategoriesAndNormalizesLegacyDisplay()
+    {
+        await _posmDb.Insertable(new[]
+        {
+            CreateDevice(1, "hardware-windows", "Windows"),
+            CreateDevice(2, "hardware-legacy", " "),
+            CreateDevice(3, "hardware-ipados", "iPadOS"),
+            CreateDevice(4, "hardware-android", "Android"),
+            CreateDevice(5, "hardware-unknown", "VisionOS"),
+            CreateDevice(6, "hardware-windows-spaced", " Windows "),
+            CreateDevice(7, "hardware-ipados-spaced", " iPadOS "),
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var windows = await service.GetGridDataAsync(CreateSystemFilterRequest("Windows"));
+        var ipados = await service.GetGridDataAsync(CreateSystemFilterRequest("iPadOS"));
+        var other = await service.GetGridDataAsync(CreateSystemFilterRequest("Other"));
+
+        Assert.True(windows.Success);
+        Assert.Equal(3, windows.Total);
+        Assert.All(windows.Items!, item => Assert.Equal("Windows", item.设备系统));
+        Assert.True(ipados.Success);
+        Assert.Equal(2, ipados.Total);
+        Assert.All(ipados.Items!, item => Assert.Equal("iPadOS", item.设备系统));
+        Assert.True(other.Success);
+        Assert.Equal(2, other.Total);
+        Assert.Equal(
+            new[] { "Android", "VisionOS" },
+            other.Items!.Select(item => item.设备系统).OrderBy(value => value)
+        );
+    }
+
+    [Fact]
     public async Task UpdateAsync_UpdatesEditableFieldsWithoutChangingStatus()
     {
         await _posmDb.Insertable(new POSM_设备注册信息表
@@ -84,7 +140,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
             new UpdateDeviceRegistrationDto
             {
                 设备类型 = "PDA",
-                设备系统 = "iOS",
+                设备系统 = "Android",
                 备注 = "new remark",
             },
             "manager"
@@ -93,7 +149,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
         Assert.True(result.Success);
         Assert.NotNull(result.Data);
         Assert.Equal("PDA", result.Data!.设备类型);
-        Assert.Equal("iOS", result.Data.设备系统);
+        Assert.Equal("Android", result.Data.设备系统);
         Assert.Equal("new remark", result.Data.备注);
         Assert.Equal((int)DeviceStatus.启用, result.Data.设备状态);
 
@@ -106,11 +162,216 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateAsync_AllowsIpadOsForPendingRegistration()
+    {
+        var pendingDevice = CreateDevice(1, "hardware-ipad", "Windows");
+        pendingDevice.设备状态 = (int)DeviceStatus.待确认;
+        await _posmDb.Insertable(pendingDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = "iPadOS",
+                备注 = "iPad POS",
+            },
+            "manager"
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal("iPadOS", result.Data!.设备系统);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iPadOS", saved.设备系统);
+        Assert.Equal((int)DeviceStatus.待确认, saved.设备状态);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_RejectsPlatformChangeAfterApprovalWithoutMutatingIdentity()
+    {
+        var enabledDevice = CreateDevice(1, "hardware-ipad", "iPadOS");
+        await _posmDb.Insertable(enabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = "Windows",
+                备注 = "must not save",
+            },
+            "manager"
+        );
+
+        Assert.False(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iPadOS", saved.设备系统);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Equal((int)DeviceStatus.启用, saved.设备状态);
+        Assert.Null(saved.最后修改人);
+        Assert.Null(saved.最后修改时间);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_AllowsEnabledLegacyIosToCanonicalizeWithoutMutatingIdentity()
+    {
+        var enabledDevice = CreateDevice(1, "hardware-ipad", "iOS");
+        await _posmDb.Insertable(enabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = "iPadOS",
+                备注 = "canonicalized",
+            },
+            "manager"
+        );
+
+        Assert.True(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iPadOS", saved.设备系统);
+        Assert.Equal("hardware-ipad", saved.设备硬件识别码);
+        Assert.Equal("SYS-001", saved.系统设备编号);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Equal("1004", saved.分店代码);
+        Assert.Equal((int)DeviceStatus.启用, saved.设备状态);
+        Assert.Equal("manager", saved.最后修改人);
+    }
+
+    [Theory]
+    [InlineData((int)DeviceStatus.禁用)]
+    [InlineData((int)DeviceStatus.锁定)]
+    [InlineData((int)DeviceStatus.未注册)]
+    public async Task UpdateAsync_RejectsLegacyIosCanonicalizationWhenNotEnabled(int status)
+    {
+        var disabledDevice = CreateDevice(1, "hardware-ipad", "iOS");
+        disabledDevice.设备状态 = status;
+        await _posmDb.Insertable(disabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = "iPadOS",
+                备注 = "must not save",
+            },
+            "manager"
+        );
+
+        Assert.False(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iOS", saved.设备系统);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Equal(status, saved.设备状态);
+        Assert.Null(saved.最后修改人);
+    }
+
+    [Theory]
+    [InlineData("Mobile")]
+    [InlineData("PDA")]
+    [InlineData("Admin")]
+    public async Task UpdateAsync_RejectsLegacyIosCanonicalizationForNonPosDevice(string deviceType)
+    {
+        var enabledDevice = CreateDevice(1, "hardware-ios", "iOS");
+        enabledDevice.设备类型 = deviceType;
+        await _posmDb.Insertable(enabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = deviceType,
+                设备系统 = "iPadOS",
+                备注 = "must not save",
+            },
+            "manager"
+        );
+
+        Assert.False(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iOS", saved.设备系统);
+        Assert.Equal(deviceType, saved.设备类型);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Null(saved.最后修改人);
+    }
+
+    [Theory]
+    [InlineData("Windows")]
+    [InlineData("Android")]
+    public async Task UpdateAsync_RejectsEnabledLegacyIosChangingToDifferentPlatform(
+        string requestedDeviceSystem
+    )
+    {
+        var enabledDevice = CreateDevice(1, "hardware-ipad", "iOS");
+        await _posmDb.Insertable(enabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = requestedDeviceSystem,
+                备注 = "must not save",
+            },
+            "manager"
+        );
+
+        Assert.False(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("iOS", saved.设备系统);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Null(saved.最后修改人);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_RejectsLegacyIosCanonicalizationWhenRequestChangesDeviceType()
+    {
+        var enabledDevice = CreateDevice(1, "hardware-ipad", "iOS");
+        await _posmDb.Insertable(enabledDevice).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "Mobile",
+                设备系统 = "iPadOS",
+                备注 = "must not save",
+            },
+            "manager"
+        );
+
+        Assert.False(result.Success);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(device => device.ID == 1);
+        Assert.Equal("POS", saved.设备类型);
+        Assert.Equal("iOS", saved.设备系统);
+        Assert.Equal("AUTH-001", saved.设备授权码);
+        Assert.Null(saved.最后修改人);
+    }
+
+    [Fact]
     public async Task UpdateAsync_RejectsInvalidEditableFieldValues()
     {
         await _posmDb.Insertable(new POSM_设备注册信息表
         {
-                ID = 1,
+            ID = 1,
             设备硬件识别码 = "hardware-002",
             系统设备编号 = "SYS-002",
             设备授权码 = "AUTH-SECRET-2",
@@ -124,8 +385,8 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
         }).ExecuteCommandAsync();
         var service = CreateService();
 
-            var result = await service.UpdateAsync(
-                1,
+        var result = await service.UpdateAsync(
+            1,
             new UpdateDeviceRegistrationDto
             {
                 设备类型 = "Tablet",
@@ -186,6 +447,40 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
             NullLogger<DeviceRegistrationReactService>.Instance
         );
     }
+
+    private static GridRequestDto CreateSystemFilterRequest(string value) =>
+        new()
+        {
+            StartRow = 0,
+            PageSize = 20,
+            FilterModel = new Dictionary<string, FilterModelDto>
+            {
+                ["设备系统"] = new()
+                {
+                    FilterType = "text",
+                    Type = "equals",
+                    Filter = value,
+                },
+            },
+        };
+
+    private static POSM_设备注册信息表 CreateDevice(
+        int id,
+        string hardwareId,
+        string deviceSystem
+    ) =>
+        new()
+        {
+            ID = id,
+            设备硬件识别码 = hardwareId,
+            系统设备编号 = $"SYS-{id:000}",
+            设备授权码 = $"AUTH-{id:000}",
+            设备状态 = (int)DeviceStatus.启用,
+            设备类型 = "POS",
+            设备系统 = deviceSystem,
+            分店代码 = "1004",
+            创建时间 = DateTime.UtcNow,
+        };
 
     private static void DeleteIfExists(string path)
     {

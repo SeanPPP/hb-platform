@@ -1,9 +1,11 @@
+using System.Security.Claims;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -91,6 +93,44 @@ public sealed class DevicesControllerTests
         var apiResult = Assert.IsType<ApiResult<DeviceReregisterResponse>>(unauthorized.Value);
         Assert.False(apiResult.Success);
         Assert.Equal("DEVICE_AUTH_REQUIRED", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Reregister_InheritsIpadOsFromAuthenticatedDeviceClaim()
+    {
+        var expected = new DeviceReregisterResponse(
+            "POS_1003_1011",
+            "1003",
+            "New Store",
+            -1,
+            false,
+            "Device registration is pending approval.");
+        var service = new FakeDeviceService { ReregisterResponse = expected };
+        var controller = new DevicesController(service)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [
+                        new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS_1002_0900"),
+                        new Claim(DeviceAuthConstants.StoreCodeClaim, "1002"),
+                        new Claim(DeviceAuthConstants.HardwareIdClaim, "HW-IPAD"),
+                        new Claim(DeviceAuthConstants.DeviceSystemClaim, DeviceSystems.IpadOs),
+                    ], DeviceAuthConstants.Scheme)),
+                },
+            },
+        };
+        var request = new DeviceReregisterRequest("1003", "HW-IPAD");
+
+        var result = await controller.Reregister(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<DeviceReregisterResponse>>(ok.Value);
+        Assert.True(apiResult.Success);
+        Assert.Same(expected, apiResult.Data);
+        Assert.Equal(DeviceSystems.IpadOs, service.LastReregisterContext?.DeviceSystem);
     }
 
     [Fact]

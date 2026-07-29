@@ -107,6 +107,122 @@ public sealed class DeviceServiceTests
         Assert.Equal(now, created.CreatedAt);
     }
 
+    [Fact]
+    public async Task RegisterAsync_WhenIpadPlatformIsRequested_CreatesIpadOsRegistration()
+    {
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(repository, LoadStoreAsync, () => new DateTime(2026, 7, 10, 11, 1, 0));
+
+        await service.RegisterAsync(
+            new DeviceRegisterRequest("1003", "HW-001", "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.Equal("iPadOS", Assert.Single(repository.CreatedRegistrations).DeviceSystem);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenIpadHardwareIdIsMissing_RejectsTheRequest()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-001",
+                DeviceStatus = 1,
+                DeviceSystem = "iPadOS",
+                AuthorizationCode = "AUTH-001"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003", null, "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Device hardware id is required for iPadOS.", response.Message);
+        Assert.Null(response.AuthorizationCode);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenLegacyWindowsRequestOmitsHardwareId_PreservesExistingCompatibility()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-001",
+                DeviceStatus = 1,
+                DeviceSystem = "Windows",
+                AuthorizationCode = "AUTH-001"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal("AUTH-001", response.AuthorizationCode);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenDatabasePlatformIsUnknown_RejectsInsteadOfFallingBackToWindows()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-001",
+                DeviceStatus = 1,
+                DeviceSystem = "Android",
+                AuthorizationCode = "AUTH-001"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Registered device system is invalid.", response.Message);
+        Assert.Null(response.AuthorizationCode);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenSubmittedPlatformDoesNotMatchRegistration_Rejects()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-001",
+                DeviceStatus = 1,
+                DeviceSystem = "iPadOS",
+                AuthorizationCode = "AUTH-001"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003", "HW-001"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Device system does not match existing registration.", response.Message);
+        Assert.Null(response.AuthorizationCode);
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -183,6 +299,97 @@ public sealed class DeviceServiceTests
         Assert.Empty(repository.DisabledRequests);
         Assert.Empty(repository.ResetRequests);
         Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenPendingPlatformDoesNotMatch_RejectsBeforeAnyWrite()
+    {
+        var targetPending = new DeviceRegistrationRecord
+        {
+            Id = 31,
+            DeviceCode = "POS_1003_IPAD",
+            StoreCode = "1003",
+            HardwareId = "HW-001",
+            DeviceStatus = -1,
+            DeviceSystem = "iPadOS"
+        };
+        var otherPending = new DeviceRegistrationRecord
+        {
+            Id = 30,
+            DeviceCode = "POS_1002_PENDING",
+            StoreCode = "1002",
+            HardwareId = "HW-001",
+            DeviceStatus = -1,
+            DeviceSystem = "Windows"
+        };
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            RegistrationsForUpdate = [targetPending, otherPending]
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.RegisterAsync(
+            new DeviceRegisterRequest("1003", "HW-001", "Counter 2"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Device system does not match existing registration.", response.Message);
+        Assert.Empty(repository.DisabledRequests);
+        Assert.Empty(repository.ResetRequests);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenDisabledPlatformDoesNotMatch_DoesNotOverwriteServerPlatform()
+    {
+        var targetDisabled = new DeviceRegistrationRecord
+        {
+            Id = 32,
+            DeviceCode = "POS_1003_WINDOWS",
+            StoreCode = "1003",
+            HardwareId = "HW-001",
+            DeviceStatus = 0,
+            DeviceSystem = "Windows"
+        };
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            RegistrationsForUpdate = [targetDisabled]
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.RegisterAsync(
+            new DeviceRegisterRequest("1003", "HW-001", "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Device system does not match existing registration.", response.Message);
+        Assert.Empty(repository.ResetRequests);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenDisabledIpadPlatformMatches_PreservesServerPlatformOnReset()
+    {
+        var targetDisabled = new DeviceRegistrationRecord
+        {
+            Id = 33,
+            DeviceCode = "POS_1003_IPAD",
+            StoreCode = "1003",
+            HardwareId = "HW-001",
+            DeviceStatus = 0,
+            DeviceSystem = "iPadOS"
+        };
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            RegistrationsForUpdate = [targetDisabled]
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        await service.RegisterAsync(
+            new DeviceRegisterRequest("1003", "HW-001", "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.Equal("iPadOS", Assert.Single(repository.ResetRequests).DeviceSystem);
     }
 
     [Fact]
@@ -668,6 +875,38 @@ public sealed class DeviceServiceTests
     }
 
     [Fact]
+    public async Task ReregisterAsync_InheritsIpadOsPlatformFromAuthenticatedDeviceContext()
+    {
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        await service.ReregisterAsync(
+            new DeviceReregisterRequest("1003", "HW-001", "iPad counter"),
+            new DeviceReregisterContext("POS_1002_0800", "1002", "HW-001", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.Equal("iPadOS", Assert.Single(repository.CreatedRegistrations).DeviceSystem);
+    }
+
+    [Fact]
+    public async Task ReregisterAsync_WhenAuthenticatedPlatformIsUnknown_RejectsWithoutWrites()
+    {
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.ReregisterAsync(
+            new DeviceReregisterRequest("1003", "HW-001", "Counter"),
+            new DeviceReregisterContext("POS_1002_0800", "1002", "HW-001", "Android"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal("Current device system is invalid.", response.Message);
+        Assert.Empty(repository.ActiveDisabledRequests);
+        Assert.Empty(repository.ResetRequests);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
     public async Task ReregisterAsync_WhenCurrentRegistrationCannotBeDisabled_ThrowsBeforeTargetWriteAndRollsBack()
     {
         var repository = new FakeDeviceRegistrationRepository
@@ -788,6 +1027,8 @@ public sealed class DeviceServiceTests
 
     private sealed class FakeDeviceRegistrationRepository : IDeviceRegistrationRepository
     {
+        public DeviceRegistrationRecord? DeviceByCode { get; init; }
+
         public DeviceRegistrationRecord? LatestByHardwareId { get; init; }
 
         public DeviceRegistrationRecord? ActiveOrLockedRegistration { get; init; }
@@ -829,7 +1070,7 @@ public sealed class DeviceServiceTests
             string storeCode,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult<DeviceRegistrationRecord?>(null);
+            return Task.FromResult(DeviceByCode);
         }
 
         public Task<DeviceRegistrationRecord?> FindLatestByHardwareIdAsync(

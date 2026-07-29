@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,9 @@ public sealed class DeviceAuthenticationHandler(
     IDeviceAuthorizationService deviceAuthorizationService)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
+    private const string AuthenticationFailureCodeItem =
+        "Hbpos.DeviceAuthentication.FailureCode";
+
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var authorizationHeader = Request.Headers.Authorization.ToString();
@@ -35,21 +39,47 @@ public sealed class DeviceAuthenticationHandler(
             hardwareId,
             Context.RequestAborted);
 
-        if (result is null)
+        if (result.Device is null)
         {
+            Context.Items[AuthenticationFailureCodeItem] =
+                result.FailureCode ?? DeviceAuthorizationFailureCodes.Invalid;
             return AuthenticateResult.Fail("Invalid POS device authorization.");
         }
 
+        var device = result.Device;
         var claims = new[]
         {
-            new Claim(DeviceAuthConstants.DeviceCodeClaim, result.DeviceCode),
-            new Claim(DeviceAuthConstants.StoreCodeClaim, result.StoreCode),
-            new Claim(DeviceAuthConstants.HardwareIdClaim, result.HardwareId)
+            new Claim(DeviceAuthConstants.DeviceCodeClaim, device.DeviceCode),
+            new Claim(DeviceAuthConstants.StoreCodeClaim, device.StoreCode),
+            new Claim(DeviceAuthConstants.HardwareIdClaim, device.HardwareId),
+            new Claim(DeviceAuthConstants.DeviceSystemClaim, device.DeviceSystem)
         };
         var identity = new ClaimsIdentity(claims, DeviceAuthConstants.Scheme);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, DeviceAuthConstants.Scheme);
 
         return AuthenticateResult.Success(ticket);
+    }
+
+    protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        if (Response.HasStarted)
+        {
+            await base.HandleChallengeAsync(properties);
+            return;
+        }
+
+        var failureCode =
+            Context.Items[AuthenticationFailureCodeItem] as string
+            ?? "DEVICE_AUTH_REQUIRED";
+        var message = failureCode == DeviceAuthorizationFailureCodes.DeviceDisabled
+            ? "POS device is disabled."
+            : "POS device authorization is required.";
+
+        Response.StatusCode = StatusCodes.Status401Unauthorized;
+        Response.ContentType = "application/json";
+        await Response.WriteAsJsonAsync(
+            ApiResult<object>.Fail(failureCode, message),
+            Context.RequestAborted);
     }
 }

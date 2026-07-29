@@ -2817,6 +2817,7 @@
       "hardwareId": "Hardware ID",
       "deviceType": "Device Type",
       "deviceSystem": "System",
+      "deviceSystemOther": "Other",
       "onlineStatus": "Online",
       "online": "Online",
       "offline": "Offline",

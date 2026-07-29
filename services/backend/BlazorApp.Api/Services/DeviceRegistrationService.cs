@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
 
@@ -624,9 +625,48 @@ namespace BlazorApp.Api.Services
                     query = query.Where(d => d.设备类型 == deviceType);
                 }
 
-                if (!string.IsNullOrEmpty(deviceSystem))
+                var normalizedDeviceSystem = deviceSystem?.Trim();
+                if (!string.IsNullOrEmpty(normalizedDeviceSystem))
                 {
-                    query = query.Where(d => d.设备系统 == deviceSystem);
+                    if (
+                        string.Equals(
+                            normalizedDeviceSystem,
+                            DeviceRegistrationDeviceSystems.Windows,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    {
+                        query = query.Where(d =>
+                            d.设备系统 == null
+                            || d.设备系统.Trim() == string.Empty
+                            || d.设备系统.Trim()
+                                == DeviceRegistrationDeviceSystems.Windows
+                        );
+                    }
+                    else if (
+                        string.Equals(
+                            normalizedDeviceSystem,
+                            DeviceRegistrationDeviceSystems.Other,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    {
+                        query = query.Where(d =>
+                            d.设备系统 != null
+                            && d.设备系统.Trim() != string.Empty
+                            && d.设备系统.Trim()
+                                != DeviceRegistrationDeviceSystems.Windows
+                            && d.设备系统.Trim()
+                                != DeviceRegistrationDeviceSystems.IpadOs
+                        );
+                    }
+                    else
+                    {
+                        query = query.Where(d =>
+                            d.设备系统 != null
+                            && d.设备系统.Trim() == normalizedDeviceSystem
+                        );
+                    }
                 }
 
                 if (status.HasValue)

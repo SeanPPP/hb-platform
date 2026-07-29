@@ -12,6 +12,7 @@ import {
   normalizeAppDeviceStatusListResponse,
   normalizeAppDeviceStatusSummary,
   normalizeDeviceRegistrationDetail,
+  normalizeRegisteredDeviceSystem,
   revokeEmergencyLoginGrant,
 } from './deviceRegistrationService'
 
@@ -101,6 +102,16 @@ assertEqual(
   normalizedCamelDetail.isOnline,
   false,
   'Should normalize missing runtime online field as false'
+)
+assertEqual(
+  normalizeRegisteredDeviceSystem('  '),
+  'Windows',
+  'Should present legacy blank systems as Windows',
+)
+assertEqual(
+  normalizeRegisteredDeviceSystem(' VisionOS '),
+  'VisionOS',
+  'Should preserve unknown non-empty systems',
 )
 
 const normalizedRuntimeDetail = normalizeDeviceRegistrationDetail({
@@ -296,11 +307,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return new Response(JSON.stringify({
     success: true,
     data: {
-      devices: [],
+      devices: [
+        { id: 21, hardwareId: 'HW-LEGACY', deviceSystem: '' },
+        { id: 22, hardwareId: 'HW-UNKNOWN', deviceSystem: 'VisionOS' },
+      ],
       pagination: {
         page: 2,
         pageSize: 30,
-        total: 0,
+        total: 2,
         totalPages: 1,
       },
     },
@@ -311,12 +325,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch
 
 try {
-  await getDeviceRegistrations({
+  const registeredDevices = await getDeviceRegistrations({
     page: 2,
     pageSize: 30,
     storeCode: 'S01',
     deviceType: 'POS',
-    deviceSystem: 'Windows',
+    deviceSystem: 'Other',
   })
   await activateDevice(12)
   await disableDevice(12)
@@ -340,10 +354,20 @@ try {
 
   assertEqual(
     calls[0]?.url,
-    '/api/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows',
+    '/api/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Other',
     'Device registration list should use legacy device API base path',
   )
   assertEqual(calls[0]?.method, 'GET', 'Device registration list should use GET')
+  assertEqual(
+    registeredDevices.devices[0]?.deviceSystem,
+    'Windows',
+    'Device registration list should normalize legacy blank systems',
+  )
+  assertEqual(
+    registeredDevices.devices[1]?.deviceSystem,
+    'VisionOS',
+    'Device registration list should preserve unknown systems',
+  )
   assertEqual(
     calls[1]?.url,
     '/api/12/activate',
