@@ -230,32 +230,53 @@ public sealed class CardTerminalSettingsStore(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await settingsRepository.GetValueAsync(
+        var snapshotEntry = await settingsRepository.GetEntryAsync(
             GetLinklyCloudCredentialSnapshotKey(environment),
             cancellationToken);
-        if (TryParseLinklyCloudCredentialSnapshot(snapshot, out var snapshotUsername, out var snapshotPassword))
+        var usernameEntry = await settingsRepository.GetEntryAsync(
+            GetLinklyCloudUsernameKey(environment),
+            cancellationToken);
+        var passwordEntry = await settingsRepository.GetEntryAsync(
+            GetLinklyCloudPasswordKey(environment),
+            cancellationToken);
+        var legacyUsername = NormalizeOptional(usernameEntry?.Value);
+        var legacyProtectedPassword = passwordEntry?.Value;
+        var hasCompleteLegacyCredential =
+            !string.IsNullOrWhiteSpace(legacyUsername) &&
+            !string.IsNullOrWhiteSpace(legacyProtectedPassword);
+
+        if (TryParseLinklyCloudCredentialSnapshot(
+                snapshotEntry?.Value,
+                out var snapshotUsername,
+                out var snapshotPassword))
         {
+            // 旧版本只会依次更新两个拆分 key。只有两项都严格晚于快照，才视为一次完整的回滚版本保存；
+            // 单项较新代表可能只写入了一半，必须继续使用原子快照，避免拼出混代凭据。
+            if (hasCompleteLegacyCredential &&
+                IsStrictlyNewer(usernameEntry, snapshotEntry) &&
+                IsStrictlyNewer(passwordEntry, snapshotEntry))
+            {
+                return new LinklyCloudCredentialSettings(
+                    legacyUsername,
+                    protector.Unprotect(legacyProtectedPassword),
+                    true);
+            }
+
             return new LinklyCloudCredentialSettings(
                 snapshotUsername,
                 protector.Unprotect(snapshotPassword),
                 true);
         }
 
-        // 兼容升级前分别保存的两个 key；新写入统一读取单行快照，避免并发更新时混合两代凭据。
-        var username = NormalizeOptional(await settingsRepository.GetValueAsync(
-            GetLinklyCloudUsernameKey(environment),
-            cancellationToken));
-        var protectedPassword = await settingsRepository.GetValueAsync(
-            GetLinklyCloudPasswordKey(environment),
-            cancellationToken);
-        var password = string.IsNullOrWhiteSpace(protectedPassword)
+        // 兼容升级前分别保存的两个 key；快照缺失或损坏时维持原有回退行为。
+        var password = string.IsNullOrWhiteSpace(legacyProtectedPassword)
             ? null
-            : protector.Unprotect(protectedPassword);
+            : protector.Unprotect(legacyProtectedPassword);
 
         return new LinklyCloudCredentialSettings(
-            username,
+            legacyUsername,
             password,
-            !string.IsNullOrWhiteSpace(protectedPassword));
+            !string.IsNullOrWhiteSpace(legacyProtectedPassword));
     }
 
     public async Task SaveLinklyCloudCredentialAsync(
@@ -369,6 +390,15 @@ public sealed class CardTerminalSettingsStore(
         {
             return false;
         }
+    }
+
+    private static bool IsStrictlyNewer(
+        LocalAppSettingEntry? candidate,
+        LocalAppSettingEntry? baseline)
+    {
+        return candidate?.UpdatedAt is { } candidateUpdatedAt &&
+               baseline?.UpdatedAt is { } baselineUpdatedAt &&
+               candidateUpdatedAt > baselineUpdatedAt;
     }
 
     private static string GetLinklyCloudPosIdKey(

@@ -381,6 +381,31 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public async Task App_settings_entry_returns_value_and_persisted_update_time()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var settings = new LocalAppSettingsRepository(store);
+            await schema.InitializeAsync();
+
+            await settings.SetValueAsync("VersionedSetting", "current");
+            var entry = await settings.GetEntryAsync("VersionedSetting");
+
+            Assert.NotNull(entry);
+            Assert.Equal("current", entry.Value);
+            Assert.NotNull(entry.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task App_settings_batch_write_rolls_back_all_values_when_second_write_fails()
     {
         var databasePath = CreateTempDatabasePath();

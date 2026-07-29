@@ -4,6 +4,14 @@ public interface ILocalAppSettingsRepository
 {
     Task<string?> GetValueAsync(string key, CancellationToken cancellationToken = default);
 
+    async Task<LocalAppSettingEntry?> GetEntryAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        var value = await GetValueAsync(key, cancellationToken);
+        return value is null ? null : new LocalAppSettingEntry(value, null);
+    }
+
     Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default);
 
     Task SetValuesAsync(
@@ -12,6 +20,8 @@ public interface ILocalAppSettingsRepository
 
     Task DeleteValueAsync(string key, CancellationToken cancellationToken = default);
 }
+
+public sealed record LocalAppSettingEntry(string Value, DateTimeOffset? UpdatedAt);
 
 public sealed class LocalAppSettingsRepository(LocalSqliteStore store) : ILocalAppSettingsRepository
 {
@@ -42,6 +52,42 @@ public sealed class LocalAppSettingsRepository(LocalSqliteStore store) : ILocalA
                 [key] = value,
             },
             cancellationToken);
+    }
+
+    public Task<LocalAppSettingEntry?> GetEntryAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        var keySnapshot = key;
+        return Task.Run(async () =>
+        {
+            await using var connection = await store.OpenConnectionAsync(cancellationToken);
+            await EnsureAppSettingsTableAsync(connection, cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT Value, UpdatedAt
+                FROM AppSettings
+                WHERE Key = $Key;
+                """;
+            command.Parameters.AddWithValue("$Key", keySnapshot);
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+
+            var value = reader.GetString(0);
+            var updatedAtText = reader.GetString(1);
+            var updatedAt = DateTimeOffset.TryParse(
+                updatedAtText,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out var parsedUpdatedAt)
+                ? parsedUpdatedAt
+                : (DateTimeOffset?)null;
+            return new LocalAppSettingEntry(value, updatedAt);
+        }, cancellationToken);
     }
 
     public Task SetValuesAsync(

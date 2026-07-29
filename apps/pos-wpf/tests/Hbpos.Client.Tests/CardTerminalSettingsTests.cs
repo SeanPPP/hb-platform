@@ -451,6 +451,84 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
+    public async Task GetLinklyCloudCredentialAsync_prefers_snapshot_when_split_keys_have_same_timestamp()
+    {
+        var repository = new InMemorySettingsRepository(exposeUpdatedAt: true);
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector());
+        await store.SaveLinklyCloudCredentialAsync(
+            CardTerminalEnvironment.Production,
+            "snapshot-user",
+            "snapshot-password");
+
+        // 同一次批量保存的三个 key 时间相同；替换拆分值但保留时间，确保测试能区分实际读取分支。
+        repository.ReplaceStoredValueKeepingUpdatedAt(
+            "CardTerminal:LinklyCloudUsername:Production",
+            "same-time-legacy-user");
+        repository.ReplaceStoredValueKeepingUpdatedAt(
+            "CardTerminal:LinklyCloudPasswordProtected:Production",
+            Protect("same-time-legacy-password"));
+
+        var credential = await store.GetLinklyCloudCredentialAsync(CardTerminalEnvironment.Production);
+
+        Assert.Equal("snapshot-user", credential.Username);
+        AssertSecretEquals(
+            "snapshot-password",
+            credential.Password,
+            "equal timestamps must keep the atomic snapshot");
+    }
+
+    [Fact]
+    public async Task GetLinklyCloudCredentialAsync_uses_complete_newer_legacy_generation_after_rollback()
+    {
+        var repository = new InMemorySettingsRepository(exposeUpdatedAt: true);
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector());
+        await store.SaveLinklyCloudCredentialAsync(
+            CardTerminalEnvironment.Production,
+            "new-version-user",
+            "new-version-password");
+
+        // 模拟回滚到旧版本：旧版本只会依次更新两个拆分 key，不会更新快照。
+        await repository.SetValueAsync(
+            "CardTerminal:LinklyCloudUsername:Production",
+            "rollback-user");
+        await repository.SetValueAsync(
+            "CardTerminal:LinklyCloudPasswordProtected:Production",
+            Protect("rollback-password"));
+
+        var credential = await store.GetLinklyCloudCredentialAsync(CardTerminalEnvironment.Production);
+
+        Assert.Equal("rollback-user", credential.Username);
+        AssertSecretEquals(
+            "rollback-password",
+            credential.Password,
+            "a completed rollback-version save should supersede the older snapshot");
+    }
+
+    [Fact]
+    public async Task GetLinklyCloudCredentialAsync_keeps_snapshot_when_rollback_updates_only_one_key()
+    {
+        var repository = new InMemorySettingsRepository(exposeUpdatedAt: true);
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector());
+        await store.SaveLinklyCloudCredentialAsync(
+            CardTerminalEnvironment.Production,
+            "snapshot-user",
+            "snapshot-password");
+
+        // 模拟旧版本在第二个 key 写入前失败，不能把新 username 与旧 password 拼成一代凭据。
+        await repository.SetValueAsync(
+            "CardTerminal:LinklyCloudUsername:Production",
+            "partial-rollback-user");
+
+        var credential = await store.GetLinklyCloudCredentialAsync(CardTerminalEnvironment.Production);
+
+        Assert.Equal("snapshot-user", credential.Username);
+        AssertSecretEquals(
+            "snapshot-password",
+            credential.Password,
+            "a partial rollback-version save must not replace the coherent snapshot");
+    }
+
+    [Fact]
     public async Task GetOrCreateLinklyCloudPosIdAsync_reuses_uuid_v4_for_same_store_and_device()
     {
         var repository = new InMemorySettingsRepository();
@@ -844,11 +922,17 @@ public sealed class CardTerminalSettingsTests
     private sealed class InMemorySettingsRepository : ILocalAppSettingsRepository
     {
         private readonly Dictionary<string, string> _values;
+        private readonly Dictionary<string, DateTimeOffset> _updatedAt = new(StringComparer.Ordinal);
+        private readonly bool _exposeUpdatedAt;
+        private long _updatedAtTicks;
 
         public int BatchWriteCount { get; private set; }
 
-        public InMemorySettingsRepository(IReadOnlyDictionary<string, string?>? seedValues = null)
+        public InMemorySettingsRepository(
+            IReadOnlyDictionary<string, string?>? seedValues = null,
+            bool exposeUpdatedAt = false)
         {
+            _exposeUpdatedAt = exposeUpdatedAt;
             _values = new Dictionary<string, string>(StringComparer.Ordinal);
             if (seedValues is null)
             {
@@ -860,6 +944,7 @@ public sealed class CardTerminalSettingsTests
                 if (entry.Value is not null)
                 {
                     _values[entry.Key] = entry.Value;
+                    _updatedAt[entry.Key] = NextUpdatedAt();
                 }
             }
         }
@@ -872,7 +957,23 @@ public sealed class CardTerminalSettingsTests
         public Task SetValueAsync(string key, string value, CancellationToken cancellationToken = default)
         {
             _values[key] = value;
+            _updatedAt[key] = NextUpdatedAt();
             return Task.CompletedTask;
+        }
+
+        public Task<LocalAppSettingEntry?> GetEntryAsync(
+            string key,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_values.TryGetValue(key, out var value))
+            {
+                return Task.FromResult<LocalAppSettingEntry?>(null);
+            }
+
+            var updatedAt = _exposeUpdatedAt && _updatedAt.TryGetValue(key, out var storedUpdatedAt)
+                ? storedUpdatedAt
+                : (DateTimeOffset?)null;
+            return Task.FromResult<LocalAppSettingEntry?>(new LocalAppSettingEntry(value, updatedAt));
         }
 
         public Task SetValuesAsync(
@@ -880,9 +981,11 @@ public sealed class CardTerminalSettingsTests
             CancellationToken cancellationToken = default)
         {
             BatchWriteCount++;
+            var updatedAt = NextUpdatedAt();
             foreach (var (key, value) in values)
             {
                 _values[key] = value;
+                _updatedAt[key] = updatedAt;
             }
 
             return Task.CompletedTask;
@@ -897,6 +1000,16 @@ public sealed class CardTerminalSettingsTests
         public string? GetStoredValue(string key)
         {
             return _values.TryGetValue(key, out var value) ? value : null;
+        }
+
+        public void ReplaceStoredValueKeepingUpdatedAt(string key, string value)
+        {
+            _values[key] = value;
+        }
+
+        private DateTimeOffset NextUpdatedAt()
+        {
+            return DateTimeOffset.UnixEpoch.AddTicks(++_updatedAtTicks);
         }
     }
 
