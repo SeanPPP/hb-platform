@@ -3,6 +3,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
+using Microsoft.Data.Sqlite;
 using System.Text.Json;
 
 namespace Hbpos.Client.Tests;
@@ -70,6 +71,127 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(3, result.PendingSyncCount);
         Assert.Equal(3, result.UpdatedSession.PendingSyncCount);
         Assert.Equal(savedOrder.OrderGuid, result.Order.OrderGuid);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_runs_blocking_local_save_off_the_calling_thread()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-UI-THREAD", "Thread Check Tea", "930UITHREAD", 4.4m));
+        var orders = new RecordingOrderRepository
+        {
+            SaveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            ContinueSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0));
+        var callingThreadId = Environment.CurrentManagedThreadId;
+
+        var completion = workflow.CompleteAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            "5");
+        await orders.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotEqual(callingThreadId, orders.SaveThreadId);
+        Assert.NotEmpty(cart.Lines);
+        orders.ContinueSave.SetResult();
+
+        await completion;
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_returns_completed_warning_when_pending_sync_refresh_fails()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-301W", "Workflow Warning Tea", "930301W", 4.4m));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 7);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new ThrowingPendingSyncQueueRepository());
+
+        var result = await workflow.CompleteAsync(cart, session, "5");
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Equal(7, result.PendingSyncCount);
+        Assert.Equal(7, result.UpdatedSession.PendingSyncCount);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_returns_completed_warning_when_cart_clear_notification_fails()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-301C", "Cart Warning Tea", "930301C", 4.4m));
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("cart listener failed");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0));
+
+        var result = await workflow.CompleteAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            "5");
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_returns_completed_warning_when_card_attempt_marking_fails()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-301A", "Attempt Warning Tea", "930301A", 10m));
+        var attemptGuid = Guid.NewGuid();
+        var attempts = new RecordingCardPaymentAttemptRepository
+        {
+            MarkOrderCompletedException = new InvalidOperationException("attempt write failed")
+        };
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            attemptGuid,
+            null,
+            "TXN-WARN",
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            10m,
+            LocalCardPaymentAttemptStatus.Approved,
+            "{}",
+            "S001",
+            "POS-01",
+            "C001",
+            null,
+            null,
+            "ANZ:TXN-WARN",
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardPaymentAttemptRepository: attempts);
+
+        var result = await workflow.CompletePaymentAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            [new PaymentTender(
+                PaymentMethodKind.Card,
+                10m,
+                "ANZ:TXN-WARN",
+                IdempotencyKey: $"CARD_ATTEMPT:{attemptGuid:N}")],
+            cashTenderedAmount: 0m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Empty(cart.Lines);
+        Assert.Single(result.Order.Payments);
     }
 
     [Fact]
@@ -220,13 +342,548 @@ public sealed class CashPaymentWorkflowServiceTests
             cartSnapshot: cart.CreateSnapshot());
 
         Assert.False(tenderResult.Succeeded);
-        Assert.Equal("linkly.backend.resultUnknown", tenderResult.StatusKey);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
         var attempt = Assert.Single(attempts.Attempts);
         Assert.Equal("backend-session-unknown", attempt.SessionId);
         Assert.Equal("TXN-UNKNOWN", attempt.TxnRef);
         Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempt.Status);
         Assert.Null(attempt.CompletedAt);
         Assert.Empty(orders.SavedOrders);
+    }
+
+    [Fact]
+    public async Task Card_tender_cancelled_before_linkly_terminal_submission_is_cancelled_and_unlocked()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-PRE", "Cancelled Before Submit", "930CANCELPRE", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancelledCardTerminalClient(),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.status.cardCancelled", tenderResult.StatusKey);
+        Assert.Equal(CardPaymentTerminalOutcome.Cancelled, tenderResult.CardResult?.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_cancelled_with_local_linkly_txn_ref_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-LOCAL", "Cancelled Local Linkly", "930CANCELLOCAL", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancelledCardTerminalClient(),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()),
+            linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempt.Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_cancelled_when_attempt_lookup_fails_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-READ", "Cancelled Attempt Read", "930CANCELREAD", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository
+        {
+            GetAttemptException = new InvalidOperationException("local read failed")
+        };
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancelledCardTerminalClient(),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Single(attempts.Attempts);
+    }
+
+    [Fact]
+    public async Task Card_tender_cancelled_after_linkly_session_starts_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-LINKLY", "Cancelled Linkly Session", "930CANCELLINKLY", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancellingCardTerminalClient(async cancellationToken =>
+            {
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                await context!.BindSessionAsync("session-after-submit", "TXN-CANCEL", DateTimeOffset.UtcNow, cancellationToken);
+            }),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_cancelled_after_square_checkout_created_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-SQUARE", "Cancelled Square Checkout", "930CANCELSQUARE", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var accessor = new SquarePaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancellingCardTerminalClient(async cancellationToken =>
+            {
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                await attempts.MarkCheckoutCreatedAsync(
+                    context!.AttemptGuid,
+                    "checkout-after-submit",
+                    "PENDING",
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+            }),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_terminal_exception_after_linkly_submission_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-TERMINAL-EXCEPTION", "Terminal Exception Tea", "930TERMINALEX", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ThrowingCardTerminalClient(async cancellationToken =>
+            {
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                await context!.BindSessionAsync("session-after-submit", "TXN-EXCEPTION", DateTimeOffset.UtcNow, cancellationToken);
+            }),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_terminal_exception_before_submission_marks_attempt_failed_and_throws()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-TERMINAL-FAILED", "Terminal Failed Tea", "930TERMINALFAIL", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ThrowingCardTerminalClient(),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot()));
+
+        Assert.Equal("terminal transport failed", exception.Message);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Failed, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Square_card_tender_terminal_exception_after_checkout_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-EXCEPTION", "Square Exception Tea", "930SQUAREEX", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var accessor = new SquarePaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ThrowingCardTerminalClient(async cancellationToken =>
+            {
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                await attempts.MarkCheckoutCreatedAsync(
+                    context!.AttemptGuid,
+                    "checkout-after-exception",
+                    "PENDING",
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+            }),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_linkly_submission_binding_ignores_caller_cancellation()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-LINKLY-BIND-CANCEL", "Linkly Binding Tea", "930LINKLYBIND", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository { RejectCancelledTokens = true };
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var cancellation = new CancellationTokenSource();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancellingCardTerminalClient(async cancellationToken =>
+            {
+                cancellation.Cancel();
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                await context!.BindSessionAsync("session-bind-cancel", "TXN-BIND-CANCEL", DateTimeOffset.UtcNow, cancellationToken);
+            }),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Square_card_tender_checkout_binding_ignores_caller_cancellation()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-BIND-CANCEL", "Square Binding Tea", "930SQUAREBIND", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository { RejectCancelledTokens = true };
+        var accessor = new SquarePaymentAttemptContextAccessor();
+        using var cancellation = new CancellationTokenSource();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancellingCardTerminalClient(async cancellationToken =>
+            {
+                cancellation.Cancel();
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                var bindCheckout = Assert.IsType<Func<string, string?, DateTimeOffset, CancellationToken, Task>>(context!.BindCheckoutAsync);
+                await bindCheckout("checkout-bind-cancel", "PENDING", DateTimeOffset.UtcNow, cancellationToken);
+            }),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Square_card_tender_checkout_binding_write_failure_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-BIND-FAIL", "Square Binding Failure Tea", "930SQUAREBINDFAIL", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            MarkCheckoutCreatedException = new InvalidOperationException("checkout persistence failed")
+        };
+        var accessor = new SquarePaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ThrowingCardTerminalClient(async cancellationToken =>
+            {
+                var context = accessor.Current;
+                Assert.NotNull(context);
+                var bindCheckout = Assert.IsType<Func<string, string?, DateTimeOffset, CancellationToken, Task>>(context!.BindCheckoutAsync);
+                await bindCheckout("checkout-bind-fail", "PENDING", DateTimeOffset.UtcNow, cancellationToken);
+            }),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+    }
+
+    [Fact]
+    public async Task Square_sale_checkout_binding_rejects_a_stale_worker_token()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-STALE-SALE", "Square Stale Sale Tea", "930SQUARESTALESALE", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var accessor = new SquarePaymentAttemptContextAccessor();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ThrowingCardTerminalClient(async cancellationToken =>
+            {
+                var context = Assert.IsType<SquarePaymentAttemptContext>(accessor.Current);
+                var persisted = Assert.Single(attempts.Attempts);
+                Assert.False(string.IsNullOrWhiteSpace(context.SubmissionToken));
+                Assert.Equal(persisted.SubmissionToken, context.SubmissionToken);
+                attempts.SimulateSupervisorRetryAndNewClaim("replacement-sale-token");
+                await context.BindCheckoutAsync!(
+                    "stale-sale-checkout",
+                    "PENDING",
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+            }),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: accessor);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var saved = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", result.StatusKey);
+        Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Equal("replacement-sale-token", saved.SubmissionToken);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, saved.Status);
+        Assert.Null(saved.CheckoutId);
+    }
+
+    [Fact]
+    public async Task Square_card_tender_unknown_local_attempt_result_requires_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-UNKNOWN", "Square Unknown Tea", "930SQUAREUNKNOWN", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var context = new SquarePaymentAttemptContextAccessor();
+        var terminal = new AsyncObservingCardTerminalClient(async () =>
+        {
+            var attempt = Assert.Single(attempts.Attempts);
+            await attempts.MarkFailedAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                null,
+                null,
+                null,
+                "Square transport result was not confirmed.",
+                DateTimeOffset.UtcNow);
+        }, new PaymentAuthorizationResult(
+            false,
+            null,
+            "Square transport result was not confirmed.",
+            StatusKey: "payment.card.squareCommunicationFailed"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: context);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Square_card_tender_explicit_checkout_cancellation_does_not_require_recovery()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-CANCELED", "Square Canceled Tea", "930SQUARECANCELED", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new AsyncObservingCardTerminalClient(async () =>
+        {
+            var attempt = Assert.Single(attempts.Attempts);
+            await attempts.MarkCheckoutCreatedAsync(
+                attempt.AttemptGuid,
+                "checkout-canceled",
+                "CANCELED",
+                DateTimeOffset.UtcNow);
+            await attempts.MarkFailedAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Canceled,
+                "CANCELED",
+                null,
+                null,
+                "Customer canceled the Square payment.",
+                DateTimeOffset.UtcNow);
+        }, new PaymentAuthorizationResult(
+            false,
+            null,
+            "Customer canceled the Square payment.",
+            StatusKey: "payment.card.squareCanceled"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: new SquarePaymentAttemptContextAccessor());
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.squareCanceled", tenderResult.StatusKey);
+        Assert.False(tenderResult.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, Assert.Single(attempts.Attempts).Status);
     }
 
     [Fact]
@@ -303,6 +960,8 @@ public sealed class CashPaymentWorkflowServiceTests
             cartSnapshot: cart.CreateSnapshot());
 
         Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
         Assert.Equal("Card terminal authorized amount did not match the requested amount.", tenderResult.StatusMessage);
         var attempt = Assert.Single(attempts.Attempts);
         Assert.Equal("backend-session-mismatch", attempt.SessionId);
@@ -310,6 +969,270 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(LocalCardPaymentAttemptStatus.RequiresReview, attempt.Status);
         Assert.Equal("Card terminal authorized amount did not match the requested amount.", attempt.ResponseText);
         Assert.Empty(orders.SavedOrders);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(15)]
+    [InlineData(5)]
+    public async Task Square_card_tender_approved_invalid_amount_requires_recovery(decimal authorizedAmount)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SQUARE-AMOUNT", "Square Invalid Amount Tea", "930SQUAREAMOUNT", 10m));
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "SQ:invalid-amount",
+            "APPROVED",
+            authorizedAmount,
+            [new CardTransactionDto("Square", "payment-invalid", null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, authorizedAmount, null)],
+            ResponseCode: "00",
+            ResponseText: "APPROVED");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new ObservingCardTerminalClient(() => { }, authorization),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts,
+            squarePaymentAttemptContextAccessor: new SquarePaymentAttemptContextAccessor());
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var expectedMessage = authorizedAmount <= 0m
+            ? "Card terminal approved a non-positive amount. Supervisor review is required."
+            : authorizedAmount > 10m
+                ? "Card terminal authorized amount exceeded the remaining amount."
+                : "Card terminal authorized amount did not match the requested amount.";
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", tenderResult.StatusKey);
+        Assert.True(tenderResult.CardResult?.RequiresRecovery);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, attempt.Status);
+        Assert.Equal(expectedMessage, attempt.ResponseText);
+    }
+
+    [Fact]
+    public async Task Card_tender_approval_after_caller_cancellation_persists_attempt_outcome()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-APPROVED", "Canceled Approved Tea", "930CANCELAPPROVED", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository { RejectCancelledTokens = true };
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var cancellation = new CancellationTokenSource();
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:TXN-CANCEL:session=session-cancel:environment=Sandbox",
+            "APPROVED",
+            10m,
+            [new CardTransactionDto("ANZ", "TXN-CANCEL", null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, 10m, null)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            "P",
+            "session-cancel",
+            "TXN-CANCEL",
+            "00",
+            "APPROVED");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new CancellingApprovedCardTerminalClient(accessor, cancellation, authorization),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(tenderResult.Succeeded);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_approved_attempt_persistence_failure_returns_result_unknown()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-APPROVED-PERSIST", "Approved Persist Tea", "930APPROVEDPERSIST", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository
+        {
+            UpdateOutcomeException = new InvalidOperationException("attempt outcome write failed")
+        };
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:TXN-PERSIST:session=session-persist:environment=Sandbox",
+            "APPROVED",
+            10m,
+            [new CardTransactionDto("ANZ", "TXN-PERSIST", null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, 10m, null)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            "P",
+            "session-persist",
+            "TXN-PERSIST",
+            "00",
+            "APPROVED");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new BindingCardTerminalClient(accessor, authorization, () => { }, () => { }),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", result.StatusKey);
+        Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Card_tender_approved_order_persists_after_caller_cancellation()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCEL-SAVE", "Canceled Save Tea", "930CANCELSAVE", 10m));
+        var orders = new RecordingOrderRepository { RejectCancelledTokens = true };
+        var attempts = new RecordingCardPaymentAttemptRepository { RejectCancelledTokens = true };
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:TXN-SAVE:session=session-save:environment=Sandbox",
+            "APPROVED",
+            10m,
+            [new CardTransactionDto("ANZ", "TXN-SAVE", null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, 10m, null)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            "P",
+            "session-save",
+            "TXN-SAVE",
+            "00",
+            "APPROVED");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new BindingCardTerminalClient(accessor, authorization, () => { }, () => { }),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var completion = await workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [tenderResult.Tender!],
+            cashTenderedAmount: 0m,
+            cancellationToken: cancellation.Token);
+
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(completion.Order.OrderGuid, orders.SavedOrders.Single().OrderGuid);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Theory]
+    [InlineData("prepare-io")]
+    [InlineData("save-sqlite-busy")]
+    public async Task Approved_card_local_persistence_failure_requires_review_without_second_terminal_call(string failureStage)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-APPROVED-ORDER-FAIL", "Approved Order Fail Tea", "930APPROVEDORDERFAIL", 10m));
+        var orders = new RecordingOrderRepository();
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:TXN-ORDER-FAIL:session=session-order-fail:environment=Sandbox",
+            "APPROVED",
+            10m,
+            [new CardTransactionDto("ANZ", "TXN-ORDER-FAIL", null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, 10m, null)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            "P",
+            "session-order-fail",
+            "TXN-ORDER-FAIL",
+            "00",
+            "APPROVED");
+        var terminal = new BindingCardTerminalClient(accessor, authorization, () => { }, () => { });
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: accessor);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+        Assert.True(tenderResult.Succeeded);
+        Assert.Equal(1, terminal.AuthorizeCallCount);
+
+        if (failureStage == "prepare-io")
+        {
+            attempts.GetAttemptException = new IOException("attempt read failed");
+        }
+        else
+        {
+            orders.SaveException = new SqliteException("database is locked", 5);
+        }
+
+        var exception = await Assert.ThrowsAsync<CardPaymentPersistenceUnknownException>(() =>
+            workflow.CompletePaymentAsync(
+                cart,
+                session,
+                [tenderResult.Tender!],
+                cashTenderedAmount: 0m));
+
+        Assert.Equal(1, terminal.AuthorizeCallCount);
+        Assert.IsType(
+            failureStage == "prepare-io" ? typeof(IOException) : typeof(SqliteException),
+            exception.InnerException);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalCardPaymentAttemptStatus.RequiresReview, attempt.Status);
+        Assert.Equal(tenderResult.Tender!.Reference, attempt.PaymentReference);
+        Assert.Empty(orders.SavedOrders);
+        Assert.Single(cart.Lines);
     }
 
     [Fact]
@@ -974,6 +1897,271 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Card_refund_persists_new_linkly_txn_ref_and_passes_it_as_idempotency_key()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:REFUND-1", "APPROVED", AuthorizedAmount: 4m));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-1",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var attempt = Assert.Single(attempts.Attempts);
+        var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(
+            attempt.OrderDraftJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(tender.Succeeded);
+        Assert.Equal("Refund", attempt.OperationKind);
+        Assert.Equal("R", attempt.TxnType);
+        Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+        Assert.NotEqual("SALE-1", attempt.TxnRef);
+        Assert.Equal(attempt.TxnRef, terminal.LastIdempotencyKey);
+        Assert.Equal("ANZ:SALE-1", terminal.LastOriginalReference);
+        Assert.Equal("ANZ:SALE-1", draft!.OriginalReference);
+        Assert.Equal(draft.OrderGuid, attempt.OperationGuid);
+    }
+
+    [Fact]
+    public async Task Square_refund_reuses_pending_attempt_idempotency_key_after_restart()
+    {
+        var cart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var now = DateTimeOffset.UtcNow;
+        var draft = new CardPaymentOrderDraft(
+            Guid.NewGuid(),
+            session,
+            cart.CreateSnapshot(),
+            [],
+            -4m,
+            4m,
+            "R",
+            "SQ:payment-1",
+            now);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        await attempts.CreateAsync(new LocalSquarePaymentAttempt(
+            Guid.NewGuid(),
+            null,
+            "persisted-square-refund-key",
+            "DEV-1",
+            "LOC-1",
+            "Production",
+            4m,
+            400,
+            "AUD",
+            LocalSquarePaymentAttemptStatus.Pending,
+            null,
+            null,
+            JsonSerializer.Serialize(draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            null,
+            null,
+            null,
+            null,
+            now,
+            now,
+            null,
+            null,
+            null,
+            "Refund",
+            draft.OrderGuid));
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "SQRF:refund-1", "APPROVED", AuthorizedAmount: 4m));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-1",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(tender.Succeeded);
+        Assert.Single(attempts.Attempts);
+        Assert.Equal("persisted-square-refund-key", terminal.LastIdempotencyKey);
+        Assert.Equal(1, terminal.IdempotentRefundCallCount);
+    }
+
+    [Fact]
+    public async Task Square_refund_result_unknown_blocks_restart_without_second_terminal_call()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                "Square refund result is unknown.",
+                AuthorizedAmount: 4m,
+                ResultUnknown: true));
+        var settings = new StaticCardTerminalSettingsProvider(CreateSquareSettings());
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var firstWorkflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: settings,
+            squarePaymentAttemptRepository: attempts);
+
+        var first = await firstWorkflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-1",
+            cartSnapshot: cart.CreateSnapshot());
+        var persistedAttempt = Assert.Single(attempts.Attempts);
+        var restartedWorkflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: settings,
+            squarePaymentAttemptRepository: attempts);
+
+        var afterRestart = await restartedWorkflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-1",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(first.Succeeded);
+        Assert.False(afterRestart.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", afterRestart.StatusKey);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, persistedAttempt.Status);
+        Assert.Equal(persistedAttempt.IdempotencyKey, terminal.LastIdempotencyKey);
+        Assert.Equal(1, terminal.IdempotentRefundCallCount);
+        Assert.Single(attempts.Attempts);
+    }
+
+    [Fact]
+    public async Task Square_refund_late_approved_worker_cannot_return_tender_after_new_claim()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                true,
+                "SQRF:late-refund",
+                "COMPLETED",
+                AuthorizedAmount: 4m,
+                CardTransactions:
+                [
+                    new CardTransactionDto(
+                        "Square",
+                        "late-refund",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "COMPLETED",
+                        null,
+                        DateTimeOffset.UtcNow,
+                        4m,
+                        null)
+                ]),
+            beforeResult: () => attempts.SimulateSupervisorRetryAndNewClaim("new-worker-token"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-1",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var saved = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.Null(result.Tender);
+        Assert.Equal("payment.card.resultUnknown", result.StatusKey);
+        Assert.Equal("new-worker-token", saved.SubmissionToken);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, saved.Status);
+        Assert.Null(saved.PaymentId);
+    }
+
+    [Fact]
+    public async Task Approved_card_refund_order_and_attempt_completion_ignore_cancelled_ui_token()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository { RejectCancelledTokens = true };
+        var orders = new RecordingOrderRepository { RejectCancelledTokens = true };
+        using var cancellation = new CancellationTokenSource();
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:REFUND-CANCEL", "APPROVED", AuthorizedAmount: 4m),
+            cancellation.Cancel);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-CANCEL",
+            cancellationToken: cancellation.Token,
+            cartSnapshot: cart.CreateSnapshot());
+        var completion = await workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [tender.Tender!],
+            cashTenderedAmount: 0m,
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.True(tender.Succeeded);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(completion.Order.OrderGuid, orders.SavedOrders[0].OrderGuid);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
     public async Task Payment_workflow_rejects_card_refund_without_original_reference()
     {
         var workflow = new CashPaymentWorkflowService(
@@ -1294,6 +2482,27 @@ public sealed class CashPaymentWorkflowServiceTests
             UpdatedAt: DateTimeOffset.UtcNow);
     }
 
+    private static PosCartService CreateReturnCart(decimal amount)
+    {
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            "S001",
+            "SKU-REFUND",
+            null,
+            "Returned Item",
+            "930599",
+            "ITEM-REFUND",
+            null,
+            1m,
+            amount,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            "RETURN-REFUND",
+            Guid.NewGuid(),
+            Guid.NewGuid()));
+        return cart;
+    }
+
     private static CardTerminalSettings CreateBackendLinklySettings()
     {
         return new CardTerminalSettings(
@@ -1342,10 +2551,36 @@ public sealed class CashPaymentWorkflowServiceTests
     {
         public List<LocalOrder> SavedOrders { get; } = [];
 
-        public Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
+        public bool RejectCancelledTokens { get; init; }
+
+        public TaskCompletionSource? SaveStarted { get; init; }
+
+        public TaskCompletionSource? ContinueSave { get; init; }
+
+        public int SaveThreadId { get; private set; }
+
+        public Exception? SaveException { get; set; }
+
+        public async Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
         {
+            if (RejectCancelledTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            SaveThreadId = Environment.CurrentManagedThreadId;
+            SaveStarted?.TrySetResult();
+            if (ContinueSave is not null)
+            {
+                await ContinueSave.Task.WaitAsync(cancellationToken);
+            }
+
+            if (SaveException is not null)
+            {
+                throw SaveException;
+            }
+
             SavedOrders.Add(order);
-            return Task.CompletedTask;
         }
 
         public Task UpdatePaymentReferenceAsync(
@@ -1472,9 +2707,29 @@ public sealed class CashPaymentWorkflowServiceTests
         }
     }
 
+    private sealed class ThrowingPendingSyncQueueRepository : ISyncQueueRepository
+    {
+        public Task<int> CountPendingAsync(CancellationToken cancellationToken = default) =>
+            Task.FromException<int>(new InvalidOperationException("pending sync refresh failed"));
+
+        public Task<SyncQueueOverview> GetOverviewAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new SyncQueueOverview(0, 0, 0, null));
+
+        public Task<IReadOnlyList<SyncQueueListItem>> GetActiveItemsAsync(int take = 20, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<SyncQueueListItem>>([]);
+    }
+
     private sealed class RecordingCardPaymentAttemptRepository : ILocalCardPaymentAttemptRepository
     {
         public List<LocalCardPaymentAttempt> Attempts { get; } = [];
+
+        public Exception? MarkOrderCompletedException { get; init; }
+
+        public Exception? GetAttemptException { get; set; }
+
+        public Exception? UpdateOutcomeException { get; init; }
+
+        public bool RejectCancelledTokens { get; init; }
 
         public Task CreateAsync(LocalCardPaymentAttempt attempt, CancellationToken cancellationToken = default)
         {
@@ -1508,6 +2763,16 @@ public sealed class CashPaymentWorkflowServiceTests
             DateTimeOffset completedAt,
             CancellationToken cancellationToken = default)
         {
+            if (RejectCancelledTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (UpdateOutcomeException is not null)
+            {
+                throw UpdateOutcomeException;
+            }
+
             Update(attemptGuid, attempt => attempt with
             {
                 Status = status,
@@ -1525,6 +2790,16 @@ public sealed class CashPaymentWorkflowServiceTests
             DateTimeOffset completedAt,
             CancellationToken cancellationToken = default)
         {
+            if (RejectCancelledTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (MarkOrderCompletedException is not null)
+            {
+                throw MarkOrderCompletedException;
+            }
+
             Update(attemptGuid, attempt => attempt with
             {
                 Status = LocalCardPaymentAttemptStatus.OrderCompleted,
@@ -1570,8 +2845,41 @@ public sealed class CashPaymentWorkflowServiceTests
             return Task.FromResult<LocalCardPaymentAttempt?>(Attempts.LastOrDefault());
         }
 
+        public Task<IReadOnlyList<LocalCardPaymentAttempt>> GetOpenRefundAttemptsAsync(
+            string storeCode,
+            string deviceCode,
+            string environment,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>(Attempts
+                .Where(attempt =>
+                    attempt.StoreCode == storeCode &&
+                    attempt.DeviceCode == deviceCode &&
+                    attempt.Environment == environment &&
+                    attempt.OperationKind == "Refund" &&
+                    attempt.Status is not (
+                        LocalCardPaymentAttemptStatus.Declined or
+                        LocalCardPaymentAttemptStatus.TimedOut or
+                        LocalCardPaymentAttemptStatus.Cancelled or
+                        LocalCardPaymentAttemptStatus.Failed or
+                        LocalCardPaymentAttemptStatus.OrderCompleted or
+                        LocalCardPaymentAttemptStatus.Abandoned))
+                .OrderByDescending(attempt => attempt.UpdatedAt)
+                .ToArray());
+        }
+
         public Task<LocalCardPaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
         {
+            if (RejectCancelledTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (GetAttemptException is not null)
+            {
+                throw GetAttemptException;
+            }
+
             return Task.FromResult<LocalCardPaymentAttempt?>(Attempts.SingleOrDefault(attempt => attempt.AttemptGuid == attemptGuid));
         }
 
@@ -1587,6 +2895,76 @@ public sealed class CashPaymentWorkflowServiceTests
     {
         public List<LocalSquarePaymentAttempt> Attempts { get; } = [];
 
+        public bool RejectCancelledTokens { get; init; }
+
+        public Exception? MarkCheckoutCreatedException { get; init; }
+
+        public Task<bool> TryBeginRefundSubmissionAsync(
+            Guid attemptGuid,
+            DateTimeOffset expectedUpdatedAt,
+            string submissionToken,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var attempt = Attempts.Single(candidate => candidate.AttemptGuid == attemptGuid);
+            if (attempt.UpdatedAt != expectedUpdatedAt)
+            {
+                return Task.FromResult(false);
+            }
+
+            Update(attemptGuid, current => current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                ResponseCode = null,
+                ResponseText = null,
+                SubmissionToken = submissionToken,
+                UpdatedAt = updatedAt
+            });
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> TryMarkRefundPaymentVerifiedAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string paymentId,
+            string paymentStatus,
+            string? responseCode,
+            string? responseText,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var attempt = Attempts.Single(candidate => candidate.AttemptGuid == attemptGuid);
+            if (!string.Equals(attempt.SubmissionToken, submissionToken, StringComparison.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+
+            Update(attemptGuid, current => current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+                PaymentId = paymentId,
+                PaymentStatus = paymentStatus,
+                ResponseCode = responseCode,
+                ResponseText = responseText,
+                CompletedAt = completedAt,
+                UpdatedAt = completedAt
+            });
+            return Task.FromResult(true);
+        }
+
+        public void SimulateSupervisorRetryAndNewClaim(string submissionToken)
+        {
+            var attempt = Assert.Single(Attempts);
+            Update(attempt.AttemptGuid, current => current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                ResponseCode = null,
+                ResponseText = null,
+                SubmissionToken = submissionToken,
+                UpdatedAt = current.UpdatedAt.AddTicks(1)
+            });
+        }
+
         public Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default)
         {
             Attempts.Add(attempt);
@@ -1600,6 +2978,16 @@ public sealed class CashPaymentWorkflowServiceTests
             DateTimeOffset updatedAt,
             CancellationToken cancellationToken = default)
         {
+            if (RejectCancelledTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (MarkCheckoutCreatedException is not null)
+            {
+                throw MarkCheckoutCreatedException;
+            }
+
             Update(attemptGuid, attempt => attempt with
             {
                 CheckoutId = checkoutId,
@@ -1608,6 +2996,35 @@ public sealed class CashPaymentWorkflowServiceTests
                 UpdatedAt = updatedAt
             });
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryMarkCheckoutCreatedAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string checkoutId,
+            string? checkoutStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var attempt = Attempts.Single(candidate => candidate.AttemptGuid == attemptGuid);
+            if (!string.Equals(attempt.SubmissionToken, submissionToken, StringComparison.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+
+            if (MarkCheckoutCreatedException is not null)
+            {
+                throw MarkCheckoutCreatedException;
+            }
+
+            Update(attemptGuid, current => current with
+            {
+                CheckoutId = checkoutId,
+                CheckoutStatus = checkoutStatus,
+                Status = LocalSquarePaymentAttemptStatus.CheckoutCreated,
+                UpdatedAt = updatedAt
+            });
+            return Task.FromResult(true);
         }
 
         public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
@@ -1699,11 +3116,33 @@ public sealed class CashPaymentWorkflowServiceTests
         public Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
             string storeCode,
             string deviceCode,
-            string cashierId,
+            string? cashierId,
             string environment,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult<LocalSquarePaymentAttempt?>(Attempts.LastOrDefault());
+        }
+
+        public Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenRefundAttemptsAsync(
+            string storeCode,
+            string deviceCode,
+            string environment,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>(Attempts
+                .Where(attempt =>
+                    attempt.StoreCode == storeCode &&
+                    attempt.DeviceCode == deviceCode &&
+                    attempt.Environment == environment &&
+                    attempt.OperationKind == "Refund" &&
+                    attempt.Status is not (
+                        LocalSquarePaymentAttemptStatus.Canceled or
+                        LocalSquarePaymentAttemptStatus.TimedOut or
+                        LocalSquarePaymentAttemptStatus.Failed or
+                        LocalSquarePaymentAttemptStatus.OrderCompleted or
+                        LocalSquarePaymentAttemptStatus.Abandoned))
+                .OrderByDescending(attempt => attempt.UpdatedAt)
+                .ToArray());
         }
 
         public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
@@ -1770,17 +3209,130 @@ public sealed class CashPaymentWorkflowServiceTests
         }
     }
 
-    private sealed class BindingCardTerminalClient(
-        ILinklyPaymentAttemptContextAccessor accessor,
-        PaymentAuthorizationResult result,
-        Action beforeBind,
-        Action afterBind) : ICardTerminalClient
+    private sealed class AsyncObservingCardTerminalClient(
+        Func<Task> beforeResult,
+        PaymentAuthorizationResult result) : ICardTerminalClient
     {
         public async Task<PaymentAuthorizationResult> AuthorizeAsync(
             decimal amount,
             PosSessionState session,
             CancellationToken cancellationToken = default)
         {
+            await beforeResult();
+            return result;
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class CancelledCardTerminalClient : ICardTerminalClient
+    {
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default) =>
+            Task.FromCanceled<PaymentAuthorizationResult>(cancellationToken);
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            Task.FromCanceled<PaymentAuthorizationResult>(cancellationToken);
+    }
+
+    private sealed class CancellingCardTerminalClient(
+        Func<CancellationToken, Task> beforeCancellation) : ICardTerminalClient
+    {
+        public async Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            await beforeCancellation(cancellationToken);
+            throw new OperationCanceledException();
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class ThrowingCardTerminalClient(
+        Func<CancellationToken, Task>? beforeThrow = null) : ICardTerminalClient
+    {
+        public async Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            if (beforeThrow is not null)
+            {
+                await beforeThrow(cancellationToken);
+            }
+
+            throw new InvalidOperationException("terminal transport failed");
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class CancellingApprovedCardTerminalClient(
+        ILinklyPaymentAttemptContextAccessor accessor,
+        CancellationTokenSource cancellation,
+        PaymentAuthorizationResult result) : ICardTerminalClient
+    {
+        public async Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            var context = accessor.Current;
+            Assert.NotNull(context);
+            await context!.BindSessionAsync(
+                result.SessionId ?? throw new InvalidOperationException("Expected a session id."),
+                result.TxnRef,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+            cancellation.Cancel();
+            return result;
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class BindingCardTerminalClient(
+        ILinklyPaymentAttemptContextAccessor accessor,
+        PaymentAuthorizationResult result,
+        Action beforeBind,
+        Action afterBind) : ICardTerminalClient
+    {
+        public int AuthorizeCallCount { get; private set; }
+
+        public async Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            AuthorizeCallCount++;
             beforeBind();
             var context = accessor.Current;
             Assert.NotNull(context);
@@ -2043,6 +3595,44 @@ public sealed class CashPaymentWorkflowServiceTests
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingIdempotentCardRefundClient(
+        PaymentAuthorizationResult result,
+        Action? beforeResult = null) : ICardTerminalClient, IIdempotentCardRefundClient
+    {
+        public int IdempotentRefundCallCount { get; private set; }
+
+        public string? LastOriginalReference { get; private set; }
+
+        public string? LastIdempotencyKey { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Durable refunds must use the idempotent overload.");
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            IdempotentRefundCallCount++;
+            LastOriginalReference = originalReference;
+            LastIdempotencyKey = idempotencyKey;
+            beforeResult?.Invoke();
+            return Task.FromResult(result);
         }
     }
 

@@ -1708,11 +1708,25 @@ public sealed class LinklyBackendTerminalClient(
         }
 
         var transactionResult = ReadTransactionResult(status, requestedAmount, requestedTxnRef);
-        var amount = transactionResult.Amount ?? requestedAmount;
+        var amount = transactionResult.Amount;
         var receiptText = ReadReceiptText(status, suppressPrintedReceipt);
         var transaction = ToCardTransaction(transactionResult, amount, receiptText);
         var approved = IsCompletedOrPendingSuccess(status) &&
             transactionResult.Succeeded;
+        // 后端会在提交后才分配并持久化 TxnRef；批准结果必须带真实引用和真实金额，不能用本地临时跟踪号补造。
+        var persistedTxnRef = NormalizeOptional(status.TxnRef);
+        var terminalTxnRef = NormalizeOptional(transactionResult.TxnRef);
+        var hasConflictingTerminalReference = !string.IsNullOrWhiteSpace(persistedTxnRef) &&
+            !string.IsNullOrWhiteSpace(terminalTxnRef) &&
+            !string.Equals(persistedTxnRef, terminalTxnRef, StringComparison.Ordinal);
+        var expectedAmount = decimal.Round(requestedAmount, 2, MidpointRounding.AwayFromZero);
+        if (approved && (hasConflictingTerminalReference ||
+                         amount is null ||
+                         decimal.Round(amount.Value, 2, MidpointRounding.AwayFromZero) != expectedAmount ||
+                         string.IsNullOrWhiteSpace(terminalTxnRef)))
+        {
+            return new PaymentAuthorizationResult(false, null, "ANZ Linkly Cloud result could not be verified.", ResultUnknown: true);
+        }
         var reference = LinklyBackendPaymentReference.Format(
             transaction.TxnRef ?? transactionResult.SessionId,
             transactionResult.SessionId,
@@ -1769,7 +1783,7 @@ public sealed class LinklyBackendTerminalClient(
 
     private static CardTransactionDto ToCardTransaction(
         LinklyCloudTransactionResult response,
-        decimal amount,
+        decimal? amount,
         string? receiptText)
     {
         return new CardTransactionDto(
@@ -1784,7 +1798,7 @@ public sealed class LinklyBackendTerminalClient(
             NormalizeOptional(response.ResponseText),
             NormalizeOptional(response.Stan),
             null,
-            decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
+            amount is decimal value ? decimal.Round(value, 2, MidpointRounding.AwayFromZero) : 0m,
             NormalizeOptional(receiptText),
             NormalizeOptional(response.RefundReference));
     }
@@ -1808,7 +1822,7 @@ public sealed class LinklyBackendTerminalClient(
             return new LinklyCloudTransactionResult(
                 status.SessionId,
                 IsSuccessfulTransaction(status.TransactionSuccess, protectedResponseCode, notificationSuccess: null),
-                NormalizeOptional(status.TxnRef) ?? requestedTxnRef,
+                NormalizeOptional(status.TxnRef),
                 null,
                 null,
                 null,
@@ -1817,7 +1831,7 @@ public sealed class LinklyBackendTerminalClient(
                 protectedResponseCode,
                 protectedResponseText,
                 null,
-                requestedAmount,
+                null,
                 fallbackRefundReference);
         }
 
@@ -1833,7 +1847,7 @@ public sealed class LinklyBackendTerminalClient(
         return new LinklyCloudTransactionResult(
             status.SessionId,
             IsSuccessfulTransaction(status.TransactionSuccess, finalResponseCode, notificationSuccess),
-            NormalizeOptional(status.TxnRef) ?? requestedTxnRef,
+            ReadString(response, "TxnRef") ?? NormalizeOptional(status.TxnRef),
             ReadString(response, "AuthCode"),
             ReadString(response, "CardType"),
             ReadString(response, "CardName"),
@@ -1842,7 +1856,7 @@ public sealed class LinklyBackendTerminalClient(
             finalResponseCode,
             finalResponseText,
             ReadString(response, "Stan"),
-            ReadDecimal(response, "AmtPurchase") ?? requestedAmount,
+            ReadDecimal(response, "AmtPurchase"),
             ReadString(purchaseAnalysisData, "RFN") ?? notificationRefundReference ?? fallbackRefundReference);
     }
 
@@ -2317,7 +2331,7 @@ public sealed class LinklyBackendTerminalClient(
         // Linkly OK/sendkey 后可能先返回 Completed，但交易通知和结果字段稍后才到；结果未解析前继续等待同一 session。
         return status.TransactionSuccess.HasValue ||
             !string.IsNullOrWhiteSpace(NormalizeOptional(status.ResponseCode)) ||
-            (status.Notifications ?? []).Any(IsTransactionNotification);
+            HasVerifiedApprovedTransactionNotification(status);
     }
 
     private static bool IsCompletedOrPendingSuccess(LinklyCloudBackendSessionResponse status)
@@ -2340,13 +2354,18 @@ public sealed class LinklyBackendTerminalClient(
             return false;
         }
 
-        if (status.TransactionSuccess == true ||
-            LinklyApprovalResponseCodes.IsApproved(NormalizeOptional(status.ResponseCode)))
-        {
-            return true;
-        }
+        return HasVerifiedApprovedTransactionNotification(status);
+    }
 
-        var notification = (status.Notifications ?? []).LastOrDefault(IsTransactionNotification);
+    private static bool HasVerifiedApprovedTransactionNotification(LinklyCloudBackendSessionResponse status)
+    {
+        var protectedResponseCode = NormalizeOptional(status.ResponseCode);
+        var protectedResponseText = NormalizeOptional(status.ResponseText);
+        var notification = string.IsNullOrWhiteSpace(protectedResponseCode)
+            ? (status.Notifications ?? []).LastOrDefault(IsTransactionNotification)
+            : (status.Notifications ?? []).LastOrDefault(candidate =>
+                IsTransactionNotification(candidate) &&
+                TransactionNotificationMatchesProtectedResult(candidate, protectedResponseCode, protectedResponseText));
         if (notification is null || string.IsNullOrWhiteSpace(notification.PayloadJson))
         {
             return false;
@@ -2356,10 +2375,22 @@ public sealed class LinklyBackendTerminalClient(
         {
             using var document = JsonDocument.Parse(notification.PayloadJson);
             var response = ReadResponse(document.RootElement);
+            var responseCode = ReadString(response, "ResponseCode");
+            var notificationTxnRef = NormalizeOptional(ReadString(response, "TxnRef"));
+            var persistedTxnRef = NormalizeOptional(status.TxnRef);
+            if (!string.IsNullOrWhiteSpace(notificationTxnRef) &&
+                !string.IsNullOrWhiteSpace(persistedTxnRef) &&
+                !string.Equals(notificationTxnRef, persistedTxnRef, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             return IsSuccessfulTransaction(
                 status.TransactionSuccess,
-                ReadString(response, "ResponseCode"),
-                ReadBool(response, "Success"));
+                protectedResponseCode ?? responseCode,
+                ReadBool(response, "Success")) &&
+                ReadDecimal(response, "AmtPurchase") is not null &&
+                !string.IsNullOrWhiteSpace(notificationTxnRef ?? persistedTxnRef);
         }
         catch (JsonException)
         {

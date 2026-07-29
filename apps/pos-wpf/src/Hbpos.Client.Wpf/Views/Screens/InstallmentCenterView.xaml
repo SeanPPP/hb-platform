@@ -9,6 +9,9 @@
              d:DesignHeight="688"
              d:DesignWidth="1366"
              Background="{StaticResource PosSurfaceAltBrush}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </UserControl.Resources>
     <Grid Margin="24">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="2.2*" />
@@ -35,6 +38,12 @@
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Sync" Width="16" Height="16" Margin="0,0,6,0" />
                             <TextBlock Text="{Binding LoadText}" FontWeight="Bold" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding RecoveryCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="38" Padding="14,0" Margin="12,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ShieldRefreshOutline" Width="16" Height="16" Margin="0,0,6,0" />
+                            <TextBlock Text="安全恢复" FontWeight="Bold" />
                         </StackPanel>
                     </Button>
                 </StackPanel>
@@ -125,6 +134,22 @@
                         <TextBlock Text="{Binding VoidCancelText}" FontWeight="Bold" />
                     </Button>
                 </StackPanel>
+
+                <Border Grid.Row="4" Margin="0,14,0,0" Padding="12" Background="#FFFFF7E8" BorderBrush="#FFE9C46A" BorderThickness="1" CornerRadius="8"
+                        Visibility="{Binding HasRefundStepsForReview, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <StackPanel>
+                        <TextBlock Text="主管退款三态结案" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" />
+                        <TextBlock Text="仅持有取消分期权限的主管可操作；普通用户没有退款重试入口。" Margin="0,4,0,0" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        <ComboBox ItemsSource="{Binding RefundStepsForReview}" SelectedItem="{Binding SelectedRefundStep, Mode=TwoWay}" DisplayMemberPath="OriginalPaymentGuid" Margin="0,10,0,0" Height="40" />
+                        <ComboBox ItemsSource="{Binding SupervisorRefundDecisions}" SelectedItem="{Binding SupervisorRefundDecision, Mode=TwoWay}" Margin="0,8,0,0" Height="40" />
+                        <TextBox Text="{Binding SupervisorRefundReason, UpdateSourceTrigger=PropertyChanged}" materialDesign:HintAssist.Hint="结案原因或备注（必填）" Margin="0,8,0,0" Height="40" Style="{StaticResource PosSearchTextBoxStyle}" />
+                        <TextBox Text="{Binding SupervisorRefundReference, UpdateSourceTrigger=PropertyChanged}" materialDesign:HintAssist.Hint="确认已退款时填写退款引用" Margin="0,8,0,0" Height="40" Style="{StaticResource PosSearchTextBoxStyle}" />
+                        <TextBox Text="{Binding SupervisorRefundEvidence, UpdateSourceTrigger=PropertyChanged}" materialDesign:HintAssist.Hint="确认未退款时填写银行证据" Margin="0,8,0,0" Height="40" Style="{StaticResource PosSearchTextBoxStyle}" />
+                        <Button Command="{Binding SupervisorResolveRefundCommand}" Style="{StaticResource PosSecondaryButtonStyle}" Height="42" Margin="0,10,0,0">
+                            <TextBlock Text="保存主管结案" FontWeight="Bold" />
+                        </Button>
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
     </Grid>

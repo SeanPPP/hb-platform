@@ -154,7 +154,7 @@ public sealed class LinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_recovers_approved_get_last_transaction_after_timeout()
+    public async Task PurchaseAsync_keeps_result_unknown_when_get_last_transaction_reference_does_not_match_after_timeout()
     {
         var purchaseClient = new FakeLinklyEftClient { ThrowOnRead = true };
         var getLastClient = new FakeLinklyEftClient(new EFTGetLastTransactionResponse
@@ -170,8 +170,8 @@ public sealed class LinklyTerminalClientTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.StartsWith("ANZ:TERM1", result.Reference, StringComparison.Ordinal);
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
         Assert.Equal(1, purchaseClient.DisconnectCallCount);
         Assert.True(purchaseClient.Disposed);
@@ -248,7 +248,7 @@ public sealed class LinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_recovers_approved_get_last_transaction_after_cancel_outcome_is_unknown()
+    public async Task PurchaseAsync_keeps_result_unknown_when_cancel_recovery_reference_does_not_match()
     {
         using var logs = new ConsoleLogCapture();
         using var cts = new CancellationTokenSource();
@@ -278,8 +278,8 @@ public sealed class LinklyTerminalClientTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings(), cts.Token);
 
-        Assert.True(result.Approved);
-        Assert.Equal("ANZ:TERM12605260000000", result.Reference);
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.IsType<EFTSendKeyRequest>(purchaseClient.Requests[1]);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
         Assert.Equal(1, purchaseClient.DisconnectCallCount);
@@ -301,7 +301,7 @@ public sealed class LinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_recovers_approved_get_last_transaction_after_unknown_exception()
+    public async Task PurchaseAsync_keeps_result_unknown_when_exception_recovery_reference_does_not_match()
     {
         using var logs = new ConsoleLogCapture();
         var purchaseClient = new FakeLinklyEftClient();
@@ -319,8 +319,8 @@ public sealed class LinklyTerminalClientTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.Equal("ANZ:TERM12605260000000", result.Reference);
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
         Assert.Equal(1, purchaseClient.DisconnectCallCount);
         Assert.True(purchaseClient.Disposed);
@@ -338,7 +338,7 @@ public sealed class LinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_returns_original_timeout_when_get_last_transaction_connect_throws()
+    public async Task PurchaseAsync_marks_result_unknown_when_get_last_transaction_connect_throws_after_submission()
     {
         var purchaseClient = new FakeLinklyEftClient { ThrowOnRead = true };
         var getLastClient = new FakeLinklyEftClient
@@ -350,6 +350,7 @@ public sealed class LinklyTerminalClientTests
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
         Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
         Assert.Equal("ANZ Linkly transaction timed out.", result.Message);
         Assert.Equal(1, purchaseClient.DisconnectCallCount);
         Assert.True(purchaseClient.Disposed);
@@ -429,6 +430,92 @@ public sealed class LinklyTerminalClientTests
         Assert.Equal(StatusType.Standard, request.StatusType);
         Assert.Equal(1, eftClient.DisconnectCallCount);
         Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task RecoverLastTransactionAsync_returns_unknown_when_get_last_envelope_is_not_successful()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTGetLastTransactionResponse
+        {
+            Success = false,
+            LastTransactionSuccess = false,
+            TxnRef = "LOCAL-TXN-001",
+            AmtPurchase = 10m,
+            ResponseCode = "05",
+            ResponseText = "DECLINED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.RecoverLastTransactionAsync(10m, CreateSession(), CreateSettings(), "LOCAL-TXN-001");
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task RecoverLastTransactionAsync_returns_unknown_when_approved_result_lacks_amount()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTGetLastTransactionResponse
+        {
+            Success = true,
+            LastTransactionSuccess = true,
+            TxnRef = "LOCAL-TXN-001",
+            ResponseCode = "00",
+            ResponseText = "APPROVED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.RecoverLastTransactionAsync(10m, CreateSession(), CreateSettings(), "LOCAL-TXN-001");
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Null(result.AuthorizedAmount);
+    }
+
+    [Fact]
+    public async Task RecoverLastTransactionAsync_returns_unknown_when_transaction_reference_does_not_match_attempt()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTGetLastTransactionResponse
+        {
+            Success = true,
+            LastTransactionSuccess = true,
+            TxnRef = "OTHER-TXN-001",
+            AmtPurchase = 10m,
+            ResponseCode = "00",
+            ResponseText = "APPROVED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.RecoverLastTransactionAsync(10m, CreateSession(), CreateSettings(), "LOCAL-TXN-001");
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task RefundWithReferenceAsync_uses_persisted_refund_txn_ref_in_terminal_request()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTTransactionResponse
+        {
+            Success = true,
+            TxnRef = "REFUND-TXN-001",
+            AmtPurchase = 10m,
+            ResponseCode = "00",
+            ResponseText = "APPROVED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.RefundWithReferenceAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "ANZ:ORIGINAL-SALE-001",
+            "REFUND-TXN-001");
+
+        Assert.True(result.Approved);
+        var request = Assert.IsType<EFTTransactionRequest>(eftClient.LastRequest);
+        Assert.Equal(TransactionType.Refund, request.TxnType);
+        Assert.Equal("REFUND-TXN-001", request.TxnRef);
     }
 
     [Fact]

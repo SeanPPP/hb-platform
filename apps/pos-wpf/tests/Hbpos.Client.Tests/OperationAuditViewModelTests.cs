@@ -648,7 +648,7 @@ public sealed class OperationAuditViewModelTests
     [InlineData(PaymentMethodKind.Cash, false, 7)]
     [InlineData(PaymentMethodKind.Voucher, false, 7)]
     [InlineData(PaymentMethodKind.Cash, true, -7)]
-    public async Task Payment_non_card_tender_exception_records_method_signed_amount_and_shared_trace(
+    public async Task Payment_non_card_tender_exception_records_method_signed_amount_without_propagating(
         PaymentMethodKind method,
         bool isRefund,
         int expectedAmount)
@@ -669,10 +669,9 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                method == PaymentMethodKind.Cash
-                    ? viewModel.SelectCashCommand.ExecuteAsync(null)
-                    : viewModel.SelectVoucherCommand.ExecuteAsync(null));
+            await (method == PaymentMethodKind.Cash
+                ? viewModel.SelectCashCommand.ExecuteAsync(null)
+                : viewModel.SelectVoucherCommand.ExecuteAsync(null));
         }
         finally
         {
@@ -692,7 +691,7 @@ public sealed class OperationAuditViewModelTests
     }
 
     [Fact]
-    public async Task Payment_non_card_tender_task_canceled_records_failed_before_propagating()
+    public async Task Payment_non_card_tender_task_canceled_records_failed_without_propagating()
     {
         var logger = new RecordingOperationAuditLogger();
         var systemLog = new RecordingApplicationLogSink();
@@ -709,8 +708,7 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<TaskCanceledException>(
-                () => viewModel.SelectCashCommand.ExecuteAsync(null));
+            await viewModel.SelectCashCommand.ExecuteAsync(null);
         }
         finally
         {
@@ -855,7 +853,7 @@ public sealed class OperationAuditViewModelTests
     }
 
     [Fact]
-    public async Task Payment_technical_failure_keeps_signed_refund_item_snapshot_and_shared_trace()
+    public async Task Payment_technical_failure_keeps_signed_refund_snapshot_without_propagating()
     {
         var logger = new RecordingOperationAuditLogger();
         var systemLog = new RecordingApplicationLogSink();
@@ -889,8 +887,7 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+            await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
         }
         finally
         {
@@ -1006,7 +1003,7 @@ public sealed class OperationAuditViewModelTests
     }
 
     [Fact]
-    public async Task Payment_upload_retry_technical_exception_records_failed_before_propagating()
+    public async Task Payment_upload_retry_technical_exception_records_failed_without_propagating()
     {
         var logger = new RecordingOperationAuditLogger();
         var systemLog = new RecordingApplicationLogSink();
@@ -1030,8 +1027,7 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+            await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
         }
         finally
         {
@@ -1054,7 +1050,7 @@ public sealed class OperationAuditViewModelTests
     }
 
     [Fact]
-    public async Task Payment_completion_task_canceled_records_failed_and_shared_trace_before_propagating()
+    public async Task Payment_completion_task_canceled_records_failed_without_propagating()
     {
         var logger = new RecordingOperationAuditLogger();
         var systemLog = new RecordingApplicationLogSink();
@@ -1070,8 +1066,7 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<TaskCanceledException>(
-                () => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+            await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
         }
         finally
         {
@@ -1089,7 +1084,7 @@ public sealed class OperationAuditViewModelTests
     }
 
     [Fact]
-    public async Task Payment_upload_retry_task_canceled_records_failed_and_shared_trace_before_propagating()
+    public async Task Payment_upload_retry_task_canceled_records_failed_without_propagating()
     {
         var logger = new RecordingOperationAuditLogger();
         var systemLog = new RecordingApplicationLogSink();
@@ -1108,8 +1103,7 @@ public sealed class OperationAuditViewModelTests
         ConsoleLog.ConfigureCenterSink(systemLog);
         try
         {
-            await Assert.ThrowsAsync<TaskCanceledException>(
-                () => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+            await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
         }
         finally
         {

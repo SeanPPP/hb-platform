@@ -36,11 +36,17 @@ public sealed record PosCartLineServiceSnapshot(
     decimal DiscountAmount,
     decimal ActualAmount);
 
-public sealed class PaymentCompletedEventArgs(LocalOrder order, decimal tenderedAmount, decimal changeAmount) : EventArgs
+public sealed class PaymentCompletedEventArgs(
+    LocalOrder order,
+    decimal tenderedAmount,
+    decimal changeAmount,
+    bool hasPostCommitWarning = false) : EventArgs
 {
     public LocalOrder Order { get; } = order;
 
     public decimal TenderedAmount { get; } = tenderedAmount;
 
     public decimal ChangeAmount { get; } = changeAmount;
+
+    public bool HasPostCommitWarning { get; } = hasPostCommitWarning;
 }

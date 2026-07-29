@@ -49,6 +49,26 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public void Card_payment_supervisor_note_is_localized_as_optional()
+    {
+        var localization = new LocalizationService();
+
+        Assert.Equal("Supervisor note (optional)", localization.T("cardRecovery.payment.field.note"));
+        Assert.Contains(
+            "A supervisor note is optional.",
+            localization.T("cardRecovery.payment.section.instructions"),
+            StringComparison.Ordinal);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("主管备注（选填）", localization.T("cardRecovery.payment.field.note"));
+        Assert.Contains(
+            "主管备注可选",
+            localization.T("cardRecovery.payment.section.instructions"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Localization_has_settings_text()
     {
         var localization = new LocalizationService();

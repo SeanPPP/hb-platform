@@ -41,6 +41,16 @@ public interface ILinklyTerminalClient
         string? originalReference,
         CancellationToken cancellationToken = default);
 
+    // 中文注释：Linkly LocalIp 的 SDK 只能用 TxnRef 关联提交和 GetLast；原交易引用仍由上层保留用于审计和退款业务语义。
+    Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        string refundTxnRef,
+        CancellationToken cancellationToken = default) =>
+        RefundAsync(amount, session, settings, originalReference, cancellationToken);
+
     Task<PaymentAuthorizationResult> VoidAsync(
         decimal amount,
         PosSessionState session,
@@ -348,7 +358,8 @@ public sealed class LinklyTerminalClient(
             session,
             settings,
             txnRef,
-            cancellationToken);
+            cancellationToken,
+            requireTxnRefMatch: true);
     }
 
     public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
@@ -387,6 +398,30 @@ public sealed class LinklyTerminalClient(
             cancellationToken);
     }
 
+    public Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        string refundTxnRef,
+        CancellationToken cancellationToken = default)
+    {
+        // Linkly 1.7.3 的 EFTTransactionRequest 没有原交易引用字段；TxnRef 是 GetLast 的唯一检索键。
+        // 原交易引用由调用方继续持久化并传给后端，退款 attempt 则必须以新的 TxnRef 写入终端请求。
+        _ = originalReference;
+        var normalizedRefundTxnRef = NormalizeReference(refundTxnRef);
+        return string.IsNullOrWhiteSpace(normalizedRefundTxnRef)
+            ? Task.FromResult(new PaymentAuthorizationResult(false, null, T("linkly.local.missingTxnRef", "ANZ Linkly transaction reference is missing.")))
+            : RunTransactionAsync(
+                TransactionType.Refund,
+                amount,
+                session,
+                settings,
+                normalizedRefundTxnRef,
+                cancellationToken,
+                requireTxnRefMatch: true);
+    }
+
     public Task<PaymentAuthorizationResult> VoidAsync(
         decimal amount,
         PosSessionState session,
@@ -409,7 +444,8 @@ public sealed class LinklyTerminalClient(
         PosSessionState session,
         CardTerminalSettings settings,
         string? originalReference,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireTxnRefMatch = false)
     {
         if (amount <= 0m)
         {
@@ -491,7 +527,7 @@ public sealed class LinklyTerminalClient(
 
             transactionRequestSent = true;
             var response = await ReadTransactionResponseAsync(client, receipts, timeoutCts.Token, settings.Environment, txnRef);
-            return ToAuthorizationResult(response, amount, txnRef, receipts);
+            return ToAuthorizationResult(response, amount, txnRef, receipts, requireTxnRefMatch);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -735,7 +771,7 @@ public sealed class LinklyTerminalClient(
                 });
             if (!connected)
             {
-                return new PaymentAuthorizationResult(false, null, fallbackMessage);
+                return new PaymentAuthorizationResult(false, null, fallbackMessage, ResultUnknown: true);
             }
 
             var request = new EFTGetLastTransactionRequest(txnRef)
@@ -761,7 +797,7 @@ public sealed class LinklyTerminalClient(
                     success: false,
                     reason: "write-request-failed",
                     request: request);
-                return new PaymentAuthorizationResult(false, null, fallbackMessage);
+                return new PaymentAuthorizationResult(false, null, fallbackMessage, ResultUnknown: true);
             }
 
             while (true)
@@ -819,7 +855,7 @@ public sealed class LinklyTerminalClient(
                             success: false,
                             reason: "empty-response",
                             request: request);
-                        return new PaymentAuthorizationResult(false, null, fallbackMessage);
+                        return new PaymentAuthorizationResult(false, null, fallbackMessage, ResultUnknown: true);
                 }
             }
         }
@@ -833,7 +869,7 @@ public sealed class LinklyTerminalClient(
                 txnRef,
                 success: false,
                 reason: "caller-cancelled");
-            return new PaymentAuthorizationResult(false, null, T("linkly.local.cancelled", CancelledMessage));
+            return new PaymentAuthorizationResult(false, null, T("linkly.local.cancelled", CancelledMessage), ResultUnknown: true);
         }
         catch (Exception ex) when (ex is OperationCanceledException or ConnectionException)
         {
@@ -850,7 +886,7 @@ public sealed class LinklyTerminalClient(
                     exception = ex.GetType().Name,
                     ex.Message
                 });
-            return new PaymentAuthorizationResult(false, null, fallbackMessage);
+            return new PaymentAuthorizationResult(false, null, fallbackMessage, ResultUnknown: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -866,7 +902,7 @@ public sealed class LinklyTerminalClient(
                 {
                     ex.Message
                 });
-            return new PaymentAuthorizationResult(false, null, fallbackMessage);
+            return new PaymentAuthorizationResult(false, null, fallbackMessage, ResultUnknown: true);
         }
         finally
         {
@@ -941,10 +977,18 @@ public sealed class LinklyTerminalClient(
         EFTTransactionResponse response,
         decimal requestedAmount,
         string requestedTxnRef,
-        IReadOnlyList<string> receipts)
+        IReadOnlyList<string> receipts,
+        bool requireTxnRefMatch = false)
     {
-        var amount = response.AmtPurchase > 0m ? response.AmtPurchase : requestedAmount;
-        var txnRef = string.IsNullOrWhiteSpace(response.TxnRef) ? requestedTxnRef : response.TxnRef.Trim();
+        var amount = response.AmtPurchase > 0m ? response.AmtPurchase : (decimal?)null;
+        var returnedTxnRef = NormalizeReference(response.TxnRef);
+        if (response.Success && (amount is null ||
+            (requireTxnRefMatch && !string.Equals(returnedTxnRef, requestedTxnRef, StringComparison.Ordinal))))
+        {
+            return new PaymentAuthorizationResult(false, null, T("linkly.local.recoveryFailed", "ANZ Linkly recovery could not confirm the previous transaction."), ResultUnknown: true);
+        }
+
+        var txnRef = returnedTxnRef ?? requestedTxnRef;
         var transaction = ToCardTransaction(response, amount, txnRef, receipts);
         return response.Success
             ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText)
@@ -957,17 +1001,33 @@ public sealed class LinklyTerminalClient(
         string requestedTxnRef,
         IReadOnlyList<string> receipts)
     {
-        var amount = response.AmtPurchase > 0m ? response.AmtPurchase : requestedAmount;
-        var txnRef = string.IsNullOrWhiteSpace(response.TxnRef) ? requestedTxnRef : response.TxnRef.Trim();
+        if (!response.Success)
+        {
+            return new PaymentAuthorizationResult(false, null, T("linkly.local.recoveryFailed", "ANZ Linkly recovery could not confirm the previous transaction."), ResultUnknown: true);
+        }
+
+        var amount = response.AmtPurchase > 0m ? response.AmtPurchase : (decimal?)null;
+        var returnedTxnRef = NormalizeReference(response.TxnRef);
+        if (response.LastTransactionSuccess && (amount is null || !string.Equals(returnedTxnRef, requestedTxnRef, StringComparison.Ordinal)))
+        {
+            return new PaymentAuthorizationResult(false, null, T("linkly.local.recoveryFailed", "ANZ Linkly recovery could not confirm the previous transaction."), ResultUnknown: true);
+        }
+
+        var txnRef = returnedTxnRef ?? requestedTxnRef;
         var transaction = ToCardTransaction(response, amount, txnRef, receipts);
-        return response.Success && response.LastTransactionSuccess
-            ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText)
-            : new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText);
+        if (response.LastTransactionSuccess)
+        {
+            return new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText);
+        }
+
+        return HasExplicitLinklyRejection(response.ResponseCode, response.ResponseText)
+            ? new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText)
+            : new PaymentAuthorizationResult(false, null, T("linkly.local.recoveryFailed", "ANZ Linkly recovery could not confirm the previous transaction."), ResultUnknown: true);
     }
 
     private static CardTransactionDto ToCardTransaction(
         EFTTransactionResponse response,
-        decimal amount,
+        decimal? amount,
         string txnRef,
         IReadOnlyList<string> receipts)
     {
@@ -983,13 +1043,29 @@ public sealed class LinklyTerminalClient(
             NormalizeOptional(response.ResponseText),
             FormatPositiveInt(response.Stan),
             ToDateTimeOffsetOrNull(response.DateSettlement),
-            decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
+            amount is decimal value ? decimal.Round(value, 2, MidpointRounding.AwayFromZero) : 0m,
             JoinReceipts(receipts));
+    }
+
+    private static bool HasExplicitLinklyRejection(string? responseCode, string? responseText)
+    {
+        if (string.Equals(responseCode, "05", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "C0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CN", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(responseText) &&
+            (responseText.Contains("DECLINED", StringComparison.OrdinalIgnoreCase) ||
+             responseText.Contains("REJECTED", StringComparison.OrdinalIgnoreCase) ||
+             responseText.Contains("CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+             responseText.Contains("CANCELED", StringComparison.OrdinalIgnoreCase));
     }
 
     private static CardTransactionDto ToCardTransaction(
         EFTGetLastTransactionResponse response,
-        decimal amount,
+        decimal? amount,
         string txnRef,
         IReadOnlyList<string> receipts)
     {
@@ -1005,7 +1081,7 @@ public sealed class LinklyTerminalClient(
             NormalizeOptional(response.ResponseText),
             FormatPositiveInt(response.Stan),
             ToDateTimeOffsetOrNull(response.DateSettlement),
-            decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
+            amount is decimal value ? decimal.Round(value, 2, MidpointRounding.AwayFromZero) : 0m,
             JoinReceipts(receipts));
     }
 

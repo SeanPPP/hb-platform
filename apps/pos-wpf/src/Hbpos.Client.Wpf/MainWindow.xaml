@@ -1305,6 +1305,10 @@
 
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <Grid Margin="22,18">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="1.05*" />
                                 <ColumnDefinition Width="16" />
@@ -1373,6 +1377,146 @@
                                                   ItemTemplate="{StaticResource ReceiptPreviewRowTemplate}" />
                                 </StackPanel>
                             </Border>
+
+                            <Border Grid.Row="1"
+                                    Grid.ColumnSpan="3"
+                                    Margin="0,16,0,0"
+                                    Padding="14"
+                                    Background="#FFFFF7E8"
+                                    BorderBrush="#FFFFD59B"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding CanResolveFinancialResult, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc cardRecovery.refund.section.title}"
+                                               FontSize="14"
+                                               FontWeight="Black"
+                                               Foreground="{StaticResource PosTextBrush}"
+                                               Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.refund.section.instructions}"
+                                               Margin="0,4,0,12"
+                                               FontSize="12"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.payment.section.title}"
+                                               FontSize="14"
+                                               FontWeight="Black"
+                                               Foreground="{StaticResource PosTextBrush}"
+                                               Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.payment.section.instructions}"
+                                               Margin="0,4,0,12"
+                                               FontSize="12"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}" />
+
+                                    <Grid Margin="0,0,0,12"
+                                          Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="16" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{loc:Loc cardRecovery.refund.field.processor}"
+                                                       FontSize="10"
+                                                       FontWeight="Black"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                            <TextBlock Text="{Binding RefundProcessorDisplay}"
+                                                       Margin="0,4,0,0"
+                                                       FontSize="12"
+                                                       FontWeight="Bold"
+                                                       Foreground="{StaticResource PosTextBrush}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="{loc:Loc cardRecovery.refund.field.originalReference}"
+                                                       FontSize="10"
+                                                       FontWeight="Black"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                            <TextBlock Text="{Binding OriginalReferenceDisplay}"
+                                                       Margin="0,4,0,0"
+                                                       FontSize="12"
+                                                       FontFamily="Consolas"
+                                                       Foreground="{StaticResource PosTextBrush}"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <TextBlock Text="{loc:Loc cardRecovery.refund.field.refundReference}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,0,0,5"
+                                               Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.payment.field.paymentReference}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,0,0,5"
+                                               Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}" />
+                                    <TextBox Text="{Binding RefundReference, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MinHeight="38"
+                                             Padding="8,6"
+                                             MaxLength="200" />
+
+                                    <TextBlock Text="{loc:Loc cardRecovery.refund.field.evidence}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,10,0,5"
+                                               Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.payment.field.evidence}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,10,0,5"
+                                               Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}" />
+                                    <TextBox Text="{Binding RefundEvidence, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MinHeight="54"
+                                             MaxHeight="96"
+                                             Padding="8,6"
+                                             MaxLength="1000"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto" />
+
+                                    <TextBlock Text="{loc:Loc cardRecovery.refund.field.note}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,10,0,5"
+                                               Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{loc:Loc cardRecovery.payment.field.note}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,10,0,5"
+                                               Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}" />
+                                    <TextBox Text="{Binding RefundSupervisorNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MinHeight="54"
+                                             MaxHeight="96"
+                                             Padding="8,6"
+                                             MaxLength="500"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto" />
+
+                                    <Border Margin="0,10,0,0"
+                                            Padding="10,8"
+                                            Background="#FFFFECEC"
+                                            BorderBrush="#FFFFCACA"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Visibility="{Binding HasRefundResolutionMessage, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding RefundResolutionMessage}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#FF9B1C1C"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+                                </StackPanel>
+                            </Border>
                         </Grid>
                     </ScrollViewer>
 
@@ -1383,6 +1527,68 @@
                             BorderThickness="0,1,0,0"
                             CornerRadius="0,0,8,8">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Command="{Binding DataContext.ResolveCardRefundCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardRefundSupervisorDecision.ConfirmRefunded}"
+                                    MinWidth="142"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.refund.action.confirmRefunded}"
+                                           Foreground="White"
+                                           FontWeight="Bold" />
+                            </Button>
+                            <Button Command="{Binding DataContext.ResolveCardRefundCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardRefundSupervisorDecision.ConfirmNotRefunded}"
+                                    MinWidth="168"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.refund.action.confirmNotRefunded}"
+                                           FontWeight="Bold" />
+                            </Button>
+                            <Button Command="{Binding DataContext.ResolveCardRefundCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardRefundSupervisorDecision.ContinueWaiting}"
+                                    MinWidth="136"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    Visibility="{Binding CanResolveRefund, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.refund.action.continueWaiting}"
+                                           FontWeight="Bold" />
+                            </Button>
+                            <Button Command="{Binding DataContext.ResolveCardPaymentCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardPaymentSupervisorDecision.ConfirmPaid}"
+                                    MinWidth="142"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.payment.action.confirmPaid}"
+                                           Foreground="White"
+                                           FontWeight="Bold" />
+                            </Button>
+                            <Button Command="{Binding DataContext.ResolveCardPaymentCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardPaymentSupervisorDecision.ConfirmNotPaid}"
+                                    MinWidth="168"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.payment.action.confirmNotPaid}"
+                                           FontWeight="Bold" />
+                            </Button>
+                            <Button Command="{Binding DataContext.ResolveCardPaymentCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{x:Static services:CardPaymentSupervisorDecision.ContinueWaiting}"
+                                    MinWidth="136"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    Visibility="{Binding CanResolvePayment, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{loc:Loc cardRecovery.refund.action.continueWaiting}"
+                                           FontWeight="Bold" />
+                            </Button>
                             <Button Command="{Binding DataContext.PrintRecoveredReceiptCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                     MinWidth="128"
                                     Height="44"
@@ -1401,14 +1607,6 @@
                                     Style="{StaticResource PosPrimaryButtonStyle}"
                                     Visibility="{Binding CanRetryRecovery, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="{Binding RetryButtonText}" Foreground="White" FontWeight="Bold" />
-                            </Button>
-                            <Button Command="{Binding DataContext.ManualConfirmActiveSessionRecoveryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                    MinWidth="184"
-                                    Height="44"
-                                    Margin="0,0,10,0"
-                                    Style="{StaticResource PosSecondaryButtonStyle}"
-                                    Visibility="{Binding CanManualConfirm, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="{Binding ManualConfirmButtonText}" FontWeight="Bold" />
                             </Button>
                             <Button Command="{Binding DataContext.CloseCardRecoveryResultDialogCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                     MinWidth="112"

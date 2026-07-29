@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hbpos.Client.Wpf.Localization;
@@ -71,7 +73,8 @@ public sealed class CashPaymentWorkflowService(
     ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null,
     ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
     ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
-    ILinklyBackendTerminalClient? linklyBackendTerminalClient = null) : ICashPaymentWorkflowService
+    ILinklyBackendTerminalClient? linklyBackendTerminalClient = null,
+    IEnumerable<ICardPaymentResultPolicy>? cardPaymentResultPolicies = null) : ICashPaymentWorkflowService
 {
     private static readonly JsonSerializerOptions CardAttemptJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -81,6 +84,13 @@ public sealed class CashPaymentWorkflowService(
     private readonly CashRoundingPolicy _cashRoundingPolicy = new();
     private readonly ICardTerminalClient _cardTerminalClient = cardTerminalClient ?? UnavailableCardTerminalClient.Instance;
     private readonly IVoucherTenderClient _voucherTenderClient = voucherTenderClient ?? UnavailableVoucherTenderClient.Instance;
+    private readonly CardPaymentResultPolicyResolver _cardPaymentResultPolicyResolver = new(
+        cardPaymentResultPolicies ??
+        [
+            new LinklyCardPaymentResultPolicy(),
+            new SquareCardPaymentResultPolicy(),
+            new FallbackCardPaymentResultPolicy()
+        ]);
 
     public bool TryParseTenderedAmount(string? amountTenderedText, out decimal tenderedAmount)
     {
@@ -307,11 +317,14 @@ public sealed class CashPaymentWorkflowService(
         }
 
         var result = checkout.CreateCashOrder(cart, session, tenderedAmount);
-        await orderRepository.SavePendingOrderAsync(result.Order, cancellationToken);
+        await RunLocalStoreAsync(
+            () => orderRepository.SavePendingOrderAsync(result.Order, cancellationToken),
+            cancellationToken);
 
-        cart.Clear();
-
-        var pendingSyncCount = await syncQueueRepository.CountPendingAsync(cancellationToken);
+        var hasPostCommitWarning = TryClearCartAfterCommit(cart, result.Order.OrderGuid);
+        var pendingSyncResult = await ReadPendingSyncCountAfterCommitAsync(session, cancellationToken);
+        hasPostCommitWarning |= pendingSyncResult.HasPostCommitWarning;
+        var pendingSyncCount = pendingSyncResult.PendingSyncCount;
         var updatedSession = session with { PendingSyncCount = pendingSyncCount };
 
         return new CashPaymentWorkflowResult(
@@ -319,7 +332,8 @@ public sealed class CashPaymentWorkflowService(
             result.TenderedAmount,
             result.ChangeAmount,
             pendingSyncCount,
-            updatedSession);
+            updatedSession,
+            hasPostCommitWarning);
     }
 
     public async Task<CashPaymentWorkflowResult> CompletePaymentAsync(
@@ -329,13 +343,37 @@ public sealed class CashPaymentWorkflowService(
         decimal cashTenderedAmount,
         CancellationToken cancellationToken = default)
     {
-        var result = checkout.CreatePaymentOrder(cart, session, tenders, cashTenderedAmount);
+        // 中文注释：在离开 UI 线程前固定付款明细，后台 SQLite 不得枚举可能继续变化的界面集合。
+        var tenderSnapshot = tenders.ToArray();
+        var result = checkout.CreatePaymentOrder(cart, session, tenderSnapshot, cashTenderedAmount);
         // 退款代金券先以待发券状态落本地，确保崩溃后仍能沿用原始幂等键恢复。
-        var order = await PrepareOrderForRecoverableCardPersistenceAsync(
-            PrepareOrderForVoucherRefundPersistence(result.Order),
-            tenders,
-            cancellationToken);
-        await orderRepository.SavePendingOrderAsync(order, cancellationToken);
+        var orderForPersistence = PrepareOrderForVoucherRefundPersistence(result.Order);
+        // 终端已批准后，订单 GUID 恢复和本地订单落盘不能被随后取消的 UI 操作打断。
+        var persistenceCancellationToken = CancellationToken.None;
+        LocalOrder order;
+        try
+        {
+            order = await RunLocalStoreAsync(
+                () => PrepareOrderForRecoverableCardPersistenceAsync(
+                    orderForPersistence,
+                    tenderSnapshot,
+                    persistenceCancellationToken),
+                persistenceCancellationToken);
+            await RunLocalStoreAsync(
+                () => orderRepository.SavePendingOrderAsync(order, persistenceCancellationToken),
+                persistenceCancellationToken);
+        }
+        catch (Exception ex) when (
+            tenderSnapshot.Any(tender => tender.Method == PaymentMethodKind.Card) &&
+            ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 已批准银行卡 tender 代表真实金融副作用；本地订单失败只能进入待恢复，绝不能退回普通付款失败。
+            await MarkApprovedCardPersistenceRequiresReviewAsync(tenderSnapshot, ex);
+            throw new CardPaymentPersistenceUnknownException(
+                orderForPersistence.OrderGuid,
+                "The card was approved, but POS could not safely save the order. Recovery or supervisor review is required.",
+                ex);
+        }
         try
         {
             order = await IssuePendingRefundVouchersAsync(order, session, cancellationToken);
@@ -344,7 +382,7 @@ public sealed class CashPaymentWorkflowService(
         {
             throw new PaymentUploadFailedException(
                 order.OrderGuid,
-                CalculateTenderedAmount(tenders),
+                CalculateTenderedAmount(tenderSnapshot),
                 result.ChangeAmount,
                 ex.Message,
                 ex);
@@ -370,26 +408,48 @@ public sealed class CashPaymentWorkflowService(
             {
                 throw new PaymentUploadFailedException(
                     result.Order.OrderGuid,
-                    CalculateTenderedAmount(tenders),
+                    CalculateTenderedAmount(tenderSnapshot),
                     result.ChangeAmount,
                     ex.Message,
                     ex);
             }
         }
 
-        await MarkCompletedCardAttemptsAsync(tenders, cancellationToken);
-        await MarkCompletedSquareAttemptsAsync(tenders, cancellationToken);
-        cart.Clear();
+        var hasPostCommitWarning = false;
+        try
+        {
+            await MarkCompletedCardAttemptsAsync(tenderSnapshot, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            hasPostCommitWarning = true;
+            LogPostCommitWarning("mark-card-attempt-completed", result.Order.OrderGuid, ex);
+        }
 
-        var pendingSyncCount = await syncQueueRepository.CountPendingAsync(cancellationToken);
+        try
+        {
+            await MarkCompletedSquareAttemptsAsync(tenderSnapshot, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            hasPostCommitWarning = true;
+            LogPostCommitWarning("mark-square-attempt-completed", result.Order.OrderGuid, ex);
+        }
+
+        hasPostCommitWarning |= TryClearCartAfterCommit(cart, result.Order.OrderGuid);
+
+        var pendingSyncResult = await ReadPendingSyncCountAfterCommitAsync(session, cancellationToken);
+        hasPostCommitWarning |= pendingSyncResult.HasPostCommitWarning;
+        var pendingSyncCount = pendingSyncResult.PendingSyncCount;
         var updatedSession = session with { PendingSyncCount = pendingSyncCount };
 
         return new CashPaymentWorkflowResult(
             result.Order,
-            CalculateTenderedAmount(tenders),
+            CalculateTenderedAmount(tenderSnapshot),
             result.ChangeAmount,
             pendingSyncCount,
-            updatedSession);
+            updatedSession,
+            hasPostCommitWarning);
     }
 
     public async Task<CashPaymentWorkflowResult> RetryVoucherUploadAsync(
@@ -400,7 +460,9 @@ public sealed class CashPaymentWorkflowService(
         decimal changeAmount,
         CancellationToken cancellationToken = default)
     {
-        var order = await orderRepository.GetOrderAsync(orderGuid, cancellationToken)
+        var order = await RunLocalStoreAsync(
+                () => orderRepository.GetOrderAsync(orderGuid, cancellationToken),
+                cancellationToken)
             ?? throw new InvalidOperationException("Pending voucher order was not found.");
         try
         {
@@ -441,9 +503,10 @@ public sealed class CashPaymentWorkflowService(
             }
         }
 
-        cart.Clear();
-
-        var pendingSyncCount = await syncQueueRepository.CountPendingAsync(cancellationToken);
+        var hasPostCommitWarning = TryClearCartAfterCommit(cart, order.OrderGuid);
+        var pendingSyncResult = await ReadPendingSyncCountAfterCommitAsync(session, cancellationToken);
+        hasPostCommitWarning |= pendingSyncResult.HasPostCommitWarning;
+        var pendingSyncCount = pendingSyncResult.PendingSyncCount;
         var updatedSession = session with { PendingSyncCount = pendingSyncCount };
 
         return new CashPaymentWorkflowResult(
@@ -451,7 +514,64 @@ public sealed class CashPaymentWorkflowService(
             tenderedAmount,
             changeAmount,
             pendingSyncCount,
-            updatedSession);
+            updatedSession,
+            hasPostCommitWarning);
+    }
+
+    private async Task<(int PendingSyncCount, bool HasPostCommitWarning)> ReadPendingSyncCountAfterCommitAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await RunLocalStoreAsync(
+                () => syncQueueRepository.CountPendingAsync(cancellationToken),
+                cancellationToken), false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogPostCommitWarning("refresh-pending-sync", orderGuid: null, ex);
+            return (session.PendingSyncCount, true);
+        }
+    }
+
+    private static void LogPostCommitWarning(string stage, Guid? orderGuid, Exception ex)
+    {
+        ConsoleLog.Write(
+            "CashPaymentWorkflow",
+            $"post-commit warning stage={stage} orderGuid={orderGuid?.ToString("D") ?? "<none>"} error={ex.GetType().Name}");
+    }
+
+    private static Task RunLocalStoreAsync(Func<Task> operation, CancellationToken cancellationToken)
+    {
+        // 中文注释：终端取消后仍要完成已开始的本地金融日志，不能让已取消的 UI token 跳过审计状态落盘。
+        var workerCancellationToken = GetLocalPersistenceCancellationToken(cancellationToken);
+        return Task.Run(operation, workerCancellationToken);
+    }
+
+    private static Task<T> RunLocalStoreAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
+    {
+        // 中文注释：调用方必须先构造不可变订单或 attempt 快照，后台委托不得访问购物车或界面集合。
+        var workerCancellationToken = GetLocalPersistenceCancellationToken(cancellationToken);
+        return Task.Run(operation, workerCancellationToken);
+    }
+
+    private static CancellationToken GetLocalPersistenceCancellationToken(CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested ? CancellationToken.None : cancellationToken;
+
+    private static bool TryClearCartAfterCommit(PosCartService cart, Guid orderGuid)
+    {
+        try
+        {
+            cart.Clear();
+            return false;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 订单已持久化后，购物车通知失败只能作为收尾告警，不能把已完成收款变成可重付失败。
+            LogPostCommitWarning("clear-cart", orderGuid, ex);
+            return true;
+        }
     }
 
     private async Task<PaymentTenderAttemptResult> AuthorizeCardTenderAsync(
@@ -489,87 +609,437 @@ public sealed class CashPaymentWorkflowService(
             "CardRefund",
             $"workflow terminal {operation} start amount={amount:0.00} remaining={remainingAmount:0.00} originalReference={LogValue(referenceText)}");
 
-        var attempt = await TryCreateCardPaymentAttemptAsync(
-            amount,
-            session,
-            actualAmount,
-            currentTenders,
-            cartSnapshot,
-            referenceText,
-            isRefund,
-            cancellationToken);
-        var squareAttempt = await TryCreateSquarePaymentAttemptAsync(
-            amount,
-            session,
-            actualAmount,
-            currentTenders,
-            cartSnapshot,
-            isRefund,
-            cancellationToken);
+        // 中文注释：attempt 草稿包含当前付款明细的不可变副本，后台 SQLite 不能直接读取 UI 绑定集合。
+        var tenderSnapshot = currentTenders.ToArray();
+        var persistenceCancellationToken = GetLocalPersistenceCancellationToken(cancellationToken);
+        var cardAttemptSelection = await RunLocalStoreAsync(
+            () => TryCreateCardPaymentAttemptAsync(
+                amount,
+                session,
+                actualAmount,
+                tenderSnapshot,
+                cartSnapshot,
+                referenceText,
+                isRefund,
+                persistenceCancellationToken),
+            persistenceCancellationToken);
+        var attempt = cardAttemptSelection.Attempt;
+        var squareAttemptSelection = await RunLocalStoreAsync(
+            () => TryCreateSquarePaymentAttemptAsync(
+                amount,
+                session,
+                actualAmount,
+                tenderSnapshot,
+                cartSnapshot,
+                referenceText,
+                isRefund,
+                persistenceCancellationToken),
+            persistenceCancellationToken);
+        var squareAttempt = squareAttemptSelection.Attempt;
+
+        if (isRefund)
+        {
+            var existingLinklyAttemptRequiresRecovery = cardAttemptSelection.Reused &&
+                attempt is not null &&
+                (attempt.Status != LocalCardPaymentAttemptStatus.Pending ||
+                 !string.IsNullOrWhiteSpace(attempt.SessionId));
+            var existingSquareAttemptRequiresRecovery = squareAttemptSelection.Reused &&
+                squareAttempt is not null &&
+                (squareAttempt.Status != LocalSquarePaymentAttemptStatus.Pending ||
+                 !string.IsNullOrWhiteSpace(squareAttempt.CheckoutId) ||
+                 !string.IsNullOrWhiteSpace(squareAttempt.PaymentId));
+            if (existingLinklyAttemptRequiresRecovery || existingSquareAttemptRequiresRecovery)
+            {
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "A matching card refund is already in progress or requires supervisor reconciliation.");
+            }
+
+            var durableRefundConfigured = cardTerminalSettingsProvider is not null &&
+                (cardPaymentAttemptRepository is not null || squarePaymentAttemptRepository is not null);
+            if (durableRefundConfigured && attempt is null && squareAttempt is null)
+            {
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "The card refund attempt could not be persisted, so the terminal was not called.");
+            }
+        }
 
         PaymentAuthorizationResult authorization;
+        var linklySubmissionObserved = false;
+        var squareSubmissionObserved = false;
+        var refundDispatchBoundaryPersisted = false;
+        string? refundIdempotencyKey = null;
+        string? refundSubmissionToken = null;
+        if (isRefund && (attempt is not null || squareAttempt is not null))
+        {
+            refundIdempotencyKey = attempt?.TxnRef ?? squareAttempt?.IdempotencyKey;
+            if (string.IsNullOrWhiteSpace(refundIdempotencyKey) ||
+                _cardTerminalClient is not IIdempotentCardRefundClient)
+            {
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "The card refund adapter cannot safely reuse the persisted attempt.");
+            }
+
+            try
+            {
+                // 中文注释：提交令牌既是跨进程 claim，也是旧 worker 的 fencing token；只有 CAS 赢家可以调用终端。
+                refundSubmissionToken = Guid.NewGuid().ToString("N");
+                if (attempt is not null)
+                {
+                    var boundaryAt = NextAttemptTimestamp(attempt.UpdatedAt);
+                    var claimed = await RunLocalStoreAsync(
+                        () => cardPaymentAttemptRepository!.TryBeginRefundSubmissionAsync(
+                            attempt.AttemptGuid,
+                            attempt.UpdatedAt,
+                            refundSubmissionToken,
+                            boundaryAt,
+                            CancellationToken.None),
+                        CancellationToken.None);
+                    if (!claimed)
+                    {
+                        return CreateCardFailureResult(
+                            "payment.card.resultUnknown",
+                            "The card refund attempt is already being processed or was reconciled.");
+                    }
+
+                    attempt = attempt with
+                    {
+                        Status = LocalCardPaymentAttemptStatus.Recovering,
+                        ResponseCode = null,
+                        ResponseText = null,
+                        SubmissionToken = refundSubmissionToken,
+                        UpdatedAt = boundaryAt
+                    };
+                }
+
+                if (squareAttempt is not null)
+                {
+                    var boundaryAt = NextAttemptTimestamp(squareAttempt.UpdatedAt);
+                    var claimed = await RunLocalStoreAsync(
+                        () => squarePaymentAttemptRepository!.TryBeginRefundSubmissionAsync(
+                            squareAttempt.AttemptGuid,
+                            squareAttempt.UpdatedAt,
+                            refundSubmissionToken,
+                            boundaryAt,
+                            CancellationToken.None),
+                        CancellationToken.None);
+                    if (!claimed)
+                    {
+                        return CreateCardFailureResult(
+                            "payment.card.resultUnknown",
+                            "The card refund attempt is already being processed or was reconciled.");
+                    }
+
+                    squareAttempt = squareAttempt with
+                    {
+                        Status = LocalSquarePaymentAttemptStatus.Recovering,
+                        ResponseCode = null,
+                        ResponseText = null,
+                        SubmissionToken = refundSubmissionToken,
+                        UpdatedAt = boundaryAt
+                    };
+                }
+
+                refundDispatchBoundaryPersisted = true;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("persist-refund-dispatch-boundary", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, ex);
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "The card refund attempt could not be locked before terminal submission.");
+            }
+        }
+
         using var linklyAttemptScope = attempt is null || linklyPaymentAttemptContextAccessor is null
             ? null
             : linklyPaymentAttemptContextAccessor.Begin(new LinklyPaymentAttemptContext(
                 attempt.AttemptGuid,
-                (sessionId, txnRef, updatedAt, bindCancellationToken) =>
-                    cardPaymentAttemptRepository!.UpdateSessionAsync(
-                        attempt.AttemptGuid,
-                        sessionId,
-                        txnRef,
-                        updatedAt,
-                        bindCancellationToken),
-                attempt.TxnRef));
+                (sessionId, txnRef, updatedAt, _) =>
+                {
+                    // 已收到 Linkly session 表明终端已接单；本地提交证据必须脱离 UI 取消。
+                    linklySubmissionObserved = true;
+                    return RunLocalStoreAsync(
+                        () => refundSubmissionToken is not null
+                            ? RequireRefundCasAsync(
+                                cardPaymentAttemptRepository!.TryUpdateRefundSessionAsync(
+                                    attempt.AttemptGuid,
+                                    refundSubmissionToken,
+                                    sessionId,
+                                    txnRef,
+                                    updatedAt,
+                                    CancellationToken.None))
+                            : cardPaymentAttemptRepository!.UpdateSessionAsync(
+                                attempt.AttemptGuid,
+                                sessionId,
+                                txnRef,
+                                updatedAt,
+                                CancellationToken.None),
+                        CancellationToken.None);
+                },
+                attempt.TxnRef,
+                refundSubmissionToken));
         using var squareAttemptScope = squareAttempt is null || squarePaymentAttemptContextAccessor is null
             ? null
-            : squarePaymentAttemptContextAccessor.Begin(new SquarePaymentAttemptContext(squareAttempt.AttemptGuid, squareAttempt.IdempotencyKey));
+            : squarePaymentAttemptContextAccessor.Begin(new SquarePaymentAttemptContext(
+                squareAttempt.AttemptGuid,
+                squareAttempt.IdempotencyKey,
+                (checkoutId, checkoutStatus, updatedAt, _) =>
+                {
+                    // Square 返回 checkoutId 即已提交；状态证据必须脱离 UI 取消。
+                    squareSubmissionObserved = true;
+                    return RunLocalStoreAsync(
+                        () => !string.IsNullOrWhiteSpace(squareAttempt.SubmissionToken)
+                            ? RequireRefundCasAsync(
+                                squarePaymentAttemptRepository!.TryMarkCheckoutCreatedAsync(
+                                    squareAttempt.AttemptGuid,
+                                    squareAttempt.SubmissionToken!,
+                                    checkoutId,
+                                    checkoutStatus,
+                                    updatedAt,
+                                    CancellationToken.None))
+                            : squarePaymentAttemptRepository!.MarkCheckoutCreatedAsync(
+                                squareAttempt.AttemptGuid,
+                                checkoutId,
+                                checkoutStatus,
+                                updatedAt,
+                                CancellationToken.None),
+                        CancellationToken.None);
+                },
+                squareAttempt.SubmissionToken));
         try
         {
-            authorization = isRefund
-                ? await _cardTerminalClient.RefundAsync(amount, session, referenceText, cancellationToken)
+            authorization = isRefund && refundIdempotencyKey is not null
+                ? await ((IIdempotentCardRefundClient)_cardTerminalClient).RefundAsync(
+                    amount,
+                    session,
+                    referenceText,
+                    refundIdempotencyKey,
+                    cancellationToken)
+                : isRefund
+                    ? await _cardTerminalClient.RefundAsync(amount, session, referenceText, cancellationToken)
                 : await _cardTerminalClient.AuthorizeAsync(amount, session, cancellationToken);
         }
-        catch
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            if (attempt is not null)
+            LocalCardPaymentAttempt? linklyAttemptAfterException;
+            LocalSquarePaymentAttempt? squareAttemptAfterException;
+            try
             {
-                await cardPaymentAttemptRepository!.UpdateOutcomeAsync(
-                    attempt.AttemptGuid,
-                    LocalCardPaymentAttemptStatus.Failed,
-                    null,
-                    "Card terminal request failed before a final response was received.",
-                    null,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
+                linklyAttemptAfterException = attempt is null
+                    ? null
+                    : await RunLocalStoreAsync(
+                        () => cardPaymentAttemptRepository!.GetAttemptAsync(attempt.AttemptGuid, CancellationToken.None),
+                        CancellationToken.None);
+                squareAttemptAfterException = squareAttempt is null
+                    ? null
+                    : await RunLocalStoreAsync(
+                        () => squarePaymentAttemptRepository!.GetAttemptAsync(squareAttempt.AttemptGuid, CancellationToken.None),
+                        CancellationToken.None);
+            }
+            catch (Exception readException) when (readException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 异常时无法可靠读取提交边界，必须保守锁定，不能让 UI 将其当作普通失败并释放券。
+                LogCardRecoveryWarning("read-attempt", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, readException);
+                return CreateCardFailureResult("payment.card.resultUnknown");
             }
 
-            if (squareAttempt is not null)
+            // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            var wasSubmitted = linklySubmissionObserved ||
+                squareSubmissionObserved ||
+                refundDispatchBoundaryPersisted ||
+                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
+                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId);
+
+            if (wasSubmitted)
             {
-                await squarePaymentAttemptRepository!.MarkFailedAsync(
-                    squareAttempt.AttemptGuid,
-                    LocalSquarePaymentAttemptStatus.Failed,
-                    null,
-                    null,
-                    null,
-                    "Card terminal request failed before a final response was received.",
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
+                // 终端已接单后任何异常都不能被当成失败并允许重新收款。
+                try
+                {
+                    if (linklyAttemptAfterException is not null &&
+                        (!string.IsNullOrWhiteSpace(linklyAttemptAfterException.SessionId) ||
+                         !string.IsNullOrWhiteSpace(linklyAttemptAfterException.TxnRef)))
+                    {
+                        await RunLocalStoreAsync(
+                            () => refundSubmissionToken is not null
+                                ? RequireRefundCasAsync(
+                                    cardPaymentAttemptRepository!.TryMarkRefundRecoveringAsync(
+                                        linklyAttemptAfterException.AttemptGuid,
+                                        refundSubmissionToken,
+                                        DateTimeOffset.UtcNow,
+                                        CancellationToken.None))
+                                : cardPaymentAttemptRepository!.MarkRecoveringAsync(
+                                    linklyAttemptAfterException.AttemptGuid,
+                                    DateTimeOffset.UtcNow,
+                                    CancellationToken.None),
+                            CancellationToken.None);
+                    }
+
+                    if (squareAttemptAfterException is not null &&
+                        (isRefund ||
+                         squareSubmissionObserved ||
+                         !string.IsNullOrWhiteSpace(squareAttemptAfterException.CheckoutId)) &&
+                        string.Equals(
+                            squareAttemptAfterException.SubmissionToken,
+                            squareAttempt?.SubmissionToken,
+                            StringComparison.Ordinal))
+                    {
+                        await RunLocalStoreAsync(
+                            () => refundSubmissionToken is not null
+                                ? RequireRefundCasAsync(
+                                    squarePaymentAttemptRepository!.TryMarkRefundFailedAsync(
+                                        squareAttemptAfterException.AttemptGuid,
+                                        refundSubmissionToken,
+                                        LocalSquarePaymentAttemptStatus.Unknown,
+                                        squareAttemptAfterException.CheckoutStatus,
+                                        squareAttemptAfterException.PaymentStatus,
+                                        squareAttemptAfterException.ResponseCode,
+                                        "Square checkout ended with an exception after submission; result requires recovery.",
+                                        DateTimeOffset.UtcNow,
+                                        CancellationToken.None,
+                                        squareAttemptAfterException.CancelReason))
+                                : squarePaymentAttemptRepository!.MarkFailedAsync(
+                                    squareAttemptAfterException.AttemptGuid,
+                                    LocalSquarePaymentAttemptStatus.Unknown,
+                                    squareAttemptAfterException.CheckoutStatus,
+                                    squareAttemptAfterException.PaymentStatus,
+                                    squareAttemptAfterException.ResponseCode,
+                                    "Square checkout ended with an exception after submission; result requires recovery.",
+                                    DateTimeOffset.UtcNow,
+                                    CancellationToken.None,
+                                    squareAttemptAfterException.CancelReason),
+                            CancellationToken.None);
+                    }
+                }
+                catch (Exception persistException) when (persistException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    LogCardRecoveryWarning("persist-recovery", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, persistException);
+                }
+
+                return CreateCardFailureResult("payment.card.resultUnknown");
+            }
+
+            try
+            {
+                if (attempt is not null)
+                {
+                    await RunLocalStoreAsync(
+                        () => cardPaymentAttemptRepository!.UpdateOutcomeAsync(
+                            attempt.AttemptGuid,
+                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                                ? LocalCardPaymentAttemptStatus.Cancelled
+                                : LocalCardPaymentAttemptStatus.Failed,
+                            null,
+                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                                ? "Card payment was canceled before terminal submission."
+                                : "Card terminal request failed before terminal submission.",
+                            null,
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None),
+                        CancellationToken.None);
+                }
+
+                if (squareAttempt is not null)
+                {
+                    await RunLocalStoreAsync(
+                        () => squarePaymentAttemptRepository!.MarkFailedAsync(
+                            squareAttempt.AttemptGuid,
+                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                                ? LocalSquarePaymentAttemptStatus.Canceled
+                                : LocalSquarePaymentAttemptStatus.Failed,
+                            null,
+                            null,
+                            null,
+                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                                ? "Card payment was canceled before terminal submission."
+                                : "Card terminal request failed before terminal submission.",
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None),
+                        CancellationToken.None);
+                }
+            }
+            catch (Exception persistException) when (persistException is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("persist-failure", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, persistException);
+                return CreateCardFailureResult("payment.card.resultUnknown");
+            }
+
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                return CreateCardFailureResult("payment.status.cardCancelled");
             }
 
             throw;
         }
 
-        if (squareAttempt is not null && !authorization.Approved)
+        if (squareAttempt is not null && !authorization.Approved && !authorization.ResultUnknown)
         {
-            await squarePaymentAttemptRepository!.MarkFailedAsync(
-                squareAttempt.AttemptGuid,
-                MapSquareAuthorizationFailureStatus(authorization.StatusKey, authorization.Message),
-                null,
-                authorization.ResponseText,
-                authorization.ResponseCode,
-                authorization.Message,
-                DateTimeOffset.UtcNow,
-                cancellationToken);
+            LocalSquarePaymentAttempt? squareAttemptAfterAuthorization;
+            try
+            {
+                squareAttemptAfterAuthorization = await RunLocalStoreAsync(
+                    () => squarePaymentAttemptRepository!.GetAttemptAsync(squareAttempt.AttemptGuid, CancellationToken.None),
+                    CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("read-square-attempt", squareAttempt.AttemptGuid, ex);
+                return CreateCardFailureResult("payment.card.resultUnknown");
+            }
+
+            var hasUnresolvedSquareAttempt = squareAttemptAfterAuthorization?.Status == LocalSquarePaymentAttemptStatus.Unknown ||
+                (squareAttemptAfterAuthorization?.Status is not (
+                    LocalSquarePaymentAttemptStatus.Canceled or
+                    LocalSquarePaymentAttemptStatus.Failed or
+                    LocalSquarePaymentAttemptStatus.TimedOut or
+                    LocalSquarePaymentAttemptStatus.Abandoned or
+                    LocalSquarePaymentAttemptStatus.OrderCompleted) &&
+                 !string.IsNullOrWhiteSpace(squareAttemptAfterAuthorization?.CheckoutId));
+            if (hasUnresolvedSquareAttempt)
+            {
+                const string squareResultUnknownMessage = "Square checkout result could not be confirmed. Recovery is required.";
+                try
+                {
+                    await MarkSquareAttemptRequiresRecoveryAsync(
+                        squareAttempt,
+                        authorization,
+                        squareResultUnknownMessage,
+                        refundSubmissionToken);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    LogCardRecoveryWarning("persist-square-recovery", squareAttempt.AttemptGuid, ex);
+                }
+
+                return CreateCardFailureResult("payment.card.resultUnknown", squareResultUnknownMessage);
+            }
+
+            await RunLocalStoreAsync(
+                () => refundSubmissionToken is not null
+                    ? RequireRefundCasAsync(
+                        squarePaymentAttemptRepository!.TryMarkRefundFailedAsync(
+                            squareAttempt.AttemptGuid,
+                            refundSubmissionToken,
+                            MapSquareAuthorizationFailureStatus(authorization.StatusKey, authorization.Message),
+                            null,
+                            authorization.ResponseText,
+                            authorization.ResponseCode,
+                            authorization.Message,
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None))
+                    : squarePaymentAttemptRepository!.MarkFailedAsync(
+                        squareAttempt.AttemptGuid,
+                        MapSquareAuthorizationFailureStatus(authorization.StatusKey, authorization.Message),
+                        null,
+                        authorization.ResponseText,
+                        authorization.ResponseCode,
+                        authorization.Message,
+                        DateTimeOffset.UtcNow,
+                        CancellationToken.None),
+                CancellationToken.None);
         }
 
         ConsoleLog.Write(
@@ -578,14 +1048,46 @@ public sealed class CashPaymentWorkflowService(
             $"message={LogValue(authorization.Message)} authorizedAmount={authorization.AuthorizedAmount?.ToString("0.00") ?? "<null>"} " +
             $"cardTxCount={authorization.CardTransactions?.Count ?? 0}");
 
+        if (authorization.ResultUnknown)
+        {
+            const string resultUnknownMessage = "Card terminal result could not be confirmed. Recovery is required.";
+            try
+            {
+                if (attempt is not null)
+                {
+                    await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
+                        attempt.AttemptGuid,
+                        authorization,
+                        CancellationToken.None,
+                        refundSubmissionToken: refundSubmissionToken);
+                }
+
+                await MarkSquareAttemptRequiresRecoveryAsync(
+                    squareAttempt,
+                    authorization,
+                    resultUnknownMessage,
+                    refundSubmissionToken);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("persist-result-unknown", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, ex);
+            }
+
+            return CreateCardFailureResult("payment.card.resultUnknown", resultUnknownMessage);
+        }
+
         if (!authorization.Approved)
         {
             if (attempt is not null)
             {
-                await UpdateCardPaymentAttemptAfterAuthorizationAsync(attempt.AttemptGuid, authorization, cancellationToken);
+                await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                    attempt.AttemptGuid,
+                    authorization,
+                    CancellationToken.None,
+                    refundSubmissionToken: refundSubmissionToken);
             }
 
-            return PaymentTenderAttemptResult.Fail(
+            return CreateCardFailureResult(
                 string.IsNullOrWhiteSpace(authorization.StatusKey) ? declinedStatusKey : authorization.StatusKey,
                 authorization.Message,
                 isTerminalDecline: HasTerminalDeclineEvidence(authorization));
@@ -597,32 +1099,52 @@ public sealed class CashPaymentWorkflowService(
             MidpointRounding.AwayFromZero);
         if (authorizedAmount <= 0m)
         {
+            const string nonPositiveAmountMessage = "Card terminal approved a non-positive amount. Supervisor review is required.";
             if (attempt is not null)
             {
-                await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
                     attempt.AttemptGuid,
                     authorization,
-                    cancellationToken,
+                    CancellationToken.None,
                     LocalCardPaymentAttemptStatus.RequiresReview,
-                    "Card terminal approved a non-positive amount. Supervisor review is required.");
+                    nonPositiveAmountMessage,
+                    refundSubmissionToken))
+                {
+                    return CreateCardFailureResult("payment.card.resultUnknown", nonPositiveAmountMessage);
+                }
             }
 
-            return PaymentTenderAttemptResult.Fail(declinedStatusKey, authorization.Message);
+            await MarkSquareAttemptRequiresRecoveryAsync(
+                squareAttempt,
+                authorization,
+                nonPositiveAmountMessage,
+                refundSubmissionToken);
+            return CreateCardFailureResult("payment.card.resultUnknown", nonPositiveAmountMessage);
         }
 
         if (authorizedAmount > remainingAmount)
         {
+            const string exceedsRemainingMessage = "Card terminal authorized amount exceeded the remaining amount.";
             if (attempt is not null)
             {
-                await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
                     attempt.AttemptGuid,
                     authorization,
-                    cancellationToken,
+                    CancellationToken.None,
                     LocalCardPaymentAttemptStatus.RequiresReview,
-                    "Card terminal authorized amount exceeded the remaining amount.");
+                    exceedsRemainingMessage,
+                    refundSubmissionToken))
+                {
+                    return CreateCardFailureResult("payment.card.resultUnknown", exceedsRemainingMessage);
+                }
             }
 
-            return PaymentTenderAttemptResult.Fail(exceedsRemainingStatusKey);
+            await MarkSquareAttemptRequiresRecoveryAsync(
+                squareAttempt,
+                authorization,
+                exceedsRemainingMessage,
+                refundSubmissionToken);
+            return CreateCardFailureResult("payment.card.resultUnknown", exceedsRemainingMessage);
         }
 
         if (authorizedAmount != amount)
@@ -630,22 +1152,87 @@ public sealed class CashPaymentWorkflowService(
             const string amountMismatchMessage = "Card terminal authorized amount did not match the requested amount.";
             if (attempt is not null)
             {
-                await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
                     attempt.AttemptGuid,
                     authorization,
-                    cancellationToken,
+                    CancellationToken.None,
                     LocalCardPaymentAttemptStatus.RequiresReview,
-                    amountMismatchMessage);
+                    amountMismatchMessage,
+                    refundSubmissionToken))
+                {
+                    return CreateCardFailureResult("payment.card.resultUnknown", amountMismatchMessage);
+                }
             }
 
-            return PaymentTenderAttemptResult.Fail(
-                declinedStatusKey,
-                amountMismatchMessage);
+            await MarkSquareAttemptRequiresRecoveryAsync(
+                squareAttempt,
+                authorization,
+                amountMismatchMessage,
+                refundSubmissionToken);
+            return CreateCardFailureResult("payment.card.resultUnknown", amountMismatchMessage);
         }
 
         if (attempt is not null)
         {
-            await UpdateCardPaymentAttemptAfterAuthorizationAsync(attempt.AttemptGuid, authorization, cancellationToken);
+            if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
+                attempt.AttemptGuid,
+                authorization,
+                CancellationToken.None,
+                refundSubmissionToken: refundSubmissionToken))
+            {
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "The card was approved but the local recovery record could not be confirmed.");
+            }
+        }
+
+        if (squareAttempt is not null && refundSubmissionToken is not null)
+        {
+            var squareRefundTransaction = authorization.CardTransactions?.FirstOrDefault(transaction =>
+                string.Equals(transaction.Processor, "Square", StringComparison.OrdinalIgnoreCase));
+            var paymentId = squareRefundTransaction?.TxnRef;
+            if (string.IsNullOrWhiteSpace(paymentId) &&
+                authorization.Reference?.StartsWith("SQRF:", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                paymentId = authorization.Reference["SQRF:".Length..];
+            }
+
+            var paymentStatus = squareRefundTransaction?.ResponseText ?? authorization.Message;
+            if (string.IsNullOrWhiteSpace(paymentId) || string.IsNullOrWhiteSpace(paymentStatus))
+            {
+                const string missingSquareEvidenceMessage =
+                    "Square approved the refund but did not return durable refund evidence. Recovery is required.";
+                await MarkSquareAttemptRequiresRecoveryAsync(
+                    squareAttempt,
+                    authorization,
+                    missingSquareEvidenceMessage,
+                    refundSubmissionToken);
+                return CreateCardFailureResult("payment.card.resultUnknown", missingSquareEvidenceMessage);
+            }
+
+            try
+            {
+                // 退款成功必须由当前 submission token 落库；旧 worker 迟到时不得生成成功 tender。
+                await RunLocalStoreAsync(
+                    () => RequireRefundCasAsync(
+                        squarePaymentAttemptRepository!.TryMarkRefundPaymentVerifiedAsync(
+                            squareAttempt.AttemptGuid,
+                            refundSubmissionToken,
+                            paymentId,
+                            paymentStatus,
+                            authorization.ResponseCode,
+                            "Refund verified.",
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None)),
+                    CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("persist-square-refund-approved", squareAttempt.AttemptGuid, ex);
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    "The Square refund was approved but its current attempt could not be confirmed. Recovery is required.");
+            }
         }
 
         var reference = isRefund
@@ -678,7 +1265,59 @@ public sealed class CashPaymentWorkflowService(
             successStatusMessage);
     }
 
-    private async Task<LocalCardPaymentAttempt?> TryCreateCardPaymentAttemptAsync(
+    private PaymentTenderAttemptResult CreateCardFailureResult(
+        string statusKey,
+        string? statusMessage = null,
+        bool isTerminalDecline = false)
+    {
+        return _cardPaymentResultPolicyResolver.Apply(
+            PaymentTenderAttemptResult.Fail(statusKey, statusMessage, isTerminalDecline));
+    }
+
+    private async Task MarkSquareAttemptRequiresRecoveryAsync(
+        LocalSquarePaymentAttempt? squareAttempt,
+        PaymentAuthorizationResult authorization,
+        string message,
+        string? refundSubmissionToken = null)
+    {
+        if (squareAttempt is null)
+        {
+            return;
+        }
+
+        await RunLocalStoreAsync(
+            () => refundSubmissionToken is not null
+                ? RequireRefundCasAsync(
+                    squarePaymentAttemptRepository!.TryMarkRefundFailedAsync(
+                        squareAttempt.AttemptGuid,
+                        refundSubmissionToken,
+                        LocalSquarePaymentAttemptStatus.Unknown,
+                        null,
+                        authorization.ResponseText,
+                        authorization.ResponseCode,
+                        message,
+                        DateTimeOffset.UtcNow,
+                        CancellationToken.None))
+                : squarePaymentAttemptRepository!.MarkFailedAsync(
+                    squareAttempt.AttemptGuid,
+                    LocalSquarePaymentAttemptStatus.Unknown,
+                    null,
+                    authorization.ResponseText,
+                    authorization.ResponseCode,
+                    message,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+            CancellationToken.None);
+    }
+
+    private static void LogCardRecoveryWarning(string stage, Guid? attemptGuid, Exception ex)
+    {
+        ConsoleLog.Write(
+            "CardRecovery",
+            $"conservative result-unknown stage={stage} attemptGuid={attemptGuid?.ToString("D") ?? "<none>"} error={ex.GetType().Name}");
+    }
+
+    private async Task<(LocalCardPaymentAttempt? Attempt, bool Reused)> TryCreateCardPaymentAttemptAsync(
         decimal amount,
         PosSessionState session,
         decimal actualAmount,
@@ -690,18 +1329,43 @@ public sealed class CashPaymentWorkflowService(
     {
         if (cardPaymentAttemptRepository is null || cardTerminalSettingsProvider is null || cartSnapshot is null)
         {
-            return null;
+            return (null, false);
         }
 
         var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
         var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
         if (settings.Processor != CardProcessorKind.Linkly ||
-            (mode != LinklyConnectionMode.CloudBackendAsync && (mode != LinklyConnectionMode.LocalIp || isRefund)))
+            (!isRefund && mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp))
         {
-            return null;
+            return (null, false);
+        }
+
+        if (isRefund)
+        {
+            var openRefundAttempts = await cardPaymentAttemptRepository.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                settings.Environment.ToString(),
+                cancellationToken);
+            var existingAttempt = openRefundAttempts.FirstOrDefault(candidate =>
+                candidate.Amount == amount &&
+                RefundDraftMatches(candidate.OrderDraftJson, referenceText));
+            if (existingAttempt is not null)
+            {
+                return (existingAttempt, true);
+            }
         }
 
         var now = DateTimeOffset.UtcNow;
+        var refundBusinessKey = isRefund
+            ? BuildRefundBusinessKey(
+                CardProcessorKind.Linkly,
+                settings.Environment.ToString(),
+                session,
+                amount,
+                referenceText,
+                "AUD")
+            : null;
         var draft = new CardPaymentOrderDraft(
             Guid.NewGuid(),
             session,
@@ -712,11 +1376,16 @@ public sealed class CashPaymentWorkflowService(
             isRefund ? "R" : "P",
             referenceText,
             now);
+        var attemptGuid = Guid.NewGuid();
         var attempt = new LocalCardPaymentAttempt(
-            Guid.NewGuid(),
+            attemptGuid,
             null,
-            // LocalIp 没有后端 session，必须在发起 socket 请求前持久化 TxnRef，供重启 GetLast 精确恢复。
-            mode == LinklyConnectionMode.LocalIp ? LinklyTerminalClient.BuildTxnRef(session) : null,
+            // 退款 TxnRef 必须与原销售引用分离并在终端调用前落库；普通 LocalIp 销售仍沿用既有生成规则。
+            isRefund
+                ? BuildRefundTxnRef(referenceText)
+                : mode == LinklyConnectionMode.LocalIp
+                    ? LinklyTerminalClient.BuildTxnRef(session)
+                    : null,
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -733,9 +1402,20 @@ public sealed class CashPaymentWorkflowService(
             now,
             now,
             null,
-            null);
+            null,
+            isRefund ? "Refund" : "Sale",
+            isRefund ? draft.OrderGuid : null,
+            SubmissionToken: null,
+            RefundBusinessKey: refundBusinessKey);
 
-        await cardPaymentAttemptRepository.CreateAsync(attempt, cancellationToken);
+        var persistedAttempt = isRefund
+            ? await cardPaymentAttemptRepository.CreateOrGetOpenRefundAsync(attempt, cancellationToken)
+            : attempt;
+        if (!isRefund)
+        {
+            await cardPaymentAttemptRepository.CreateAsync(attempt, cancellationToken);
+        }
+
         LinklyJsonLog.Write(
             "CardRecovery",
             "card-recovery",
@@ -745,36 +1425,36 @@ public sealed class CashPaymentWorkflowService(
             details: new
             {
                 timestamp = DateTimeOffset.Now,
-                attemptGuid = attempt.AttemptGuid,
-                localStatus = attempt.Status.ToString(),
-                txnType = attempt.TxnType,
-                amount = attempt.Amount,
-                processor = attempt.Processor,
-                connectionMode = attempt.ConnectionMode,
-                storeCode = attempt.StoreCode,
-                deviceCode = attempt.DeviceCode,
-                cashierId = attempt.CashierId,
-                createdAt = attempt.CreatedAt,
-                updatedAt = attempt.UpdatedAt
+                attemptGuid = persistedAttempt.AttemptGuid,
+                localStatus = persistedAttempt.Status.ToString(),
+                txnType = persistedAttempt.TxnType,
+                amount = persistedAttempt.Amount,
+                processor = persistedAttempt.Processor,
+                connectionMode = persistedAttempt.ConnectionMode,
+                storeCode = persistedAttempt.StoreCode,
+                deviceCode = persistedAttempt.DeviceCode,
+                cashierId = persistedAttempt.CashierId,
+                createdAt = persistedAttempt.CreatedAt,
+                updatedAt = persistedAttempt.UpdatedAt
             });
-        return attempt;
+        return (persistedAttempt, persistedAttempt.AttemptGuid != attempt.AttemptGuid);
     }
 
-    private async Task<LocalSquarePaymentAttempt?> TryCreateSquarePaymentAttemptAsync(
+    private async Task<(LocalSquarePaymentAttempt? Attempt, bool Reused)> TryCreateSquarePaymentAttemptAsync(
         decimal amount,
         PosSessionState session,
         decimal actualAmount,
         IReadOnlyList<PaymentTender> currentTenders,
         PosCartSnapshot? cartSnapshot,
+        string? referenceText,
         bool isRefund,
         CancellationToken cancellationToken)
     {
         if (squarePaymentAttemptRepository is null ||
             cardTerminalSettingsProvider is null ||
-            cartSnapshot is null ||
-            isRefund)
+            cartSnapshot is null)
         {
-            return null;
+            return (null, false);
         }
 
         var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
@@ -782,11 +1462,37 @@ public sealed class CashPaymentWorkflowService(
             string.IsNullOrWhiteSpace(settings.SquareDeviceId) ||
             string.IsNullOrWhiteSpace(settings.SquareLocationId))
         {
-            return null;
+            return (null, false);
+        }
+
+        if (isRefund)
+        {
+            var openRefundAttempts = await squarePaymentAttemptRepository.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                settings.Environment.ToString(),
+                cancellationToken);
+            var existingAttempt = openRefundAttempts.FirstOrDefault(candidate =>
+                candidate.Amount == amount &&
+                RefundDraftMatches(candidate.OrderDraftJson, referenceText));
+            if (existingAttempt is not null)
+            {
+                return (existingAttempt, true);
+            }
         }
 
         const string currency = "AUD";
         var now = DateTimeOffset.UtcNow;
+        var refundBusinessKey = isRefund
+            ? BuildRefundBusinessKey(
+                CardProcessorKind.Square,
+                settings.Environment.ToString(),
+                session,
+                amount,
+                referenceText,
+                currency)
+            : null;
+        var saleSubmissionToken = isRefund ? null : Guid.NewGuid().ToString("N");
         var draft = new CardPaymentOrderDraft(
             Guid.NewGuid(),
             session,
@@ -794,8 +1500,8 @@ public sealed class CashPaymentWorkflowService(
             currentTenders.ToArray(),
             actualAmount,
             amount,
-            "P",
-            null,
+            isRefund ? "R" : "P",
+            referenceText,
             now);
         var attempt = new LocalSquarePaymentAttempt(
             Guid.NewGuid(),
@@ -822,10 +1528,91 @@ public sealed class CashPaymentWorkflowService(
             now,
             null,
             null,
-            null);
+            null,
+            isRefund ? "Refund" : "Sale",
+            isRefund ? draft.OrderGuid : null,
+            SubmissionToken: saleSubmissionToken,
+            RefundBusinessKey: refundBusinessKey);
 
-        await squarePaymentAttemptRepository.CreateAsync(attempt, cancellationToken);
-        return attempt;
+        var persistedAttempt = isRefund
+            ? await squarePaymentAttemptRepository.CreateOrGetOpenRefundAsync(attempt, cancellationToken)
+            : attempt;
+        if (!isRefund)
+        {
+            await squarePaymentAttemptRepository.CreateAsync(attempt, cancellationToken);
+        }
+
+        return (persistedAttempt, persistedAttempt.AttemptGuid != attempt.AttemptGuid);
+    }
+
+    private static bool RefundDraftMatches(string orderDraftJson, string? originalReference)
+    {
+        try
+        {
+            var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(orderDraftJson, CardAttemptJsonOptions);
+            return string.Equals(
+                draft?.OriginalReference?.Trim(),
+                originalReference?.Trim(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            // 同终端、同金额的未决退款草稿损坏时无法证明是另一笔交易，必须保守阻止重复退款。
+            return true;
+        }
+    }
+
+    private static string BuildRefundTxnRef(string? originalReference)
+    {
+        var normalizedOriginalReference = originalReference?.Trim();
+        if (normalizedOriginalReference?.StartsWith("ANZ:", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            normalizedOriginalReference = normalizedOriginalReference[4..].Trim();
+        }
+
+        string txnRef;
+        do
+        {
+            txnRef = Guid.NewGuid().ToString("N");
+        }
+        while (string.Equals(txnRef, normalizedOriginalReference, StringComparison.OrdinalIgnoreCase));
+
+        return txnRef;
+    }
+
+    private static string BuildRefundBusinessKey(
+        CardProcessorKind processor,
+        string environment,
+        PosSessionState session,
+        decimal amount,
+        string? originalReference,
+        string currency)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            processor.ToString().ToUpperInvariant(),
+            environment.Trim().ToUpperInvariant(),
+            session.StoreCode.Trim().ToUpperInvariant(),
+            session.DeviceCode.Trim().ToUpperInvariant(),
+            originalReference?.Trim().ToUpperInvariant() ?? string.Empty,
+            ToMinorUnits(amount).ToString(CultureInfo.InvariantCulture),
+            currency.Trim().ToUpperInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static DateTimeOffset NextAttemptTimestamp(DateTimeOffset current)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return now > current ? now : current.AddTicks(1);
+    }
+
+    private static async Task RequireRefundCasAsync(Task<bool> update)
+    {
+        if (!await update)
+        {
+            throw new InvalidOperationException("退款 attempt 已被其他任务推进或主管结案。");
+        }
     }
 
     private async Task UpdateCardPaymentAttemptAfterAuthorizationAsync(
@@ -833,23 +1620,49 @@ public sealed class CashPaymentWorkflowService(
         PaymentAuthorizationResult authorization,
         CancellationToken cancellationToken,
         LocalCardPaymentAttemptStatus? statusOverride = null,
-        string? responseTextOverride = null)
+        string? responseTextOverride = null,
+        string? refundSubmissionToken = null)
     {
+        // 终端已经返回后，attempt 结果是金融恢复边界，不能受 UI 取消影响。
+        var persistenceCancellationToken = CancellationToken.None;
         var now = DateTimeOffset.UtcNow;
         if (!string.IsNullOrWhiteSpace(authorization.SessionId))
         {
-            await cardPaymentAttemptRepository!.UpdateSessionAsync(
-                attemptGuid,
-                authorization.SessionId,
-                authorization.TxnRef,
-                now,
-                cancellationToken);
+            await RunLocalStoreAsync(
+                () => refundSubmissionToken is not null
+                    ? RequireRefundCasAsync(
+                        cardPaymentAttemptRepository!.TryUpdateRefundSessionAsync(
+                            attemptGuid,
+                            refundSubmissionToken,
+                            authorization.SessionId,
+                            authorization.TxnRef,
+                            now,
+                            persistenceCancellationToken))
+                    : cardPaymentAttemptRepository!.UpdateSessionAsync(
+                        attemptGuid,
+                        authorization.SessionId,
+                        authorization.TxnRef,
+                        now,
+                        persistenceCancellationToken),
+                persistenceCancellationToken);
         }
 
         if (authorization.ResultUnknown)
         {
             // 已提交到终端但结果未知时必须保留为可恢复状态，避免被当作普通超时失败后允许重新刷卡。
-            await cardPaymentAttemptRepository!.MarkRecoveringAsync(attemptGuid, now, cancellationToken);
+            await RunLocalStoreAsync(
+                () => refundSubmissionToken is not null
+                    ? RequireRefundCasAsync(
+                        cardPaymentAttemptRepository!.TryMarkRefundRecoveringAsync(
+                            attemptGuid,
+                            refundSubmissionToken,
+                            now,
+                            persistenceCancellationToken))
+                    : cardPaymentAttemptRepository!.MarkRecoveringAsync(
+                        attemptGuid,
+                        now,
+                        persistenceCancellationToken),
+                persistenceCancellationToken);
             return;
         }
 
@@ -860,14 +1673,74 @@ public sealed class CashPaymentWorkflowService(
                 authorization.Message,
                 firstTransaction?.ResponseText,
                 firstTransaction?.ResponseCode ?? authorization.ResponseCode));
-        await cardPaymentAttemptRepository!.UpdateOutcomeAsync(
-            attemptGuid,
-            status,
-            firstTransaction?.ResponseCode ?? authorization.ResponseCode,
-            responseTextOverride ?? firstTransaction?.ResponseText ?? authorization.ResponseText ?? authorization.Message,
-            authorization.Reference,
-            now,
-            cancellationToken);
+        await RunLocalStoreAsync(
+            () => refundSubmissionToken is not null
+                ? RequireRefundCasAsync(
+                    cardPaymentAttemptRepository!.TryUpdateRefundOutcomeAsync(
+                        attemptGuid,
+                        refundSubmissionToken,
+                        status,
+                        firstTransaction?.ResponseCode ?? authorization.ResponseCode,
+                        responseTextOverride ?? firstTransaction?.ResponseText ?? authorization.ResponseText ?? authorization.Message,
+                        authorization.Reference,
+                        now,
+                        persistenceCancellationToken))
+                : cardPaymentAttemptRepository!.UpdateOutcomeAsync(
+                    attemptGuid,
+                    status,
+                    firstTransaction?.ResponseCode ?? authorization.ResponseCode,
+                    responseTextOverride ?? firstTransaction?.ResponseText ?? authorization.ResponseText ?? authorization.Message,
+                    authorization.Reference,
+                    now,
+                    persistenceCancellationToken),
+            persistenceCancellationToken);
+    }
+
+    private async Task<bool> TryPersistCardPaymentAttemptAfterFinancialResultAsync(
+        Guid attemptGuid,
+        PaymentAuthorizationResult authorization,
+        CancellationToken cancellationToken,
+        LocalCardPaymentAttemptStatus? statusOverride = null,
+        string? responseTextOverride = null,
+        string? refundSubmissionToken = null)
+    {
+        try
+        {
+            await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                attemptGuid,
+                authorization,
+                cancellationToken,
+                statusOverride,
+                responseTextOverride,
+                refundSubmissionToken);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogCardRecoveryWarning("persist-financial-result", attemptGuid, ex);
+            try
+            {
+                await RunLocalStoreAsync(
+                    () => refundSubmissionToken is not null
+                        ? RequireRefundCasAsync(
+                            cardPaymentAttemptRepository!.TryMarkRefundRecoveringAsync(
+                                attemptGuid,
+                                refundSubmissionToken,
+                                DateTimeOffset.UtcNow,
+                                CancellationToken.None))
+                        : cardPaymentAttemptRepository!.MarkRecoveringAsync(
+                            attemptGuid,
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None),
+                    CancellationToken.None);
+            }
+            catch (Exception recoveryException) when (recoveryException is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning("persist-financial-result-recovery", attemptGuid, recoveryException);
+            }
+
+            return false;
+        }
     }
 
     private static LocalCardPaymentAttemptStatus MapCardAttemptFailureStatus(
@@ -1015,6 +1888,76 @@ public sealed class CashPaymentWorkflowService(
             Guid.TryParseExact(value[prefix.Length..], "N", out attemptGuid);
     }
 
+    private async Task MarkApprovedCardPersistenceRequiresReviewAsync(
+        IReadOnlyList<PaymentTender> tenders,
+        Exception persistenceException)
+    {
+        const string reviewMessage =
+            "The card was approved, but the local order could not be safely persisted.";
+        var now = DateTimeOffset.UtcNow;
+
+        if (cardPaymentAttemptRepository is not null)
+        {
+            foreach (var tender in tenders.Where(tender => tender.Method == PaymentMethodKind.Card))
+            {
+                if (!TryReadCardAttemptTenderKey(tender.IdempotencyKey, out var attemptGuid))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await RunLocalStoreAsync(
+                        () => cardPaymentAttemptRepository.UpdateOutcomeAsync(
+                            attemptGuid,
+                            LocalCardPaymentAttemptStatus.RequiresReview,
+                            responseCode: null,
+                            responseText: reviewMessage,
+                            paymentReference: tender.Reference,
+                            completedAt: now,
+                            cancellationToken: CancellationToken.None),
+                        CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    LogCardRecoveryWarning("mark-approved-order-persistence-review", attemptGuid, ex);
+                }
+            }
+        }
+
+        if (squarePaymentAttemptRepository is not null)
+        {
+            foreach (var tender in tenders.Where(tender => tender.Method == PaymentMethodKind.Card))
+            {
+                if (!TryReadSquareAttemptTenderKey(tender.IdempotencyKey, out var attemptGuid))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await RunLocalStoreAsync(
+                        () => squarePaymentAttemptRepository.MarkFailedAsync(
+                            attemptGuid,
+                            LocalSquarePaymentAttemptStatus.Unknown,
+                            checkoutStatus: null,
+                            paymentStatus: null,
+                            responseCode: null,
+                            responseText: reviewMessage,
+                            resolvedAt: now,
+                            cancellationToken: CancellationToken.None),
+                        CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    LogCardRecoveryWarning("mark-approved-square-order-persistence-review", attemptGuid, ex);
+                }
+            }
+        }
+
+        LogCardRecoveryWarning("approved-order-persistence", attemptGuid: null, persistenceException);
+    }
+
     private async Task MarkCompletedCardAttemptsAsync(
         IReadOnlyList<PaymentTender> tenders,
         CancellationToken cancellationToken)
@@ -1031,10 +1974,12 @@ public sealed class CashPaymentWorkflowService(
             .Distinct())
         {
             // 订单落本地后才把刷卡 attempt 标为完成，避免“刷卡成功但订单未写入”被误判为已恢复。
-            await cardPaymentAttemptRepository.MarkOrderCompletedAsync(
-                attemptGuid,
-                DateTimeOffset.UtcNow,
-                cancellationToken);
+            await RunLocalStoreAsync(
+                () => cardPaymentAttemptRepository.MarkOrderCompletedAsync(
+                    attemptGuid,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
             await AcknowledgeCompletedCardAttemptAsync(attemptGuid, cancellationToken);
         }
     }
@@ -1043,12 +1988,17 @@ public sealed class CashPaymentWorkflowService(
         Guid attemptGuid,
         CancellationToken cancellationToken)
     {
-        if (linklyBackendTerminalClient is null || cardTerminalSettingsProvider is null)
+        var backendTerminalClient = linklyBackendTerminalClient;
+        var settingsProvider = cardTerminalSettingsProvider;
+        var attemptRepository = cardPaymentAttemptRepository;
+        if (backendTerminalClient is null || settingsProvider is null || attemptRepository is null)
         {
             return;
         }
 
-        var attempt = await cardPaymentAttemptRepository!.GetAttemptAsync(attemptGuid, cancellationToken);
+        var attempt = await RunLocalStoreAsync(
+            () => attemptRepository.GetAttemptAsync(attemptGuid, cancellationToken),
+            cancellationToken);
         if (attempt is null ||
             attempt.AcknowledgedAt is not null ||
             string.IsNullOrWhiteSpace(attempt.SessionId))
@@ -1056,7 +2006,10 @@ public sealed class CashPaymentWorkflowService(
             return;
         }
 
-        var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
+        var sessionId = attempt.SessionId;
+        var settings = await RunLocalStoreAsync(
+            () => settingsProvider.GetSettingsAsync(cancellationToken),
+            cancellationToken);
         var mode = ResolveAttemptConnectionMode(
             attempt,
             CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode));
@@ -1070,20 +2023,22 @@ public sealed class CashPaymentWorkflowService(
         try
         {
             // 订单已经落地后才确认 Linkly session，避免恢复列表提前丢失成功交易。
-            await linklyBackendTerminalClient.AcknowledgeSessionAsync(
+            await backendTerminalClient.AcknowledgeSessionAsync(
                 settings with { Environment = environment },
-                attempt.SessionId,
+                sessionId,
                 cancellationToken);
-            await cardPaymentAttemptRepository.MarkAcknowledgedAsync(
-                attemptGuid,
-                DateTimeOffset.UtcNow,
+            await RunLocalStoreAsync(
+                () => attemptRepository.MarkAcknowledgedAsync(
+                    attemptGuid,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken),
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ConsoleLog.Write(
                 "CardRecovery",
-                $"payment completion acknowledge failed attemptGuid={attemptGuid} sessionId={attempt.SessionId} error={ex.GetType().Name}");
+                $"payment completion acknowledge failed attemptGuid={attemptGuid} sessionId={sessionId} error={ex.GetType().Name}");
         }
     }
 
@@ -1103,10 +2058,12 @@ public sealed class CashPaymentWorkflowService(
             .Distinct())
         {
             // 只有订单真正保存后，Square attempt 才能标为完成，避免恢复时漏救订单。
-            await squarePaymentAttemptRepository.MarkOrderCompletedAsync(
-                attemptGuid,
-                DateTimeOffset.UtcNow,
-                cancellationToken);
+            await RunLocalStoreAsync(
+                () => squarePaymentAttemptRepository.MarkOrderCompletedAsync(
+                    attemptGuid,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
         }
     }
 
@@ -1310,7 +2267,9 @@ public sealed class CashPaymentWorkflowService(
             .FirstOrDefault(value => value is not null);
         if (attemptGuid is not null && cardPaymentAttemptRepository is not null)
         {
-            var attempt = await cardPaymentAttemptRepository.GetAttemptAsync(attemptGuid.Value, cancellationToken);
+            var attempt = await RunLocalStoreAsync(
+                () => cardPaymentAttemptRepository.GetAttemptAsync(attemptGuid.Value, cancellationToken),
+                cancellationToken);
             if (attempt is not null)
             {
                 var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(attempt.OrderDraftJson, CardAttemptJsonOptions);
@@ -1324,7 +2283,9 @@ public sealed class CashPaymentWorkflowService(
             .FirstOrDefault(value => value is not null);
         if (squareAttemptGuid is not null && squarePaymentAttemptRepository is not null)
         {
-            var attempt = await squarePaymentAttemptRepository.GetAttemptAsync(squareAttemptGuid.Value, cancellationToken);
+            var attempt = await RunLocalStoreAsync(
+                () => squarePaymentAttemptRepository.GetAttemptAsync(squareAttemptGuid.Value, cancellationToken),
+                cancellationToken);
             if (attempt is not null)
             {
                 var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(attempt.OrderDraftJson, CardAttemptJsonOptions);
@@ -1366,7 +2327,9 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // 每张退款券发券成功后立刻回写本地引用，避免后续步骤失败时再次展示为待处理。
-            await orderRepository.UpdatePaymentReferenceAsync(payment.PaymentGuid, authorization.Reference, cancellationToken);
+            await RunLocalStoreAsync(
+                () => orderRepository.UpdatePaymentReferenceAsync(payment.PaymentGuid, authorization.Reference, cancellationToken),
+                cancellationToken);
             updatedPayments.Add(payment with
             {
                 Reference = authorization.Reference,
@@ -1559,6 +2522,31 @@ public interface ICardTerminalClient
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>供需要跨重启重放退款的金融流程传入已持久化幂等键。</summary>
+public interface IIdempotentCardRefundClient
+{
+    Task<PaymentAuthorizationResult> RefundAsync(
+        decimal amount,
+        PosSessionState session,
+        string? originalReference,
+        string idempotencyKey,
+        CancellationToken cancellationToken = default);
+}
+
+// 中文注释：分期恢复只能查询已持久化的终端 attempt，绝不能再次发起收款。
+public interface IInstallmentTerminalRecoveryClient
+{
+    Task<PaymentAuthorizationResult> RecoverLinklyAsync(
+        LocalCardPaymentAttempt attempt,
+        PosSessionState session,
+        CancellationToken cancellationToken = default);
+
+    Task<PaymentAuthorizationResult> RecoverSquareAsync(
+        LocalSquarePaymentAttempt attempt,
+        PosSessionState session,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IVoucherTenderClient
 {
     Task<PaymentAuthorizationResult> RedeemAsync(
@@ -1620,7 +2608,8 @@ public sealed record PaymentTenderAttemptResult(
     string StatusKey,
     PaymentTender? Tender = null,
     string? StatusMessage = null,
-    bool IsTerminalDecline = false)
+    bool IsTerminalDecline = false,
+    CardPaymentResultDisposition? CardResult = null)
 {
     public static PaymentTenderAttemptResult Success(PaymentTender tender, string statusKey, string? statusMessage = null)
     {
@@ -1705,7 +2694,8 @@ public sealed record CashPaymentWorkflowResult(
     decimal TenderedAmount,
     decimal ChangeAmount,
     int PendingSyncCount,
-    PosSessionState UpdatedSession);
+    PosSessionState UpdatedSession,
+    bool HasPostCommitWarning = false);
 
 public sealed class PaymentUploadFailedException : InvalidOperationException
 {
@@ -1727,4 +2717,18 @@ public sealed class PaymentUploadFailedException : InvalidOperationException
     public decimal TenderedAmount { get; }
 
     public decimal ChangeAmount { get; }
+}
+
+public sealed class CardPaymentPersistenceUnknownException : InvalidOperationException
+{
+    public CardPaymentPersistenceUnknownException(
+        Guid orderGuid,
+        string message,
+        Exception innerException)
+        : base(message, innerException)
+    {
+        OrderGuid = orderGuid;
+    }
+
+    public Guid OrderGuid { get; }
 }

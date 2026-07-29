@@ -551,7 +551,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
         PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
         RetryActiveSessionRecoveryCommand = _cardRecoveryPresenter.RetryActiveSessionRecoveryCommand;
-        ManualConfirmActiveSessionRecoveryCommand = _cardRecoveryPresenter.ManualConfirmActiveSessionRecoveryCommand;
+        ResolveCardRefundCommand = _cardRecoveryPresenter.ResolveCardRefundCommand;
+        ResolveCardPaymentCommand = _cardRecoveryPresenter.ResolveCardPaymentCommand;
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
@@ -612,6 +613,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
+            setPaymentRecoveryBlocked: (blocked, message) => CashPayment?.SetCardRecoveryBlocked(blocked, message),
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
@@ -648,7 +650,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             canPrintReceipt: () => IsShellPermissionAllowed(Permissions.PosTerminal.Receipt.PrintLast),
             notifyShowCashPaymentCanExecuteChanged: () => ShowCashPaymentCommand!.NotifyCanExecuteChanged(),
             notifyPrintRecoveredReceiptCanExecuteChanged: () => PrintRecoveredReceiptCommand!.NotifyCanExecuteChanged(),
-            notifyPropertyChanged: name => OnPropertyChanged(name));
+            notifyPropertyChanged: name => OnPropertyChanged(name),
+            operationAuthorizationService: _operationAuthorizationService,
+            operationAuditLogger: _operationAuditLogger,
+            requirePermission: TryRequireShellPermission);
 
     private SyncOrchestrator CreateSyncOrchestrator() =>
         new(
@@ -807,7 +812,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public IRelayCommand RetryActiveSessionRecoveryCommand { get; }
 
-    public IRelayCommand ManualConfirmActiveSessionRecoveryCommand { get; }
+    public IAsyncRelayCommand<CardRefundSupervisorDecision> ResolveCardRefundCommand { get; }
+
+    public IAsyncRelayCommand<CardPaymentSupervisorDecision> ResolveCardPaymentCommand { get; }
 
     public IRelayCommand ShowCashPaymentCommand { get; }
 
@@ -1241,6 +1248,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task InitializePosExperienceAsync(AppStartupOptions startupOptions)
     {
+        if (!startupOptions.PreviewMode)
+        {
+            await RecoverPendingInstallmentOperationsSafelyAsync();
+        }
+
         _screenNavigator.ClearScreens();
         _screenNavigator.SetCachedPosTerminalScreen(null);
         _screenNavigator.SetCachedSpecialProductsScreen(null);
@@ -1310,6 +1322,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await BeginStartupCatalogIndexLoadAsync(startupOptions);
         await PreloadStartupSpecialProductsDataAsync(startupOptions);
         _screenNavigator.NavigateFromStartup(startupOptions.InitialScreen);
+    }
+
+    private async Task RecoverPendingInstallmentOperationsSafelyAsync()
+    {
+        try
+        {
+            // 中文注释：服务端/本地操作使用 CAS 领取状态；此处不重置或读取购物车，启动与服务切换可安全重复调用。
+            var recovered = await Task.Run(
+                () => _installmentOrderService.RecoverPendingOperationsAsync(Session, CancellationToken.None),
+                CancellationToken.None);
+            if (recovered.Count > 0)
+            {
+                ConsoleLog.Write(
+                    "InstallmentRecovery",
+                    $"startup recovery completed store={Session.StoreCode} count={recovered.Count}");
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 未知金融结果必须继续保持锁定；启动恢复失败不能阻断 POS 或清空后来建立的购物车。
+            ConsoleLog.WriteError(
+                "InstallmentRecovery",
+                $"startup recovery failed store={Session.StoreCode} error={ex.GetType().Name}",
+                null,
+                ex);
+        }
     }
 
     private Task ContinuePosStartupAfterShownAsync(AppStartupOptions startupOptions, Window? owner)
@@ -2220,64 +2258,140 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e)
+    private void OnPaymentCompleted(object? sender, PaymentCompletedEventArgs e) =>
+        _ = HandlePaymentCompletedSafelyAsync(e);
+
+    private async Task HandlePaymentCompletedSafelyAsync(PaymentCompletedEventArgs e)
     {
-        _lastCompletedOrder = e.Order;
-        // 中文注释：先同步切走支付页，避免收据设置和同步状态刷新期间仍可误触支付操作。
-        PaymentSuccess.LoadFromOrder(e.Order);
-        CurrentScreen = PaymentSuccess;
-        // 真实支付完成后播放一次成功音；手动打开成功页不经过此入口。
-        _userFeedbackService.Play(UserFeedbackCue.Checkout);
-        ShowCashPaymentCommand.NotifyCanExecuteChanged();
-
-        await PaymentSuccess.LoadFromOrderAsync(e.Order);
-        await RefreshPendingSyncAsync();
-        if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
+        try
         {
-            var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
-            var cashDrawerResult = await OpenCashDrawerWithShellPermissionAsync();
-            OperationAuditEvents.RecordAction(
-                _operationAuditLogger,
-                OperationAuditTypes.CashDrawerOpen,
-                cashDrawerResult.Succeeded ? "Succeeded" : drawerPermissionAllowed ? "Failed" : "Denied",
-                Session,
-                reasonCode: "PAYMENT_COMPLETE",
-                safeMessage: cashDrawerResult.Succeeded ? null : cashDrawerResult.Message,
-                paymentMethod: PaymentMethodKind.Cash.ToString(),
-                paymentAmount: e.Order.Payments
-                    .Where(payment => payment.Method == PaymentMethodKind.Cash)
-                    .Sum(payment => payment.Amount),
-                orderGuid: e.Order.OrderGuid.ToString("D"));
-            if (!cashDrawerResult.Succeeded)
-            {
-                StatusMessage = cashDrawerResult.Message;
-            }
+            await HandlePaymentCompletedCoreAsync(e);
         }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 该入口来自同步事件，绝不能把未知后续异常重新抛回 Dispatcher。
+            ConsoleLog.WriteError("PaymentCompleted", "payment follow-up failed outside an isolated stage", null, ex);
+            SetPaymentCompletedWarning();
+        }
+    }
 
-        // 中文注释：普通销售成功后不再自动打印；卡退款仍保留自动收据，便于退款凭证留存。
+    private async Task HandlePaymentCompletedCoreAsync(PaymentCompletedEventArgs e)
+    {
+        // 支付成功页必须优先呈现；其余设备、同步与打印都是不可反向影响收款的后续处理。
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-load-sync",
+            () =>
+            {
+                _lastCompletedOrder = e.Order;
+                PaymentSuccess.HasPostCommitWarning = e.HasPostCommitWarning;
+                PaymentSuccess.LoadFromOrder(e.Order);
+                return Task.CompletedTask;
+            });
+        if (e.HasPostCommitWarning)
+        {
+            SetPaymentCompletedWarning();
+        }
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-navigate",
+            () =>
+            {
+                CurrentScreen = PaymentSuccess;
+                ShowCashPaymentCommand.NotifyCanExecuteChanged();
+                return Task.CompletedTask;
+            });
+        await ExecutePaymentCompletionFollowUpAsync(
+            "payment-feedback",
+            () =>
+            {
+                _userFeedbackService.Play(UserFeedbackCue.Checkout);
+                return Task.CompletedTask;
+            });
+        await ExecutePaymentCompletionFollowUpAsync(
+            "success-page-load",
+            () => PaymentSuccess.LoadFromOrderAsync(e.Order));
+        await ExecutePaymentCompletionFollowUpAsync("pending-sync-refresh", RefreshPendingSyncAsync);
+        await ExecutePaymentCompletionFollowUpAsync("cash-drawer", () => OpenCashDrawerAfterPaymentAsync(e.Order));
+
+        // 普通销售成功后不自动打印；退款和代金券余额的既有打印习惯保持不变。
         if (IsPureVoucherRefund(e.Order))
         {
-            var receipt = ReceiptQueryService.CreateReceipt(e.Order);
-            if (receipt.RefundVoucher is not null)
-            {
-                // 中文注释：发券引用已落库后才自动打印独立券面，打印失败不能回滚已成功的退款。
-                await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
-                return;
-            }
+            await ExecutePaymentCompletionFollowUpAsync(
+                "voucher-refund-print",
+                async () =>
+                {
+                    var receipt = ReceiptQueryService.CreateReceipt(e.Order);
+                    if (receipt.RefundVoucher is not null)
+                    {
+                        await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
+                    }
+                });
+
+            return;
         }
 
         if (MainReceiptCoordinator.ContainsCardPayment(e.Order) && e.Order.ActualAmount < 0m)
         {
-            await PrintReceiptWithShellPermissionAsync(
-                ReceiptQueryService.CreateReceipt(e.Order),
-                ReceiptPrintReason.CardAuto);
+            await ExecutePaymentCompletionFollowUpAsync(
+                "card-refund-print",
+                () => PrintReceiptWithShellPermissionAsync(
+                    ReceiptQueryService.CreateReceipt(e.Order),
+                    ReceiptPrintReason.CardAuto));
             return;
         }
 
         if (e.Order.ActualAmount >= 0m)
         {
-            await PrintVoucherBalancesAsync(e.Order);
+            await ExecutePaymentCompletionFollowUpAsync(
+                "voucher-balance-print",
+                () => PrintVoucherBalancesAsync(e.Order));
         }
+    }
+
+    private async Task OpenCashDrawerAfterPaymentAsync(LocalOrder order)
+    {
+        if (!MainReceiptCoordinator.ContainsCashPayment(order))
+        {
+            return;
+        }
+
+        var drawerPermissionAllowed = IsShellPermissionAllowed(Permissions.PosTerminal.CashDrawer.Open);
+        var cashDrawerResult = await OpenCashDrawerWithShellPermissionAsync();
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashDrawerOpen,
+            cashDrawerResult.Succeeded ? "Succeeded" : drawerPermissionAllowed ? "Failed" : "Denied",
+            Session,
+            reasonCode: "PAYMENT_COMPLETE",
+            safeMessage: cashDrawerResult.Succeeded ? null : cashDrawerResult.Message,
+            paymentMethod: PaymentMethodKind.Cash.ToString(),
+            paymentAmount: order.Payments
+                .Where(payment => payment.Method == PaymentMethodKind.Cash)
+                .Sum(payment => payment.Amount),
+            orderGuid: order.OrderGuid.ToString("D"));
+        if (!cashDrawerResult.Succeeded)
+        {
+            SetPaymentCompletedWarning();
+        }
+    }
+
+    private async Task ExecutePaymentCompletionFollowUpAsync(string stage, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.WriteError("PaymentCompleted", $"payment follow-up failed stage={stage}", null, ex);
+            SetPaymentCompletedWarning();
+        }
+    }
+
+    private void SetPaymentCompletedWarning()
+    {
+        // 中文注释：收款已落地后的任何收尾失败都必须在成功页留下可见提示，阻止收银员重复收款。
+        PaymentSuccess.HasPostCommitWarning = true;
+        StatusMessage = _localization.T("payment.status.completedWarning");
     }
 
     private static bool IsPureVoucherRefund(LocalOrder order) =>

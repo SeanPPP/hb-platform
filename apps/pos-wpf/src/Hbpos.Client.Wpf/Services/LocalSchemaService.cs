@@ -28,6 +28,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         await EnsureLocalCardPaymentAttemptColumnsAsync(connection, cancellationToken);
         await EnsureLocalSquarePaymentAttemptColumnsAsync(connection, cancellationToken);
         await EnsureLocalInstallmentColumnsAsync(connection, cancellationToken);
+        await EnsureLocalInstallmentOperationAttemptColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderLineColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderReturnPaymentCapacityColumnsAsync(connection, cancellationToken);
 
@@ -236,6 +237,47 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         if (!columns.Contains("CancellationInfoJson"))
         {
             await ExecuteAsync(connection, "ALTER TABLE LocalOrderInstallments ADD COLUMN CancellationInfoJson TEXT NULL;", cancellationToken);
+        }
+    }
+
+    private static async Task EnsureLocalInstallmentOperationAttemptColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        // 旧普通销售记录保持 Sale，避免升级后把既有终端交易误归到分期操作。
+        foreach (var table in new[] { "LocalCardPaymentAttempts", "LocalSquarePaymentAttempts" })
+        {
+            var columns = await ReadColumnNamesAsync(connection, table, cancellationToken);
+            if (!columns.Contains("OperationKind"))
+            {
+                await ExecuteAsync(connection, $"ALTER TABLE {table} ADD COLUMN OperationKind TEXT NOT NULL DEFAULT 'Sale';", cancellationToken);
+            }
+
+            if (!columns.Contains("OperationGuid"))
+            {
+                await ExecuteAsync(connection, $"ALTER TABLE {table} ADD COLUMN OperationGuid TEXT NULL;", cancellationToken);
+            }
+
+            if (!columns.Contains("SubmissionToken"))
+            {
+                await ExecuteAsync(connection, $"ALTER TABLE {table} ADD COLUMN SubmissionToken TEXT NULL;", cancellationToken);
+            }
+
+            if (!columns.Contains("RefundBusinessKey"))
+            {
+                await ExecuteAsync(connection, $"ALTER TABLE {table} ADD COLUMN RefundBusinessKey TEXT NULL;", cancellationToken);
+            }
+        }
+
+        var operationColumns = await ReadColumnNamesAsync(connection, "LocalInstallmentOperations", cancellationToken);
+        if (!operationColumns.Contains("ApiClaimToken"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LocalInstallmentOperations ADD COLUMN ApiClaimToken TEXT NULL;", cancellationToken);
+        }
+
+        if (!operationColumns.Contains("ApiClaimedAt"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LocalInstallmentOperations ADD COLUMN ApiClaimedAt TEXT NULL;", cancellationToken);
         }
     }
 
@@ -529,7 +571,11 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             CreatedAt TEXT NOT NULL,
             UpdatedAt TEXT NOT NULL,
             CompletedAt TEXT NULL,
-            AcknowledgedAt TEXT NULL
+            AcknowledgedAt TEXT NULL,
+            OperationKind TEXT NOT NULL DEFAULT 'Sale',
+            OperationGuid TEXT NULL,
+            SubmissionToken TEXT NULL,
+            RefundBusinessKey TEXT NULL
         );
         """,
         """
@@ -558,7 +604,82 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             UpdatedAt TEXT NOT NULL,
             CompletedAt TEXT NULL,
             OrderCompletedAt TEXT NULL,
-            ResolvedAt TEXT NULL
+            ResolvedAt TEXT NULL,
+            OperationKind TEXT NOT NULL DEFAULT 'Sale',
+            OperationGuid TEXT NULL,
+            SubmissionToken TEXT NULL,
+            RefundBusinessKey TEXT NULL
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalInstallmentOperations (
+            OperationGuid TEXT PRIMARY KEY,
+            Kind TEXT NOT NULL,
+            InstallmentGuid TEXT NOT NULL,
+            PaymentGuid TEXT NULL,
+            StoreCode TEXT NOT NULL,
+            DeviceCode TEXT NOT NULL,
+            CashierId TEXT NOT NULL,
+            IdempotencyKey TEXT NOT NULL,
+            RequestJson TEXT NOT NULL,
+            State TEXT NOT NULL,
+            TerminalAttemptGuid TEXT NULL,
+            TerminalProcessor TEXT NULL,
+            ResponseJson TEXT NULL,
+            FailureMessage TEXT NULL,
+            ApiClaimToken TEXT NULL,
+            ApiClaimedAt TEXT NULL,
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalInstallmentRefundSteps (
+            RefundStepGuid TEXT PRIMARY KEY,
+            OperationGuid TEXT NOT NULL,
+            OriginalPaymentGuid TEXT NOT NULL,
+            Method INTEGER NOT NULL,
+            Amount TEXT NOT NULL,
+            OriginalReference TEXT NULL,
+            IdempotencyKey TEXT NOT NULL,
+            State TEXT NOT NULL,
+            RefundReference TEXT NULL,
+            CardTransactionsJson TEXT NULL,
+            FailureMessage TEXT NULL,
+            SupervisorDecision TEXT NULL,
+            SupervisorUserId TEXT NULL,
+            SupervisorReason TEXT NULL,
+            SupervisorEvidence TEXT NULL,
+            ResolvedAt TEXT NULL,
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL,
+            FOREIGN KEY (OperationGuid) REFERENCES LocalInstallmentOperations(OperationGuid)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalFinancialSupervisorResolutions (
+            ResolutionGuid TEXT PRIMARY KEY,
+            Target TEXT NOT NULL,
+            Processor TEXT NOT NULL,
+            Environment TEXT NOT NULL,
+            StoreCode TEXT NOT NULL,
+            DeviceCode TEXT NOT NULL,
+            AttemptGuid TEXT NULL,
+            RefundStepGuid TEXT NULL,
+            OperationGuid TEXT NULL,
+            SessionId TEXT NULL,
+            Decision TEXT NOT NULL,
+            OperatorCashierId TEXT NOT NULL,
+            OperatorUserGuid TEXT NULL,
+            OperatorName TEXT NULL,
+            Reason TEXT NOT NULL,
+            Evidence TEXT NULL,
+            FinancialReference TEXT NULL,
+            RetryReference TEXT NULL,
+            ResolvedAt TEXT NOT NULL,
+            AuditEventId TEXT NOT NULL,
+            AuditPayloadJson TEXT NOT NULL,
+            AuditPersistedAt TEXT NULL
         );
         """,
         """
@@ -807,12 +928,60 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         ON LocalCardPaymentAttempts (StoreCode, DeviceCode, CashierId, Environment, Status, UpdatedAt DESC, CreatedAt DESC);
         """,
         """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LocalCardPaymentAttempts_OpenRefundBusinessKey
+        ON LocalCardPaymentAttempts (RefundBusinessKey)
+        WHERE OperationKind = 'Refund'
+          AND RefundBusinessKey IS NOT NULL
+          AND Status NOT IN ('Declined', 'TimedOut', 'Cancelled', 'Failed', 'OrderCompleted', 'Abandoned');
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LocalCardPaymentAttempts_ActiveSession
+        ON LocalCardPaymentAttempts (Environment, StoreCode, DeviceCode, SessionId)
+        WHERE OperationKind = 'ActiveSession'
+          AND SessionId IS NOT NULL;
+        """,
+        """
         CREATE INDEX IF NOT EXISTS IX_LocalSquarePaymentAttempts_RecoverLatest
         ON LocalSquarePaymentAttempts (StoreCode, DeviceCode, CashierId, Environment, Status, UpdatedAt DESC, CreatedAt DESC);
         """,
         """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LocalSquarePaymentAttempts_OpenRefundBusinessKey
+        ON LocalSquarePaymentAttempts (RefundBusinessKey)
+        WHERE OperationKind = 'Refund'
+          AND RefundBusinessKey IS NOT NULL
+          AND Status NOT IN ('Canceled', 'TimedOut', 'Failed', 'OrderCompleted', 'Abandoned');
+        """,
+        """
         CREATE INDEX IF NOT EXISTS IX_LocalSquarePaymentAttempts_CheckoutId
         ON LocalSquarePaymentAttempts (CheckoutId);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalInstallmentOperations_Recover
+        ON LocalInstallmentOperations (StoreCode, State, UpdatedAt, CreatedAt);
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LocalInstallmentOperations_Kind_Installment_Payment_Idempotency
+        ON LocalInstallmentOperations (Kind, InstallmentGuid, PaymentGuid, IdempotencyKey);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalInstallmentRefundSteps_Operation_State
+        ON LocalInstallmentRefundSteps (OperationGuid, State, UpdatedAt);
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LocalFinancialSupervisorResolutions_AuditEventId
+        ON LocalFinancialSupervisorResolutions (AuditEventId);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalFinancialSupervisorResolutions_Attempt_ResolvedAt
+        ON LocalFinancialSupervisorResolutions (AttemptGuid, ResolvedAt);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalFinancialSupervisorResolutions_RefundStep_ResolvedAt
+        ON LocalFinancialSupervisorResolutions (RefundStepGuid, ResolvedAt);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalFinancialSupervisorResolutions_AuditPending
+        ON LocalFinancialSupervisorResolutions (AuditPersistedAt, ResolvedAt);
         """,
         """
         CREATE INDEX IF NOT EXISTS IX_LocalOrders_Store_Device_SoldAt

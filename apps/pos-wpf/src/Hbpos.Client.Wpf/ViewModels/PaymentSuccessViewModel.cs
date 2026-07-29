@@ -47,6 +47,9 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
     [ObservableProperty]
     private bool _isCardPaymentSummaryVisible;
 
+    [ObservableProperty]
+    private bool _hasPostCommitWarning;
+
     public PaymentSuccessViewModel()
         : this(initialize: true, receiptQueryService: null, receiptTextFormatter: null, receiptPrinterSettingsStore: null)
     {

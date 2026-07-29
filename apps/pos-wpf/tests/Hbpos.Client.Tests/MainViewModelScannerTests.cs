@@ -1176,6 +1176,37 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Startup_recovers_pending_installments_without_clearing_the_cart()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-RECOVERY-CART", "930REC") with { RetailPrice = 12m });
+        var installmentService = new RecordingInstallmentOrderService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart,
+            installmentOrderService: installmentService);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.Equal(1, installmentService.RecoverPendingOperationsCallCount);
+        Assert.Equal("1042", installmentService.LastRecoverySession?.StoreCode);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Preview_startup_does_not_recover_pending_installments()
+    {
+        var installmentService = new RecordingInstallmentOrderService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            installmentOrderService: installmentService);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], true, null, null));
+
+        Assert.Equal(0, installmentService.RecoverPendingOperationsCallCount);
+    }
+
+    [Fact]
     public async Task Payment_completion_plays_checkout_feedback_once()
     {
         var feedback = new RecordingUserFeedbackService();
@@ -1188,6 +1219,35 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
 
         Assert.Equal([UserFeedbackCue.Checkout], feedback.Cues);
+    }
+
+    [Fact]
+    public async Task Payment_completion_post_commit_warning_is_visible_on_the_success_screen()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+
+        InvokePaymentCompleted(viewModel, order, hasPostCommitWarning: true);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+
+        Assert.True(viewModel.PaymentSuccess.HasPostCommitWarning);
+        Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_completion_feedback_failure_does_not_block_cash_drawer_follow_up()
+    {
+        var cashDrawerService = new RecordingCashDrawerService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashDrawerService: cashDrawerService,
+            userFeedbackService: new ThrowingUserFeedbackService());
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => cashDrawerService.OpenCallCount == 1);
+        Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -1260,6 +1320,7 @@ public sealed class MainViewModelScannerTests
         {
             selectCardTask = payment.SelectCardCommand.ExecuteAsync(null);
             await syncQueue.OverviewReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await WaitUntilAsync(() => completedOrder is not null);
 
             Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
             Assert.NotNull(completedOrder);
@@ -1359,8 +1420,9 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
         await Task.Delay(50);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
-        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CashDrawer.Open, out var deniedMessage));
-        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CashDrawer.Open, out _));
+        Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
+        Assert.True(viewModel.PaymentSuccess.HasPostCommitWarning);
     }
 
     [Fact]
@@ -1381,7 +1443,8 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && cashDrawerService.OpenCallCount == 1);
 
         Assert.Equal(1, cashDrawerService.OpenCallCount);
-        Assert.Equal("drawer offline", viewModel.StatusMessage);
+        Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
+        Assert.True(viewModel.PaymentSuccess.HasPostCommitWarning);
     }
 
     [Fact]
@@ -4044,6 +4107,27 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Card_payment_recovery_post_commit_warning_is_shown_without_relocking_payment()
+    {
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.OrderCompleted,
+                "Recovered approved payment.",
+                order,
+                HasPostCommitWarning: true)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery);
+
+        Assert.True(await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false));
+
+        Assert.Equal(
+            "Payment completed. Do not take payment again; a follow-up action needs attention.",
+            viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Card_payment_recovery_completion_plays_checkout_feedback_once()
     {
         var feedback = new RecordingUserFeedbackService();
@@ -4272,7 +4356,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Active_card_session_unknown_from_payment_shows_retry_and_manual_confirm_actions()
+    public async Task Active_card_session_unknown_from_payment_shows_retry_without_manual_clear()
     {
         var recovery = new FakeCardPaymentRecoveryService(
             Task.FromResult(new CardPaymentRecoveryResult(
@@ -4295,9 +4379,8 @@ public sealed class MainViewModelScannerTests
         var dialog = viewModel.CardRecoveryResultDialog;
         Assert.NotNull(dialog);
         Assert.True(dialog!.CanRetryRecovery);
-        Assert.True(dialog.CanManualConfirm);
+        Assert.False(dialog.CanManualConfirm);
         Assert.Equal("Retry recovery", dialog.RetryButtonText);
-        Assert.Equal("Confirm checked and continue", dialog.ManualConfirmButtonText);
 
         viewModel.CloseCardRecoveryResultDialogCommand.Execute(null);
 
@@ -4384,7 +4467,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Active_card_session_manual_confirm_clears_session_and_continues_current_order()
+    public async Task Active_card_session_checking_does_not_expose_manual_clear_and_keeps_current_order()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("1042", "SKU-CURRENT-MANUAL", "930ACTIVEMANUAL"));
@@ -4405,15 +4488,15 @@ public sealed class MainViewModelScannerTests
             cart: cart);
 
         var recoveryTask = StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
-        await WaitUntilAsync(() => viewModel.CardRecoveryResultDialog?.CanManualConfirm == true);
+        await WaitUntilAsync(() => viewModel.IsCardRecoveryResultDialogOpen);
 
-        viewModel.ManualConfirmActiveSessionRecoveryCommand.Execute(null);
+        Assert.False(viewModel.CardRecoveryResultDialog?.CanManualConfirm);
+        viewModel.CloseCardRecoveryResultDialogCommand.Execute(null);
 
-        Assert.True(await recoveryTask);
-        Assert.Equal(2, recovery.CallCount);
+        Assert.False(await recoveryTask);
+        Assert.Equal(1, recovery.CallCount);
         Assert.Single(cart.Lines);
         Assert.Equal("SKU-CURRENT-MANUAL", cart.Lines[0].ProductCode);
-        Assert.Contains("manually cleared", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -5001,11 +5084,11 @@ public sealed class MainViewModelScannerTests
                 .ToArray());
     }
 
-    private static void InvokePaymentCompleted(MainViewModel viewModel, LocalOrder order)
+    private static void InvokePaymentCompleted(MainViewModel viewModel, LocalOrder order, bool hasPostCommitWarning = false)
     {
         var method = typeof(MainViewModel).GetMethod("OnPaymentCompleted", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(viewModel, [null, new PaymentCompletedEventArgs(order, order.ActualAmount, 0m)]);
+        method!.Invoke(viewModel, [null, new PaymentCompletedEventArgs(order, order.ActualAmount, 0m, hasPostCommitWarning)]);
     }
 
     private static byte[] OnePixelPngBytes()
@@ -5939,6 +6022,10 @@ public sealed class MainViewModelScannerTests
     {
         public LocalInstallmentOrder? CreatedLocalOrder { get; private set; }
 
+        public int RecoverPendingOperationsCallCount { get; private set; }
+
+        public PosSessionState? LastRecoverySession { get; private set; }
+
         public int ConfirmPickupCallCount { get; private set; }
 
         public Guid? LastConfirmPickupOrderId { get; private set; }
@@ -6024,6 +6111,15 @@ public sealed class MainViewModelScannerTests
 
         public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreatedLocalOrder?.InstallmentGuid == installmentGuid ? CreatedLocalOrder : null);
+
+        public Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            RecoverPendingOperationsCallCount++;
+            LastRecoverySession = session;
+            return Task.FromResult<IReadOnlyList<InstallmentOperationRecoveryResult>>([]);
+        }
 
         public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
@@ -6686,6 +6782,36 @@ public sealed class MainViewModelScannerTests
         {
             Cues.Add(cue);
         }
+    }
+
+    private sealed class BlockingOnlineRuntimeStatusApiClient : IPosRuntimeStatusApiClient
+    {
+        public TaskCompletionSource OnlineStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseOnline { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<PosRuntimeStatusReport> CompletedReports { get; } = [];
+
+        public async Task ReportAsync(
+            PosRuntimeStatusReport report,
+            CancellationToken cancellationToken = default)
+        {
+            if (report.IsOnline)
+            {
+                OnlineStarted.TrySetResult();
+                // 模拟旧客户端忽略取消：关机必须等待该上报终态，不能抢先发 offline。
+                await ReleaseOnline.Task;
+            }
+
+            CompletedReports.Add(report);
+        }
+    }
+
+    private sealed class ThrowingUserFeedbackService : IUserFeedbackService
+    {
+        public void Play(UserFeedbackCue cue) => throw new InvalidOperationException("speaker unavailable");
     }
 
     private sealed class ConsoleLogCapture : IDisposable

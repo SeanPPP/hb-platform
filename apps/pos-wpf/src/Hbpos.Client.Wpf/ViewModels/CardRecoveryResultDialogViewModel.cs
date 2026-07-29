@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Wpf.ViewModels;
@@ -11,8 +12,14 @@ public enum CardRecoveryResultSeverity
     Error
 }
 
-public sealed class CardRecoveryResultDialogViewModel
+public sealed class CardRecoveryResultDialogViewModel : ObservableObject
 {
+    private string _refundReference = string.Empty;
+    private string _refundEvidence = string.Empty;
+    private string _refundSupervisorNote = string.Empty;
+    private string _refundResolutionMessage = string.Empty;
+    private bool _isRefundResolutionBusy;
+
     public CardRecoveryResultDialogViewModel(
         string title,
         string message,
@@ -30,7 +37,9 @@ public sealed class CardRecoveryResultDialogViewModel
         bool canRetryRecovery = false,
         string retryButtonText = "Retry recovery",
         bool canManualConfirm = false,
-        string manualConfirmButtonText = "Confirm checked and continue")
+        string manualConfirmButtonText = "Confirm checked and continue",
+        CardRefundRecoveryDetails? refundDetails = null,
+        CardPaymentSupervisorDetails? paymentSupervisorDetails = null)
     {
         Title = title;
         Message = message;
@@ -48,6 +57,8 @@ public sealed class CardRecoveryResultDialogViewModel
         RetryButtonText = retryButtonText;
         CanManualConfirm = canManualConfirm;
         ManualConfirmButtonText = manualConfirmButtonText;
+        RefundDetails = refundDetails;
+        PaymentSupervisorDetails = paymentSupervisorDetails;
         ReceiptPreviewRows = new ObservableCollection<ReceiptPreviewRow>(receiptPreviewRows ?? []);
     }
 
@@ -84,6 +95,59 @@ public sealed class CardRecoveryResultDialogViewModel
     public bool CanManualConfirm { get; }
 
     public string ManualConfirmButtonText { get; }
+
+    public CardRefundRecoveryDetails? RefundDetails { get; }
+
+    public CardPaymentSupervisorDetails? PaymentSupervisorDetails { get; }
+
+    public bool CanResolveRefund => RefundDetails is not null;
+
+    public bool CanResolvePayment => PaymentSupervisorDetails is not null;
+
+    public bool CanResolveFinancialResult => CanResolveRefund || CanResolvePayment;
+
+    public string RefundProcessorDisplay => RefundDetails?.Processor.ToString() ?? "-";
+
+    public string OriginalReferenceDisplay =>
+        string.IsNullOrWhiteSpace(RefundDetails?.OriginalReference) ? "-" : RefundDetails.OriginalReference;
+
+    public string RefundReference
+    {
+        get => _refundReference;
+        set => SetProperty(ref _refundReference, value ?? string.Empty);
+    }
+
+    public string RefundEvidence
+    {
+        get => _refundEvidence;
+        set => SetProperty(ref _refundEvidence, value ?? string.Empty);
+    }
+
+    public string RefundSupervisorNote
+    {
+        get => _refundSupervisorNote;
+        set => SetProperty(ref _refundSupervisorNote, value ?? string.Empty);
+    }
+
+    public string RefundResolutionMessage
+    {
+        get => _refundResolutionMessage;
+        set
+        {
+            if (SetProperty(ref _refundResolutionMessage, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(HasRefundResolutionMessage));
+            }
+        }
+    }
+
+    public bool HasRefundResolutionMessage => !string.IsNullOrWhiteSpace(RefundResolutionMessage);
+
+    public bool IsRefundResolutionBusy
+    {
+        get => _isRefundResolutionBusy;
+        set => SetProperty(ref _isRefundResolutionBusy, value);
+    }
 
     public bool HasReceiptPreview => ReceiptPreviewRows.Count > 0;
 

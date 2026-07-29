@@ -71,6 +71,27 @@
                     </Border>
 
                     <Border Margin="0,16,0,0"
+                            Padding="16,12"
+                            Background="{StaticResource PosWarningBrush}"
+                            CornerRadius="12"
+                            AutomationProperties.AutomationId="PaymentCompletedWarning"
+                            Visibility="{Binding HasPostCommitWarning, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                     Width="20"
+                                                     Height="20"
+                                                     Foreground="{StaticResource PosPrimaryDarkBrush}"
+                                                     Margin="0,0,10,0" />
+                            <TextBlock Text="{loc:Loc payment.status.completedWarning}"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource PosPrimaryDarkBrush}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="0,16,0,0"
                             Padding="24"
                             Background="{StaticResource PosWarningBrush}"
                             CornerRadius="12"

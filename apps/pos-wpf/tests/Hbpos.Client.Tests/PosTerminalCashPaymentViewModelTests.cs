@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Reflection;
 using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -11,6 +13,7 @@ using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Promotions;
+using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Tests;
 
@@ -2876,6 +2879,64 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Same(recoveredTender, Assert.Single(viewModel.PaymentTenders));
     }
 
+    [Theory]
+    [InlineData("io")]
+    [InlineData("sqlite-busy")]
+    public async Task Approved_card_order_persistence_failure_keeps_lock_voucher_and_card_tender(string failureKind)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem(
+            "SKU-146C",
+            "Approved Persistence Tea",
+            "930146C",
+            PriceSourceKind.StoreRetailPrice,
+            10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, 2m, "VOUCHER-146C")
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        PaymentCompletedEventArgs? completed = null;
+        viewModel.PaymentCompleted += (_, args) => completed = args;
+
+        viewModel.TenderAmountText = "2";
+        viewModel.VoucherCodeText = "VOUCHER-146C";
+        await viewModel.SelectVoucherCommand.ExecuteAsync(null);
+        var voucherTender = Assert.Single(viewModel.PaymentTenders);
+
+        Exception persistenceFailure = failureKind == "io"
+            ? new IOException("order save failed")
+            : new SqliteException("database is locked", 5);
+        workflow.TenderToAdd = new PaymentTender(PaymentMethodKind.Card, 8m, "CARD-APPROVED-146C");
+        workflow.ThrowOnComplete = new CardPaymentPersistenceUnknownException(
+            Guid.NewGuid(),
+            "The card was approved, but POS could not safely save the order.",
+            persistenceFailure);
+        viewModel.TenderAmountText = "8";
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Equal("The card was approved, but POS could not safely save the order.", viewModel.StatusMessage);
+        Assert.Null(completed);
+        Assert.Single(cart.Lines);
+        Assert.Equal(2, viewModel.PaymentTenders.Count);
+        Assert.Contains(voucherTender, viewModel.PaymentTenders);
+        var cardTender = Assert.Single(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Card);
+        Assert.Empty(workflow.ReleasedVoucherTenders);
+        Assert.False(viewModel.RemoveTenderCommand.CanExecute(cardTender));
+
+        await viewModel.RemoveTenderCommand.ExecuteAsync(cardTender);
+        var addTenderCallsAfterFailure = workflow.AddTenderCallCount;
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.Contains(cardTender, viewModel.PaymentTenders);
+        Assert.Contains(voucherTender, viewModel.PaymentTenders);
+        Assert.Empty(workflow.ReleasedVoucherTenders);
+        Assert.Equal(addTenderCallsAfterFailure, workflow.AddTenderCallCount);
+        Assert.Equal(1, workflow.CompletePaymentCallCount);
+    }
+
     [Fact]
     public void Payment_page_prepare_for_entry_keeps_current_tender_empty()
     {
@@ -2909,7 +2970,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public async Task Payment_page_back_to_pos_command_is_disabled_during_card_cancellation_window()
+    public async Task Payment_page_late_approved_card_after_cancellation_cannot_be_removed_or_leave_payment()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-148", "Back Card Tea", "930148", PriceSourceKind.StoreRetailPrice, 7.83m));
@@ -2945,9 +3006,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.False(returnedToPos);
         Assert.Equal("payment.status.removeTendersBeforeBack", viewModel.StatusMessage);
 
-        viewModel.RemoveTenderCommand.Execute(Assert.Single(viewModel.PaymentTenders));
+        var approvedCardTender = Assert.Single(viewModel.PaymentTenders);
+        Assert.False(viewModel.RemoveTenderCommand.CanExecute(approvedCardTender));
+        viewModel.RemoveTenderCommand.Execute(approvedCardTender);
         viewModel.BackToPosCommand.Execute(null);
-        Assert.True(returnedToPos);
+        Assert.False(returnedToPos);
+        Assert.Same(approvedCardTender, Assert.Single(viewModel.PaymentTenders));
     }
 
     [Fact]
@@ -3251,7 +3315,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.TenderAmountText = "5";
         await viewModel.SelectCashCommand.ExecuteAsync(null);
         workflow.AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail("linkly.backend.resultUnknown", "Result unknown"));
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            StatusMessage: "Result unknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
         viewModel.TenderAmountText = "10";
         await viewModel.SelectCardCommand.ExecuteAsync(null);
 
@@ -3312,6 +3383,135 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.False(viewModel.IsPaymentInteractionLocked);
         Assert.False(viewModel.IsCancelPaymentVisible);
         Assert.Single(viewModel.PaymentTenders);
+    }
+
+    [Fact]
+    public async Task Payment_page_shutdown_cancels_active_card_and_keeps_interactions_locked()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SHUTDOWN", "Shutdown Card Tea", "930SHUTDOWN", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+
+        viewModel.BeginShutdown();
+        viewModel.BeginShutdown();
+        await paymentTask;
+
+        Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.IsPaymentInteractionEnabled);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+        Assert.False(viewModel.CancelCommand.CanExecute(null));
+        Assert.Empty(viewModel.PaymentTenders);
+    }
+
+    [Fact]
+    public async Task Payment_page_shutdown_and_dispose_do_not_block_on_cancellation_callback()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SHUTDOWN-BLOCK", "Shutdown Card Tea", "930SHUTDOWNBLOCK", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = workflow.LastAddTenderCancellationToken.Register(() =>
+        {
+            callbackStarted.TrySetResult();
+            try
+            {
+                Thread.Sleep(100);
+            }
+            finally
+            {
+                callbackCompleted.TrySetResult();
+            }
+        });
+
+        var beginStartedAt = Stopwatch.GetTimestamp();
+        viewModel.BeginShutdown();
+        Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var disposeStartedAt = Stopwatch.GetTimestamp();
+        viewModel.Dispose();
+        Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+
+        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await paymentTask;
+    }
+
+    [Fact]
+    public async Task Payment_page_dispose_keeps_active_card_token_until_workflow_finally()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SHUTDOWN-LIFETIME", "Shutdown Card Tea", "930SHUTDOWNLIFETIME", PriceSourceKind.StoreRetailPrice, 10m));
+        var tokenWasUsableAfterWorkflowRelease = false;
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true,
+            AfterAddTenderResult = cancellationToken =>
+            {
+                using var registration = cancellationToken.Register(static () => { });
+                tokenWasUsableAfterWorkflowRelease = true;
+            }
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        var cardSession = typeof(PaymentViewModel)
+            .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(viewModel)!;
+        var activeProperty = cardSession.GetType().GetProperty(
+            "ActiveCardPaymentCts",
+            BindingFlags.Instance | BindingFlags.Public)!;
+        var activeCancellation = Assert.IsType<CancellationTokenSource>(
+            activeProperty.GetValue(cardSession));
+
+        viewModel.BeginShutdown();
+        var shutdownCancellationTask = Assert.IsAssignableFrom<Task>(
+            cardSession.GetType()
+                .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(cardSession));
+        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(activeCancellation.IsCancellationRequested);
+        Assert.False(paymentTask.IsCompleted);
+
+        viewModel.Dispose();
+
+        Assert.Same(activeCancellation, activeProperty.GetValue(cardSession));
+        using (activeCancellation.Token.Register(static () => { }))
+        {
+        }
+        Assert.False(paymentTask.IsCompleted);
+
+        workflow.AddTenderResult.SetResult(
+            PaymentTenderAttemptResult.Fail("payment.status.cardCancelled"));
+        await paymentTask;
+
+        Assert.True(tokenWasUsableAfterWorkflowRelease);
+        Assert.Null(workflow.AfterAddTenderResultException);
+        Assert.Null(activeProperty.GetValue(cardSession));
+        Assert.Throws<ObjectDisposedException>(
+            () => activeCancellation.Token.Register(static () => { }));
+        Assert.Null(Record.Exception(viewModel.Dispose));
     }
 
     [Fact]
@@ -3438,6 +3638,26 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Payment_page_prepare_for_entry_preserves_external_recovery_lock()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-RECOVERY-LOCK", "Recovery Lock Tea", "930RECOVERYLOCK", PriceSourceKind.StoreRetailPrice, 10m));
+        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session);
+
+        viewModel.SetCardRecoveryBlocked(true, "Previous card result is unknown.");
+        viewModel.PrepareForEntry(Session);
+
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+
+        viewModel.SetCardRecoveryBlocked(false);
+        viewModel.PrepareForEntry(Session);
+
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Payment_page_prepare_for_entry_after_second_cancel_allows_new_tender_before_late_card_result()
     {
         var cart = new PosCartService();
@@ -3539,9 +3759,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "CANCELLED (C0)"));
+            StatusMessage: "CANCELLED (C0)",
+            CardResult: new CardPaymentResultDisposition(CardPaymentTerminalOutcome.Cancelled)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3583,9 +3805,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await workflow.AddTenderStarted.Task;
 
         viewModel.CancelCommand.Execute(null);
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "linkly.backend.cancelled",
-            "ANZ Linkly Cloud transaction was cancelled."));
+            StatusMessage: "ANZ Linkly Cloud transaction was cancelled.",
+            CardResult: new CardPaymentResultDisposition(CardPaymentTerminalOutcome.Cancelled)));
         await cancelledPaymentTask;
 
         Assert.Empty(viewModel.PaymentTenders);
@@ -3639,9 +3863,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await workflow.AddTenderStarted.Task;
 
         viewModel.CancelCommand.Execute(null);
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "CANCELLED (CN)"));
+            StatusMessage: "CANCELLED (CN)",
+            CardResult: new CardPaymentResultDisposition(CardPaymentTerminalOutcome.Cancelled)));
         await cancelledPaymentTask;
 
         Assert.Empty(viewModel.PaymentTenders);
@@ -3678,9 +3904,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "Square checkout was canceled."));
+            StatusMessage: "Square checkout was canceled.",
+            CardResult: new CardPaymentResultDisposition(CardPaymentTerminalOutcome.Cancelled)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3707,7 +3935,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(statusKey, statusMessage));
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            statusKey,
+            StatusMessage: statusMessage,
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.Cancelled,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3730,9 +3964,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.card.squareTimedOut",
-            "Square checkout timed out before the customer completed payment."));
+            StatusMessage: "Square checkout timed out before the customer completed payment.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.TimedOut,
+                CardPaymentErrorKind.Timeout,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3759,7 +3998,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(statusKey, statusMessage));
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            statusKey,
+            StatusMessage: statusMessage,
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.None,
+                CardPaymentErrorKind.SquareCommunicationFailed,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3782,10 +4028,15 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "DECLINED (55)",
-            isTerminalDecline: true));
+            StatusMessage: "DECLINED (55)",
+            IsTerminalDecline: true,
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.None,
+                CardPaymentErrorKind.CardDeclined,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3867,9 +4118,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "ANZ Linkly transaction timed out."));
+            StatusMessage: "ANZ Linkly transaction timed out.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.TimedOut,
+                CardPaymentErrorKind.Timeout)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3894,9 +4149,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "linkly.backend.resultUnknown",
-            "The Linkly card result is unknown. Recover the previous transaction before charging again."));
+            StatusMessage: "The Linkly card result is unknown. Recover the previous transaction before charging again.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
         var recoverCallCount = 0;
         var viewModel = new PaymentViewModel(
             cart,
@@ -3924,7 +4184,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
 
         Assert.Equal(1, recoverCallCount);
-        Assert.False(viewModel.CardPaymentErrorOverlay.IsOpen);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
         Assert.True(viewModel.SelectCardCommand.CanExecute(null));
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
@@ -3938,22 +4198,162 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "linkly.backend.resultUnknown",
-            "The Linkly card result is still unknown."));
+            StatusMessage: "The Linkly card result is still unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
+        var recoveryResolved = false;
+        var recoverCallCount = 0;
         var viewModel = new PaymentViewModel(
             cart,
             workflow,
             Session,
-            recoverPreviousCardTransactionAsync: () => Task.FromResult(false));
+            recoverPreviousCardTransactionAsync: () =>
+            {
+                recoverCallCount++;
+                return Task.FromResult(recoveryResolved);
+            });
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
         await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
 
+        Assert.Equal(1, recoverCallCount);
         Assert.True(viewModel.CardPaymentErrorOverlay!.IsOpen);
         viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+        Assert.False(viewModel.CardPaymentErrorOverlay.IsOpen);
         Assert.False(viewModel.SelectCardCommand.CanExecute(null));
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+
+        recoveryResolved = true;
+        await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, recoverCallCount);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_card_recovery_failure_stays_locked_and_can_retry()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158W", "Failed Recovery Tea", "930158W", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "The Linkly card result is still unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            recoverPreviousCardTransactionAsync: () =>
+                Task.FromException<bool>(new IOException("simulated recovery failure")));
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+
+        var exception = await Record.ExceptionAsync(
+            () => viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null));
+
+        Assert.Null(exception);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.Equal("payment.card.resultUnknown", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_card_recovery_success_does_not_clear_newer_external_lock()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158X", "Concurrent Recovery Tea", "930158X", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
+        var recoveryStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryResult = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            recoverPreviousCardTransactionAsync: () =>
+            {
+                recoveryStarted.TrySetResult(true);
+                return recoveryResult.Task;
+            });
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        var recoveryTask = viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+        await recoveryStarted.Task;
+        viewModel.SetCardRecoveryBlocked(true, "A newer recovery is still checking.");
+        recoveryResult.SetResult(true);
+        await recoveryTask;
+
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_card_recovery_success_does_not_clear_shutdown_lock()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158Y", "Shutdown Recovery Tea", "930158Y", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
+        var recoveryStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryResult = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            recoverPreviousCardTransactionAsync: () =>
+            {
+                recoveryStarted.TrySetResult(true);
+                return recoveryResult.Task;
+            });
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        var recoveryTask = viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+        await recoveryStarted.Task;
+        viewModel.BeginShutdown();
+        recoveryResult.SetResult(true);
+        await recoveryTask;
+
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
     }
 
     [Fact]
@@ -3992,9 +4392,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "linkly.cloud.communicationFailed",
-            "Linkly Cloud 通讯失败。"));
+            StatusMessage: "Linkly Cloud 通讯失败。",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.None,
+                CardPaymentErrorKind.CloudCommunicationFailed,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -4015,9 +4420,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "linkly.backend.activeSessionRequiresRecovery",
-            "Current terminal already has an unfinished card transaction."));
+            StatusMessage: "Current terminal already has an unfinished card transaction.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
         var recoverCallCount = 0;
         var viewModel = new PaymentViewModel(
             cart,
@@ -4044,7 +4454,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
 
         Assert.Equal(1, recoverCallCount);
-        Assert.False(viewModel.CardPaymentErrorOverlay.IsOpen);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
     }
 
     [Fact]
@@ -4056,9 +4466,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
             "payment.status.cardDeclined",
-            "Current terminal already has an unfinished card transaction. Recover the previous transaction."));
+            StatusMessage: "Current terminal already has an unfinished card transaction. Recover the previous transaction.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
         var viewModel = new PaymentViewModel(
             cart,
             workflow,
@@ -5192,7 +5607,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     {
         public PaymentTender TenderToAdd { get; set; } = new(PaymentMethodKind.Voucher, 5m, "ABC123");
 
-        public PaymentUploadFailedException? ThrowOnComplete { get; set; }
+        public Exception? ThrowOnComplete { get; set; }
 
         public CashPaymentWorkflowResult? CompletePaymentResult { get; set; }
 
@@ -5204,7 +5619,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         public bool IgnoreCancellation { get; set; }
 
+        public Action<CancellationToken>? AfterAddTenderResult { get; set; }
+
+        public Exception? AfterAddTenderResultException { get; private set; }
+
         public int AddTenderCallCount { get; private set; }
+
+        public CancellationToken LastAddTenderCancellationToken { get; private set; }
 
         public int CompletePaymentCallCount { get; private set; }
 
@@ -5259,6 +5680,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             PosCartSnapshot? cartSnapshot = null)
         {
             AddTenderCallCount++;
+            LastAddTenderCancellationToken = cancellationToken;
             AddTenderStarted?.SetResult();
 
             if (AddTenderException is not null)
@@ -5268,9 +5690,20 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
             if (AddTenderResult is not null)
             {
-                return IgnoreCancellation
+                var result = IgnoreCancellation
                     ? await AddTenderResult.Task
                     : await AddTenderResult.Task.WaitAsync(cancellationToken);
+                try
+                {
+                    AfterAddTenderResult?.Invoke(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    AfterAddTenderResultException = ex;
+                    throw;
+                }
+
+                return result;
             }
 
             var tender = TenderToAdd.Method == method

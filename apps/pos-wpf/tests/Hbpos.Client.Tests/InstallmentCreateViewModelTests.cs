@@ -95,6 +95,34 @@ public sealed class InstallmentCreateViewModelTests
     }
 
     [Fact]
+    public void Dispose_stops_receiving_culture_changes()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new InstallmentCreateViewModel(
+            new FakeInstallmentOrderService(),
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { },
+            localization);
+        var changeCount = 0;
+        viewModel.PropertyChanged += (_, _) => changeCount++;
+
+        try
+        {
+            viewModel.Dispose();
+            viewModel.Dispose();
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(0, changeCount);
+        }
+        finally
+        {
+            localization.SetCulture(LocalizationService.DefaultCultureName);
+        }
+    }
+
+    [Fact]
     public async Task SubmitCommand_requires_voucher_reference_and_token_then_submits_request()
     {
         var auditLogger = new RecordingOperationAuditLogger();
@@ -165,6 +193,73 @@ public sealed class InstallmentCreateViewModelTests
         Assert.Equal(20m, service.LastCreateRequest.DownPaymentAmount);
     }
 
+    [Fact]
+    public async Task SubmitCommand_reuses_financial_identity_after_safe_exception()
+    {
+        var service = new FakeInstallmentOrderService
+        {
+            OnCreateAsync = (request, callCount) => callCount == 1
+                ? Task.FromException<InstallmentOrderCreateResult>(new InvalidOperationException("temporary failure"))
+                : Task.FromResult(FakeInstallmentOrderService.CreateSucceededResult())
+        };
+        var viewModel = new InstallmentCreateViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot());
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+
+        await viewModel.SubmitCommand.ExecuteAsync(null);
+        Assert.True(viewModel.SubmitCommand.CanExecute(null));
+        await viewModel.SubmitCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, service.CreateRequests.Count);
+        Assert.Equal(
+            service.CreateRequests[0].DownPayment.PaymentGuid,
+            service.CreateRequests[1].DownPayment.PaymentGuid);
+        Assert.Equal(
+            service.CreateRequests[0].DownPayment.IdempotencyKey,
+            service.CreateRequests[1].DownPayment.IdempotencyKey);
+        Assert.Equal(
+            service.CreateRequests[0].InstallmentGuid,
+            service.CreateRequests[1].InstallmentGuid);
+        Assert.NotEqual(
+            service.CreateRequests[0].InstallmentGuid,
+            service.CreateRequests[0].DownPayment.PaymentGuid);
+    }
+
+    [Fact]
+    public async Task SubmitCommand_requires_review_keeps_identity_and_disables_new_create()
+    {
+        var service = new FakeInstallmentOrderService
+        {
+            OnCreateAsync = (_, _) => Task.FromResult(
+                new InstallmentOrderCreateResult(
+                    false,
+                    "The previous create result is unknown.",
+                    RequiresReview: true))
+        };
+        var viewModel = new InstallmentCreateViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot());
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+
+        await viewModel.SubmitCommand.ExecuteAsync(null);
+
+        Assert.Single(service.CreateRequests);
+        Assert.False(viewModel.SubmitCommand.CanExecute(null));
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot());
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+        Assert.False(viewModel.SubmitCommand.CanExecute(null));
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -194,6 +289,10 @@ public sealed class InstallmentCreateViewModelTests
     private sealed class FakeInstallmentOrderService : IInstallmentOrderService
     {
         public InstallmentOrderCreateRequest? LastCreateRequest { get; private set; }
+
+        public List<InstallmentOrderCreateRequest> CreateRequests { get; } = [];
+
+        public Func<InstallmentOrderCreateRequest, int, Task<InstallmentOrderCreateResult>>? OnCreateAsync { get; init; }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
@@ -238,7 +337,13 @@ public sealed class InstallmentCreateViewModelTests
         public Task<InstallmentOrderCreateResult> CreateOrderAsync(InstallmentOrderCreateRequest request, CancellationToken cancellationToken = default)
         {
             LastCreateRequest = request;
-            return Task.FromResult(new InstallmentOrderCreateResult(
+            CreateRequests.Add(request);
+            return OnCreateAsync?.Invoke(request, CreateRequests.Count) ??
+                Task.FromResult(CreateSucceededResult());
+        }
+
+        public static InstallmentOrderCreateResult CreateSucceededResult() =>
+            new(
                 true,
                 "Installment order created.",
                 new InstallmentOrderSummary(
@@ -257,8 +362,7 @@ public sealed class InstallmentCreateViewModelTests
                     true,
                     "Pending repayment",
                     "POS-01",
-                    DateTimeOffset.Now)));
-        }
+                    DateTimeOffset.Now));
 
         public Task<InstallmentOrderActionResult> AddRepaymentAsync(InstallmentOrderRepaymentRequest request, CancellationToken cancellationToken = default)
         {

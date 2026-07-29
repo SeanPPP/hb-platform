@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
@@ -30,6 +31,7 @@ internal sealed class CardRecoveryPresenter
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly PosCartService _cart;
     private readonly Action<string?>? _setStatusMessage;
+    private readonly Action<bool, string?>? _setPaymentRecoveryBlocked;
     private readonly Func<Window?>? _getOwner;
     private readonly Func<Task>? _navigateToPaymentOnDraft;
     private readonly Func<PosSessionState>? _getSession;
@@ -42,6 +44,9 @@ internal sealed class CardRecoveryPresenter
     private readonly Action? _notifyShowCashPaymentCanExecuteChanged;
     private readonly Action? _notifyPrintRecoveredReceiptCanExecuteChanged;
     private readonly Action<string>? _notifyPropertyChanged;
+    private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
+    private readonly Func<string, bool>? _requirePermission;
 
     private Task<CardPaymentRecoveryResult>? _cardPaymentRecoveryTask;
     private ReceiptDetails? _cardRecoveryDialogReceipt;
@@ -59,6 +64,7 @@ internal sealed class CardRecoveryPresenter
         MainChildViewModelFactory mainChildViewModelFactory,
         PosCartService cart,
         Action<string?>? setStatusMessage = null,
+        Action<bool, string?>? setPaymentRecoveryBlocked = null,
         Func<Window?>? getOwner = null,
         Func<Task>? navigateToPaymentOnDraft = null,
         Func<PosSessionState>? getSession = null,
@@ -70,7 +76,10 @@ internal sealed class CardRecoveryPresenter
         Func<bool>? canPrintReceipt = null,
         Action? notifyShowCashPaymentCanExecuteChanged = null,
         Action? notifyPrintRecoveredReceiptCanExecuteChanged = null,
-        Action<string>? notifyPropertyChanged = null)
+        Action<string>? notifyPropertyChanged = null,
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        IOperationAuditLogger? operationAuditLogger = null,
+        Func<string, bool>? requirePermission = null)
     {
         _cardPaymentRecoveryService = cardPaymentRecoveryService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
@@ -83,6 +92,7 @@ internal sealed class CardRecoveryPresenter
         _mainChildViewModelFactory = mainChildViewModelFactory;
         _cart = cart;
         _setStatusMessage = setStatusMessage;
+        _setPaymentRecoveryBlocked = setPaymentRecoveryBlocked;
         _getOwner = getOwner;
         _navigateToPaymentOnDraft = navigateToPaymentOnDraft;
         _getSession = getSession;
@@ -95,13 +105,16 @@ internal sealed class CardRecoveryPresenter
         _notifyShowCashPaymentCanExecuteChanged = notifyShowCashPaymentCanExecuteChanged;
         _notifyPrintRecoveredReceiptCanExecuteChanged = notifyPrintRecoveredReceiptCanExecuteChanged;
         _notifyPropertyChanged = notifyPropertyChanged;
+        _operationAuthorizationService = operationAuthorizationService;
+        _operationAuditLogger = operationAuditLogger;
+        _requirePermission = requirePermission;
 
         CloseCardRecoveryResultDialogCommand = new RelayCommand(CloseCardRecoveryResultDialog);
         PrintRecoveredReceiptCommand = new AsyncRelayCommand(PrintRecoveredReceiptAsync, CanPrintRecoveredReceipt);
         RetryActiveSessionRecoveryCommand = new RelayCommand(
             () => CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction.Retry));
-        ManualConfirmActiveSessionRecoveryCommand = new RelayCommand(
-            () => CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction.ManualConfirm));
+        ResolveCardRefundCommand = new AsyncRelayCommand<CardRefundSupervisorDecision>(ResolveCardRefundAsync);
+        ResolveCardPaymentCommand = new AsyncRelayCommand<CardPaymentSupervisorDecision>(ResolveCardPaymentAsync);
 
         if (_cardRecoveryResultDialogService is not null)
         {
@@ -123,7 +136,9 @@ internal sealed class CardRecoveryPresenter
 
     public IRelayCommand RetryActiveSessionRecoveryCommand { get; }
 
-    public IRelayCommand ManualConfirmActiveSessionRecoveryCommand { get; }
+    public IAsyncRelayCommand<CardRefundSupervisorDecision> ResolveCardRefundCommand { get; }
+
+    public IAsyncRelayCommand<CardPaymentSupervisorDecision> ResolveCardPaymentCommand { get; }
 
     // ---- Public methods ----
 
@@ -134,6 +149,7 @@ internal sealed class CardRecoveryPresenter
             return false;
         }
 
+        _setPaymentRecoveryBlocked?.Invoke(true, "Checking the previous card transaction. Please do not collect payment again.");
         var recoveryTask = _cardPaymentRecoveryTask;
         if (recoveryTask is null)
         {
@@ -175,15 +191,10 @@ internal sealed class CardRecoveryPresenter
             _cardPaymentRecoveryTask = null;
         }
 
+        ApplyRecoveryStatus(result);
         if (result.Outcome == CardPaymentRecoveryOutcome.None)
         {
             return false;
-        }
-
-        _setStatusMessage?.Invoke(result.Message);
-        if (result.UpdatedSession is not null)
-        {
-            _setSession?.Invoke(result.UpdatedSession);
         }
 
         if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted && result.Order is not null)
@@ -197,6 +208,12 @@ internal sealed class CardRecoveryPresenter
             var printResult = await PrintRecoveredCardReceiptAsync(result.Order);
             _onCardRecoveryOrderCompleted?.Invoke(result.Order);
             await ShowRecoveredCardOrderDialogAsync(result, printResult);
+            if (result.HasPostCommitWarning)
+            {
+                // 打印、同步等收尾失败不能覆盖“金融提交已完成”的安全提示。
+                ApplyRecoveryStatus(result);
+            }
+
             _notifyShowCashPaymentCanExecuteChanged?.Invoke();
             return true;
         }
@@ -224,6 +241,182 @@ internal sealed class CardRecoveryPresenter
         }
 
         return false;
+    }
+
+    private async Task ResolveCardRefundAsync(CardRefundSupervisorDecision decision)
+    {
+        var dialog = CardRecoveryResultDialog;
+        var details = dialog?.RefundDetails;
+        if (dialog is null || details is null || _cardPaymentRecoveryService is null)
+        {
+            return;
+        }
+
+        if (dialog.IsRefundResolutionBusy)
+        {
+            return;
+        }
+
+        dialog.RefundResolutionMessage = string.Empty;
+        dialog.IsRefundResolutionBusy = true;
+        try
+        {
+            using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+                _operationAuthorizationService,
+                _requirePermission ?? DenyPermission,
+                Permissions.PosTerminal.Returns.Confirm,
+                "card-recovery",
+                $"resolve-refund/{decision.ToString().ToLowerInvariant()}",
+                GetSession(),
+                CancellationToken.None);
+            if (authorization is null)
+            {
+                dialog.RefundResolutionMessage = _localization.T("cardRecovery.refund.authorizationRequired");
+                return;
+            }
+
+            using var activation = authorization.Activate();
+            var resolution = new CardRefundSupervisorResolution(
+                details.AttemptGuid,
+                details.Processor,
+                decision,
+                dialog.RefundSupervisorNote,
+                dialog.RefundEvidence,
+                dialog.RefundReference);
+            var result = await _cardPaymentRecoveryService.ResolveRefundAsync(
+                resolution,
+                _cart,
+                GetSession(),
+                CancellationToken.None);
+            if (!result.Succeeded)
+            {
+                dialog.RefundResolutionMessage = result.Message;
+                return;
+            }
+
+            RecordRefundSupervisorAudit(details, resolution);
+            _cardPaymentRecoveryTask = null;
+            _setStatusMessage?.Invoke(result.Message);
+            CloseCardRecoveryResultDialog();
+            if (result.RecoveryResult is not null)
+            {
+                await ApplyResolvedRefundRecoveryAsync(result.RecoveryResult);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.WriteError(
+                "CardRecovery",
+                $"resolve card refund failed attemptGuid={details.AttemptGuid} decision={decision} error={ex.GetType().Name}",
+                exception: ex);
+            dialog.RefundResolutionMessage = _localization.T("cardRecovery.refund.resolveFailed");
+        }
+        finally
+        {
+            dialog.IsRefundResolutionBusy = false;
+        }
+    }
+
+    private async Task ResolveCardPaymentAsync(CardPaymentSupervisorDecision decision)
+    {
+        var dialog = CardRecoveryResultDialog;
+        var details = dialog?.PaymentSupervisorDetails;
+        if (dialog is null || details is null || _cardPaymentRecoveryService is null)
+        {
+            return;
+        }
+
+        if (dialog.IsRefundResolutionBusy)
+        {
+            return;
+        }
+
+        dialog.RefundResolutionMessage = string.Empty;
+        dialog.IsRefundResolutionBusy = true;
+        try
+        {
+            var session = GetSession();
+            using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+                _operationAuthorizationService,
+                _requirePermission ?? DenyPermission,
+                Permissions.PosTerminal.Audit.View,
+                "card-recovery",
+                $"resolve-payment/{decision.ToString().ToLowerInvariant()}",
+                session,
+                CancellationToken.None);
+            if (authorization is null)
+            {
+                dialog.RefundResolutionMessage = _localization.T("cardRecovery.payment.authorizationRequired");
+                return;
+            }
+
+            using var activation = authorization.Activate();
+            var authorizer = OperationAuthorizationScope.CurrentAuthorizationContext?.AuthorizingSession ??
+                session.CashierSession;
+            if (authorizer is null)
+            {
+                dialog.RefundResolutionMessage = _localization.T("cardRecovery.payment.authorizationRequired");
+                return;
+            }
+
+            var resolution = new CardPaymentSupervisorResolution(
+                details.AttemptGuid,
+                details.Processor,
+                decision,
+                dialog.RefundSupervisorNote,
+                authorizer.CashierId,
+                authorizer.UserGuid,
+                authorizer.CashierName,
+                dialog.RefundEvidence,
+                dialog.RefundReference);
+            var result = await _cardPaymentRecoveryService.ResolvePaymentAsync(
+                resolution,
+                _cart,
+                session,
+                CancellationToken.None);
+            if (!result.Succeeded)
+            {
+                dialog.RefundResolutionMessage = result.Message;
+                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
+                return;
+            }
+
+            _cardPaymentRecoveryTask = null;
+            _setStatusMessage?.Invoke(result.Message);
+            if (result.LockRetained)
+            {
+                dialog.RefundResolutionMessage = result.Message;
+                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
+                return;
+            }
+
+            CloseCardRecoveryResultDialog();
+            if (result.RecoveryResult is not null)
+            {
+                await ApplyResolvedRefundRecoveryAsync(result.RecoveryResult);
+            }
+            else
+            {
+                _setPaymentRecoveryBlocked?.Invoke(false, result.Message);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _setPaymentRecoveryBlocked?.Invoke(true, dialog.Message);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "CardRecovery",
+                $"resolve card payment failed attemptGuid={details.AttemptGuid} decision={decision} error={ex.GetType().Name}",
+                exception: ex);
+            dialog.RefundResolutionMessage = _localization.T("cardRecovery.payment.resolveFailed");
+            _setPaymentRecoveryBlocked?.Invoke(true, dialog.RefundResolutionMessage);
+        }
+        finally
+        {
+            dialog.IsRefundResolutionBusy = false;
+        }
     }
 
     public async Task<bool> RecoverActiveCardPaymentSessionFromPaymentAsync()
@@ -275,11 +468,6 @@ internal sealed class CardRecoveryPresenter
                     continue;
                 }
 
-                if (action == ActiveSessionRecoveryDialogAction.ManualConfirm)
-                {
-                    return await ManuallyClearActiveSessionAsync(result);
-                }
-
                 return false;
             }
 
@@ -290,9 +478,15 @@ internal sealed class CardRecoveryPresenter
 
     private void ApplyRecoveryStatus(CardPaymentRecoveryResult result)
     {
-        if (!string.IsNullOrWhiteSpace(result.Message))
+        var statusMessage = result.HasPostCommitWarning &&
+            result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? _localization.T("payment.status.completedWarning")
+                : result.Message;
+        var blocked = result.Outcome is CardPaymentRecoveryOutcome.Checking or CardPaymentRecoveryOutcome.Unknown;
+        _setPaymentRecoveryBlocked?.Invoke(blocked, statusMessage);
+        if (!string.IsNullOrWhiteSpace(statusMessage))
         {
-            _setStatusMessage?.Invoke(result.Message);
+            _setStatusMessage?.Invoke(statusMessage);
         }
 
         if (result.UpdatedSession is not null)
@@ -425,22 +619,94 @@ internal sealed class CardRecoveryPresenter
             timestamp: details?.Timestamp ?? DateTimeOffset.Now));
     }
 
+    private async Task ApplyResolvedRefundRecoveryAsync(CardPaymentRecoveryResult result)
+    {
+        ApplyRecoveryStatus(result);
+
+        if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted && result.Order is not null)
+        {
+            if (_refreshPendingSyncAsync is not null)
+            {
+                await _refreshPendingSyncAsync();
+            }
+
+            LogRecoveredCardOrderCompleted(result.Order);
+            var printResult = await PrintRecoveredCardReceiptAsync(result.Order);
+            _onCardRecoveryOrderCompleted?.Invoke(result.Order);
+            await ShowRecoveredCardOrderDialogAsync(result, printResult);
+            if (result.HasPostCommitWarning)
+            {
+                ApplyRecoveryStatus(result);
+            }
+
+            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
+            return;
+        }
+
+        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+        {
+            if (_navigateToPaymentOnDraft is not null)
+            {
+                await _navigateToPaymentOnDraft();
+            }
+
+            _onCardRecoveryDraftRestored?.Invoke(result.RestoredTenders, result.Message);
+            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
+            ShowRecoveredCardDraftDialog(result);
+            return;
+        }
+
+        if (result.Outcome == CardPaymentRecoveryOutcome.Unknown)
+        {
+            ShowRecoveredCardFailureDialog(result);
+        }
+    }
+
+    private void RecordRefundSupervisorAudit(
+        CardRefundRecoveryDetails details,
+        CardRefundSupervisorResolution resolution)
+    {
+        var reasonCode = resolution.Decision switch
+        {
+            CardRefundSupervisorDecision.ConfirmRefunded => CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
+            CardRefundSupervisorDecision.ConfirmNotRefunded => CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            _ => CardRefundSupervisorResolutionCodes.ContinueWaiting
+        };
+        var safeMessage =
+            $"decision={resolution.Decision}; note={NormalizeAuditValue(resolution.Reason)}; " +
+            $"evidence={NormalizeAuditValue(resolution.Evidence)}; refundReference={NormalizeAuditValue(resolution.RefundReference)}";
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.ReturnRefundComplete,
+            resolution.Decision.ToString(),
+            GetSession(),
+            reasonCode: reasonCode,
+            safeMessage: safeMessage,
+            paymentMethod: details.Processor.ToString(),
+            paymentAmount: -Math.Abs(details.Amount),
+            orderGuid: details.OperationGuid?.ToString("D"),
+            correlationId: details.AttemptGuid.ToString("D"));
+    }
+
     private void ShowRecoveredCardFailureDialog(CardPaymentRecoveryResult result)
     {
         var details = result.DialogDetails;
+        var refundDetails = result.RefundDetails;
         ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
             _localization.T("cardRecovery.dialog.title.unknown"),
             string.IsNullOrWhiteSpace(result.Message)
                 ? _localization.T("cardRecovery.dialog.message.failedFallback")
                 : result.Message,
             CardRecoveryResultSeverity.Error,
-            orderGuid: null,
+            orderGuid: refundDetails?.OperationGuid,
             amount: details?.Amount,
             sessionId: details?.SessionId,
             txnRef: details?.TxnRef,
             responseCode: details?.ResponseCode,
             responseText: details?.ResponseText,
-            timestamp: details?.Timestamp ?? DateTimeOffset.Now));
+            timestamp: details?.Timestamp ?? DateTimeOffset.Now,
+            refundDetails: refundDetails,
+            paymentSupervisorDetails: result.PaymentSupervisorDetails));
     }
 
     private Task<ActiveSessionRecoveryDialogAction> ShowActiveSessionUnresolvedDialogAsync(CardPaymentRecoveryResult result)
@@ -465,8 +731,7 @@ internal sealed class CardRecoveryPresenter
             timestamp: details?.Timestamp ?? DateTimeOffset.Now,
             canRetryRecovery: true,
             retryButtonText: _localization.T("cardRecovery.dialog.action.retryRecovery"),
-            canManualConfirm: true,
-            manualConfirmButtonText: _localization.T("cardRecovery.dialog.action.confirmCheckedContinue")));
+            paymentSupervisorDetails: result.PaymentSupervisorDetails));
 
         return source.Task;
     }
@@ -715,6 +980,11 @@ internal sealed class CardRecoveryPresenter
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
+
+    private static string NormalizeAuditValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "<none>" : value.Trim();
+
+    private static bool DenyPermission(string permissionCode) => false;
 
     private sealed record CardRecoveryEvidence(string TransactionReference, string? TxnRef, string? SessionId);
 

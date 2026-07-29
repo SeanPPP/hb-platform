@@ -1516,14 +1516,26 @@
   <data name="payment.status.cardTimedOut" xml:space="preserve">
     <value>刷卡支付已超时。</value>
   </data>
+  <data name="payment.card.resultUnknown" xml:space="preserve">
+    <value>刷卡支付结果未知。请先恢复上一笔交易，切勿重复收款。</value>
+  </data>
+  <data name="payment.status.tenderFailed" xml:space="preserve">
+    <value>支付明细处理失败，未产生额外扣款。</value>
+  </data>
   <data name="payment.status.retryVoucherUpload" xml:space="preserve">
     <value>请先重试代金券订单上传，再修改支付明细。</value>
   </data>
   <data name="payment.status.uploadFailed" xml:space="preserve">
     <value>代金券订单上传失败。请再次点击完成支付重试。</value>
   </data>
+  <data name="payment.status.paymentFailed" xml:space="preserve">
+    <value>支付未能完成。请检查支付明细后再试。</value>
+  </data>
   <data name="payment.status.completed" xml:space="preserve">
     <value>支付已完成。</value>
+  </data>
+  <data name="payment.status.completedWarning" xml:space="preserve">
+    <value>支付已完成，请勿重复收款；后续处理需要关注。</value>
   </data>
   <data name="shell.backToPos" xml:space="preserve">
     <value>返回收银</value>
@@ -2401,7 +2413,7 @@
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>检测到上一笔 Square 刷卡结果需要处理，但当前购物车已有商品。请先完成或清空当前购物车后再恢复上一笔订单。</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>无法确认上一笔 Square 刷卡结果。请联系主管确认 Square 后台状态后再继续。</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>检测到上次程序关闭前有一笔 {0:C2} Square 刷卡交易正在处理，正在查询刷卡机状态。</value></data>
-  <data name="cardRecovery.square.missingCheckoutId" xml:space="preserve"><value>上次 Square 刷卡请求可能未成功发出，请重新付款。</value></data>
+  <data name="cardRecovery.square.missingCheckoutId" xml:space="preserve"><value>上次 Square 付款的 Checkout 引用未保存，结果仍未知。请勿重复收款，并由主管核对 Square。</value></data>
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>上一笔 Square 刷卡未完成：{0}。订单已恢复，请重新选择付款方式。</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>Square 返回的付款金额与订单金额不一致。订单未自动保存，请联系主管确认。</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>上一笔 Square 刷卡已成功，订单已自动恢复并保存。</value></data>
@@ -2469,4 +2481,31 @@
   <data name="attendance.qr.closeHelp" xml:space="preserve"><value>关闭考勤二维码扫码弹窗</value></data>
   <data name="attendance.qr.device" xml:space="preserve"><value>POS 设备</value></data>
   <data name="attendance.qr.seconds" xml:space="preserve"><value>秒</value></data>
+  <data name="cardRecovery.refund.section.title" xml:space="preserve"><value>主管退款核对</value></data>
+  <data name="cardRecovery.refund.section.instructions" xml:space="preserve"><value>请先核对银行或终端记录，再选择一个结果。主管决定保存前，该退款会继续锁定。</value></data>
+  <data name="cardRecovery.refund.field.processor" xml:space="preserve"><value>支付处理器</value></data>
+  <data name="cardRecovery.refund.field.originalReference" xml:space="preserve"><value>原付款参考号</value></data>
+  <data name="cardRecovery.refund.field.refundReference" xml:space="preserve"><value>退款参考号（如有）</value></data>
+  <data name="cardRecovery.refund.field.evidence" xml:space="preserve"><value>银行证据（确认未退款时必填）</value></data>
+  <data name="cardRecovery.refund.field.note" xml:space="preserve"><value>主管备注（继续等待时必填；确认已退款需参考号或备注）</value></data>
+  <data name="cardRecovery.refund.action.confirmRefunded" xml:space="preserve"><value>确认已退款</value></data>
+  <data name="cardRecovery.refund.action.confirmNotRefunded" xml:space="preserve"><value>确认未退款</value></data>
+  <data name="cardRecovery.refund.action.continueWaiting" xml:space="preserve"><value>继续等待</value></data>
+  <data name="cardRecovery.refund.authorizationRequired" xml:space="preserve"><value>处理该退款需要主管授权。</value></data>
+  <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>退款决定保存失败。再次退款前请重新运行恢复。</value></data>
+  <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>退款仍保持锁定。取得银行结果后请再次运行恢复。</value></data>
+  <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>银行已确认未发生退款。原退货已恢复，可使用同一操作重试。</value></data>
+  <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>已记录确认退款，并恢复原退货。</value></data>
+  <data name="cardRecovery.refund.confirmedDraftInvalid" xml:space="preserve"><value>退款已确认，但 POS 无法重建原退货。请勿再次退款，并联系支持人员。</value></data>
+  <data name="cardRecovery.refund.confirmedTenderRestored" xml:space="preserve"><value>已恢复确认的银行卡退款。请完成其余退款方式，不要再次退这笔银行卡款。</value></data>
+  <data name="cardRecovery.refund.confirmedCompleted" xml:space="preserve"><value>已恢复确认的银行卡退款并保存退货单。</value></data>
+  <data name="cardRecovery.payment.section.title" xml:space="preserve"><value>主管付款核对</value></data>
+  <data name="cardRecovery.payment.section.instructions" xml:space="preserve"><value>解锁前请先核对银行结果。确认已付款需参考号或证据，确认未付款需银行证据；主管备注可选。</value></data>
+  <data name="cardRecovery.payment.field.paymentReference" xml:space="preserve"><value>付款参考号（如有）</value></data>
+  <data name="cardRecovery.payment.field.evidence" xml:space="preserve"><value>银行证据（确认未付款时必填）</value></data>
+  <data name="cardRecovery.payment.field.note" xml:space="preserve"><value>主管备注（选填）</value></data>
+  <data name="cardRecovery.payment.action.confirmPaid" xml:space="preserve"><value>确认已付款</value></data>
+  <data name="cardRecovery.payment.action.confirmNotPaid" xml:space="preserve"><value>确认未付款</value></data>
+  <data name="cardRecovery.payment.authorizationRequired" xml:space="preserve"><value>处理该付款需要主管授权。</value></data>
+  <data name="cardRecovery.payment.resolveFailed" xml:space="preserve"><value>付款结案保存失败。请保持锁定并重试。</value></data>
 </root>
