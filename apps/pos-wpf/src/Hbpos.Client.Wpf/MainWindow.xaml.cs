@@ -415,14 +415,24 @@ public partial class MainWindow : Window
         e.Cancel = true;
         _isWaitingForWindowModeSaveBeforeClose = true;
         IsEnabled = false;
-        var scannerStopTask = StopExternalInputForShutdownAsync(_rawScannerService.Stop);
         _viewModel.BeginShutdown();
+        try
+        {
+            _rawScannerService.Stop();
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"external input stop failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
         try
         {
             await WaitForClosePreparationAsync(
                 () => _windowModeSaveTask,
-                _appShutdownCoordinator,
-                scannerStopTask);
+                _appShutdownCoordinator);
         }
         catch (Exception ex)
         {
@@ -795,13 +805,9 @@ public partial class MainWindow : Window
 
     internal static async Task WaitForClosePreparationAsync(
         Func<Task> getPendingWindowModeSave,
-        IAppShutdownCoordinator shutdownCoordinator,
-        Task? externalInputStopTask = null)
+        IAppShutdownCoordinator shutdownCoordinator)
     {
         var windowSaveTask = WaitForPendingWindowModeSaveAsync(getPendingWindowModeSave);
-        var closePreparationTask = Task.WhenAll(
-            windowSaveTask,
-            externalInputStopTask ?? Task.CompletedTask);
         var remainingBudget = shutdownCoordinator.GetOrStartRemainingBudget();
         var windowSaveBudget = remainingBudget < TimeSpan.FromMilliseconds(250)
             ? remainingBudget
@@ -810,19 +816,19 @@ public partial class MainWindow : Window
         {
             if (windowSaveBudget > TimeSpan.Zero)
             {
-                await closePreparationTask.WaitAsync(windowSaveBudget);
+                await windowSaveTask.WaitAsync(windowSaveBudget);
             }
         }
         catch (TimeoutException)
         {
-            _ = closePreparationTask.ContinueWith(
+            _ = windowSaveTask.ContinueWith(
                 static completedTask => _ = completedTask.Exception,
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
             ConsoleLog.WriteError(
                 "Shutdown",
-                "window state or input stop did not finish within 250ms; continuing bounded shutdown");
+                $"window state did not finish within {windowSaveBudget.TotalMilliseconds:F0}ms; continuing bounded shutdown");
         }
         catch (Exception ex)
         {
@@ -833,25 +839,6 @@ public partial class MainWindow : Window
         }
 
         await shutdownCoordinator.PrepareAsync();
-    }
-
-    internal static Task StopExternalInputForShutdownAsync(Action stop)
-    {
-        ArgumentNullException.ThrowIfNull(stop);
-        return Task.Run(() =>
-        {
-            try
-            {
-                stop();
-            }
-            catch (Exception ex)
-            {
-                ConsoleLog.WriteError(
-                    "Shutdown",
-                    $"external input stop failed error={ex.GetType().Name} message={ex.Message}",
-                    exception: ex);
-            }
-        });
     }
 
     internal static WindowState ResolveWindowState(string? savedMode)

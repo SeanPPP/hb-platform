@@ -147,46 +147,31 @@ public sealed class MainWindowStateTests
     }
 
     [Fact]
-    public async Task WaitForClosePreparationAsync_waits_for_external_input_stop_before_shutdown_steps()
+    public async Task WaitForClosePreparationAsync_logs_the_actual_window_save_budget()
     {
-        var inputStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var coordinator = new AppShutdownCoordinator();
-        var shutdownStepCalled = false;
-        coordinator.RegisterStep(
-            "host",
-            100,
-            TimeSpan.FromSeconds(1),
-            _ =>
-            {
-                shutdownStepCalled = true;
-                return Task.CompletedTask;
-            });
+        var stuckSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new FixedBudgetShutdownCoordinator(TimeSpan.FromMilliseconds(25));
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void CaptureLine(string line) => lines.Enqueue(line);
 
-        var waitTask = MainWindow.WaitForClosePreparationAsync(
-            () => Task.CompletedTask,
-            coordinator,
-            inputStop.Task);
-
-        Assert.False(shutdownStepCalled);
-        inputStop.TrySetResult();
-        await waitTask;
-
-        Assert.True(shutdownStepCalled);
-    }
-
-    [Fact]
-    public async Task StopExternalInputForShutdownAsync_does_not_run_blocking_stop_on_caller()
-    {
-        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-        var stopTask = MainWindow.StopExternalInputForShutdownAsync(() =>
+        ConsoleLog.LineWritten += CaptureLine;
+        try
         {
-            Thread.Sleep(100);
-        });
+            await MainWindow.WaitForClosePreparationAsync(
+                () => stuckSave.Task,
+                coordinator).WaitAsync(TimeSpan.FromSeconds(1));
 
-        Assert.True(
-            System.Diagnostics.Stopwatch.GetElapsedTime(startedAt) < TimeSpan.FromSeconds(1));
-        Assert.False(stopTask.IsCompleted);
-        await stopTask;
+            Assert.Contains(lines, line =>
+                line.Contains(
+                    "window state did not finish within 25ms",
+                    StringComparison.Ordinal));
+            Assert.True(coordinator.PrepareCalled);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= CaptureLine;
+            stuckSave.TrySetResult();
+        }
     }
 
     [Fact]
@@ -203,6 +188,13 @@ public sealed class MainWindowStateTests
         Assert.Equal(
             "_ = _appShutdownCoordinator.GetOrStartRemainingBudget();",
             firstClosingStatement);
+        Assert.True(
+            closingBody.IndexOf("_viewModel.BeginShutdown();", StringComparison.Ordinal) <
+            closingBody.IndexOf("_rawScannerService.Stop();", StringComparison.Ordinal));
+        Assert.True(
+            closingBody.IndexOf("_rawScannerService.Stop();", StringComparison.Ordinal) <
+            closingBody.IndexOf("await WaitForClosePreparationAsync", StringComparison.Ordinal));
+        Assert.DoesNotContain("StopExternalInputForShutdownAsync", closingBody, StringComparison.Ordinal);
         Assert.DoesNotContain("_rawScannerService.Stop()", closedBody, StringComparison.Ordinal);
         Assert.DoesNotContain("_viewModel.Dispose()", closedBody, StringComparison.Ordinal);
     }
@@ -274,6 +266,31 @@ public sealed class MainWindowStateTests
 
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FixedBudgetShutdownCoordinator(TimeSpan budget) : IAppShutdownCoordinator
+    {
+        public bool IsPreparationStarted => PrepareCalled;
+
+        public bool IsPrepared => PrepareCalled;
+
+        public bool PrepareCalled { get; private set; }
+
+        public TimeSpan GetOrStartRemainingBudget() => budget;
+
+        public void RegisterStep(
+            string name,
+            int order,
+            TimeSpan timeout,
+            Func<CancellationToken, Task> executeAsync)
+        {
+        }
+
+        public Task PrepareAsync(CancellationToken cancellationToken = default)
+        {
+            PrepareCalled = true;
             return Task.CompletedTask;
         }
     }
