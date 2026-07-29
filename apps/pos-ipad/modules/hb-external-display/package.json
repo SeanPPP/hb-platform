@@ -1,0 +1,7 @@
+{
+  "name": "hb-external-display",
+  "version": "0.1.0",
+  "description": "HB POS iPad noninteractive external customer display module",
+  "main": "index.ts",
+  "private": true
+}

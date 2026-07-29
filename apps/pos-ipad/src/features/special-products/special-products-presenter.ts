@@ -1,0 +1,466 @@
+import {
+  resolveSpecialProductsAccess,
+  type SpecialProductsAccess,
+} from "./special-products-authorization";
+
+import type {
+  SpecialProductItem,
+  SpecialProductsRemotePort,
+  SpecialProductsRepositoryPort,
+} from "@/core/contracts";
+import { normalizeSpecialProductOrder } from "@/core/contracts";
+
+
+export interface SpecialProductsCartPort {
+  add(item: SpecialProductItem): Promise<void>;
+}
+
+export type SpecialProductsStatusCode =
+  | "added-to-cart"
+  | "add-to-cart-failed"
+  | "download-complete"
+  | "download-failed"
+  | "load-failed"
+  | "mark-complete"
+  | "mark-failed"
+  | "online-required"
+  | "permission-required"
+  | "reorder-complete"
+  | "reorder-failed"
+  | "search-failed";
+
+export type SpecialProductsState = Readonly<{
+  access: SpecialProductsAccess;
+  busy: boolean;
+  candidates: readonly SpecialProductItem[];
+  items: readonly SpecialProductItem[];
+  kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
+  online: boolean;
+  searching: boolean;
+  searchQuery: string;
+  statusCode: SpecialProductsStatusCode | null;
+}>;
+
+export type SpecialProductsPresenterOptions = Readonly<{
+  addToCart: SpecialProductsCartPort;
+  initialOnline: boolean;
+  localPageSize?: number;
+  permissions: readonly string[];
+  remote: SpecialProductsRemotePort;
+  remotePageSize?: number;
+  repository: SpecialProductsRepositoryPort;
+  storeCode: string;
+}>;
+
+export class SpecialProductsPresenter {
+  private static readonly DEFAULT_LOCAL_PAGE_SIZE = 100;
+  private static readonly DEFAULT_REMOTE_PAGE_SIZE = 200;
+  private static readonly MAX_LOCAL_PAGES = 1_000;
+  private static readonly MAX_REMOTE_PAGES = 10_000;
+
+  private readonly listeners = new Set<() => void>();
+  private readonly options: SpecialProductsPresenterOptions;
+  private readonly storeCode: string;
+  private state: SpecialProductsState;
+  private destroyed = false;
+  private loadGeneration = 0;
+  private searchGeneration = 0;
+  private managementInFlight: Promise<void> | null = null;
+
+  public constructor(options: SpecialProductsPresenterOptions) {
+    this.options = options;
+    this.storeCode = requiredText(options.storeCode, "storeCode");
+    this.state = {
+      access: resolveSpecialProductsAccess(options.permissions),
+      busy: false,
+      candidates: [],
+      items: [],
+      kind: "idle",
+      online: options.initialOnline,
+      searching: false,
+      searchQuery: "",
+      statusCode: null,
+    };
+  }
+
+  public readonly getState = (): SpecialProductsState => this.state;
+
+  public readonly subscribe = (listener: () => void): (() => void) => {
+    if (this.destroyed) return () => undefined;
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  public destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.loadGeneration += 1;
+    this.searchGeneration += 1;
+    this.listeners.clear();
+  }
+
+  public setOnline(online: boolean): void {
+    if (this.destroyed || this.state.online === online) return;
+    this.patch({ online });
+  }
+
+  public setSearchQuery(searchQuery: string): void {
+    if (this.destroyed) return;
+    this.searchGeneration += 1;
+    this.patch({
+      candidates: [],
+      searching: false,
+      searchQuery: searchQuery.slice(0, 120),
+      statusCode: null,
+    });
+  }
+
+  public async load(): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.state.access.canView) {
+      this.patch({
+        candidates: [],
+        items: [],
+        kind: "unauthorized",
+        statusCode: "permission-required",
+      });
+      return;
+    }
+
+    const generation = ++this.loadGeneration;
+    this.patch({ kind: "loading", statusCode: null });
+    try {
+      const items = await this.listAll();
+      if (!this.isCurrentLoad(generation)) return;
+      this.patch({
+        items,
+        kind: "ready",
+        statusCode: null,
+      });
+    } catch {
+      if (!this.isCurrentLoad(generation)) return;
+      this.patch({
+        kind: this.state.items.length > 0 ? "ready" : "failed",
+        statusCode: "load-failed",
+      });
+    }
+  }
+
+  public async searchCandidates(): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.state.access.canManage) {
+      this.patch({ statusCode: "permission-required" });
+      return;
+    }
+    const query = this.state.searchQuery.trim();
+    const generation = ++this.searchGeneration;
+    if (query.length === 0) {
+      this.patch({ candidates: [], searching: false, statusCode: null });
+      return;
+    }
+
+    this.patch({ searching: true, statusCode: null });
+    try {
+      const candidates = await this.options.repository.searchCandidates(
+        this.storeCode,
+        query,
+        50,
+      );
+      if (!this.isCurrentSearch(generation)) return;
+      this.patch({
+        candidates: freezeStoreItems(candidates, this.storeCode),
+        searching: false,
+      });
+    } catch {
+      if (!this.isCurrentSearch(generation)) return;
+      this.patch({
+        candidates: [],
+        searching: false,
+        statusCode: "search-failed",
+      });
+    }
+  }
+
+  public async addToCart(productCode: string): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.state.access.canAddToCart) {
+      this.patch({ statusCode: "permission-required" });
+      return;
+    }
+    const item = this.state.items.find(
+      (candidate) => candidate.productCode === productCode,
+    );
+    if (!item) {
+      this.patch({ statusCode: "add-to-cart-failed" });
+      return;
+    }
+
+    try {
+      await this.options.addToCart.add(item);
+      if (!this.destroyed) this.patch({ statusCode: "added-to-cart" });
+    } catch {
+      if (!this.destroyed) this.patch({ statusCode: "add-to-cart-failed" });
+    }
+  }
+
+  public download(): Promise<void> {
+    return this.runManagement(
+      "download-complete",
+      "download-failed",
+      async () => {
+        const downloaded = await this.downloadAllPages();
+        if (this.destroyed) return;
+        await this.options.repository.replaceDownloaded(
+          this.storeCode,
+          downloaded,
+        );
+      },
+    );
+  }
+
+  public mark(
+    productCode: string,
+    isSpecialProduct: boolean,
+  ): Promise<void> {
+    return this.runManagement("mark-complete", "mark-failed", async () => {
+      const normalizedProductCode = requiredText(productCode, "productCode");
+      const source = isSpecialProduct
+        ? this.state.candidates
+        : this.state.items;
+      if (
+        !source.some(
+          (candidate) => candidate.productCode === normalizedProductCode,
+        )
+      ) {
+        throw new Error("Special product mutation target is unavailable.");
+      }
+      const items = await this.options.remote.mark({
+        storeCode: this.storeCode,
+        productCode: normalizedProductCode,
+        isSpecialProduct,
+      });
+      if (this.destroyed) return;
+      await this.options.repository.applyMark(
+        this.storeCode,
+        normalizedProductCode,
+        isSpecialProduct,
+        items,
+      );
+    });
+  }
+
+  public reorder(productCode: string, delta: -1 | 1): Promise<void> {
+    return this.runManagement(
+      "reorder-complete",
+      "reorder-failed",
+      async () => {
+        const normalizedProductCode = requiredText(
+          productCode,
+          "productCode",
+        );
+        const productCodes = this.state.items.map((item) => item.productCode);
+        const currentIndex = productCodes.indexOf(normalizedProductCode);
+        const nextIndex = currentIndex + delta;
+        if (
+          currentIndex < 0 ||
+          (delta !== -1 && delta !== 1) ||
+          nextIndex < 0 ||
+          nextIndex >= productCodes.length
+        ) {
+          throw new Error("Special product reorder target is unavailable.");
+        }
+        [productCodes[currentIndex], productCodes[nextIndex]] = [
+          productCodes[nextIndex]!,
+          productCodes[currentIndex]!,
+        ];
+        const normalizedOrder = normalizeSpecialProductOrder(
+          productCodes,
+          new Set(this.state.items.map((item) => item.productCode)),
+        );
+        if (this.destroyed) return;
+        await this.options.repository.saveOrder(
+          this.storeCode,
+          normalizedOrder,
+        );
+      },
+    );
+  }
+
+  private runManagement(
+    successCode: SpecialProductsStatusCode,
+    failureCode: SpecialProductsStatusCode,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    if (!this.state.access.canManage) {
+      this.patch({ statusCode: "permission-required" });
+      return Promise.resolve();
+    }
+    if (!this.state.online) {
+      this.patch({ statusCode: "online-required" });
+      return Promise.resolve();
+    }
+    if (this.managementInFlight) return this.managementInFlight;
+
+    const generation = ++this.loadGeneration;
+    this.patch({ busy: true, statusCode: null });
+    const running = (async () => {
+      try {
+        await operation();
+        if (!this.isCurrentLoad(generation)) return;
+        const items = await this.listAll();
+        if (!this.isCurrentLoad(generation)) return;
+        this.patch({
+          busy: false,
+          items,
+          kind: "ready",
+          statusCode: successCode,
+        });
+      } catch {
+        if (!this.isCurrentLoad(generation)) return;
+        this.patch({
+          busy: false,
+          kind: this.state.items.length > 0 ? "ready" : "failed",
+          statusCode: failureCode,
+        });
+      }
+    })().finally(() => {
+      if (this.managementInFlight === running) {
+        this.managementInFlight = null;
+      }
+    });
+    this.managementInFlight = running;
+    return running;
+  }
+
+  private async downloadAllPages(): Promise<
+    readonly Omit<SpecialProductItem, "sortOrder">[]
+  > {
+    const downloaded: Omit<SpecialProductItem, "sortOrder">[] = [];
+    const seenProductCodes = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+
+    for (
+      let pageNumber = 0;
+      pageNumber < SpecialProductsPresenter.MAX_REMOTE_PAGES;
+      pageNumber += 1
+    ) {
+      if (this.destroyed) return [];
+      const page = await this.options.remote.getPage({
+        storeCode: this.storeCode,
+        cursor,
+        pageSize:
+          this.options.remotePageSize ??
+          SpecialProductsPresenter.DEFAULT_REMOTE_PAGE_SIZE,
+      });
+      if (this.destroyed) return [];
+
+      for (const item of page.items) {
+        const productCode = requiredText(item.productCode, "productCode");
+        if (
+          item.storeCode !== this.storeCode ||
+          seenProductCodes.has(productCode)
+        ) {
+          throw new Error("Special product download page is invalid.");
+        }
+        seenProductCodes.add(productCode);
+        downloaded.push({ ...item, productCode });
+      }
+
+      if (!page.hasMore) return Object.freeze(downloaded);
+      const nextCursor = page.nextCursor;
+      if (
+        typeof nextCursor !== "string" ||
+        nextCursor.length === 0 ||
+        nextCursor.length > 2_048 ||
+        seenCursors.has(nextCursor)
+      ) {
+        throw new Error("Special product download cursor is invalid.");
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    throw new Error("Special product download page limit exceeded.");
+  }
+
+  private async listAll(): Promise<readonly SpecialProductItem[]> {
+    const pageSize =
+      this.options.localPageSize ??
+      SpecialProductsPresenter.DEFAULT_LOCAL_PAGE_SIZE;
+    if (!Number.isSafeInteger(pageSize) || pageSize <= 0 || pageSize > 1_000) {
+      throw new TypeError("Special product local page size is invalid.");
+    }
+
+    const items: SpecialProductItem[] = [];
+    for (
+      let pageNumber = 0;
+      pageNumber < SpecialProductsPresenter.MAX_LOCAL_PAGES;
+      pageNumber += 1
+    ) {
+      const page = await this.options.repository.list(
+        this.storeCode,
+        pageSize,
+        items.length,
+      );
+      if (this.destroyed) return [];
+      items.push(...freezeStoreItems(page, this.storeCode));
+      if (page.length < pageSize) {
+        return Object.freeze(
+          [...items].sort(
+            (left, right) =>
+              left.sortOrder - right.sortOrder ||
+              left.productCode.localeCompare(right.productCode),
+          ),
+        );
+      }
+    }
+    throw new Error("Special product local page limit exceeded.");
+  }
+
+  private isCurrentLoad(generation: number): boolean {
+    return !this.destroyed && generation === this.loadGeneration;
+  }
+
+  private isCurrentSearch(generation: number): boolean {
+    return !this.destroyed && generation === this.searchGeneration;
+  }
+
+  private patch(patch: Partial<SpecialProductsState>): void {
+    if (this.destroyed) return;
+    this.state = { ...this.state, ...patch };
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // 已卸载页面的订阅异常不能阻止其余观察者接收脱敏状态。
+      }
+    }
+  }
+}
+
+function freezeStoreItems(
+  items: readonly SpecialProductItem[],
+  storeCode: string,
+): readonly SpecialProductItem[] {
+  if (items.some((item) => item.storeCode !== storeCode)) {
+    throw new Error("Special product store scope is invalid.");
+  }
+  return Object.freeze(items.map((item) => Object.freeze({ ...item })));
+}
+
+function requiredText(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > 128 ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return normalized;
+}

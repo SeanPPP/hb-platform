@@ -1,0 +1,765 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Redirect } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
+import { useTranslation } from "react-i18next";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { reconcileDeviceSessionRuntime } from "./device-registration-state";
+
+import {
+  HbposApiError,
+  type DeviceRegistrationStore,
+} from "@/core/api/hbpos-api";
+import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import type { DeviceSessionState } from "@/core/security/device-session";
+import { toggleAppLanguage } from "@/i18n";
+import { PosStatusStrip } from "@/ui/shell/status-strip";
+import { posColors } from "@/ui/theme";
+
+type StoreLoadState = "idle" | "loading" | "ready" | "failed";
+
+export function DeviceRegistrationScreen() {
+  const { t } = useTranslation();
+  const runtime = usePosRuntime();
+  const [session, setSession] = useState<DeviceSessionState | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [stores, setStores] = useState<readonly DeviceRegistrationStore[]>([]);
+  const [storeLoadState, setStoreLoadState] =
+    useState<StoreLoadState>("idle");
+  const [storeLoadError, setStoreLoadError] = useState<string | null>(null);
+  const [selectedStoreCode, setSelectedStoreCode] = useState("");
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const deviceSession = runtime.services?.deviceSession;
+  const selectedStore =
+    stores.find((store) => store.storeCode === selectedStoreCode) ?? null;
+
+  const reconcile = useCallback(
+    async (next: DeviceSessionState) => {
+      setSession(next);
+      await reconcileDeviceSessionRuntime(next, runtime);
+    },
+    [runtime],
+  );
+
+  const loadStores = useCallback(async () => {
+    if (!deviceSession) {
+      setStoreLoadState("failed");
+      setStoreLoadError(null);
+      return;
+    }
+
+    setStoreLoadState("loading");
+    setStoreLoadError(null);
+    try {
+      const nextStores = await deviceSession.listRegistrationStores();
+      setStores(nextStores);
+      setSelectedStoreCode((current) =>
+        nextStores.some((store) => store.storeCode === current)
+          ? current
+          : "",
+      );
+      setStoreLoadState("ready");
+    } catch (error: unknown) {
+      setStores([]);
+      setStoreLoadState("failed");
+      setStoreLoadError(error instanceof Error ? error.message : null);
+    }
+  }, [deviceSession]);
+
+  useEffect(() => {
+    if (runtime.state.phase === "pending-approval") {
+      return;
+    }
+    void loadStores();
+  }, [loadStores, runtime.state.phase]);
+
+  const poll = useCallback(async () => {
+    if (!deviceSession) return;
+    try {
+      const next = await deviceSession.poll();
+      setRequestError(null);
+      await reconcile(next);
+    } catch (error: unknown) {
+      applyRequestFailure(error, runtime, setRequestError);
+    }
+  }, [deviceSession, reconcile, runtime]);
+
+  useEffect(() => {
+    if (
+      runtime.state.phase !== "pending-approval" ||
+      !deviceSession
+    ) {
+      return;
+    }
+
+    void poll();
+    const timer = setInterval(() => void poll(), 5_000);
+    return () => clearInterval(timer);
+  }, [deviceSession, poll, runtime.state.phase]);
+
+  if (
+    runtime.state.phase === "ready" ||
+    runtime.state.phase === "ready-offline"
+  ) {
+    return <Redirect href="/" />;
+  }
+
+  const submit = async () => {
+    if (!deviceSession) {
+      setRequestError(t("registration.runtimeUnavailable"));
+      return;
+    }
+    if (!selectedStore) {
+      setRequestError(t("registration.storeRequired"));
+      return;
+    }
+
+    setRequestError(null);
+    setIsSubmitting(true);
+    try {
+      const next = await deviceSession.register({
+        storeCode: selectedStore.storeCode,
+      });
+      await reconcile(next);
+    } catch (error: unknown) {
+      applyRequestFailure(error, runtime, setRequestError);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const submitDisabled =
+    isSubmitting ||
+    runtime.state.database !== "ready" ||
+    storeLoadState !== "ready" ||
+    !selectedStore;
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar style="dark" />
+      <PosStatusStrip />
+      <View style={styles.languageBar}>
+        <Pressable
+          accessibilityLabel={t("registration.languageSwitchLabel")}
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => void toggleAppLanguage()}
+          style={({ pressed }) => [
+            styles.languageButton,
+            pressed && styles.languageButtonPressed,
+          ]}
+          testID="registration-language-switch"
+        >
+          <MaterialCommunityIcons
+            color={posColors.ink}
+            name="translate"
+            size={18}
+          />
+          <Text style={styles.languageButtonLabel}>
+            {t("registration.languageSwitch")}
+          </Text>
+        </Pressable>
+      </View>
+      <View style={styles.page}>
+        <View style={styles.contextPanel}>
+          <View style={styles.brandMark}>
+            <Text style={styles.brandLetters}>HB</Text>
+          </View>
+          <Text style={styles.eyebrow}>{t("registration.eyebrow")}</Text>
+          <Text style={styles.title}>{t("registration.title")}</Text>
+          <Text style={styles.subtitle}>{t("registration.subtitle")}</Text>
+
+          <View style={styles.securityNote}>
+            <MaterialCommunityIcons
+              color={posColors.green}
+              name="shield-lock-outline"
+              size={24}
+            />
+            <Text style={styles.securityCopy}>
+              {t("registration.securityNote")}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.formPanel}>
+          <Text style={styles.formTitle}>
+            {runtime.state.phase === "pending-approval"
+              ? t("registration.pendingTitle")
+              : t("registration.formTitle")}
+          </Text>
+          <Text style={styles.formHint}>
+            {runtime.state.phase === "pending-approval"
+              ? t("registration.pendingHint")
+              : t("registration.formHint")}
+          </Text>
+
+          {runtime.state.phase !== "pending-approval" ? (
+            <>
+              <FieldLabel>{t("registration.storeCode")}</FieldLabel>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled:
+                    storeLoadState !== "ready" || stores.length === 0,
+                  expanded: pickerVisible,
+                }}
+                disabled={
+                  storeLoadState !== "ready" || stores.length === 0
+                }
+                onPress={() => setPickerVisible(true)}
+                style={({ pressed }) => [
+                  styles.storePicker,
+                  pressed && styles.storePickerPressed,
+                ]}
+                testID="registration-store-picker"
+              >
+                <View style={styles.storePickerCopy}>
+                  <Text
+                    style={[
+                      styles.storePickerValue,
+                      !selectedStore && styles.storePickerPlaceholder,
+                    ]}
+                  >
+                    {selectedStore
+                      ? storeDisplayName(selectedStore)
+                      : storePickerMessage(storeLoadState, stores.length, t)}
+                  </Text>
+                </View>
+                <MaterialCommunityIcons
+                  color={posColors.ink}
+                  name="chevron-down"
+                  size={24}
+                />
+              </Pressable>
+
+              {storeLoadState === "failed" ||
+              (storeLoadState === "ready" && stores.length === 0) ? (
+                <View style={styles.storeStatus}>
+                  <Text style={styles.storeStatusText}>
+                    {storeLoadError ?? (
+                      storeLoadState === "failed"
+                        ? t("registration.storeLoadFailed")
+                        : t("registration.storeEmpty")
+                    )}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void loadStores()}
+                    style={({ pressed }) => [
+                      styles.retryButton,
+                      pressed && styles.retryButtonPressed,
+                    ]}
+                    testID="registration-store-retry"
+                  >
+                    <Text style={styles.retryButtonLabel}>
+                      {t("registration.storeRetry")}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <View style={styles.pendingCard}>
+              <MaterialCommunityIcons
+                color={posColors.orange}
+                name="clock-outline"
+                size={34}
+              />
+              <View style={styles.pendingCopy}>
+                <Text style={styles.pendingCode}>
+                  {session?.deviceCode ?? t("registration.pendingDeviceCode")}
+                </Text>
+                <Text style={styles.pendingStore}>
+                  {session?.storeCode ?? t("registration.pendingStore")}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {requestError ? (
+            <View accessibilityRole="alert" style={styles.errorBanner}>
+              <Text style={styles.errorBannerText}>{requestError}</Text>
+            </View>
+          ) : null}
+
+          {runtime.state.phase !== "pending-approval" ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: submitDisabled }}
+              disabled={submitDisabled}
+              onPress={() => void submit()}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                (pressed || isSubmitting) && styles.primaryButtonPressed,
+                submitDisabled && styles.primaryButtonDisabled,
+              ]}
+              testID="registration-submit"
+            >
+              <Text style={styles.primaryButtonLabel}>
+                {isSubmitting
+                  ? t("registration.submitting")
+                  : t("registration.submit")}
+              </Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void poll()}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && styles.secondaryButtonPressed,
+              ]}
+            >
+              <Text style={styles.secondaryButtonLabel}>
+                {t("registration.checkNow")}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+      <StorePickerOverlay
+        onClose={() => setPickerVisible(false)}
+        onSelect={(storeCode) => {
+          setSelectedStoreCode(storeCode);
+          setRequestError(null);
+          setPickerVisible(false);
+        }}
+        selectedStoreCode={selectedStoreCode}
+        stores={stores}
+        visible={pickerVisible}
+      />
+    </SafeAreaView>
+  );
+}
+
+function StorePickerOverlay({
+  onClose,
+  onSelect,
+  selectedStoreCode,
+  stores,
+  visible,
+}: Readonly<{
+  onClose(): void;
+  onSelect(storeCode: string): void;
+  selectedStoreCode: string;
+  stores: readonly DeviceRegistrationStore[];
+  visible: boolean;
+}>) {
+  const { t } = useTranslation();
+  if (!visible) {
+    return null;
+  }
+
+  return (
+    <View style={styles.modalBackdrop}>
+      <View
+        accessibilityViewIsModal
+        style={styles.modalCard}
+        testID="registration-store-modal"
+      >
+        <View style={styles.modalHeader}>
+          <Text style={styles.modalTitle}>
+            {t("registration.storePickerTitle")}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onClose}
+            style={({ pressed }) => [
+              styles.modalClose,
+              pressed && styles.modalClosePressed,
+            ]}
+          >
+            <Text style={styles.modalCloseLabel}>
+              {t("registration.storePickerClose")}
+            </Text>
+          </Pressable>
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.storeList}
+          keyboardShouldPersistTaps="handled"
+        >
+          {stores.map((store) => {
+            const selected = store.storeCode === selectedStoreCode;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                key={store.storeCode}
+                onPress={() => onSelect(store.storeCode)}
+                style={({ pressed }) => [
+                  styles.storeOption,
+                  selected && styles.storeOptionSelected,
+                  pressed && styles.storeOptionPressed,
+                ]}
+                testID={`registration-store-${store.storeCode}`}
+              >
+                <View style={styles.storeOptionCopy}>
+                  <Text style={styles.storeOptionName}>
+                    {store.storeName}
+                  </Text>
+                  <Text style={styles.storeOptionCode}>
+                    {store.storeCode}
+                  </Text>
+                </View>
+                {selected ? (
+                  <MaterialCommunityIcons
+                    color={posColors.green}
+                    name="check-circle"
+                    size={22}
+                  />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+function applyRequestFailure(
+  error: unknown,
+  runtime: ReturnType<typeof usePosRuntime>,
+  setRequestError: Dispatch<SetStateAction<string | null>>,
+) {
+  if (error instanceof HbposApiError) {
+    if (error.status === 403) {
+      runtime.updateOperationalState({
+        backend: "rejected",
+        device: "locked",
+      });
+    } else if (error.kind === "transport") {
+      runtime.updateOperationalState({
+        backend: "offline",
+        device:
+          runtime.state.device === "pending-approval"
+            ? "pending-approval"
+            : "registration-required",
+      });
+    }
+    setRequestError(error.message);
+    return;
+  }
+  setRequestError(
+    error instanceof Error
+      ? error.message
+      : "Device registration request failed.",
+  );
+}
+
+function FieldLabel({ children }: { children: string }) {
+  return <Text style={styles.fieldLabel}>{children}</Text>;
+}
+
+function storeDisplayName(store: DeviceRegistrationStore): string {
+  return `${store.storeName} · ${store.storeCode}`;
+}
+
+function storePickerMessage(
+  state: StoreLoadState,
+  storeCount: number,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  if (state === "loading" || state === "idle") {
+    return t("registration.storeLoading");
+  }
+  if (state === "failed") {
+    return t("registration.storeLoadFailed");
+  }
+  if (storeCount === 0) {
+    return t("registration.storeEmpty");
+  }
+  return t("registration.storePlaceholder");
+}
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: posColors.canvas },
+  languageBar: {
+    minHeight: 48,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    paddingHorizontal: 48,
+  },
+  languageButton: {
+    minWidth: 108,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: posColors.surface,
+  },
+  languageButtonPressed: { backgroundColor: posColors.blueSoft },
+  languageButtonLabel: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  page: {
+    flex: 1,
+    flexDirection: "row",
+    paddingHorizontal: 48,
+    paddingTop: 8,
+    paddingBottom: 34,
+    gap: 56,
+  },
+  contextPanel: { flex: 1, justifyContent: "center", maxWidth: 520 },
+  brandMark: {
+    width: 52,
+    height: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: posColors.ink,
+  },
+  brandLetters: { color: "#FFFFFF", fontSize: 19, fontWeight: "900" },
+  eyebrow: {
+    marginTop: 28,
+    color: posColors.orange,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.8,
+  },
+  title: {
+    marginTop: 14,
+    color: posColors.ink,
+    fontSize: 42,
+    fontWeight: "900",
+    lineHeight: 48,
+  },
+  subtitle: {
+    marginTop: 18,
+    color: posColors.mutedInk,
+    fontSize: 17,
+    lineHeight: 27,
+  },
+  securityNote: {
+    marginTop: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: posColors.green,
+    backgroundColor: posColors.greenSoft,
+  },
+  securityCopy: {
+    flex: 1,
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 20,
+  },
+  formPanel: {
+    width: 430,
+    alignSelf: "center",
+    padding: 30,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: posColors.surface,
+  },
+  formTitle: { color: posColors.ink, fontSize: 25, fontWeight: "900" },
+  formHint: {
+    marginTop: 8,
+    marginBottom: 24,
+    color: posColors.mutedInk,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  fieldLabel: {
+    marginTop: 14,
+    marginBottom: 8,
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  storePicker: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 15,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  storePickerPressed: { backgroundColor: posColors.blueSoft },
+  storePickerCopy: { flex: 1, paddingRight: 12 },
+  storePickerValue: {
+    color: posColors.ink,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  storePickerPlaceholder: {
+    color: posColors.mutedInk,
+    fontWeight: "500",
+  },
+  storeStatus: {
+    marginTop: 10,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: posColors.orange,
+    backgroundColor: "#FFF7ED",
+  },
+  storeStatusText: {
+    color: posColors.ink,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  retryButton: {
+    minHeight: 44,
+    marginTop: 8,
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: posColors.ink,
+  },
+  retryButtonPressed: { backgroundColor: posColors.blueSoft },
+  retryButtonLabel: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  errorBanner: {
+    marginTop: 18,
+    padding: 12,
+    backgroundColor: "#FEE4E2",
+  },
+  errorBannerText: { color: "#912018", fontSize: 13, fontWeight: "700" },
+  primaryButton: {
+    minHeight: 52,
+    marginTop: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: posColors.ink,
+  },
+  primaryButtonPressed: { opacity: 0.7 },
+  primaryButtonDisabled: { opacity: 0.45 },
+  primaryButtonLabel: { color: "#FFFFFF", fontSize: 15, fontWeight: "900" },
+  secondaryButton: {
+    minHeight: 50,
+    marginTop: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: posColors.ink,
+  },
+  secondaryButtonPressed: { backgroundColor: posColors.blueSoft },
+  secondaryButtonLabel: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  pendingCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFF7ED",
+  },
+  pendingCopy: { flex: 1 },
+  pendingCode: { color: posColors.ink, fontSize: 18, fontWeight: "900" },
+  pendingStore: {
+    marginTop: 4,
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 32,
+    backgroundColor: "rgba(10, 31, 50, 0.42)",
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 560,
+    maxHeight: "76%",
+    padding: 24,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: posColors.surface,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: posColors.border,
+  },
+  modalTitle: {
+    flex: 1,
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  modalClose: {
+    minWidth: 72,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: posColors.border,
+  },
+  modalClosePressed: { backgroundColor: posColors.blueSoft },
+  modalCloseLabel: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  storeList: { paddingTop: 12, gap: 8 },
+  storeOption: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  storeOptionSelected: {
+    borderColor: posColors.green,
+    backgroundColor: posColors.greenSoft,
+  },
+  storeOptionPressed: { opacity: 0.72 },
+  storeOptionCopy: { flex: 1 },
+  storeOptionName: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  storeOptionCode: {
+    marginTop: 3,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+});

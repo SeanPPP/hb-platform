@@ -1,0 +1,287 @@
+import { expect, jest, test } from "@jest/globals";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
+
+import type {
+  NoReceiptReturnItem,
+  ReceiptReturnContext,
+} from "./return-domain";
+import { ReturnPresenter } from "./return-presenter";
+import {
+  RETURN_MIN_TOUCH_TARGET,
+  ReturnScreen,
+  parsePositiveAudCents,
+} from "./return-screen";
+import {
+  ReturnWorkflow,
+  type ReturnExecutionCommand,
+  type ReturnExecutionPort,
+} from "./return-workflow";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "en", resolvedLanguage: "en" },
+  }),
+}));
+
+test("小票退货覆盖查询、数量、容量选择、Unknown 恢复和成功页", async () => {
+  expect(RETURN_MIN_TOUCH_TARGET).toBe(44);
+  const execution = new ScreenExecution();
+  const presenter = createScreenPresenter(execution);
+  const screen = await render(
+    <ReturnScreen locale="en" presenter={presenter} />,
+  );
+
+  await fireEvent.changeText(
+    screen.getByTestId("return-order-query"),
+    "HB-1001",
+  );
+  await fireEvent.press(screen.getByTestId("return-order-search"));
+  await waitFor(() =>
+    expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy(),
+  );
+
+  await fireEvent.press(
+    screen.getByTestId("return-increase-return-line-1"),
+  );
+  expect(
+    screen.getByTestId("return-confirm").props.accessibilityState.disabled,
+  ).toBe(false);
+  await fireEvent.press(screen.getByTestId("return-method-card"));
+  await fireEvent.press(screen.getByTestId("return-confirm"));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("return-unknown")).toBeTruthy(),
+  );
+  expect(screen.queryByTestId("return-confirm")).toBeNull();
+  expect(screen.queryByTestId("return-method-cash")).toBeNull();
+  expect(execution.executeCalls).toHaveLength(1);
+  expect(execution.executeCalls[0]?.plan.allocations[0]?.method).toBe("card");
+
+  await fireEvent.press(screen.getByTestId("return-unknown-action"));
+  await waitFor(() =>
+    expect(screen.getByTestId("return-success")).toBeTruthy(),
+  );
+  expect(execution.recoverCalls).toBe(1);
+});
+
+test("无小票 OPENITEM 走在线主管路径并提供中英文一致的 44pt 操作", async () => {
+  const execution = new ScreenExecution();
+  let authorizationCalls = 0;
+  const presenter = createScreenPresenter(execution, {
+    authorize: async () => {
+      authorizationCalls += 1;
+      return { authorizationKey: "supervisor-grant-screen" };
+    },
+  });
+  const screen = await render(
+    <ReturnScreen locale="zh" presenter={presenter} />,
+  );
+
+  await fireEvent.press(screen.getByTestId("return-mode-no-receipt"));
+  await fireEvent.changeText(
+    screen.getByTestId("return-open-item-name"),
+    "散装商品",
+  );
+  await fireEvent.changeText(
+    screen.getByTestId("return-open-item-amount"),
+    "4.50",
+  );
+  await fireEvent.press(screen.getByTestId("return-open-item-add"));
+
+  await waitFor(() =>
+    expect(screen.getByText("散装商品")).toBeTruthy(),
+  );
+  expect(authorizationCalls).toBe(1);
+  expect(screen.getByText("数量 1")).toBeTruthy();
+  expect(
+    screen.getByTestId("return-confirm").props.accessibilityState.disabled,
+  ).toBe(false);
+  expect(screen.queryByTestId("return-method-installment")).toBeNull();
+  await fireEvent.press(screen.getByTestId("return-method-voucher"));
+  expect(presenter.getState().preferredMethod).toBe("voucher");
+});
+
+test("OPENITEM 金额只接受正数且最多两位小数", () => {
+  expect(parsePositiveAudCents("4.5")).toBe(450);
+  expect(parsePositiveAudCents("4.50")).toBe(450);
+  expect(parsePositiveAudCents("0")).toBeNull();
+  expect(parsePositiveAudCents("-1")).toBeNull();
+  expect(parsePositiveAudCents("1.234")).toBeNull();
+});
+
+test("支付边界等待页隐藏确认和退款方式，避免重复操作", async () => {
+  const pending = deferred<{
+    status: "completed";
+    returnOrderGuid: string;
+  }>();
+  const execution = new ScreenExecution();
+  execution.executeImpl = async () => pending.promise;
+  const presenter = createScreenPresenter(execution);
+  await presenter.loadReceipt("HB-1001");
+  presenter.incrementLine("return-line-1");
+  const screen = await render(
+    <ReturnScreen locale="en" presenter={presenter} />,
+  );
+
+  await fireEvent.press(screen.getByTestId("return-confirm"));
+  expect(screen.getByTestId("return-waiting")).toBeTruthy();
+  expect(screen.queryByTestId("return-confirm")).toBeNull();
+  expect(screen.queryByTestId("return-method-card")).toBeNull();
+
+  pending.resolve({
+    status: "completed",
+    returnOrderGuid: "return-order-waiting",
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("return-success")).toBeTruthy(),
+  );
+  expect(execution.executeCalls).toHaveLength(1);
+});
+
+function createScreenPresenter(
+  execution: ScreenExecution,
+  options: Readonly<{
+    authorize?(): Promise<{ authorizationKey: string }>;
+  }> = {},
+): ReturnPresenter {
+  const workflow = new ReturnWorkflow({
+    lookup: {
+      lookupReceipt: async () => screenReceiptContext(),
+      lookupNoReceiptProduct: async () => noReceiptItem(),
+      createNoReceiptOpenItem: async (input) => ({
+        ...noReceiptItem(),
+        sourceKind: "no-receipt-open-item",
+        selectionKey: "open-item-line",
+        returnSourceKey: "noreceipt-open:BNE:1",
+        lookupCode: "OPENITEM",
+        displayName: input.displayName,
+        unitRefundCents: input.unitRefundCents,
+      }),
+    },
+    connectivity: { isOnline: async () => true },
+    supervisorAuthorization: {
+      authorizeNoReceiptReturn:
+        options.authorize ??
+        (async () => ({ authorizationKey: "supervisor-grant-default" })),
+    },
+    sessionGuard: {
+      captureLease: () => "lease-1",
+      assertActive: () => undefined,
+    },
+    execution,
+    createActionId: () => "return-action-1",
+  });
+  return new ReturnPresenter(workflow);
+}
+
+class ScreenExecution implements ReturnExecutionPort {
+  public readonly executeCalls: ReturnExecutionCommand[] = [];
+  public recoverCalls = 0;
+  public executeImpl: (
+    command: ReturnExecutionCommand,
+  ) => Promise<
+    | { status: "completed"; returnOrderGuid: string }
+    | { status: "unknown"; recoveryKey: string | null }
+  > = async () => ({
+    status: "unknown",
+    recoveryKey: "private-recovery-key",
+  });
+
+  public async execute(
+    command: ReturnExecutionCommand,
+  ): Promise<
+    | { status: "completed"; returnOrderGuid: string }
+    | { status: "unknown"; recoveryKey: string | null }
+  > {
+    this.executeCalls.push(command);
+    return this.executeImpl(command);
+  }
+
+  public async recover(): Promise<{
+    status: "completed";
+    returnOrderGuid: string;
+  }> {
+    this.recoverCalls += 1;
+    return {
+      status: "completed",
+      returnOrderGuid: "return-order-1",
+    };
+  }
+}
+
+function screenReceiptContext(): ReceiptReturnContext {
+  return {
+    originalOrderGuid: "order-a",
+    receiptLabel: "HB-1001",
+    loadedFrom: "remote",
+    returnRecordsMayBeStale: false,
+    lines: [
+      {
+        selectionKey: "detail-a",
+        originalOrderGuid: "order-a",
+        originalOrderDetailGuid: "detail-a",
+        returnSourceKey: "return:order-a:detail-a",
+        productCode: "P-1",
+        itemNumber: "1001",
+        lookupCode: "1001",
+        displayName: "Blue cup",
+        availableQuantity: 2,
+        unitRefundCents: 1_000,
+        remainingAmountCents: 2_000,
+        syncProvenance: {
+          referenceCode: "RECEIPT-REF",
+          priceSource: 0,
+        },
+      },
+    ],
+    tenderCapacities: [
+      {
+        capacityId: "cash-capacity",
+        originalOrderGuid: "order-a",
+        method: "cash",
+        remainingCents: 2_000,
+        offlineCashProof: {
+          evidenceId: "cash-proof",
+          capacityId: "cash-capacity",
+          originalOrderGuid: "order-a",
+          remainingCents: 2_000,
+        },
+      },
+      {
+        capacityId: "card-capacity",
+        originalOrderGuid: "order-a",
+        method: "card",
+        remainingCents: 2_000,
+        offlineCashProof: null,
+      },
+    ],
+  };
+}
+
+function noReceiptItem(): NoReceiptReturnItem {
+  return {
+    sourceKind: "no-receipt-product",
+    selectionKey: "no-receipt-line",
+    returnSourceKey: "noreceipt:BNE:1",
+    productCode: "P-2",
+    itemNumber: "2002",
+    lookupCode: "9320001",
+    displayName: "No receipt product",
+    unitRefundCents: 500,
+    syncProvenance: {
+      referenceCode: "CATALOG-REF",
+      priceSource: 1,
+    },
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}

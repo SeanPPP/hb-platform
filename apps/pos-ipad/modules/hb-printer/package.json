@@ -1,0 +1,7 @@
+{
+  "name": "hb-printer",
+  "version": "0.1.0",
+  "description": "HB POS iPad Bluetooth ESC/POS printer module",
+  "main": "index.ts",
+  "private": true
+}

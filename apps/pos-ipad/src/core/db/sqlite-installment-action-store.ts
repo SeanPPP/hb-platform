@@ -1,0 +1,912 @@
+import type {
+  InstallmentActionCommand,
+  InstallmentActionState,
+  InstallmentActionStorePort,
+  InstallmentPaymentAction,
+  PersistedInstallmentAction,
+} from "../runtime/production-installment-runtime";
+
+import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
+import type { SqliteConnectionPort } from "./types";
+
+export type {
+  InstallmentActionState,
+  InstallmentActionStorePort,
+  PersistedInstallmentAction,
+};
+
+export const INSTALLMENT_ACTION_PAYLOAD_REVISION = 1;
+
+type TerminalScope = Parameters<
+  InstallmentActionStorePort["loadBlocking"]
+>[0];
+
+type ActionRow = Readonly<{
+  action_id: unknown;
+  store_code: unknown;
+  device_code: unknown;
+  installment_guid: unknown;
+  action_kind: unknown;
+  idempotency_key: unknown;
+  payment_guid: unknown;
+  payment_method: unknown;
+  amount_cents: unknown;
+  state: unknown;
+  resolution: unknown;
+  payload_revision: unknown;
+  command_ciphertext: unknown;
+}>;
+
+type ActionEnvelopeV1 = Readonly<{
+  format: "hb-pos-installment-action-v1";
+  aad: Readonly<{
+    revision: 1;
+    storeCode: string;
+    deviceCode: string;
+    actionId: string;
+  }>;
+  action: InstallmentPaymentAction;
+  command: InstallmentActionCommand;
+  intentFingerprint: string;
+}>;
+
+export class SqliteInstallmentActionStore
+  implements InstallmentActionStorePort
+{
+  public constructor(
+    private readonly connection: SqliteConnectionPort,
+    private readonly encryptor: SensitivePayloadEncryptor,
+    private readonly nowIso: () => string,
+  ) {}
+
+  public async loadBlocking(
+    terminal: TerminalScope,
+  ): Promise<PersistedInstallmentAction | null> {
+    const scope = normalizeTerminal(terminal);
+    const rows = await selectBlockingRows(this.connection, scope);
+    if (rows.length === 0) return null;
+    if (rows.length !== 1) {
+      throw new Error(
+        "Persisted installment action terminal uniqueness is invalid.",
+      );
+    }
+    return this.readRow(rows[0]!);
+  }
+
+  /** provider 恢复按稳定 actionId 读取；终态事实也必须继续可验证。 */
+  public async loadById(
+    actionIdInput: string,
+  ): Promise<PersistedInstallmentAction | null> {
+    const actionId = uuid(actionIdInput, "action ID");
+    const row = await this.connection.getFirst<ActionRow>(
+      `${selectColumns()} WHERE action_id = ? LIMIT 1`,
+      [actionId],
+    );
+    return row ? this.readRow(row) : null;
+  }
+
+  public async createIfNone(
+    candidateValue: PersistedInstallmentAction,
+  ): Promise<Readonly<{
+    created: boolean;
+    action: PersistedInstallmentAction;
+  }>> {
+    const candidate = normalizePersistedAction(candidateValue);
+    if (candidate.state !== "Created") {
+      throw new TypeError(
+        "New installment action state must be Created.",
+      );
+    }
+    return this.connection.withExclusiveTransaction(
+      async (transaction) => {
+        const scope = {
+          storeCode: candidate.storeCode,
+          deviceCode: candidate.deviceCode,
+        };
+        const existing = await selectBlockingRows(transaction, scope);
+        if (existing.length > 1) {
+          throw new Error(
+            "Persisted installment action terminal uniqueness is invalid.",
+          );
+        }
+        if (existing.length === 1) {
+          // 旧 blocking 必须先成功解密；坏事实不能被新 action 覆盖。
+          return Object.freeze({
+            created: false,
+            action: await this.readRow(existing[0]!),
+          });
+        }
+        const ciphertext = await encryptEnvelope(
+          this.encryptor,
+          createEnvelope(candidate),
+        );
+        const timestamp = strictIso(
+          this.nowIso(),
+          "installment action creation time",
+        );
+        const action = candidate.action;
+        await transaction.run(
+          `INSERT INTO installment_actions (
+            action_id, store_code, device_code, installment_guid,
+            action_kind, idempotency_key, payment_guid, payment_method,
+            amount_cents, state, resolution, payload_revision,
+            command_ciphertext, created_at_iso, updated_at_iso,
+            resolved_at_iso
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)`,
+          [
+            action.actionId,
+            candidate.storeCode,
+            candidate.deviceCode,
+            action.installmentGuid,
+            action.kind,
+            action.idempotencyKey,
+            action.paymentGuid,
+            action.method,
+            action.amountCents,
+            candidate.state,
+            INSTALLMENT_ACTION_PAYLOAD_REVISION,
+            ciphertext,
+            timestamp,
+            timestamp,
+          ],
+        );
+        return Object.freeze({ created: true, action: candidate });
+      },
+    );
+  }
+
+  public async transition(
+    input: Parameters<InstallmentActionStorePort["transition"]>[0],
+  ): Promise<PersistedInstallmentAction> {
+    const scope = normalizeTerminal(input.terminal);
+    const actionId = uuid(input.actionId, "installment action ID");
+    const expectedState = state(input.expectedState);
+    const nextState = state(input.nextState);
+    if (!allowedTransition(expectedState, nextState)) {
+      throw new Error("Installment action state transition is invalid.");
+    }
+    const timestamp = strictIso(
+      this.nowIso(),
+      "installment action transition time",
+    );
+    return this.connection.withExclusiveTransaction(
+      async (transaction) => {
+        const current = await this.requireBlocking(
+          transaction,
+          scope,
+          actionId,
+        );
+        if (current.state !== expectedState) {
+          throw new Error("Installment action state CAS failed.");
+        }
+        const result = await transaction.run(
+          `UPDATE installment_actions
+           SET state = ?, updated_at_iso = ?
+           WHERE action_id = ? AND store_code = ? AND device_code = ?
+             AND state = ? AND resolution IS NULL`,
+          [
+            nextState,
+            timestamp,
+            actionId,
+            scope.storeCode,
+            scope.deviceCode,
+            expectedState,
+          ],
+        );
+        if (result.changes !== 1) {
+          throw new Error("Installment action state CAS failed.");
+        }
+        const row = await selectActionRow(
+          transaction,
+          scope,
+          actionId,
+        );
+        if (row === null) {
+          throw new Error("Installment action state CAS failed.");
+        }
+        return this.readRow(row);
+      },
+    );
+  }
+
+  public decline(
+    input: Parameters<InstallmentActionStorePort["decline"]>[0],
+  ): Promise<void> {
+    if (
+      input.expectedState !== "ProviderPending" &&
+      input.expectedState !== "Unknown"
+    ) {
+      throw new TypeError(
+        "Installment action decline state is invalid.",
+      );
+    }
+    return this.resolve(
+      input.actionId,
+      input.terminal,
+      input.expectedState,
+      "Declined",
+    );
+  }
+
+  public complete(
+    input: Parameters<InstallmentActionStorePort["complete"]>[0],
+  ): Promise<void> {
+    if (input.expectedState !== "BackendPending") {
+      throw new TypeError(
+        "Installment action completion state is invalid.",
+      );
+    }
+    return this.resolve(
+      input.actionId,
+      input.terminal,
+      input.expectedState,
+      "Completed",
+    );
+  }
+
+  private async resolve(
+    actionIdValue: string,
+    terminal: TerminalScope,
+    expectedState: InstallmentActionState,
+    resolution: "Declined" | "Completed",
+  ): Promise<void> {
+    const scope = normalizeTerminal(terminal);
+    const actionId = uuid(actionIdValue, "installment action ID");
+    const timestamp = strictIso(
+      this.nowIso(),
+      "installment action resolution time",
+    );
+    await this.connection.withExclusiveTransaction(
+      async (transaction) => {
+        const current = await this.requireBlocking(
+          transaction,
+          scope,
+          actionId,
+        );
+        if (current.state !== expectedState) {
+          throw new Error(
+            "Installment action resolution state CAS failed.",
+          );
+        }
+        const result = await transaction.run(
+          `UPDATE installment_actions
+           SET resolution = ?, resolved_at_iso = ?, updated_at_iso = ?
+           WHERE action_id = ? AND store_code = ? AND device_code = ?
+             AND state = ? AND resolution IS NULL`,
+          [
+            resolution,
+            timestamp,
+            timestamp,
+            actionId,
+            scope.storeCode,
+            scope.deviceCode,
+            expectedState,
+          ],
+        );
+        if (result.changes !== 1) {
+          throw new Error(
+            "Installment action resolution state CAS failed.",
+          );
+        }
+      },
+    );
+  }
+
+  private async requireBlocking(
+    connection: SqliteConnectionPort,
+    scope: TerminalScope,
+    actionId: string,
+  ): Promise<PersistedInstallmentAction> {
+    const row = await selectActionRow(connection, scope, actionId);
+    if (row === null) {
+      throw new Error("Installment action state CAS failed.");
+    }
+    return this.readRow(row);
+  }
+
+  private async readRow(row: ActionRow): Promise<PersistedInstallmentAction> {
+    try {
+      if (row.resolution !== null) throw new Error("resolved");
+      const action = actionFromRow(row);
+      const persistedState = state(row.state);
+      const revision = integer(row.payload_revision, "payload revision");
+      if (revision !== INSTALLMENT_ACTION_PAYLOAD_REVISION) {
+        throw new Error("revision");
+      }
+      const storeCode = identity(row.store_code, "store code", 50);
+      const deviceCode = identity(row.device_code, "device code", 128);
+      const ciphertext = bytes(row.command_ciphertext);
+      const envelope = await decryptEnvelope(
+        this.encryptor,
+        ciphertext,
+      );
+      if (
+        envelope.aad.revision !== revision ||
+        envelope.aad.storeCode !== storeCode ||
+        envelope.aad.deviceCode !== deviceCode ||
+        envelope.aad.actionId !== action.actionId ||
+        JSON.stringify(envelope.action) !== JSON.stringify(action)
+      ) {
+        throw new Error("AAD");
+      }
+      return normalizePersistedAction({
+        action,
+        command: envelope.command,
+        deviceCode,
+        intentFingerprint: envelope.intentFingerprint,
+        state: persistedState,
+        storeCode,
+      });
+    } catch {
+      throw new Error(
+        "Persisted installment action ciphertext or binding is invalid.",
+      );
+    }
+  }
+}
+
+async function selectBlockingRows(
+  connection: SqliteConnectionPort,
+  scope: TerminalScope,
+): Promise<readonly ActionRow[]> {
+  return connection.getAll<ActionRow>(
+    `${selectColumns()}
+     WHERE store_code = ? AND device_code = ? AND resolution IS NULL
+     ORDER BY created_at_iso, action_id LIMIT 2`,
+    [scope.storeCode, scope.deviceCode],
+  );
+}
+
+async function selectActionRow(
+  connection: SqliteConnectionPort,
+  scope: TerminalScope,
+  actionId: string,
+): Promise<ActionRow | null> {
+  return connection.getFirst<ActionRow>(
+    `${selectColumns()}
+     WHERE action_id = ? AND store_code = ? AND device_code = ?
+       AND resolution IS NULL LIMIT 1`,
+    [actionId, scope.storeCode, scope.deviceCode],
+  );
+}
+
+function selectColumns(): string {
+  return `SELECT action_id, store_code, device_code, installment_guid,
+    action_kind, idempotency_key, payment_guid, payment_method,
+    amount_cents, state, resolution, payload_revision, command_ciphertext
+  FROM installment_actions`;
+}
+
+function createEnvelope(
+  value: PersistedInstallmentAction,
+): ActionEnvelopeV1 {
+  return Object.freeze({
+    format: "hb-pos-installment-action-v1",
+    aad: Object.freeze({
+      revision: INSTALLMENT_ACTION_PAYLOAD_REVISION,
+      storeCode: value.storeCode,
+      deviceCode: value.deviceCode,
+      actionId: value.action.actionId,
+    }),
+    action: value.action,
+    command: value.command,
+    intentFingerprint: value.intentFingerprint,
+  });
+}
+
+async function encryptEnvelope(
+  encryptor: SensitivePayloadEncryptor,
+  envelope: ActionEnvelopeV1,
+): Promise<Uint8Array> {
+  const ciphertext = await encryptor.encrypt(JSON.stringify(envelope));
+  if (!(ciphertext instanceof Uint8Array) || ciphertext.length === 0) {
+    throw new Error("Installment action encryption failed.");
+  }
+  return ciphertext;
+}
+
+async function decryptEnvelope(
+  encryptor: SensitivePayloadEncryptor,
+  ciphertext: Uint8Array,
+): Promise<ActionEnvelopeV1> {
+  const value = JSON.parse(await encryptor.decrypt(ciphertext)) as unknown;
+  if (
+    !exact(value, [
+      "format",
+      "aad",
+      "action",
+      "command",
+      "intentFingerprint",
+    ]) ||
+    value.format !== "hb-pos-installment-action-v1" ||
+    !exact(value.aad, [
+      "revision",
+      "storeCode",
+      "deviceCode",
+      "actionId",
+    ]) ||
+    value.aad.revision !== INSTALLMENT_ACTION_PAYLOAD_REVISION
+  ) {
+    throw new Error("Invalid installment action envelope.");
+  }
+  const action = normalizeAction(value.action);
+  const storeCode = identity(value.aad.storeCode, "store code", 50);
+  const deviceCode = identity(value.aad.deviceCode, "device code", 128);
+  const actionId = uuid(value.aad.actionId, "action ID");
+  if (action.actionId !== actionId) throw new Error("Invalid AAD.");
+  return Object.freeze({
+    format: "hb-pos-installment-action-v1",
+    aad: Object.freeze({
+      revision: INSTALLMENT_ACTION_PAYLOAD_REVISION,
+      storeCode,
+      deviceCode,
+      actionId,
+    }),
+    action,
+    command: normalizeCommand(value.command, action, deviceCode),
+    intentFingerprint: confidential(
+      value.intentFingerprint,
+      "intent fingerprint",
+      1_048_576,
+    ),
+  });
+}
+
+function normalizePersistedAction(value: unknown): PersistedInstallmentAction {
+  if (
+    !exact(value, [
+      "action",
+      "command",
+      "deviceCode",
+      "intentFingerprint",
+      "state",
+      "storeCode",
+    ])
+  ) {
+    throw new TypeError("Persisted installment action is invalid.");
+  }
+  const storeCode = identity(value.storeCode, "store code", 50);
+  const deviceCode = identity(value.deviceCode, "device code", 128);
+  const action = normalizeAction(value.action);
+  return Object.freeze({
+    action,
+    command: normalizeCommand(value.command, action, deviceCode),
+    deviceCode,
+    intentFingerprint: confidential(
+      value.intentFingerprint,
+      "intent fingerprint",
+      1_048_576,
+    ),
+    state: state(value.state),
+    storeCode,
+  });
+}
+
+function normalizeAction(value: unknown): InstallmentPaymentAction {
+  if (
+    !exact(value, [
+      "actionId",
+      "idempotencyKey",
+      "kind",
+      "installmentGuid",
+      "paymentGuid",
+      "method",
+      "amountCents",
+    ])
+  ) {
+    throw new TypeError("Installment payment action is invalid.");
+  }
+  const actionId = uuid(value.actionId, "action ID");
+  const idempotencyKey = uuid(value.idempotencyKey, "idempotency key");
+  const installmentGuid = uuid(value.installmentGuid, "installment GUID");
+  if (actionId !== idempotencyKey) {
+    throw new TypeError("Installment action identity is invalid.");
+  }
+  if (value.kind === "cancel-refund") {
+    if (
+      value.paymentGuid !== null ||
+      value.method !== null ||
+      value.amountCents !== null
+    ) {
+      throw new TypeError("Installment refund action is invalid.");
+    }
+    return Object.freeze({
+      actionId,
+      idempotencyKey,
+      kind: "cancel-refund",
+      installmentGuid,
+      paymentGuid: null,
+      method: null,
+      amountCents: null,
+    });
+  }
+  if (value.kind !== "create" && value.kind !== "repayment") {
+    throw new TypeError("Installment action kind is invalid.");
+  }
+  return Object.freeze({
+    actionId,
+    idempotencyKey,
+    kind: value.kind,
+    installmentGuid,
+    paymentGuid: uuid(value.paymentGuid, "payment GUID"),
+    method: paymentMethod(value.method),
+    amountCents: positive(value.amountCents, "payment amount"),
+  });
+}
+
+function actionFromRow(row: ActionRow): InstallmentPaymentAction {
+  return normalizeAction({
+    actionId: row.action_id,
+    idempotencyKey: row.idempotency_key,
+    kind: row.action_kind,
+    installmentGuid: row.installment_guid,
+    paymentGuid: row.payment_guid,
+    method: row.payment_method,
+    amountCents: row.amount_cents,
+  });
+}
+
+function normalizeCommand(
+  value: unknown,
+  action: InstallmentPaymentAction,
+  deviceCode: string,
+): InstallmentActionCommand {
+  if (!record(value) || value.kind !== action.kind) {
+    throw new TypeError("Installment command kind is invalid.");
+  }
+  if (value.kind === "create") {
+    return createCommand(value, action, deviceCode);
+  }
+  if (value.kind === "repayment") {
+    if (
+      !exact(value, [
+        "deviceCode",
+        "cashierId",
+        "cashierName",
+        "kind",
+        "installmentGuid",
+      ])
+    ) {
+      throw new TypeError("Installment repayment command is invalid.");
+    }
+    return Object.freeze({
+      ...commandIdentity(value, deviceCode),
+      kind: "repayment",
+      installmentGuid: matchingInstallment(value.installmentGuid, action),
+    });
+  }
+  if (
+    !exact(value, [
+      "deviceCode",
+      "cashierId",
+      "cashierName",
+      "kind",
+      "installmentGuid",
+      "cancelledAtIso",
+      "reason",
+      "idempotencyKey",
+    ])
+  ) {
+    throw new TypeError("Installment cancel command is invalid.");
+  }
+  const idempotencyKey = uuid(value.idempotencyKey, "idempotency key");
+  if (idempotencyKey !== action.idempotencyKey) {
+    throw new TypeError("Installment command identity is invalid.");
+  }
+  return Object.freeze({
+    ...commandIdentity(value, deviceCode),
+    kind: "cancel-refund",
+    installmentGuid: matchingInstallment(value.installmentGuid, action),
+    cancelledAtIso: strictIso(value.cancelledAtIso, "cancellation time"),
+    reason: nullableConfidential(value.reason, "reason", 1_000),
+    idempotencyKey,
+  });
+}
+
+function createCommand(
+  value: Record<string, unknown>,
+  action: InstallmentPaymentAction,
+  deviceCode: string,
+): Extract<InstallmentActionCommand, { kind: "create" }> {
+  if (
+    !exact(value, [
+      "deviceCode",
+      "cashierId",
+      "cashierName",
+      "kind",
+      "installmentGuid",
+      "createdAtIso",
+      "totalCents",
+      "downPaymentCents",
+      "lines",
+      "customerName",
+      "customerPhone",
+      "note",
+      "cartFingerprint",
+      "draftRevision",
+    ]) ||
+    !Array.isArray(value.lines) ||
+    value.lines.length === 0 ||
+    value.lines.length > 1_000
+  ) {
+    throw new TypeError("Installment create command is invalid.");
+  }
+  const totalCents = positive(value.totalCents, "total");
+  const downPaymentCents = positive(
+    value.downPaymentCents,
+    "down payment",
+  );
+  if (downPaymentCents > totalCents) {
+    throw new TypeError("Installment down payment is invalid.");
+  }
+  const seen = new Set<string>();
+  const lines = value.lines.map((item) => {
+    const line = normalizeLine(item);
+    if (seen.has(line.installmentLineGuid)) {
+      throw new TypeError("Installment line is duplicate.");
+    }
+    seen.add(line.installmentLineGuid);
+    return line;
+  });
+  return Object.freeze({
+    ...commandIdentity(value, deviceCode),
+    kind: "create",
+    installmentGuid: matchingInstallment(value.installmentGuid, action),
+    createdAtIso: strictIso(value.createdAtIso, "creation time"),
+    totalCents,
+    downPaymentCents,
+    lines: Object.freeze(lines),
+    customerName: identity(value.customerName, "customer name", 256),
+    customerPhone: identity(value.customerPhone, "customer phone", 128),
+    note: nullableConfidential(value.note, "note", 1_000),
+    cartFingerprint: confidential(
+      value.cartFingerprint,
+      "cart fingerprint",
+      1_048_576,
+    ),
+    draftRevision: integer(value.draftRevision, "draft revision"),
+  });
+}
+
+function commandIdentity(
+  value: Record<string, unknown>,
+  expectedDevice: string,
+): Readonly<{
+  deviceCode: string;
+  cashierId: string;
+  cashierName: string;
+}> {
+  const deviceCode = identity(value.deviceCode, "command device", 128);
+  if (deviceCode !== expectedDevice) {
+    throw new TypeError("Installment command scope is invalid.");
+  }
+  return Object.freeze({
+    deviceCode,
+    cashierId: identity(value.cashierId, "cashier ID", 256),
+    cashierName: identity(value.cashierName, "cashier name", 256),
+  });
+}
+
+function matchingInstallment(
+  value: unknown,
+  action: InstallmentPaymentAction,
+): string {
+  const result = uuid(value, "command installment GUID");
+  if (result !== action.installmentGuid) {
+    throw new TypeError("Installment command identity is invalid.");
+  }
+  return result;
+}
+
+function normalizeLine(
+  value: unknown,
+): Extract<
+  InstallmentActionCommand,
+  { kind: "create" }
+>["lines"][number] {
+  if (
+    !exact(value, [
+      "installmentLineGuid",
+      "productCode",
+      "referenceCode",
+      "displayName",
+      "lookupCode",
+      "quantity",
+      "unitPriceCents",
+      "discountCents",
+      "actualAmountCents",
+      "itemNumber",
+    ])
+  ) {
+    throw new TypeError("Installment line is invalid.");
+  }
+  return Object.freeze({
+    installmentLineGuid: uuid(value.installmentLineGuid, "line GUID"),
+    productCode: identity(value.productCode, "product code", 128),
+    referenceCode: nullableIdentity(value.referenceCode, "reference", 128),
+    displayName: identity(value.displayName, "display name", 512),
+    lookupCode: identity(value.lookupCode, "lookup code", 256),
+    quantity: quantity(value.quantity),
+    unitPriceCents: integer(value.unitPriceCents, "unit price"),
+    discountCents: integer(value.discountCents, "discount"),
+    actualAmountCents: integer(value.actualAmountCents, "actual amount"),
+    itemNumber: nullableIdentity(value.itemNumber, "item number", 128),
+  });
+}
+
+function normalizeTerminal(value: TerminalScope): TerminalScope {
+  if (!record(value)) {
+    throw new TypeError("Installment terminal scope is invalid.");
+  }
+  return Object.freeze({
+    storeCode: identity(value.storeCode, "store code", 50),
+    deviceCode: identity(value.deviceCode, "device code", 128),
+  });
+}
+
+function state(value: unknown): InstallmentActionState {
+  if (
+    value !== "Created" &&
+    value !== "ProviderPending" &&
+    value !== "Unknown" &&
+    value !== "Approved" &&
+    value !== "BackendPending"
+  ) {
+    throw new TypeError("Installment action state is invalid.");
+  }
+  return value;
+}
+
+function allowedTransition(
+  current: InstallmentActionState,
+  next: InstallmentActionState,
+): boolean {
+  return (
+    (current === "Created" && next === "ProviderPending") ||
+    (current === "ProviderPending" &&
+      (next === "Unknown" || next === "Approved")) ||
+    (current === "Unknown" && next === "Approved") ||
+    (current === "Approved" && next === "BackendPending")
+  );
+}
+
+function paymentMethod(
+  value: unknown,
+): "cash" | "card" | "voucher" {
+  if (value !== "cash" && value !== "card" && value !== "voucher") {
+    throw new TypeError("Installment payment method is invalid.");
+  }
+  return value;
+}
+
+function uuid(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      value,
+    )
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value.toLowerCase();
+}
+
+function identity(
+  value: unknown,
+  label: string,
+  max: number,
+): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > max ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function nullableIdentity(
+  value: unknown,
+  label: string,
+  max: number,
+): string | null {
+  return value === null ? null : identity(value, label, max);
+}
+
+function confidential(
+  value: unknown,
+  label: string,
+  max: number,
+): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > max ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function nullableConfidential(
+  value: unknown,
+  label: string,
+  max: number,
+): string | null {
+  return value === null ? null : confidential(value, label, max);
+}
+
+function positive(value: unknown, label: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value <= 0
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function integer(value: unknown, label: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function quantity(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9]\d*)(?:\.\d{1,4})?$/u.test(value) ||
+    Number(value) <= 0
+  ) {
+    throw new TypeError("Installment line quantity is invalid.");
+  }
+  return value;
+}
+
+function strictIso(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function bytes(value: unknown): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.length === 0) {
+    throw new Error("Persisted installment action ciphertext is invalid.");
+  }
+  return value;
+}
+
+function exact<T extends readonly string[]>(
+  value: unknown,
+  keys: T,
+): value is Record<T[number], unknown> {
+  if (!record(value)) return false;
+  const actual = Object.keys(value);
+  return (
+    actual.length === keys.length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}

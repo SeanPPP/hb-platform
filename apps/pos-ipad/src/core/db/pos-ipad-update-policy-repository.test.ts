@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import { POS_DATABASE_MIGRATIONS } from "./migrations";
+import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+
+import type { PosIpadUpdatePolicy } from "@/core/contracts/app-updates";
+
+const policy: PosIpadUpdatePolicy = Object.freeze({
+  enabled: true,
+  minimumSupportedVersion: "1.2.0",
+  latestVersion: "1.3.0",
+  forceUpdate: false,
+  appStoreUrl: "https://apps.apple.com/au/app/hot-bargain/id123456789",
+  releaseMessage: "请在空闲时更新。",
+});
+
+class SystemSqliteConnection implements SqliteConnectionPort {
+  private tail: Promise<void> = Promise.resolve();
+
+  public constructor(public readonly databasePath: string) {}
+
+  public async exec(sql: string): Promise<void> {
+    this.execute(sql);
+  }
+
+  public async run(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<SqlRunResult> {
+    this.execute(`${bind(sql, parameters)}; SELECT changes() AS changes;`);
+    return { changes: 1, lastInsertRowId: 0 };
+  }
+
+  public async getFirst<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<T | null> {
+    const result = spawnSqlite(this.databasePath, ["-json"], bind(sql, parameters));
+    if (result.status !== 0) throw new Error(result.stderr);
+    const rows = result.stdout.trim() ? JSON.parse(result.stdout) as readonly T[] : [];
+    return rows[0] ?? null;
+  }
+
+  public async getAll<T extends object>(): Promise<readonly T[]> {
+    return [];
+  }
+
+  public async withExclusiveTransaction<T>(
+    operation: (transaction: SqliteConnectionPort) => Promise<T>,
+  ): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation(this);
+    } finally {
+      release();
+    }
+  }
+
+  public async close(): Promise<void> {}
+
+  private execute(sql: string): void {
+    const result = spawnSqlite(this.databasePath, [], sql);
+    if (result.status !== 0) throw new Error(result.stderr);
+  }
+}
+
+test("真实 SQLite：更新策略只以无敏感字段 JSON 缓存，跨重开可读", async () => {
+  await withDatabase(async (connection) => {
+    const repository = new PosIpadUpdatePolicyRepository(
+      connection,
+      () => "2026-07-28T00:00:00.000Z",
+    );
+    assert.equal(await repository.get(), null);
+    assert.deepEqual(await repository.save(policy), policy);
+
+    const row = await connection.getFirst<{
+      setting_value: string;
+      updated_at_iso: string;
+    }>("SELECT setting_value, updated_at_iso FROM app_settings WHERE setting_key = 'pos_ipad_update_policy_v1'");
+    assert.equal(row?.updated_at_iso, "2026-07-28T00:00:00.000Z");
+    assert.deepEqual(JSON.parse(row?.setting_value ?? "{}"), policy);
+    assert.deepEqual(
+      await new PosIpadUpdatePolicyRepository(
+        new SystemSqliteConnection(connection.databasePath),
+        () => "2026-07-28T00:01:00.000Z",
+      ).get(),
+      policy,
+    );
+  });
+});
+
+test("损坏、未知或敏感缓存一律不使用，非法保存不污染已验证缓存", async () => {
+  await withDatabase(async (connection) => {
+    const repository = new PosIpadUpdatePolicyRepository(
+      connection,
+      () => "2026-07-28T00:00:00.000Z",
+    );
+    await repository.save(policy);
+    await assert.rejects(
+      () => repository.save({ ...policy, authorizationToken: "forbidden" } as unknown as PosIpadUpdatePolicy),
+      /unsupported field/,
+    );
+    assert.deepEqual(await repository.get(), policy);
+
+    await connection.run(
+      "UPDATE app_settings SET setting_value = ? WHERE setting_key = 'pos_ipad_update_policy_v1'",
+      ["{not json"],
+    );
+    assert.equal(await repository.get(), null);
+    await connection.run(
+      "UPDATE app_settings SET setting_value = ? WHERE setting_key = 'pos_ipad_update_policy_v1'",
+      [JSON.stringify({ ...policy, cardReference: "forbidden" })],
+    );
+    assert.equal(await repository.get(), null);
+  });
+});
+
+async function withDatabase(
+  operation: (connection: SystemSqliteConnection) => Promise<void>,
+): Promise<void> {
+  const folder = mkdtempSync(join(tmpdir(), "hb-pos-update-policy-"));
+  const path = join(folder, "update-policy.db");
+  try {
+    const connection = new SystemSqliteConnection(path);
+    await connection.exec(POS_DATABASE_MIGRATIONS.map((migration) => migration.sql).join("\n"));
+    await operation(connection);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
+function spawnSqlite(
+  databasePath: string,
+  arguments_: readonly string[],
+  input: string,
+): Readonly<{ status: number | null; stdout: string; stderr: string }> {
+  const result = spawnSync(
+    process.env.SQLITE3_BINARY ?? "sqlite3",
+    [...arguments_, databasePath],
+    { input, encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function bind(sql: string, parameters: readonly SqlValue[]): string {
+  let index = 0;
+  return sql.replace(/\?/g, () => sqliteLiteral(parameter(parameters, index++)));
+}
+
+function parameter(parameters: readonly SqlValue[], index: number): SqlValue {
+  const value = parameters[index];
+  if (value === undefined) throw new Error("Missing SQLite parameter.");
+  return value;
+}
+
+function sqliteLiteral(value: SqlValue): string {
+  if (value === null) return "NULL";
+  if (typeof value === "number") return String(value);
+  if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString("hex")}'`;
+  return `'${value.replace(/'/g, "''")}'`;
+}

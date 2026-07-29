@@ -1,0 +1,297 @@
+export const salesEnglishCopy = {
+  "app.title": "HB POS",
+  "app.workspace": "Checkout workspace",
+  "app.runtimeUnavailable":
+    "Sales services are not connected yet. Transaction actions remain disabled.",
+  "updateGate.forceTitle": "Update required before the next sale",
+  "updateGate.disabledTitle": "New iPad sales are temporarily disabled",
+  "updateGate.uncheckedTitle": "Checking whether this terminal can start a sale",
+  "updateGate.hint":
+    "Existing sales, payment recovery and reliable sync remain available.",
+  "updateGate.openStore": "Open App Store",
+  "header.catalogMaintenance": "Catalog update",
+  "header.heldOrders": "Held sales",
+  "header.syncHistory": "Sync history",
+  "header.hold": "Hold",
+  "header.lock": "Lock",
+  "catalog.title": "Products",
+  "catalog.searchPlaceholder": "Scan barcode or search products",
+  "catalog.keyboard": "Keyboard",
+  "catalog.search": "Search",
+  "catalog.addCode": "Add code",
+  "catalog.cameraScan": "Camera scan",
+  "catalog.openItem": "Open item",
+  "catalog.scanHint":
+    'Tapping the search field keeps HID-only input and submits scans with Enter. For touch or Chinese input, tap the "Keyboard" button above.',
+  "catalog.noResults": "No matching products",
+  "catalog.searching": "Searching…",
+  "catalog.add": "Add",
+  "cart.title": "Current sale",
+  "cart.items": "{{count}} items",
+  "cart.emptyTitle": "Cart is empty",
+  "cart.emptyHint": "Scan a barcode or choose a product to begin.",
+  "cart.quantity": "Quantity",
+  "cart.decrease": "Decrease quantity",
+  "cart.increase": "Increase quantity",
+  "cart.edit": "Edit",
+  "cart.discount": "Discount",
+  "cart.remove": "Remove",
+  "summary.title": "Sale summary",
+  "summary.subtotal": "Subtotal",
+  "summary.discount": "Discount",
+  "summary.orderDiscount": "Order discount",
+  "summary.clearCart": "Clear cart",
+  "summary.total": "Total",
+  "summary.cashOnly": "Offline mode · Cash only",
+  "summary.cashOnlyHint":
+    "Card and voucher payments require a live backend connection.",
+  "summary.checkoutCash": "Cash checkout",
+  "summary.checkoutOnline": "Card / voucher",
+  "summary.checkoutDisabled": "Add an item to continue",
+  "cash.title": "Cash payment",
+  "cash.amountDue": "Amount due",
+  "cash.tendered": "Cash tendered",
+  "cash.tenderedPlaceholder": "0.00",
+  "cash.exact": "Exact",
+  "cash.change": "Change",
+  "cash.cancel": "Back",
+  "cash.confirm": "Confirm cash",
+  "cash.confirming": "Saving sale…",
+  "discount.title": "Line discount",
+  "discount.hint": "Choose a manager-approved quick discount.",
+  "discount.amount": "Amount",
+  "discount.percent": "Percent",
+  "discount.none": "No discount",
+  "discount.cancel": "Cancel",
+  "openItem.title": "Open item",
+  "openItem.hint":
+    "Enter a positive unit price. Each open item is added as a separate line.",
+  "openItem.price": "Unit price",
+  "openItem.confirm": "Add open item",
+  "editLine.title": "Edit sale line",
+  "editLine.quantity": "Quantity",
+  "editLine.price": "Unit price",
+  "editLine.discountAmount": "Discount amount",
+  "editLine.discountPercent": "Discount percent",
+  "editLine.value": "New value",
+  "editLine.confirm": "Apply",
+  "orderDiscount.title": "Order discount",
+  "orderDiscount.hint":
+    "Choose a quick discount or enter a manager-approved amount or percent.",
+  "orderDiscount.editTitle": "Manual order discount",
+  "clearCart.title": "Clear current sale?",
+  "clearCart.hint":
+    "This removes every line after cashier or supervisor authorization.",
+  "clearCart.confirm": "Clear sale",
+  "clearCart.cancel": "Keep sale",
+  "success.eyebrow": "SALE COMMITTED",
+  "success.title": "Cash sale saved",
+  "success.order": "Order {{orderGuid}}",
+  "success.change": "Change due",
+  "success.syncOnline": "Queued for reliable backend sync.",
+  "success.syncOffline":
+    "Saved in the encrypted ledger. It will sync when connection returns.",
+  "success.drawerPermissionDenied":
+    "Cash drawer not opened: this cashier lacks permission. Ask a supervisor.",
+  "success.drawerDisabled":
+    "Cash drawer is disabled in settings. Open it manually if required.",
+  "success.drawerUnavailable":
+    "Cash drawer was not queued because the printer or drawer is unavailable. Open it manually if required.",
+  "success.newSale": "New sale",
+  "locked.title": "Terminal locked",
+  "locked.hint": "A cashier must authenticate again before checkout can continue.",
+  "locked.unlockPending": "Cashier authentication is not connected in this phase.",
+  "error.searchRequired": "Enter a barcode, item number or product name.",
+  "error.searchFailed": "Product search failed. Try again.",
+  "error.productAddFailed": "The product could not be added.",
+  "error.authorizationDenied":
+    "Supervisor authorization is required for this operation.",
+  "error.cartUpdateFailed": "The cart could not be updated.",
+  "error.invalidQuantity": "Enter a positive whole-number quantity.",
+  "error.invalidPrice": "Enter a valid price with up to two decimals.",
+  "error.invalidDiscount":
+    "Enter a valid discount amount or a percent from 0 to 100.",
+  "error.emptyCart": "Add an item before checkout.",
+  "error.cashInvalid": "Enter a valid cash amount with up to two decimals.",
+  "error.cashInsufficient": "Cash tendered is less than the amount due.",
+  "error.cashFailed":
+    "The sale was not confirmed. Review the error before trying again.",
+  "error.cartClearFailed":
+    "The order was committed, but the cart could not be cleared. Do not charge again.",
+  "error.holdFailed": "The sale could not be held.",
+  "error.lockFailed": "The terminal could not be locked.",
+  "error.newTransactionsDisabled":
+    "This terminal cannot start a new sale until the update policy allows it.",
+  "error.runtimeUnavailable": "Sales services are not connected.",
+  "common.dismiss": "Dismiss",
+} as const;
+
+export type SalesCopyKey = keyof typeof salesEnglishCopy;
+
+const salesChineseCopy = {
+  "app.title": "HB POS",
+  "app.workspace": "收银工作台",
+  "app.runtimeUnavailable": "销售服务尚未接入，所有交易操作保持禁用。",
+  "updateGate.forceTitle": "更新应用后才能开始下一单",
+  "updateGate.disabledTitle": "iPad 新交易已暂时停用",
+  "updateGate.uncheckedTitle": "正在确认本终端能否开始交易",
+  "updateGate.hint": "已有交易、支付恢复和可靠补传仍可继续。",
+  "updateGate.openStore": "打开 App Store",
+  "header.catalogMaintenance": "目录更新",
+  "header.heldOrders": "挂单管理",
+  "header.syncHistory": "同步历史",
+  "header.hold": "挂单",
+  "header.lock": "锁屏",
+  "catalog.title": "商品",
+  "catalog.searchPlaceholder": "扫描条码或搜索商品",
+  "catalog.keyboard": "键盘",
+  "catalog.search": "搜索",
+  "catalog.addCode": "按编码加入",
+  "catalog.cameraScan": "相机扫码",
+  "catalog.openItem": "无码商品",
+  "catalog.scanHint":
+    "点击搜索框默认只接收 HID 扫码，并以回车提交；触摸或中文输入请点击上方“键盘”按钮。",
+  "catalog.noResults": "没有匹配商品",
+  "catalog.searching": "正在搜索…",
+  "catalog.add": "加入",
+  "cart.title": "当前交易",
+  "cart.items": "{{count}} 件商品",
+  "cart.emptyTitle": "购物车为空",
+  "cart.emptyHint": "扫描条码或选择商品后开始收银。",
+  "cart.quantity": "数量",
+  "cart.decrease": "减少数量",
+  "cart.increase": "增加数量",
+  "cart.edit": "编辑",
+  "cart.discount": "折扣",
+  "cart.remove": "删除",
+  "summary.title": "交易汇总",
+  "summary.subtotal": "小计",
+  "summary.discount": "折扣",
+  "summary.orderDiscount": "整单折扣",
+  "summary.clearCart": "清空购物车",
+  "summary.total": "应收",
+  "summary.cashOnly": "离线模式 · 仅现金",
+  "summary.cashOnlyHint": "银行卡和代金券支付必须连接后端。",
+  "summary.checkoutCash": "现金结账",
+  "summary.checkoutOnline": "银行卡 / 礼券",
+  "summary.checkoutDisabled": "加入商品后继续",
+  "cash.title": "现金付款",
+  "cash.amountDue": "应收金额",
+  "cash.tendered": "实收现金",
+  "cash.tenderedPlaceholder": "0.00",
+  "cash.exact": "正好",
+  "cash.change": "找零",
+  "cash.cancel": "返回",
+  "cash.confirm": "确认现金",
+  "cash.confirming": "正在保存交易…",
+  "discount.title": "单行折扣",
+  "discount.hint": "请选择已获主管授权的快捷折扣。",
+  "discount.amount": "按金额",
+  "discount.percent": "按百分比",
+  "discount.none": "取消折扣",
+  "discount.cancel": "取消",
+  "openItem.title": "无码商品",
+  "openItem.hint": "请输入正数单价；每次加入都会建立独立商品行。",
+  "openItem.price": "商品单价",
+  "openItem.confirm": "加入无码商品",
+  "editLine.title": "编辑商品行",
+  "editLine.quantity": "数量",
+  "editLine.price": "单价",
+  "editLine.discountAmount": "折扣金额",
+  "editLine.discountPercent": "折扣百分比",
+  "editLine.value": "新值",
+  "editLine.confirm": "应用",
+  "orderDiscount.title": "整单折扣",
+  "orderDiscount.hint": "选择快捷折扣，或输入经主管授权的金额/百分比。",
+  "orderDiscount.editTitle": "手动整单折扣",
+  "clearCart.title": "清空当前交易？",
+  "clearCart.hint": "取得收银员或主管授权后，将删除购物车内全部商品。",
+  "clearCart.confirm": "确认清空",
+  "clearCart.cancel": "保留交易",
+  "success.eyebrow": "交易已提交",
+  "success.title": "现金交易已保存",
+  "success.order": "订单 {{orderGuid}}",
+  "success.change": "应找金额",
+  "success.syncOnline": "已进入可靠补传队列。",
+  "success.syncOffline": "已写入加密账本，恢复联网后自动补传。",
+  "success.drawerPermissionDenied":
+    "钱箱未打开：当前收银员没有开钱箱权限，请联系主管。",
+  "success.drawerDisabled": "钱箱已在设置中停用，如需找零请手动处理。",
+  "success.drawerUnavailable":
+    "打印机或钱箱当前不可用，未创建开箱任务；如需找零请手动处理。",
+  "success.newSale": "下一单",
+  "locked.title": "终端已锁定",
+  "locked.hint": "收银员重新认证后才能继续收银。",
+  "locked.unlockPending": "本阶段尚未接入收银员解锁流程。",
+  "error.searchRequired": "请输入条码、货号或商品名称。",
+  "error.searchFailed": "商品搜索失败，请重试。",
+  "error.productAddFailed": "商品无法加入购物车。",
+  "error.authorizationDenied": "此操作需要主管授权。",
+  "error.cartUpdateFailed": "购物车更新失败。",
+  "error.invalidQuantity": "请输入正整数数量。",
+  "error.invalidPrice": "请输入最多两位小数的有效价格。",
+  "error.invalidDiscount": "请输入有效折扣金额，或 0 至 100 的百分比。",
+  "error.emptyCart": "请先加入商品再结账。",
+  "error.cashInvalid": "请输入最多两位小数的有效现金金额。",
+  "error.cashInsufficient": "实收现金少于应收金额。",
+  "error.cashFailed": "交易未确认，请核对错误后再试。",
+  "error.cartClearFailed": "订单已经提交，但购物车未能清空。请勿再次收款。",
+  "error.holdFailed": "当前交易无法挂单。",
+  "error.lockFailed": "终端无法锁定。",
+  "error.newTransactionsDisabled": "更新策略允许前，本终端不能开始新交易。",
+  "error.runtimeUnavailable": "销售服务尚未接入。",
+  "common.dismiss": "关闭",
+} as const satisfies Record<SalesCopyKey, string>;
+
+const salesCopy = {
+  en: salesEnglishCopy,
+  zh: salesChineseCopy,
+} as const;
+
+export type SalesLocale = keyof typeof salesCopy;
+
+export type SalesDrawerWarningCopyKey =
+  | "success.drawerPermissionDenied"
+  | "success.drawerDisabled"
+  | "success.drawerUnavailable";
+
+export function drawerWarningCopyKey(
+  disposition:
+    | "not-required"
+    | "queued"
+    | "permission-denied"
+    | "disabled"
+    | "unavailable"
+    | "replayed",
+): SalesDrawerWarningCopyKey | null {
+  if (disposition === "permission-denied") {
+    return "success.drawerPermissionDenied";
+  }
+  if (disposition === "disabled") {
+    return "success.drawerDisabled";
+  }
+  if (disposition === "unavailable") {
+    return "success.drawerUnavailable";
+  }
+  return null;
+}
+
+export function resolveSalesLocale(language?: string): SalesLocale {
+  return language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function salesText(
+  locale: SalesLocale,
+  key: SalesCopyKey,
+  values?: Readonly<Record<string, string | number>>,
+): string {
+  const template = salesCopy[locale][key];
+  if (!values) {
+    return template;
+  }
+
+  return template.replace(/\{\{(\w+)\}\}/g, (placeholder, name: string) => {
+    const value = values[name];
+    return value === undefined ? placeholder : String(value);
+  });
+}

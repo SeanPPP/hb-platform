@@ -1,0 +1,572 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { HbposInstallmentsApi } from "./hbpos-installments-api";
+
+import type {
+  HbposTransport,
+  HbposTransportRequest,
+  HbposTransportResponse,
+} from "@/core/api/hbpos-api";
+
+class QueueTransport implements HbposTransport {
+  public readonly requests: HbposTransportRequest[] = [];
+
+  public constructor(private readonly responses: unknown[]) {}
+
+  public async request<T>(
+    request: HbposTransportRequest,
+  ): Promise<HbposTransportResponse<T>> {
+    this.requests.push(request);
+    if (this.responses.length === 0) throw new Error("Missing fake response.");
+    return { status: 200, data: this.responses.shift() as T };
+  }
+}
+
+const installmentGuid = "10000000-0000-4000-8000-000000000001";
+const paymentGuid = "20000000-0000-4000-8000-000000000001";
+const lineGuid = "30000000-0000-4000-8000-000000000001";
+
+test("历史查询固定可信门店并严格映射状态、时间和整数分", async () => {
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: {
+        orders: [
+          {
+            installmentGuid,
+            installmentNumber: "IP-0001",
+            storeCode: "S1",
+            deviceCode: "IPAD-1",
+            cashierName: "Alice",
+            customerName: "Bob",
+            customerPhone: "0400000000",
+            createdAt: "2026-07-27T01:02:03Z",
+            totalAmount: 120.5,
+            downPaymentAmount: 20,
+            paidAmount: 45.25,
+            balanceAmount: 75.25,
+            status: 1,
+            updatedAt: "2026-07-27T02:03:04Z",
+          },
+        ],
+      },
+    },
+  ]);
+  const api = new HbposInstallmentsApi(transport, " S1 ");
+
+  const orders = await api.list({
+    deviceCode: " IPAD-1 ",
+    keyword: " Bob ",
+    status: "Active",
+    take: 100,
+  });
+
+  assert.deepEqual(transport.requests, [
+    {
+      method: "GET",
+      url: "/api/v1/installments/history",
+      params: {
+        storeCode: "S1",
+        deviceCode: "IPAD-1",
+        keyword: "Bob",
+        status: 1,
+        take: 100,
+      },
+    },
+  ]);
+  assert.deepEqual(orders, [
+    {
+      installmentGuid,
+      installmentNumber: "IP-0001",
+      storeCode: "S1",
+      deviceCode: "IPAD-1",
+      cashierName: "Alice",
+      customerName: "Bob",
+      customerPhone: "0400000000",
+      createdAtIso: "2026-07-27T01:02:03.000Z",
+      totalCents: 12_050,
+      downPaymentCents: 2_000,
+      paidCents: 4_525,
+      balanceCents: 7_525,
+      status: "Active",
+      updatedAtIso: "2026-07-27T02:03:04.000Z",
+    },
+  ]);
+});
+
+test("详情只投影 UI 白名单，不暴露支付引用、授权码或原始回单", async () => {
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: {
+        installmentGuid,
+        installmentNumber: "IP-0001",
+        storeCode: "S1",
+        deviceCode: "IPAD-1",
+        cashierId: "C1",
+        cashierName: "Alice",
+        customerName: "Bob",
+        customerPhone: "0400000000",
+        createdAt: "2026-07-27T01:02:03Z",
+        totalAmount: 120.5,
+        minimumDownPayment: 20,
+        downPaymentAmount: 20,
+        paidAmount: 120.5,
+        balanceAmount: 0,
+        status: 2,
+        lines: [
+          {
+            installmentLineGuid: lineGuid,
+            productCode: "P1",
+            referenceCode: "R1",
+            displayName: "Tea",
+            lookupCode: "930001",
+            quantity: 1.25,
+            unitPrice: 100,
+            discountAmount: 5,
+            actualAmount: 120.5,
+            itemNumber: "I1",
+          },
+        ],
+        payments: [
+          {
+            paymentGuid,
+            method: 2,
+            amount: 120.5,
+            reference: "provider-payment-secret",
+            status: 1,
+            recordedAt: "2026-07-27T02:03:04Z",
+            cashierId: "C1",
+            deviceCode: "IPAD-1",
+            idempotencyKey: "secret-idempotency-key",
+            cardTransactions: [
+              {
+                authCode: "AUTH-SECRET",
+                cardType: "VISA",
+                maskedCardNumber: "**** **** **** 1234",
+                receiptText: "RAW-RECEIPT-SECRET",
+                txnRef: "TXN-SECRET",
+              },
+            ],
+          },
+        ],
+        pickupInfo: null,
+        cancellationInfo: null,
+        note: "Collect Friday",
+      },
+    },
+  ]);
+
+  const details = await new HbposInstallmentsApi(
+    transport,
+    "S1",
+  ).getDetails(installmentGuid);
+
+  assert.equal(details?.status, "PaidOff");
+  assert.equal(details?.minimumDownPaymentCents, 2_000);
+  assert.deepEqual(details?.lines[0], {
+    installmentLineGuid: lineGuid,
+    productCode: "P1",
+    referenceCode: "R1",
+    displayName: "Tea",
+    lookupCode: "930001",
+    quantity: "1.25",
+    unitPriceCents: 10_000,
+    discountCents: 500,
+    actualAmountCents: 12_050,
+    itemNumber: "I1",
+  });
+  assert.deepEqual(details?.payments[0], {
+    paymentGuid,
+    method: "card",
+    amountCents: 12_050,
+    status: "Recorded",
+    recordedAtIso: "2026-07-27T02:03:04.000Z",
+    cashierId: "C1",
+    deviceCode: "IPAD-1",
+    cardType: "VISA",
+    maskedCardNumber: "**** **** **** 1234",
+  });
+  const serialized = JSON.stringify(details);
+  for (const secret of [
+    "provider-payment-secret",
+    "secret-idempotency-key",
+    "AUTH-SECRET",
+    "RAW-RECEIPT-SECRET",
+    "TXN-SECRET",
+  ]) {
+    assert.equal(serialized.includes(secret), false);
+  }
+});
+
+test("创建、补款、退款取消、作废和取货使用固定 v1 路由", async () => {
+  const responseDetails = detailsPayload({ status: 1, balanceAmount: 80 });
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: { details: responseDetails },
+    },
+    {
+      success: true,
+      data: { details: detailsPayload({ status: 2, balanceAmount: 0 }) },
+    },
+    {
+      success: true,
+      data: { details: detailsPayload({ status: 4, balanceAmount: 0 }) },
+    },
+    {
+      success: true,
+      data: { details: detailsPayload({ status: 4, balanceAmount: 80 }) },
+    },
+    {
+      success: true,
+      data: { details: detailsPayload({ status: 3, balanceAmount: 0 }) },
+    },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+  const identity = {
+    cashierId: "C1",
+    cashierName: "Alice",
+    deviceCode: "IPAD-1",
+  };
+
+  await api.create({
+    ...identity,
+    installmentGuid,
+    createdAtIso: "2026-07-27T01:02:03Z",
+    totalCents: 10_000,
+    downPaymentCents: 2_000,
+    customerName: "Bob",
+    customerPhone: "0400000000",
+    note: "Friday",
+    lines: [
+      {
+        installmentLineGuid: lineGuid,
+        productCode: "P1",
+        referenceCode: "R1",
+        displayName: "Tea",
+        lookupCode: "930001",
+        quantity: "1.25",
+        unitPriceCents: 8_000,
+        discountCents: 0,
+        actualAmountCents: 10_000,
+        itemNumber: "I1",
+      },
+    ],
+    downPayment: {
+      paymentGuid,
+      method: "cash",
+      amountCents: 2_000,
+      reference: null,
+      reservationToken: null,
+      cardTransactions: [],
+      idempotencyKey: "create-key",
+    },
+  });
+  await api.appendPayment({
+    ...identity,
+    installmentGuid,
+    payment: {
+      paymentGuid,
+      method: "card",
+      amountCents: 8_000,
+      reference: "PROTECTED-REF",
+      reservationToken: null,
+      cardTransactions: [],
+      idempotencyKey: "repayment-key",
+    },
+  });
+  await api.cancelWithRefund({
+    ...identity,
+    installmentGuid,
+    cancelledAtIso: "2026-07-27T03:00:00Z",
+    reason: "Customer request",
+    idempotencyKey: "cancel-key",
+    refunds: [
+      {
+        paymentGuid,
+        method: "cash",
+        amountCents: 2_000,
+        reference: null,
+        cardTransactions: [],
+        idempotencyKey: "refund-key",
+      },
+    ],
+  });
+  await api.void({
+    ...identity,
+    installmentGuid,
+    voidedAtIso: "2026-07-27T03:00:00Z",
+    reason: "Incorrect order",
+    idempotencyKey: "void-key",
+  });
+  await api.confirmPickup({
+    ...identity,
+    installmentGuid,
+    confirmedAtIso: "2026-07-27T03:00:00Z",
+    note: "ID checked",
+  });
+
+  assert.deepEqual(
+    transport.requests.map(({ method, url }) => ({ method, url })),
+    [
+      { method: "POST", url: "/api/v1/installments" },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/payments`,
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/cancel`,
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/void`,
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/pickup`,
+      },
+    ],
+  );
+  assert.deepEqual(transport.requests[0]?.data, {
+    installmentGuid,
+    storeCode: "S1",
+    deviceCode: "IPAD-1",
+    cashierId: "C1",
+    cashierName: "Alice",
+    createdAt: "2026-07-27T01:02:03.000Z",
+    totalAmount: 100,
+    downPaymentAmount: 20,
+    lines: [
+      {
+        installmentLineGuid: lineGuid,
+        productCode: "P1",
+        referenceCode: "R1",
+        displayName: "Tea",
+        lookupCode: "930001",
+        quantity: 1.25,
+        unitPrice: 80,
+        discountAmount: 0,
+        actualAmount: 100,
+        itemNumber: "I1",
+      },
+    ],
+    downPayment: {
+      paymentGuid,
+      method: 1,
+      amount: 20,
+      reference: null,
+      reservationToken: null,
+      cardTransactions: [],
+      idempotencyKey: "create-key",
+    },
+    customerName: "Bob",
+    customerPhone: "0400000000",
+    note: "Friday",
+  });
+});
+
+test("真实 cancel 与 AlreadyCancelled 回包允许 payment history 负退款，但命令和 summary 仍拒绝负数", async () => {
+  const cancelledDetails = {
+    ...detailsPayload({ status: 4, balanceAmount: 0 }),
+    paidAmount: 0,
+    payments: [
+      paymentPayload({ amount: 20, paymentGuid, method: 2 }),
+      paymentPayload({
+        amount: -20,
+        paymentGuid: "20000000-0000-4000-8000-000000000002",
+        method: 2,
+      }),
+    ],
+    cancellationInfo: {
+      kind: 1,
+      cancelledAt: "2026-07-27T03:00:00Z",
+      cancelledBy: "Alice",
+      reason: "Customer request",
+    },
+  };
+  const transport = new QueueTransport([
+    { success: true, data: { details: cancelledDetails } },
+    {
+      success: true,
+      data: {
+        alreadyCancelled: true,
+        details: cancelledDetails,
+        message: "AlreadyCancelled",
+      },
+    },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+  const command = cancelCommand();
+
+  const cancelled = await api.cancelWithRefund(command);
+  const alreadyCancelled = await api.cancelWithRefund(command);
+
+  assert.equal(cancelled.payments[1]?.amountCents, -2_000);
+  assert.equal(alreadyCancelled.payments[1]?.amountCents, -2_000);
+  assert.equal(alreadyCancelled.status, "Cancelled");
+
+  await assert.rejects(
+    api.cancelWithRefund({
+      ...command,
+      refunds: [{ ...command.refunds[0]!, amountCents: -1 }],
+    }),
+    /amount/i,
+  );
+  const invalidSummaryApi = new HbposInstallmentsApi(
+    new QueueTransport([
+      {
+        success: true,
+        data: {
+          orders: [{ ...summaryPayload(), totalAmount: -1 }],
+        },
+      },
+    ]),
+    "S1",
+  );
+  await assert.rejects(
+    invalidSummaryApi.list({
+      keyword: null,
+      status: null,
+      take: 100,
+    }),
+    /money/i,
+  );
+});
+
+test("响应门店越权、金额精度漂移或写响应缺少详情时失败关闭", async () => {
+  const wrongStore = new HbposInstallmentsApi(
+    new QueueTransport([
+      {
+        success: true,
+        data: {
+          orders: [
+            {
+              ...summaryPayload(),
+              storeCode: "S2",
+            },
+          ],
+        },
+      },
+    ]),
+    "S1",
+  );
+  await assert.rejects(
+    () => wrongStore.list({ keyword: null, status: null, take: 100 }),
+    /storeCode/i,
+  );
+
+  const invalidMoney = new HbposInstallmentsApi(
+    new QueueTransport([
+      {
+        success: true,
+        data: {
+          orders: [{ ...summaryPayload(), totalAmount: 1.001 }],
+        },
+      },
+    ]),
+    "S1",
+  );
+  await assert.rejects(
+    () => invalidMoney.list({ keyword: null, status: null, take: 100 }),
+    /money/i,
+  );
+
+  const missingDetails = new HbposInstallmentsApi(
+    new QueueTransport([{ success: true, data: { status: 1 } }]),
+    "S1",
+  );
+  await assert.rejects(
+    () =>
+      missingDetails.void({
+        installmentGuid,
+        deviceCode: "IPAD-1",
+        cashierId: "C1",
+        cashierName: "Alice",
+        voidedAtIso: "2026-07-27T03:00:00Z",
+        reason: "Incorrect",
+        idempotencyKey: "void-key",
+      }),
+    /details/i,
+  );
+});
+
+function summaryPayload() {
+  return {
+    installmentGuid,
+    installmentNumber: "IP-0001",
+    storeCode: "S1",
+    deviceCode: "IPAD-1",
+    cashierName: "Alice",
+    customerName: "Bob",
+    customerPhone: "0400000000",
+    createdAt: "2026-07-27T01:02:03Z",
+    totalAmount: 100,
+    downPaymentAmount: 20,
+    paidAmount: 20,
+    balanceAmount: 80,
+    status: 1,
+    updatedAt: "2026-07-27T02:03:04Z",
+  };
+}
+
+function detailsPayload(
+  overrides: Readonly<{ status: 1 | 2 | 3 | 4; balanceAmount: number }>,
+) {
+  return {
+    ...summaryPayload(),
+    cashierId: "C1",
+    minimumDownPayment: 20,
+    lines: [],
+    payments: [],
+    pickupInfo: null,
+    cancellationInfo: null,
+    note: null,
+    ...overrides,
+  };
+}
+
+function paymentPayload(
+  overrides: Readonly<{
+    amount: number;
+    method: 1 | 2 | 3;
+    paymentGuid: string;
+  }>,
+) {
+  return {
+    paymentGuid: overrides.paymentGuid,
+    method: overrides.method,
+    amount: overrides.amount,
+    reference: null,
+    status: 1,
+    recordedAt: "2026-07-27T03:00:00Z",
+    cashierId: "C1",
+    deviceCode: "IPAD-1",
+    idempotencyKey: "payment-key",
+    cardTransactions: [],
+  };
+}
+
+function cancelCommand() {
+  return {
+    cashierId: "C1",
+    cashierName: "Alice",
+    deviceCode: "IPAD-1",
+    installmentGuid,
+    cancelledAtIso: "2026-07-27T03:00:00Z",
+    reason: "Customer request",
+    idempotencyKey: "cancel-key",
+    refunds: [
+      {
+        paymentGuid: "20000000-0000-4000-8000-000000000002",
+        method: "card" as const,
+        amountCents: 2_000,
+        reference: "protected-ref",
+        cardTransactions: [],
+        idempotencyKey: "refund-key",
+      },
+    ],
+  };
+}

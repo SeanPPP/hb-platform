@@ -1,0 +1,7 @@
+{
+  "name": "hb-attendance-security",
+  "version": "0.1.0",
+  "description": "HB POS iPad attendance QR and emergency login security module",
+  "main": "index.ts",
+  "private": true
+}

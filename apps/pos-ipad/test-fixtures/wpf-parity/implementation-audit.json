@@ -1,0 +1,738 @@
+{
+  "version": 1,
+  "target": "apps/pos-ipad",
+  "features": {
+    "device-registration": {
+      "ipad": [
+        "apps/pos-ipad/src/core/api/hbpos-api.ts",
+        "apps/pos-ipad/src/core/security/device-session.ts",
+        "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts",
+        "apps/pos-ipad/src/features/device-registration/device-registration-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/api/hbpos-api.test.ts",
+        "apps/pos-ipad/src/core/security/device-session.test.ts",
+        "apps/pos-ipad/src/core/runtime/startup-device-gate.test.ts"
+      ],
+      "blockers": []
+    },
+    "device-reregister": {
+      "ipad": [
+        "apps/pos-ipad/src/core/security/device-session.ts",
+        "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts",
+        "apps/pos-ipad/src/features/settings/settings-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/security/device-session.test.ts",
+        "apps/pos-ipad/src/features/settings/settings-presenter.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-settings-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "cashier-login": {
+      "ipad": [
+        "apps/pos-ipad/src/core/security/cashier-authentication.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts",
+        "apps/pos-ipad/src/features/cashier-login/cashier-login-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/security/cashier-authentication.test.ts",
+        "apps/pos-ipad/src/features/cashier-login/cashier-login-controller.test.ts",
+        "apps/pos-ipad/src/tests/routes/login-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "supervisor-authorization": {
+      "ipad": [
+        "apps/pos-ipad/src/features/operation-authorization/operation-authorization-service.ts",
+        "apps/pos-ipad/src/features/operation-authorization/operation-authorization-modal.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/operation-authorization/operation-authorization-service.test.ts",
+        "apps/pos-ipad/src/features/operation-authorization/operation-authorization-modal.rntl.test.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "emergency-login": {
+      "ipad": [
+        "apps/pos-ipad/src/core/runtime/emergency-cashier-runtime.ts",
+        "apps/pos-ipad/src/features/attendance-audit/emergency-login-security.ts",
+        "apps/pos-ipad/src/core/peripherals/attendance-security/native/expo-attendance-security-adapter.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/runtime/emergency-cashier-runtime.test.ts",
+        "apps/pos-ipad/src/features/attendance-audit/emergency-login-security.test.ts",
+        "apps/pos-ipad/modules/hb-attendance-security/tests/native-interop.test.mjs"
+      ],
+      "blockers": []
+    },
+    "screen-lock": {
+      "ipad": [
+        "apps/pos-ipad/src/features/cashier-lock/cashier-lock-service.ts",
+        "apps/pos-ipad/src/features/cashier-login/cashier-session-invalidation-bridge.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/cashier-lock/cashier-lock-service.test.ts",
+        "apps/pos-ipad/src/features/cashier-login/cashier-session-invalidation-bridge.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "operation-audit": {
+      "ipad": [
+        "apps/pos-ipad/src/core/sync/hbpos-sync-adapters.ts",
+        "apps/pos-ipad/src/core/sync/sync-coordinator.ts",
+        "apps/pos-ipad/src/core/runtime/production-attendance-audit-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/expo-attendance-runtime-configuration.ts",
+        "apps/pos-ipad/app/attendance-audit.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/sync/hbpos-sync-adapters.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-attendance-audit-runtime.test.ts",
+        "apps/pos-ipad/src/core/runtime/expo-attendance-runtime-configuration.test.ts",
+        "apps/pos-ipad/src/features/attendance-audit/attendance-audit-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "catalog-snapshot": {
+      "ipad": [
+        "apps/pos-ipad/src/features/catalog/catalog-snapshot-service.ts",
+        "apps/pos-ipad/src/core/db/catalog-repository.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/catalog/catalog-snapshot-service.test.ts",
+        "apps/pos-ipad/src/core/db/catalog-repository.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "barcode-search": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-security.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-parity.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/core/db/catalog-repository.test.ts"
+      ],
+      "blockers": []
+    },
+    "remote-product-fallback": {
+      "ipad": [
+        "apps/pos-ipad/src/features/catalog/remote-catalog-fallback.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/catalog/remote-catalog-fallback.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "open-item": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.test.ts",
+        "apps/pos-ipad/src/features/sales/domain/line-sync-provenance.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-parity.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "line-editing": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-parity.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "discounts-promotions": {
+      "ipad": [
+        "apps/pos-ipad/src/features/catalog/hbpos-catalog-remote.ts",
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.ts",
+        "apps/pos-ipad/src/features/sales/runtime/promotion-snapshot-loader.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx",
+        "apps/pos-ipad/src/core/db/catalog-repository.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/catalog/hbpos-catalog-remote.test.ts",
+        "apps/pos-ipad/src/features/sales/domain/promotions.test.ts",
+        "apps/pos-ipad/src/features/sales/domain/pricing-cart.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/promotion-snapshot-loader.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "clear-cart": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-security.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/runtime/sales-operation-parity.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-presenter.test.ts",
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "hold-resume": {
+      "ipad": [
+        "apps/pos-ipad/src/features/held-orders/held-orders-orchestrator.ts",
+        "apps/pos-ipad/src/features/held-orders/held-orders-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/held-orders/held-orders-orchestrator.test.ts",
+        "apps/pos-ipad/src/features/held-orders/held-orders-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/tests/routes/held-orders-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "cash-sale": {
+      "ipad": [
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts",
+        "apps/pos-ipad/src/core/db/atomic-cash-order-committer.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "CASH_SALE_PERMISSION_GUARD_NOT_WIRED",
+          "kind": "parity-gap",
+          "detail": "离线现金结账耐久事务已接线，但 sales cash 路径没有执行 Payment.View、TakeCash 与 Confirm 权限门禁。"
+        }
+      ]
+    },
+    "zero-total-sale": {
+      "ipad": [
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.test.ts",
+        "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "ZERO_TOTAL_CONFIRM_PERMISSION_NOT_WIRED",
+          "kind": "parity-gap",
+          "detail": "零金额耐久提交已实现，但生产 sales 路径没有执行 WPF 的 Payment.View 与 Payment.Confirm 权限门禁。"
+        }
+      ]
+    },
+    "cash-rounding": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/domain/cash-rounding.ts",
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/domain/cash-rounding.test.ts",
+        "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.test.ts"
+      ],
+      "blockers": []
+    },
+    "square-payment": {
+      "ipad": [
+        "apps/pos-ipad/src/features/payments/square/square-payment-adapter.ts",
+        "apps/pos-ipad/src/features/payments/runtime/payment-provider-registry.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/payments/square/square-payment-adapter.test.ts",
+        "apps/pos-ipad/src/features/payments/runtime/payment-provider-registry.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_SQUARE_TERMINAL_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未完成 Square 实机的成功、拒绝、取消、超时、响应丢失、批准后崩溃和 Unknown 恢复矩阵。"
+        }
+      ]
+    },
+    "linkly-cloud-payment": {
+      "ipad": [
+        "apps/pos-ipad/src/features/payments/linkly/linkly-cloud-backend.ts",
+        "apps/pos-ipad/src/features/payments/runtime/linkly-operator-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/payments/linkly/linkly-cloud-backend.test.ts",
+        "apps/pos-ipad/src/features/payments/runtime/linkly-operator-runtime.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_LINKLY_TERMINAL_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未完成 Linkly Cloud Backend Async 实机的 create、status、recover、sendkey、receipt、ack、refund 与故障矩阵。"
+        }
+      ]
+    },
+    "voucher-payment": {
+      "ipad": [
+        "apps/pos-ipad/src/features/payments/voucher/voucher-payment-adapter.ts",
+        "apps/pos-ipad/src/features/payments/runtime/payment-provider-registry.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/payments/voucher/voucher-payment-adapter.test.ts",
+        "apps/pos-ipad/src/features/payments/runtime/voucher-preparation.test.ts",
+        "apps/pos-ipad/src/features/payments/mixed/voucher-tender-reversal-service.test.ts"
+      ],
+      "blockers": []
+    },
+    "mixed-payment": {
+      "ipad": [
+        "apps/pos-ipad/src/features/payments/mixed/mixed-payment-coordinator.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts",
+        "apps/pos-ipad/src/features/payments/ui/payment-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/payments/mixed/mixed-payment-coordinator.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.test.ts",
+        "apps/pos-ipad/src/features/payments/ui/payment-screen.rntl.test.tsx"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_CARD_TENDER_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "混合 tender 的卡支付与移除恢复仍依赖 Square 和 Linkly 实机矩阵通过。"
+        }
+      ]
+    },
+    "payment-recovery": {
+      "ipad": [
+        "apps/pos-ipad/src/features/payments/payment-attempt-service.ts",
+        "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/payment-provider-runtime-bootstrap.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/payments/payment-attempt-service.test.ts",
+        "apps/pos-ipad/src/features/payments/__integration_tests__/payment-attempt-sqlite-fault-matrix.test.ts",
+        "apps/pos-ipad/e2e/payment/payment-fault-matrix.fixture.test.mjs"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_TERMINAL_UNKNOWN_RECOVERY_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "自动故障矩阵已覆盖状态机，但尚未用 Square 与 Linkly 真终端验证批准后断链和 Unknown 恢复不重扣。"
+        }
+      ]
+    },
+    "payment-success": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx",
+        "apps/pos-ipad/src/features/payments/ui/payment-screen.tsx",
+        "apps/pos-ipad/src/features/payments/ui/payment-presenter.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sales/ui/sales-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/features/payments/ui/payment-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/features/payments/ui/payment-presenter.test.ts"
+      ],
+      "blockers": []
+    },
+    "receipt-return": {
+      "ipad": [
+        "apps/pos-ipad/src/features/returns/return-workflow.ts",
+        "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
+        "apps/pos-ipad/src/features/returns/return-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/returns/return-workflow.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-return-runtime.test.ts",
+        "apps/pos-ipad/e2e/payment/return-original-action-recovery.e2e.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_PROVIDER_REFUND_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "现金与自动化 provider 路径已覆盖，但原卡 Square/Linkly 退款容量和崩溃恢复尚未完成真终端验收。"
+        }
+      ]
+    },
+    "no-receipt-return": {
+      "ipad": [
+        "apps/pos-ipad/src/features/returns/return-workflow.ts",
+        "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
+        "apps/pos-ipad/src/features/returns/return-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/returns/return-domain.test.ts",
+        "apps/pos-ipad/src/features/returns/return-workflow.test.ts",
+        "apps/pos-ipad/src/features/returns/return-screen.rntl.test.tsx"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_PROVIDER_REFUND_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "无小票现金路径已自动测试，但卡或券退款的终端与后端实链路尚未完成门店设备验收。"
+        }
+      ]
+    },
+    "offline-cash-return": {
+      "ipad": [
+        "apps/pos-ipad/src/core/db/sqlite-offline-return-capacity.ts",
+        "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
+        "apps/pos-ipad/src/features/returns/return-workflow.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/db/sqlite-feature-facades.integration.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-return-runtime.test.ts",
+        "apps/pos-ipad/src/features/returns/return-workflow.test.ts"
+      ],
+      "blockers": []
+    },
+    "local-history": {
+      "ipad": [
+        "apps/pos-ipad/src/core/db/sqlite-local-sync-history-store.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-authorization.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.ts",
+        "apps/pos-ipad/app/sync-history.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/tests/routes/sync-history-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "remote-history": {
+      "ipad": [
+        "apps/pos-ipad/src/features/remote-history/remote-history-api.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-presenter.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-runtime.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-screen.tsx",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/remote-history/remote-history-api.test.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-presenter.test.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-runtime.test.ts",
+        "apps/pos-ipad/src/features/remote-history/remote-history-route.rntl.test.tsx",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "sync-recovery": {
+      "ipad": [
+        "apps/pos-ipad/src/core/sync/sync-coordinator.ts",
+        "apps/pos-ipad/src/core/sync/hbpos-sync-adapters.ts",
+        "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/sync/sync-coordinator.test.ts",
+        "apps/pos-ipad/src/core/sync/forbidden-runtime-lifecycle.integration.test.ts",
+        "apps/pos-ipad/src/core/db/sqlite-outbox-order-state.integration.test.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts"
+      ],
+      "blockers": []
+    },
+    "support-export": {
+      "ipad": [
+        "apps/pos-ipad/src/features/sync-history/sync-history-domain.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.ts",
+        "apps/pos-ipad/app/sync-history.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts",
+        "apps/pos-ipad/src/features/sync-history/sync-history-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/tests/routes/sync-history-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "special-products": {
+      "ipad": [
+        "apps/pos-ipad/src/features/special-products/special-products-runtime.ts",
+        "apps/pos-ipad/src/features/special-products/special-products-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/special-products/hbpos-special-products-api.test.ts",
+        "apps/pos-ipad/src/features/special-products/special-products-presenter.test.ts",
+        "apps/pos-ipad/src/features/special-products/special-products-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "installments": {
+      "ipad": [
+        "apps/pos-ipad/src/core/db/sqlite-installment-payment-persistence.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts",
+        "apps/pos-ipad/src/core/runtime/production-installment-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/production-installment-payment-adapter.ts",
+        "apps/pos-ipad/src/features/installments/installment-runtime.ts",
+        "apps/pos-ipad/src/features/installments/installment-screen.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/db/sqlite-installment-payment-ledger.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-installment-runtime.test.ts",
+        "apps/pos-ipad/src/core/runtime/production-installment-payment-adapter.test.ts",
+        "apps/pos-ipad/src/features/installments/installment-runtime.test.ts",
+        "apps/pos-ipad/src/features/installments/installments-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "daily-close": {
+      "ipad": [
+        "apps/pos-ipad/src/features/daily-close/daily-close-runtime.ts",
+        "apps/pos-ipad/src/features/daily-close/daily-close-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts",
+        "apps/pos-ipad/src/features/receipts/daily-close-receipt.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/daily-close/daily-close-domain.test.ts",
+        "apps/pos-ipad/src/features/daily-close/daily-close-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/features/daily-close/daily-close-route.rntl.test.tsx"
+      ],
+      "blockers": [
+        {
+          "code": "DAILY_CLOSE_REAL_PRINTER_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "汇总、保存和归档已自动测试，但日结打印与历史重打尚未在目标芯烨打印机完成验收。"
+        }
+      ]
+    },
+    "catalog-settings": {
+      "ipad": [
+        "apps/pos-ipad/src/features/settings/settings-runtime.ts",
+        "apps/pos-ipad/src/features/catalog/maintenance/catalog-maintenance-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-settings-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/settings/settings-runtime.test.ts",
+        "apps/pos-ipad/src/features/catalog/maintenance/catalog-maintenance-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/core/runtime/production-settings-composition.test.ts"
+      ],
+      "blockers": []
+    },
+    "payment-settings": {
+      "ipad": [
+        "apps/pos-ipad/src/features/settings/settings-screen.tsx",
+        "apps/pos-ipad/src/core/runtime/production-settings-composition.ts",
+        "apps/pos-ipad/src/core/runtime/settings-payment-test-api.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/settings/settings-screen.rntl.test.tsx",
+        "apps/pos-ipad/src/core/runtime/production-settings-composition.test.ts",
+        "apps/pos-ipad/src/core/runtime/settings-payment-test-api.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "REAL_PAYMENT_CONFIGURATION_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "配置保存与测试 API 已接线，但尚未用目标 Square 与 Linkly 终端验证配对、环境切换和测试交易。"
+        }
+      ]
+    },
+    "attendance-qr": {
+      "ipad": [
+        "apps/pos-ipad/src/core/runtime/production-attendance-audit-runtime.ts",
+        "apps/pos-ipad/src/core/runtime/expo-attendance-runtime-configuration.ts",
+        "apps/pos-ipad/src/features/attendance-audit/attendance-qr-controller.ts",
+        "apps/pos-ipad/src/core/peripherals/attendance-security/native/expo-attendance-security-adapter.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/runtime/production-attendance-audit-runtime.test.ts",
+        "apps/pos-ipad/src/core/runtime/expo-attendance-runtime-configuration.test.ts",
+        "apps/pos-ipad/src/features/attendance-audit/attendance-qr-controller.test.ts",
+        "apps/pos-ipad/modules/hb-attendance-security/tests/native-interop.test.mjs"
+      ],
+      "blockers": []
+    },
+    "locale-parity": {
+      "ipad": [
+        "apps/pos-ipad/src/i18n/index.ts",
+        "apps/pos-ipad/src/i18n/locales/en.json",
+        "apps/pos-ipad/src/i18n/locales/zh.json"
+      ],
+      "tests": [
+        "apps/pos-ipad/scripts/check-locale-parity.test.mjs"
+      ],
+      "blockers": []
+    },
+    "receipt-printing": {
+      "ipad": [
+        "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.ts",
+        "apps/pos-ipad/modules/hb-printer/ios/HbPrinterModule.swift",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.test.ts",
+        "apps/pos-ipad/modules/hb-printer/ios/hb-printer-lifecycle-source.test.mjs",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "XINYE_PRINTER_REAL_DEVICE_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未完成目标芯烨机型 50 次中文、分包、切纸、断连与 Ambiguous 不重放真机循环。"
+        }
+      ]
+    },
+    "cash-drawer": {
+      "ipad": [
+        "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.ts",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.test.ts",
+        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.test.ts",
+        "apps/pos-ipad/src/core/db/sqlite-fulfilment-store.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "RJ11_DRAWER_REAL_DEVICE_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未在芯烨打印机 RJ11 钱箱完成提交后开箱、失败与 Unknown 不重放的 50 次真机循环。"
+        }
+      ]
+    },
+    "hid-scanner": {
+      "ipad": [
+        "apps/pos-ipad/src/ui/scanner/scanner-route-bridge.tsx",
+        "apps/pos-ipad/app/login.tsx",
+        "apps/pos-ipad/app/sales.tsx",
+        "apps/pos-ipad/src/core/peripherals/scanner/hid-scanner.ts",
+        "apps/pos-ipad/src/core/peripherals/scanner/hid-scanner-capture.tsx",
+        "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/peripherals/scanner/hid-scanner.test.ts",
+        "apps/pos-ipad/src/tests/routes/scanner-route-bridge.rntl.test.tsx",
+        "apps/pos-ipad/src/core/runtime/settings-scanner-test.test.ts",
+        "apps/pos-ipad/src/features/settings/settings-screen.rntl.test.tsx"
+      ],
+      "blockers": [
+        {
+          "code": "HID_500_SCAN_REAL_DEVICE_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未用目标蓝牙 HID 扫码枪连续执行 500 次跨焦点扫描并证明无串码。"
+        }
+      ]
+    },
+    "camera-scanner": {
+      "ipad": [
+        "apps/pos-ipad/src/core/peripherals/scanner/expo-camera-adapter.ts",
+        "apps/pos-ipad/src/core/peripherals/scanner/hid-scanner.ts",
+        "apps/pos-ipad/src/features/scanner-camera/camera-scanner-modal.tsx",
+        "apps/pos-ipad/app/sales.tsx"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/core/peripherals/scanner/hid-scanner.test.ts",
+        "apps/pos-ipad/src/features/scanner-camera/camera-scanner-modal.rntl.test.tsx",
+        "apps/pos-ipad/src/features/scanner-camera/camera-scanner-permission.rntl.test.tsx",
+        "apps/pos-ipad/src/features/scanner-camera/camera-scanner-denied.rntl.test.tsx",
+        "apps/pos-ipad/src/features/scanner-camera/camera-scanner-unavailable.rntl.test.tsx",
+        "apps/pos-ipad/src/tests/routes/sales-route.rntl.test.tsx"
+      ],
+      "blockers": []
+    },
+    "customer-display": {
+      "ipad": [
+        "apps/pos-ipad/modules/hb-external-display/ios/HBExternalDisplayCoordinator.swift",
+        "apps/pos-ipad/src/core/peripherals/customer-display/native/external-display-bridge.ts",
+        "apps/pos-ipad/src/core/peripherals/customer-display/native/external-display-react-surface.tsx",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/modules/hb-external-display/tests/native-source-contract.test.mjs",
+        "apps/pos-ipad/src/core/peripherals/customer-display/native/external-display-bridge.test.ts",
+        "apps/pos-ipad/src/core/peripherals/customer-display/native/external-display-react-surface.rntl.test.tsx",
+        "apps/pos-ipad/scripts/check-external-display-startup.test.mjs"
+      ],
+      "blockers": [
+        {
+          "code": "EXTERNAL_DISPLAY_REAL_DEVICE_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "尚未完成 USB-C HDMI 与 USB-C 显示器的 1080p/4K、30 次热插拔、60 分钟连续显示及主屏不受影响验收。"
+        }
+      ]
+    },
+    "customer-display-adverts": {
+      "ipad": [
+        "apps/pos-ipad/src/features/customer-display/advertisement-api.ts",
+        "apps/pos-ipad/src/features/customer-display/advertisement-cache.ts",
+        "apps/pos-ipad/src/features/customer-display/advertisement-playback.ts",
+        "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/customer-display/advertisement-api.test.ts",
+        "apps/pos-ipad/src/features/customer-display/advertisement-cache.test.ts",
+        "apps/pos-ipad/src/features/customer-display/advertisement-playback.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "EXTERNAL_AD_PLAYBACK_REAL_DEVICE_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "本地缓存与播放编排已自动测试，但外屏图片/视频切换、拔线恢复和交易即时抢占尚未完成真机验收。"
+        }
+      ]
+    },
+    "app-updates": {
+      "ipad": [
+        "apps/pos-ipad/src/features/app-updates/app-update-coordinator.ts",
+        "apps/pos-ipad/src/features/app-updates/hbpos-pos-ipad-update-api.ts",
+        "apps/pos-ipad/src/features/app-updates/expo-app-update-restart.ts",
+        "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts"
+      ],
+      "tests": [
+        "apps/pos-ipad/src/features/app-updates/app-update-coordinator.test.ts",
+        "apps/pos-ipad/src/features/app-updates/hbpos-pos-ipad-update-api.test.ts",
+        "apps/pos-ipad/src/features/app-updates/expo-app-update-restart.test.ts"
+      ],
+      "blockers": [
+        {
+          "code": "EAS_UPDATE_REAL_BUILD_QA_REQUIRED",
+          "kind": "real-device",
+          "detail": "最低版本门禁与安全重启已接线，但尚未在 Preview/TestFlight 真包验证兼容 OTA、runtimeVersion 隔离和待处理写入不重启。"
+        }
+      ]
+    },
+    "unlisted-distribution": {
+      "ipad": [
+        "apps/pos-ipad/app.config.ts",
+        "apps/pos-ipad/eas.json",
+        "apps/pos-ipad/docs/UNLISTED_RELEASE_RUNBOOK.md"
+      ],
+      "tests": [
+        "apps/pos-ipad/scripts/check-project-contract.test.mjs"
+      ],
+      "blockers": [
+        {
+          "code": "UNLISTED_APPLICATION_NOT_SUBMITTED",
+          "kind": "external-release",
+          "detail": "尚未完成 App Review、Unlisted 申请和受控链接验收，配置存在不等于已获分发批准。"
+        }
+      ]
+    }
+  }
+}

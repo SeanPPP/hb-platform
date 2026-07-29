@@ -1,0 +1,311 @@
+import type {
+  LinklySafeOperatorKey,
+} from "@/features/payments/runtime/linkly-operator-runtime";
+import type {
+  PaymentFieldIssue,
+  PaymentUiMethod,
+  PaymentUiPhase,
+  PaymentUiRuntimeErrorCode,
+} from "@/features/payments/ui/payment-presenter";
+
+export const paymentEnglishCopy = {
+  title: "Payment",
+  subtitle: "Complete each tender against the same durable order.",
+  "action.back": "Back to sale",
+  "action.pay": "Start payment",
+  "action.addTender": "Add tender",
+  "action.recover": "Recover existing payment",
+  "action.cancel": "Cancel payment",
+  "action.remove": "Remove",
+  "action.dismiss": "Dismiss",
+  "action.newSale": "New sale",
+  "action.linklyPrinted": "Receipt printed",
+  "action.linklyAcknowledge": "Acknowledge",
+  "method.title": "Tender method",
+  "method.cash": "Cash",
+  "method.card": "Card",
+  "method.square": "Square",
+  "method.linkly-cloud": "Linkly",
+  "method.voucher": "Voucher",
+  "method.unavailable": "Unavailable",
+  "amount.label": "Amount",
+  "amount.hint": "Enter up to the remaining balance.",
+  "voucher.label": "Voucher code",
+  "voucher.placeholder": "Scan or enter voucher",
+  "voucher.captured": "Voucher captured securely",
+  "summary.title": "Payment summary",
+  "summary.total": "Order total",
+  "summary.paid": "Paid",
+  "summary.remaining": "Remaining",
+  "summary.tenders": "Active tenders",
+  "summary.noTenders": "No tender has been committed.",
+  "summary.reversible": "Can be removed safely",
+  "summary.locked": "Reversal unavailable",
+  "summary.order": "Order {{order}}",
+  "terminal.title": "Terminal controls",
+  "terminal.safeOnly": "Only the approved Linkly operator keys are available.",
+  "terminal.ok-cancel": "OK / Cancel",
+  "terminal.yes": "Yes",
+  "terminal.no": "No",
+  "terminal.authorise": "Authorise",
+  "status.loading.title": "Checking payment recovery",
+  "status.loading.hint": "Looking for a durable draft or payment attempt.",
+  "status.ready.title": "Choose a tender",
+  "status.ready.hint": "Online card and voucher payments create a durable attempt before contacting the provider.",
+  "status.submitting.title": "Saving payment action",
+  "status.submitting.hint": "Keep this screen open. Repeated taps will not create another action.",
+  "status.draft-prepared.title": "Payment draft recovered",
+  "status.draft-prepared.hint": "Choose a method to continue the same order, or cancel this untouched draft.",
+  "status.awaiting-terminal.title": "Waiting for terminal",
+  "status.awaiting-terminal.hint": "Do not retry, switch terminal or start another card payment.",
+  "status.pending.title": "Payment pending",
+  "status.pending.hint": "The provider is still processing this attempt.",
+  "status.offline-cash.title": "Online tender unavailable",
+  "status.offline-cash.hint": "No provider attempt was created. You may safely switch this saved draft to cash.",
+  "status.unknown.title": "Payment outcome unknown",
+  "status.unknown.hint": "Do not charge again. Reconnect and recover this exact attempt.",
+  "status.recovery-required.title": "Recovery required",
+  "status.recovery-required.hint": "Continue the saved action before taking another tender.",
+  "status.partial.title": "Partial payment recorded",
+  "status.partial.hint": "Choose a different available tender for the remaining balance.",
+  "status.declined.title": "Payment declined",
+  "status.declined.hint": "No tender was added. Choose an available method or cancel safely.",
+  "status.cancelled.title": "Payment cancelled",
+  "status.cancelled.hint": "The saved attempt was cancelled without creating another charge.",
+  "status.success.title": "Payment complete",
+  "status.success.hint": "The order is committed locally and ready for fulfilment.",
+  "field.amount-required": "Enter a payment amount.",
+  "field.amount-invalid": "Enter a positive amount with no more than two decimal places.",
+  "field.amount-exceeds-remaining": "The amount exceeds the remaining balance.",
+  "field.voucher-required": "Scan or enter a voucher code.",
+  "field.method-unavailable": "That tender is not available for the current payment state.",
+  "field.checkout-unavailable": "The original checkout context is unavailable. Recover the saved order first.",
+  "error.SQUARE_CONFIGURATION_MISSING": "Square is not configured on this iPad.",
+  "error.SQUARE_CONFIGURATION_INVALID": "Square configuration is invalid.",
+  "error.SQUARE_CONFIGURATION_LOAD_FAILED": "Square configuration could not be loaded.",
+  "error.LINKLY_CONFIGURATION_MISSING": "Linkly is not configured on this iPad.",
+  "error.LINKLY_CONFIGURATION_INVALID": "Linkly configuration is invalid.",
+  "error.LINKLY_CONFIGURATION_LOAD_FAILED": "Linkly configuration could not be loaded.",
+  "error.VOUCHER_CONFIGURATION_DISABLED": "Voucher payments are disabled.",
+  "error.VOUCHER_CONFIGURATION_LOAD_FAILED": "Voucher configuration could not be loaded.",
+  "error.PAYMENT_PROVIDER_UNKNOWN": "The selected payment provider is unavailable.",
+  "error.PAYMENT_ACTION_IN_FLIGHT": "A payment action is already in progress.",
+  "error.PAYMENT_ATTEMPT_IDENTITY_MISMATCH": "The recovered payment attempt does not match this order.",
+  "error.PAYMENT_ATTEMPT_MISMATCH": "A different durable payment attempt was found.",
+  "error.PAYMENT_ATTEMPT_NOT_FOUND": "The saved payment attempt was not found.",
+  "error.PAYMENT_ATTEMPT_ORDER_MISMATCH": "The payment attempt belongs to a different order.",
+  "error.PAYMENT_RECOVERY_FAILED": "Payment recovery did not complete.",
+  "error.PAYMENT_RECOVERY_MISMATCH": "Payment recovery returned a different attempt.",
+  "error.PAYMENT_START_FAILED": "The payment could not be started safely.",
+  "error.PAYMENT_CANCEL_FAILED": "Cancellation did not complete. Recover before retrying.",
+  "error.PAYMENT_STATUS_UNKNOWN": "The provider outcome is unknown. Do not charge again.",
+  "error.PAYMENT_TERMINAL_AWAITED": "Complete or cancel the existing terminal action.",
+  "error.APPROVED_COMPLETION_REQUIRED": "The provider approved payment; local order completion must be recovered.",
+  "error.APPROVED_COMPLETION_FAILED": "Approved payment is saved, but local completion still requires recovery.",
+  "error.APPROVED_COMPLETION_MISMATCH": "Approved payment does not match the saved order draft.",
+  "error.APPROVED_TRUTH_MISMATCH": "Approved tender and durable order totals do not match.",
+  "error.BLOCKING_ATTEMPT_ORDER_MISMATCH": "Another payment attempt is blocking this order.",
+  "error.MIXED_CASH_COMMIT_FAILED": "The cash tender could not be committed atomically.",
+  "error.MIXED_CASH_UNAVAILABLE": "Mixed cash tender is unavailable.",
+  "error.ONLINE_REQUIRED": "This payment action requires an online connection.",
+  "error.TENDER_REVERSAL_FAILED": "The tender could not be reversed safely.",
+  "error.TENDER_REVERSAL_TRUTH_MISMATCH": "Tender reversal does not match the durable order.",
+  "error.TENDER_REVERSAL_UNAVAILABLE": "This tender cannot be removed.",
+  "error.TENDER_REVERSAL_UNKNOWN": "Tender reversal outcome is unknown. Do not retry.",
+  "error.TENDER_REVERSAL_RECOVERY_REQUIRED": "A saved voucher reversal must be recovered before taking another tender.",
+  "error.TENDER_REVERSAL_BLOCKED": "Voucher reversal requires supervisor support and cannot be retried.",
+  "error.ZERO_BALANCE_ORDER_NOT_COMPLETED": "The balance is zero but local order completion is still pending.",
+  "error.PAYMENT_DRAFT_NOT_FOUND": "The durable payment draft was not found.",
+  "error.PAYMENT_DRAFT_CONFLICT": "The payment draft no longer matches this checkout.",
+  "error.PAYMENT_DRAFT_ABANDON_FORBIDDEN": "This draft already has payment activity and cannot be abandoned.",
+  "error.PAYMENT_CART_LEASE_CONFLICT": "The cart changed while payment held an exclusive lease.",
+  "error.PAYMENT_TENDER_METHOD_ALREADY_ACTIVE": "That tender type is already active on this order.",
+  "error.PAYMENT_CHECKOUT_FAILED": "The payment action did not complete and was not automatically retried.",
+  "error.PAYMENT_PREPARED_ACTION_RECOVERY_REQUIRED": "A saved provider action must be resumed before any new payment.",
+  "error.VOUCHER_CONTEXT_NOT_PREPARED": "The voucher context was not saved safely. Scan the voucher again.",
+  "error.LINKLY_UNKNOWN_REQUIRES_RECOVERY": "Linkly outcome is unknown. Recover the payment before using operator keys.",
+  "error.LINKLY_OPERATOR_STATE_INVALID": "Linkly operator controls are not valid in the current state.",
+  "error.LINKLY_OPERATOR_KEY_NOT_ALLOWED": "That Linkly key is not currently accepted by the terminal.",
+} as const;
+
+export type PaymentCopyKey = keyof typeof paymentEnglishCopy;
+
+const paymentChineseCopy = {
+  title: "支付",
+  subtitle: "所有付款均落入同一笔耐久订单。",
+  "action.back": "返回收银",
+  "action.pay": "开始支付",
+  "action.addTender": "添加付款",
+  "action.recover": "恢复当前支付",
+  "action.cancel": "取消支付",
+  "action.remove": "移除",
+  "action.dismiss": "关闭提示",
+  "action.newSale": "开始下一单",
+  "action.linklyPrinted": "小票已打印",
+  "action.linklyAcknowledge": "确认完成",
+  "method.title": "付款方式",
+  "method.cash": "现金",
+  "method.card": "银行卡",
+  "method.square": "Square",
+  "method.linkly-cloud": "Linkly",
+  "method.voucher": "礼券",
+  "method.unavailable": "不可用",
+  "amount.label": "本次金额",
+  "amount.hint": "金额不得超过剩余应付。",
+  "voucher.label": "礼券码",
+  "voucher.placeholder": "扫描或输入礼券码",
+  "voucher.captured": "礼券码已安全获取",
+  "summary.title": "支付汇总",
+  "summary.total": "订单总额",
+  "summary.paid": "已付款",
+  "summary.remaining": "剩余应付",
+  "summary.tenders": "当前付款",
+  "summary.noTenders": "尚未提交任何付款。",
+  "summary.reversible": "可安全移除",
+  "summary.locked": "不可撤销",
+  "summary.order": "订单 {{order}}",
+  "terminal.title": "终端操作",
+  "terminal.safeOnly": "这里只提供经过限制的 Linkly 安全按键。",
+  "terminal.ok-cancel": "确认 / 取消",
+  "terminal.yes": "是",
+  "terminal.no": "否",
+  "terminal.authorise": "授权",
+  "status.loading.title": "正在检查支付恢复",
+  "status.loading.hint": "正在查找已保存的草稿或支付尝试。",
+  "status.ready.title": "选择付款方式",
+  "status.ready.hint": "银行卡和礼券会先耐久保存支付尝试，再联系支付方。",
+  "status.submitting.title": "正在保存支付动作",
+  "status.submitting.hint": "请保持此页面；重复点击不会创建新的支付动作。",
+  "status.draft-prepared.title": "已恢复支付草稿",
+  "status.draft-prepared.hint": "请选择方式继续同一订单，或取消这个尚未支付的草稿。",
+  "status.awaiting-terminal.title": "等待支付终端",
+  "status.awaiting-terminal.hint": "不要重试、切换终端或再次发起银行卡扣款。",
+  "status.pending.title": "支付处理中",
+  "status.pending.hint": "支付方仍在处理当前尝试。",
+  "status.offline-cash.title": "在线付款不可用",
+  "status.offline-cash.hint": "尚未创建支付方尝试，可将这个已保存草稿安全改为现金付款。",
+  "status.unknown.title": "支付结果未知",
+  "status.unknown.hint": "禁止再次扣款；联网后恢复这一笔既有尝试。",
+  "status.recovery-required.title": "必须恢复支付",
+  "status.recovery-required.hint": "完成已保存的支付动作后才能继续收款。",
+  "status.partial.title": "部分付款已入账",
+  "status.partial.hint": "请为剩余应付选择另一种可用付款方式。",
+  "status.declined.title": "支付被拒绝",
+  "status.declined.hint": "没有新增付款，可选择其他可用方式或安全取消。",
+  "status.cancelled.title": "支付已取消",
+  "status.cancelled.hint": "既有支付尝试已取消，没有再次扣款。",
+  "status.success.title": "支付完成",
+  "status.success.hint": "订单已在本地提交，可以继续履约。",
+  "field.amount-required": "请输入付款金额。",
+  "field.amount-invalid": "请输入正数金额，最多保留两位小数。",
+  "field.amount-exceeds-remaining": "付款金额超过剩余应付。",
+  "field.voucher-required": "请扫描或输入礼券码。",
+  "field.method-unavailable": "当前支付状态不能使用该付款方式。",
+  "field.checkout-unavailable": "原结账上下文不可用，请先恢复已保存订单。",
+  "error.SQUARE_CONFIGURATION_MISSING": "此 iPad 尚未配置 Square。",
+  "error.SQUARE_CONFIGURATION_INVALID": "Square 配置无效。",
+  "error.SQUARE_CONFIGURATION_LOAD_FAILED": "无法读取 Square 配置。",
+  "error.LINKLY_CONFIGURATION_MISSING": "此 iPad 尚未配置 Linkly。",
+  "error.LINKLY_CONFIGURATION_INVALID": "Linkly 配置无效。",
+  "error.LINKLY_CONFIGURATION_LOAD_FAILED": "无法读取 Linkly 配置。",
+  "error.VOUCHER_CONFIGURATION_DISABLED": "礼券支付已停用。",
+  "error.VOUCHER_CONFIGURATION_LOAD_FAILED": "无法读取礼券配置。",
+  "error.PAYMENT_PROVIDER_UNKNOWN": "所选支付方不可用。",
+  "error.PAYMENT_ACTION_IN_FLIGHT": "已有支付动作正在执行。",
+  "error.PAYMENT_ATTEMPT_IDENTITY_MISMATCH": "恢复的支付尝试与当前订单不一致。",
+  "error.PAYMENT_ATTEMPT_MISMATCH": "发现另一笔已保存的支付尝试。",
+  "error.PAYMENT_ATTEMPT_NOT_FOUND": "未找到已保存的支付尝试。",
+  "error.PAYMENT_ATTEMPT_ORDER_MISMATCH": "支付尝试属于另一笔订单。",
+  "error.PAYMENT_RECOVERY_FAILED": "支付恢复尚未完成。",
+  "error.PAYMENT_RECOVERY_MISMATCH": "恢复返回了不同的支付尝试。",
+  "error.PAYMENT_START_FAILED": "无法安全发起支付。",
+  "error.PAYMENT_CANCEL_FAILED": "取消尚未完成，重试前必须先恢复。",
+  "error.PAYMENT_STATUS_UNKNOWN": "支付方结果未知，禁止再次扣款。",
+  "error.PAYMENT_TERMINAL_AWAITED": "请完成或取消当前终端动作。",
+  "error.APPROVED_COMPLETION_REQUIRED": "支付方已批准，必须恢复本地订单提交。",
+  "error.APPROVED_COMPLETION_FAILED": "已保存批准结果，但本地订单仍需恢复完成。",
+  "error.APPROVED_COMPLETION_MISMATCH": "批准的支付与已保存订单草稿不一致。",
+  "error.APPROVED_TRUTH_MISMATCH": "批准付款与耐久订单金额不一致。",
+  "error.BLOCKING_ATTEMPT_ORDER_MISMATCH": "另一笔支付尝试正在阻塞此订单。",
+  "error.MIXED_CASH_COMMIT_FAILED": "无法原子提交现金付款。",
+  "error.MIXED_CASH_UNAVAILABLE": "混合现金付款不可用。",
+  "error.ONLINE_REQUIRED": "此支付动作必须联网。",
+  "error.TENDER_REVERSAL_FAILED": "无法安全撤销该付款。",
+  "error.TENDER_REVERSAL_TRUTH_MISMATCH": "付款撤销与耐久订单不一致。",
+  "error.TENDER_REVERSAL_UNAVAILABLE": "此付款不能移除。",
+  "error.TENDER_REVERSAL_UNKNOWN": "付款撤销结果未知，禁止重试。",
+  "error.TENDER_REVERSAL_RECOVERY_REQUIRED": "必须先恢复已保存的礼券撤销，才能继续收款。",
+  "error.TENDER_REVERSAL_BLOCKED": "礼券撤销已阻断，必须由主管处理且不能重试。",
+  "error.ZERO_BALANCE_ORDER_NOT_COMPLETED": "余额已为零，但本地订单尚未完成。",
+  "error.PAYMENT_DRAFT_NOT_FOUND": "未找到耐久支付草稿。",
+  "error.PAYMENT_DRAFT_CONFLICT": "支付草稿与当前结账不一致。",
+  "error.PAYMENT_DRAFT_ABANDON_FORBIDDEN": "此草稿已有支付活动，不能放弃。",
+  "error.PAYMENT_CART_LEASE_CONFLICT": "支付独占期间购物车发生了变化。",
+  "error.PAYMENT_TENDER_METHOD_ALREADY_ACTIVE": "此订单已存在同类型付款。",
+  "error.PAYMENT_CHECKOUT_FAILED": "支付动作未完成，系统没有自动重试。",
+  "error.PAYMENT_PREPARED_ACTION_RECOVERY_REQUIRED": "必须先恢复已保存的支付方动作。",
+  "error.VOUCHER_CONTEXT_NOT_PREPARED": "礼券上下文未安全保存，请重新扫描礼券。",
+  "error.LINKLY_UNKNOWN_REQUIRES_RECOVERY": "Linkly 结果未知，使用终端按键前必须先恢复支付。",
+  "error.LINKLY_OPERATOR_STATE_INVALID": "当前状态不能使用 Linkly 终端操作。",
+  "error.LINKLY_OPERATOR_KEY_NOT_ALLOWED": "终端当前不接受这个 Linkly 按键。",
+} as const satisfies Record<PaymentCopyKey, string>;
+
+const paymentCopy = {
+  en: paymentEnglishCopy,
+  zh: paymentChineseCopy,
+} as const;
+
+export type PaymentLocale = keyof typeof paymentCopy;
+
+export function resolvePaymentLocale(language?: string): PaymentLocale {
+  return language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function paymentText(
+  locale: PaymentLocale,
+  key: PaymentCopyKey,
+  values?: Readonly<Record<string, string | number>>,
+): string {
+  const template = paymentCopy[locale][key];
+  if (!values) return template;
+  return template.replace(/\{\{(\w+)\}\}/g, (placeholder, name: string) => {
+    const value = values[name];
+    return value === undefined ? placeholder : String(value);
+  });
+}
+
+export function paymentMethodCopyKey(
+  method: PaymentUiMethod,
+): PaymentCopyKey {
+  return `method.${method}`;
+}
+
+export function paymentPhaseTitleKey(
+  phase: PaymentUiPhase,
+): PaymentCopyKey {
+  return `status.${phase}.title`;
+}
+
+export function paymentPhaseHintKey(
+  phase: PaymentUiPhase,
+): PaymentCopyKey {
+  return `status.${phase}.hint`;
+}
+
+export function paymentFieldIssueCopyKey(
+  issue: PaymentFieldIssue,
+): PaymentCopyKey {
+  return `field.${issue}`;
+}
+
+export function paymentRuntimeErrorCopyKey(
+  code: PaymentUiRuntimeErrorCode,
+): PaymentCopyKey {
+  return `error.${code}`;
+}
+
+export function linklyKeyCopyKey(
+  key: LinklySafeOperatorKey,
+): PaymentCopyKey {
+  return `terminal.${key}`;
+}

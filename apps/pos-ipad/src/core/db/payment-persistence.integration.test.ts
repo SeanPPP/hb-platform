@@ -1,0 +1,4163 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import test from "node:test";
+
+import type {
+  CartSnapshot,
+  PricingCartStateSnapshot,
+} from "../contracts";
+
+import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
+import {
+  SqliteMixedPaymentTenderStore,
+  type MixedCashOrderCompletionPlan,
+} from "./sqlite-mixed-payment-tender-store";
+import { SqlitePaymentDraftRecoveryStore } from "./sqlite-payment-draft-recovery-store";
+import {
+  createSqliteRepositories,
+  type SensitivePayloadEncryptor,
+} from "./sqlite-repositories";
+import { SqliteReturnApiAttemptStore } from "./sqlite-return-api-attempt-store";
+import { SqliteReturnCapacityVault } from "./sqlite-return-capacity-vault";
+import { SqliteReturnExecutionLedger } from "./sqlite-return-execution-ledger";
+import { SqliteReturnFulfilmentPlanStore } from "./sqlite-return-fulfilment-plan-store";
+import { SqliteVoucherPreparationStore } from "./sqlite-voucher-preparation-store";
+import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
+import type {
+  SqliteConnectionPort,
+  SqlRunResult,
+  SqlValue,
+} from "./types";
+
+const T0 = "2026-07-28T00:00:00.000Z";
+const T1 = "2026-07-28T00:01:00.000Z";
+const T2 = "2026-07-28T00:02:00.000Z";
+const TEST_SYNC_PROVENANCE = {
+  referenceCode: null,
+  priceSource: 0,
+} as const;
+
+type TestSyncProvenance = Readonly<{
+  referenceCode: string | null;
+  priceSource: number;
+}>;
+
+class SystemSqliteConnection implements SqliteConnectionPort {
+  private readonly database: DatabaseSync;
+  private readonly queue = new AsyncSerialQueue();
+
+  public constructor(databasePath: string) {
+    this.database = new DatabaseSync(databasePath);
+    this.database.exec("PRAGMA foreign_keys = ON");
+  }
+
+  public exec(sql: string): Promise<void> {
+    return this.queue.enqueue(async () => this.database.exec(sql));
+  }
+
+  public run(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<SqlRunResult> {
+    return this.queue.enqueue(async () =>
+      runStatement(this.database, sql, parameters));
+  }
+
+  public getFirst<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<T | null> {
+    return this.queue.enqueue(async () =>
+      getFirst<T>(this.database, sql, parameters));
+  }
+
+  public getAll<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<readonly T[]> {
+    return this.queue.enqueue(async () =>
+      getAll<T>(this.database, sql, parameters));
+  }
+
+  public withExclusiveTransaction<T>(
+    operation: (transaction: SqliteConnectionPort) => Promise<T>,
+  ): Promise<T> {
+    return this.queue.enqueue(async () => {
+      this.database.exec("BEGIN IMMEDIATE");
+      const transaction = new TransactionConnection(this.database);
+      try {
+        const result = await operation(transaction);
+        this.database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  public close(): Promise<void> {
+    return this.queue.enqueue(async () => this.database.close());
+  }
+}
+
+class TransactionConnection implements SqliteConnectionPort {
+  public constructor(private readonly database: DatabaseSync) {}
+  public async exec(sql: string): Promise<void> { this.database.exec(sql); }
+  public async run(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<SqlRunResult> {
+    return runStatement(this.database, sql, parameters);
+  }
+  public async getFirst<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<T | null> {
+    return getFirst<T>(this.database, sql, parameters);
+  }
+  public async getAll<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<readonly T[]> {
+    return getAll<T>(this.database, sql, parameters);
+  }
+  public withExclusiveTransaction<T>(): Promise<T> {
+    return Promise.reject(new Error("Nested test transaction."));
+  }
+  public close(): Promise<void> {
+    return Promise.reject(new Error("Transaction cannot close database."));
+  }
+}
+
+class AsyncSerialQueue {
+  private tail: Promise<void> = Promise.resolve();
+  public enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation, operation);
+    this.tail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
+const encryptor: SensitivePayloadEncryptor = {
+  async encrypt(plaintext) {
+    return Uint8Array.from(
+      new TextEncoder().encode(plaintext),
+      (value) => value ^ 0xa5,
+    );
+  },
+  async decrypt(ciphertext) {
+    return new TextDecoder().decode(
+      Uint8Array.from(ciphertext, (value) => value ^ 0xa5),
+    );
+  },
+};
+
+test("真实 SQLite：M12 原子升级 M17，失败不推进版本且敏感字段不出现在明文 schema", async () => {
+  await withDatabase("migration", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 12),
+    );
+    assert.equal(
+      Number(
+        (await connection.getFirst<{ version: unknown }>(
+          "SELECT MAX(version) AS version FROM schema_migrations",
+        ))?.version,
+      ),
+      12,
+    );
+    await applyMigrations(
+      connection,
+      () => T1,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 17),
+    );
+    const versions = await connection.getAll<{ version: unknown }>(
+      "SELECT version FROM schema_migrations ORDER BY version",
+    );
+    assert.equal(Number(versions.at(-1)?.version), 17);
+    const cashActionColumns = await connection.getAll<{
+      name: unknown;
+      pk: unknown;
+    }>("PRAGMA table_info('mixed_cash_tender_actions')");
+    assert.deepEqual(
+      cashActionColumns
+        .filter((column) => Number(column.pk) > 0)
+        .sort((left, right) => Number(left.pk) - Number(right.pk))
+        .map((column) => String(column.name)),
+      ["order_guid", "action_id"],
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('payment_order_draft_bindings')
+         WHERE name = 'pricing_state_json' AND "notnull" = 1`,
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('payment_order_draft_bindings')
+         WHERE name IN (
+           'close_action_id', 'close_attempt_id',
+           'close_audit_event_id', 'closed_at_iso'
+         )`,
+      ),
+      4,
+    );
+    const voucherColumns = await connection.getAll<{ name: unknown }>(
+      "PRAGMA table_info('voucher_protected_attempt_states')",
+    );
+    const preparedColumns = await connection.getAll<{ name: unknown }>(
+      "PRAGMA table_info('voucher_prepared_contexts')",
+    );
+    const names = [...voucherColumns, ...preparedColumns].map((row) =>
+      String(row.name).toLowerCase());
+    assert.equal(names.some((name) => name.includes("voucher_code")), false);
+    assert.equal(names.some((name) => name.includes("reservation_token")), false);
+    assert.equal(names.some((name) => name.includes("refund_reason")), false);
+
+    const failing = {
+      version: 18,
+      name: "M18_failure",
+      sql: "CREATE TABLE rolled_back_test (id TEXT); INVALID SQL;",
+    };
+    await assert.rejects(
+      () => applyMigrations(connection, () => T2, [failing]),
+      /near "INVALID"/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 18",
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：M15 保留历史 NULL/NULL，强制新行整数枚举来源且冻结来源对", async () => {
+  await withDatabase("m15-line-provenance", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter(
+        (migration) => migration.version <= 14,
+      ),
+    );
+    await insertOrder(connection, {
+      orderGuid: "m15-legacy-order",
+      sequence: 1,
+      storeCode: "S-M15",
+      deviceCode: "D-M15",
+      cashierId: "C-M15",
+      amountCents: 500,
+      state: "PendingSync",
+      syncProvenance: null,
+    });
+    await applyMigrations(connection, () => T1);
+    const legacy = await connection.getFirst<{
+      reference_code: unknown;
+      sync_price_source: unknown;
+    }>(
+      `SELECT reference_code, sync_price_source
+       FROM local_order_lines
+       WHERE order_guid = 'm15-legacy-order'`,
+    );
+    assert.deepEqual(
+      legacy ? { ...legacy } : null,
+      { reference_code: null, sync_price_source: null },
+    );
+
+    const insertLine = (
+      suffix: string,
+      lineSequence: number,
+      referenceCode: string | null,
+      syncPriceSource: number | null,
+    ) =>
+      connection.run(
+        `INSERT INTO local_order_lines (
+          line_id, order_guid, line_sequence, product_code, item_number,
+          lookup_code, display_name, quantity, unit_price_cents,
+          discount_cents, actual_amount_cents, price_source, line_kind,
+          return_source_key, original_order_guid, original_order_detail_guid,
+          reference_code, sync_price_source
+        ) VALUES (?, 'm15-legacy-order', ?, 'P', NULL, ?, 'Product', '1',
+          100, 0, 100, 'catalog', 'sale', NULL, NULL, NULL, ?, ?)`,
+        [
+          `line-m15-${suffix}`,
+          lineSequence,
+          `P-${suffix}`,
+          referenceCode,
+          syncPriceSource,
+        ],
+      );
+
+    const invalidInserts = await Promise.allSettled(
+      [
+        { suffix: "missing", source: null },
+        { suffix: "negative", source: -1 },
+        { suffix: "fractional", source: 2.5 },
+        { suffix: "overflow", source: 5 },
+      ].map((input, index) =>
+        insertLine(input.suffix, index + 2, null, input.source)),
+    );
+    const validInserts = await Promise.allSettled(
+      [0, 1, 2, 3, 4].map((source, index) =>
+        insertLine(`source-${source}`, index + 6, null, source)),
+    );
+    const immutableUpdates = await Promise.allSettled([
+      connection.run(
+        `UPDATE local_order_lines
+         SET reference_code = 'REF-M15-CHANGED'
+         WHERE line_id = 'line-m15-source-2'`,
+      ),
+      connection.run(
+        `UPDATE local_order_lines
+         SET sync_price_source = 3
+         WHERE line_id = 'line-m15-source-4'`,
+      ),
+      connection.run(
+        `UPDATE local_order_lines
+         SET reference_code = 'REF-M15-LEGACY', sync_price_source = 1
+         WHERE line_id = 'line-m15-legacy-order'`,
+      ),
+    ]);
+
+    assert.deepEqual(
+      {
+        invalidInserts: invalidInserts.map((result) => result.status),
+        validInserts: validInserts.map((result) => result.status),
+        immutableUpdates: immutableUpdates.map((result) => result.status),
+      },
+      {
+        invalidInserts: ["rejected", "rejected", "rejected", "rejected"],
+        validInserts: ["fulfilled", "fulfilled", "fulfilled", "fulfilled", "fulfilled"],
+        immutableUpdates: ["rejected", "rejected", "rejected"],
+      },
+    );
+    invalidInserts.forEach((result, index) => {
+      assert.equal(result.status, "rejected");
+      if (result.status !== "rejected") return;
+      assert.match(
+        String(result.reason),
+        index === 0
+          ? /ORDER_LINE_SYNC_PROVENANCE_INCOMPLETE/
+          : /CHECK constraint failed/,
+      );
+    });
+    immutableUpdates.forEach((result) => {
+      assert.equal(result.status, "rejected");
+      if (result.status !== "rejected") return;
+      assert.match(
+        String(result.reason),
+        /ORDER_LINE_SYNC_PROVENANCE_IMMUTABLE/,
+      );
+    });
+    const legacyAfterRejectedUpdate = await connection.getFirst<{
+      reference_code: unknown;
+      sync_price_source: unknown;
+    }>(
+      `SELECT reference_code, sync_price_source
+       FROM local_order_lines
+       WHERE line_id = 'line-m15-legacy-order'`,
+    );
+    assert.deepEqual(
+      legacyAfterRejectedUpdate ? { ...legacyAfterRejectedUpdate } : null,
+      { reference_code: null, sync_price_source: null },
+    );
+    const validAfterRejectedUpdate = await connection.getFirst<{
+      reference_code: unknown;
+      sync_price_source: unknown;
+    }>(
+      `SELECT reference_code, sync_price_source
+       FROM local_order_lines
+       WHERE line_id = 'line-m15-source-2'`,
+    );
+    assert.deepEqual(
+      validAfterRejectedUpdate ? { ...validAfterRejectedUpdate } : null,
+      { reference_code: null, sync_price_source: 2 },
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM schema_migrations
+         WHERE version = 15`,
+      ),
+      1,
+    );
+    await applyMigrations(connection, () => T2);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM schema_migrations
+         WHERE version = 15`,
+      ),
+      1,
+    );
+    await assert.rejects(
+      () =>
+        connection.run(
+          `UPDATE local_order_lines
+           SET reference_code = 'REF-M15-RETRY'
+           WHERE line_id = 'line-m15-source-2'`,
+        ),
+      /ORDER_LINE_SYNC_PROVENANCE_IMMUTABLE/,
+    );
+  });
+});
+
+test("真实 SQLite：M13 未物化和已物化计划原子升级 M14，历史一律冻结为 refund-receipt", async () => {
+  await withDatabase("return-fulfilment-m14-upgrade", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 13),
+    );
+    await insertM13ReturnFulfilmentPlan(connection, {
+      suffix: "pending",
+      sequence: 201,
+      materializedAtIso: null,
+    });
+    await insertM13ReturnFulfilmentPlan(connection, {
+      suffix: "materialized",
+      sequence: 202,
+      materializedAtIso: T1,
+    });
+
+    const m14 = POS_DATABASE_MIGRATIONS.find(
+      (migration) => migration.version === 14,
+    );
+    assert.ok(m14);
+    const failingM14 = {
+      ...m14,
+      sql: `${m14.sql}\nINVALID SQL;`,
+    };
+    await assert.rejects(
+      () => applyMigrations(connection, () => T2, [failingM14]),
+      /near "INVALID"/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 14",
+      ),
+      0,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('return_fulfilment_plans')
+         WHERE name = 'receipt_kind'`,
+      ),
+      0,
+    );
+
+    await applyMigrations(connection, () => T2);
+    const migratedPlans = await connection.getAll<{
+        action_id: unknown;
+        receipt_kind: unknown;
+        print_job_id: unknown;
+        materialized_at_iso: unknown;
+      }>(
+        `SELECT action_id, receipt_kind, print_job_id, materialized_at_iso
+         FROM return_fulfilment_plans
+         ORDER BY action_id`,
+      );
+    assert.deepEqual(
+      migratedPlans.map((row) => ({
+        action_id: row.action_id,
+        receipt_kind: row.receipt_kind,
+        print_job_id: row.print_job_id,
+        materialized_at_iso: row.materialized_at_iso,
+      })),
+      [
+        {
+          action_id: "m14-action-materialized",
+          receipt_kind: "refund-receipt",
+          print_job_id: "m13-print-materialized",
+          materialized_at_iso: T1,
+        },
+        {
+          action_id: "m14-action-pending",
+          receipt_kind: "refund-receipt",
+          print_job_id: "m13-print-pending",
+          materialized_at_iso: null,
+        },
+      ],
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 14",
+      ),
+      1,
+    );
+    await applyMigrations(connection, () => T2);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 14",
+      ),
+      1,
+    );
+    await assert.rejects(
+      () =>
+        connection.run(
+          `UPDATE return_fulfilment_plans
+           SET receipt_kind = 'refund-voucher'
+           WHERE action_id = 'm14-action-pending'`,
+        ),
+      /RETURN_FULFILMENT_PLAN_IDENTITY_IMMUTABLE/,
+    );
+    await assert.rejects(
+      () =>
+        connection.run(
+          `UPDATE return_fulfilment_plans
+           SET materialized_at_iso = ?
+           WHERE action_id = 'm14-action-materialized'`,
+          [T2],
+        ),
+      /RETURN_FULFILMENT_MATERIALIZATION_IMMUTABLE/,
+    );
+    await assert.rejects(
+      () =>
+        connection.run(
+          `DELETE FROM return_fulfilment_plans
+           WHERE action_id = 'm14-action-pending'`,
+        ),
+      /RETURN_FULFILMENT_PLAN_DELETE_FORBIDDEN/,
+    );
+  });
+});
+
+test("真实 SQLite：cash-only 退货只物化无 print link 的钱箱事件，重放不打印也不加密", async () => {
+  await withDatabase("return-fulfilment-drawer-only", async (connection) => {
+    await migrateFresh(connection);
+    await insertM14ReturnFulfilmentPlan(connection, {
+      suffix: "drawer-only",
+      sequence: 211,
+      receiptKind: "none",
+      printJobId: null,
+      drawerEventId: "m14-drawer-drawer-only",
+    });
+    let encryptCalls = 0;
+    const plans = new SqliteReturnFulfilmentPlanStore(
+      connection,
+      {
+        async encrypt() {
+          encryptCalls += 1;
+          throw new Error("Drawer-only plan must not encrypt a receipt.");
+        },
+        async decrypt() {
+          throw new Error("Drawer-only plan must not decrypt a receipt.");
+        },
+      },
+      () => T2,
+    );
+    const input = {
+      actionId: "m14-action-drawer-only",
+      expectedReturnOrderGuid: "m14-order-drawer-only",
+      expectedPrintJobId: null,
+      expectedDrawerEventId: "m14-drawer-drawer-only",
+      printerId: "m14-printer",
+      receiptBytes: null,
+      drawerReason: "cash-return",
+    } as unknown as Parameters<typeof plans.materialize>[0];
+
+    await assert.rejects(
+      () =>
+        plans.materialize({
+          ...input,
+          expectedPrintJobId: "must-not-encrypt",
+          receiptBytes: new Uint8Array([0x00]),
+        }),
+      /plan identity has diverged/,
+    );
+    assert.equal(encryptCalls, 0);
+    const first = await plans.materialize(input);
+    const replay = await plans.materialize(input);
+    assert.equal(first.receiptKind, "none");
+    assert.equal(first.printJobId, null);
+    assert.equal(first.printReceipt, false);
+    assert.equal(first.materializedAtIso, T2);
+    assert.deepEqual(replay, first);
+    assert.equal(encryptCalls, 0);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM print_jobs
+         WHERE order_guid = 'm14-order-drawer-only'`,
+      ),
+      0,
+    );
+    const drawer = await connection.getFirst<{
+        print_job_id: unknown;
+        state: unknown;
+        reason: unknown;
+      }>(
+        `SELECT print_job_id, state, reason
+         FROM drawer_events
+         WHERE event_id = 'm14-drawer-drawer-only'`,
+      );
+    assert.deepEqual(
+      drawer && {
+        print_job_id: drawer.print_job_id,
+        state: drawer.state,
+        reason: drawer.reason,
+      },
+      {
+        print_job_id: null,
+        state: "Required",
+        reason: "cash-return",
+      },
+    );
+    assert.equal((await plans.listPending()).length, 0);
+  });
+});
+
+test("真实 SQLite：打印加钱箱计划保持同一 print link，非法 receipt kind/print id 组合被拒绝", async () => {
+  await withDatabase("return-fulfilment-print-drawer", async (connection) => {
+    await migrateFresh(connection);
+    await insertM14ReturnFulfilmentPlan(connection, {
+      suffix: "print-drawer",
+      sequence: 221,
+      receiptKind: "refund-receipt",
+      printJobId: "m14-print-print-drawer",
+      drawerEventId: "m14-drawer-print-drawer",
+    });
+    const plans = new SqliteReturnFulfilmentPlanStore(
+      connection,
+      encryptor,
+      () => T2,
+    );
+    const input = {
+      actionId: "m14-action-print-drawer",
+      expectedReturnOrderGuid: "m14-order-print-drawer",
+      expectedPrintJobId: "m14-print-print-drawer",
+      expectedDrawerEventId: "m14-drawer-print-drawer",
+      printerId: "m14-printer",
+      receiptBytes: new Uint8Array([0x1b, 0x40, 0x0a]),
+      drawerReason: "cash-return",
+    };
+    const first = await plans.materialize(input);
+    const replay = await plans.materialize(input);
+    assert.equal(first.receiptKind, "refund-receipt");
+    assert.equal(first.printReceipt, true);
+    assert.deepEqual(replay, first);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM print_jobs
+         WHERE job_id = 'm14-print-print-drawer' AND state = 'Queued'`,
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM drawer_events
+         WHERE event_id = 'm14-drawer-print-drawer'
+           AND print_job_id = 'm14-print-print-drawer'
+           AND state = 'Required'`,
+      ),
+      1,
+    );
+
+    for (const invalid of [
+      {
+        suffix: "none-with-print",
+        receiptKind: "none",
+        printJobId: "invalid-print",
+        printReceipt: 0,
+      },
+      {
+        suffix: "receipt-without-print",
+        receiptKind: "refund-receipt",
+        printJobId: null,
+        printReceipt: 1,
+      },
+      {
+        suffix: "voucher-with-false-print",
+        receiptKind: "refund-voucher",
+        printJobId: "invalid-voucher-print",
+        printReceipt: 0,
+      },
+      {
+        suffix: "unknown-kind",
+        receiptKind: "unknown",
+        printJobId: "invalid-kind-print",
+        printReceipt: 1,
+      },
+    ] as const) {
+      await insertReturnActionAndOrder(
+        connection,
+        invalid.suffix,
+        230 + invalid.suffix.length,
+        TEST_SYNC_PROVENANCE,
+      );
+      await assert.rejects(
+        () =>
+          connection.run(
+            `INSERT INTO return_fulfilment_plans (
+              action_id, return_order_guid, print_job_id, drawer_event_id,
+              receipt_kind, print_receipt, drawer_required,
+              materialized_at_iso, created_at_iso
+            ) VALUES (?, ?, ?, NULL, ?, ?, 0, NULL, ?)`,
+            [
+              `m14-action-${invalid.suffix}`,
+              `m14-order-${invalid.suffix}`,
+              invalid.printJobId,
+              invalid.receiptKind,
+              invalid.printReceipt,
+              T0,
+            ],
+          ),
+        /CHECK constraint failed/,
+      );
+    }
+  });
+});
+
+test("真实 SQLite：payment draft 同事务创建并按完整 cart/身份重放，soldAt 变化不换单", async () => {
+  await withDatabase("draft-replay", async (connection) => {
+    await migrateFresh(connection);
+    const ids = sequenceIds("order-guid", "audit-draft");
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      ids,
+      () => T2,
+    );
+    const input = draftInput();
+    const first = await store.createOrReuseDraft(input);
+    const replay = await store.createOrReuseDraft({
+      ...input,
+      soldAtIso: T1,
+    });
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.orderGuid, first.orderGuid);
+    assert.equal(replay.localSequence, first.localSequence);
+    assert.equal(replay.soldAtIso, T0);
+    assert.equal(
+      await scalar(connection, "SELECT COUNT(*) AS count FROM local_orders"),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM local_order_lines",
+      ),
+      input.cart.lines.length,
+    );
+    await assert.rejects(
+      () => store.createOrReuseDraft({
+        ...input,
+        identity: { ...input.identity, cashierId: "cashier-other" },
+      }),
+      /different cart or identity/,
+    );
+    await assert.rejects(
+      async () => store.createOrReuseDraft({
+        ...input,
+        cart: {
+          ...input.cart,
+          actualAmount: { currency: "AUD", cents: 901 },
+        },
+      }),
+      /monetary truth|different cart or identity/,
+    );
+    const recovery = await store.findBlockingRecovery(input.identity);
+    assert.equal(recovery?.kind, "DraftPrepared");
+    assert.equal(recovery?.attemptId, null);
+    assert.equal(recovery?.orderGuid, first.orderGuid);
+    assert.equal(recovery?.cart.revision, input.cart.revision);
+    assert.deepEqual(recovery?.cart.lines, input.cart.lines);
+    assert.deepEqual(recovery?.pricingState, input.pricingState);
+    assert.equal(recovery?.pricingState.asOfIso, input.pricingState.asOfIso);
+    assert.equal(
+      recovery?.pricingState.lines[0]?.discountState.kind,
+      "promotion",
+    );
+    assert.equal(
+      recovery?.pricingState.lines[1]?.discountState.kind,
+      "manual-percent",
+    );
+  });
+});
+
+test("真实 SQLite：payment draft 要求 cart/定价状态冻结同步来源并逐行原子写入", async () => {
+  await withDatabase("draft-line-provenance", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-provenance", "audit-provenance"),
+      () => T2,
+    );
+    const input = draftInput({ draftId: "draft-line-provenance" });
+    const created = await store.createOrReuseDraft(input);
+    const rows = await connection.getAll<{
+      reference_code: unknown;
+      sync_price_source: unknown;
+    }>(
+      `SELECT reference_code, sync_price_source
+       FROM local_order_lines
+       WHERE order_guid = ?
+       ORDER BY line_sequence`,
+      [created.orderGuid],
+    );
+    assert.deepEqual(rows.map((row) => ({ ...row })), [
+      { reference_code: "REF-P1", sync_price_source: 2 },
+      { reference_code: null, sync_price_source: 4 },
+    ]);
+
+    const legacyCart = saleCart();
+    const firstLine = legacyCart.lines[0];
+    assert.ok(firstLine);
+    const { syncProvenance: _syncProvenance, ...legacyFirstLine } =
+      firstLine;
+    assert.throws(
+      () =>
+        store.createOrReuseDraft({
+          ...draftInput({ draftId: "draft-missing-provenance" }),
+          cart: {
+            ...legacyCart,
+            lines: [
+              legacyFirstLine,
+              ...legacyCart.lines.slice(1),
+            ],
+          },
+        }),
+      /line sync provenance/i,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_orders
+         WHERE order_guid <> ?`,
+        [created.orderGuid],
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：readDraft 始终投影当前订单和未被 reversal 抵消的活动 tender", async () => {
+  await withDatabase("draft-current-projection", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-projection", "audit-projection"),
+      () => T2,
+    );
+    const input = draftInput({ draftId: "draft-current-projection" });
+    const created = await store.createOrReuseDraft(input);
+    assert.deepEqual(
+      await store.readDraft(created.orderGuid, input.identity),
+      {
+        checkoutIntentId: input.draftId,
+        orderGuid: created.orderGuid,
+        cartRevision: input.cart.revision,
+        state: "Draft",
+        total: { currency: "AUD", cents: 900 },
+        remaining: { currency: "AUD", cents: 900 },
+        tenders: [],
+      },
+    );
+
+    await insertTender(
+      connection,
+      "projection-cash-source",
+      created.orderGuid,
+      "cash",
+      300,
+    );
+    await insertTender(
+      connection,
+      "projection-card",
+      created.orderGuid,
+      "card",
+      200,
+    );
+    let projected = await store.readDraft(created.orderGuid, input.identity);
+    assert.equal(projected?.remaining.cents, 400);
+    assert.deepEqual(
+      projected?.tenders.map((tender) => [
+        tender.tenderGuid,
+        tender.method,
+        tender.amount.cents,
+      ]),
+      [
+        ["projection-card", "card", 200],
+        ["projection-cash-source", "cash", 300],
+      ],
+    );
+
+    await insertTender(
+      connection,
+      "projection-cash-reversal",
+      created.orderGuid,
+      "cash",
+      -300,
+    );
+    await connection.run(
+      `INSERT INTO payment_tender_reversal_links (
+        order_guid, action_id, source_tender_guid,
+        reversal_tender_guid, created_at_iso
+      ) VALUES (?, 'projection-reversal', 'projection-cash-source',
+        'projection-cash-reversal', ?)`,
+      [created.orderGuid, T1],
+    );
+    projected = await store.readDraft(created.orderGuid, input.identity);
+    assert.equal(projected?.remaining.cents, 700);
+    assert.deepEqual(
+      projected?.tenders.map((tender) => tender.tenderGuid),
+      ["projection-card"],
+    );
+
+    await insertTender(
+      connection,
+      "projection-cash-final",
+      created.orderGuid,
+      "cash",
+      700,
+    );
+    await connection.run(
+      `UPDATE local_orders
+       SET state = 'PendingSync', updated_at_iso = ?
+       WHERE order_guid = ?`,
+      [T2, created.orderGuid],
+    );
+    projected = await store.readDraft(created.orderGuid, input.identity);
+    assert.equal(projected?.checkoutIntentId, input.draftId);
+    assert.equal(projected?.cartRevision, input.cart.revision);
+    assert.equal(projected?.state, "PendingSync");
+    assert.equal(projected?.remaining.cents, 0);
+    assert.equal(
+      JSON.stringify(projected).includes("pricingState"),
+      false,
+    );
+  });
+});
+
+test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重启后保留同一草稿投影", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "hb-pos-draft-cancel-close-"));
+  const path = join(folder, "cancel-close.db");
+  const connection = new SystemSqliteConnection(path);
+  try {
+    await migrateFresh(connection);
+    const input = draftInput({
+      draftId: "draft-cancelled-close",
+      identity: {
+        storeCode: "S-CANCEL",
+        deviceCode: "D-CANCEL",
+        cashierId: "C-CANCEL",
+        cashierName: "Cancelled Cashier",
+      },
+    });
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-cancelled", "audit-cancelled"),
+      () => T1,
+    );
+    const created = await store.createOrReuseDraft(input);
+    await insertActionBinding(
+      connection,
+      created.orderGuid,
+      "cancel-action",
+      "cancel-attempt",
+      "cancel-idempotency",
+    );
+    await insertAttempt(connection, {
+      attemptId: "cancel-attempt",
+      idempotencyKey: "cancel-idempotency",
+      orderGuid: created.orderGuid,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Cancelled",
+    });
+    const closed = await store.closeCancelledDraft({
+      actionId: "cancel-action",
+      orderGuid: created.orderGuid,
+      ...input.identity,
+    });
+    assert.equal(closed.replayed, false);
+    assert.deepEqual(closed.draft, {
+      checkoutIntentId: input.draftId,
+      orderGuid: created.orderGuid,
+      cartRevision: input.cart.revision,
+      state: "Draft",
+      total: { currency: "AUD", cents: 900 },
+      remaining: { currency: "AUD", cents: 900 },
+      tenders: [],
+    });
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_order_draft_bindings
+         WHERE order_guid = ? AND state = 'CancelledClosed'
+           AND close_action_id = 'cancel-action'
+           AND close_attempt_id = 'cancel-attempt'`,
+        [created.orderGuid],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_orders order_row
+         INNER JOIN local_order_lines line
+           ON line.order_guid = order_row.order_guid
+         INNER JOIN payment_attempts attempt
+           ON attempt.order_guid = order_row.order_guid
+         INNER JOIN payment_action_bindings action_binding
+           ON action_binding.order_guid = order_row.order_guid
+         WHERE order_row.order_guid = ?`,
+        [created.orderGuid],
+      ),
+      input.cart.lines.length,
+    );
+    await connection.close();
+
+    const reopened = new SystemSqliteConnection(path);
+    const reopenedStore = new SqlitePaymentDraftRecoveryStore(
+      reopened,
+      sequenceIds("unused-order", "unused-audit"),
+      () => T2,
+    );
+    const replay = await reopenedStore.closeCancelledDraft({
+      actionId: "cancel-action",
+      orderGuid: created.orderGuid,
+      ...input.identity,
+    });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(
+      await reopenedStore.readDraft(created.orderGuid, input.identity),
+      closed.draft,
+    );
+    await assert.rejects(
+      () => reopenedStore.closeCancelledDraft({
+        actionId: "different-cancel-action",
+        orderGuid: created.orderGuid,
+        ...input.identity,
+      }),
+      /different immutable action/,
+    );
+    await assert.rejects(
+      () => insertActionBinding(
+        reopened,
+        created.orderGuid,
+        "late-payment-action",
+        "late-payment-attempt",
+        "late-payment-idempotency",
+      ),
+      /PAYMENT_ORDER_DRAFT_CANCELLED_CLOSED/,
+    );
+    await reopened.close();
+  } finally {
+    try { await connection.close(); } catch { /* already closed */ }
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("真实 SQLite：Cancelled close 遇到活动 tender、非 Cancelled 或其他 blocking attempt 一律失败关闭", async () => {
+  await withDatabase("draft-cancel-close-guards", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-cancel-guard", "audit-cancel-guard"),
+      () => T2,
+    );
+    const withTender = draftInput({
+      draftId: "draft-cancel-with-tender",
+      identity: {
+        storeCode: "S-CANCEL-TENDER",
+        deviceCode: "D-CANCEL-TENDER",
+        cashierId: "C",
+        cashierName: "Cashier",
+      },
+    });
+    const tenderOrder = await store.createOrReuseDraft(withTender);
+    await insertActionBinding(
+      connection,
+      tenderOrder.orderGuid,
+      "cancel-with-tender",
+      "attempt-with-tender",
+      "idempotency-with-tender",
+    );
+    await insertAttempt(connection, {
+      attemptId: "attempt-with-tender",
+      idempotencyKey: "idempotency-with-tender",
+      orderGuid: tenderOrder.orderGuid,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Cancelled",
+    });
+    await insertTender(
+      connection,
+      "active-cash-tender",
+      tenderOrder.orderGuid,
+      "cash",
+      100,
+    );
+    await assert.rejects(
+      () => store.closeCancelledDraft({
+        actionId: "cancel-with-tender",
+        orderGuid: tenderOrder.orderGuid,
+        ...withTender.identity,
+      }),
+      /active positive tender/,
+    );
+
+    const wrongState = draftInput({
+      draftId: "draft-cancel-wrong-state",
+      identity: {
+        storeCode: "S-CANCEL-STATE",
+        deviceCode: "D-CANCEL-STATE",
+        cashierId: "C",
+        cashierName: "Cashier",
+      },
+    });
+    const wrongStateOrder = await store.createOrReuseDraft(wrongState);
+    await insertActionBinding(
+      connection,
+      wrongStateOrder.orderGuid,
+      "declined-action",
+      "declined-attempt",
+      "declined-idempotency",
+    );
+    await insertAttempt(connection, {
+      attemptId: "declined-attempt",
+      idempotencyKey: "declined-idempotency",
+      orderGuid: wrongStateOrder.orderGuid,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Declined",
+    });
+    await assert.rejects(
+      () => store.closeCancelledDraft({
+        actionId: "declined-action",
+        orderGuid: wrongStateOrder.orderGuid,
+        ...wrongState.identity,
+      }),
+      /identity are inconsistent/,
+    );
+
+    const blocked = draftInput({
+      draftId: "draft-cancel-other-blocking",
+      identity: {
+        storeCode: "S-CANCEL-BLOCK",
+        deviceCode: "D-CANCEL-BLOCK",
+        cashierId: "C",
+        cashierName: "Cashier",
+      },
+    });
+    const blockedOrder = await store.createOrReuseDraft(blocked);
+    await insertActionBinding(
+      connection,
+      blockedOrder.orderGuid,
+      "cancel-primary",
+      "cancel-primary-attempt",
+      "cancel-primary-idempotency",
+    );
+    await insertAttempt(connection, {
+      attemptId: "cancel-primary-attempt",
+      idempotencyKey: "cancel-primary-idempotency",
+      orderGuid: blockedOrder.orderGuid,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Cancelled",
+    });
+    await insertActionBinding(
+      connection,
+      blockedOrder.orderGuid,
+      "other-blocking",
+      "other-blocking-attempt",
+      "other-blocking-idempotency",
+    );
+    await insertAttempt(connection, {
+      attemptId: "other-blocking-attempt",
+      idempotencyKey: "other-blocking-idempotency",
+      orderGuid: blockedOrder.orderGuid,
+      provider: "linkly-cloud",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Unknown",
+    });
+    await assert.rejects(
+      () => store.closeCancelledDraft({
+        actionId: "cancel-primary",
+        orderGuid: blockedOrder.orderGuid,
+        ...blocked.identity,
+      }),
+      /Another blocking payment attempt/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_order_draft_bindings
+         WHERE order_guid = ? AND state = 'Active'`,
+        [blockedOrder.orderGuid],
+      ),
+      1,
+    );
+  });
+});
+
+test("真实 SQLite：退货多 allocation 在 provider 前耐久绑定，Unknown 跨恢复冻结容量并以同一 OrderGuid 完成", async () => {
+  await withDatabase("durable-return-ledger", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    await vault.seedOrLoad({
+      capacityId: "return-capacity-cash",
+      originalOrderGuid: "original-return-order",
+      method: "cash",
+      originalAmountCents: 500,
+      remainingAmountCents: 500,
+      protectedContext: null,
+      observedAtIso: T0,
+    });
+    await vault.seedOrLoad({
+      capacityId: "return-capacity-card",
+      originalOrderGuid: "original-return-order",
+      method: "card",
+      originalAmountCents: 500,
+      remainingAmountCents: 500,
+      protectedContext: {
+        paymentId: "SECRET-PAYMENT-ID",
+        rfn: "SECRET-RFN",
+      },
+      observedAtIso: T0,
+    });
+    let tenderId = 0;
+    let auditId = 0;
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => `return-tender-${++tenderId}`,
+        createAuditEventId: () => `return-audit-${++auditId}`,
+      },
+      () => T2,
+    );
+    const draft = durableReturnDraft();
+    const [prepared, replay] = await Promise.all([
+      ledger.prepareOrLoad(draft),
+      ledger.prepareOrLoad(draft),
+    ]);
+    assert.equal(prepared.returnOrderGuid, "return-order-guid-1");
+    assert.equal(replay.returnOrderGuid, prepared.returnOrderGuid);
+    assert.equal(prepared.status, "processing");
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_orders
+         WHERE order_guid = 'return-order-guid-1' AND state = 'Draft'`,
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_order_lines
+         WHERE order_guid = 'return-order-guid-1'`,
+      ),
+      1,
+    );
+
+    await assert.rejects(
+      () => ledger.prepareOrLoad({
+        ...draft,
+        actionId: "return-action-capacity-race",
+        requestFingerprint: "return-fingerprint-race",
+        returnOrderGuid: "return-order-guid-race",
+        actionRecoveryToken: "return-recovery-race",
+        identity: {
+          ...draft.identity,
+          deviceCode: "D-RETURN-OTHER",
+        },
+        lines: draft.lines.map((line) => ({
+          ...line,
+          lineId: "return-line-race",
+        })),
+        allocations: draft.allocations.map((allocation, index) => ({
+          ...allocation,
+          allocationId: `return-allocation-race-${index}`,
+          externalAttemptId:
+            allocation.externalAttemptId === null
+              ? null
+              : `return-external-race-${index}`,
+        })),
+      }),
+      /capacity is exhausted or reserved/,
+    );
+
+    assert.equal(
+      await ledger.markAllocationSubmitted({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = 'return-order-guid-1'`,
+      ),
+      0,
+    );
+    assert.equal(
+      await ledger.markAllocationSubmitted({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-card",
+      }),
+      true,
+    );
+    await insertActionBinding(
+      connection,
+      draft.returnOrderGuid,
+      "return-provider-action",
+      "return-payment-attempt",
+      "return-payment-idempotency",
+      ["square", "refund", "AUD", -300],
+    );
+    await insertAttempt(connection, {
+      attemptId: "return-payment-attempt",
+      idempotencyKey: "return-payment-idempotency",
+      orderGuid: draft.returnOrderGuid,
+      provider: "square",
+      operation: "refund",
+      amountCents: -300,
+      state: "Unknown",
+    });
+    assert.equal(
+      await ledger.bindAllocationAttempt({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-card",
+        attemptKind: "payment-provider",
+        externalActionId: "return-provider-action",
+        durableAttemptId: "return-payment-attempt",
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-card",
+        expectedStatuses: ["submitted"],
+        status: "unknown",
+        protectedRecoveryKey: "SECRET-RECOVERY-KEY",
+      }),
+      true,
+    );
+    await ledger.markActionUnknown({ actionId: draft.actionId });
+    const unknown = await ledger.load(draft.actionId);
+    assert.equal(unknown?.status, "unknown");
+    assert.equal(
+      unknown?.allocations[1]?.protectedRecoveryKey,
+      "SECRET-RECOVERY-KEY",
+    );
+    const rawRecovery = await connection.getFirst<{ value: unknown }>(
+      `SELECT HEX(protected_recovery_ciphertext) AS value
+       FROM return_action_allocations
+       WHERE action_id = ? AND allocation_id = 'return-allocation-card'`,
+      [draft.actionId],
+    );
+    assert.equal(
+      String(rawRecovery?.value).includes("SECRET-RECOVERY-KEY"),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(
+        await connection.getAll<{ name: unknown }>(
+          "PRAGMA table_info('return_tender_capacities')",
+        ),
+      ).includes("payment_id"),
+      false,
+    );
+
+    const recoverable = await ledger.listRecoverable({
+      storeCode: draft.identity.storeCode,
+      deviceCode: draft.identity.deviceCode,
+      cashierId: draft.identity.cashierId,
+      sessionEpoch: "new-session-epoch",
+    });
+    assert.deepEqual(recoverable, [
+      {
+        actionId: draft.actionId,
+        returnOrderGuid: draft.returnOrderGuid,
+        sourceKind: "receipt",
+        totalRefundCents: 500,
+        status: "unknown",
+        lines: [
+          {
+            sourceKind: "receipt",
+            itemNumber: "I-RETURN",
+            displayName: "Returned Product",
+            quantity: 1,
+            unitRefundCents: 500,
+            signedAmountCents: -500,
+            syncProvenance: {
+              referenceCode: "REF-P-RETURN",
+              priceSource: 0,
+            },
+          },
+        ],
+      },
+    ]);
+    const recoveryJson = JSON.stringify(recoverable);
+    for (const secret of [
+      "SECRET-RECOVERY-KEY",
+      "SECRET-PAYMENT-ID",
+      "SECRET-RFN",
+      draft.actionRecoveryToken,
+      "return-capacity-card",
+      "return-capacity-cash",
+      "protected_recovery_ciphertext",
+    ]) {
+      assert.equal(
+        recoveryJson.includes(secret),
+        false,
+        `recoverable projection leaked ${secret}`,
+      );
+    }
+    assert.deepEqual(
+      await ledger.listRecoverable({
+        storeCode: draft.identity.storeCode,
+        deviceCode: draft.identity.deviceCode,
+        cashierId: "OTHER-CASHIER",
+        sessionEpoch: "new-session-epoch",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      await ledger.listRecoverable({
+        storeCode: "OTHER-STORE",
+        deviceCode: draft.identity.deviceCode,
+        cashierId: draft.identity.cashierId,
+        sessionEpoch: "new-session-epoch",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      await ledger.listRecoverable({
+        storeCode: draft.identity.storeCode,
+        deviceCode: "OTHER-DEVICE",
+        cashierId: draft.identity.cashierId,
+        sessionEpoch: "new-session-epoch",
+      }),
+      [],
+    );
+
+    assert.equal(
+      await ledger.resumeUnknownAction({ actionId: draft.actionId }),
+      true,
+    );
+    await connection.run(
+      `UPDATE payment_attempts
+       SET state = 'Approved', updated_at_iso = ?
+       WHERE attempt_id = 'return-payment-attempt'`,
+      [T2],
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-card",
+        expectedStatuses: ["unknown"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-card",
+        expectedStatuses: ["unknown"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = 'return-order-guid-1'
+           AND payment_attempt_id = 'return-payment-attempt'`,
+      ),
+      1,
+    );
+    const completion = durableReturnCompletion(draft);
+    assert.throws(
+      () =>
+        ledger.completeAtomically({
+          ...completion,
+          fulfilment: {
+            ...completion.fulfilment,
+            receiptKind: "refund-voucher",
+          },
+        }),
+      /fulfilment policy/,
+    );
+    assert.throws(
+      () =>
+        ledger.completeAtomically({
+          ...completion,
+          fulfilment: {
+            ...completion.fulfilment,
+            receiptKind: "voucher" as never,
+          },
+      }),
+      /receipt kind/,
+    );
+    assert.throws(
+      () =>
+        ledger.completeAtomically({
+          ...completion,
+          plan: {
+            ...completion.plan,
+            allocations: [
+              {
+                method: "voucher",
+                signedAmountCents: -200,
+                originalCapacityId: "voucher-capacity-a",
+                originalOrderGuid: "original-return-order",
+                offlineCashProof: null,
+              },
+              {
+                method: "voucher",
+                signedAmountCents: -300,
+                originalCapacityId: "voucher-capacity-b",
+                originalOrderGuid: "original-return-order",
+                offlineCashProof: null,
+              },
+            ],
+          },
+          fulfilment: {
+            printJobId: "unsafe-multi-voucher-print",
+            drawerEventId: null,
+            receiptKind: "refund-voucher",
+            drawerRequired: false,
+          },
+        }),
+      /fulfilment policy/,
+    );
+    const completed = await ledger.completeAtomically(completion);
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.returnOrderGuid, draft.returnOrderGuid);
+    assert.equal(
+      (await ledger.completeAtomically(completion)).status,
+      "completed",
+    );
+    assert.equal(
+      (await ledger.load(draft.actionId))?.allocations[1]
+        ?.protectedRecoveryKey,
+      "SECRET-RECOVERY-KEY",
+    );
+    await assert.rejects(
+      () => ledger.completeAtomically({
+        ...completion,
+        outbox: {
+          ...completion.outbox,
+          messageId: "different-replayed-outbox",
+        },
+      }),
+      /outbox was replayed differently/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_orders
+         WHERE order_guid = 'return-order-guid-1'
+           AND state = 'PendingSync'
+           AND actual_amount_cents = -500`,
+      ),
+      1,
+    );
+    assert.deepEqual(
+      {
+        ...(await connection.getFirst<{
+          receipt_kind: unknown;
+          print_job_id: unknown;
+          drawer_event_id: unknown;
+        }>(
+          `SELECT receipt_kind, print_job_id, drawer_event_id
+           FROM return_fulfilment_plans
+           WHERE action_id = ?`,
+          [draft.actionId],
+        )),
+      },
+      {
+        receipt_kind: "refund-receipt",
+        print_job_id: completion.fulfilment.printJobId,
+        drawer_event_id: completion.fulfilment.drawerEventId,
+      },
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = 'return-order-guid-1'
+           AND amount_cents < 0`,
+      ),
+      2,
+    );
+    assert.equal(
+      Number(
+        (await vault.get("return-capacity-card"))?.remainingAmountCents,
+      ),
+      200,
+    );
+    assert.equal(
+      Number(
+        (await vault.get("return-capacity-cash"))?.remainingAmountCents,
+      ),
+      300,
+    );
+    assert.equal(
+      Number(
+        (
+          await connection.getFirst<{ value: unknown }>(
+            `SELECT remaining_quantity AS value
+             FROM return_capacity
+             WHERE return_source_key = 'return-source-1'`,
+          )
+        )?.value,
+      ),
+      0,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM outbox_messages
+         WHERE aggregate_id = 'return-order-guid-1'
+           AND kind = 'order-sync'`,
+      ),
+      1,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        String(
+          (
+            await connection.getFirst<{ payload_json: unknown }>(
+              `SELECT payload_json
+               FROM outbox_messages
+               WHERE aggregate_id = 'return-order-guid-1'
+                 AND kind = 'order-sync'`,
+            )
+          )?.payload_json,
+        ),
+      ),
+      { orderGuid: "return-order-guid-1" },
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM return_fulfilment_plans
+         WHERE return_order_guid = 'return-order-guid-1'
+           AND materialized_at_iso IS NULL`,
+      ),
+      1,
+    );
+    const fulfilmentPlans = new SqliteReturnFulfilmentPlanStore(
+      connection,
+      encryptor,
+      () => T2,
+    );
+    assert.equal((await fulfilmentPlans.listPending())[0]?.actionId, draft.actionId);
+    const materialization = {
+      actionId: draft.actionId,
+      expectedReturnOrderGuid: draft.returnOrderGuid,
+      expectedPrintJobId: completion.fulfilment.printJobId,
+      expectedDrawerEventId: completion.fulfilment.drawerEventId,
+      printerId: "return-printer-1",
+      receiptBytes: new Uint8Array([0x1b, 0x40, 0x0a]),
+      drawerReason: "cash-return",
+    };
+    assert.equal(
+      (await fulfilmentPlans.materialize(materialization)).materializedAtIso,
+      T2,
+    );
+    assert.equal(
+      (await fulfilmentPlans.materialize(materialization)).materializedAtIso,
+      T2,
+    );
+    assert.equal((await fulfilmentPlans.listPending()).length, 0);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM print_jobs
+         WHERE job_id = ? AND state = 'Queued'`,
+        [completion.fulfilment.printJobId],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM drawer_events
+         WHERE event_id = ? AND state = 'Required'`,
+        [completion.fulfilment.drawerEventId],
+      ),
+      1,
+    );
+    await assert.rejects(
+      () =>
+        fulfilmentPlans.materialize({
+          ...materialization,
+          receiptBytes: new Uint8Array([0x00]),
+        }),
+      /receipt bytes have diverged/,
+    );
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => T2,
+      createLeaseId: () => "return-sync-lease",
+      encryptor,
+    });
+    const [leased] = await repositories.outbox.leaseReady(1, 60);
+    assert.equal(leased?.kind, "order-sync");
+    assert.equal(leased?.aggregateId, draft.returnOrderGuid);
+  });
+});
+
+test("真实 SQLite：原单金额不可整除数量时，全量退货按剩余金额收尾且部分数量仍严格校验单价", async () => {
+  await withDatabase("durable-return-tail-rounding", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    await vault.seedOrLoad({
+      capacityId: "return-tail-capacity",
+      originalOrderGuid: "original-return-order",
+      method: "cash",
+      originalAmountCents: 1_001,
+      remainingAmountCents: 1_001,
+      protectedContext: null,
+      observedAtIso: T0,
+    });
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => "return-tail-tender",
+        createAuditEventId: () => "return-tail-audit",
+      },
+      () => T2,
+    );
+    const base = durableReturnDraft({
+      actionId: "return-tail-action",
+      requestFingerprint: "return-tail-fingerprint",
+      returnOrderGuid: "return-tail-order",
+      actionRecoveryToken: "return-tail-recovery",
+      returnSourceKey: "return-tail-source",
+      capacityId: "return-tail-capacity",
+      onlineCashOnly: true,
+    });
+    const fullTail = {
+      ...base,
+      plan: {
+        ...base.plan,
+        totalRefundCents: 1_001,
+        lines: base.plan.lines.map((line) => ({
+          ...line,
+          quantity: 3,
+          signedAmountCents: -1_001,
+        })),
+        allocations: base.plan.allocations.map((allocation) => ({
+          ...allocation,
+          signedAmountCents: -1_001,
+        })),
+      },
+      lines: base.lines.map((line) => ({
+        ...line,
+        quantity: 3,
+        unitRefundCents: 334,
+        signedAmountCents: -1_001,
+        availableQuantity: 3,
+        remainingAmountCents: 1_001,
+      })),
+      allocations: base.allocations.map((allocation) => ({
+        ...allocation,
+        signedAmountCents: -1_001,
+      })),
+    };
+
+    assert.throws(
+      () =>
+        ledger.prepareOrLoad({
+          ...fullTail,
+          actionId: "return-partial-mismatch-action",
+          requestFingerprint: "return-partial-mismatch-fingerprint",
+          returnOrderGuid: "return-partial-mismatch-order",
+          actionRecoveryToken: "return-partial-mismatch-recovery",
+          plan: {
+            ...fullTail.plan,
+            totalRefundCents: 667,
+            lines: fullTail.plan.lines.map((line) => ({
+              ...line,
+              quantity: 2,
+              signedAmountCents: -667,
+            })),
+            allocations: fullTail.plan.allocations.map((allocation) => ({
+              ...allocation,
+              signedAmountCents: -667,
+            })),
+          },
+          lines: fullTail.lines.map((line) => ({
+            ...line,
+            quantity: 2,
+            signedAmountCents: -667,
+          })),
+          allocations: fullTail.allocations.map((allocation) => ({
+            ...allocation,
+            signedAmountCents: -667,
+          })),
+        }),
+      /line amount is inconsistent/,
+    );
+
+    const prepared = await ledger.prepareOrLoad(fullTail);
+    assert.equal(prepared.lines[0]?.signedAmountCents, -1_001);
+  });
+});
+
+test("真实 SQLite：双 provider 逐笔 Approved 即落 tender，写失败可重放且 final 不重复", async () => {
+  await withDatabase("durable-return-two-provider", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    await vault.seedOrLoad({
+      capacityId: "return-capacity-provider-a",
+      originalOrderGuid: "original-provider-order",
+      method: "card",
+      originalAmountCents: 200,
+      remainingAmountCents: 200,
+      protectedContext: { paymentId: "SECRET-PROVIDER-A" },
+      observedAtIso: T0,
+    });
+    await vault.seedOrLoad({
+      capacityId: "return-capacity-provider-b",
+      originalOrderGuid: "original-provider-order",
+      method: "card",
+      originalAmountCents: 300,
+      remainingAmountCents: 300,
+      protectedContext: { rfn: "SECRET-PROVIDER-B" },
+      observedAtIso: T0,
+    });
+    await insertOrder(connection, {
+      orderGuid: "occupied-tender-order",
+      sequence: 99,
+      storeCode: "S-SEED",
+      deviceCode: "D-SEED",
+      cashierId: "C-SEED",
+      amountCents: 1,
+      state: "Synced",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await insertTender(
+      connection,
+      "occupied-provider-tender",
+      "occupied-tender-order",
+      "cash",
+      1,
+    );
+
+    let tenderCall = 0;
+    let auditCall = 0;
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => {
+          tenderCall += 1;
+          return tenderCall === 1
+            ? "occupied-provider-tender"
+            : `two-provider-tender-${tenderCall}`;
+        },
+        createAuditEventId: () => `two-provider-audit-${++auditCall}`,
+      },
+      () => T2,
+    );
+    const draft = durableTwoProviderReturnDraft();
+    await ledger.prepareOrLoad(draft);
+
+    await ledger.markAllocationSubmitted({
+      actionId: draft.actionId,
+      allocationId: "provider-allocation-a",
+    });
+    await insertActionBinding(
+      connection,
+      draft.returnOrderGuid,
+      "provider-action-a",
+      "provider-attempt-a",
+      "provider-idempotency-a",
+      ["square", "refund", "AUD", -200],
+    );
+    await insertAttempt(connection, {
+      attemptId: "provider-attempt-a",
+      idempotencyKey: "provider-idempotency-a",
+      orderGuid: draft.returnOrderGuid,
+      provider: "square",
+      operation: "refund",
+      amountCents: -200,
+      state: "Approved",
+    });
+    await ledger.bindAllocationAttempt({
+      actionId: draft.actionId,
+      allocationId: "provider-allocation-a",
+      attemptKind: "payment-provider",
+      externalActionId: "provider-action-a",
+      durableAttemptId: "provider-attempt-a",
+    });
+    await assert.rejects(
+      () =>
+        ledger.recordAllocationOutcome({
+          actionId: draft.actionId,
+          allocationId: "provider-allocation-a",
+          expectedStatuses: ["submitted"],
+          status: "completed",
+          protectedRecoveryKey: null,
+        }),
+      /UNIQUE constraint failed/,
+    );
+    assert.equal(
+      (await ledger.load(draft.actionId))?.allocations[0]?.status,
+      "submitted",
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE payment_attempt_id = 'provider-attempt-a'`,
+      ),
+      0,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "provider-allocation-a",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "provider-allocation-a",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => T2,
+      createLeaseId: () => "unused-return-lease",
+      encryptor,
+    });
+    assert.equal(
+      await repositories.payments.findBlocking(draft.returnOrderGuid),
+      null,
+    );
+
+    await ledger.markAllocationSubmitted({
+      actionId: draft.actionId,
+      allocationId: "provider-allocation-b",
+    });
+    await insertActionBinding(
+      connection,
+      draft.returnOrderGuid,
+      "provider-action-b",
+      "provider-attempt-b",
+      "provider-idempotency-b",
+      ["linkly-cloud", "refund", "AUD", -300],
+    );
+    await insertAttempt(connection, {
+      attemptId: "provider-attempt-b",
+      idempotencyKey: "provider-idempotency-b",
+      orderGuid: draft.returnOrderGuid,
+      provider: "linkly-cloud",
+      operation: "refund",
+      amountCents: -300,
+      state: "Approved",
+    });
+    await ledger.bindAllocationAttempt({
+      actionId: draft.actionId,
+      allocationId: "provider-allocation-b",
+      attemptKind: "payment-provider",
+      externalActionId: "provider-action-b",
+      durableAttemptId: "provider-attempt-b",
+    });
+    await assert.rejects(
+      () =>
+        ledger.bindAllocationAttempt({
+          actionId: draft.actionId,
+          allocationId: "provider-allocation-a",
+          attemptKind: "payment-provider",
+          externalActionId: "provider-action-b",
+          durableAttemptId: "provider-attempt-b",
+        }),
+      /already bound to another durable attempt/,
+    );
+    assert.equal(
+      (
+        await repositories.payments.findBlocking(draft.returnOrderGuid)
+      )?.attemptId,
+      "provider-attempt-b",
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "provider-allocation-b",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "provider-allocation-b",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await repositories.payments.findBlocking(draft.returnOrderGuid),
+      null,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = ? AND payment_attempt_id IS NOT NULL`,
+        [draft.returnOrderGuid],
+      ),
+      2,
+    );
+
+    const completion = durableReturnCompletion(draft);
+    assert.equal(
+      (await ledger.completeAtomically(completion)).status,
+      "completed",
+    );
+    assert.equal(
+      (await ledger.completeAtomically(completion)).status,
+      "completed",
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = ?`,
+        [draft.returnOrderGuid],
+      ),
+      2,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM return_tender_attempt_bindings
+         WHERE action_id = ?`,
+        [draft.actionId],
+      ),
+      2,
+    );
+  });
+});
+
+test("真实 SQLite：provider 退款金额或签名 provider 不一致时拒绝 allocation 绑定", async () => {
+  await withDatabase("durable-return-provider-mismatch", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    for (const [capacityId, amount] of [
+      ["return-capacity-provider-a", 200],
+      ["return-capacity-provider-b", 300],
+    ] as const) {
+      await vault.seedOrLoad({
+        capacityId,
+        originalOrderGuid: "original-provider-order",
+        method: "card",
+        originalAmountCents: amount,
+        remainingAmountCents: amount,
+        protectedContext: { providerRef: `SECRET-${capacityId}` },
+        observedAtIso: T0,
+      });
+    }
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => "unused-mismatch-tender",
+        createAuditEventId: () => "unused-mismatch-audit",
+      },
+      () => T2,
+    );
+    const draft = durableTwoProviderReturnDraft({
+      actionId: "provider-mismatch-action",
+      returnOrderGuid: "provider-mismatch-order",
+      returnSourceKey: "provider-mismatch-source",
+    });
+    await ledger.prepareOrLoad(draft);
+    for (const allocation of draft.allocations) {
+      await ledger.markAllocationSubmitted({
+        actionId: draft.actionId,
+        allocationId: allocation.allocationId,
+      });
+    }
+    await insertActionBinding(
+      connection,
+      draft.returnOrderGuid,
+      "mismatch-amount-action",
+      "mismatch-amount-attempt",
+      "mismatch-amount-idempotency",
+      ["square", "refund", "AUD", -199],
+    );
+    await insertAttempt(connection, {
+      attemptId: "mismatch-amount-attempt",
+      idempotencyKey: "mismatch-amount-idempotency",
+      orderGuid: draft.returnOrderGuid,
+      provider: "square",
+      operation: "refund",
+      amountCents: -200,
+      state: "Approved",
+    });
+    await assert.rejects(
+      () =>
+        ledger.bindAllocationAttempt({
+          actionId: draft.actionId,
+          allocationId: "provider-allocation-a",
+          attemptKind: "payment-provider",
+          externalActionId: "mismatch-amount-action",
+          durableAttemptId: "mismatch-amount-attempt",
+        }),
+      /identity is inconsistent/,
+    );
+
+    await insertActionBinding(
+      connection,
+      draft.returnOrderGuid,
+      "mismatch-provider-action",
+      "mismatch-provider-attempt",
+      "mismatch-provider-idempotency",
+      ["square", "refund", "AUD", -300],
+    );
+    await insertAttempt(connection, {
+      attemptId: "mismatch-provider-attempt",
+      idempotencyKey: "mismatch-provider-idempotency",
+      orderGuid: draft.returnOrderGuid,
+      provider: "linkly-cloud",
+      operation: "refund",
+      amountCents: -300,
+      state: "Approved",
+    });
+    await assert.rejects(
+      () =>
+        ledger.bindAllocationAttempt({
+          actionId: draft.actionId,
+          allocationId: "provider-allocation-b",
+          attemptKind: "payment-provider",
+          externalActionId: "mismatch-provider-action",
+          durableAttemptId: "mismatch-provider-attempt",
+        }),
+      /identity is inconsistent/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM return_tender_attempt_bindings
+         WHERE action_id = ?`,
+        [draft.actionId],
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：Hbpos API attempt 先耐久再绑定，最终写失败整体回滚且可用同一 returnOrderGuid 重放", async () => {
+  await withDatabase("durable-return-api-rollback", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    await vault.seedOrLoad({
+      capacityId: "api-cash-capacity",
+      originalOrderGuid: "api-original-order",
+      method: "cash",
+      originalAmountCents: 500,
+      remainingAmountCents: 500,
+      protectedContext: null,
+      observedAtIso: T0,
+    });
+    let tender = 0;
+    let audit = 0;
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => `api-return-tender-${++tender}`,
+        createAuditEventId: () => `api-return-audit-${++audit}`,
+      },
+      () => T2,
+    );
+    const draft = durableReturnDraft({
+      actionId: "api-return-action",
+      requestFingerprint: "api-return-fingerprint",
+      returnOrderGuid: "api-return-order",
+      actionRecoveryToken: "api-return-recovery",
+      originalOrderGuid: "api-original-order",
+      returnSourceKey: "api-return-source",
+      capacityId: "api-cash-capacity",
+      onlineCashOnly: true,
+    });
+    await ledger.prepareOrLoad(draft);
+    await ledger.markAllocationSubmitted({
+      actionId: draft.actionId,
+      allocationId: "return-allocation-cash",
+    });
+    const apiAttempts = new SqliteReturnApiAttemptStore(
+      connection,
+      encryptor,
+    );
+    const apiAttempt = {
+      durableAttemptId: "hbpos-api-attempt-1",
+      externalAttemptId: "return-external-cash",
+      returnOrderGuid: draft.returnOrderGuid,
+      actionId: draft.actionId,
+      allocationId: "return-allocation-cash",
+      externalActionId: "hbpos-api-action-1",
+      idempotencyKey: "hbpos-api-idempotency-1",
+      method: "cash" as const,
+      signedAmountCents: -500,
+      protectedContext: { backendRefundReference: "SECRET-BACKEND-REF" },
+      createdAtIso: T1,
+    };
+    assert.equal(
+      (await apiAttempts.prepareOrLoad(apiAttempt)).state,
+      "Created",
+    );
+    assert.equal(
+      (await apiAttempts.prepareOrLoad(apiAttempt)).durableAttemptId,
+      apiAttempt.durableAttemptId,
+    );
+    assert.equal(
+      await apiAttempts.compareAndSetState({
+        durableAttemptId: apiAttempt.durableAttemptId,
+        expected: "Created",
+        next: "Submitted",
+        updatedAtIso: T1,
+      }),
+      true,
+    );
+    assert.equal(
+      await apiAttempts.compareAndSetState({
+        durableAttemptId: apiAttempt.durableAttemptId,
+        expected: "Submitted",
+        next: "Approved",
+        updatedAtIso: T2,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.bindAllocationAttempt({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        attemptKind: "hbpos-api",
+        externalActionId: apiAttempt.externalActionId,
+        durableAttemptId: apiAttempt.durableAttemptId,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = 'api-return-order'`,
+      ),
+      0,
+    );
+    await connection.run(
+      `INSERT INTO outbox_messages (
+        message_id, aggregate_id, kind, payload_json, state,
+        attempt_count, next_attempt_at_iso, lease_id, lease_expires_at_iso,
+        last_error_code, created_at_iso, updated_at_iso
+      ) VALUES ('duplicate-return-outbox', 'seed', 'audit-batch', '{}',
+        'pending', 0, ?, NULL, NULL, NULL, ?, ?)`,
+      [T0, T0, T0],
+    );
+    const failingCompletion = durableReturnCompletion(draft, {
+      messageId: "duplicate-return-outbox",
+    });
+    await assert.rejects(
+      () => ledger.completeAtomically(failingCompletion),
+      /UNIQUE constraint failed/,
+    );
+    assert.equal((await ledger.load(draft.actionId))?.status, "processing");
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM local_orders
+         WHERE order_guid = 'api-return-order' AND state = 'Draft'`,
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = 'api-return-order'`,
+      ),
+      0,
+    );
+    assert.equal(
+      (await vault.get("api-cash-capacity"))?.remainingAmountCents,
+      500,
+    );
+    const completed = await ledger.completeAtomically(
+      durableReturnCompletion(draft),
+    );
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.returnOrderGuid, "api-return-order");
+    assert.deepEqual(
+      await apiAttempts.resolveProtectedContext(
+        apiAttempt.durableAttemptId,
+      ),
+      { backendRefundReference: "SECRET-BACKEND-REF" },
+    );
+    const completion = durableReturnCompletion(draft);
+    await connection.run(
+      `INSERT INTO drawer_events (
+        event_id, order_guid, printer_id, print_job_id, state, reason,
+        retry_count, requested_at_iso, completed_at_iso, last_error_code,
+        created_at_iso, updated_at_iso
+      ) VALUES (?, ?, 'conflicting-printer', NULL, 'Required', 'seed',
+        0, NULL, NULL, NULL, ?, ?)`,
+      [
+        completion.fulfilment.drawerEventId,
+        completion.returnOrderGuid,
+        T2,
+        T2,
+      ],
+    );
+    const fulfilmentPlans = new SqliteReturnFulfilmentPlanStore(
+      connection,
+      encryptor,
+      () => T2,
+    );
+    await assert.rejects(
+      () =>
+        fulfilmentPlans.materialize({
+          actionId: draft.actionId,
+          expectedReturnOrderGuid: draft.returnOrderGuid,
+          expectedPrintJobId: completion.fulfilment.printJobId,
+          expectedDrawerEventId: completion.fulfilment.drawerEventId,
+          printerId: "api-return-printer",
+          receiptBytes: null,
+          drawerReason: "cash-return",
+        }),
+      /UNIQUE constraint failed/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM print_jobs
+         WHERE job_id = ?`,
+        [completion.fulfilment.printJobId],
+      ),
+      0,
+    );
+    assert.equal(
+      (
+        await fulfilmentPlans.get(draft.actionId)
+      )?.materializedAtIso,
+      null,
+    );
+  });
+});
+
+test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删除且旧异步支付被数据库拒绝", async () => {
+  await withDatabase("draft-abandon", async (connection) => {
+    await migrateFresh(connection);
+    const ids = sequenceIds("order-abandon", "audit-abandon");
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      ids,
+      () => T1,
+    );
+    const input = draftInput({ draftId: "draft-abandon" });
+    const created = await store.createOrReuseDraft(input);
+    const command = {
+      actionId: "abandon-action-1",
+      draftId: input.draftId,
+      orderGuid: created.orderGuid,
+      storeCode: input.identity.storeCode,
+      deviceCode: input.identity.deviceCode,
+    };
+    const abandoned = await store.abandonPreparedDraft(command);
+    assert.equal(abandoned.replayed, false);
+    assert.equal(abandoned.draftId, input.draftId);
+    assert.equal(abandoned.orderGuid, created.orderGuid);
+    assert.deepEqual(abandoned.cart, input.cart);
+    assert.deepEqual(abandoned.pricingState, input.pricingState);
+    const abandonReplay = await store.abandonPreparedDraft(command);
+    assert.equal(abandonReplay.replayed, true);
+    assert.deepEqual(abandonReplay.pricingState, input.pricingState);
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM local_orders WHERE order_guid = ? AND state = 'Draft'",
+        [created.orderGuid],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM local_order_lines WHERE order_guid = ?",
+        [created.orderGuid],
+      ),
+      input.cart.lines.length,
+    );
+    await assert.rejects(
+      () => store.abandonPreparedDraft({
+        ...command,
+        actionId: "abandon-action-2",
+      }),
+      /different immutable action/,
+    );
+    await assert.rejects(
+      () => insertActionBinding(
+        connection,
+        created.orderGuid,
+        "late-action",
+        "late-attempt",
+        "late-idempotency",
+      ),
+      /PAYMENT_ORDER_DRAFT_ABANDONED/,
+    );
+    await assert.rejects(
+      () => insertAttempt(connection, {
+        attemptId: "late-attempt",
+        idempotencyKey: "late-idempotency",
+        orderGuid: created.orderGuid,
+        provider: "square",
+        operation: "purchase",
+        amountCents: 900,
+        state: "Created",
+      }),
+      /PAYMENT_ORDER_DRAFT_ABANDONED/,
+    );
+
+    const next = await store.createOrReuseDraft(
+      draftInput({ draftId: "draft-after-abandon" }),
+    );
+    assert.notEqual(next.orderGuid, created.orderGuid);
+    assert.equal(next.localSequence, created.localSequence + 1);
+  });
+});
+
+test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重启恢复，完成态 binding 不再阻塞", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "hb-pos-payment-recovery-"));
+  const path = join(folder, "recovery.db");
+  const firstConnection = new SystemSqliteConnection(path);
+  try {
+    await migrateFresh(firstConnection);
+    const ids = sequenceIds("order-recovery", "audit-recovery");
+    const store = new SqlitePaymentDraftRecoveryStore(
+      firstConnection,
+      ids,
+      () => T1,
+    );
+    const input = draftInput({
+      draftId: "draft-recovery",
+      identity: {
+        storeCode: "S-REC",
+        deviceCode: "D-REC",
+        cashierId: "C-REC",
+        cashierName: "Recovery",
+      },
+    });
+    const created = await store.createOrReuseDraft(input);
+    // 已知离线可能只落 action binding；仍必须作为 DraftPrepared 返回原购物车。
+    await insertActionBinding(
+      firstConnection,
+      created.orderGuid,
+      "pay-action",
+      "attempt-recovery",
+      "idempotency-recovery",
+    );
+    const actionOnly = await store.findBlockingRecovery(input.identity);
+    assert.equal(actionOnly?.kind, "DraftPrepared");
+    assert.deepEqual(actionOnly?.boundAction, {
+      actionId: "pay-action",
+      attemptId: "attempt-recovery",
+      provider: "square",
+      operation: "purchase",
+      amount: { currency: "AUD", cents: 900 },
+    });
+    assert.equal(
+      await scalar(
+        firstConnection,
+        "SELECT COUNT(*) AS count FROM payment_action_bindings WHERE order_guid = ?",
+        [created.orderGuid],
+      ),
+      1,
+    );
+    await insertAttempt(firstConnection, {
+      attemptId: "attempt-recovery",
+      idempotencyKey: "idempotency-recovery",
+      orderGuid: created.orderGuid,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Unknown",
+    });
+    await firstConnection.close();
+
+    const reopened = new SystemSqliteConnection(path);
+    const reopenedStore = new SqlitePaymentDraftRecoveryStore(
+      reopened,
+      sequenceIds("unused-order", "unused-audit"),
+      () => T2,
+    );
+    const blocking = await reopenedStore.findBlockingRecovery(input.identity);
+    assert.equal(blocking?.kind, "AttemptBlocking");
+    if (blocking?.kind === "AttemptBlocking") {
+      assert.equal(blocking.attemptId, "attempt-recovery");
+      assert.equal(blocking.orderGuid, created.orderGuid);
+      assert.equal(blocking.state, "Unknown");
+      assert.deepEqual(blocking.boundAction, {
+        actionId: "pay-action",
+        attemptId: "attempt-recovery",
+        provider: "square",
+        operation: "purchase",
+        amount: { currency: "AUD", cents: 900 },
+      });
+      assert.deepEqual(blocking.pricingState, input.pricingState);
+    }
+    await assert.rejects(
+      () => reopenedStore.abandonPreparedDraft({
+        actionId: "cannot-abandon",
+        draftId: input.draftId,
+        orderGuid: created.orderGuid,
+        ...input.identity,
+      }),
+      /tender, attempt, or action binding/,
+    );
+    await reopened.run(
+      "UPDATE payment_attempts SET state = 'Approved', updated_at_iso = ? WHERE attempt_id = ?",
+      [T2, "attempt-recovery"],
+    );
+    await reopened.run(
+      `INSERT INTO order_tenders (
+        tender_guid, order_guid, method, amount_cents,
+        payment_attempt_id, created_at_iso
+      ) VALUES ('tender-recovery', ?, 'card', 900, 'attempt-recovery', ?)`,
+      [created.orderGuid, T2],
+    );
+    await reopened.run(
+      "UPDATE local_orders SET state = 'PendingSync', updated_at_iso = ? WHERE order_guid = ?",
+      [T2, created.orderGuid],
+    );
+    assert.equal(
+      await reopenedStore.findBlockingRecovery(input.identity),
+      null,
+    );
+    const next = await reopenedStore.createOrReuseDraft(
+      draftInput({
+        draftId: "draft-after-complete",
+        identity: input.identity,
+      }),
+    );
+    assert.notEqual(next.orderGuid, created.orderGuid);
+    await reopened.close();
+  } finally {
+    try { await firstConnection.close(); } catch { /* already closed */ }
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("真实 SQLite：payment action-only recovery 严格解析签名，多 binding 或非法签名失败关闭", async () => {
+  await withDatabase("draft-bound-action-fail-closed", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-bound", "audit-bound"),
+      () => T1,
+    );
+    const invalidInput = draftInput({
+      draftId: "draft-invalid-binding",
+      identity: {
+        storeCode: "S-INVALID-BINDING",
+        deviceCode: "D-INVALID-BINDING",
+        cashierId: "C-INVALID-BINDING",
+        cashierName: "Invalid binding",
+      },
+    });
+    const invalidDraft = await store.createOrReuseDraft(invalidInput);
+    await connection.run(
+      `INSERT INTO payment_action_bindings (
+        order_guid, action_id, request_signature,
+        attempt_id, idempotency_key, created_at_iso
+      ) VALUES (?, 'invalid-action', 'not-json',
+        'invalid-attempt', 'invalid-idempotency', ?)`,
+      [invalidDraft.orderGuid, T0],
+    );
+    await assert.rejects(
+      () => store.findBlockingRecovery(invalidInput.identity),
+      /request signature is invalid JSON/,
+    );
+
+    const multipleInput = draftInput({
+      draftId: "draft-multiple-binding",
+      identity: {
+        storeCode: "S-MULTIPLE-BINDING",
+        deviceCode: "D-MULTIPLE-BINDING",
+        cashierId: "C-MULTIPLE-BINDING",
+        cashierName: "Multiple binding",
+      },
+    });
+    const multipleDraft = await store.createOrReuseDraft(multipleInput);
+    await insertActionBinding(
+      connection,
+      multipleDraft.orderGuid,
+      "binding-one",
+      "attempt-one",
+      "idempotency-one",
+    );
+    await insertActionBinding(
+      connection,
+      multipleDraft.orderGuid,
+      "binding-two",
+      "attempt-two",
+      "idempotency-two",
+    );
+    await assert.rejects(
+      () => store.findBlockingRecovery(multipleInput.identity),
+      /Multiple payment action bindings require support/,
+    );
+  });
+});
+
+test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 reversal 不删原 tender", async () => {
+  await withDatabase("mixed-partial", async (connection) => {
+    await migrateFresh(connection);
+    await insertOrder(connection, {
+      orderGuid: "order-mixed",
+      sequence: 1,
+      storeCode: "S-MIX",
+      deviceCode: "D-MIX",
+      cashierId: "C-MIX",
+      amountCents: 1000,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const ids = sequenceIds("tender-mixed", "audit-mixed");
+    const store = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: ids.createOrderGuid,
+        createAuditEventId: ids.createAuditEventId,
+      },
+      () => T1,
+    );
+    const command = {
+      actionId: "cash-action",
+      orderGuid: "order-mixed",
+      amount: { currency: "AUD", cents: 400 } as const,
+    };
+    const [one, two] = await Promise.all([
+      store.appendCashTenderAtomically(command),
+      store.appendCashTenderAtomically(command),
+    ]);
+    assert.deepEqual(
+      [one.replayed, two.replayed].sort(),
+      [false, true],
+    );
+    assert.equal(one.tenderGuid, two.tenderGuid);
+    assert.equal(one.truth.state, "Completing");
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM order_tenders WHERE order_guid = ?",
+        ["order-mixed"],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM outbox_messages WHERE aggregate_id = ?",
+        ["order-mixed"],
+      ),
+      0,
+    );
+    await assert.rejects(
+      () => store.appendCashTenderAtomically({
+        ...command,
+        amount: { currency: "AUD", cents: 401 },
+      }),
+      /different immutable content/,
+    );
+
+    const reversed = await store.reverseTender({
+      actionId: "reverse-shared",
+      orderGuid: "order-mixed",
+      tenderGuid: one.tenderGuid,
+    });
+    assert.equal(reversed.state, "reversed");
+    assert.equal(reversed.replayed, false);
+    assert.equal(
+      reversed.truth.tenders.find(
+        (tender) => tender.tenderGuid === one.tenderGuid,
+      )?.amount.cents,
+      400,
+    );
+    assert.equal(
+      reversed.truth.tenders.find(
+        (tender) => tender.tenderGuid === reversed.reversalTenderGuid,
+      )?.amount.cents,
+      -400,
+    );
+    assert.equal(
+      (await store.reverseTender({
+        actionId: "reverse-shared",
+        orderGuid: "order-mixed",
+        tenderGuid: one.tenderGuid,
+      })).replayed,
+      true,
+    );
+    await assert.rejects(
+      () => store.reverseTender({
+        actionId: "reverse-other",
+        orderGuid: "order-mixed",
+        tenderGuid: one.tenderGuid,
+      }),
+      /already has an immutable reversal/,
+    );
+  });
+});
+
+test("真实 SQLite：reversal action 以 order+action 查询，两订单同 action 不误读且 card 只返回 pending", async () => {
+  await withDatabase("mixed-reversal-scope", async (connection) => {
+    await migrateFresh(connection);
+    for (const [sequence, orderGuid] of ["order-a", "order-b"].entries()) {
+      await insertOrder(connection, {
+        orderGuid,
+        sequence: sequence + 1,
+        storeCode: `S-${sequence}`,
+        deviceCode: `D-${sequence}`,
+        cashierId: "C",
+        amountCents: 500,
+        state: "Completing",
+        syncProvenance: TEST_SYNC_PROVENANCE,
+      });
+      await insertTender(
+        connection,
+        `cash-${orderGuid}`,
+        orderGuid,
+        "cash",
+        200,
+      );
+    }
+    const ids = sequenceIds("reverse-guid", "reverse-audit");
+    const store = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: ids.createOrderGuid,
+        createAuditEventId: ids.createAuditEventId,
+      },
+      () => T1,
+    );
+    const a = await store.reverseTender({
+      actionId: "same-action",
+      orderGuid: "order-a",
+      tenderGuid: "cash-order-a",
+    });
+    const b = await store.reverseTender({
+      actionId: "same-action",
+      orderGuid: "order-b",
+      tenderGuid: "cash-order-b",
+    });
+    assert.notEqual(a.reversalTenderGuid, b.reversalTenderGuid);
+    assert.equal(a.truth.orderGuid, "order-a");
+    assert.equal(b.truth.orderGuid, "order-b");
+
+    await insertTender(
+      connection,
+      "card-source",
+      "order-b",
+      "card",
+      100,
+    );
+    const pending = await store.reverseTender({
+      actionId: "card-reverse",
+      orderGuid: "order-b",
+      tenderGuid: "card-source",
+    });
+    assert.equal(pending.state, "pending");
+    assert.equal(pending.reversalTenderGuid, null);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_tender_reversal_links WHERE order_guid = ? AND action_id = ?",
+        ["order-b", "card-reverse"],
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写入失败不会留下 zero-balance Completing", async () => {
+  await withDatabase("mixed-final", async (connection) => {
+    await migrateFresh(connection);
+    await insertOrder(connection, {
+      orderGuid: "order-final",
+      sequence: 1,
+      storeCode: "S-FINAL",
+      deviceCode: "D-FINAL",
+      cashierId: "C-FINAL",
+      amountCents: 500,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const finalPlan = completionPlan("order-final", "final");
+    const ids = sequenceIds("final-tender", "final-audit");
+    const store = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: ids.createOrderGuid,
+        createAuditEventId: ids.createAuditEventId,
+      },
+      () => T1,
+      {
+        planner: {
+          async planFinalCash(input) {
+            assert.equal(input.amount.cents, input.expectedRemaining.cents);
+            return finalPlan;
+          },
+        },
+        encryptor,
+      },
+    );
+    const result = await store.appendCashTenderAtomically({
+      actionId: "final-action",
+      orderGuid: "order-final",
+      amount: { currency: "AUD", cents: 500 },
+    });
+    assert.equal(result.truth.state, "PendingSync");
+    assert.equal(
+      result.truth.tenders.reduce(
+        (sum, tender) => sum + tender.amount.cents,
+        0,
+      ),
+      500,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM outbox_messages WHERE aggregate_id = 'order-final'",
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM print_jobs WHERE order_guid = 'order-final'",
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM drawer_events WHERE order_guid = 'order-final'",
+      ),
+      1,
+    );
+
+    await insertOrder(connection, {
+      orderGuid: "order-plan-fail",
+      sequence: 2,
+      storeCode: "S-PLAN",
+      deviceCode: "D-PLAN",
+      cashierId: "C-PLAN",
+      amountCents: 300,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const plannerFailure = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: () => "unused-tender",
+        createAuditEventId: () => "unused-audit",
+      },
+      () => T1,
+      {
+        planner: {
+          async planFinalCash() {
+            throw new Error("planner failed");
+          },
+        },
+        encryptor,
+      },
+    );
+    await assert.rejects(
+      () => plannerFailure.appendCashTenderAtomically({
+        actionId: "planner-fail",
+        orderGuid: "order-plan-fail",
+        amount: { currency: "AUD", cents: 300 },
+      }),
+      /planner failed/,
+    );
+    await assertDraftHasNoTender(connection, "order-plan-fail");
+
+    await insertOrder(connection, {
+      orderGuid: "order-write-fail",
+      sequence: 3,
+      storeCode: "S-WRITE",
+      deviceCode: "D-WRITE",
+      cashierId: "C-WRITE",
+      amountCents: 300,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const duplicateOutboxPlan = {
+      ...completionPlan("order-write-fail", "write-fail"),
+      outbox: {
+        ...completionPlan("order-write-fail", "write-fail").outbox,
+        messageId: finalPlan.outbox.messageId,
+      },
+    };
+    const writeFailure = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: () => "write-fail-tender",
+        createAuditEventId: () => "write-fail-audit",
+      },
+      () => T1,
+      {
+        planner: { async planFinalCash() { return duplicateOutboxPlan; } },
+        encryptor,
+      },
+    );
+    await assert.rejects(
+      () => writeFailure.appendCashTenderAtomically({
+        actionId: "write-fail",
+        orderGuid: "order-write-fail",
+        amount: { currency: "AUD", cents: 300 },
+      }),
+      /UNIQUE constraint failed/,
+    );
+    await assertDraftHasNoTender(connection, "order-write-fail");
+
+    await insertOrder(connection, {
+      orderGuid: "order-no-planner",
+      sequence: 4,
+      storeCode: "S-NO-PLANNER",
+      deviceCode: "D-NO-PLANNER",
+      cashierId: "C-NO-PLANNER",
+      amountCents: 300,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const noPlanner = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: () => "no-planner-tender",
+        createAuditEventId: () => "no-planner-audit",
+      },
+      () => T1,
+    );
+    await assert.rejects(
+      () => noPlanner.appendCashTenderAtomically({
+        actionId: "no-planner",
+        orderGuid: "order-no-planner",
+        amount: { currency: "AUD", cents: 300 },
+      }),
+      /requires a durable completion planner/,
+    );
+    await assertDraftHasNoTender(connection, "order-no-planner");
+
+    await insertOrder(connection, {
+      orderGuid: "order-partial-rollback",
+      sequence: 5,
+      storeCode: "S-PARTIAL-ROLLBACK",
+      deviceCode: "D-PARTIAL-ROLLBACK",
+      cashierId: "C-PARTIAL-ROLLBACK",
+      amountCents: 300,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid,
+        correlation_id, payload_json, uploaded_at_iso
+      ) VALUES ('duplicate-partial-audit', 'TEST', ?, NULL, 'seed', '{}', NULL)`,
+      [T0],
+    );
+    const partialWriteFailure = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: () => "partial-rollback-tender",
+        createAuditEventId: () => "duplicate-partial-audit",
+      },
+      () => T1,
+    );
+    await assert.rejects(
+      () => partialWriteFailure.appendCashTenderAtomically({
+        actionId: "partial-rollback",
+        orderGuid: "order-partial-rollback",
+        amount: { currency: "AUD", cents: 100 },
+      }),
+      /UNIQUE constraint failed/,
+    );
+    await assertDraftHasNoTender(connection, "order-partial-rollback");
+  });
+});
+
+test("真实 SQLite：voucher preparation 响应丢失/重启仍稳定绑定，券码和退款原因只在密文", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "hb-pos-voucher-prepare-"));
+  const path = join(folder, "voucher-prepare.db");
+  const connection = new SystemSqliteConnection(path);
+  try {
+    await migrateFresh(connection);
+    await insertOrder(connection, {
+      orderGuid: "order-voucher-prepared",
+      sequence: 1,
+      storeCode: "S-VOUCHER",
+      deviceCode: "D-VOUCHER",
+      cashierId: "C-VOUCHER",
+      amountCents: 500,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const store = new SqliteVoucherPreparationStore(
+      connection,
+      encryptor,
+      () => "vpc_abcdefghijklmnop",
+      () => T0,
+    );
+    const context = {
+      actionId: "voucher-action",
+      orderGuid: "order-voucher-prepared",
+      operation: "purchase" as const,
+      storeCode: "S-VOUCHER",
+      cashierId: "C-VOUCHER",
+      voucherCode: "SECRET-VOUCHER-123",
+      refundReason: null,
+    };
+    assert.equal(await store.prepare(context), "vpc_abcdefghijklmnop");
+    assert.equal(await store.prepare(context), "vpc_abcdefghijklmnop");
+    await assert.rejects(
+      () => store.prepare({ ...context, voucherCode: "DIFFERENT" }),
+      /different protected content/,
+    );
+    const raw = await connection.getFirst<{
+      plaintext: unknown;
+      cipher_hex: unknown;
+    }>(
+      `SELECT
+        protected_reference || order_guid || action_id || operation AS plaintext,
+        HEX(context_ciphertext) AS cipher_hex
+       FROM voucher_prepared_contexts`,
+    );
+    assert.equal(String(raw?.plaintext).includes("SECRET-VOUCHER-123"), false);
+    assert.equal(
+      Buffer.from(String(raw?.cipher_hex), "hex")
+        .toString("utf8")
+        .includes("SECRET-VOUCHER-123"),
+      false,
+    );
+    await insertActionBinding(
+      connection,
+      context.orderGuid,
+      context.actionId,
+      "attempt-voucher-prepared",
+      "idempotency-voucher-prepared",
+      ["voucher", "purchase", "AUD", 500],
+    );
+    await insertAttempt(connection, {
+      attemptId: "attempt-voucher-prepared",
+      idempotencyKey: "idempotency-voucher-prepared",
+      orderGuid: context.orderGuid,
+      provider: "voucher",
+      operation: "purchase",
+      amountCents: 500,
+      state: "Submitted",
+    });
+    const binding = {
+      orderGuid: context.orderGuid,
+      operation: "purchase" as const,
+      attemptId: "attempt-voucher-prepared",
+      idempotencyKey: "idempotency-voucher-prepared",
+    };
+    await store.bindToAttempt(binding); // 模拟响应丢失
+    await connection.close();
+    const reopened = new SystemSqliteConnection(path);
+    const reopenedStore = new SqliteVoucherPreparationStore(
+      reopened,
+      encryptor,
+      () => "vpc_should_not_be_used",
+      () => T1,
+    );
+    const recovered = await reopenedStore.bindToAttempt(binding);
+    assert.equal(recovered?.voucherCode, "SECRET-VOUCHER-123");
+    assert.equal(recovered?.protectedReference, "vpc_abcdefghijklmnop");
+    assert.equal(
+      await reopenedStore.bindToAttempt({
+        ...binding,
+        attemptId: "another-attempt",
+      }),
+      null,
+    );
+    await reopened.close();
+  } finally {
+    try { await connection.close(); } catch { /* already closed */ }
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("真实 SQLite：VoucherProtectedToken stable vpr_、phase CAS、重启恢复且敏感状态不入明文列", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "hb-pos-voucher-state-"));
+  const path = join(folder, "voucher-state.db");
+  const connection = new SystemSqliteConnection(path);
+  try {
+    await migrateFresh(connection);
+    await insertOrder(connection, {
+      orderGuid: "order-voucher-state",
+      sequence: 1,
+      storeCode: "S-VSTATE",
+      deviceCode: "D-VSTATE",
+      cashierId: "C-VSTATE",
+      amountCents: 500,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await insertAttempt(connection, {
+      attemptId: "attempt-voucher-state",
+      idempotencyKey: "idempotency-voucher-state",
+      orderGuid: "order-voucher-state",
+      provider: "voucher",
+      operation: "purchase",
+      amountCents: 500,
+      state: "Submitted",
+    });
+    const store = new SqliteVoucherProtectedTokenStore(
+      connection,
+      encryptor,
+      () => "vpr_abcdefghijklmnop",
+      () => T0,
+    );
+    const prepared = {
+      attemptId: "attempt-voucher-state",
+      idempotencyKey: "idempotency-voucher-state",
+      orderGuid: "order-voucher-state",
+      operation: "purchase" as const,
+      phase: "purchase-prepared" as const,
+      storeCode: "S-VSTATE",
+      cashierId: "C-VSTATE",
+      voucherCode: "VOUCHER-SENSITIVE",
+      reservationToken: null,
+      amountCents: 500,
+      expiresAtIso: null,
+      reason: null,
+    };
+    assert.equal(await store.save(prepared), "vpr_abcdefghijklmnop");
+    assert.equal(await store.save(prepared), "vpr_abcdefghijklmnop");
+    await store.save({ ...prepared, phase: "lock-submitted" });
+    const approved = {
+      ...prepared,
+      phase: "approved" as const,
+      reservationToken: "RESERVATION-SENSITIVE",
+      expiresAtIso: "2026-07-29T00:00:00.000Z",
+    };
+    await store.save(approved);
+    await assert.rejects(
+      () => store.save({ ...prepared, phase: "purchase-prepared" }),
+      /transition is invalid/,
+    );
+    const raw = await connection.getFirst<{
+      plaintext: unknown;
+      cipher_hex: unknown;
+    }>(
+      `SELECT
+        protected_reference || attempt_id || idempotency_key || order_guid
+          AS plaintext,
+        HEX(state_ciphertext) AS cipher_hex
+       FROM voucher_protected_attempt_states`,
+    );
+    const rawCipher = Buffer.from(String(raw?.cipher_hex), "hex")
+      .toString("utf8");
+    assert.equal(String(raw?.plaintext).includes("VOUCHER-SENSITIVE"), false);
+    assert.equal(rawCipher.includes("VOUCHER-SENSITIVE"), false);
+    assert.equal(rawCipher.includes("RESERVATION-SENSITIVE"), false);
+    await connection.close();
+
+    const reopened = new SystemSqliteConnection(path);
+    const reopenedStore = new SqliteVoucherProtectedTokenStore(
+      reopened,
+      encryptor,
+      () => "vpr_should_not_be_used",
+      () => T2,
+    );
+    assert.deepEqual(
+      await reopenedStore.getByAttempt("attempt-voucher-state"),
+      {
+        ...approved,
+        protectedReference: "vpr_abcdefghijklmnop",
+      },
+    );
+    assert.deepEqual(
+      await reopenedStore.resolve("vpr_abcdefghijklmnop"),
+      await reopenedStore.getByAttempt("attempt-voucher-state"),
+    );
+    await assert.rejects(
+      () => reopenedStore.save({
+        ...approved,
+        orderGuid: "different-order",
+      }),
+      /persisted attempt and order/,
+    );
+    await reopened.close();
+  } finally {
+    try { await connection.close(); } catch { /* already closed */ }
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+function draftInput(
+  overrides: Partial<{
+    draftId: string;
+    identity: {
+      storeCode: string;
+      deviceCode: string;
+      cashierId: string;
+      cashierName: string;
+    };
+    cart: CartSnapshot;
+    pricingState: PricingCartStateSnapshot;
+  }> = {},
+) {
+  return {
+    draftId: overrides.draftId ?? "draft-1",
+    identity: overrides.identity ?? {
+      storeCode: "S1",
+      deviceCode: "D1",
+      cashierId: "C1",
+      cashierName: "Cashier",
+    },
+    soldAtIso: T0,
+    cart: overrides.cart ?? saleCart(),
+    pricingState: overrides.pricingState ?? salePricingState(),
+  };
+}
+
+function saleCart(): CartSnapshot {
+  return {
+    revision: 7,
+    mode: "sale",
+    lines: [
+      {
+        lineId: "line-1",
+        productCode: "P1",
+        itemNumber: "I1",
+        lookupCode: "L1",
+        displayName: "Promotion product",
+        quantity: "1",
+        unitPrice: { currency: "AUD", cents: 600 },
+        discount: { currency: "AUD", cents: 100 },
+        actualAmount: { currency: "AUD", cents: 500 },
+        priceSource: "promotion",
+        syncProvenance: {
+          referenceCode: "REF-P1",
+          priceSource: 2,
+        },
+        kind: "sale",
+        returnSourceKey: null,
+        originalOrderGuid: null,
+        originalOrderDetailGuid: null,
+      },
+      {
+        lineId: "line-2",
+        productCode: "P2",
+        itemNumber: "I2",
+        lookupCode: "L2",
+        displayName: "Manual discount product",
+        quantity: "1",
+        unitPrice: { currency: "AUD", cents: 500 },
+        discount: { currency: "AUD", cents: 100 },
+        actualAmount: { currency: "AUD", cents: 400 },
+        priceSource: "catalog",
+        syncProvenance: {
+          referenceCode: null,
+          priceSource: 4,
+        },
+        kind: "sale",
+        returnSourceKey: null,
+        originalOrderGuid: null,
+        originalOrderDetailGuid: null,
+      },
+    ],
+    subtotal: { currency: "AUD", cents: 1100 },
+    discount: { currency: "AUD", cents: 200 },
+    actualAmount: { currency: "AUD", cents: 900 },
+  };
+}
+
+function salePricingState(): PricingCartStateSnapshot {
+  return {
+    revision: 7,
+    mode: "sale",
+    asOfIso: "2026-07-27T23:30:00.000Z",
+    promotions: [
+      {
+        id: "promo-1",
+        name: "Promotion one",
+        effectiveStartIso: "2026-07-01T00:00:00.000Z",
+        effectiveEndIso: "2026-07-31T23:59:59.999Z",
+        isExclusive: false,
+        priority: 10,
+        applyQuantity: 1,
+        fixedPrice: { currency: "AUD", cents: 500 },
+        maxApplicationsPerOrder: 1,
+        products: [{ productCode: "P1", unitWeight: 1 }],
+      },
+    ],
+    lines: [
+      {
+        lineId: "line-1",
+        productCode: "P1",
+        itemNumber: "I1",
+        lookupCode: "L1",
+        displayName: "Promotion product",
+        quantity: 1,
+        unitPriceCents: 600,
+        basePriceSource: "catalog",
+        syncProvenance: {
+          referenceCode: "REF-P1",
+          priceSource: 2,
+        },
+        kind: "sale",
+        returnSourceKey: null,
+        originalOrderGuid: null,
+        originalOrderDetailGuid: null,
+        discountState: {
+          kind: "promotion",
+          cents: 100,
+          promotionIds: ["promo-1"],
+        },
+      },
+      {
+        lineId: "line-2",
+        productCode: "P2",
+        itemNumber: "I2",
+        lookupCode: "L2",
+        displayName: "Manual discount product",
+        quantity: 1,
+        unitPriceCents: 500,
+        basePriceSource: "catalog",
+        syncProvenance: {
+          referenceCode: null,
+          priceSource: 4,
+        },
+        kind: "sale",
+        returnSourceKey: null,
+        originalOrderGuid: null,
+        originalOrderDetailGuid: null,
+        discountState: {
+          kind: "manual-percent",
+          basisPoints: 2_000,
+        },
+      },
+    ],
+  };
+}
+
+async function insertReturnActionAndOrder(
+  connection: SqliteConnectionPort,
+  suffix: string,
+  sequence: number,
+  syncProvenance: TestSyncProvenance | null,
+): Promise<void> {
+  const actionId = `m14-action-${suffix}`;
+  const orderGuid = `m14-order-${suffix}`;
+  await insertOrder(connection, {
+    orderGuid,
+    sequence,
+    storeCode: "S-M14",
+    deviceCode: "D-M14",
+    cashierId: "C-M14",
+    amountCents: -100,
+    state: "PendingSync",
+    syncProvenance,
+  });
+  await connection.run(
+    `INSERT INTO return_actions (
+      action_id, request_fingerprint, return_order_guid,
+      action_recovery_token, source_kind, total_refund_cents, online,
+      store_code, device_code, cashier_id, cashier_name, session_epoch,
+      supervisor_grant_id, plan_json, state, created_at_iso,
+      completed_at_iso, updated_at_iso
+    ) VALUES (?, ?, ?, ?, 'receipt', 100, 1, 'S-M14', 'D-M14',
+      'C-M14', 'M14 Cashier', ?, NULL, '{}', 'completed', ?, ?, ?)`,
+    [
+      actionId,
+      `m14-fingerprint-${suffix}`,
+      orderGuid,
+      `m14-recovery-${suffix}`,
+      `m14-session-${suffix}`,
+      T0,
+      T1,
+      T1,
+    ],
+  );
+}
+
+async function insertM13ReturnFulfilmentPlan(
+  connection: SqliteConnectionPort,
+  input: Readonly<{
+    suffix: string;
+    sequence: number;
+    materializedAtIso: string | null;
+  }>,
+): Promise<void> {
+  await insertReturnActionAndOrder(
+    connection,
+    input.suffix,
+    input.sequence,
+    null,
+  );
+  const printJobId = `m13-print-${input.suffix}`;
+  if (input.materializedAtIso !== null) {
+    await connection.run(
+      `INSERT INTO print_jobs (
+        job_id, order_guid, state, printer_id, receipt_ciphertext,
+        is_reprint, retry_count, last_error_code, created_at_iso,
+        updated_at_iso
+      ) VALUES (?, ?, 'Printed', 'm13-printer', ?, 0, 0, NULL, ?, ?)`,
+      [
+        printJobId,
+        `m14-order-${input.suffix}`,
+        new Uint8Array([0xa5]),
+        input.materializedAtIso,
+        input.materializedAtIso,
+      ],
+    );
+  }
+  await connection.run(
+    `INSERT INTO return_fulfilment_plans (
+      action_id, return_order_guid, print_job_id, drawer_event_id,
+      print_receipt, drawer_required, materialized_at_iso, created_at_iso
+    ) VALUES (?, ?, ?, NULL, 1, 0, ?, ?)`,
+    [
+      `m14-action-${input.suffix}`,
+      `m14-order-${input.suffix}`,
+      printJobId,
+      input.materializedAtIso,
+      T0,
+    ],
+  );
+}
+
+async function insertM14ReturnFulfilmentPlan(
+  connection: SqliteConnectionPort,
+  input: Readonly<{
+    suffix: string;
+    sequence: number;
+    receiptKind: "none" | "refund-voucher" | "refund-receipt";
+    printJobId: string | null;
+    drawerEventId: string | null;
+  }>,
+): Promise<void> {
+  await insertReturnActionAndOrder(
+    connection,
+    input.suffix,
+    input.sequence,
+    TEST_SYNC_PROVENANCE,
+  );
+  await connection.run(
+    `INSERT INTO return_fulfilment_plans (
+      action_id, return_order_guid, print_job_id, drawer_event_id,
+      receipt_kind, print_receipt, drawer_required,
+      materialized_at_iso, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    [
+      `m14-action-${input.suffix}`,
+      `m14-order-${input.suffix}`,
+      input.printJobId,
+      input.drawerEventId,
+      input.receiptKind,
+      input.receiptKind === "none" ? 0 : 1,
+      input.drawerEventId === null ? 0 : 1,
+      T0,
+    ],
+  );
+}
+
+function durableReturnDraft(
+  options: {
+    actionId?: string;
+    requestFingerprint?: string;
+    returnOrderGuid?: string;
+    actionRecoveryToken?: string;
+    originalOrderGuid?: string;
+    returnSourceKey?: string;
+    capacityId?: string;
+    onlineCashOnly?: boolean;
+  } = {},
+) {
+  const actionId = options.actionId ?? "return-action-1";
+  const returnOrderGuid = options.returnOrderGuid ?? "return-order-guid-1";
+  const originalOrderGuid =
+    options.originalOrderGuid ?? "original-return-order";
+  const returnSourceKey = options.returnSourceKey ?? "return-source-1";
+  const onlineCashOnly = options.onlineCashOnly ?? false;
+  const cashCapacityId =
+    options.capacityId ?? "return-capacity-cash";
+  const allocations = onlineCashOnly
+    ? [
+        {
+          allocationId: "return-allocation-cash",
+          index: 0,
+          executionKind: "online-refund" as const,
+          method: "cash" as const,
+          signedAmountCents: -500,
+          capacityId: cashCapacityId,
+          originalOrderGuid,
+          offlineCashProof: null,
+          externalAttemptId: "return-external-cash",
+          externalAttemptKind: null,
+          externalActionId: null,
+          durableAttemptId: null,
+          status: "created" as const,
+          protectedRecoveryKey: null,
+        },
+      ]
+    : [
+        {
+          allocationId: "return-allocation-cash",
+          index: 0,
+          executionKind: "offline-cash" as const,
+          method: "cash" as const,
+          signedAmountCents: -200,
+          capacityId: cashCapacityId,
+          originalOrderGuid,
+          offlineCashProof: {
+            evidenceId: "offline-cash-evidence",
+            capacityId: cashCapacityId,
+            originalOrderGuid,
+            remainingCents: 500,
+          },
+          externalAttemptId: null,
+          externalAttemptKind: null,
+          externalActionId: null,
+          durableAttemptId: null,
+          status: "created" as const,
+          protectedRecoveryKey: null,
+        },
+        {
+          allocationId: "return-allocation-card",
+          index: 1,
+          executionKind: "online-refund" as const,
+          method: "card" as const,
+          signedAmountCents: -300,
+          capacityId: "return-capacity-card",
+          originalOrderGuid,
+          offlineCashProof: null,
+          externalAttemptId: "return-external-card",
+          externalAttemptKind: null,
+          externalActionId: null,
+          durableAttemptId: null,
+          status: "created" as const,
+          protectedRecoveryKey: null,
+        },
+      ];
+  return {
+    actionId,
+    requestFingerprint:
+      options.requestFingerprint ?? "return-request-fingerprint",
+    returnOrderGuid,
+    actionRecoveryToken:
+      options.actionRecoveryToken ?? "return-action-recovery-token",
+    identity: {
+      storeCode: "S-RETURN",
+      deviceCode: "D-RETURN",
+      cashierId: "C-RETURN",
+      cashierName: "Return Cashier",
+      sessionEpoch: "return-session-epoch",
+    },
+    plan: {
+      sourceKind: "receipt" as const,
+      totalRefundCents: 500,
+      lines: [
+        {
+          sourceKind: "receipt" as const,
+          returnSourceKey,
+          originalOrderGuid,
+          originalOrderDetailGuid: "original-return-detail",
+          productCode: "P-RETURN",
+          quantity: 1,
+          signedAmountCents: -500,
+          syncProvenance: {
+            referenceCode: "REF-P-RETURN",
+            priceSource: 0 as const,
+          },
+        },
+      ],
+      allocations: allocations.map((allocation) => ({
+        method: allocation.method,
+        signedAmountCents: allocation.signedAmountCents,
+        originalCapacityId: allocation.capacityId,
+        originalOrderGuid: allocation.originalOrderGuid,
+        offlineCashProof: allocation.offlineCashProof,
+      })),
+      online: true,
+    },
+    supervisorGrantKey: null,
+    createdAtIso: T0,
+    lines: [
+      {
+        lineId:
+          options.returnOrderGuid === undefined
+            ? "return-line-1"
+            : `line-${returnOrderGuid}`,
+        selectionKey: `selection-${returnSourceKey}`,
+        sourceKind: "receipt" as const,
+        returnSourceKey,
+        originalOrderGuid,
+        originalOrderDetailGuid: "original-return-detail",
+        productCode: "P-RETURN",
+        itemNumber: "I-RETURN",
+        lookupCode: "LOOKUP-RETURN",
+        displayName: "Returned Product",
+        quantity: 1,
+        unitRefundCents: 500,
+        signedAmountCents: -500,
+        availableQuantity: 1,
+        remainingAmountCents: 500,
+        syncProvenance: {
+          referenceCode: "REF-P-RETURN",
+          priceSource: 0 as const,
+        },
+      },
+    ],
+    allocations,
+  };
+}
+
+function durableTwoProviderReturnDraft(
+  options: {
+    actionId?: string;
+    returnOrderGuid?: string;
+    returnSourceKey?: string;
+  } = {},
+) {
+  const base = durableReturnDraft({
+    actionId: options.actionId ?? "two-provider-return-action",
+    requestFingerprint: `fingerprint-${options.actionId ?? "two-provider"}`,
+    returnOrderGuid: options.returnOrderGuid ?? "two-provider-return-order",
+    actionRecoveryToken: `recovery-${options.actionId ?? "two-provider"}`,
+    originalOrderGuid: "original-provider-order",
+    returnSourceKey:
+      options.returnSourceKey ?? "two-provider-return-source",
+  });
+  const allocations = [
+    {
+      allocationId: "provider-allocation-a",
+      index: 0,
+      executionKind: "online-refund" as const,
+      method: "card" as const,
+      signedAmountCents: -200,
+      capacityId: "return-capacity-provider-a",
+      originalOrderGuid: "original-provider-order",
+      offlineCashProof: null,
+      externalAttemptId: "provider-external-a",
+      externalAttemptKind: null,
+      externalActionId: null,
+      durableAttemptId: null,
+      status: "created" as const,
+      protectedRecoveryKey: null,
+    },
+    {
+      allocationId: "provider-allocation-b",
+      index: 1,
+      executionKind: "online-refund" as const,
+      method: "card" as const,
+      signedAmountCents: -300,
+      capacityId: "return-capacity-provider-b",
+      originalOrderGuid: "original-provider-order",
+      offlineCashProof: null,
+      externalAttemptId: "provider-external-b",
+      externalAttemptKind: null,
+      externalActionId: null,
+      durableAttemptId: null,
+      status: "created" as const,
+      protectedRecoveryKey: null,
+    },
+  ];
+  return {
+    ...base,
+    plan: {
+      ...base.plan,
+      allocations: allocations.map((allocation) => ({
+        method: allocation.method,
+        signedAmountCents: allocation.signedAmountCents,
+        originalCapacityId: allocation.capacityId,
+        originalOrderGuid: allocation.originalOrderGuid,
+        offlineCashProof: allocation.offlineCashProof,
+      })),
+    },
+    allocations,
+  };
+}
+
+function durableReturnCompletion(
+  draft: ReturnType<typeof durableReturnDraft>,
+  options: { messageId?: string } = {},
+) {
+  const methods = draft.plan.allocations.map((allocation) =>
+    String(allocation.method));
+  const hasCash = methods.includes("cash");
+  const hasCard = methods.includes("card");
+  const voucherOnly =
+    methods.length === 1 && methods[0] === "voucher";
+  const receiptKind:
+    | "none"
+    | "refund-voucher"
+    | "refund-receipt" = hasCard
+    ? "refund-receipt"
+    : voucherOnly
+      ? "refund-voucher"
+      : "none";
+  return {
+    actionId: draft.actionId,
+    returnOrderGuid: draft.returnOrderGuid,
+    completedAtIso: T2,
+    identity: draft.identity,
+    plan: draft.plan,
+    lines: draft.lines,
+    returnRecords: draft.lines.map((line, index) => ({
+      returnDetailGuid: `return-detail-${draft.actionId}-${index}`,
+      returnOrderGuid: draft.returnOrderGuid,
+      originalOrderGuid: line.originalOrderGuid,
+      originalOrderDetailGuid: line.originalOrderDetailGuid,
+      returnSourceKey: line.returnSourceKey,
+      productCode: line.productCode,
+      returnQuantity: line.quantity,
+      returnAmountCents: -line.signedAmountCents,
+    })),
+    outbox: {
+      messageId: options.messageId ?? `return-outbox-${draft.actionId}`,
+      aggregateId: draft.returnOrderGuid,
+      idempotencyKey: draft.returnOrderGuid,
+      kind: "return-order-sync" as const,
+    },
+    fulfilment: {
+      printJobId:
+        receiptKind === "none" ? null : `return-print-${draft.actionId}`,
+      drawerEventId:
+        hasCash ? `return-drawer-${draft.actionId}` : null,
+      receiptKind,
+      drawerRequired: hasCash,
+    },
+  };
+}
+
+function sequenceIds(orderPrefix: string, auditPrefix: string) {
+  let order = 0;
+  let audit = 0;
+  return {
+    createOrderGuid: () => `${orderPrefix}-${++order}`,
+    createAuditEventId: () => `${auditPrefix}-${++audit}`,
+  };
+}
+
+function completionPlan(
+  orderGuid: string,
+  suffix: string,
+): MixedCashOrderCompletionPlan {
+  return {
+    completionAuditEvents: [
+      {
+        eventId: `completion-audit-${suffix}`,
+        eventType: "ORDER_COMPLETED",
+        occurredAtIso: T1,
+        orderGuid,
+        correlationId: `completion-${suffix}`,
+        payload: {
+          action: "mixed-cash-order-completed",
+          amountCents: 500,
+        },
+      },
+    ],
+    outbox: {
+      messageId: `outbox-${suffix}`,
+      aggregateId: orderGuid,
+      kind: "order-sync",
+      payloadJson: JSON.stringify({ orderGuid }),
+      nextAttemptAtIso: T1,
+    },
+    fulfilment: {
+      print: {
+        jobId: `print-${suffix}`,
+        orderGuid,
+        printerId: "printer-1",
+        receiptBytes: new Uint8Array([1, 2, 3]),
+        isReprint: false,
+      },
+      drawer: {
+        eventId: `drawer-${suffix}`,
+        orderGuid,
+        printerId: "printer-1",
+        printJobId: `print-${suffix}`,
+        reason: "cash-sale",
+      },
+    },
+  };
+}
+
+async function migrateFresh(connection: SqliteConnectionPort): Promise<void> {
+  await applyMigrations(connection, () => T0);
+}
+
+async function insertOrder(
+  connection: SqliteConnectionPort,
+  input: {
+    orderGuid: string;
+    sequence: number;
+    storeCode: string;
+    deviceCode: string;
+    cashierId: string;
+    amountCents: number;
+    state: string;
+    syncProvenance: TestSyncProvenance | null;
+  },
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO local_orders (
+      order_guid, local_sequence, store_code, device_code,
+      cashier_id, cashier_name, sold_at_iso, state,
+      total_cents, discount_cents, actual_amount_cents,
+      original_order_guid, created_at_iso, updated_at_iso
+    ) VALUES (?, ?, ?, ?, ?, 'Cashier', ?, ?, ?, 0, ?, NULL, ?, ?)`,
+    [
+      input.orderGuid,
+      input.sequence,
+      input.storeCode,
+      input.deviceCode,
+      input.cashierId,
+      T0,
+      input.state,
+      input.amountCents,
+      input.amountCents,
+      T0,
+      T0,
+    ],
+  );
+  const syncProvenanceColumns =
+    input.syncProvenance === null
+      ? ""
+      : ",\n      reference_code, sync_price_source";
+  const syncProvenanceValues =
+    input.syncProvenance === null ? "" : ", ?, ?";
+  const syncProvenanceParameters =
+    input.syncProvenance === null
+      ? []
+      : [
+          input.syncProvenance.referenceCode,
+          input.syncProvenance.priceSource,
+        ];
+  await connection.run(
+    `INSERT INTO local_order_lines (
+      line_id, order_guid, line_sequence, product_code, item_number,
+      lookup_code, display_name, quantity, unit_price_cents,
+      discount_cents, actual_amount_cents, price_source, line_kind,
+      return_source_key, original_order_guid, original_order_detail_guid${syncProvenanceColumns}
+    ) VALUES (?, ?, 1, 'P', NULL, 'P', 'Product', '1', ?, 0, ?,
+      'catalog', 'sale', NULL, NULL, NULL${syncProvenanceValues})`,
+    [
+      `line-${input.orderGuid}`,
+      input.orderGuid,
+      input.amountCents,
+      input.amountCents,
+      ...syncProvenanceParameters,
+    ],
+  );
+}
+
+function insertAttempt(
+  connection: SqliteConnectionPort,
+  input: {
+    attemptId: string;
+    idempotencyKey: string;
+    orderGuid: string;
+    provider: string;
+    operation: string;
+    amountCents: number;
+    state: string;
+  },
+): Promise<void> {
+  return connection.run(
+    `INSERT INTO payment_attempts (
+      attempt_id, idempotency_key, order_guid, provider, operation,
+      amount_cents, state, checkout_id, payment_id, session_id,
+      txn_ref, rfn, provider_payload_ciphertext, provider_receipt_ciphertext,
+      provider_response_code, created_at_iso, updated_at_iso, last_error_code
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, ?, ?, NULL)`,
+    [
+      input.attemptId,
+      input.idempotencyKey,
+      input.orderGuid,
+      input.provider,
+      input.operation,
+      input.amountCents,
+      input.state,
+      T0,
+      T0,
+    ],
+  ).then(() => undefined);
+}
+
+function insertActionBinding(
+  connection: SqliteConnectionPort,
+  orderGuid: string,
+  actionId: string,
+  attemptId: string,
+  idempotencyKey: string,
+  signature: readonly [string, string, "AUD", number] = [
+    "square",
+    "purchase",
+    "AUD",
+    900,
+  ],
+): Promise<void> {
+  return connection.run(
+    `INSERT INTO payment_action_bindings (
+      order_guid, action_id, request_signature,
+      attempt_id, idempotency_key, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      orderGuid,
+      actionId,
+      JSON.stringify(signature),
+      attemptId,
+      idempotencyKey,
+      T0,
+    ],
+  ).then(() => undefined);
+}
+
+function insertTender(
+  connection: SqliteConnectionPort,
+  tenderGuid: string,
+  orderGuid: string,
+  method: string,
+  amountCents: number,
+  paymentAttemptId: string | null = null,
+): Promise<void> {
+  return connection.run(
+    `INSERT INTO order_tenders (
+      tender_guid, order_guid, method, amount_cents,
+      payment_attempt_id, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      tenderGuid,
+      orderGuid,
+      method,
+      amountCents,
+      paymentAttemptId,
+      T0,
+    ],
+  ).then(() => undefined);
+}
+
+async function assertDraftHasNoTender(
+  connection: SqliteConnectionPort,
+  orderGuid: string,
+): Promise<void> {
+  assert.equal(
+    await scalar(
+      connection,
+      "SELECT COUNT(*) AS count FROM order_tenders WHERE order_guid = ?",
+      [orderGuid],
+    ),
+    0,
+  );
+  assert.equal(
+    String(
+      (await connection.getFirst<{ state: unknown }>(
+        "SELECT state FROM local_orders WHERE order_guid = ?",
+        [orderGuid],
+      ))?.state,
+    ),
+    "Draft",
+  );
+}
+
+async function scalar(
+  connection: SqliteConnectionPort,
+  sql: string,
+  parameters: readonly SqlValue[] = [],
+): Promise<number> {
+  return Number(
+    (await connection.getFirst<{ count: unknown }>(sql, parameters))?.count,
+  );
+}
+
+async function withDatabase(
+  suffix: string,
+  operation: (connection: SystemSqliteConnection) => Promise<void>,
+): Promise<void> {
+  const folder = mkdtempSync(join(tmpdir(), `hb-pos-${suffix}-`));
+  const connection = new SystemSqliteConnection(join(folder, "test.db"));
+  try {
+    await operation(connection);
+  } finally {
+    try { await connection.close(); } catch { /* already closed */ }
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
+function runStatement(
+  database: DatabaseSync,
+  sql: string,
+  parameters: readonly SqlValue[],
+): SqlRunResult {
+  const result = database.prepare(sql).run(
+    ...parameters.map(toSqlInputValue),
+  );
+  return {
+    changes: Number(result.changes),
+    lastInsertRowId: Number(result.lastInsertRowid),
+  };
+}
+
+function getFirst<T extends object>(
+  database: DatabaseSync,
+  sql: string,
+  parameters: readonly SqlValue[],
+): T | null {
+  return (
+    database.prepare(sql).get(...parameters.map(toSqlInputValue)) as
+      T | undefined
+  ) ?? null;
+}
+
+function getAll<T extends object>(
+  database: DatabaseSync,
+  sql: string,
+  parameters: readonly SqlValue[],
+): readonly T[] {
+  return database.prepare(sql).all(
+    ...parameters.map(toSqlInputValue),
+  ) as unknown as readonly T[];
+}
+
+function toSqlInputValue(value: SqlValue): SQLInputValue {
+  return value as SQLInputValue;
+}

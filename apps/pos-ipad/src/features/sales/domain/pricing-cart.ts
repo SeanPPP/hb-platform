@@ -1,0 +1,1214 @@
+import {
+  createAud,
+  type CartLineKind,
+  type CartMode,
+  type CartSnapshot,
+  type LineSyncProvenance,
+  type Money,
+  type PriceSource,
+  normalizeLineSyncProvenance,
+} from "../../../core/contracts";
+
+import type {
+  AddCartItemInput,
+  AddOpenItemInput,
+  PricingCartLineState,
+  PricingCartOptions,
+  PricingCartStateSnapshot,
+  PricingDiscountState,
+  PromotionDefinition,
+  PromotionProduct,
+  QuickDiscountBasisPoints,
+} from "./types";
+
+type MutablePricingLine = {
+  lineId: string;
+  productCode: string;
+  itemNumber: string | null;
+  lookupCode: string;
+  displayName: string;
+  quantity: number;
+  unitPriceCents: number;
+  basePriceSource: Exclude<PriceSource, "promotion">;
+  syncProvenance: LineSyncProvenance | undefined;
+  kind: CartLineKind;
+  returnSourceKey: string | null;
+  originalOrderGuid: string | null;
+  originalOrderDetailGuid: string | null;
+  discountState: PricingDiscountState;
+};
+
+type PromotionUnit = Readonly<{
+  line: MutablePricingLine;
+  quantityIndex: number;
+  selectedIndex: number;
+}>;
+
+type PromotionLineAllocation = {
+  cents: number;
+  promotionIds: string[];
+};
+
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_INTEGER_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+const NONE_DISCOUNT: PricingDiscountState = { kind: "none" };
+
+function assertSafeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value)) {
+    throw new TypeError(`${label} must be a safe integer`);
+  }
+}
+
+function assertNonBlank(value: string, label: string): void {
+  if (value.trim().length === 0) {
+    throw new TypeError(`${label} must not be blank`);
+  }
+}
+
+function assertAudCents(
+  money: Money,
+  label: string,
+  minimum = Number.MIN_SAFE_INTEGER,
+): number {
+  if (money.currency !== "AUD" || !Number.isSafeInteger(money.cents)) {
+    throw new TypeError(`${label} must use safe integer AUD cents`);
+  }
+
+  if (money.cents < minimum) {
+    throw new RangeError(`${label} is below its minimum`);
+  }
+
+  return money.cents;
+}
+
+function bigIntToSafeInteger(value: bigint, label: string): number {
+  if (
+    value > MAX_SAFE_INTEGER_BIGINT ||
+    value < MIN_SAFE_INTEGER_BIGINT
+  ) {
+    throw new RangeError(`${label} exceeds the safe integer range`);
+  }
+
+  return Number(value);
+}
+
+function multiplySafe(
+  left: number,
+  right: number,
+  label: string,
+): number {
+  return bigIntToSafeInteger(BigInt(left) * BigInt(right), label);
+}
+
+function sumSafe(values: Iterable<number>, label: string): number {
+  let result = 0n;
+  for (const value of values) {
+    assertSafeInteger(value, label);
+    result += BigInt(value);
+  }
+
+  return bigIntToSafeInteger(result, label);
+}
+
+/**
+ * 对整数分币比例执行 MidpointRounding.AwayFromZero，避免先转浮点数。
+ */
+function roundProductRatio(
+  left: number,
+  right: number,
+  denominator: number,
+  label: string,
+): number {
+  assertSafeInteger(left, label);
+  assertSafeInteger(right, label);
+  if (!Number.isSafeInteger(denominator) || denominator <= 0) {
+    throw new RangeError(`${label} denominator must be positive`);
+  }
+
+  let numerator = BigInt(left) * BigInt(right);
+  const divisor = BigInt(denominator);
+  const sign = numerator < 0n ? -1n : 1n;
+  numerator = numerator < 0n ? -numerator : numerator;
+
+  let quotient = numerator / divisor;
+  const remainder = numerator % divisor;
+  if (remainder * 2n >= divisor) {
+    quotient += 1n;
+  }
+
+  return bigIntToSafeInteger(sign * quotient, label);
+}
+
+function normalizeLookupCode(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function normalizeProductCode(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function compareOrdinalIgnoreCase(left: string, right: string): number {
+  const normalizedLeft = left.toUpperCase();
+  const normalizedRight = right.toUpperCase();
+  if (normalizedLeft < normalizedRight) {
+    return -1;
+  }
+  if (normalizedLeft > normalizedRight) {
+    return 1;
+  }
+
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function clonePromotionProduct(
+  product: PromotionProduct,
+): PromotionProduct {
+  assertNonBlank(product.productCode, "promotion product code");
+  assertSafeInteger(product.unitWeight, "promotion unit weight");
+  return {
+    productCode: product.productCode,
+    unitWeight: product.unitWeight,
+  };
+}
+
+function clonePromotion(
+  promotion: PromotionDefinition,
+): PromotionDefinition {
+  assertNonBlank(promotion.id, "promotion id");
+  assertNonBlank(promotion.name, "promotion name");
+  assertSafeInteger(promotion.priority, "promotion priority");
+  assertSafeInteger(promotion.applyQuantity, "promotion apply quantity");
+  if (promotion.applyQuantity < 0) {
+    throw new RangeError("promotion apply quantity must not be negative");
+  }
+  if (
+    promotion.maxApplicationsPerOrder !== null &&
+    (!Number.isSafeInteger(promotion.maxApplicationsPerOrder) ||
+      promotion.maxApplicationsPerOrder < 0)
+  ) {
+    throw new RangeError(
+      "promotion max applications must be a non-negative integer",
+    );
+  }
+
+  const start = Date.parse(promotion.effectiveStartIso);
+  const end = Date.parse(promotion.effectiveEndIso);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+    throw new TypeError("promotion effective date range is invalid");
+  }
+
+  return {
+    id: promotion.id,
+    name: promotion.name,
+    effectiveStartIso: new Date(start).toISOString(),
+    effectiveEndIso: new Date(end).toISOString(),
+    isExclusive: promotion.isExclusive,
+    priority: promotion.priority,
+    applyQuantity: promotion.applyQuantity,
+    fixedPrice: createAud(
+      assertAudCents(promotion.fixedPrice, "promotion fixed price", 0),
+    ),
+    maxApplicationsPerOrder: promotion.maxApplicationsPerOrder,
+    products: promotion.products.map(clonePromotionProduct),
+  };
+}
+
+function canonicalPromotions(
+  promotions: readonly PromotionDefinition[],
+): PromotionDefinition[] {
+  return promotions
+    .map(clonePromotion)
+    .sort(
+      (left, right) =>
+        right.priority - left.priority ||
+        compareOrdinalIgnoreCase(left.id, right.id),
+    );
+}
+
+function cloneDiscountState(
+  discountState: PricingDiscountState,
+): PricingDiscountState {
+  switch (discountState.kind) {
+    case "none":
+      return NONE_DISCOUNT;
+    case "manual-amount":
+      return { kind: "manual-amount", cents: discountState.cents };
+    case "manual-percent":
+      return {
+        kind: "manual-percent",
+        basisPoints: discountState.basisPoints,
+      };
+    case "promotion":
+      return {
+        kind: "promotion",
+        cents: discountState.cents,
+        promotionIds: [...discountState.promotionIds],
+      };
+  }
+}
+
+function cloneLineState(line: MutablePricingLine): PricingCartLineState {
+  return {
+    lineId: line.lineId,
+    productCode: line.productCode,
+    itemNumber: line.itemNumber,
+    lookupCode: line.lookupCode,
+    displayName: line.displayName,
+    quantity: line.quantity,
+    unitPriceCents: line.unitPriceCents,
+    basePriceSource: line.basePriceSource,
+    ...(line.syncProvenance === undefined
+      ? {}
+      : {
+          syncProvenance: normalizeLineSyncProvenance(
+            line.syncProvenance,
+          ),
+        }),
+    kind: line.kind,
+    returnSourceKey: line.returnSourceKey,
+    originalOrderGuid: line.originalOrderGuid,
+    originalOrderDetailGuid: line.originalOrderDetailGuid,
+    discountState: cloneDiscountState(line.discountState),
+  };
+}
+
+function hasSameSyncProvenance(
+  left: LineSyncProvenance | undefined,
+  right: LineSyncProvenance,
+): boolean {
+  return (
+    left !== undefined &&
+    left.referenceCode === right.referenceCode &&
+    left.priceSource === right.priceSource
+  );
+}
+
+function validateMode(mode: CartMode): CartMode {
+  if (mode !== "sale" && mode !== "return" && mode !== "installment") {
+    throw new TypeError("cart mode is invalid");
+  }
+  return mode;
+}
+
+function canonicalIso(value: string, label: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new TypeError(`${label} must be a valid ISO timestamp`);
+  }
+  return new Date(timestamp).toISOString();
+}
+
+export class PricingCart {
+  private revision = 0;
+  private mode: CartMode;
+  private asOfIso: string;
+  private promotions: PromotionDefinition[];
+  private lines: MutablePricingLine[] = [];
+
+  constructor(options: PricingCartOptions = {}) {
+    this.mode = validateMode(options.mode ?? "sale");
+    this.asOfIso = canonicalIso(
+      options.asOfIso ?? new Date().toISOString(),
+      "cart as-of timestamp",
+    );
+    this.promotions = canonicalPromotions(options.promotions ?? []);
+  }
+
+  static restore(snapshot: PricingCartStateSnapshot): PricingCart {
+    if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) {
+      throw new TypeError("cart revision must be a non-negative integer");
+    }
+
+    const cart = new PricingCart({
+      mode: snapshot.mode,
+      asOfIso: snapshot.asOfIso,
+      promotions: snapshot.promotions,
+    });
+    const seenLineIds = new Set<string>();
+    cart.lines = snapshot.lines.map((line) => {
+      assertNonBlank(line.lineId, "cart line id");
+      if (seenLineIds.has(line.lineId)) {
+        throw new TypeError(`duplicate cart line id: ${line.lineId}`);
+      }
+      seenLineIds.add(line.lineId);
+      assertNonBlank(line.productCode, "cart product code");
+      assertNonBlank(line.displayName, "cart display name");
+      if (!PricingCart.isPositiveQuantity(line.quantity)) {
+        throw new TypeError("cart line quantity must be a positive integer");
+      }
+      assertSafeInteger(line.unitPriceCents, "cart unit price");
+      if (line.unitPriceCents < 0) {
+        throw new RangeError("cart unit price must not be negative");
+      }
+      if (
+        line.basePriceSource !== "catalog" &&
+        line.basePriceSource !== "manual" &&
+        line.basePriceSource !== "open-item"
+      ) {
+        throw new TypeError("cart base price source is invalid");
+      }
+
+      const restored: MutablePricingLine = {
+        lineId: line.lineId,
+        productCode: line.productCode,
+        itemNumber: line.itemNumber,
+        lookupCode: line.lookupCode,
+        displayName: line.displayName,
+        quantity: line.quantity,
+        unitPriceCents: line.unitPriceCents,
+        basePriceSource: line.basePriceSource,
+        syncProvenance:
+          line.syncProvenance === undefined
+            ? undefined
+            : normalizeLineSyncProvenance(line.syncProvenance),
+        kind: line.kind,
+        returnSourceKey: line.returnSourceKey,
+        originalOrderGuid: line.originalOrderGuid,
+        originalOrderDetailGuid: line.originalOrderDetailGuid,
+        discountState: cloneDiscountState(line.discountState),
+      };
+      cart.validateRestoredDiscount(restored);
+      return restored;
+    });
+    cart.revision = snapshot.revision;
+    // 快照已经包含结账当时的促销结果；恢复时不得按新时刻重新定价。
+    return cart;
+  }
+
+  addItem(input: AddCartItemInput): string {
+    const quantity = input.quantity ?? 1;
+    this.assertNewLineInput(input, quantity);
+    const syncProvenance = normalizeLineSyncProvenance(
+      input.syncProvenance,
+    );
+    const kind = input.kind ?? "sale";
+    const normalizedLookup = normalizeLookupCode(input.lookupCode);
+
+    if (kind === "sale") {
+      const existing = this.lines.find(
+        (line) =>
+          line.kind === "sale" &&
+          line.basePriceSource !== "open-item" &&
+          normalizeLookupCode(line.lookupCode) === normalizedLookup,
+      );
+      if (existing) {
+        if (
+          !hasSameSyncProvenance(
+            existing.syncProvenance,
+            syncProvenance,
+          )
+        ) {
+          throw new TypeError(
+            "cart line sync provenance conflicts with the existing lookup",
+          );
+        }
+        const nextQuantity = sumSafe(
+          [existing.quantity, quantity],
+          "merged cart quantity",
+        );
+        this.assertGrossSafe(nextQuantity, existing.unitPriceCents);
+        existing.quantity = nextQuantity;
+        this.normalizeDiscountAfterGrossChange(existing);
+        this.finishMutation();
+        return existing.lineId;
+      }
+    }
+
+    this.assertUniqueLineId(input.lineId);
+    const unitPriceCents = assertAudCents(
+      input.unitPrice,
+      "cart unit price",
+      0,
+    );
+    const priceSource = input.priceSource ?? "catalog";
+    if (priceSource !== "catalog" && priceSource !== "manual") {
+      throw new TypeError("cart item price source is invalid");
+    }
+    this.assertGrossSafe(quantity, unitPriceCents);
+
+    this.lines.push({
+      lineId: input.lineId,
+      productCode: input.productCode,
+      itemNumber: input.itemNumber,
+      lookupCode: input.lookupCode,
+      displayName: input.displayName,
+      quantity,
+      unitPriceCents,
+      basePriceSource: priceSource,
+      syncProvenance,
+      kind,
+      returnSourceKey: input.returnSourceKey ?? null,
+      originalOrderGuid: input.originalOrderGuid ?? null,
+      originalOrderDetailGuid: input.originalOrderDetailGuid ?? null,
+      discountState: NONE_DISCOUNT,
+    });
+    this.finishMutation();
+    return input.lineId;
+  }
+
+  addOpenItem(input: AddOpenItemInput): string {
+    const quantity = input.quantity ?? 1;
+    this.assertNewLineInput(
+      {
+        ...input,
+        lookupCode: input.lookupCode ?? input.productCode,
+      },
+      quantity,
+    );
+    const syncProvenance = normalizeLineSyncProvenance(
+      input.syncProvenance,
+    );
+    this.assertUniqueLineId(input.lineId);
+    const unitPriceCents = assertAudCents(
+      input.unitPrice,
+      "open item price",
+      0,
+    );
+    this.assertGrossSafe(quantity, unitPriceCents);
+
+    this.lines.push({
+      lineId: input.lineId,
+      productCode: input.productCode,
+      itemNumber: input.itemNumber,
+      lookupCode: input.lookupCode ?? input.productCode,
+      displayName: input.displayName,
+      quantity,
+      unitPriceCents,
+      basePriceSource: "open-item",
+      syncProvenance,
+      kind: "sale",
+      returnSourceKey: null,
+      originalOrderGuid: null,
+      originalOrderDetailGuid: null,
+      discountState: NONE_DISCOUNT,
+    });
+    this.finishMutation();
+    return input.lineId;
+  }
+
+  removeLine(lineId: string): boolean {
+    const index = this.lines.findIndex((line) => line.lineId === lineId);
+    if (index < 0) {
+      return false;
+    }
+
+    this.lines.splice(index, 1);
+    this.finishMutation();
+    return true;
+  }
+
+  increaseLine(lineId: string): boolean {
+    const line = this.editableLine(lineId);
+    if (!line) {
+      return false;
+    }
+
+    const nextQuantity = sumSafe(
+      [line.quantity, 1],
+      "cart line quantity",
+    );
+    this.assertGrossSafe(nextQuantity, line.unitPriceCents);
+    line.quantity = nextQuantity;
+    this.normalizeDiscountAfterGrossChange(line);
+    this.finishMutation();
+    return true;
+  }
+
+  decreaseLine(lineId: string): boolean {
+    const line = this.editableLine(lineId);
+    if (!line) {
+      return false;
+    }
+
+    if (line.quantity <= 1) {
+      this.lines.splice(this.lines.indexOf(line), 1);
+    } else {
+      line.quantity -= 1;
+      this.normalizeDiscountAfterGrossChange(line);
+    }
+    this.finishMutation();
+    return true;
+  }
+
+  setLineQuantity(lineId: string, quantity: number): boolean {
+    const line = this.editableLine(lineId);
+    if (!line || !PricingCart.isPositiveQuantity(quantity)) {
+      return false;
+    }
+
+    this.assertGrossSafe(quantity, line.unitPriceCents);
+    line.quantity = quantity;
+    this.normalizeDiscountAfterGrossChange(line);
+    this.finishMutation();
+    return true;
+  }
+
+  setLineUnitPrice(lineId: string, unitPrice: Money): boolean {
+    const line = this.editableLine(lineId);
+    if (
+      !line ||
+      unitPrice.currency !== "AUD" ||
+      !Number.isSafeInteger(unitPrice.cents) ||
+      unitPrice.cents < 0
+    ) {
+      return false;
+    }
+
+    this.assertGrossSafe(line.quantity, unitPrice.cents);
+    line.unitPriceCents = unitPrice.cents;
+    if (line.basePriceSource !== "open-item") {
+      line.basePriceSource = "manual";
+    }
+    this.normalizeDiscountAfterGrossChange(line);
+    this.finishMutation();
+    return true;
+  }
+
+  setLineDiscountAmount(lineId: string, discount: Money): boolean {
+    const line = this.editableLine(lineId);
+    if (
+      !line ||
+      discount.currency !== "AUD" ||
+      !Number.isSafeInteger(discount.cents) ||
+      discount.cents < 0 ||
+      discount.cents > this.lineGross(line)
+    ) {
+      return false;
+    }
+
+    line.discountState =
+      discount.cents === 0
+        ? NONE_DISCOUNT
+        : { kind: "manual-amount", cents: discount.cents };
+    this.finishMutation();
+    return true;
+  }
+
+  setLineDiscountPercentBps(
+    lineId: string,
+    basisPoints: number,
+  ): boolean {
+    const line = this.editableLine(lineId);
+    if (
+      !line ||
+      !Number.isSafeInteger(basisPoints) ||
+      basisPoints < 0 ||
+      basisPoints > 10_000
+    ) {
+      return false;
+    }
+
+    line.discountState =
+      basisPoints === 0
+        ? NONE_DISCOUNT
+        : { kind: "manual-percent", basisPoints };
+    this.finishMutation();
+    return true;
+  }
+
+  applyQuickLineDiscount(
+    lineId: string,
+    basisPoints: QuickDiscountBasisPoints,
+  ): boolean {
+    if (
+      basisPoints !== 1_000 &&
+      basisPoints !== 2_000 &&
+      basisPoints !== 3_000 &&
+      basisPoints !== 4_000 &&
+      basisPoints !== 5_000
+    ) {
+      return false;
+    }
+    return this.setLineDiscountPercentBps(lineId, basisPoints);
+  }
+
+  setOrderDiscountAmount(discount: Money): boolean {
+    if (
+      this.lines.length === 0 ||
+      this.lines.some((line) => line.kind === "return") ||
+      discount.currency !== "AUD" ||
+      !Number.isSafeInteger(discount.cents) ||
+      discount.cents < 0
+    ) {
+      return false;
+    }
+
+    const totalGross = this.totalGross();
+    if (discount.cents > totalGross) {
+      return false;
+    }
+
+    this.applyOrderDiscount(discount.cents, totalGross);
+    this.finishMutation();
+    return true;
+  }
+
+  setOrderDiscountPercentBps(basisPoints: number): boolean {
+    if (
+      this.lines.length === 0 ||
+      this.lines.some((line) => line.kind === "return") ||
+      !Number.isSafeInteger(basisPoints) ||
+      basisPoints < 0 ||
+      basisPoints > 10_000
+    ) {
+      return false;
+    }
+
+    const totalGross = this.totalGross();
+    const discountCents = roundProductRatio(
+      totalGross,
+      basisPoints,
+      10_000,
+      "order percentage discount",
+    );
+    this.applyOrderDiscount(discountCents, totalGross);
+    this.finishMutation();
+    return true;
+  }
+
+  applyQuickOrderDiscount(
+    basisPoints: QuickDiscountBasisPoints,
+  ): boolean {
+    if (
+      basisPoints !== 1_000 &&
+      basisPoints !== 2_000 &&
+      basisPoints !== 3_000 &&
+      basisPoints !== 4_000 &&
+      basisPoints !== 5_000
+    ) {
+      return false;
+    }
+    return this.setOrderDiscountPercentBps(basisPoints);
+  }
+
+  setPromotions(
+    promotions: readonly PromotionDefinition[],
+    asOfIso: string,
+  ): void {
+    this.promotions = canonicalPromotions(promotions);
+    this.asOfIso = canonicalIso(asOfIso, "cart as-of timestamp");
+    this.finishMutation();
+  }
+
+  snapshot(): CartSnapshot {
+    const lines = this.lines.map((line) => {
+      const gross = this.lineGross(line);
+      const discount = this.lineDiscount(line);
+      const actual =
+        line.kind === "return" ? -gross : gross - discount;
+      return {
+        lineId: line.lineId,
+        productCode: line.productCode,
+        itemNumber: line.itemNumber,
+        lookupCode: line.lookupCode,
+        displayName: line.displayName,
+        quantity: String(line.quantity),
+        unitPrice: createAud(line.unitPriceCents),
+        discount: createAud(discount),
+        actualAmount: createAud(actual),
+        priceSource:
+          line.discountState.kind === "promotion" && discount > 0
+            ? ("promotion" as const)
+            : line.basePriceSource,
+        ...(line.syncProvenance === undefined
+          ? {}
+          : {
+              syncProvenance: normalizeLineSyncProvenance(
+                line.syncProvenance,
+              ),
+            }),
+        kind: line.kind,
+        returnSourceKey: line.returnSourceKey,
+        originalOrderGuid: line.originalOrderGuid,
+        originalOrderDetailGuid: line.originalOrderDetailGuid,
+      };
+    });
+
+    return {
+      revision: this.revision,
+      mode: this.mode,
+      lines,
+      subtotal: createAud(
+        sumSafe(
+          this.lines.map((line) => {
+            const gross = this.lineGross(line);
+            return line.kind === "return" ? -gross : gross;
+          }),
+          "cart subtotal",
+        ),
+      ),
+      discount: createAud(
+        sumSafe(
+          this.lines.map((line) => this.lineDiscount(line)),
+          "cart discount",
+        ),
+      ),
+      actualAmount: createAud(
+        sumSafe(
+          lines.map((line) => line.actualAmount.cents),
+          "cart actual amount",
+        ),
+      ),
+    };
+  }
+
+  stateSnapshot(): PricingCartStateSnapshot {
+    return {
+      revision: this.revision,
+      mode: this.mode,
+      asOfIso: this.asOfIso,
+      promotions: this.promotions.map(clonePromotion),
+      lines: this.lines.map(cloneLineState),
+    };
+  }
+
+  private static isPositiveQuantity(quantity: number): boolean {
+    return Number.isSafeInteger(quantity) && quantity > 0;
+  }
+
+  private assertNewLineInput(
+    input: {
+      lineId: string;
+      productCode: string;
+      lookupCode: string;
+      displayName: string;
+    },
+    quantity: number,
+  ): void {
+    assertNonBlank(input.lineId, "cart line id");
+    assertNonBlank(input.productCode, "cart product code");
+    assertNonBlank(input.displayName, "cart display name");
+    if (!PricingCart.isPositiveQuantity(quantity)) {
+      throw new TypeError("cart item quantity must be a positive integer");
+    }
+  }
+
+  private assertUniqueLineId(lineId: string): void {
+    if (this.lines.some((line) => line.lineId === lineId)) {
+      throw new TypeError(`duplicate cart line id: ${lineId}`);
+    }
+  }
+
+  private editableLine(lineId: string): MutablePricingLine | undefined {
+    const line = this.lines.find((candidate) => candidate.lineId === lineId);
+    return line?.kind === "return" ? undefined : line;
+  }
+
+  private assertGrossSafe(quantity: number, unitPriceCents: number): void {
+    multiplySafe(quantity, unitPriceCents, "cart line gross");
+  }
+
+  private lineGross(line: MutablePricingLine): number {
+    return multiplySafe(
+      line.quantity,
+      line.unitPriceCents,
+      "cart line gross",
+    );
+  }
+
+  private lineDiscount(line: MutablePricingLine): number {
+    if (line.kind === "return") {
+      return 0;
+    }
+
+    const gross = this.lineGross(line);
+    switch (line.discountState.kind) {
+      case "none":
+        return 0;
+      case "manual-amount":
+      case "promotion":
+        return Math.min(gross, Math.max(0, line.discountState.cents));
+      case "manual-percent":
+        return Math.min(
+          gross,
+          roundProductRatio(
+            gross,
+            line.discountState.basisPoints,
+            10_000,
+            "line percentage discount",
+          ),
+        );
+    }
+  }
+
+  private normalizeDiscountAfterGrossChange(
+    line: MutablePricingLine,
+  ): void {
+    const gross = this.lineGross(line);
+    if (line.discountState.kind === "manual-amount") {
+      const cents = Math.min(gross, line.discountState.cents);
+      line.discountState =
+        cents > 0 ? { kind: "manual-amount", cents } : NONE_DISCOUNT;
+    } else if (line.discountState.kind === "promotion") {
+      line.discountState = NONE_DISCOUNT;
+    }
+  }
+
+  private finishMutation(): void {
+    this.refreshPromotionDiscounts();
+    this.revision = sumSafe([this.revision, 1], "cart revision");
+  }
+
+  private totalGross(): number {
+    return sumSafe(
+      this.lines.map((line) => {
+        const gross = this.lineGross(line);
+        return line.kind === "return" ? -gross : gross;
+      }),
+      "cart gross total",
+    );
+  }
+
+  private applyOrderDiscount(
+    discountCents: number,
+    totalGross: number,
+  ): void {
+    let remainingDiscount = Math.min(
+      totalGross,
+      Math.max(0, discountCents),
+    );
+    const discountable = this.lines.filter(
+      (line) => this.lineGross(line) > 0,
+    );
+
+    for (let index = 0; index < discountable.length; index += 1) {
+      const line = discountable[index]!;
+      const gross = this.lineGross(line);
+      const proposed =
+        index === discountable.length - 1
+          ? remainingDiscount
+          : roundProductRatio(
+              discountCents,
+              gross,
+              totalGross,
+              "order discount allocation",
+            );
+      const lineDiscount = Math.min(
+        gross,
+        remainingDiscount,
+        Math.max(0, proposed),
+      );
+      line.discountState =
+        lineDiscount > 0
+          ? { kind: "manual-amount", cents: lineDiscount }
+          : NONE_DISCOUNT;
+      remainingDiscount -= lineDiscount;
+    }
+  }
+
+  private validateRestoredDiscount(line: MutablePricingLine): void {
+    const gross = this.lineGross(line);
+    const state = line.discountState;
+    if (line.kind === "return" && state.kind !== "none") {
+      throw new TypeError("return line cannot contain a discount");
+    }
+
+    if (
+      state.kind === "manual-amount" ||
+      state.kind === "promotion"
+    ) {
+      assertSafeInteger(state.cents, "restored line discount");
+      if (state.cents < 0 || state.cents > gross) {
+        throw new RangeError("restored line discount is out of range");
+      }
+    } else if (
+      state.kind === "manual-percent" &&
+      (!Number.isSafeInteger(state.basisPoints) ||
+        state.basisPoints < 0 ||
+        state.basisPoints > 10_000)
+    ) {
+      throw new RangeError(
+        "restored line discount percentage is out of range",
+      );
+    }
+
+    if (
+      state.kind === "promotion" &&
+      (line.basePriceSource === "open-item" ||
+        state.promotionIds.some((id) => id.trim().length === 0))
+    ) {
+      throw new TypeError("restored promotion discount is invalid");
+    }
+  }
+
+  private refreshPromotionDiscounts(): void {
+    for (const line of this.lines) {
+      if (line.discountState.kind === "promotion") {
+        line.discountState = NONE_DISCOUNT;
+      }
+    }
+
+    const eligibleLines = this.lines.filter((line) => {
+      const discount = this.lineDiscount(line);
+      const hasManualDiscount =
+        (line.discountState.kind === "manual-amount" ||
+          line.discountState.kind === "manual-percent") &&
+        discount > 0;
+      return (
+        line.kind === "sale" &&
+        line.basePriceSource !== "open-item" &&
+        !hasManualDiscount &&
+        line.unitPriceCents > 0 &&
+        this.lineGross(line) > 0
+      );
+    });
+    if (eligibleLines.length === 0) {
+      return;
+    }
+
+    const asOf = Date.parse(this.asOfIso);
+    const applicableRules = this.promotions.filter((promotion) => {
+      if (
+        promotion.applyQuantity <= 0 ||
+        promotion.products.length === 0 ||
+        Date.parse(promotion.effectiveStartIso) > asOf ||
+        Date.parse(promotion.effectiveEndIso) < asOf
+      ) {
+        return false;
+      }
+
+      const productCodes = new Set(
+        promotion.products.map((product) =>
+          normalizeProductCode(product.productCode),
+        ),
+      );
+      return eligibleLines.some((line) =>
+        productCodes.has(normalizeProductCode(line.productCode)),
+      );
+    });
+    if (applicableRules.length === 0) {
+      return;
+    }
+
+    const exclusive = applicableRules.find(
+      (promotion) => promotion.isExclusive,
+    );
+    const rulesToEvaluate = exclusive
+      ? [exclusive]
+      : applicableRules.filter((promotion) => !promotion.isExclusive);
+    const allocations = new Map<
+      MutablePricingLine,
+      PromotionLineAllocation
+    >();
+
+    for (const promotion of rulesToEvaluate) {
+      this.evaluatePromotion(promotion, eligibleLines, allocations);
+    }
+
+    for (const [line, allocation] of allocations) {
+      if (allocation.cents <= 0) {
+        continue;
+      }
+      line.discountState = {
+        kind: "promotion",
+        cents: Math.min(this.lineGross(line), allocation.cents),
+        promotionIds: [...allocation.promotionIds],
+      };
+    }
+  }
+
+  private evaluatePromotion(
+    promotion: PromotionDefinition,
+    eligibleLines: readonly MutablePricingLine[],
+    allocations: Map<MutablePricingLine, PromotionLineAllocation>,
+  ): void {
+    const productWeights = new Map<string, number>();
+    for (const product of promotion.products) {
+      const productCode = normalizeProductCode(product.productCode);
+      if (productCode.length > 0) {
+        productWeights.set(
+          productCode,
+          product.unitWeight > 0 ? product.unitWeight : 1,
+        );
+      }
+    }
+    if (productWeights.size === 0) {
+      return;
+    }
+
+    const units: PromotionUnit[] = [];
+    for (const line of eligibleLines) {
+      const unitWeight = productWeights.get(
+        normalizeProductCode(line.productCode),
+      );
+      if (unitWeight === undefined) {
+        continue;
+      }
+
+      for (
+        let quantityIndex = 0;
+        quantityIndex < line.quantity;
+        quantityIndex += 1
+      ) {
+        for (
+          let weightIndex = 0;
+          weightIndex < unitWeight;
+          weightIndex += 1
+        ) {
+          units.push({
+            line,
+            quantityIndex,
+            selectedIndex: units.length,
+          });
+        }
+      }
+    }
+
+    let applicationCount = Math.floor(
+      units.length / promotion.applyQuantity,
+    );
+    if (promotion.maxApplicationsPerOrder !== null) {
+      applicationCount = Math.min(
+        applicationCount,
+        promotion.maxApplicationsPerOrder,
+      );
+    }
+
+    for (
+      let applicationIndex = 0;
+      applicationIndex < applicationCount;
+      applicationIndex += 1
+    ) {
+      const start = applicationIndex * promotion.applyQuantity;
+      this.addPromotionGroupDiscount(
+        promotion,
+        units.slice(start, start + promotion.applyQuantity),
+        allocations,
+      );
+    }
+  }
+
+  private addPromotionGroupDiscount(
+    promotion: PromotionDefinition,
+    selectedUnits: readonly PromotionUnit[],
+    allocations: Map<MutablePricingLine, PromotionLineAllocation>,
+  ): void {
+    const physicalUnits = new Map<
+      string,
+      PromotionUnit & { firstSelectedIndex: number }
+    >();
+    selectedUnits.forEach((unit, selectedIndex) => {
+      const key = `${unit.line.lineId}\u0000${unit.quantityIndex}`;
+      if (!physicalUnits.has(key)) {
+        physicalUnits.set(key, {
+          ...unit,
+          firstSelectedIndex: selectedIndex,
+        });
+      }
+    });
+
+    const sortedPhysicalUnits = [...physicalUnits.values()].sort(
+      (left, right) =>
+        left.quantityIndex - right.quantityIndex ||
+        left.firstSelectedIndex - right.firstSelectedIndex,
+    );
+    const groupedLines = new Map<
+      MutablePricingLine,
+      {
+        amount: number;
+        sortOrder: number;
+        firstSelectedIndex: number;
+      }
+    >();
+    for (const unit of sortedPhysicalUnits) {
+      const current = groupedLines.get(unit.line);
+      if (current) {
+        current.amount = sumSafe(
+          [current.amount, unit.line.unitPriceCents],
+          "promotion group amount",
+        );
+        current.sortOrder = Math.min(
+          current.sortOrder,
+          unit.quantityIndex,
+        );
+      } else {
+        groupedLines.set(unit.line, {
+          amount: unit.line.unitPriceCents,
+          sortOrder: unit.quantityIndex,
+          firstSelectedIndex: unit.firstSelectedIndex,
+        });
+      }
+    }
+
+    const candidates = [...groupedLines.entries()]
+      .map(([line, group]) => {
+        const currentDiscount = allocations.get(line)?.cents ?? 0;
+        return {
+          line,
+          ...group,
+          capacity: Math.max(
+            0,
+            this.lineGross(line) - currentDiscount,
+          ),
+        };
+      })
+      .filter((candidate) => candidate.capacity > 0)
+      .sort(
+        (left, right) =>
+          left.sortOrder - right.sortOrder ||
+          left.firstSelectedIndex - right.firstSelectedIndex,
+      );
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const groupTotal = sumSafe(
+      candidates.map((candidate) => candidate.amount),
+      "promotion group total",
+    );
+    let remainingDiscount =
+      groupTotal - promotion.fixedPrice.cents;
+    if (remainingDiscount <= 0) {
+      return;
+    }
+
+    for (
+      let index = 0;
+      index < candidates.length && remainingDiscount > 0;
+      index += 1
+    ) {
+      const candidate = candidates[index]!;
+      const remainingAmount = sumSafe(
+        candidates
+          .slice(index)
+          .map((remaining) => remaining.amount),
+        "promotion remaining amount",
+      );
+      if (remainingAmount <= 0) {
+        break;
+      }
+
+      const proposed =
+        index === candidates.length - 1
+          ? remainingDiscount
+          : roundProductRatio(
+              remainingDiscount,
+              candidate.amount,
+              remainingAmount,
+              "promotion discount allocation",
+            );
+      const lineDiscount = Math.min(
+        remainingDiscount,
+        candidate.capacity,
+        Math.max(0, proposed),
+      );
+      if (lineDiscount <= 0) {
+        continue;
+      }
+
+      const allocation = allocations.get(candidate.line) ?? {
+        cents: 0,
+        promotionIds: [],
+      };
+      allocation.cents = sumSafe(
+        [allocation.cents, lineDiscount],
+        "promotion line discount",
+      );
+      if (!allocation.promotionIds.includes(promotion.id)) {
+        allocation.promotionIds.push(promotion.id);
+      }
+      allocations.set(candidate.line, allocation);
+      remainingDiscount -= lineDiscount;
+    }
+  }
+}

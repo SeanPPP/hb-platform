@@ -1,0 +1,842 @@
+{
+  "version": 2,
+  "target": "apps/pos-ipad",
+  "sourceApplication": "apps/pos-wpf/src/Hbpos.Client.Wpf",
+  "implementationAudit": "apps/pos-ipad/test-fixtures/wpf-parity/implementation-audit.json",
+  "allowedPlatformAdaptations": [
+    "Bluetooth HID and camera scanning replace Win32 Raw Input.",
+    "App Store and EAS Update replace the Windows installer.",
+    "USB-C noninteractive external display scenes replace the WPF second window."
+  ],
+  "modules": [
+    {
+      "id": "identity-security",
+      "name": "设备、身份与权限",
+      "features": [
+        {
+          "id": "device-registration",
+          "name": "设备注册、轮询审批与验证",
+          "workPackage": "W1.5",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/DeviceRegistrationViewModel.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/DevicesController.cs"
+          ],
+          "acceptance": [
+            "iPadOS 注册进入现有审批流并在批准后保存设备授权码。",
+            "旧 WPF 未发送 DeviceSystem 时仍登记为 Windows。"
+          ]
+        },
+        {
+          "id": "device-reregister",
+          "name": "设备重新注册",
+          "workPackage": "W4.5",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.DeviceRegistration"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/SettingsViewModel.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Services/DeviceService.cs"
+          ],
+          "acceptance": [
+            "重新注册保留本地数据库与待同步订单，平台由服务端继承为 iPadOS。"
+          ]
+        },
+        {
+          "id": "cashier-login",
+          "name": "收银员条码登录与离线缓存",
+          "workPackage": "W1.5",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.CatalogDownload"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/CashierSessionServices.cs",
+            "apps/pos-wpf/tests/Hbpos.Client.Tests/CashierPermissionTests.cs"
+          ],
+          "acceptance": [
+            "在线成功更新同门店、设备、条码的加密缓存。",
+            "传输失败可回退缓存，但在线明确拒绝绝不回退。"
+          ]
+        },
+        {
+          "id": "supervisor-authorization",
+          "name": "主管代授权",
+          "workPackage": "W2.10",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "敏感操作按 WPF 权限规则请求主管授权并写入审计。"
+          ]
+        },
+        {
+          "id": "emergency-login",
+          "name": "紧急离线二维码登录",
+          "workPackage": "W4.6",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/EmergencyLoginTokenService.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/EmergencyLoginPublicKeySyncService.cs",
+            "apps/pos-wpf/tests/Hbpos.Client.Tests/EmergencyLoginTokenServiceTests.cs"
+          ],
+          "acceptance": [
+            "验证 P-256 签名、kid、门店、有效期与可信时间。",
+            "时钟回拨、签名篡改或跨门店 token 必须拒绝。"
+          ]
+        },
+        {
+          "id": "screen-lock",
+          "name": "锁屏与重新登录",
+          "workPackage": "W2.10",
+          "status": "implemented-and-tested",
+          "connectivity": "local",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/MainViewModel.cs"
+          ],
+          "acceptance": [
+            "锁屏清除当前收银员敏感会话但不删除待同步交易。"
+          ]
+        },
+        {
+          "id": "operation-audit",
+          "name": "操作审计与批量补传",
+          "workPackage": "W4.6",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": ["Permissions.PosTerminal.Audit.View"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/OperationAuditEvents.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/OperationAuditsController.cs"
+          ],
+          "acceptance": [
+            "离线审计先持久化，恢复后每批不超过 100 条可靠补传。",
+            "日志和审计不包含设备授权码、银行卡引用或券码明文。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "catalog-sales",
+      "name": "目录、定价与购物车",
+      "features": [
+        {
+          "id": "catalog-snapshot",
+          "name": "目录分页快照",
+          "workPackage": "W2.1",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/LocalCatalogSyncService.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/CatalogController.cs"
+          ],
+          "acceptance": [
+            "分页下载校验完成后单事务切换版本，失败继续使用旧快照。"
+          ]
+        },
+        {
+          "id": "barcode-search",
+          "name": "条码、货号与名称搜索",
+          "workPackage": "W2.1",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.AddItem"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "离线本地索引按条码、货号和名称返回与 WPF 一致的候选。"
+          ]
+        },
+        {
+          "id": "remote-product-fallback",
+          "name": "远程商品兜底查询",
+          "workPackage": "W2.1",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.AddItem"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/CatalogController.cs"
+          ],
+          "acceptance": [
+            "本地未命中且在线时可远程查询，离线时不伪造商品。"
+          ]
+        },
+        {
+          "id": "open-item",
+          "name": "开放商品",
+          "workPackage": "W2.2",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.AddOpenItem"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "OPENITEM 保留名称、数量、输入价格和同步行类型。"
+          ]
+        },
+        {
+          "id": "line-editing",
+          "name": "购物车数量、价格与删除",
+          "workPackage": "W2.2",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.ChangeQuantity",
+            "Permissions.PosTerminal.Sales.ChangePrice",
+            "Permissions.PosTerminal.Sales.RemoveLine"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "使用整数分币重新计算行小计、折扣和整单金额。"
+          ]
+        },
+        {
+          "id": "discounts-promotions",
+          "name": "行折扣、整单折扣与促销",
+          "workPackage": "W2.2",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.LineDiscount",
+            "Permissions.PosTerminal.Sales.LineManualDiscount",
+            "Permissions.PosTerminal.Sales.LineQuickDiscount10Percent",
+            "Permissions.PosTerminal.Sales.LineQuickDiscount20Percent",
+            "Permissions.PosTerminal.Sales.LineQuickDiscount30Percent",
+            "Permissions.PosTerminal.Sales.LineQuickDiscount40Percent",
+            "Permissions.PosTerminal.Sales.LineQuickDiscount50Percent",
+            "Permissions.PosTerminal.Sales.OrderDiscount",
+            "Permissions.PosTerminal.Sales.OrderManualDiscount",
+            "Permissions.PosTerminal.Sales.OrderQuickDiscount10Percent",
+            "Permissions.PosTerminal.Sales.OrderQuickDiscount20Percent",
+            "Permissions.PosTerminal.Sales.OrderQuickDiscount30Percent",
+            "Permissions.PosTerminal.Sales.OrderQuickDiscount40Percent",
+            "Permissions.PosTerminal.Sales.OrderQuickDiscount50Percent"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/PromotionEvaluationService.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "支持金额/百分比及 10/20/30/40/50 快捷折扣。",
+            "相同快照输入生成与 WPF 黄金载荷相同的分币结果。"
+          ]
+        },
+        {
+          "id": "clear-cart",
+          "name": "清空购物车",
+          "workPackage": "W2.10",
+          "status": "implemented-and-tested",
+          "connectivity": "local",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.View",
+            "Permissions.PosTerminal.Sales.ClearCart"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PosTerminalViewModel.cs"
+          ],
+          "acceptance": [
+            "清空草稿写入审计且不影响已完成本地订单。"
+          ]
+        },
+        {
+          "id": "hold-resume",
+          "name": "挂单与取单",
+          "workPackage": "W2.3",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Sales.HoldOrder",
+            "Permissions.PosTerminal.Sales.RecallOrder",
+            "Permissions.PosTerminal.History.Recall"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/SuspendedOrderService.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/TransactionHistoryViewModel.cs"
+          ],
+          "acceptance": [
+            "挂单和取单保留商品、折扣、来源价格与递增本地序号。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkout-payments",
+      "name": "结账与支付",
+      "features": [
+        {
+          "id": "cash-sale",
+          "name": "现金销售与找零",
+          "workPackage": "W2.5",
+          "status": "in-progress",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.TakeCash",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/CashPaymentWorkflowService.cs"
+          ],
+          "acceptance": [
+            "一个 SQLCipher 事务写入订单、行、现金 tender、审计和 outbox 后才清空购物车。"
+          ]
+        },
+        {
+          "id": "zero-total-sale",
+          "name": "零金额订单",
+          "workPackage": "W2.5",
+          "status": "in-progress",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PaymentViewModel.cs"
+          ],
+          "acceptance": [
+            "零金额订单无需伪造 tender 即可按 WPF 规则完成。"
+          ]
+        },
+        {
+          "id": "cash-rounding",
+          "name": "澳币 0.05 现金取整",
+          "workPackage": "W2.2",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/tests/Hbpos.Client.Tests/CashPaymentWorkflowServiceTests.cs"
+          ],
+          "acceptance": [
+            "7.82 应付 7.80、7.83 应付 7.85，找零与本地付款总额不被高估。"
+          ]
+        },
+        {
+          "id": "square-payment",
+          "name": "Square Terminal 支付与退款",
+          "workPackage": "W3.2",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.TakeCard",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/SquareTerminalPaymentClient.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/SquareController.cs"
+          ],
+          "acceptance": [
+            "持久化 CheckoutId、PaymentId 与幂等键后才调用 provider。",
+            "批准后崩溃可恢复同一 OrderGuid。"
+          ]
+        },
+        {
+          "id": "linkly-cloud-payment",
+          "name": "Linkly Cloud Backend Async 支付与退款",
+          "workPackage": "W3.3",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.TakeCard",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/LinklyBackendTerminalClient.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/LinklyController.cs"
+          ],
+          "acceptance": [
+            "持久化 SessionId、TxnRef、RFN 后才提交，并支持 status/recover/sendkey/receipt/ack。"
+          ]
+        },
+        {
+          "id": "voucher-payment",
+          "name": "代金券查询、锁定、释放与退款",
+          "workPackage": "W3.4",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.TakeVoucher",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/VouchersController.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/VoucherApiClient.cs"
+          ],
+          "acceptance": [
+            "正向券支付必须在线锁定；移除 tender 时可靠释放同一 reservation。"
+          ]
+        },
+        {
+          "id": "mixed-payment",
+          "name": "现金、卡与券混合支付",
+          "workPackage": "W3.5",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.Confirm",
+            "Permissions.PosTerminal.Payment.RemoveTender",
+            "Permissions.PosTerminal.Payment.TakeCash",
+            "Permissions.PosTerminal.Payment.TakeCard",
+            "Permissions.PosTerminal.Payment.TakeVoucher"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PaymentViewModel.cs"
+          ],
+          "acceptance": [
+            "每种付款方式只保留一个 tender，并按 WPF 规则允许移除与重新添加。"
+          ]
+        },
+        {
+          "id": "payment-recovery",
+          "name": "支付 Unknown 恢复",
+          "workPackage": "W3.1",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Payment.View",
+            "Permissions.PosTerminal.Payment.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/CardPaymentRecoveryService.cs"
+          ],
+          "acceptance": [
+            "Unknown 未恢复前禁止再次扣款、自动取消、退款或切换另一卡支付。"
+          ]
+        },
+        {
+          "id": "payment-success",
+          "name": "支付成功与找零页面",
+          "workPackage": "W3.7",
+          "status": "implemented-and-tested",
+          "connectivity": "local",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/PaymentSuccessViewModel.cs"
+          ],
+          "acceptance": [
+            "仅现金销售显示找零；关闭页面不会撤销已落库订单。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "returns-history",
+      "name": "退货、历史与同步",
+      "features": [
+        {
+          "id": "receipt-return",
+          "name": "按小票退货",
+          "workPackage": "W3.6",
+          "status": "in-progress",
+          "connectivity": "hybrid",
+          "permissions": [
+            "Permissions.PosTerminal.Returns.View",
+            "Permissions.PosTerminal.Returns.AddReceiptLine",
+            "Permissions.PosTerminal.Returns.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/ReceiptReturnsViewModel.cs"
+          ],
+          "acceptance": [
+            "按原订单行与原支付方式容量限制可退数量和金额。"
+          ]
+        },
+        {
+          "id": "no-receipt-return",
+          "name": "无小票商品与 OPENITEM 退货",
+          "workPackage": "W3.6",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Returns.View",
+            "Permissions.PosTerminal.Returns.AddNoReceiptItem",
+            "Permissions.PosTerminal.Returns.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/ReceiptReturnsViewModel.cs"
+          ],
+          "acceptance": [
+            "无小票商品和 OPENITEM 退货按主管权限与负数行合同同步。"
+          ]
+        },
+        {
+          "id": "offline-cash-return",
+          "name": "可证明的离线现金退款",
+          "workPackage": "W2.5",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.Returns.View",
+            "Permissions.PosTerminal.Returns.AddReceiptLine",
+            "Permissions.PosTerminal.Returns.Confirm"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/CashPaymentWorkflowService.cs"
+          ],
+          "acceptance": [
+            "仅本机已同步或可验证原现金容量时允许，卡、券与分期退款离线禁止。"
+          ]
+        },
+        {
+          "id": "local-history",
+          "name": "本地订单与付款历史",
+          "workPackage": "W2.11",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": ["Permissions.PosTerminal.History.View"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/TransactionHistoryViewModel.cs"
+          ],
+          "acceptance": [
+            "按递增 local_sequence 展示完成、待传、阻塞与拒绝状态。"
+          ]
+        },
+        {
+          "id": "remote-history",
+          "name": "远程历史与详情",
+          "workPackage": "W4.1",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.History.View",
+            "Permissions.PosTerminal.History.Reprint"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/OrdersController.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/TransactionHistoryViewModel.cs"
+          ],
+          "acceptance": [
+            "支持远程筛选、详情、付款预览和重打，不新增历史页退款入口。"
+          ]
+        },
+        {
+          "id": "sync-recovery",
+          "name": "订单 outbox 与可靠补传",
+          "workPackage": "W2.4",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": ["Permissions.PosTerminal.System.Sync"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/OrderUploadService.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/OrdersController.cs"
+          ],
+          "acceptance": [
+            "联网恢复、启动和前台触发同一 OrderGuid 补传，AlreadySynced 等同成功。",
+            "401 保留 Pending，403 保留订单并锁定，稳定业务拒绝进入主管对账。"
+          ]
+        },
+        {
+          "id": "support-export",
+          "name": "支持导出",
+          "workPackage": "W2.11",
+          "status": "implemented-and-tested",
+          "connectivity": "offline",
+          "permissions": [
+            "Permissions.PosTerminal.History.View",
+            "Permissions.PosTerminal.Audit.View"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/TransactionHistoryViewModel.cs"
+          ],
+          "acceptance": [
+            "导出待同步状态与脱敏诊断，不导出密钥、token 或完整支付引用；诊断支持包额外要求既有 Audit.View 权限。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "operations",
+      "name": "门店运营",
+      "features": [
+        {
+          "id": "special-products",
+          "name": "特价商品浏览与管理",
+          "workPackage": "W4.2",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [
+            "Permissions.PosTerminal.SpecialProducts.View",
+            "Permissions.PosTerminal.SpecialProducts.Manage",
+            "Permissions.PosTerminal.SpecialProducts.AddToCart"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/SpecialProductsViewModel.cs"
+          ],
+          "acceptance": [
+            "离线可浏览和加入购物车；标记、取消和排序写操作在线。"
+          ]
+        },
+        {
+          "id": "installments",
+          "name": "分期订单全生命周期",
+          "workPackage": "W4.3",
+          "status": "implemented-and-tested",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Installments.View",
+            "Permissions.PosTerminal.Installments.Create",
+            "Permissions.PosTerminal.Installments.AddRepayment",
+            "Permissions.PosTerminal.Installments.ConfirmPickup",
+            "Permissions.PosTerminal.Installments.Cancel"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/InstallmentCenterViewModel.cs"
+          ],
+          "acceptance": [
+            "创建、续付、取消退款、作废、取货与历史续付全部在线并可恢复支付。"
+          ]
+        },
+        {
+          "id": "daily-close",
+          "name": "本机日结",
+          "workPackage": "W4.4",
+          "status": "in-progress",
+          "connectivity": "local",
+          "permissions": [
+            "Permissions.PosTerminal.DailyClose.View",
+            "Permissions.PosTerminal.DailyClose.Save",
+            "Permissions.PosTerminal.DailyClose.Reprint"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/DailyCloseViewModel.cs"
+          ],
+          "acceptance": [
+            "按营业日、门店、设备和收银员汇总销售退款与 AUD 面额差异。",
+            "保存、打印、历史重打均保持本机日结语义。"
+          ]
+        },
+        {
+          "id": "catalog-settings",
+          "name": "API 地址与目录设置",
+          "workPackage": "W4.5",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.CatalogDownload",
+            "Permissions.PosTerminal.Settings.CatalogReset"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/SettingsViewModel.cs"
+          ],
+          "acceptance": [
+            "切换 API 地址需重新验证设备；目录可下载、校验和安全重置。"
+          ]
+        },
+        {
+          "id": "payment-settings",
+          "name": "Square 与 Linkly 设置",
+          "workPackage": "W4.5",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.PaymentTerminal"
+          ],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/SettingsViewModel.cs"
+          ],
+          "acceptance": [
+            "仅提供 Square 与 Linkly Cloud Backend Async 配置/测试，不暴露本地 IP 或 Cloud Direct。"
+          ]
+        },
+        {
+          "id": "attendance-qr",
+          "name": "考勤动态二维码",
+          "workPackage": "W4.6",
+          "status": "implemented-and-tested",
+          "connectivity": "hybrid",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/ViewModels/AttendanceQrPanelViewModel.cs"
+          ],
+          "acceptance": [
+            "签名密钥绑定门店、设备与硬件 ID，可信时间防止离线回拨。"
+          ]
+        },
+        {
+          "id": "locale-parity",
+          "name": "中英文完整性",
+          "workPackage": "W4.10",
+          "status": "implemented-and-tested",
+          "connectivity": "local",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Resources/Strings.zh-CN.resx",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Resources/Strings.resx"
+          ],
+          "acceptance": [
+            "所有页面、错误码、打印文本和客显键在中英文资源中一一对应。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "peripherals",
+      "name": "门店外设",
+      "features": [
+        {
+          "id": "receipt-printing",
+          "name": "58/80mm ESC/POS 小票",
+          "workPackage": "W2.7",
+          "status": "in-progress",
+          "connectivity": "local",
+          "permissions": ["Permissions.PosTerminal.Receipt.PrintLast"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/ReceiptPrinting.cs"
+          ],
+          "acceptance": [
+            "芯烨 BLE 可打印中文、换行和切纸；失败不回滚订单。",
+            "Ambiguous 打印任务禁止自动重放。"
+          ]
+        },
+        {
+          "id": "cash-drawer",
+          "name": "RJ11 钱箱",
+          "workPackage": "W2.8",
+          "status": "in-progress",
+          "connectivity": "local",
+          "permissions": ["Permissions.PosTerminal.CashDrawer.Open"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/ReceiptPrinting.cs"
+          ],
+          "acceptance": [
+            "订单提交后才发 ESC/POS 脉冲；Unknown 钱箱事件禁止自动重放。"
+          ]
+        },
+        {
+          "id": "hid-scanner",
+          "name": "蓝牙 HID 扫码枪",
+          "workPackage": "W2.9",
+          "status": "in-progress",
+          "connectivity": "local",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/RawScannerService.cs"
+          ],
+          "acceptance": [
+            "按键缓冲以 CR/LF 结束并按上下文路由，登录、搜索、弹窗和购物车不串码。"
+          ]
+        },
+        {
+          "id": "camera-scanner",
+          "name": "相机扫码兜底",
+          "workPackage": "W2.9",
+          "status": "implemented-and-tested",
+          "connectivity": "local",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/RawScannerService.cs"
+          ],
+          "acceptance": [
+            "相机扫描与 HID 使用同一上下文路由且执行去抖。"
+          ]
+        },
+        {
+          "id": "customer-display",
+          "name": "USB-C 非交互独立客显",
+          "workPackage": "W4.9",
+          "status": "in-progress",
+          "connectivity": "local",
+          "permissions": ["Permissions.PosTerminal.CustomerDisplay.Manage"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Views/Windows/CustomerDisplayWindow.xaml",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/DisplayTopologyService.cs"
+          ],
+          "acceptance": [
+            "外接 UIWindowScene 只显示、不触摸、不镜像，拔线或崩溃不影响主屏收银。",
+            "snapshot 不包含 token、支付引用、顾客资料或设备授权。"
+          ]
+        },
+        {
+          "id": "customer-display-adverts",
+          "name": "客显图片与视频广告",
+          "workPackage": "W4.9",
+          "status": "in-progress",
+          "connectivity": "hybrid",
+          "permissions": ["Permissions.PosTerminal.CustomerDisplay.Manage"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/CustomerDisplayOrchestrator.cs",
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/AdvertisementMediaCacheService.cs"
+          ],
+          "acceptance": [
+            "空闲时仅播放校验后的本地缓存 URI，交易中立即切换购物车快照。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "platform-delivery",
+      "name": "平台与发布",
+      "features": [
+        {
+          "id": "app-updates",
+          "name": "原生版本门禁与 EAS Update",
+          "workPackage": "W4.7",
+          "status": "in-progress",
+          "connectivity": "online",
+          "permissions": ["Permissions.PosTerminal.Settings.AppUpdate"],
+          "sourceEvidence": [
+            "apps/pos-wpf/src/Hbpos.Client.Wpf/Services/AppUpdateCoordinator.cs",
+            "apps/pos-wpf/src/Hbpos.Api/Controllers/PosIpadAppUpdateController.cs"
+          ],
+          "acceptance": [
+            "原生最低版本经独立 pos-ipad endpoint 门禁；兼容 JS/资源更新才使用 EAS Update。",
+            "不调用 WPF EXE/MSI 更新接口。"
+          ]
+        },
+        {
+          "id": "unlisted-distribution",
+          "name": "Unlisted App 分发",
+          "workPackage": "W5.5",
+          "status": "planned",
+          "connectivity": "online",
+          "permissions": [],
+          "sourceEvidence": [
+            "apps/pos-ipad/app.config.ts",
+            "apps/pos-ipad/eas.json",
+            "apps/pos-ipad/docs/UNLISTED_RELEASE_RUNBOOK.md"
+          ],
+          "acceptance": [
+            "获取链接后仍需设备注册审批；链接本身不构成授权。"
+          ]
+        }
+      ]
+    }
+  ]
+}
