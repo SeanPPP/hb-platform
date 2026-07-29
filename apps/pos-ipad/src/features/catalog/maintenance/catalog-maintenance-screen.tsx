@@ -3,11 +3,18 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+import type {
+  CatalogRefreshStep,
+  CatalogSummary,
+} from "../catalog-refresh-contract";
 
 import {
   catalogMaintenanceText,
@@ -18,11 +25,14 @@ import {
 import type {
   CatalogMaintenancePresenter,
   CatalogMaintenanceState,
+  CatalogRefreshProgress,
+  CatalogRefreshWarningCode,
 } from "./catalog-maintenance-presenter";
 
 import { posColors } from "@/ui/theme";
 
 export const CATALOG_MAINTENANCE_MIN_TOUCH_TARGET = 44;
+const CATALOG_MAINTENANCE_COMPACT_WIDTH = 900;
 
 type CatalogMaintenanceScreenProps = Readonly<{
   locale?: CatalogMaintenanceLocale;
@@ -30,7 +40,7 @@ type CatalogMaintenanceScreenProps = Readonly<{
   onBack?(): void;
 }>;
 
-/** 为横屏 iPad 维护工作流设计；既有目录在每一个状态下都被明确标示为可继续使用。 */
+/** 横屏保持并排工作台；窄屏以可滚动的顺序堆叠，避免进度步骤被截断。 */
 export function CatalogMaintenanceScreen({
   locale: localeOverride,
   presenter,
@@ -41,6 +51,7 @@ export function CatalogMaintenanceScreen({
     presenter.getState,
     presenter.getState,
   );
+  const { width } = useWindowDimensions();
   const { i18n } = useTranslation();
   const locale =
     localeOverride ??
@@ -49,126 +60,296 @@ export function CatalogMaintenanceScreen({
     key: CatalogMaintenanceCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ) => catalogMaintenanceText(locale, key, values);
-  const isDownloading = state.kind === "downloading";
+  const compact = width < CATALOG_MAINTENANCE_COMPACT_WIDTH;
+  const refreshInProgress = state.refresh.kind === "running";
+  const catalogLoading = state.catalog.kind === "loading";
 
   return (
     <SafeAreaView style={styles.safeArea} testID="catalog-maintenance-screen">
-      <View style={styles.page}>
-        <View style={styles.header}>
-          <View style={styles.titleGroup}>
-            <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
-            <Text style={styles.title}>{t("header.title")}</Text>
-            <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        style={styles.scrollView}
+      >
+        <View style={[styles.page, compact && styles.pageCompact]}>
+          <View style={[styles.header, compact && styles.headerCompact]}>
+            <View style={styles.titleGroup}>
+              <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
+              <Text style={styles.title}>{t("header.title")}</Text>
+              <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
+            </View>
+            {onBack ? (
+              <CatalogMaintenanceButton
+                label={t("action.back")}
+                onPress={onBack}
+                testID="catalog-maintenance-back"
+                tone="secondary"
+              />
+            ) : null}
           </View>
-          {onBack ? (
-            <CatalogMaintenanceButton
-              label={t("action.back")}
-              onPress={onBack}
-              testID="catalog-maintenance-back"
-              tone="secondary"
-            />
-          ) : null}
-        </View>
 
-        <View style={styles.workspace}>
-          <View style={styles.statusPanel}>
-            <Text style={styles.panelLabel}>{t("status.panelLabel")}</Text>
-            <StatusContent locale={locale} state={state} />
-          </View>
-          <View style={styles.actionPanel}>
-            <Text style={styles.actionTitle}>{t("action.title")}</Text>
-            <Text style={styles.actionCopy}>{t("action.copy")}</Text>
-            <CatalogMaintenanceButton
-              disabled={isDownloading}
-              label={t(isDownloading ? "action.refreshing" : "action.refresh")}
-              onPress={() => void presenter.refresh()}
-              testID="catalog-maintenance-refresh"
-            />
-            <Text style={styles.safetyFootnote}>{t("action.footnote")}</Text>
+          <View style={[styles.workspace, compact && styles.workspaceCompact]}>
+            <View style={[styles.statusPanel, compact && styles.panelCompact]}>
+              <Text style={styles.panelLabel}>{t("status.panelLabel")}</Text>
+              <StatusContent locale={locale} state={state} compact={compact} />
+            </View>
+            <View style={[styles.actionPanel, compact && styles.panelCompact]}>
+              <Text style={styles.actionTitle}>{t("action.title")}</Text>
+              <Text style={styles.actionCopy}>{t("action.copy")}</Text>
+              <CatalogMaintenanceButton
+                disabled={catalogLoading || refreshInProgress}
+                label={t(
+                  refreshInProgress ? "action.refreshing" : "action.refresh",
+                )}
+                onPress={() => void presenter.refresh()}
+                testID="catalog-maintenance-refresh"
+              />
+              <Text style={styles.safetyFootnote}>{t("action.footnote")}</Text>
+            </View>
           </View>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 function StatusContent({
+  compact,
   locale,
   state,
 }: Readonly<{
+  compact: boolean;
   locale: CatalogMaintenanceLocale;
   state: CatalogMaintenanceState;
 }>) {
-  if (state.kind === "downloading") {
-    return (
-      <View
-        accessibilityLiveRegion="polite"
-        style={styles.statusBody}
-        testID="catalog-maintenance-downloading"
-      >
-        <ActivityIndicator color={posColors.orange} size="large" />
-        <Text style={styles.statusTitle}>
-          {catalogMaintenanceText(locale, "status.downloading")}
-        </Text>
-        <CatalogContinuityNote locale={locale} />
-      </View>
-    );
-  }
-
-  if (state.kind === "success") {
-    return (
-      <View
-        accessibilityLiveRegion="polite"
-        style={styles.statusBody}
-        testID="catalog-maintenance-success"
-      >
-        <Text style={[styles.statusTitle, styles.successTitle]}>
-          {catalogMaintenanceText(locale, "status.success")}
-        </Text>
-        <View style={styles.resultGrid}>
-          <Metric
-            label={catalogMaintenanceText(locale, "metric.snapshot")}
-            value={state.snapshotId}
-          />
-          <Metric
-            label={catalogMaintenanceText(locale, "metric.items")}
-            value={String(state.itemCount)}
-          />
-        </View>
-        <CatalogContinuityNote locale={locale} />
-      </View>
-    );
-  }
-
-  if (state.kind === "failed") {
-    return (
-      <View
-        accessibilityRole="alert"
-        style={styles.statusBody}
-        testID="catalog-maintenance-failed"
-      >
-        <Text style={[styles.statusTitle, styles.failedTitle]}>
-          {catalogMaintenanceText(locale, "status.failed")}
-        </Text>
-        <Text style={styles.errorCode}>
-          {catalogMaintenanceText(locale, "status.safeError", {
-            errorCode: state.errorCode,
-          })}
-        </Text>
-        <CatalogContinuityNote locale={locale} />
-      </View>
-    );
-  }
+  const refreshTestId =
+    state.refresh.kind === "running"
+      ? "catalog-maintenance-downloading"
+      : `catalog-maintenance-${state.refresh.kind}`;
+  const progress =
+    state.refresh.kind === "idle" ? null : state.refresh.progress;
 
   return (
-    <View style={styles.statusBody} testID="catalog-maintenance-idle">
-      <Text style={styles.statusTitle}>
-        {catalogMaintenanceText(locale, "status.idle")}
+    <View
+      style={[styles.statusBody, compact && styles.statusBodyCompact]}
+      testID={refreshTestId}
+    >
+      <LocalCatalogSummary catalog={state.catalog} locale={locale} />
+      <RefreshStatus
+        locale={locale}
+        progress={progress}
+        refresh={state.refresh}
+      />
+      {state.refresh.kind !== "warning" && state.catalog.summary !== null ? (
+        <CatalogContinuityNote locale={locale} />
+      ) : null}
+    </View>
+  );
+}
+
+function LocalCatalogSummary({
+  catalog,
+  locale,
+}: Readonly<{
+  catalog: CatalogMaintenanceState["catalog"];
+  locale: CatalogMaintenanceLocale;
+}>) {
+  const t = (
+    key: CatalogMaintenanceCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => catalogMaintenanceText(locale, key, values);
+  if (catalog.kind === "loading") {
+    return (
+      <View style={styles.catalogLoading} testID="catalog-maintenance-catalog-loading">
+        <ActivityIndicator color={posColors.blue} size="small" />
+        <Text style={styles.catalogLoadingText}>{t("status.catalogLoading")}</Text>
+      </View>
+    );
+  }
+  if (catalog.summary === null) {
+    return (
+      <View
+        style={styles.catalogUnavailable}
+        testID="catalog-maintenance-catalog-unavailable"
+      >
+        <Text
+          style={[
+            styles.catalogUnavailableTitle,
+            catalog.kind === "failed" && styles.failedTitle,
+          ]}
+        >
+          {t(
+            catalog.kind === "failed"
+              ? "status.catalogMetadataError"
+              : "status.catalogUnavailable",
+          )}
+        </Text>
+        {catalog.kind === "failed" ? (
+          <Text style={styles.errorCode}>
+            {t("status.safeError", { errorCode: catalog.errorCode })}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+
+  return <CatalogSummaryGrid locale={locale} summary={catalog.summary} />;
+}
+
+function CatalogSummaryGrid({
+  locale,
+  summary,
+}: Readonly<{
+  locale: CatalogMaintenanceLocale;
+  summary: CatalogSummary;
+}>) {
+  const t = (key: CatalogMaintenanceCopyKey) =>
+    catalogMaintenanceText(locale, key);
+  return (
+    <View style={styles.summaryGrid} testID="catalog-maintenance-summary">
+      <Metric label={t("metric.version")} value={summary.catalogVersion} />
+      <Metric label={t("metric.items")} value={String(summary.itemCount)} />
+      <Metric
+        label={t("metric.activated")}
+        value={formatCatalogTimestamp(summary.activatedAt)}
+      />
+      <Metric
+        label={t("metric.snapshot")}
+        secondary
+        value={summary.snapshotId}
+      />
+    </View>
+  );
+}
+
+function RefreshStatus({
+  locale,
+  progress,
+  refresh,
+}: Readonly<{
+  locale: CatalogMaintenanceLocale;
+  progress: CatalogRefreshProgress | null;
+  refresh: CatalogMaintenanceState["refresh"];
+}>) {
+  const t = (
+    key: CatalogMaintenanceCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => catalogMaintenanceText(locale, key, values);
+
+  if (refresh.kind === "idle") {
+    return (
+      <View style={styles.refreshStatus}>
+        <Text style={styles.statusTitle}>{t("status.idle")}</Text>
+        <Text style={styles.statusHint}>{t("status.idleHint")}</Text>
+      </View>
+    );
+  }
+
+  const title =
+    refresh.kind === "success"
+      ? t("status.success")
+      : refresh.kind === "warning"
+        ? t("status.warning")
+      : refresh.kind === "failed"
+        ? t("status.failed")
+        : t("status.downloading");
+  return (
+    <View
+      accessibilityRole={
+        refresh.kind === "failed" || refresh.kind === "warning"
+          ? "alert"
+          : undefined
+      }
+      style={styles.refreshStatus}
+    >
+      <Text
+        style={[
+          styles.statusTitle,
+          refresh.kind === "success" && styles.successTitle,
+          refresh.kind === "warning" && styles.warningTitle,
+          refresh.kind === "failed" && styles.failedTitle,
+        ]}
+      >
+        {title}
       </Text>
-      <Text style={styles.statusHint}>
-        {catalogMaintenanceText(locale, "status.idleHint")}
+      {progress ? <RefreshProgress locale={locale} progress={progress} /> : null}
+      {refresh.kind === "failed" ? (
+        <Text style={styles.errorCode}>
+          {t("status.safeError", { errorCode: refresh.errorCode })}
+        </Text>
+      ) : null}
+      {refresh.kind === "warning" ? (
+        <Text style={styles.warningCopy}>
+          {t(warningCopyKey(refresh.warningCode))}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function RefreshProgress({
+  locale,
+  progress,
+}: Readonly<{
+  locale: CatalogMaintenanceLocale;
+  progress: CatalogRefreshProgress;
+}>) {
+  const t = (
+    key: CatalogMaintenanceCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => catalogMaintenanceText(locale, key, values);
+  const overallPercent = formatPercent(progress.overallPercent);
+  const currentStep = t(stepCopyKey(progress.currentStep));
+
+  return (
+    <View style={styles.progressSection} testID="catalog-maintenance-progress">
+      <Text accessibilityLiveRegion="polite" style={styles.progressCurrentStep}>
+        {t("progress.currentStep", { step: currentStep })}
       </Text>
-      <CatalogContinuityNote locale={locale} />
+      <View
+        accessibilityLabel={t("progress.accessibility", {
+          percent: overallPercent,
+        })}
+        accessibilityRole="progressbar"
+        accessibilityValue={{ max: 100, min: 0, now: progress.overallPercent }}
+        style={styles.progressTrack}
+        testID="catalog-maintenance-overall-progress"
+      >
+        <View
+          style={[
+            styles.progressFill,
+            { width: `${progress.overallPercent}%` },
+          ]}
+        />
+      </View>
+      <Text style={styles.progressTotal}>
+        {t("progress.total", { percent: overallPercent })}
+      </Text>
+      <View style={styles.stepList}>
+        {progress.steps.map((step) => {
+          const percent = formatPercent(step.percent);
+          const title = t(stepCopyKey(step.step));
+          const status = stepStatus(progress, step.step, step.percent);
+          return (
+            <View
+              accessibilityLabel={t("progress.stepAccessibility", {
+                percent,
+                step: title,
+              })}
+              key={step.step}
+              style={styles.stepRow}
+              testID={`catalog-maintenance-step-${step.step}`}
+            >
+              <View style={[styles.stepMarker, styles[`stepMarker${status}`]]} />
+              <Text style={[styles.stepLabel, styles[`stepLabel${status}`]]}>
+                {title}
+              </Text>
+              <Text style={[styles.stepPercent, styles[`stepLabel${status}`]]}>
+                {percent}%
+              </Text>
+            </View>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -183,11 +364,15 @@ function CatalogContinuityNote({
   );
 }
 
-function Metric({ label, value }: Readonly<{ label: string; value: string }>) {
+function Metric({
+  label,
+  secondary = false,
+  value,
+}: Readonly<{ label: string; secondary?: boolean; value: string }>) {
   return (
-    <View style={styles.metric}>
+    <View style={[styles.metric, secondary && styles.secondaryMetric]}>
       <Text style={styles.metricLabel}>{label}</Text>
-      <Text numberOfLines={1} style={styles.metricValue}>
+      <Text numberOfLines={1} style={[styles.metricValue, secondary && styles.secondaryMetricValue]}>
         {value}
       </Text>
     </View>
@@ -233,9 +418,46 @@ function CatalogMaintenanceButton({
   );
 }
 
+function stepCopyKey(step: CatalogRefreshStep): CatalogMaintenanceCopyKey {
+  return `step.${step}` as CatalogMaintenanceCopyKey;
+}
+
+function warningCopyKey(
+  warningCode: CatalogRefreshWarningCode,
+): CatalogMaintenanceCopyKey {
+  switch (warningCode) {
+    case "catalog-runtime-reload-failed":
+      return "warning.runtimeReload";
+    case "catalog-activation-verification-failed":
+      return "warning.activationVerification";
+  }
+}
+
+function stepStatus(
+  progress: CatalogRefreshProgress,
+  step: CatalogRefreshStep,
+  percent: number,
+): "Pending" | "Current" | "Complete" {
+  if (percent === 100) return "Complete";
+  return progress.currentStep === step ? "Current" : "Pending";
+}
+
+function formatPercent(percent: number): string {
+  const rounded = Math.round(percent * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+/** 目录仓储保存 canonical ISO；页面统一显示到分钟，避免因本地时区重解释启用事实。 */
+function formatCatalogTimestamp(value: string): string {
+  return value.replace(/:\d{2}(?:\.\d+)?Z$/, "Z");
+}
+
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: posColors.canvas },
+  scrollView: { flex: 1 },
+  scrollContent: { flexGrow: 1 },
   page: { flex: 1, paddingHorizontal: 40, paddingVertical: 28 },
+  pageCompact: { paddingHorizontal: 20, paddingVertical: 20 },
   header: {
     alignItems: "flex-start",
     flexDirection: "row",
@@ -243,6 +465,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 28,
   },
+  headerCompact: { gap: 16, marginBottom: 20 },
   titleGroup: { flex: 1, maxWidth: 880 },
   eyebrow: {
     color: posColors.blue,
@@ -263,6 +486,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   workspace: { flex: 1, flexDirection: "row", gap: 24, minHeight: 330 },
+  workspaceCompact: { flexDirection: "column", gap: 16, minHeight: 0 },
   statusPanel: {
     backgroundColor: posColors.surface,
     borderColor: posColors.border,
@@ -271,6 +495,7 @@ const styles = StyleSheet.create({
     flex: 1.25,
     padding: 28,
   },
+  panelCompact: { flexGrow: 0, padding: 20 },
   panelLabel: {
     color: posColors.mutedInk,
     fontSize: 13,
@@ -278,49 +503,48 @@ const styles = StyleSheet.create({
     letterSpacing: 0.9,
   },
   statusBody: { flex: 1, justifyContent: "center", paddingVertical: 24 },
-  statusTitle: {
-    color: posColors.ink,
-    fontSize: 25,
-    fontWeight: "800",
-    lineHeight: 34,
-    marginTop: 14,
-  },
-  successTitle: { color: posColors.green },
-  failedTitle: { color: posColors.red },
-  statusHint: {
-    color: posColors.mutedInk,
-    fontSize: 17,
-    lineHeight: 25,
-    marginTop: 12,
-  },
-  continuityNote: {
-    color: posColors.green,
-    fontSize: 17,
-    fontWeight: "700",
-    lineHeight: 25,
-    marginTop: 18,
-  },
-  errorCode: {
-    color: posColors.red,
-    fontFamily: "Courier",
-    fontSize: 16,
-    fontWeight: "700",
-    marginTop: 12,
-  },
-  resultGrid: { flexDirection: "row", gap: 14, marginTop: 18 },
+  statusBodyCompact: { justifyContent: "flex-start", paddingVertical: 20 },
+  catalogLoading: { alignItems: "center", flexDirection: "row", gap: 10 },
+  catalogLoadingText: { color: posColors.mutedInk, fontSize: 16, fontWeight: "700" },
+  catalogUnavailable: { paddingTop: 16 },
+  catalogUnavailableTitle: { color: posColors.ink, fontSize: 20, fontWeight: "800" },
+  summaryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 16 },
   metric: {
     backgroundColor: posColors.greenSoft,
     borderRadius: 8,
-    flex: 1,
+    flexGrow: 1,
+    minWidth: 168,
     padding: 14,
   },
+  secondaryMetric: { backgroundColor: posColors.surface, borderColor: posColors.border, borderWidth: 1 },
   metricLabel: { color: posColors.mutedInk, fontSize: 13, fontWeight: "700" },
-  metricValue: {
-    color: posColors.ink,
-    fontSize: 19,
-    fontWeight: "800",
-    marginTop: 4,
-  },
+  metricValue: { color: posColors.ink, fontSize: 18, fontWeight: "800", marginTop: 4 },
+  secondaryMetricValue: { fontSize: 15 },
+  refreshStatus: { marginTop: 24 },
+  statusTitle: { color: posColors.ink, fontSize: 23, fontWeight: "800", lineHeight: 31 },
+  successTitle: { color: posColors.green },
+  warningTitle: { color: posColors.orange },
+  failedTitle: { color: posColors.red },
+  statusHint: { color: posColors.mutedInk, fontSize: 17, lineHeight: 25, marginTop: 8 },
+  errorCode: { color: posColors.red, fontFamily: "Courier", fontSize: 15, fontWeight: "700", marginTop: 10 },
+  warningCopy: { color: posColors.ink, fontSize: 16, lineHeight: 23, marginTop: 10 },
+  progressSection: { marginTop: 14 },
+  progressCurrentStep: { color: posColors.mutedInk, fontSize: 15, fontWeight: "700" },
+  progressTrack: { backgroundColor: posColors.border, borderRadius: 99, height: 10, marginTop: 10, overflow: "hidden" },
+  progressFill: { backgroundColor: posColors.orange, borderRadius: 99, height: "100%" },
+  progressTotal: { color: posColors.ink, fontSize: 15, fontWeight: "800", marginTop: 8 },
+  stepList: { gap: 8, marginTop: 14 },
+  stepRow: { alignItems: "center", flexDirection: "row", gap: 9, minHeight: 24 },
+  stepMarker: { borderRadius: 5, height: 10, width: 10 },
+  stepMarkerPending: { backgroundColor: posColors.border },
+  stepMarkerCurrent: { backgroundColor: posColors.orange },
+  stepMarkerComplete: { backgroundColor: posColors.green },
+  stepLabel: { flex: 1, fontSize: 16, lineHeight: 22 },
+  stepPercent: { fontSize: 15, fontVariant: ["tabular-nums"], fontWeight: "800" },
+  stepLabelPending: { color: posColors.mutedInk },
+  stepLabelCurrent: { color: posColors.ink, fontWeight: "800" },
+  stepLabelComplete: { color: posColors.green, fontWeight: "700" },
+  continuityNote: { color: posColors.green, fontSize: 17, fontWeight: "700", lineHeight: 25, marginTop: 22 },
   actionPanel: {
     backgroundColor: posColors.blueSoft,
     borderColor: "#C7D9E8",
@@ -331,12 +555,7 @@ const styles = StyleSheet.create({
     padding: 28,
   },
   actionTitle: { color: posColors.ink, fontSize: 23, fontWeight: "800" },
-  actionCopy: {
-    color: posColors.mutedInk,
-    fontSize: 17,
-    lineHeight: 25,
-    marginTop: 12,
-  },
+  actionCopy: { color: posColors.mutedInk, fontSize: 17, lineHeight: 25, marginTop: 12 },
   button: {
     alignItems: "center",
     backgroundColor: posColors.orange,
@@ -347,25 +566,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
   },
-  buttonLabel: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  secondaryButton: {
-    backgroundColor: posColors.surface,
-    borderColor: posColors.border,
-    borderWidth: 1,
-    marginTop: 0,
-  },
+  buttonLabel: { color: "#FFFFFF", fontSize: 16, fontWeight: "800", textAlign: "center" },
+  secondaryButton: { backgroundColor: posColors.surface, borderColor: posColors.border, borderWidth: 1, marginTop: 0 },
   secondaryButtonLabel: { color: posColors.ink },
   disabledButton: { backgroundColor: "#C9B6AF" },
   pressedButton: { opacity: 0.82 },
-  safetyFootnote: {
-    color: posColors.mutedInk,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 16,
-  },
+  safetyFootnote: { color: posColors.mutedInk, fontSize: 14, lineHeight: 20, marginTop: 16 },
 });

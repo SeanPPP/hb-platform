@@ -87,6 +87,8 @@ function securedSettingsPort(
       }),
     downloadCatalog: (signal) =>
       run(() => input.control.downloadCatalog(signal)),
+    testApiAddress: (apiBaseUrl, signal) =>
+      run(() => input.control.testApiAddress(apiBaseUrl, signal)),
     testPaymentProvider: (provider, settings, signal) =>
       run(() =>
         input.control.testPaymentProvider(

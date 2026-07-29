@@ -163,6 +163,7 @@ test("真实 SQLite：活动目录元数据返回同一快照的条数与激活�
 
     assert.deepEqual(await repository.getActiveMetadata(), {
       snapshotId: "active-one",
+      catalogVersion: "v1",
       itemCount: 2,
       activatedAt: NOW,
     });
@@ -190,6 +191,40 @@ test("真实 SQLite：多个 active 或损坏的 active 元数据均失败关闭
       () => repository.getActiveMetadata(),
       /active|catalog|snapshot/i,
     );
+  });
+
+  await withMigratedDatabase(async (connection) => {
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+    await insertCatalogSnapshot(connection, "active-blank-version", "active", NOW);
+    await connection.run(
+      "UPDATE catalog_snapshots SET catalog_version = ? WHERE snapshot_id = ?",
+      ["   ", "active-blank-version"],
+    );
+
+    await assert.rejects(
+      () => repository.getActiveMetadata(),
+      /catalog version/i,
+    );
+  });
+});
+
+test("真实 SQLite：暂存写边界拒绝非法目录版本且不落任何快照", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+    await assert.rejects(
+      () => repository.beginStaging({
+        snapshotId: "staging-invalid-version",
+        catalogVersion: " catalog-v2",
+        checksum: "checksum",
+        downloadedAtIso: NOW,
+      }),
+      /catalog version/i,
+    );
+    const row = await connection.getFirst<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_id = ?",
+      ["staging-invalid-version"],
+    );
+    assert.equal(row?.count, 0);
   });
 });
 

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
+import {
+  calculateCatalogPageChecksum,
+  type CatalogPageDigest,
+  type CatalogLookupItem,
+} from "../../features/catalog/hbpos-catalog-remote";
+import { CATALOG_DOWNLOAD_PERMISSION } from "../../features/catalog/maintenance/catalog-maintenance-authorization";
 import type { CashCheckoutResult } from "../../features/checkout/cash";
 import type { CustomerDisplayAdvertisementCachePort } from "../../features/customer-display";
 import {
@@ -14,6 +21,10 @@ import {
 } from "../../features/remote-history/remote-history-presenter";
 import { PricingCart } from "../../features/sales/domain";
 import { SALES_PERMISSIONS } from "../../features/sales/runtime/sales-operation-security";
+import {
+  SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+  SETTINGS_VIEW_PERMISSION,
+} from "../../features/settings/settings-authorization";
 import type {
   LocalSyncHistoryOrder,
   LocalSyncHistorySupportContext,
@@ -43,7 +54,10 @@ import type {
   DurableCashOrderCommit,
   LocalOrder,
 } from "../contracts/order";
-import type { ActiveCatalogPromotions } from "../db/catalog-repository";
+import type {
+  ActiveCatalogMetadata,
+  ActiveCatalogPromotions,
+} from "../db/catalog-repository";
 import { PosDatabase } from "../db/pos-database";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
 
@@ -51,6 +65,7 @@ import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime
 import {
   createPostCommitFulfilmentCashCheckout,
   createProductionPosRuntimeServices,
+  type ProductionSettingsRuntimeConfiguration,
 } from "./production-pos-service-composition";
 
 const ids = [
@@ -63,6 +78,9 @@ const ids = [
   "00000000-0000-4000-8000-000000000007",
   "00000000-0000-4000-8000-000000000008",
 ] as const;
+
+const nodeCatalogPageDigest: CatalogPageDigest = async (payload) =>
+  createHash("sha256").update(payload, "utf8").digest("hex");
 
 test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutService 提交现金订单", async () => {
   let nextId = 0;
@@ -99,6 +117,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
     createId: () => ids[nextId++] ?? "00000000-0000-4000-8000-000000000099",
     random: () => 0.5,
     sha256Hex: async (material) => `sha256:${material}`,
+    catalogPageDigest: nodeCatalogPageDigest,
     createPrinter: () => ({
       async connect() {
         hardwareCalls += 1;
@@ -1305,6 +1324,272 @@ test("可信收银员登录后缓存当前门店广告，并只向客显发布�
   services.customerDisplay.stopAdvertisements();
 });
 
+test("本地目录摘要只向具备下载权限的可信同店收银员公开", async () => {
+  const summary: ActiveCatalogMetadata = {
+    snapshotId: "catalog-active-1",
+    catalogVersion: "catalog-v3",
+    itemCount: 42,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const services = createTestComposition(
+    databaseFor([], { activeCatalogMetadata: summary }),
+    { cashierPermissions: [CATALOG_DOWNLOAD_PERMISSION] },
+  );
+  await services.initialize();
+
+  await assert.rejects(
+    () => services.catalog.getCurrentCatalog({ storeCode: "S001" }),
+    /CURRENT_CASHIER_REQUIRED/,
+  );
+
+  await services.cashierSession.signIn("cashier");
+  assert.deepEqual(
+    await services.catalog.getCurrentCatalog({ storeCode: "S001" }),
+    summary,
+  );
+  await assert.rejects(
+    () => services.catalog.getCurrentCatalog({ storeCode: "OTHER" }),
+    /store/i,
+  );
+
+  const withoutPermission = createTestComposition(
+    databaseFor([], { activeCatalogMetadata: summary }),
+  );
+  await withoutPermission.initialize();
+  await withoutPermission.cashierSession.signIn("cashier");
+  await assert.rejects(
+    () => withoutPermission.catalog.getCurrentCatalog({ storeCode: "S001" }),
+    /permission/i,
+  );
+});
+
+test("下载期间会话失效会在激活前拒绝，既不覆盖 active 也不报告成功", async () => {
+  let invalidate: (() => void) | undefined;
+  let activations = 0;
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() { activations += 1; },
+    }),
+    {
+      cashierPermissions: [CATALOG_DOWNLOAD_PERMISSION],
+      captureInvalidation(listener) { invalidate = listener; },
+      transport: await catalogDownloadTransport(),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  await assert.rejects(
+    () => services.catalog.downloadAndActivate({
+      storeCode: "S001",
+      onProgress(event) {
+        if (event.step === "products" && event.percent === 100) {
+          invalidate?.();
+        }
+      },
+    }),
+    /CURRENT_CASHIER_REQUIRED/,
+  );
+  assert.equal(activations, 0);
+});
+
+test("激活后没有同快照促销状态时返回告警，并仍返回新 active 目录摘要", async () => {
+  const services = createTestComposition(
+    databaseFor([]),
+    {
+      cashierPermissions: [CATALOG_DOWNLOAD_PERMISSION],
+      transport: await catalogDownloadTransport(),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const outcome = await services.catalog.downloadAndActivate({
+    storeCode: "S001",
+  });
+
+  assert.deepEqual(outcome, {
+    kind: "activated-with-warning",
+    summary: {
+      snapshotId: "test-id-1",
+      catalogVersion: "catalog-v3",
+      itemCount: 1,
+      activatedAt: "2026-07-28T00:00:00.000Z",
+    },
+    warningCode: "catalog-runtime-reload-failed",
+  });
+});
+
+test("激活后促销快照与目录不一致时返回告警", async () => {
+  const services = createTestComposition(
+    databaseFor([], {
+      activeCatalogPromotions: {
+        snapshotId: "another-active-snapshot",
+        storeCode: "S001",
+        promotions: [],
+      },
+    }),
+    {
+      cashierPermissions: [CATALOG_DOWNLOAD_PERMISSION],
+      transport: await catalogDownloadTransport(),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const outcome = await services.catalog.downloadAndActivate({
+    storeCode: "S001",
+  });
+
+  assert.equal(outcome.kind, "activated-with-warning");
+  assert.equal(outcome.warningCode, "catalog-runtime-reload-failed");
+});
+
+test("settings 目录重载缺失、fallback 或快照不一致时保持已切换目录并报告失败", async () => {
+  const cases: readonly Readonly<{
+    name: string;
+    database: NonNullable<Parameters<typeof databaseFor>[1]>;
+  }>[] = [
+    { name: "missing", database: {} },
+    {
+      name: "fallback",
+      database: {
+        onActivePromotionsLoad() {
+          throw new Error("promotion reload failed");
+        },
+      },
+    },
+    {
+      name: "mismatch",
+      database: {
+        activeCatalogPromotions: {
+          snapshotId: "other-snapshot",
+          storeCode: "S001",
+          promotions: [],
+        },
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    let activations = 0;
+    const services = createTestComposition(
+      databaseFor([], {
+        ...scenario.database,
+        onCatalogActivate() { activations += 1; },
+      }),
+      {
+        cashierPermissions: [
+          SETTINGS_VIEW_PERMISSION,
+          SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+        ],
+        settings: settingsRuntimeConfiguration(),
+        transport: await catalogDownloadTransport(),
+      },
+    );
+    await services.initialize();
+    await services.cashierSession.signIn("cashier");
+    assert.equal("createPresenter" in services.settings, true, scenario.name);
+    if (!("createPresenter" in services.settings)) continue;
+    const presenter = services.settings.createPresenter();
+    await presenter.load();
+    await presenter.downloadCatalog();
+
+    assert.equal(activations, 1, scenario.name);
+    assert.equal(
+      presenter.getState().statusCode,
+      "catalog-download-failed",
+      scenario.name,
+    );
+  }
+});
+
+test("销毁 settings 下载会在激活前取消，并只清理 staging", async () => {
+  let activateCount = 0;
+  let discardCount = 0;
+  let promotionsEntered!: () => void;
+  let releasePromotions!: () => void;
+  const entered = new Promise<void>((resolve) => { promotionsEntered = resolve; });
+  const release = new Promise<void>((resolve) => { releasePromotions = resolve; });
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() { activateCount += 1; },
+      onCatalogDiscard() { discardCount += 1; },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: await catalogDownloadTransport({
+        beforePromotions: async () => {
+          promotionsEntered();
+          await release;
+        },
+      }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await entered;
+  presenter.destroy();
+  releasePromotions();
+  await download;
+
+  assert.equal(activateCount, 0);
+  assert.equal(discardCount, 1);
+});
+
+test("settings 目录下载绑定原 cashier lease，换班到同店身份也不能激活", async () => {
+  let activateCount = 0;
+  let discardCount = 0;
+  let promotionsEntered!: () => void;
+  let releasePromotions!: () => void;
+  const entered = new Promise<void>((resolve) => { promotionsEntered = resolve; });
+  const release = new Promise<void>((resolve) => { releasePromotions = resolve; });
+  const services = createTestComposition(
+    databaseFor([], {
+      onCatalogActivate() { activateCount += 1; },
+      onCatalogDiscard() { discardCount += 1; },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: await catalogDownloadTransport({
+        beforePromotions: async () => {
+          promotionsEntered();
+          await release;
+        },
+      }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier-1");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await entered;
+  await services.cashierSession.signIn("cashier-2");
+  releasePromotions();
+  await download;
+
+  assert.equal(activateCount, 0);
+  assert.equal(discardCount, 1);
+});
+
 test("日结只使用可信收银员作用域，先耐久归档再通过同一打印适配器输出 ESC/POS", async () => {
   const printed: Readonly<{
     jobId: string;
@@ -1364,6 +1649,7 @@ function createTestComposition(
     transport?: HbposTransport;
     onPrint?(jobId: string, bytes: Uint8Array): void;
     installmentBootstrap?: PaymentProviderRuntimeBootstrap;
+    settings?: ProductionSettingsRuntimeConfiguration;
   }> = {},
 ) {
   let nextId = 0;
@@ -1387,6 +1673,7 @@ function createTestComposition(
     createId: () => `test-id-${++nextId}`,
     random: () => 0.5,
     sha256Hex: async (material) => `sha256:${material}`,
+    catalogPageDigest: nodeCatalogPageDigest,
     createPrinter: () => ({
       async connect() {},
       async print(jobId, bytes) {
@@ -1487,7 +1774,136 @@ function createTestComposition(
           },
         }
       : {}),
+    ...(options.settings ? { settings: options.settings } : {}),
   });
+}
+
+function settingsRuntimeConfiguration(): ProductionSettingsRuntimeConfiguration {
+  return {
+    apiBaseUrl: "https://pos.example.test",
+    appVersion: "0.1.0-test",
+    updateChannel: "preview",
+    readDevicePresentation: async () => ({
+      deviceCode: "IPAD-1",
+      storeCode: "S001",
+      storeName: "Test Store",
+      terminalName: "Test Terminal",
+    }),
+    paymentConfiguration: {
+      current: null,
+      availability: {
+        square: { available: false, blockerCode: "not-configured" },
+        linkly: { available: false, blockerCode: "not-configured" },
+      },
+      test: async () => undefined,
+      save: async () => undefined,
+    },
+    apiConfiguration: {
+      probe: async () => true,
+      save: async () => undefined,
+    },
+    runtimeReload: { reload: async () => undefined },
+    device: { reregister: async () => undefined },
+    printer: {
+      getStatus: async () => "ready",
+      scan: async () => [],
+      connect: async () => undefined,
+      disconnect: async () => undefined,
+      print: async () => ({ status: "printed", errorCode: null }),
+      subscribe: () => () => undefined,
+      open: async () => ({ status: "completed", errorCode: null }),
+    },
+    scanner: {
+      status: "ready",
+      test: async () => ({ source: "hid", value: "SKU-1" }),
+    },
+    appUpdate: {
+      snapshot: () => ({
+        channel: "preview",
+        currentVersion: "0.1.0-test",
+        availableVersion: null,
+        updateRequired: false,
+        restartAvailable: true,
+      }),
+      check: async () => ({
+        channel: "preview",
+        currentVersion: "0.1.0-test",
+        availableVersion: null,
+        updateRequired: false,
+        restartAvailable: true,
+      }),
+      restart: async () => true,
+    },
+  };
+}
+
+async function catalogDownloadTransport(
+  options: Readonly<{
+    beforePromotions?(): void | Promise<void>;
+  }> = {},
+): Promise<HbposTransport> {
+  const item: CatalogLookupItem = {
+    storeCode: "S001",
+    productCode: "P-001",
+    referenceCode: null,
+    displayName: "Milk",
+    lookupCode: "930000000001",
+    lookupCodeNormalized: "930000000001",
+    itemNumber: "I-001",
+    barcode: null,
+    retailPrice: 12.34,
+    priceSource: 0,
+    priceSourceLabel: "product",
+    quantityFactor: 1,
+    updatedAt: "2026-07-28T00:00:00.000Z",
+    rowVersion: "row-1",
+    productImage: null,
+    discountRate: null,
+    isSpecialProduct: false,
+  };
+  const pageChecksum = await calculateCatalogPageChecksum(
+    [item],
+    nodeCatalogPageDigest,
+  );
+  return {
+    async request<T>(request: HbposTransportRequest) {
+      if (request.url === "/api/v1/catalog/sellable-items/page") {
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              storeCode: "S001",
+              generatedAt: "2026-07-28T00:00:00.000Z",
+              cursor: null,
+              items: [item],
+              deletedLookups: [],
+              nextCursor: null,
+              hasMore: false,
+              totalCount: 1,
+              catalogVersion: "catalog-v3",
+              pageChecksum,
+            },
+          } as T,
+        };
+      }
+      if (request.url === "/api/v1/catalog/promotions") {
+        await options.beforePromotions?.();
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              storeCode: "S001",
+              generatedAt: "2026-07-28T00:00:00.000Z",
+              promotions: [],
+            },
+          } as T,
+        };
+      }
+      throw new Error(`Unexpected catalog URL: ${request.url}`);
+    },
+  };
 }
 
 class RecordingExternalDisplay implements ExternalCustomerDisplayPort {
@@ -1612,9 +2028,18 @@ function databaseFor(
     onSyncHistoryRestore?(): void;
     onRefundVoucherPrintMaterialCreated?(): void;
     activeCatalogPromotions?: ActiveCatalogPromotions | null;
+    activeCatalogMetadata?: ActiveCatalogMetadata | null;
+    onCatalogActivate?(): void;
+    onCatalogDiscard?(): void;
     onActivePromotionsLoad?(storeCode: string): void;
   }> = {},
 ): PosDatabase {
+  let activeCatalogMetadata = options.activeCatalogMetadata ?? null;
+  let stagingCatalog: Readonly<{
+    snapshotId: string;
+    catalogVersion: string;
+    itemCount: number;
+  }> | null = null;
   const settings = {
     async getReceiptPrinterSettings() {
       options.onFrozenSettingsRead?.();
@@ -1664,6 +2089,54 @@ function databaseFor(
       },
     }),
     catalogSnapshots: () => ({
+      async getActiveMetadata() {
+        return activeCatalogMetadata;
+      },
+      async beginStaging(input: Readonly<{
+        snapshotId: string;
+        catalogVersion: string;
+      }>) {
+        stagingCatalog = {
+          snapshotId: input.snapshotId,
+          catalogVersion: input.catalogVersion,
+          itemCount: 0,
+        };
+      },
+      async appendPage(snapshotId: string, items: readonly unknown[]) {
+        if (!stagingCatalog || stagingCatalog.snapshotId !== snapshotId) {
+          throw new Error("unexpected catalog staging page");
+        }
+        stagingCatalog = {
+          ...stagingCatalog,
+          itemCount: stagingCatalog.itemCount + items.length,
+        };
+      },
+      async replacePromotions() {},
+      async activate(
+        snapshotId: string,
+        expectedItemCount: number,
+        activatedAt: string,
+      ) {
+        if (
+          !stagingCatalog ||
+          stagingCatalog.snapshotId !== snapshotId ||
+          stagingCatalog.itemCount !== expectedItemCount
+        ) {
+          throw new Error("unexpected catalog activation");
+        }
+        activeCatalogMetadata = {
+          snapshotId,
+          catalogVersion: stagingCatalog.catalogVersion,
+          itemCount: expectedItemCount,
+          activatedAt,
+        };
+        options.onCatalogActivate?.();
+        stagingCatalog = null;
+      },
+      async discardStaging(snapshotId: string) {
+        if (stagingCatalog?.snapshotId === snapshotId) stagingCatalog = null;
+        options.onCatalogDiscard?.();
+      },
       async loadActivePromotions(storeCode: string) {
         options.onActivePromotionsLoad?.(storeCode);
         return options.activeCatalogPromotions ?? null;

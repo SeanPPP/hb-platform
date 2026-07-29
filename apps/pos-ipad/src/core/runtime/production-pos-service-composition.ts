@@ -1,8 +1,19 @@
 import type { AppUpdateRestartSafetySnapshot } from "../../features/app-updates";
 import type { AttendanceAuditRuntimeFactory } from "../../features/attendance-audit/attendance-audit-runtime";
 import { CashierLockService } from "../../features/cashier-lock";
-import { CatalogSnapshotService } from "../../features/catalog/catalog-snapshot-service";
-import { HbposCatalogPageApi } from "../../features/catalog/hbpos-catalog-remote";
+import type {
+  CatalogRefreshOutcome,
+  CatalogRefreshProgressObserver,
+  CatalogSummary,
+} from "../../features/catalog/catalog-refresh-contract";
+import {
+  CatalogSnapshotService,
+  type CatalogActivationResult,
+} from "../../features/catalog/catalog-snapshot-service";
+import {
+  HbposCatalogPageApi,
+  type CatalogPageDigest,
+} from "../../features/catalog/hbpos-catalog-remote";
 import { CATALOG_DOWNLOAD_PERMISSION } from "../../features/catalog/maintenance/catalog-maintenance-authorization";
 import {
   HbposCatalogLookupApi,
@@ -76,6 +87,10 @@ import type {
   SalesOperationAuthorizationPort,
 } from "../../features/sales/runtime/sales-operation-security";
 import type { SalesPresenter } from "../../features/sales/ui/sales-presenter";
+import {
+  SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+  SETTINGS_CATALOG_RESET_PERMISSION,
+} from "../../features/settings/settings-authorization";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
 import { HbposSpecialProductsApi } from "../../features/special-products/hbpos-special-products-api";
 import { SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION } from "../../features/special-products/special-products-authorization";
@@ -182,9 +197,19 @@ export type PosCatalogRuntimeService = Readonly<{
     limit: number,
     offset?: number,
   ): Promise<readonly LocalCatalogMatch[]>;
+  getCurrentCatalog(
+    input: Readonly<{
+      storeCode: string;
+      signal?: AbortSignal | undefined;
+    }>,
+  ): Promise<CatalogSummary | null>;
   downloadAndActivate(
-    input: Readonly<{ storeCode: string }>,
-  ): Promise<Readonly<{ snapshotId: string; itemCount: number }>>;
+    input: Readonly<{
+      storeCode: string;
+      onProgress?: CatalogRefreshProgressObserver | undefined;
+      signal?: AbortSignal | undefined;
+    }>,
+  ): Promise<CatalogRefreshOutcome>;
 }>;
 
 export type PosReceiptSettingsService = Readonly<{
@@ -412,6 +437,8 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
   createId(): string;
   random(): number;
   sha256Hex(material: string): Promise<string>;
+  /** 测试可注入 Node 摘要；生产省略时仍使用 Expo 原生 SHA256。 */
+  catalogPageDigest?: CatalogPageDigest | undefined;
   createPrinter(): FulfilmentHardwarePort;
   externalDisplay?: ExternalCustomerDisplayPort | undefined;
   customerDisplayAdvertisementCacheRootUri?: string | undefined;
@@ -627,7 +654,7 @@ export function createProductionPosRuntimeServices(
   );
   const catalogue = new CatalogSnapshotService(
     catalogRepository,
-    new HbposCatalogPageApi(input.transport),
+    new HbposCatalogPageApi(input.transport, input.catalogPageDigest),
     {
       createSnapshotId: input.createId,
       nowIso: input.clock.nowIso,
@@ -955,7 +982,7 @@ export function createProductionPosRuntimeServices(
         catalog: {
           getActiveMetadata: () =>
             catalogRepository.getActiveMetadata(),
-          download: () =>
+          download: (signal) =>
             downloadSettingsCatalog(
               catalogue,
               catalogRepository,
@@ -964,8 +991,9 @@ export function createProductionPosRuntimeServices(
               input.auditMetadata,
               input.clock.nowIso,
               false,
+              signal,
             ),
-          reset: () =>
+          reset: (signal) =>
             downloadSettingsCatalog(
               catalogue,
               catalogRepository,
@@ -974,6 +1002,7 @@ export function createProductionPosRuntimeServices(
               input.auditMetadata,
               input.clock.nowIso,
               true,
+              signal,
             ),
         },
         receiptSettings,
@@ -1097,26 +1126,92 @@ export function createProductionPosRuntimeServices(
       salesCatalogRepository.findExact(lookupCode),
     searchByName: (query, limit, offset) =>
       salesCatalogRepository.searchByName(query, limit, offset),
+    getCurrentCatalog: async (request) => {
+      throwIfCatalogRequestAborted(request.signal);
+      requireCatalogDownloadSession(
+        currentCashier,
+        input.auditMetadata,
+        request.storeCode,
+      );
+      const summary = await catalogRepository.getActiveMetadata();
+      throwIfCatalogRequestAborted(request.signal);
+      return summary;
+    },
     downloadAndActivate: async (request) => {
-      const session = currentCashier.require();
-      assertTrustedCashierScope(session, input.auditMetadata);
-      if (!session.permissionCodes.includes(CATALOG_DOWNLOAD_PERMISSION)) {
-        throw Object.assign(
-          new Error("Catalog download permission is required."),
-          { code: "CATALOG_DOWNLOAD_PERMISSION_REQUIRED" },
-        );
-      }
-      if (request.storeCode.trim() !== session.storeCode) {
-        throw new Error("Catalog download store does not match the current cashier.");
-      }
+      throwIfCatalogRequestAborted(request.signal);
+      const session = requireCatalogDownloadSession(
+        currentCashier,
+        input.auditMetadata,
+        request.storeCode,
+      );
+      let outcome: CatalogRefreshOutcome | null = null;
       const result = await catalogue.downloadAndActivate({
         storeCode: session.storeCode,
+        ...(request.onProgress
+          ? { onProgress: request.onProgress }
+          : {}),
+        ...(request.signal ? { signal: request.signal } : {}),
+        beforeActivate: () => {
+          throwIfCatalogRequestAborted(request.signal);
+          requireCatalogDownloadSession(
+            currentCashier,
+            input.auditMetadata,
+            request.storeCode,
+          );
+        },
+        afterActivate: async (activation) => {
+          const fallback = catalogSummaryFromActivation(activation);
+          let active: CatalogSummary;
+          try {
+            const verified = await catalogRepository.getActiveMetadata();
+            if (!matchesActivation(verified, activation)) {
+              outcome = {
+                kind: "activated-with-warning",
+                summary: fallback,
+                warningCode: "catalog-activation-verification-failed",
+              };
+              return;
+            }
+            active = verified;
+          } catch {
+            outcome = {
+              kind: "activated-with-warning",
+              summary: fallback,
+              warningCode: "catalog-activation-verification-failed",
+            };
+            return;
+          }
+          try {
+            const after = requireCatalogDownloadSession(
+              currentCashier,
+              input.auditMetadata,
+              request.storeCode,
+            );
+            const promotionReload = await promotionSnapshotLoader.load({
+              storeCode: after.storeCode,
+              asOfIso: input.clock.nowIso(),
+            });
+            if (
+              promotionReload.status !== "loaded" ||
+              promotionReload.snapshotId !== active.snapshotId
+            ) {
+              throw new Error("Catalog promotion runtime reload failed.");
+            }
+            outcome = { kind: "complete", summary: active };
+          } catch {
+            outcome = {
+              kind: "activated-with-warning",
+              summary: active,
+              warningCode: "catalog-runtime-reload-failed",
+            };
+          }
+        },
       });
-      await promotionSnapshotLoader.load({
-        storeCode: session.storeCode,
-        asOfIso: input.clock.nowIso(),
-      });
-      return result;
+      return outcome ?? {
+        kind: "activated-with-warning",
+        summary: catalogSummaryFromActivation(result),
+        warningCode: "catalog-activation-verification-failed",
+      };
     },
   };
 
@@ -1494,30 +1589,67 @@ async function downloadSettingsCatalog(
   terminal: HbposAuditMetadata,
   nowIso: () => string,
   reset: boolean,
+  signal: AbortSignal,
 ) {
-  const session = currentCashier.require();
-  assertTrustedCashierScope(session, terminal);
-  const result = reset
-    ? await service.resetAndRedownload({
-        storeCode: session.storeCode,
-      })
-    : await service.downloadAndActivate({
-        storeCode: session.storeCode,
+  throwIfCatalogRequestAborted(signal);
+  const cashierLease = currentCashier.createLease();
+  const permissionCode = reset
+    ? SETTINGS_CATALOG_RESET_PERMISSION
+    : SETTINGS_CATALOG_DOWNLOAD_PERMISSION;
+  const session = requireSettingsCatalogSession(
+    cashierLease,
+    terminal,
+    terminal.storeCode,
+    permissionCode,
+  );
+  let active: CatalogSummary | null = null;
+  const request = {
+    storeCode: session.storeCode,
+    signal,
+    beforeActivate: () => {
+      requireSettingsCatalogSession(
+        cashierLease,
+        terminal,
+        session.storeCode,
+        permissionCode,
+      );
+    },
+    afterActivate: async (activation: CatalogActivationResult) => {
+      const verified = await repository.getActiveMetadata();
+      const after = requireSettingsCatalogSession(
+        cashierLease,
+        terminal,
+        session.storeCode,
+        permissionCode,
+      );
+      if (!matchesActivation(verified, activation)) {
+        throw new Error("SETTINGS_CATALOG_ACTIVATION_NOT_CONFIRMED");
+      }
+      const promotionReload = await promotionSnapshotLoader.load({
+        storeCode: after.storeCode,
+        asOfIso: nowIso(),
       });
-  const active = await repository.getActiveMetadata();
-  const after = currentCashier.require();
-  assertTrustedCashierScope(after, terminal);
-  if (
-    !active ||
-    active.snapshotId !== result.snapshotId ||
-    active.itemCount !== result.itemCount
-  ) {
+      if (
+        promotionReload.status !== "loaded" ||
+        promotionReload.snapshotId !== verified.snapshotId
+      ) {
+        throw Object.assign(
+          new Error("SETTINGS_CATALOG_RUNTIME_RELOAD_NOT_CONFIRMED"),
+          { code: "SETTINGS_CATALOG_RUNTIME_RELOAD_NOT_CONFIRMED" },
+        );
+      }
+      active = verified;
+    },
+  };
+  if (reset) {
+    await service.resetAndRedownload(request);
+  } else {
+    await service.downloadAndActivate(request);
+  }
+  if (!active) {
     throw new Error("SETTINGS_CATALOG_ACTIVATION_NOT_CONFIRMED");
   }
-  await promotionSnapshotLoader.load({
-    storeCode: after.storeCode,
-    asOfIso: nowIso(),
-  });
+  // 中文注释：afterActivate 已在同一目录刷新串行临界区内验证并重载运行时促销。
   return active;
 }
 
@@ -1790,6 +1922,73 @@ function assertTrustedCashierScope(
   ) {
     throw new Error("Authenticated cashier session does not match this terminal.");
   }
+}
+
+function requireCatalogDownloadSession(
+  currentCashier: CurrentCashierSession,
+  metadata: HbposAuditMetadata,
+  requestedStoreCode: string,
+): TrustedCashierSession {
+  const session = currentCashier.require();
+  assertTrustedCashierScope(session, metadata);
+  if (!session.permissionCodes.includes(CATALOG_DOWNLOAD_PERMISSION)) {
+    throw Object.assign(
+      new Error("Catalog download permission is required."),
+      { code: "CATALOG_DOWNLOAD_PERMISSION_REQUIRED" },
+    );
+  }
+  if (requestedStoreCode.trim() !== session.storeCode) {
+    throw new Error("Catalog download store does not match the current cashier.");
+  }
+  return session;
+}
+
+/** Settings 必须绑定原发起 cashier lease，并在每个激活边界复核其专属权限。 */
+function requireSettingsCatalogSession(
+  cashierLease: TrustedCashierLease,
+  metadata: HbposAuditMetadata,
+  requestedStoreCode: string,
+  permissionCode: string,
+): TrustedCashierSession {
+  const session = cashierLease.get();
+  assertTrustedCashierScope(session, metadata);
+  if (!session.permissionCodes.includes(permissionCode)) {
+    throw Object.assign(
+      new Error("Settings catalog permission is required."),
+      { code: "SETTINGS_CATALOG_PERMISSION_REQUIRED" },
+    );
+  }
+  if (requestedStoreCode.trim() !== session.storeCode) {
+    throw new Error("Catalog download store does not match the current cashier.");
+  }
+  return session;
+}
+
+function throwIfCatalogRequestAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("Catalog refresh was cancelled.");
+  }
+}
+
+function catalogSummaryFromActivation(
+  result: CatalogActivationResult,
+): CatalogSummary {
+  return {
+    snapshotId: result.snapshotId,
+    catalogVersion: result.catalogVersion,
+    itemCount: result.itemCount,
+    activatedAt: result.activatedAt,
+  };
+}
+
+function matchesActivation(
+  active: CatalogSummary | null,
+  result: Pick<CatalogActivationResult, "snapshotId" | "catalogVersion" | "itemCount">,
+): active is CatalogSummary {
+  return active !== null &&
+    active.snapshotId === result.snapshotId &&
+    active.catalogVersion === result.catalogVersion &&
+    active.itemCount === result.itemCount;
 }
 
 function assertFenceScope(

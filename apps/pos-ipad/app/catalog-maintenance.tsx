@@ -66,16 +66,19 @@ export default function CatalogMaintenanceRoute() {
           clearActiveCashier();
           return;
         }
-        createdPresenter = new CatalogMaintenancePresenter({
+        const presenter = new CatalogMaintenancePresenter({
           authenticatedStoreCode: identity.storeCode,
           port: services.catalog,
         });
+        createdPresenter = presenter;
         if (cancelled) {
           createdPresenter.destroy();
           createdPresenter = null;
           return;
         }
-        setBinding({ services, cashier, presenter: createdPresenter });
+        setBinding({ services, cashier, presenter });
+        // 中文注释：本地目录摘要异步读取，不能阻塞已授权收银员进入维护界面。
+        void presenter.initialize();
       })
       .catch(() => {
         if (!cancelled) clearActiveCashier();

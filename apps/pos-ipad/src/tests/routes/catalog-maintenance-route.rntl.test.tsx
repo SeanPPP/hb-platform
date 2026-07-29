@@ -8,6 +8,8 @@ let mockActiveCashier: any;
 let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockDownloadAndActivate = jest.fn();
+const mockGetCurrentCatalog = jest.fn();
+const mockInitializeCatalogMaintenance = jest.fn();
 const mockGetDeviceIdentity = jest.fn<
   () => Promise<Readonly<{
     storeCode: string;
@@ -74,6 +76,11 @@ jest.mock("@/features/catalog/maintenance", () => {
       }
 
       public destroy() {}
+
+      public initialize() {
+        mockInitializeCatalogMaintenance();
+        return Promise.resolve();
+      }
     },
     CatalogMaintenanceScreen: (props: unknown) => {
       mockScreenProps = props;
@@ -128,13 +135,20 @@ test("具备目录下载权限并复核设备身份后绑定固定门店 Port", 
   const presenter = mockScreenProps.presenter as {
     options: {
       authenticatedStoreCode: string;
-      port: { downloadAndActivate: typeof mockDownloadAndActivate };
+      port: {
+        getCurrentCatalog: typeof mockGetCurrentCatalog;
+        downloadAndActivate: typeof mockDownloadAndActivate;
+      };
     };
   };
   expect(presenter.options).toEqual({
     authenticatedStoreCode: "S1",
-    port: { downloadAndActivate: mockDownloadAndActivate },
+    port: {
+      getCurrentCatalog: mockGetCurrentCatalog,
+      downloadAndActivate: mockDownloadAndActivate,
+    },
   });
+  expect(mockInitializeCatalogMaintenance).toHaveBeenCalledTimes(1);
   mockScreenProps.onBack();
   expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
 });
@@ -184,7 +198,10 @@ function readyRuntime(
     state: { phase: "ready", device: "authorized-online" },
     services: {
       deviceSession,
-      catalog: { downloadAndActivate: mockDownloadAndActivate },
+      catalog: {
+        getCurrentCatalog: mockGetCurrentCatalog,
+        downloadAndActivate: mockDownloadAndActivate,
+      },
     },
   };
 }

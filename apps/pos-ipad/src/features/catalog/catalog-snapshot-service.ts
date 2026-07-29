@@ -1,4 +1,8 @@
 import type {
+  CatalogRefreshProgressEvent,
+  CatalogRefreshProgressObserver,
+} from "./catalog-refresh-contract";
+import type {
   CatalogLookupItem,
   VerifiedCatalogSyncPage,
 } from "./hbpos-catalog-remote";
@@ -59,9 +63,30 @@ export type CatalogSnapshotServiceOptions = Readonly<{
   pageSize?: number;
 }>;
 
+export type CatalogRefreshRequest = Readonly<{
+  storeCode: string;
+  onProgress?: CatalogRefreshProgressObserver | undefined;
+  signal?: AbortSignal | undefined;
+  /** 在写入 active 前由组合根重新核验可信会话，避免下载期间权限漂移后仍切换目录。 */
+  beforeActivate?: (() => void | Promise<void>) | undefined;
+  /**
+   * active 已提交后，在本服务的串行临界区内重载同一快照的运行时依赖。
+   * 调用方必须自行把可恢复告警收敛为结果；这里不会把它当作“切换前失败”。
+   */
+  afterActivate?: ((result: CatalogActivationResult) => void | Promise<void>) | undefined;
+}>;
+
+export type CatalogActivationResult = Readonly<{
+  snapshotId: string;
+  catalogVersion: string;
+  itemCount: number;
+  activatedAt: string;
+}>;
+
 export class CatalogSnapshotService {
   private readonly nowIso: () => string;
   private readonly pageSize: number;
+  private serial = Promise.resolve();
 
   public constructor(
     private readonly storage: CatalogSnapshotStoragePort,
@@ -72,16 +97,32 @@ export class CatalogSnapshotService {
     this.pageSize = options.pageSize ?? 500;
   }
 
-  public async downloadAndActivate(input: Readonly<{ storeCode: string }>): Promise<Readonly<{ snapshotId: string; itemCount: number }>> {
+  public downloadAndActivate(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
+    const operation = this.serial.then(
+      () => this.runDownloadAndActivate(input),
+      () => this.runDownloadAndActivate(input),
+    );
+    // 中文注释：失败只影响本次请求；后续刷新仍须排队而不能并发切换 active。
+    this.serial = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async runDownloadAndActivate(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
     const snapshotId = this.options.createSnapshotId();
     let stagingStarted = false;
+    let activated = false;
     try {
+      throwIfAborted(input.signal);
+      reportProgress(input.onProgress, { step: "prepare", percent: 0 });
+      throwIfAborted(input.signal);
       const first = await this.remote.getPage({ storeCode: input.storeCode, cursor: null, pageSize: this.pageSize });
+      throwIfAborted(input.signal);
       assertPageContract(first, {
         requestedStoreCode: input.storeCode,
         requestedCursor: null,
       });
       const firstItems = first.items.map(mapCatalogLookupToStagedItem);
+      throwIfAborted(input.signal);
       await this.storage.beginStaging({
         snapshotId,
         catalogVersion: first.catalogVersion,
@@ -89,6 +130,15 @@ export class CatalogSnapshotService {
         downloadedAtIso: this.nowIso(),
       });
       stagingStarted = true;
+      // 中文注释：begin 成功后必须先拥有清理权，即使此刻取消也只能丢弃 staging。
+      throwIfAborted(input.signal);
+      reportProgress(input.onProgress, { step: "prepare", percent: 100 });
+      reportProgress(input.onProgress, {
+        step: "products",
+        percent: 0,
+        completedItemCount: 0,
+        totalItemCount: first.totalCount,
+      });
 
       const seenLookupKeys = new Set<string>();
       const seenCursors = new Set<string>();
@@ -97,6 +147,7 @@ export class CatalogSnapshotService {
       let stagedItems = firstItems;
       let requestedCursor: string | null = null;
       while (page) {
+        throwIfAborted(input.signal);
         assertPageContract(page, {
           requestedStoreCode: input.storeCode,
           requestedCursor,
@@ -108,24 +159,47 @@ export class CatalogSnapshotService {
           throw new Error("Catalog total changed during paged download.");
         }
         assertUniqueLookupKeys(stagedItems, seenLookupKeys);
+        throwIfAborted(input.signal);
         await this.storage.appendPage(snapshotId, stagedItems);
+        throwIfAborted(input.signal);
         count += stagedItems.length;
         if (count > first.totalCount) {
           throw new Error("Catalog page count exceeds the server total.");
         }
-        if (page.nextCursor === null) {
+        const finalPage = page.nextCursor === null;
+        if (!finalPage && first.totalCount === 0) {
+          throw new Error("Catalog pagination cannot continue after an empty total.");
+        }
+        if (finalPage && count !== first.totalCount) {
+          throw new Error("Catalog page count does not match the server total.");
+        }
+        reportProgress(input.onProgress, {
+          step: "products",
+          // 中文注释：只要服务器声明还有下一页，进度最多 99%，即使已写入数暂时等于 total。
+          percent: finalPage
+            ? 100
+            : Math.min(99, Math.floor((count / first.totalCount) * 100)),
+          completedItemCount: count,
+          totalItemCount: first.totalCount,
+        });
+        if (finalPage) {
           page = null;
         } else {
-          if (seenCursors.has(page.nextCursor)) {
+          const nextCursor = page.nextCursor;
+          if (nextCursor === null) {
+            throw new Error("Catalog pagination cursor is missing.");
+          }
+          if (seenCursors.has(nextCursor)) {
             throw new Error("Catalog pagination cursor repeated.");
           }
-          seenCursors.add(page.nextCursor);
-          requestedCursor = page.nextCursor;
+          seenCursors.add(nextCursor);
+          requestedCursor = nextCursor;
           page = await this.remote.getPage({
             storeCode: input.storeCode,
             cursor: requestedCursor,
             pageSize: this.pageSize,
           });
+          throwIfAborted(input.signal);
           stagedItems = page.items.map(mapCatalogLookupToStagedItem);
         }
       }
@@ -133,20 +207,58 @@ export class CatalogSnapshotService {
         throw new Error("Catalog page count does not match the server total.");
       }
 
+      reportProgress(input.onProgress, { step: "promotions", percent: 0 });
+      throwIfAborted(input.signal);
       const promotions = await this.remote.getPromotions?.({ storeCode: input.storeCode }) ?? [];
+      throwIfAborted(input.signal);
       await this.storage.replacePromotions(snapshotId, promotions);
-      await this.storage.activate(snapshotId, count, this.nowIso());
-      return { snapshotId, itemCount: count };
+      throwIfAborted(input.signal);
+      reportProgress(input.onProgress, { step: "promotions", percent: 100 });
+      reportProgress(input.onProgress, { step: "activate", percent: 0 });
+      throwIfAborted(input.signal);
+      await input.beforeActivate?.();
+      throwIfAborted(input.signal);
+      const activatedAt = this.nowIso();
+      await this.storage.activate(snapshotId, count, activatedAt);
+      activated = true;
+      const result: CatalogActivationResult = {
+        snapshotId,
+        catalogVersion: first.catalogVersion,
+        itemCount: count,
+        activatedAt,
+      };
+      await input.afterActivate?.(result);
+      // 中文注释：100% 表示 active 与同快照运行时依赖均已完成收口。
+      reportProgress(input.onProgress, { step: "activate", percent: 100 });
+      return result;
     } catch (error) {
-      // 仅清理 staging；任何 active 快照都不在失败路径删除。
-      if (stagingStarted) await this.storage.discardStaging(snapshotId);
+      // 中文注释：active 已提交后，后置重载异常绝不能回到“切换前失败”的清理路径。
+      if (stagingStarted && !activated) await this.storage.discardStaging(snapshotId);
       throw error;
     }
   }
 
   /** “重置目录”不会先清空 active：它只是强制重新下载并以同一安全切换流程替换。 */
-  public resetAndRedownload(input: Readonly<{ storeCode: string }>): Promise<Readonly<{ snapshotId: string; itemCount: number }>> {
+  public resetAndRedownload(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
     return this.downloadAndActivate(input);
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("Catalog refresh was cancelled.");
+  }
+}
+
+/** 进度仅供展示；观察器自身故障绝不能中断已校验目录的安全切换。 */
+function reportProgress(
+  observer: CatalogRefreshProgressObserver | undefined,
+  event: CatalogRefreshProgressEvent,
+): void {
+  try {
+    observer?.(Object.freeze({ ...event }));
+  } catch {
+    // 中文注释：UI 销毁或订阅方异常不得影响目录下载与激活。
   }
 }
 
@@ -178,7 +290,7 @@ function assertPageContract(
   page: VerifiedCatalogSyncPage,
   expected: Readonly<{ requestedStoreCode: string; requestedCursor: string | null }>,
 ): void {
-  if (!page.catalogVersion || !Number.isSafeInteger(page.totalCount) || page.totalCount < 0) {
+  if (!isCatalogVersion(page.catalogVersion) || !Number.isSafeInteger(page.totalCount) || page.totalCount < 0) {
     throw new Error("Catalog page is missing a valid snapshot version or total.");
   }
   if (page.storeCode !== expected.requestedStoreCode) {
@@ -195,6 +307,14 @@ function assertPageContract(
       throw new Error("Catalog item store does not match the requested store.");
     }
   }
+}
+
+function isCatalogVersion(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.trim() === value &&
+    value.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function assertUniqueLookupKeys(items: readonly CatalogStagedItem[], seen: Set<string>): void {

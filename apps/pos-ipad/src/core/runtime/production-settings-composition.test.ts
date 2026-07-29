@@ -147,6 +147,46 @@ test("打印与外屏测试只使用已配置外设和无敏感字段的只读�
   ]);
 });
 
+test("销毁 settings presenter 会把目录下载的 AbortSignal 传到底层", async () => {
+  let receivedSignal: AbortSignal | null = null;
+  let releaseDownload!: () => void;
+  let downloadEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { downloadEntered = resolve; });
+  const release = new Promise<void>((resolve) => { releaseDownload = resolve; });
+  const runtime = createProductionSettingsComposition(
+    dependencies({
+      catalog: {
+        getActiveMetadata: async () => ({
+          snapshotId: "catalog-1",
+          catalogVersion: "catalog-v1",
+          itemCount: 2,
+          activatedAt: NOW,
+        }),
+        download: async (signal) => {
+          receivedSignal = signal;
+          downloadEntered();
+          await release;
+          return { snapshotId: "catalog-2", itemCount: 3, activatedAt: NOW };
+        },
+        reset: async () => ({
+          snapshotId: "catalog-3",
+          itemCount: 4,
+          activatedAt: NOW,
+        }),
+      },
+    }),
+  );
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await entered;
+  presenter.destroy();
+  assert.equal((receivedSignal as unknown as AbortSignal).aborted, true);
+  releaseDownload();
+  await download;
+});
+
 function activeCashier(): CurrentCashierSession {
   const cashier = new CurrentCashierSession();
   const epoch = cashier.beginAuthentication();
@@ -203,6 +243,7 @@ function dependencies(
     catalog: {
       getActiveMetadata: async () => ({
         snapshotId: "catalog-1",
+        catalogVersion: "catalog-v1",
         itemCount: 2,
         activatedAt: NOW,
       }),

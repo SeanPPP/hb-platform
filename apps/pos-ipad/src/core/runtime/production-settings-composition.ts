@@ -51,8 +51,8 @@ export type ProductionSettingsCompositionInput = Readonly<{
   readDevicePresentation(): Promise<SettingsDevicePresentation>;
   catalog: Readonly<{
     getActiveMetadata(): Promise<SettingsCatalogSnapshot | null>;
-    download(): Promise<SettingsCatalogSnapshot>;
-    reset(): Promise<SettingsCatalogSnapshot>;
+    download(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
+    reset(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
   }>;
   receiptSettings: Readonly<{
     get(): Promise<ReceiptPrinterSettings>;
@@ -181,13 +181,13 @@ export function createProductionSettingsComposition(
     catalog: {
       download: async (signal) => {
         throwIfAborted(signal);
-        const result = await input.catalog.download();
+        const result = await input.catalog.download(signal);
         throwIfAborted(signal);
         return result;
       },
       reset: async (signal) => {
         throwIfAborted(signal);
-        const result = await input.catalog.reset();
+        const result = await input.catalog.reset(signal);
         throwIfAborted(signal);
         return result;
       },

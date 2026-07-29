@@ -158,6 +158,7 @@ function fakeControl(
   return {
     loadSnapshot: unavailable,
     downloadCatalog: unavailable,
+    testApiAddress: unavailable,
     testPaymentProvider: unavailable,
     savePrinterSettings: unavailable,
     scanPrinters: unavailable,

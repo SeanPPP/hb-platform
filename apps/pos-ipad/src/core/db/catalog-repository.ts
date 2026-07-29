@@ -54,6 +54,7 @@ export type LocalCatalogMatch = Readonly<{
 
 export type ActiveCatalogMetadata = Readonly<{
   snapshotId: string;
+  catalogVersion: string;
   itemCount: number;
   activatedAt: string;
 }>;
@@ -82,6 +83,7 @@ export class SqliteCatalogSnapshotRepository {
     const rows = await this.db.getAll<ActiveCatalogMetadataRow>(
       `SELECT
          snapshots.snapshot_id,
+         snapshots.catalog_version,
          snapshots.state,
          snapshots.activated_at_iso,
          COUNT(items.lookup_code_normalized) AS item_count
@@ -97,6 +99,7 @@ export class SqliteCatalogSnapshotRepository {
     const active: ActiveCatalogMetadata[] = [];
     for (const row of rows) {
       const snapshotId = requiredCatalogSnapshotId(row.snapshot_id);
+      const catalogVersion = requiredCatalogVersion(row.catalog_version);
       const state = catalogSnapshotState(row.state);
       const itemCount = requiredNonNegativeInteger(
         row.item_count,
@@ -119,6 +122,7 @@ export class SqliteCatalogSnapshotRepository {
         if (state === "active") {
           active.push({
             snapshotId,
+            catalogVersion,
             itemCount,
             activatedAt,
           });
@@ -203,6 +207,8 @@ export class SqliteCatalogSnapshotRepository {
   }
 
   public async beginStaging(snapshot: Readonly<{ snapshotId: string; catalogVersion: string; checksum: string; downloadedAtIso: string }>): Promise<void> {
+    requiredCatalogSnapshotId(snapshot.snapshotId);
+    requiredCatalogVersion(snapshot.catalogVersion);
     await this.db.withExclusiveTransaction(async (tx) => {
       // 相同 snapshotId 只能是可恢复的 staging；绝不覆盖任何 active/retired 目录。
       const existing = await tx.getFirst<{ state: string }>("SELECT state FROM catalog_snapshots WHERE snapshot_id = ?", [snapshot.snapshotId]);
@@ -325,6 +331,7 @@ export class SqliteCatalogSnapshotRepository {
 type CatalogRow = Record<string, unknown>;
 type ActiveCatalogMetadataRow = Readonly<{
   snapshot_id: unknown;
+  catalog_version: unknown;
   state: unknown;
   activated_at_iso: unknown;
   item_count: unknown;
@@ -408,6 +415,19 @@ function requiredCatalogSnapshotId(value: unknown): string {
     /[\u0000-\u001f\u007f]/u.test(value)
   ) {
     throw new Error("Invalid catalog snapshot id.");
+  }
+  return value;
+}
+
+function requiredCatalogVersion(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.trim() !== value ||
+    value.length > 512 ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new Error("Invalid catalog version.");
   }
   return value;
 }
