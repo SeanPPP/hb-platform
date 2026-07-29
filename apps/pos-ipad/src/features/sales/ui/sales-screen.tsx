@@ -568,12 +568,16 @@ export function SalesScreen({
                   moveEarlier: "前移",
                   moveLater: "后移",
                   reorderHint: "长按后拖动可排序；也可使用前移或后移操作。",
+                  positionChanged: (label, position, total) =>
+                    `${label} 已移到第 ${position} 位，共 ${total} 位。`,
                 }
               : {
                   moveEarlier: "Move earlier",
                   moveLater: "Move later",
                   reorderHint:
                     "Long press and drag to reorder, or use the move earlier and move later actions.",
+                  positionChanged: (label, position, total) =>
+                    `${label} moved to position ${position} of ${total}.`,
                 }
           }
           actions={toolbarActions}
@@ -1982,11 +1986,8 @@ const styles = StyleSheet.create({
   },
   headerActions: {
     flex: 1,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    justifyContent: "flex-end",
     marginLeft: 20,
+    minWidth: 0,
   },
   lineControls: {
     alignItems: "center",

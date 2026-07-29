@@ -3,6 +3,7 @@ import {
   AccessibilityInfo,
   Animated,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -12,13 +13,13 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { MIN_TOUCH_TARGET } from "./sales-presenter";
 import {
   mergeVisibleSalesToolbarOrder,
   reconcileSalesToolbarOrder,
   type SalesToolbarActionId,
 } from "./sales-toolbar-order";
 
-import { MIN_TOUCH_TARGET } from "./sales-presenter";
 import { posColors } from "@/ui/theme";
 
 export type SalesToolbarActionTone =
@@ -41,6 +42,7 @@ export type SalesToolbarAccessibilityCopy = Readonly<{
   moveEarlier: string;
   moveLater: string;
   reorderHint: string;
+  positionChanged(label: string, position: number, total: number): string;
 }>;
 
 export type SalesToolbarProps = Readonly<{
@@ -66,13 +68,28 @@ type DragOrigin = Readonly<{
   pageY: number;
 }>;
 
+type ToolbarSlot = Readonly<{
+  centerX: number;
+  centerY: number;
+  index: number;
+}>;
+
+type ToolbarScrollMetrics = Readonly<{
+  contentWidth: number;
+  offsetX: number;
+  viewportWidth: number;
+}>;
+
 const LONG_PRESS_DELAY_MS = 400;
 const MOVEMENT_TOLERANCE = 8;
+const OVERFLOW_EPSILON = 2;
 const defaultAccessibilityCopy: SalesToolbarAccessibilityCopy = {
   moveEarlier: "Move earlier",
   moveLater: "Move later",
   reorderHint:
     "Long press and drag to reorder. You can also use Move earlier or Move later.",
+  positionChanged: (label, position, total) =>
+    `${label} moved to position ${position} of ${total}.`,
 };
 
 export function SalesToolbar({
@@ -90,10 +107,20 @@ export function SalesToolbar({
   const dragFeedback = useRef(new Animated.Value(0)).current;
   const layoutsRef = useRef(new Map<SalesToolbarActionId, ToolbarLayout>());
   const dragOriginRef = useRef<DragOrigin | null>(null);
+  const dragSlotsRef = useRef<readonly ToolbarSlot[]>([]);
   const dragStartOrderRef = useRef<readonly SalesToolbarActionId[]>([]);
   const draggingIdRef = useRef<SalesToolbarActionId | null>(null);
   const movedBeforeLongPressRef = useRef(false);
   const suppressBusinessPressRef = useRef(false);
+  const scrollMetricsRef = useRef<ToolbarScrollMetrics>({
+    contentWidth: 0,
+    offsetX: 0,
+    viewportWidth: 0,
+  });
+  const [hiddenSides, setHiddenSides] = useState({
+    left: false,
+    right: false,
+  });
 
   const canonical = useMemo(
     () => reconcileSalesToolbarOrder(canonicalOrder),
@@ -174,12 +201,16 @@ export function SalesToolbar({
     [],
   );
 
-  const moveVisibleAction = useCallback(
-    (actionId: SalesToolbarActionId, targetId: SalesToolbarActionId) => {
+  const moveVisibleActionToIndex = useCallback(
+    (actionId: SalesToolbarActionId, targetIndex: number) => {
       const current = visibleOrderRef.current;
       const sourceIndex = current.indexOf(actionId);
-      const targetIndex = current.indexOf(targetId);
-      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+      if (
+        sourceIndex < 0 ||
+        targetIndex < 0 ||
+        targetIndex >= current.length ||
+        sourceIndex === targetIndex
+      ) {
         return false;
       }
       const next = [...current];
@@ -192,6 +223,15 @@ export function SalesToolbar({
     [setLocalVisibleOrder],
   );
 
+  const moveVisibleAction = useCallback(
+    (actionId: SalesToolbarActionId, targetId: SalesToolbarActionId) =>
+      moveVisibleActionToIndex(
+        actionId,
+        visibleOrderRef.current.indexOf(targetId),
+      ),
+    [moveVisibleActionToIndex],
+  );
+
   const commitAccessibleMove = useCallback(
     (actionId: SalesToolbarActionId, direction: -1 | 1) => {
       const current = visibleOrderRef.current;
@@ -199,6 +239,15 @@ export function SalesToolbar({
       const targetId = current[sourceIndex + direction];
       if (sourceIndex < 0 || !targetId) return;
       if (!moveVisibleAction(actionId, targetId)) return;
+      const nextPosition = visibleOrderRef.current.indexOf(actionId) + 1;
+      const actionLabel = actionMap.get(actionId)?.label ?? actionId;
+      AccessibilityInfo.announceForAccessibility(
+        accessibilityCopy.positionChanged(
+          actionLabel,
+          nextPosition,
+          visibleOrderRef.current.length,
+        ),
+      );
 
       const nextCanonical = mergeVisibleSalesToolbarOrder(
         canonical,
@@ -206,7 +255,13 @@ export function SalesToolbar({
       );
       if (!sameOrder(nextCanonical, canonical)) onOrderChange(nextCanonical);
     },
-    [canonical, moveVisibleAction, onOrderChange],
+    [
+      accessibilityCopy,
+      actionMap,
+      canonical,
+      moveVisibleAction,
+      onOrderChange,
+    ],
   );
 
   const finishDrag = useCallback(() => {
@@ -224,7 +279,19 @@ export function SalesToolbar({
       if (!sameOrder(nextCanonical, canonical)) onOrderChange(nextCanonical);
     }
     dragOriginRef.current = null;
+    dragSlotsRef.current = [];
   }, [canonical, onOrderChange, setFeedback]);
+
+  const cancelDrag = useCallback(() => {
+    if (!draggingIdRef.current) return;
+
+    draggingIdRef.current = null;
+    setDraggingId(null);
+    setLocalVisibleOrder(dragStartOrderRef.current);
+    setFeedback(false);
+    dragOriginRef.current = null;
+    dragSlotsRef.current = [];
+  }, [setFeedback, setLocalVisibleOrder]);
 
   const beginPointer = useCallback(
     (actionId: SalesToolbarActionId, event: GestureResponderEvent) => {
@@ -250,6 +317,21 @@ export function SalesToolbar({
       suppressBusinessPressRef.current = true;
       draggingIdRef.current = actionId;
       dragStartOrderRef.current = [...visibleOrderRef.current];
+      // 拖动期间按开始时的物理槽位命中，避免 React 布局回调到达前重复 move 造成来回抖动。
+      dragSlotsRef.current = visibleOrderRef.current.flatMap(
+        (visibleId, index) => {
+          const layout = layoutsRef.current.get(visibleId);
+          return layout
+            ? [
+                {
+                  centerX: layout.x + layout.width / 2,
+                  centerY: layout.y + layout.height / 2,
+                  index,
+                },
+              ]
+            : [];
+        },
+      );
       setDraggingId(actionId);
       setFeedback(true);
     },
@@ -267,22 +349,22 @@ export function SalesToolbar({
       if (!activeId) {
         if (distance > MOVEMENT_TOLERANCE) {
           movedBeforeLongPressRef.current = true;
-          suppressBusinessPressRef.current = true;
         }
         return;
       }
 
       const pointerX = origin.centerX + pageX - origin.pageX;
       const pointerY = origin.centerY + pageY - origin.pageY;
-      const nearestId = findNearestActionId(
+      const targetIndex = findNearestSlotIndex(
         pointerX,
         pointerY,
-        visibleOrderRef.current,
-        layoutsRef.current,
+        dragSlotsRef.current,
       );
-      if (nearestId) moveVisibleAction(activeId, nearestId);
+      if (targetIndex >= 0) {
+        moveVisibleActionToIndex(activeId, targetIndex);
+      }
     },
-    [moveVisibleAction],
+    [moveVisibleActionToIndex],
   );
 
   const onLayout = useCallback(
@@ -293,87 +375,171 @@ export function SalesToolbar({
     [],
   );
 
+  const updateScrollMetrics = useCallback(
+    (partial: Partial<ToolbarScrollMetrics>) => {
+      const next = { ...scrollMetricsRef.current, ...partial };
+      scrollMetricsRef.current = next;
+      const left = next.offsetX > OVERFLOW_EPSILON;
+      const right =
+        next.contentWidth - next.viewportWidth - next.offsetX >
+        OVERFLOW_EPSILON;
+      setHiddenSides((current) =>
+        current.left === left && current.right === right
+          ? current
+          : { left, right },
+      );
+    },
+    [],
+  );
+
   return (
-    <View style={[styles.toolbar, style]} testID={testID ?? "sales-toolbar"}>
-      {orderedVisibleIds.map((actionId) => {
-        const action = actionMap.get(actionId);
-        if (!action) return null;
-        const isDragging = draggingId === action.id;
-        return (
-          <Animated.View
-            key={action.id}
-            style={[
-              styles.actionShell,
-              isDragging && styles.actionShellDragging,
-              isDragging && {
-                opacity: dragFeedback.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [1, 0.82],
-                }),
-                transform: [
+    <View style={[styles.toolbarFrame, style]}>
+      <ScrollView
+        contentContainerStyle={styles.toolbarContent}
+        directionalLockEnabled
+        horizontal
+        onContentSizeChange={(contentWidth) =>
+          updateScrollMetrics({ contentWidth })
+        }
+        onLayout={(event) =>
+          updateScrollMetrics({
+            viewportWidth: event.nativeEvent.layout.width,
+          })
+        }
+        onScroll={(event) =>
+          updateScrollMetrics({
+            contentWidth: event.nativeEvent.contentSize.width,
+            offsetX: Math.max(0, event.nativeEvent.contentOffset.x),
+            viewportWidth: event.nativeEvent.layoutMeasurement.width,
+          })
+        }
+        scrollEnabled={draggingId === null}
+        scrollEventThrottle={16}
+        showsHorizontalScrollIndicator={false}
+        style={styles.toolbarViewport}
+        testID={testID ?? "sales-toolbar"}
+      >
+        {orderedVisibleIds.map((actionId) => {
+          const action = actionMap.get(actionId);
+          if (!action) return null;
+          const isDragging = draggingId === action.id;
+          const actionIndex = orderedVisibleIds.indexOf(action.id);
+          const accessibilityActions = [
+            ...(actionIndex > 0
+              ? [
                   {
-                    translateY: dragFeedback.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -2],
-                    }),
+                    label: accessibilityCopy.moveEarlier,
+                    name: "move-earlier",
                   },
-                ],
-              },
-            ]}
-          >
-            <Pressable
+                ]
+              : []),
+            ...(actionIndex < orderedVisibleIds.length - 1
+              ? [
+                  {
+                    label: accessibilityCopy.moveLater,
+                    name: "move-later",
+                  },
+                ]
+              : []),
+          ];
+          // RN 0.81 的 Pressable 运行时支持 onPressMove，但当前 TypeScript 声明遗漏该属性。
+          const pressMoveProps = { onPressMove: moveDrag };
+          return (
+            <Animated.View
+              key={action.id}
               onLayout={(event) => onLayout(action.id, event)}
-              accessibilityActions={[
-                { label: accessibilityCopy.moveEarlier, name: "move-earlier" },
-                { label: accessibilityCopy.moveLater, name: "move-later" },
+              style={[
+                styles.actionShell,
+                isDragging && styles.actionShellDragging,
+                isDragging && {
+                  opacity: dragFeedback.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [1, 0.82],
+                  }),
+                  transform: [
+                    {
+                      translateY: dragFeedback.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, -2],
+                      }),
+                    },
+                  ],
+                },
               ]}
-              accessibilityHint={accessibilityCopy.reorderHint}
-              accessibilityLabel={action.accessibilityLabel ?? action.label}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: action.disabled === true }}
-              delayLongPress={LONG_PRESS_DELAY_MS}
-              onAccessibilityAction={(event) => {
-                const direction =
-                  event.nativeEvent.actionName === "move-earlier"
-                    ? -1
-                    : event.nativeEvent.actionName === "move-later"
-                      ? 1
-                      : null;
-                if (direction) commitAccessibleMove(action.id, direction);
-              }}
-              onLongPress={() => beginDrag(action.id)}
-              onPress={() => {
-                const suppress = suppressBusinessPressRef.current;
-                suppressBusinessPressRef.current = false;
-                if (!suppress && !action.disabled) action.onPress();
-              }}
-              onPressIn={(event) => beginPointer(action.id, event)}
-              onPressOut={finishDrag}
-              onResponderTerminate={finishDrag}
-              onTouchMove={moveDrag}
-              style={({ pressed }) => [
-                styles.actionButton,
-                actionToneStyles[action.tone ?? "primary"],
-                action.disabled && styles.actionButtonDisabled,
-                pressed && !isDragging && styles.actionButtonPressed,
-              ]}
-              testID={action.testID ?? `sales-toolbar-${action.id}`}
+              testID={`${action.testID ?? `sales-toolbar-${action.id}`}-layout`}
             >
-              <Text
-                style={[
-                  styles.actionText,
-                  (action.tone === "quiet" || action.tone === "secondary") &&
-                    styles.quietActionText,
-                  action.tone === "danger" && styles.dangerActionText,
-                  action.disabled && styles.actionTextDisabled,
+              <Pressable
+                {...pressMoveProps}
+                accessibilityActions={accessibilityActions}
+                accessibilityHint={accessibilityCopy.reorderHint}
+                accessibilityLabel={action.accessibilityLabel ?? action.label}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: action.disabled === true }}
+                cancelable={!isDragging}
+                delayLongPress={LONG_PRESS_DELAY_MS}
+                onAccessibilityAction={(event) => {
+                  const direction =
+                    event.nativeEvent.actionName === "move-earlier"
+                      ? -1
+                      : event.nativeEvent.actionName === "move-later"
+                        ? 1
+                        : null;
+                  if (direction) commitAccessibleMove(action.id, direction);
+                }}
+                onLongPress={() => beginDrag(action.id)}
+                onPress={() => {
+                  const suppress = suppressBusinessPressRef.current;
+                  suppressBusinessPressRef.current = false;
+                  if (!suppress && !action.disabled) action.onPress();
+                }}
+                onPressIn={(event) => beginPointer(action.id, event)}
+                onTouchCancel={cancelDrag}
+                onTouchEnd={finishDrag}
+                style={({ pressed }) => [
+                  styles.actionButton,
+                  actionToneStyles[action.tone ?? "primary"],
+                  action.disabled && styles.actionButtonDisabled,
+                  pressed && !isDragging && styles.actionButtonPressed,
                 ]}
+                testID={action.testID ?? `sales-toolbar-${action.id}`}
               >
-                {action.label}
-              </Text>
-            </Pressable>
-          </Animated.View>
-        );
-      })}
+                <Text
+                  style={[
+                    styles.actionText,
+                    (action.tone === "quiet" ||
+                      action.tone === "secondary") &&
+                      styles.quietActionText,
+                    action.tone === "danger" && styles.dangerActionText,
+                    action.disabled && styles.actionTextDisabled,
+                  ]}
+                >
+                  {action.label}
+                </Text>
+              </Pressable>
+            </Animated.View>
+          );
+        })}
+      </ScrollView>
+      {hiddenSides.left ? (
+        <View
+          accessible={false}
+          pointerEvents="none"
+          style={[styles.overflowHint, styles.overflowHintLeft]}
+          testID="sales-toolbar-hidden-left"
+        >
+          <Text style={styles.overflowHintIcon}>‹</Text>
+        </View>
+      ) : null}
+      {hiddenSides.right ? (
+        <View
+          accessible={false}
+          pointerEvents="none"
+          style={[styles.overflowHint, styles.overflowHintRight]}
+          testID="sales-toolbar-hidden-right"
+        >
+          <Text style={styles.overflowHintIcon}>›</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -393,26 +559,23 @@ function orderVisibleIds(
   return ordered;
 }
 
-function findNearestActionId(
+function findNearestSlotIndex(
   pointerX: number,
   pointerY: number,
-  actionIds: readonly SalesToolbarActionId[],
-  layouts: ReadonlyMap<SalesToolbarActionId, ToolbarLayout>,
-): SalesToolbarActionId | null {
-  let nearestId: SalesToolbarActionId | null = null;
+  slots: readonly ToolbarSlot[],
+): number {
+  let nearestIndex = -1;
   let nearestDistance = Number.POSITIVE_INFINITY;
-  for (const actionId of actionIds) {
-    const layout = layouts.get(actionId);
-    if (!layout) continue;
+  for (const slot of slots) {
     const distance = Math.hypot(
-      pointerX - (layout.x + layout.width / 2),
-      pointerY - (layout.y + layout.height / 2),
+      pointerX - slot.centerX,
+      pointerY - slot.centerY,
     );
     if (distance >= nearestDistance) continue;
-    nearestId = actionId;
+    nearestIndex = slot.index;
     nearestDistance = distance;
   }
-  return nearestId;
+  return nearestIndex;
 }
 
 function sameOrder(
@@ -480,11 +643,53 @@ const styles = StyleSheet.create({
   quietActionText: {
     color: posColors.ink,
   },
-  toolbar: {
+  overflowHint: {
     alignItems: "center",
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    height: 28,
+    justifyContent: "center",
+    marginTop: -14,
+    position: "absolute",
+    shadowColor: "#000000",
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.14,
+    shadowRadius: 2,
+    top: "50%",
+    width: 28,
+    zIndex: 2,
+  },
+  overflowHintLeft: {
+    left: 2,
+  },
+  overflowHintIcon: {
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "900",
+    lineHeight: 24,
+  },
+  overflowHintRight: {
+    right: 2,
+  },
+  toolbarContent: {
+    alignItems: "center",
+    flexGrow: 1,
     flexDirection: "row",
-    flexWrap: "wrap",
+    flexWrap: "nowrap",
     gap: 10,
     justifyContent: "flex-end",
+  },
+  toolbarFrame: {
+    flexShrink: 1,
+    minHeight: MIN_TOUCH_TARGET,
+    minWidth: 0,
+    position: "relative",
+  },
+  toolbarViewport: {
+    minHeight: MIN_TOUCH_TARGET,
+    minWidth: 0,
+    width: "100%",
   },
 });
