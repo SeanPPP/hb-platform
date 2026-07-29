@@ -914,6 +914,99 @@ public sealed class DeviceRegistrationTests
         Assert.True(viewModel.CancelCommand.CanExecute(null));
     }
 
+    [Fact]
+    public async Task DeviceRegistrationViewModel_DisposeDuringLoad_ignores_non_cooperative_late_result()
+    {
+        var pendingLoad = new TaskCompletionSource<DeviceRegistrationLoadResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            LoadResultAsync = (_, _) => pendingLoad.Task,
+            VerifyResult = new DeviceRegistrationActionResult(
+                "POS-OLD",
+                "1002",
+                "Old Store",
+                "HW-001",
+                false,
+                "Activated",
+                null,
+                true,
+                false)
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.Zero,
+            delayAsync: (_, _) => Task.CompletedTask);
+        var activated = false;
+        var reregistered = false;
+        var canceled = false;
+        viewModel.DeviceActivated += (_, _) => activated = true;
+        viewModel.DeviceReregistered += (_, _) => reregistered = true;
+        viewModel.CancelRequested += (_, _) => canceled = true;
+        viewModel.Prepare(cachedDevice: null);
+
+        var loadTask = viewModel.LoadStoresAsync(cachedDevice: null);
+        Assert.True(viewModel.IsBusy);
+
+        viewModel.Dispose();
+        pendingLoad.SetResult(new DeviceRegistrationLoadResult(
+            [new StoreSelectionItem("1002", "Old Store", true)],
+            new StoreSelectionItem("1002", "Old Store", true),
+            "POS-OLD",
+            true,
+            "Pending approval"));
+        await loadTask;
+
+        Assert.Empty(viewModel.Stores);
+        Assert.Null(viewModel.SelectedStore);
+        Assert.Equal(0, workflow.VerifyCallCount);
+        Assert.Null(viewModel.ApprovalPollingTask);
+        Assert.False(activated);
+        Assert.False(reregistered);
+        Assert.False(canceled);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_SecondLoad_ignores_first_late_result()
+    {
+        var firstLoad = new TaskCompletionSource<DeviceRegistrationLoadResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondLoad = new TaskCompletionSource<DeviceRegistrationLoadResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            LoadResultAsync = (call, _) => call == 1 ? firstLoad.Task : secondLoad.Task
+        };
+        var viewModel = new DeviceRegistrationViewModel(workflow);
+        viewModel.Prepare(cachedDevice: null);
+
+        var firstTask = viewModel.LoadStoresAsync(cachedDevice: null);
+        var secondTask = viewModel.LoadStoresAsync(cachedDevice: null);
+        secondLoad.SetResult(new DeviceRegistrationLoadResult(
+            [new StoreSelectionItem("2002", "Current Store", true)],
+            new StoreSelectionItem("2002", "Current Store", true),
+            "POS-CURRENT",
+            false,
+            "Current load completed"));
+        await secondTask;
+
+        firstLoad.SetResult(new DeviceRegistrationLoadResult(
+            [new StoreSelectionItem("1001", "Stale Store", true)],
+            new StoreSelectionItem("1001", "Stale Store", true),
+            "POS-STALE",
+            true,
+            "Stale load completed"));
+        await firstTask;
+
+        var store = Assert.Single(viewModel.Stores);
+        Assert.Equal("2002", store.StoreCode);
+        Assert.Equal("2002", viewModel.SelectedStore?.StoreCode);
+        Assert.Equal("POS-CURRENT", viewModel.DeviceCode);
+        Assert.Equal("Current load completed", viewModel.StatusMessage);
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(0, workflow.VerifyCallCount);
+    }
+
     private static string CreateTempDatabasePath()
     {
         return Path.Combine(Path.GetTempPath(), $"hbpos-client-device-{Guid.NewGuid():N}.db");
@@ -954,6 +1047,8 @@ public sealed class DeviceRegistrationTests
 
         public TaskCompletionSource<DeviceRegistrationActionResult>? PendingVerifyResult { get; init; }
 
+        public Func<int, CancellationToken, Task<DeviceRegistrationLoadResult>>? LoadResultAsync { get; init; }
+
         private TaskCompletionSource RegisterStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private TaskCompletionSource ReregisterStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -976,6 +1071,8 @@ public sealed class DeviceRegistrationTests
 
         public int VerifyCallCount { get; private set; }
 
+        public int LoadCallCount { get; private set; }
+
         public IReadOnlyList<string> VerifiedDeviceCodes => _verifiedDeviceCodes;
 
         public string GetHardwareId() => HardwareId;
@@ -987,7 +1084,8 @@ public sealed class DeviceRegistrationTests
             CancellationToken cancellationToken = default)
         {
             LastLoadExcludedStoreCode = excludedStoreCode;
-            return Task.FromResult(LoadResult);
+            var call = ++LoadCallCount;
+            return LoadResultAsync?.Invoke(call, cancellationToken) ?? Task.FromResult(LoadResult);
         }
 
         public Task<DeviceRegistrationActionResult> RegisterAsync(

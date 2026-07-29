@@ -23,6 +23,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     private CancellationTokenSource? _approvalPollingCancellation;
     private CancellationTokenSource? _manualVerificationCancellation;
     private CancellationTokenSource? _registrationActionCancellation;
+    private CancellationTokenSource? _storeLoadCancellation;
     private Task? _approvalPollingTask;
     private long _registrationSessionVersion;
     private bool _isReregisterCancelRequested;
@@ -144,6 +145,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     public void Prepare(LocalDeviceCache? cachedDevice)
     {
+        CancelStoreLoad();
         StopApprovalPolling();
         IsReregisterMode = false;
         CanCancel = false;
@@ -178,6 +180,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     public void PrepareReregister(string currentStoreCode)
     {
+        CancelStoreLoad();
         StopApprovalPolling();
         IsReregisterMode = true;
         CanCancel = true;
@@ -195,24 +198,56 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     public async Task LoadStoresAsync(LocalDeviceCache? cachedDevice, CancellationToken cancellationToken = default)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var previousLoadCancellation = _storeLoadCancellation;
+        _storeLoadCancellation = loadCancellation;
+        CancelAndDispose(previousLoadCancellation);
         IsBusy = true;
         StatusMessage = T("deviceRegistration.status.loadingStores", DeviceRegistrationWorkflowService.LoadingStoresMessage);
 
         try
         {
-            var result = await _workflowService.LoadStoresAsync(cachedDevice, IsReregisterMode, _excludedStoreCode, cancellationToken);
+            var result = await _workflowService.LoadStoresAsync(
+                cachedDevice,
+                IsReregisterMode,
+                _excludedStoreCode,
+                loadCancellation.Token);
+            if (!IsCurrentStoreLoad(loadCancellation))
+            {
+                return;
+            }
+
             ApplyLoadResult(result);
+        }
+        catch (OperationCanceledException) when (loadCancellation.IsCancellationRequested)
+        {
+            // 页面已关闭、服务器已切换或新一代加载已接管，不再回写旧请求状态。
         }
         catch (Exception ex)
         {
-            StatusMessage = ex.Message;
+            if (IsCurrentStoreLoad(loadCancellation))
+            {
+                StatusMessage = ex.Message;
+            }
         }
         finally
         {
-            IsBusy = false;
+            if (ReferenceEquals(_storeLoadCancellation, loadCancellation))
+            {
+                _storeLoadCancellation = null;
+                loadCancellation.Dispose();
+                if (!_disposed)
+                {
+                    IsBusy = false;
+                    NotifyCommandState();
+                }
+            }
         }
-
-        NotifyCommandState();
     }
 
     partial void OnIsReregisterModeChanged(bool value)
@@ -534,6 +569,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         if (_apiServerSettings?.RestartRequired == true)
         {
             // 保存新服务器地址后立即停止旧地址上的注册工作，重启前不允许继续提交或验证。
+            CancelStoreLoad();
             StopApprovalPolling();
         }
         else
@@ -595,6 +631,11 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     private void RestartApprovalPollingIfNeeded()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         StopApprovalPolling();
         // 新地址仅在重启后生效，等待重启期间不能重新创建仍访问旧地址的审批轮询。
         if (_apiServerSettings?.RestartRequired == true ||
@@ -640,6 +681,29 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
         cancellation.Cancel();
         cancellation.Dispose();
+    }
+
+    private void CancelStoreLoad()
+    {
+        var loadCancellation = _storeLoadCancellation;
+        if (loadCancellation is null)
+        {
+            return;
+        }
+
+        _storeLoadCancellation = null;
+        CancelAndDispose(loadCancellation);
+        if (!_disposed)
+        {
+            IsBusy = false;
+        }
+    }
+
+    private bool IsCurrentStoreLoad(CancellationTokenSource loadCancellation)
+    {
+        return !_disposed &&
+               ReferenceEquals(_storeLoadCancellation, loadCancellation) &&
+               !loadCancellation.IsCancellationRequested;
     }
 
     private bool IsCurrentApprovalPolling(CancellationTokenSource pollingCancellation, long sessionVersion)
@@ -751,6 +815,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     {
         if (CanExecuteCancel())
         {
+            CancelStoreLoad();
             StopApprovalPolling();
             if (IsReregisterMode)
             {
@@ -782,8 +847,13 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
                 nameof(ApiServerSettingsViewModel.RestartRequired));
         }
 
+        CancelStoreLoad();
         StopApprovalPolling();
         _approvalPollingTask = null;
+        DeviceActivated = null;
+        DeviceActivatedAsync = null;
+        DeviceReregistered = null;
+        CancelRequested = null;
     }
 
     private void OnCultureChanged(object? sender, EventArgs e)
