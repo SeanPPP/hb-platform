@@ -20,6 +20,12 @@ import {
   type SalesLocale,
 } from "./sales-copy";
 import {
+  applySalesNumberKey,
+  SalesNumberKeypad,
+  type SalesNumberKey,
+  type SalesNumberKeypadMode,
+} from "./sales-number-keypad";
+import {
   deriveCashDraft,
   formatAud,
   getCashDueCents,
@@ -48,6 +54,7 @@ type LineEditMode =
 type LineEditState = Readonly<{
   lineId: string;
   mode: LineEditMode;
+  replaceOnNextDigit: boolean;
   value: string;
 }>;
 
@@ -90,6 +97,14 @@ type ActionButtonProps = Readonly<{
   accessibilityLabel?: string;
 }>;
 
+type NumericValueDisplayProps = Readonly<{
+  accessibilityLabel: string;
+  currencyPrefix?: string;
+  placeholder: string;
+  testID: string;
+  value: string;
+}>;
+
 export function SalesScreen({
   presenter,
   locale: localeOverride,
@@ -124,6 +139,13 @@ export function SalesScreen({
     key: SalesCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ) => salesText(locale, key, values);
+  const keypadLabels = {
+    backspace: t("keypad.backspace"),
+    clear: t("keypad.clear"),
+    decimal: t("keypad.decimal"),
+    quick50: t("keypad.quick50"),
+    quick99: t("keypad.quick99"),
+  };
   const [discountLineId, setDiscountLineId] = useState<string | null>(null);
   const [openItemVisible, setOpenItemVisible] = useState(false);
   const [openItemPrice, setOpenItemPrice] = useState("");
@@ -139,6 +161,7 @@ export function SalesScreen({
   );
   const manualInputFocusChangeRef = useRef(onManualInputFocusChange);
   const manualInputActiveRef = useRef(false);
+  const numericInputModalActiveRef = useRef(false);
   const manualInputBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -201,35 +224,95 @@ export function SalesScreen({
     setSearchSoftInputOnFocus(false);
   };
 
+  const beginNumericInput = (): void => {
+    numericInputModalActiveRef.current = true;
+    resetSearchInputToHidMode();
+    searchInputRef.current?.blur();
+    notifyManualInputFocused();
+  };
+
   const handleSearchInputBlur = (): void => {
     resetSearchInputToHidMode();
-    notifyManualInputBlurred();
+    if (!numericInputModalActiveRef.current) {
+      notifyManualInputBlurred();
+    }
   };
 
   const closeCashInput = (): void => {
+    if (!presenter.closeCash()) return;
+    numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
-    presenter.closeCash();
   };
 
   const closeOpenItemInput = (): void => {
+    numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
     setOpenItemVisible(false);
   };
 
   const closeLineEditInput = (): void => {
+    numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
     setLineEdit(null);
   };
 
   const closeOrderEditInput = (): void => {
+    numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
     setOrderEdit(null);
+  };
+
+  const handleCashKey = (key: SalesNumberKey): void => {
+    presenter.setCashTenderedText(
+      applySalesNumberKey(state.cashTenderedText, key, { mode: "decimal" }),
+    );
+  };
+
+  const handleOpenItemKey = (key: SalesNumberKey): void => {
+    setOpenItemPrice((current) =>
+      applySalesNumberKey(current, key, { mode: "decimal" }),
+    );
+  };
+
+  const handleLineEditKey = (key: SalesNumberKey): void => {
+    setLineEdit((current) => {
+      if (!current) return null;
+      const mode: SalesNumberKeypadMode =
+        current.mode === "quantity" ? "integer" : "decimal";
+      const nextValue = applySalesNumberKey(current.value, key, {
+        mode,
+        replaceOnNextDigit: current.replaceOnNextDigit,
+      });
+      // 首次数字用于替换预填值；一旦用户执行实际编辑，后续数字就按位追加。
+      const keepReplaceSelection =
+        key === "decimal" && nextValue === current.value;
+      return {
+        ...current,
+        replaceOnNextDigit:
+          current.replaceOnNextDigit && keepReplaceSelection,
+        value: nextValue,
+      };
+    });
+  };
+
+  const handleOrderEditKey = (key: SalesNumberKey): void => {
+    setOrderEdit((current) =>
+      current
+        ? {
+            ...current,
+            value: applySalesNumberKey(current.value, key, {
+              mode: "decimal",
+            }),
+          }
+        : null,
+    );
   };
 
   useEffect(
     () => () => {
       clearManualInputBlurTimer();
       clearSearchKeyboardTimer();
+      numericInputModalActiveRef.current = false;
       if (!manualInputActiveRef.current) return;
       manualInputActiveRef.current = false;
       manualInputFocusChangeRef.current?.(false);
@@ -260,6 +343,7 @@ export function SalesScreen({
     }
     searchKeyboardRequestRef.current = false;
     setSearchSoftInputOnFocus(false);
+    numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
   }, [manualInputTreeUnavailable]);
 
@@ -271,8 +355,10 @@ export function SalesScreen({
     setLineEdit({
       lineId,
       mode: "quantity",
+      replaceOnNextDigit: true,
       value: line.quantity,
     });
+    beginNumericInput();
   };
 
   const selectLineEditMode = (mode: LineEditMode): void => {
@@ -285,6 +371,7 @@ export function SalesScreen({
       return {
         lineId: current.lineId,
         mode,
+        replaceOnNextDigit: true,
         value:
           mode === "quantity"
             ? line.quantity
@@ -688,6 +775,7 @@ export function SalesScreen({
               onPress={() => {
                 setOpenItemPrice("");
                 setOpenItemVisible(true);
+                beginNumericInput();
               }}
               style={styles.searchAction}
               testID="sales-open-item-button"
@@ -892,7 +980,11 @@ export function SalesScreen({
                 ? t("summary.checkoutDisabled")
                 : t("summary.checkoutCash")
             }
-            onPress={() => presenter.openCash()}
+            onPress={() => {
+              if (presenter.openCash()) {
+                beginNumericInput();
+              }
+            }}
             style={styles.checkoutButton}
             testID="sales-cash-checkout"
           />
@@ -935,53 +1027,58 @@ export function SalesScreen({
         <View style={styles.modalBackdrop}>
           <View
             accessibilityViewIsModal
-            style={styles.cashModal}
+            style={styles.numericModal}
             testID="sales-cash-modal"
           >
             <Text style={styles.modalTitle}>{t("cash.title")}</Text>
-            <Text style={styles.cashDueLabel}>{t("cash.amountDue")}</Text>
-            <Text style={styles.cashDueAmount}>
-              {formatAud(getCashDueCents(state.cart), locale)}
-            </Text>
-            <Text style={styles.fieldLabel}>{t("cash.tendered")}</Text>
-            <View style={styles.cashInputRow}>
-              <Text style={styles.currencyPrefix}>$</Text>
-              <TextInput
-                accessibilityLabel={t("cash.tendered")}
-                editable={state.phase === "cash"}
-                keyboardType="decimal-pad"
-                onBlur={notifyManualInputBlurred}
-                onChangeText={(value) => presenter.setCashTenderedText(value)}
-                onFocus={notifyManualInputFocused}
-                placeholder={t("cash.tenderedPlaceholder")}
-                placeholderTextColor="#7B8793"
-                selectionColor={posColors.orange}
-                showSoftInputOnFocus
-                style={styles.cashInput}
-                testID="sales-cash-tendered"
-                value={state.cashTenderedText}
-              />
-              <ActionButton
-                disabled={state.phase !== "cash"}
-                label={t("cash.exact")}
-                onPress={() => presenter.setExactCash()}
-                testID="sales-cash-exact"
-                tone="secondary"
-              />
+            <View style={styles.numericEditorBody}>
+              <View style={styles.numericEditorSummary}>
+                <Text style={styles.cashDueLabel}>{t("cash.amountDue")}</Text>
+                <Text style={styles.cashDueAmount}>
+                  {formatAud(getCashDueCents(state.cart), locale)}
+                </Text>
+                <Text style={styles.fieldLabel}>{t("cash.tendered")}</Text>
+                <NumericValueDisplay
+                  accessibilityLabel={t("cash.tendered")}
+                  currencyPrefix="$"
+                  placeholder={t("cash.tenderedPlaceholder")}
+                  testID="sales-cash-tendered"
+                  value={state.cashTenderedText}
+                />
+                <ActionButton
+                  disabled={state.phase !== "cash"}
+                  label={t("cash.exact")}
+                  onPress={() => presenter.setExactCash()}
+                  style={styles.cashExactAction}
+                  testID="sales-cash-exact"
+                  tone="secondary"
+                />
+                <View style={styles.changePreview}>
+                  <Text style={styles.changePreviewLabel}>
+                    {t("cash.change")}
+                  </Text>
+                  <Text style={styles.changePreviewAmount}>
+                    {formatAud(cashDraft.changeCents, locale)}
+                  </Text>
+                </View>
+                {state.errorCode === "cash-invalid" ||
+                state.errorCode === "cash-insufficient" ||
+                state.errorCode === "cash-failed" ? (
+                  <Text accessibilityRole="alert" style={styles.cashError}>
+                    {t(errorCopyKey(state.errorCode))}
+                  </Text>
+                ) : null}
+              </View>
+              <View style={styles.numericKeypadColumn}>
+                <SalesNumberKeypad
+                  disabled={state.phase !== "cash"}
+                  labels={keypadLabels}
+                  mode="decimal"
+                  onKeyPress={handleCashKey}
+                  testIDPrefix="sales-cash"
+                />
+              </View>
             </View>
-            <View style={styles.changePreview}>
-              <Text style={styles.changePreviewLabel}>{t("cash.change")}</Text>
-              <Text style={styles.changePreviewAmount}>
-                {formatAud(cashDraft.changeCents, locale)}
-              </Text>
-            </View>
-            {state.errorCode === "cash-invalid" ||
-            state.errorCode === "cash-insufficient" ||
-            state.errorCode === "cash-failed" ? (
-              <Text accessibilityRole="alert" style={styles.cashError}>
-                {t(errorCopyKey(state.errorCode))}
-              </Text>
-            ) : null}
             <View style={styles.modalActions}>
               <ActionButton
                 disabled={state.phase === "submitting-cash"}
@@ -1019,23 +1116,30 @@ export function SalesScreen({
         <View style={styles.modalBackdrop}>
           <View
             accessibilityViewIsModal
-            style={styles.editorModal}
+            style={styles.numericModal}
             testID="sales-open-item-modal"
           >
             <Text style={styles.modalTitle}>{t("openItem.title")}</Text>
             <Text style={styles.discountHint}>{t("openItem.hint")}</Text>
-            <Text style={styles.fieldLabel}>{t("openItem.price")}</Text>
-            <EditorInput
-              accessibilityLabel={t("openItem.price")}
-              onChangeText={setOpenItemPrice}
-              onFocusChange={(focused) =>
-                focused
-                  ? notifyManualInputFocused()
-                  : notifyManualInputBlurred()
-              }
-              testID="sales-open-item-price"
-              value={openItemPrice}
-            />
+            <View style={styles.numericEditorBody}>
+              <View style={styles.numericEditorSummary}>
+                <Text style={styles.fieldLabel}>{t("openItem.price")}</Text>
+                <NumericValueDisplay
+                  accessibilityLabel={t("openItem.price")}
+                  placeholder="0.00"
+                  testID="sales-open-item-price"
+                  value={openItemPrice}
+                />
+              </View>
+              <View style={styles.numericKeypadColumn}>
+                <SalesNumberKeypad
+                  labels={keypadLabels}
+                  mode="decimal"
+                  onKeyPress={handleOpenItemKey}
+                  testIDPrefix="sales-open-item"
+                />
+              </View>
+            </View>
             <View style={styles.modalActions}>
               <ActionButton
                 label={t("discount.cancel")}
@@ -1107,8 +1211,10 @@ export function SalesScreen({
                     setLineEdit({
                       lineId,
                       mode: "discount-amount",
+                      replaceOnNextDigit: false,
                       value: "",
                     });
+                    beginNumericInput();
                   }
                 }}
                 style={styles.modalAction}
@@ -1124,8 +1230,10 @@ export function SalesScreen({
                     setLineEdit({
                       lineId,
                       mode: "discount-percent",
+                      replaceOnNextDigit: false,
                       value: "",
                     });
+                    beginNumericInput();
                   }
                 }}
                 style={styles.modalAction}
@@ -1154,7 +1262,7 @@ export function SalesScreen({
         <View style={styles.modalBackdrop}>
           <View
             accessibilityViewIsModal
-            style={styles.editorModal}
+            style={styles.numericModal}
             testID="sales-line-edit-modal"
           >
             <Text style={styles.modalTitle}>{t("editLine.title")}</Text>
@@ -1194,25 +1302,29 @@ export function SalesScreen({
                 }
               />
             </View>
-            <Text style={styles.fieldLabel}>{t("editLine.value")}</Text>
-            <EditorInput
-              accessibilityLabel={t("editLine.value")}
-              keyboardType={
-                lineEdit?.mode === "quantity" ? "number-pad" : "decimal-pad"
-              }
-              onChangeText={(value) =>
-                setLineEdit((current) =>
-                  current ? { ...current, value } : null,
-                )
-              }
-              onFocusChange={(focused) =>
-                focused
-                  ? notifyManualInputFocused()
-                  : notifyManualInputBlurred()
-              }
-              testID="sales-line-edit-value"
-              value={lineEdit?.value ?? ""}
-            />
+            <View style={styles.numericEditorBody}>
+              <View style={styles.numericEditorSummary}>
+                <Text style={styles.fieldLabel}>{t("editLine.value")}</Text>
+                <NumericValueDisplay
+                  accessibilityLabel={t("editLine.value")}
+                  placeholder={
+                    lineEdit?.mode === "quantity" ? "0" : "0.00"
+                  }
+                  testID="sales-line-edit-value"
+                  value={lineEdit?.value ?? ""}
+                />
+              </View>
+              <View style={styles.numericKeypadColumn}>
+                <SalesNumberKeypad
+                  labels={keypadLabels}
+                  mode={
+                    lineEdit?.mode === "quantity" ? "integer" : "decimal"
+                  }
+                  onKeyPress={handleLineEditKey}
+                  testIDPrefix="sales-line-edit"
+                />
+              </View>
+            </View>
             <View style={styles.modalActions}>
               <ActionButton
                 label={t("discount.cancel")}
@@ -1270,6 +1382,7 @@ export function SalesScreen({
                 onPress={() => {
                   setOrderDiscountVisible(false);
                   setOrderEdit({ mode: "amount", value: "" });
+                  beginNumericInput();
                 }}
                 style={styles.modalAction}
                 testID="sales-order-discount-amount"
@@ -1280,6 +1393,7 @@ export function SalesScreen({
                 onPress={() => {
                   setOrderDiscountVisible(false);
                   setOrderEdit({ mode: "percent", value: "" });
+                  beginNumericInput();
                 }}
                 style={styles.modalAction}
                 testID="sales-order-discount-percent"
@@ -1306,32 +1420,35 @@ export function SalesScreen({
         <View style={styles.modalBackdrop}>
           <View
             accessibilityViewIsModal
-            style={styles.editorModal}
+            style={styles.numericModal}
             testID="sales-order-edit-modal"
           >
             <Text style={styles.modalTitle}>
               {t("orderDiscount.editTitle")}
             </Text>
-            <Text style={styles.fieldLabel}>
-              {orderEdit?.mode === "percent"
-                ? t("editLine.discountPercent")
-                : t("editLine.discountAmount")}
-            </Text>
-            <EditorInput
-              accessibilityLabel={t("editLine.value")}
-              onChangeText={(value) =>
-                setOrderEdit((current) =>
-                  current ? { ...current, value } : null,
-                )
-              }
-              onFocusChange={(focused) =>
-                focused
-                  ? notifyManualInputFocused()
-                  : notifyManualInputBlurred()
-              }
-              testID="sales-order-edit-value"
-              value={orderEdit?.value ?? ""}
-            />
+            <View style={styles.numericEditorBody}>
+              <View style={styles.numericEditorSummary}>
+                <Text style={styles.fieldLabel}>
+                  {orderEdit?.mode === "percent"
+                    ? t("editLine.discountPercent")
+                    : t("editLine.discountAmount")}
+                </Text>
+                <NumericValueDisplay
+                  accessibilityLabel={t("editLine.value")}
+                  placeholder="0.00"
+                  testID="sales-order-edit-value"
+                  value={orderEdit?.value ?? ""}
+                />
+              </View>
+              <View style={styles.numericKeypadColumn}>
+                <SalesNumberKeypad
+                  labels={keypadLabels}
+                  mode="decimal"
+                  onKeyPress={handleOrderEditKey}
+                  testIDPrefix="sales-order-edit"
+                />
+              </View>
+            </View>
             <View style={styles.modalActions}>
               <ActionButton
                 label={t("discount.cancel")}
@@ -1432,38 +1549,38 @@ function ProductSearchRow({
   );
 }
 
-function EditorInput({
+function NumericValueDisplay({
   accessibilityLabel,
-  keyboardType = "decimal-pad",
-  onChangeText,
-  onFocusChange,
+  currencyPrefix,
+  placeholder,
   testID,
   value,
-}: Readonly<{
-  accessibilityLabel: string;
-  keyboardType?: "decimal-pad" | "number-pad";
-  onChangeText(value: string): void;
-  onFocusChange(focused: boolean): void;
-  testID: string;
-  value: string;
-}>) {
+}: NumericValueDisplayProps) {
+  const displayValue = value || placeholder;
   return (
-    <TextInput
+    <View
+      accessible
       accessibilityLabel={accessibilityLabel}
-      autoFocus
-      keyboardType={keyboardType}
-      onBlur={() => onFocusChange(false)}
-      onChangeText={onChangeText}
-      onFocus={() => onFocusChange(true)}
-      placeholder="0.00"
-      placeholderTextColor="#7B8793"
-      selectionColor={posColors.orange}
-      selectTextOnFocus
-      showSoftInputOnFocus
-      style={styles.editorInput}
+      accessibilityLiveRegion="polite"
+      accessibilityValue={{ text: displayValue }}
+      style={styles.numericValueDisplay}
       testID={testID}
-      value={value}
-    />
+    >
+      {currencyPrefix ? (
+        <Text style={styles.numericValuePrefix}>{currencyPrefix}</Text>
+      ) : null}
+      <Text
+        adjustsFontSizeToFit
+        minimumFontScale={0.65}
+        numberOfLines={1}
+        style={[
+          styles.numericValueText,
+          value.length === 0 && styles.numericValuePlaceholder,
+        ]}
+      >
+        {displayValue}
+      </Text>
+    </View>
   );
 }
 
@@ -1761,33 +1878,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: 12,
   },
-  cashInput: {
-    backgroundColor: "#FAFAF8",
-    borderColor: posColors.ink,
-    borderRadius: 4,
-    borderWidth: 1,
-    color: posColors.ink,
-    flex: 1,
-    fontSize: 24,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "800",
-    height: 52,
-    paddingHorizontal: 38,
-  },
-  cashInputRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 10,
-    position: "relative",
-  },
-  cashModal: {
-    backgroundColor: posColors.surface,
-    borderColor: posColors.border,
-    borderRadius: 6,
-    borderWidth: 1,
-    maxWidth: 560,
-    padding: 28,
-    width: "72%",
+  cashExactAction: {
+    marginTop: 12,
+    width: "100%",
   },
   changeAmount: {
     color: posColors.green,
@@ -1843,15 +1936,6 @@ const styles = StyleSheet.create({
     minHeight: 64,
     width: "100%",
   },
-  currencyPrefix: {
-    color: posColors.mutedInk,
-    fontSize: 22,
-    fontWeight: "800",
-    left: 14,
-    position: "absolute",
-    top: 12,
-    zIndex: 1,
-  },
   dangerButtonText: {
     color: posColors.red,
   },
@@ -1891,18 +1975,6 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 18,
     marginTop: 18,
-  },
-  editorInput: {
-    backgroundColor: "#FAFAF8",
-    borderColor: posColors.ink,
-    borderRadius: 4,
-    borderWidth: 1,
-    color: posColors.ink,
-    fontSize: 24,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "800",
-    height: 54,
-    paddingHorizontal: 14,
   },
   editorModal: {
     backgroundColor: posColors.surface,
@@ -2060,6 +2132,60 @@ const styles = StyleSheet.create({
     color: posColors.ink,
     fontSize: 24,
     fontWeight: "900",
+  },
+  numericEditorBody: {
+    alignItems: "stretch",
+    flexDirection: "row",
+    gap: 24,
+    marginTop: 18,
+  },
+  numericEditorSummary: {
+    flex: 1,
+    justifyContent: "center",
+    minWidth: 0,
+  },
+  numericKeypadColumn: {
+    flexBasis: 352,
+    flexGrow: 0,
+    flexShrink: 1,
+    maxWidth: 380,
+    minWidth: 292,
+  },
+  numericModal: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 6,
+    borderWidth: 1,
+    maxWidth: 820,
+    padding: 26,
+    width: "78%",
+  },
+  numericValueDisplay: {
+    alignItems: "center",
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.ink,
+    borderRadius: 4,
+    borderWidth: 1,
+    flexDirection: "row",
+    minHeight: 64,
+    paddingHorizontal: 16,
+  },
+  numericValuePlaceholder: {
+    color: "#7B8793",
+  },
+  numericValuePrefix: {
+    color: posColors.mutedInk,
+    fontSize: 24,
+    fontWeight: "800",
+    marginRight: 8,
+  },
+  numericValueText: {
+    color: posColors.ink,
+    flex: 1,
+    fontSize: 30,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+    textAlign: "right",
   },
   mutedText: {
     color: posColors.mutedInk,

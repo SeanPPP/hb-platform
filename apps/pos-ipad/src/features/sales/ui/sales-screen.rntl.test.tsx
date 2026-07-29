@@ -251,6 +251,16 @@ function presenter(
   });
 }
 
+async function pressKeypadKeys(
+  screen: Awaited<ReturnType<typeof render>>,
+  testIDPrefix: string,
+  keys: readonly string[],
+): Promise<void> {
+  for (const key of keys) {
+    await fireEvent.press(screen.getByTestId(`${testIDPrefix}-key-${key}`));
+  }
+}
+
 afterEach(() => {
   mockStatusStripProps = null;
   usePosShellStore.getState().reset();
@@ -258,6 +268,68 @@ afterEach(() => {
 });
 
 describe("SalesScreen", () => {
+  it("无码商品使用自定义小数键盘且不会暴露系统文本输入", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-button"));
+
+    const valueDisplay = screen.getByTestId("sales-open-item-price");
+    expect(valueDisplay.props.onChangeText).toBeUndefined();
+    expect(valueDisplay.props.autoFocus).toBeUndefined();
+    expect(valueDisplay.props.showSoftInputOnFocus).toBeUndefined();
+    expect(valueDisplay.props.accessibilityValue).toEqual({ text: "0.00" });
+    expect(screen.getByText("0.5")).toBeTruthy();
+    expect(screen.getByText("0.99")).toBeTruthy();
+    expect(
+      screen.getByTestId("sales-open-item-key-clear").props.accessibilityLabel,
+    ).toBe("清除");
+    expect(
+      screen.getByTestId("sales-open-item-key-backspace").props
+        .accessibilityLabel,
+    ).toBe("退格");
+
+    const firstKey = screen.getByTestId("sales-open-item-key-1");
+    expect(
+      StyleSheet.flatten(firstKey.props.style).minHeight,
+    ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+    await fireEvent.press(firstKey);
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-2"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-quick-50"));
+    expect(
+      screen.getByTestId("sales-open-item-price").props.accessibilityValue,
+    ).toEqual({ text: "12.50" });
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-quick-99"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-decimal"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-8"));
+    expect(
+      screen.getByTestId("sales-open-item-price").props.accessibilityValue,
+    ).toEqual({ text: "12.99" });
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-backspace"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-5"));
+    expect(
+      screen.getByTestId("sales-open-item-price").props.accessibilityValue,
+    ).toEqual({ text: "12.95" });
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-clear"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-decimal"));
+    await fireEvent.press(screen.getByTestId("sales-open-item-key-5"));
+    expect(
+      screen.getByTestId("sales-open-item-price").props.accessibilityValue,
+    ).toEqual({ text: "0.5" });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("语言切换入口移入状态条并从销售工具栏移除", async () => {
     const onSwitchLanguage = jest.fn();
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
@@ -506,7 +578,7 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("搜索到自动聚焦编辑器的交接保持手动输入焦点占用", async () => {
+  it("搜索系统键盘切换到自定义编辑器时隐藏键盘并保持 HID 暂停", async () => {
     const onManualInputFocusChange = jest.fn();
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
     const screen = await render(
@@ -530,19 +602,21 @@ describe("SalesScreen", () => {
     jest.useFakeTimers();
     try {
       await fireEvent(searchInput, "focus");
-      await fireEvent(searchInput, "blur");
+      await fireEvent.press(screen.getByTestId("sales-show-keyboard"));
+      expect(
+        screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
+      ).toBe(true);
       await fireEvent.press(screen.getByTestId("sales-open-item-button"));
-      const openItemInput = screen.getByTestId("sales-open-item-price");
-      expect(openItemInput.props.autoFocus).toBe(true);
-      expect(openItemInput.props.showSoftInputOnFocus).toBe(true);
-      await fireEvent(openItemInput, "focus");
+      expect(
+        screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
+      ).toBe(false);
       await act(() => {
         jest.runOnlyPendingTimers();
       });
       expect(onManualInputFocusChange).toHaveBeenCalledTimes(1);
       expect(onManualInputFocusChange).toHaveBeenLastCalledWith(true);
 
-      await fireEvent(openItemInput, "blur");
+      await fireEvent.press(screen.getByText("取消"));
       await act(() => {
         jest.runOnlyPendingTimers();
       });
@@ -657,13 +731,18 @@ describe("SalesScreen", () => {
     );
 
     await fireEvent.press(screen.getByTestId("sales-cash-checkout"));
-    const cashInput = screen.getByTestId("sales-cash-tendered");
-    expect(cashInput.props.showSoftInputOnFocus).toBe(true);
+    const cashValue = screen.getByTestId("sales-cash-tendered");
+    expect(cashValue.props.onChangeText).toBeUndefined();
+    expect(cashValue.props.showSoftInputOnFocus).toBeUndefined();
 
     jest.useFakeTimers();
     try {
-      await fireEvent(cashInput, "focus");
-      await fireEvent(cashInput, "blur");
+      expect(onManualInputFocusChange).toHaveBeenNthCalledWith(1, true);
+      await fireEvent.press(screen.getByTestId("sales-cash-exact"));
+      expect(
+        screen.getByTestId("sales-cash-tendered").props.accessibilityValue,
+      ).toEqual({ text: "9.95" });
+      await fireEvent.press(screen.getByTestId("sales-cash-cancel"));
       await act(() => {
         jest.runOnlyPendingTimers();
       });
@@ -692,8 +771,6 @@ describe("SalesScreen", () => {
     jest.useFakeTimers();
     try {
       await fireEvent.press(screen.getByTestId("sales-open-item-button"));
-      const openItemInput = screen.getByTestId("sales-open-item-price");
-      await fireEvent(openItemInput, "focus");
       await fireEvent.press(screen.getByText("取消"));
       await act(() => {
         jest.runOnlyPendingTimers();
@@ -724,17 +801,19 @@ describe("SalesScreen", () => {
     jest.useFakeTimers();
     try {
       await fireEvent.press(screen.getByTestId("sales-cash-checkout"));
-      const firstCashInput = screen.getByTestId("sales-cash-tendered");
-      await fireEvent(firstCashInput, "focus");
       await fireEvent.press(screen.getByTestId("sales-cash-cancel"));
       await act(() => {
         jest.runOnlyPendingTimers();
       });
 
       await fireEvent.press(screen.getByTestId("sales-cash-checkout"));
-      const secondCashInput = screen.getByTestId("sales-cash-tendered");
-      await fireEvent(secondCashInput, "focus");
-      await fireEvent.changeText(secondCashInput, "10.00");
+      await pressKeypadKeys(screen, "sales-cash", [
+        "1",
+        "0",
+        "decimal",
+        "0",
+        "0",
+      ]);
       await fireEvent.press(screen.getByTestId("sales-cash-confirm"));
       expect(await screen.findByTestId("sales-success")).toBeTruthy();
       await act(() => {
@@ -835,6 +914,37 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("商品行预填值退格后继续逐位输入而不会覆盖整个值", async () => {
+    const initial = cartSnapshot(1_234);
+    const cart = new ScreenCartPort({
+      ...initial,
+      lines: initial.lines.map((line) => ({ ...line, quantity: "12" })),
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("sales-line-line-1-edit"));
+    await pressKeypadKeys(screen, "sales-line-edit", ["backspace", "3"]);
+    expect(
+      screen.getByTestId("sales-line-edit-value").props.accessibilityValue,
+    ).toEqual({ text: "13" });
+
+    await fireEvent.press(screen.getByTestId("sales-line-edit-price"));
+    await pressKeypadKeys(screen, "sales-line-edit", ["backspace", "5"]);
+    expect(
+      screen.getByTestId("sales-line-edit-value").props.accessibilityValue,
+    ).toEqual({ text: "12.35" });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("OPENITEM、数量、价格和手动行折扣通过触控编辑器调用对应 Port", async () => {
     const cart = new ScreenCartPort(cartSnapshot(2_000));
     const addOpenItem = jest.fn(async (_unitPriceCents: number) => undefined);
@@ -854,43 +964,61 @@ describe("SalesScreen", () => {
 
     await fireEvent.press(screen.getByTestId("sales-open-item-button"));
     expect(screen.getByTestId("sales-open-item-modal")).toBeTruthy();
-    await fireEvent.changeText(
-      screen.getByTestId("sales-open-item-price"),
-      "12.34",
-    );
+    await pressKeypadKeys(screen, "sales-open-item", [
+      "1",
+      "2",
+      "decimal",
+      "3",
+      "4",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-open-item-confirm"));
     expect(addOpenItem).toHaveBeenCalledWith(1_234);
 
     await fireEvent.press(screen.getByTestId("sales-line-line-1-edit"));
     expect(screen.getByTestId("sales-line-edit-modal")).toBeTruthy();
-    await fireEvent.changeText(
-      screen.getByTestId("sales-line-edit-value"),
-      "3",
-    );
+    expect(
+      screen.getByTestId("sales-line-edit-value").props.onChangeText,
+    ).toBeUndefined();
+    expect(
+      screen.queryByTestId("sales-line-edit-key-decimal"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("sales-line-edit-key-quick-50"),
+    ).toBeNull();
+    await pressKeypadKeys(screen, "sales-line-edit", ["3"]);
     await fireEvent.press(screen.getByTestId("sales-line-edit-confirm"));
 
     await fireEvent.press(screen.getByTestId("sales-line-line-1-edit"));
     await fireEvent.press(screen.getByTestId("sales-line-edit-price"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-line-edit-value"),
-      "8.50",
-    );
+    await pressKeypadKeys(screen, "sales-line-edit", ["quick-99"]);
+    expect(
+      screen.getByTestId("sales-line-edit-value").props.accessibilityValue,
+    ).toEqual({ text: "20.99" });
+    await pressKeypadKeys(screen, "sales-line-edit", ["clear"]);
+    await pressKeypadKeys(screen, "sales-line-edit", [
+      "8",
+      "quick-50",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-line-edit-confirm"));
 
     await fireEvent.press(screen.getByTestId("sales-line-line-1-discount"));
     await fireEvent.press(screen.getByTestId("sales-line-discount-amount"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-line-edit-value"),
-      "1.25",
-    );
+    await pressKeypadKeys(screen, "sales-line-edit", [
+      "1",
+      "decimal",
+      "2",
+      "5",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-line-edit-confirm"));
 
     await fireEvent.press(screen.getByTestId("sales-line-line-1-discount"));
     await fireEvent.press(screen.getByTestId("sales-line-discount-percent"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-line-edit-value"),
-      "12.5",
-    );
+    await pressKeypadKeys(screen, "sales-line-edit", [
+      "1",
+      "2",
+      "decimal",
+      "5",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-line-edit-confirm"));
 
     expect(cart.edits).toEqual([
@@ -929,18 +1057,25 @@ describe("SalesScreen", () => {
 
     await fireEvent.press(screen.getByTestId("sales-order-discount"));
     await fireEvent.press(screen.getByTestId("sales-order-discount-amount"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-order-edit-value"),
-      "3.00",
-    );
+    expect(
+      screen.getByTestId("sales-order-edit-value").props.onChangeText,
+    ).toBeUndefined();
+    await pressKeypadKeys(screen, "sales-order-edit", [
+      "3",
+      "decimal",
+      "0",
+      "0",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-order-edit-confirm"));
 
     await fireEvent.press(screen.getByTestId("sales-order-discount"));
     await fireEvent.press(screen.getByTestId("sales-order-discount-percent"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-order-edit-value"),
-      "12.5",
-    );
+    await pressKeypadKeys(screen, "sales-order-edit", [
+      "1",
+      "2",
+      "decimal",
+      "5",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-order-edit-confirm"));
 
     await fireEvent.press(screen.getByTestId("sales-clear-cart"));
@@ -1041,12 +1176,18 @@ describe("SalesScreen", () => {
 
     await fireEvent.press(screen.getByTestId("sales-cash-checkout"));
     expect(screen.getByTestId("sales-cash-modal")).toBeTruthy();
-    await fireEvent.changeText(
-      screen.getByTestId("sales-cash-tendered"),
-      "10.00",
-    );
+    await pressKeypadKeys(screen, "sales-cash", [
+      "1",
+      "0",
+      "decimal",
+      "0",
+      "0",
+    ]);
     const confirm = screen.getByTestId("sales-cash-confirm");
     await fireEvent.press(confirm);
+    expect(
+      screen.getByTestId("sales-cash-key-1").props.accessibilityState,
+    ).toEqual({ disabled: true });
     await fireEvent.press(confirm);
     expect(completeCash).toHaveBeenCalledTimes(1);
 
@@ -1096,10 +1237,13 @@ describe("SalesScreen", () => {
     );
 
     await fireEvent.press(screen.getByTestId("sales-cash-checkout"));
-    await fireEvent.changeText(
-      screen.getByTestId("sales-cash-tendered"),
-      "10.00",
-    );
+    await pressKeypadKeys(screen, "sales-cash", [
+      "1",
+      "0",
+      "decimal",
+      "0",
+      "0",
+    ]);
     await fireEvent.press(screen.getByTestId("sales-cash-confirm"));
 
     expect(await screen.findByTestId("sales-drawer-warning")).toBeTruthy();
