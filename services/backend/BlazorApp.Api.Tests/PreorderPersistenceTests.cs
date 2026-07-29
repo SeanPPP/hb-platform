@@ -2315,7 +2315,7 @@ public sealed class PreorderPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task 导出商品明细排除草稿和取消订单数量()
+    public async Task 导出分店商品矩阵按快照商品和自然分店顺序汇总有效数量()
     {
         await _db.Insertable(new PreorderActivation
         {
@@ -2329,40 +2329,91 @@ public sealed class PreorderPersistenceTests : IDisposable
             EndAtUtc = Now.AddHours(1),
             Status = PreorderActivationStatuses.Active,
         }).ExecuteCommandAsync();
-        await _db.Insertable(new PreorderActivationItem
+        await _db.Insertable(new PreorderActivationItem[]
         {
-            ActivationItemGuid = "export-item",
-            ActivationGuid = "export-activation",
-            ProductCode = "P1",
-            ItemNumber = "I1",
-            ProductName = "商品",
-            MinimumOrderQuantity = 2,
+            new()
+            {
+                ActivationItemGuid = "export-item-first",
+                ActivationGuid = "export-activation",
+                ProductCode = "P1",
+                ItemNumber = "I1",
+                ProductName = "快照商品一",
+                MinimumOrderQuantity = 4,
+                SortOrder = 1,
+                ImportPrice = 1.25m,
+                RetailPrice = 2.50m,
+            },
+            new()
+            {
+                ActivationItemGuid = "export-item-second",
+                ActivationGuid = "export-activation",
+                ProductCode = "P2",
+                ItemNumber = "I2",
+                ProductName = "快照商品二",
+                MinimumOrderQuantity = 6,
+                SortOrder = 10,
+                ImportPrice = 4.75m,
+                RetailPrice = 9.25m,
+            },
         }).ExecuteCommandAsync();
         await _db.Insertable(new PreorderActivationStore[]
         {
-            new() { ActivationStoreGuid = "export-store-1", ActivationGuid = "export-activation", StoreGuid = "s1", StoreCode = "S1", StoreName = "一店" },
-            new() { ActivationStoreGuid = "export-store-2", ActivationGuid = "export-activation", StoreGuid = "s2", StoreCode = "S2", StoreName = "二店" },
-            new() { ActivationStoreGuid = "export-store-3", ActivationGuid = "export-activation", StoreGuid = "s3", StoreCode = "S3", StoreName = "三店" },
+            new() { ActivationStoreGuid = "export-store-s2", ActivationGuid = "export-activation", StoreGuid = "s2", StoreCode = "S2", StoreName = "同名" },
+            new() { ActivationStoreGuid = "export-store-s10", ActivationGuid = "export-activation", StoreGuid = "s10", StoreCode = "S10", StoreName = "同名" },
+            new() { ActivationStoreGuid = "export-store-s20", ActivationGuid = "export-activation", StoreGuid = "s20", StoreCode = "S20", StoreName = "" },
+            new() { ActivationStoreGuid = "export-store-draft", ActivationGuid = "export-activation", StoreGuid = "sd", StoreCode = "S3", StoreName = "草稿店" },
+            new() { ActivationStoreGuid = "export-store-no-demand", ActivationGuid = "export-activation", StoreGuid = "sn", StoreCode = "S4", StoreName = "无需求店" },
+            new() { ActivationStoreGuid = "export-store-cancelled", ActivationGuid = "export-activation", StoreGuid = "sc", StoreCode = "S5", StoreName = "取消店" },
         }).ExecuteCommandAsync();
         var orders = new[]
         {
-            new PreorderWarehouseOrder { OrderGuid = "export-submitted", ActivationGuid = "export-activation", StoreGuid = "s1", StoreCode = "S1", StoreName = "一店", OrderNo = "PRE-EXPORT-S1", Status = PreorderWarehouseOrderStatuses.Submitted },
-            new PreorderWarehouseOrder { OrderGuid = "export-cancelled", ActivationGuid = "export-activation", StoreGuid = "s2", StoreCode = "S2", StoreName = "二店", OrderNo = "PRE-EXPORT-S2", Status = PreorderWarehouseOrderStatuses.Cancelled },
-            new PreorderWarehouseOrder { OrderGuid = "export-draft", ActivationGuid = "export-activation", StoreGuid = "s3", StoreCode = "S3", StoreName = "三店", OrderNo = "PRE-EXPORT-S3", Status = PreorderWarehouseOrderStatuses.Draft },
+            new PreorderWarehouseOrder { OrderGuid = "export-processing", ActivationGuid = "export-activation", StoreGuid = "s2", StoreCode = "S2", StoreName = "同名", OrderNo = "PRE-EXPORT-S2", Status = PreorderWarehouseOrderStatuses.Processing, SubmittedAtUtc = Now },
+            new PreorderWarehouseOrder { OrderGuid = "export-submitted", ActivationGuid = "export-activation", StoreGuid = "s10", StoreCode = "S10", StoreName = "同名", OrderNo = "PRE-EXPORT-S10", Status = PreorderWarehouseOrderStatuses.Submitted, SubmittedAtUtc = Now },
+            new PreorderWarehouseOrder { OrderGuid = "export-completed", ActivationGuid = "export-activation", StoreGuid = "s20", StoreCode = "S20", StoreName = "", OrderNo = "PRE-EXPORT-S20", Status = PreorderWarehouseOrderStatuses.Completed, SubmittedAtUtc = Now },
+            new PreorderWarehouseOrder { OrderGuid = "export-draft", ActivationGuid = "export-activation", StoreGuid = "sd", StoreCode = "S3", StoreName = "草稿店", OrderNo = "PRE-EXPORT-S3", Status = PreorderWarehouseOrderStatuses.Draft, SubmittedAtUtc = Now },
+            new PreorderWarehouseOrder { OrderGuid = "export-no-demand", ActivationGuid = "export-activation", StoreGuid = "sn", StoreCode = "S4", StoreName = "无需求店", OrderNo = "PRE-EXPORT-S4", Status = PreorderWarehouseOrderStatuses.NoDemand, SubmittedAtUtc = Now },
+            new PreorderWarehouseOrder { OrderGuid = "export-cancelled", ActivationGuid = "export-activation", StoreGuid = "sc", StoreCode = "S5", StoreName = "取消店", OrderNo = "PRE-EXPORT-S5", Status = PreorderWarehouseOrderStatuses.Cancelled, SubmittedAtUtc = Now },
         };
         await _db.Insertable(orders).ExecuteCommandAsync();
-        await _db.Insertable(orders.Select((order, index) => new PreorderWarehouseOrderItem
+
+        PreorderWarehouseOrderItem Detail(
+            string orderGuid,
+            string activationItemGuid,
+            int packCount,
+            int orderedQuantity
+        ) => new()
         {
-            OrderItemGuid = $"export-detail-{index}",
-            OrderGuid = order.OrderGuid,
-            ActivationItemGuid = "export-item",
-            ProductCode = "P1",
-            ItemNumber = "I1",
-            ProductName = "商品",
-            PackCount = index + 1,
-            MinimumOrderQuantity = 2,
-            OrderedQuantity = (index + 1) * 2,
-        }).ToList()).ExecuteCommandAsync();
+            OrderItemGuid = $"{orderGuid}-{activationItemGuid}",
+            OrderGuid = orderGuid,
+            ActivationItemGuid = activationItemGuid,
+            ProductCode = activationItemGuid == "export-item-first" ? "P1" : "P2",
+            ItemNumber = activationItemGuid == "export-item-first" ? "I1" : "I2",
+            // 故意与激活快照不同，防止导出回读可变订单行价格或名称。
+            ProductName = "订单行旧名称",
+            MinimumOrderQuantity = 99,
+            PackCount = packCount,
+            OrderedQuantity = orderedQuantity,
+            ImportPrice = 99m,
+            RetailPrice = 199m,
+            ImportAmount = 999m,
+            RetailAmount = 1999m,
+        };
+        await _db.Insertable(new[]
+        {
+            Detail("export-processing", "export-item-first", 9, 0),
+            Detail("export-processing", "export-item-second", 1, 6),
+            // 有效明细 GUID 与激活快照仅大小写不同，矩阵仍应按同一商品匹配数量。
+            Detail("export-submitted", "EXPORT-ITEM-FIRST", 1, 4),
+            Detail("export-submitted", "export-item-second", 1, 6),
+            Detail("export-completed", "export-item-first", 2, 8),
+            Detail("export-completed", "export-item-second", 1, 6),
+            Detail("export-draft", "export-item-first", 1, 4),
+            Detail("export-draft", "export-item-second", 1, 6),
+            Detail("export-no-demand", "export-item-first", 1, 4),
+            Detail("export-no-demand", "export-item-second", 1, 6),
+            Detail("export-cancelled", "export-item-first", 1, 4),
+            Detail("export-cancelled", "export-item-second", 1, 6),
+        }).ExecuteCommandAsync();
 
         var file = await CreateService("admin-user", manageOrders: true).ExportAsync("export-activation");
         using var stream = new MemoryStream(file.Content);
@@ -2371,10 +2422,187 @@ public sealed class PreorderPersistenceTests : IDisposable
         var ordersSheet = workbook.Worksheet("分店订单");
         var sheet = workbook.Worksheet("分店商品明细");
 
+        Assert.Equal(new[] { "商品汇总", "分店订单", "分店商品明细", "未提交分店" },
+            workbook.Worksheets.Select(item => item.Name));
         Assert.Equal("总数量", productSummary.Cell(1, 6).GetString());
-        Assert.Equal("总数量", ordersSheet.Cell(1, 8).GetString());
-        Assert.Equal("PRE-EXPORT-S1", sheet.Cell(2, 1).GetString());
-        Assert.True(sheet.Cell(3, 1).IsEmpty());
+        Assert.Equal(new[] { "订单号", "分店", "状态", "提交人", "提交时间", "SKU数", "总份数", "总数量", "进口金额", "零售金额" },
+            ordersSheet.Row(1).Cells(1, 10).Select(item => item.GetString()));
+        Assert.Equal(orders.Select(item => item.OrderNo).OrderBy(item => item),
+            ordersSheet.Column(1).CellsUsed().Skip(1).Select(item => item.GetString()).OrderBy(item => item));
+
+        Assert.Equal(new[] { "货号", "名称", "MOQ", "进口价", "零售价", "同名 (S2)", "同名 (S10)", "S20" },
+            sheet.Row(1).Cells(1, 8).Select(item => item.GetString()));
+        Assert.Equal(1, sheet.SheetView.SplitRow);
+        Assert.Equal(5, sheet.SheetView.SplitColumn);
+        var lastColumn = sheet.LastColumnUsed();
+        var lastRow = sheet.LastRowUsed();
+        Assert.NotNull(lastColumn);
+        Assert.NotNull(lastRow);
+        Assert.Equal(8, lastColumn.ColumnNumber());
+        Assert.Equal(3, lastRow.RowNumber());
+        Assert.Equal(new[] { "I1", "快照商品一", "4" },
+            sheet.Row(2).Cells(1, 3).Select(item => item.GetString()));
+        Assert.Equal(new[] { "I2", "快照商品二", "6" },
+            sheet.Row(3).Cells(1, 3).Select(item => item.GetString()));
+        Assert.Equal(1.25m, sheet.Cell(2, 4).GetValue<decimal>());
+        Assert.Equal(2.50m, sheet.Cell(2, 5).GetValue<decimal>());
+        Assert.Equal(4.75m, sheet.Cell(3, 4).GetValue<decimal>());
+        Assert.Equal(9.25m, sheet.Cell(3, 5).GetValue<decimal>());
+
+        // S2、S10、S20 依自然代码顺序；每格是 OrderedQuantity 数值，0 也必须落格。
+        Assert.Equal(0, sheet.Cell(2, 6).GetValue<int>());
+        Assert.Equal(4, sheet.Cell(2, 7).GetValue<int>());
+        Assert.Equal(8, sheet.Cell(2, 8).GetValue<int>());
+        Assert.Equal(6, sheet.Cell(3, 6).GetValue<int>());
+        Assert.Equal(6, sheet.Cell(3, 7).GetValue<int>());
+        Assert.Equal(6, sheet.Cell(3, 8).GetValue<int>());
+        Assert.All(sheet.Range(2, 6, 3, 8).Cells(), item => Assert.Equal(XLDataType.Number, item.DataType));
+    }
+
+    [Fact]
+    public async Task 导出分店商品矩阵没有正数有效订货时仅保留固定表头()
+    {
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "export-zero-activation",
+            TemplateGuid = "export-zero-template",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-EXPORT-ZERO",
+            TemplateNameSnapshot = "零数量导出",
+            SourceTemplateRevision = 1,
+            StartAtUtc = Now.AddHours(-1),
+            EndAtUtc = Now.AddHours(1),
+            Status = PreorderActivationStatuses.Active,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationItem
+        {
+            ActivationItemGuid = "export-zero-item",
+            ActivationGuid = "export-zero-activation",
+            ProductCode = "P1",
+            ItemNumber = "I1",
+            ProductName = "零数量商品",
+            MinimumOrderQuantity = 2,
+            ImportPrice = 1m,
+            RetailPrice = 2m,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderWarehouseOrder
+        {
+            OrderGuid = "export-zero-submitted",
+            ActivationGuid = "export-zero-activation",
+            StoreGuid = "s1",
+            StoreCode = "S1",
+            StoreName = "零数量店",
+            OrderNo = "PRE-EXPORT-ZERO-S1",
+            Status = PreorderWarehouseOrderStatuses.Submitted,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderWarehouseOrderItem
+        {
+            OrderItemGuid = "export-zero-detail",
+            OrderGuid = "export-zero-submitted",
+            ActivationItemGuid = "export-zero-item",
+            ProductCode = "P1",
+            ItemNumber = "I1",
+            ProductName = "零数量商品",
+            MinimumOrderQuantity = 2,
+            OrderedQuantity = 0,
+        }).ExecuteCommandAsync();
+
+        var file = await CreateService("admin-user", manageOrders: true).ExportAsync("export-zero-activation");
+        using var stream = new MemoryStream(file.Content);
+        using var workbook = new XLWorkbook(stream);
+        var sheet = workbook.Worksheet("分店商品明细");
+
+        Assert.Equal(new[] { "货号", "名称", "MOQ", "进口价", "零售价" },
+            sheet.Row(1).Cells(1, 5).Select(item => item.GetString()));
+        var lastColumn = sheet.LastColumnUsed();
+        var lastRow = sheet.LastRowUsed();
+        Assert.NotNull(lastColumn);
+        Assert.NotNull(lastRow);
+        Assert.Equal(5, lastColumn.ColumnNumber());
+        Assert.Equal(1, lastRow.RowNumber());
+    }
+
+    [Fact]
+    public async Task 导出分店商品矩阵拒绝仅大小写不同的重复商品分店键()
+    {
+        await _db.Insertable(new PreorderActivation
+        {
+            ActivationGuid = "export-duplicate-key-activation",
+            TemplateGuid = "export-duplicate-key-template",
+            PeriodNumber = 1,
+            ActivationCode = "PRE-EXPORT-DUPLICATE-KEY",
+            TemplateNameSnapshot = "重复矩阵键",
+            SourceTemplateRevision = 1,
+            StartAtUtc = Now.AddHours(-1),
+            EndAtUtc = Now.AddHours(1),
+            Status = PreorderActivationStatuses.Active,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new PreorderActivationItem
+        {
+            ActivationItemGuid = "export-duplicate-key-item",
+            ActivationGuid = "export-duplicate-key-activation",
+            ProductCode = "P1",
+            ItemNumber = "I1",
+            ProductName = "重复键商品",
+            MinimumOrderQuantity = 2,
+            ImportPrice = 1m,
+            RetailPrice = 2m,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new PreorderWarehouseOrder
+            {
+                OrderGuid = "export-duplicate-key-order-lower",
+                ActivationGuid = "export-duplicate-key-activation",
+                StoreGuid = "export-duplicate-key-store",
+                StoreCode = "S1",
+                StoreName = "重复键店",
+                OrderNo = "PRE-EXPORT-DUPLICATE-KEY-S1-A",
+                Status = PreorderWarehouseOrderStatuses.Submitted,
+            },
+            new PreorderWarehouseOrder
+            {
+                OrderGuid = "export-duplicate-key-order-upper",
+                ActivationGuid = "export-duplicate-key-activation",
+                StoreGuid = "EXPORT-DUPLICATE-KEY-STORE",
+                StoreCode = "S1",
+                StoreName = "重复键店",
+                OrderNo = "PRE-EXPORT-DUPLICATE-KEY-S1-B",
+                Status = PreorderWarehouseOrderStatuses.Completed,
+            },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new PreorderWarehouseOrderItem
+            {
+                OrderItemGuid = "export-duplicate-key-detail-lower",
+                OrderGuid = "export-duplicate-key-order-lower",
+                ActivationItemGuid = "export-duplicate-key-item",
+                ProductCode = "P1",
+                ItemNumber = "I1",
+                ProductName = "重复键商品",
+                MinimumOrderQuantity = 2,
+                OrderedQuantity = 2,
+            },
+            new PreorderWarehouseOrderItem
+            {
+                OrderItemGuid = "export-duplicate-key-detail-upper",
+                OrderGuid = "export-duplicate-key-order-upper",
+                ActivationItemGuid = "EXPORT-DUPLICATE-KEY-ITEM",
+                ProductCode = "P1",
+                ItemNumber = "I1",
+                ProductName = "重复键商品",
+                MinimumOrderQuantity = 2,
+                OrderedQuantity = 2,
+            },
+        }).ExecuteCommandAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateService("admin-user", manageOrders: true)
+                .ExportAsync("export-duplicate-key-activation")
+        );
+
+        Assert.Equal("导出商品矩阵存在重复的商品与分店明细", error.Message);
     }
 
     [Fact]
@@ -3385,7 +3613,15 @@ public sealed class PreorderPersistenceTests : IDisposable
         Assert.Equal(0, orders.Cell(2, 6).GetValue<int>());
         Assert.Equal(0, orders.Cell(2, 7).GetValue<int>());
         Assert.Equal(0, orders.Cell(2, 8).GetValue<int>());
-        Assert.True(workbook.Worksheet("分店商品明细").Cell(2, 1).IsEmpty());
+        var matrix = workbook.Worksheet("分店商品明细");
+        Assert.Equal(new[] { "货号", "名称", "MOQ", "进口价", "零售价" },
+            matrix.Row(1).Cells(1, 5).Select(item => item.GetString()));
+        var lastColumn = matrix.LastColumnUsed();
+        var lastRow = matrix.LastRowUsed();
+        Assert.NotNull(lastColumn);
+        Assert.NotNull(lastRow);
+        Assert.Equal(5, lastColumn.ColumnNumber());
+        Assert.Equal(1, lastRow.RowNumber());
     }
 
     [Fact]

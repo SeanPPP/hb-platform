@@ -1080,8 +1080,7 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
         PreorderActivation activation;
         PreorderActivationStatisticsDto statistics;
         List<PreorderOrderSummaryDto> orders;
-        List<PreorderOrderSummaryDto> effectiveOrders;
-        List<PreorderWarehouseOrderItem> items;
+        List<PreorderActivationItem> activationItems;
         await _db.Ado.BeginTranAsync(IsolationLevel.Serializable);
         try
         {
@@ -1089,17 +1088,8 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
             activation = await RequireActivationAsync(activationGuid);
             statistics = await BuildStatisticsSnapshotAsync(activationGuid);
             orders = statistics.Orders.ToList();
-            // 订单工作表保留全部状态供审计；商品明细只导出计入有效汇总的订单。
-            effectiveOrders = orders.Where(item =>
-                activation.Status != PreorderActivationStatuses.Cancelled
-                && PreorderRules.IsEffectiveQuantityStatus(item.Status)
-            ).ToList();
-            var orderGuids = effectiveOrders.Select(item => item.OrderGuid).ToList();
-            items = orderGuids.Count == 0
-                ? new List<PreorderWarehouseOrderItem>()
-                : await _db.Queryable<PreorderWarehouseOrderItem>()
-                    .Where(item => !item.IsDeleted && orderGuids.Contains(item.OrderGuid))
-                    .ToListAsync();
+            // 商品行和价格必须取激活时快照，不能使用后来被维护过的订单明细或商品主数据。
+            activationItems = await LoadActivationItemsAsync(activationGuid);
             await _db.Ado.CommitTranAsync();
         }
         catch
@@ -1123,7 +1113,7 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
             }
         }
         WriteOrdersSheet(workbook, orders);
-        WriteOrderItemsSheet(workbook, effectiveOrders, items);
+        WriteOrderItemsSheet(workbook, activationItems, statistics.StoreProductQuantities);
         WritePendingStoresSheet(workbook, statistics.PendingStores);
         foreach (var sheet in workbook.Worksheets)
         {
@@ -2654,31 +2644,121 @@ public sealed class PreorderReactService : IPreorderReactService, IPreorderGateS
 
     private static void WriteOrderItemsSheet(
         XLWorkbook workbook,
-        IReadOnlyList<PreorderOrderSummaryDto> orders,
-        IReadOnlyList<PreorderWarehouseOrderItem> items
+        IReadOnlyList<PreorderActivationItem> activationItems,
+        IReadOnlyList<PreorderStoreProductQuantityDto> storeProductQuantities
     )
     {
         var sheet = workbook.Worksheets.Add("分店商品明细");
-        var headers = new[] { "订单号", "分店", "货号", "名称", "MOQ", "份数", "件数", "进口价", "零售价", "进口金额", "零售金额" };
+        var headers = new[] { "货号", "名称", "MOQ", "进口价", "零售价" };
         for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
-        var orderByGuid = orders.ToDictionary(item => item.OrderGuid, StringComparer.OrdinalIgnoreCase);
-        var rowIndex = 2;
-        foreach (var item in items)
+
+        // 关键逻辑：同一商品和分店只能对应一份有效订货明细，重复时必须中断导出而非静默相加或覆盖。
+        var quantityByItemAndStore = new Dictionary<string, Dictionary<string, PreorderStoreProductQuantityDto>>(
+            StringComparer.OrdinalIgnoreCase
+        );
+        foreach (var quantity in storeProductQuantities)
         {
-            var order = orderByGuid[item.OrderGuid];
-            sheet.Cell(rowIndex, 1).Value = order.OrderNo;
-            sheet.Cell(rowIndex, 2).Value = order.StoreCode;
-            sheet.Cell(rowIndex, 3).Value = item.ItemNumber;
-            sheet.Cell(rowIndex, 4).Value = item.ProductName;
-            sheet.Cell(rowIndex, 5).Value = item.MinimumOrderQuantity;
-            sheet.Cell(rowIndex, 6).Value = item.PackCount;
-            sheet.Cell(rowIndex, 7).Value = item.OrderedQuantity;
-            sheet.Cell(rowIndex, 8).Value = item.ImportPrice;
-            sheet.Cell(rowIndex, 9).Value = item.RetailPrice;
-            sheet.Cell(rowIndex, 10).Value = item.ImportAmount;
-            sheet.Cell(rowIndex, 11).Value = item.RetailAmount;
-            rowIndex++;
+            if (!quantityByItemAndStore.TryGetValue(quantity.ActivationItemGuid, out var quantitiesByStore))
+            {
+                quantitiesByStore = new Dictionary<string, PreorderStoreProductQuantityDto>(StringComparer.OrdinalIgnoreCase);
+                quantityByItemAndStore[quantity.ActivationItemGuid] = quantitiesByStore;
+            }
+            if (!quantitiesByStore.TryAdd(quantity.StoreGuid, quantity))
+            {
+                throw new InvalidOperationException("导出商品矩阵存在重复的商品与分店明细");
+            }
         }
+
+        // 统计快照已过滤有效订单状态；此处只根据正数订货量决定是否创建分店列，避免再次改变统计口径。
+        var stores = storeProductQuantities
+            .Where(item => item.OrderedQuantity > 0)
+            .GroupBy(item => item.StoreGuid, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(item => item.StoreCode, Comparer<string>.Create(CompareStoreCodeNaturally))
+            .ThenBy(item => item.StoreName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.StoreGuid, StringComparer.Ordinal)
+            .ToList();
+        if (stores.Count == 0)
+        {
+            sheet.SheetView.FreezeRows(1);
+            sheet.SheetView.FreezeColumns(5);
+            return;
+        }
+
+        var storeHeaders = stores
+            .Select(item => string.IsNullOrWhiteSpace(item.StoreName) ? item.StoreCode : item.StoreName)
+            .ToList();
+        var duplicateHeaders = storeHeaders
+            .GroupBy(item => item, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < stores.Count; index++)
+        {
+            var header = storeHeaders[index];
+            sheet.Cell(1, headers.Length + index + 1).Value = duplicateHeaders.Contains(header)
+                ? $"{header} ({stores[index].StoreCode})"
+                : header;
+        }
+
+        for (var index = 0; index < activationItems.Count; index++)
+        {
+            var item = activationItems[index];
+            var rowIndex = index + 2;
+            sheet.Cell(rowIndex, 1).Value = item.ItemNumber;
+            sheet.Cell(rowIndex, 2).Value = item.ProductName;
+            sheet.Cell(rowIndex, 3).Value = item.MinimumOrderQuantity;
+            sheet.Cell(rowIndex, 4).Value = item.ImportPrice;
+            sheet.Cell(rowIndex, 5).Value = item.RetailPrice;
+            for (var storeIndex = 0; storeIndex < stores.Count; storeIndex++)
+            {
+                sheet.Cell(rowIndex, headers.Length + storeIndex + 1).Value = quantityByItemAndStore.TryGetValue(item.ActivationItemGuid, out var quantitiesByStore)
+                    && quantitiesByStore.TryGetValue(stores[storeIndex].StoreGuid, out var quantity)
+                    ? quantity.OrderedQuantity
+                    : 0;
+            }
+        }
+        sheet.SheetView.FreezeRows(1);
+        sheet.SheetView.FreezeColumns(5);
+    }
+
+    private static int CompareStoreCodeNaturally(string? left, string? right)
+    {
+        left ??= string.Empty;
+        right ??= string.Empty;
+        var leftIndex = 0;
+        var rightIndex = 0;
+        while (leftIndex < left.Length && rightIndex < right.Length)
+        {
+            var leftIsDigit = char.IsDigit(left[leftIndex]);
+            var rightIsDigit = char.IsDigit(right[rightIndex]);
+            if (leftIsDigit && rightIsDigit)
+            {
+                var leftStart = leftIndex;
+                var rightStart = rightIndex;
+                while (leftIndex < left.Length && char.IsDigit(left[leftIndex])) leftIndex++;
+                while (rightIndex < right.Length && char.IsDigit(right[rightIndex])) rightIndex++;
+                var leftDigits = left[leftStart..leftIndex].TrimStart('0');
+                var rightDigits = right[rightStart..rightIndex].TrimStart('0');
+                var lengthComparison = leftDigits.Length.CompareTo(rightDigits.Length);
+                if (lengthComparison != 0) return lengthComparison;
+                var numberComparison = string.Compare(leftDigits, rightDigits, StringComparison.Ordinal);
+                if (numberComparison != 0) return numberComparison;
+                continue;
+            }
+
+            var leftStartText = leftIndex;
+            var rightStartText = rightIndex;
+            while (leftIndex < left.Length && char.IsDigit(left[leftIndex]) == leftIsDigit) leftIndex++;
+            while (rightIndex < right.Length && char.IsDigit(right[rightIndex]) == rightIsDigit) rightIndex++;
+            var textComparison = string.Compare(
+                left[leftStartText..leftIndex],
+                right[rightStartText..rightIndex],
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (textComparison != 0) return textComparison;
+        }
+        return leftIndex < left.Length ? 1 : rightIndex < right.Length ? -1 : 0;
     }
 
     private static void WritePendingStoresSheet(XLWorkbook workbook, IReadOnlyList<PreorderStoreDto> stores)
