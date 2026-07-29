@@ -243,7 +243,7 @@ export function RevenueReportScreen({
             period: getLastMonthRevenuePeriod,
           };
 
-  const rows = summaryQuery.data ?? [];
+  const rows = summaryQuery.isLoading || summaryQuery.isError ? [] : (summaryQuery.data ?? []);
   const detailRows = (detailQuery.data ?? []) as DetailRow[];
   const growthNewLabel = t("reports.metrics.newGrowth");
   const getWeekdayLabel = (weekday: number) => t(`reports.weekdaysShort.${weekday}`);
@@ -259,9 +259,13 @@ export function RevenueReportScreen({
     );
   };
 
-  const renderSummaryRow = ({ item }: { item: BranchRevenueRow }) => (
+  const renderSummaryRow = (item: BranchRevenueRow, isLast: boolean) => (
     <Pressable
-      style={styles.tableRow}
+      style={[
+        styles.tableRow,
+        styles.summaryTableRow,
+        isLast ? styles.lastSummaryTableRow : null,
+      ]}
       accessibilityRole="button"
       accessibilityLabel={t(
         mode === "day"
@@ -289,6 +293,26 @@ export function RevenueReportScreen({
         <TableText numeric style={styles.muted}>{formatMoney(item.compareAverageTransaction)}</TableText>
       </View>
     </Pressable>
+  );
+
+  const renderSummaryTableHeader = () => (
+    <View style={[styles.tableRow, styles.summaryTableRow, styles.tableHeaderRow, styles.summaryTableHeaderRow]}>
+      <View style={styles.branchColumn}>
+        <TableText style={styles.headerText}>{t("productReport.filters.store")}</TableText>
+      </View>
+      <View style={styles.amountColumn}>
+        <TableText numeric style={styles.headerText}>{t("reports.metrics.revenue")}</TableText>
+      </View>
+      <View style={styles.growthColumn}>
+        <TableText numeric style={styles.headerText}>{t("reports.metrics.growthRate")}</TableText>
+      </View>
+      <View style={styles.countColumn}>
+        <TableText numeric style={styles.headerText}>{t("reports.metrics.transactions")}</TableText>
+      </View>
+      <View style={styles.amountColumn}>
+        <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
+      </View>
+    </View>
   );
 
   const renderDetailRow = (item: DetailRow, index: number) => (
@@ -321,96 +345,89 @@ export function RevenueReportScreen({
 
   return (
     <View style={styles.container}>
-      <View style={styles.content}>
-        {!embedded ? (
-          <View style={styles.header}>
-            <Text variant="headlineSmall" style={styles.title}>
-              {t("reports.title")}
-            </Text>
+      {!embedded ? (
+        <View style={styles.standaloneHeader}>
+          <Text variant="headlineSmall" style={styles.title}>
+            {t("reports.title")}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* 过滤区是列表头，列标题紧随其后吸顶；整页只保留一个纵向滚动容器。 */}
+      <FlatList
+        data={[{ type: "table-header" }, ...rows]}
+        keyExtractor={(item) => ("type" in item ? item.type : item.id)}
+        renderItem={({ item, index }) =>
+          "type" in item
+            ? renderSummaryTableHeader()
+            : renderSummaryRow(item, index === rows.length)
+        }
+        style={styles.tableList}
+        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
+        contentInsetAdjustmentBehavior="automatic"
+        ListHeaderComponent={
+          <View style={styles.filters}>
             <Text variant="bodySmall" style={styles.muted}>
               {getPeriodLabel(period)}
             </Text>
-          </View>
-        ) : (
-          <Text variant="bodySmall" style={styles.muted}>
-            {getPeriodLabel(period)}
-          </Text>
-        )}
 
-        <SegmentedButtons
-          value={mode}
-          onValueChange={(value) => setPeriodMode(value as RevenuePeriodMode)}
-          buttons={[
-            { value: "day", label: t("reports.periods.day") },
-            { value: "week", label: t("reports.periods.week") },
-            { value: "month", label: t("reports.periods.month") },
-          ]}
-        />
-
-        <MonthDatePickerField
-          value={selectedDate}
-          minDate={dateBounds.minDate}
-          maxDate={dateBounds.maxDate}
-          label={t("reports.periods.date")}
-          onChange={(date) => setActivePeriod(getRevenuePeriodForDate(mode, date), date)}
-        />
-
-        <View style={styles.toolbar}>
-          <Button compact mode="outlined" icon="chevron-left" disabled={!isRevenuePeriodAvailable(previousPeriod, dateBounds)} onPress={() => setActivePeriod(previousPeriod)}>
-            {t("reports.actions.previous")}
-          </Button>
-          <Button compact mode="outlined" icon="chevron-right" disabled={!isRevenuePeriodAvailable(nextPeriod, dateBounds)} onPress={() => setActivePeriod(nextPeriod)}>
-            {t("reports.actions.next")}
-          </Button>
-          <Button compact onPress={() => setActivePeriod(getDefaultRevenuePeriod(mode), dateBounds.maxDate)}>
-            {currentShortcut}
-          </Button>
-          <Button compact onPress={() => setActivePeriod(previousShortcut.period())}>
-            {previousShortcut.label}
-          </Button>
-        </View>
-
-        <View style={[styles.table, styles.mainTable]}>
-          <View style={[styles.tableRow, styles.tableHeaderRow]}>
-            <View style={styles.branchColumn}>
-              <TableText style={styles.headerText}>{t("productReport.filters.store")}</TableText>
-            </View>
-            <View style={styles.amountColumn}>
-              <TableText numeric style={styles.headerText}>{t("reports.metrics.revenue")}</TableText>
-            </View>
-            <View style={styles.growthColumn}>
-              <TableText numeric style={styles.headerText}>{t("reports.metrics.growthRate")}</TableText>
-            </View>
-            <View style={styles.countColumn}>
-              <TableText numeric style={styles.headerText}>{t("reports.metrics.transactions")}</TableText>
-            </View>
-            <View style={styles.amountColumn}>
-              <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
-            </View>
-          </View>
-          {summaryQuery.isLoading ? (
-            <StateBox label={t("loading")} loading />
-          ) : summaryQuery.isError ? (
-            <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={() => summaryQuery.refetch()} />
-          ) : (
-            <FlatList
-              data={rows}
-              keyExtractor={(item) => item.id}
-              renderItem={renderSummaryRow}
-              bounces={false}
-              style={styles.tableList}
-              contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
-              refreshControl={
-                <RefreshControl
-                  refreshing={summaryQuery.isRefetching}
-                  onRefresh={refresh}
-                />
-              }
-              ListEmptyComponent={<StateBox label={t("reports.states.empty")} />}
+            <SegmentedButtons
+              value={mode}
+              onValueChange={(value) => setPeriodMode(value as RevenuePeriodMode)}
+              buttons={[
+                { value: "day", label: t("reports.periods.day") },
+                { value: "week", label: t("reports.periods.week") },
+                { value: "month", label: t("reports.periods.month") },
+              ]}
             />
-          )}
-        </View>
-      </View>
+
+            <MonthDatePickerField
+              value={selectedDate}
+              minDate={dateBounds.minDate}
+              maxDate={dateBounds.maxDate}
+              label={t("reports.periods.date")}
+              onChange={(date) => setActivePeriod(getRevenuePeriodForDate(mode, date), date)}
+            />
+
+            <View style={styles.toolbar}>
+              <Button compact mode="outlined" icon="chevron-left" disabled={!isRevenuePeriodAvailable(previousPeriod, dateBounds)} onPress={() => setActivePeriod(previousPeriod)}>
+                {t("reports.actions.previous")}
+              </Button>
+              <Button compact mode="outlined" icon="chevron-right" disabled={!isRevenuePeriodAvailable(nextPeriod, dateBounds)} onPress={() => setActivePeriod(nextPeriod)}>
+                {t("reports.actions.next")}
+              </Button>
+              <Button compact onPress={() => setActivePeriod(getDefaultRevenuePeriod(mode), dateBounds.maxDate)}>
+                {currentShortcut}
+              </Button>
+              <Button compact onPress={() => setActivePeriod(previousShortcut.period())}>
+                {previousShortcut.label}
+              </Button>
+            </View>
+          </View>
+        }
+        stickyHeaderIndices={[1]}
+        refreshControl={
+          <RefreshControl
+            refreshing={summaryQuery.isRefetching}
+            onRefresh={refresh}
+          />
+        }
+        ListFooterComponent={
+          summaryQuery.isLoading ? (
+            <View style={styles.summaryTableState}>
+              <StateBox label={t("loading")} loading />
+            </View>
+          ) : summaryQuery.isError ? (
+            <View style={styles.summaryTableState}>
+              <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={() => summaryQuery.refetch()} />
+            </View>
+          ) : rows.length === 0 ? (
+            <View style={styles.summaryTableState}>
+              <StateBox label={t("reports.states.empty")} />
+            </View>
+          ) : null
+        }
+      />
 
       <Portal>
         <Modal
@@ -502,14 +519,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F7F8FA",
   },
-  content: {
-    flex: 1,
+  filters: {
     gap: 12,
-    padding: 16,
     paddingTop: 8,
+    paddingBottom: 12,
   },
-  header: {
-    gap: 4,
+  standaloneHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
   title: {
     color: "#111827",
@@ -530,10 +547,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#FFFFFF",
   },
-  mainTable: {
-    flex: 1,
-    minHeight: 0,
-  },
   tableRow: {
     minHeight: 48,
     flexDirection: "row",
@@ -547,6 +560,34 @@ const styles = StyleSheet.create({
   tableHeaderRow: {
     minHeight: 38,
     backgroundColor: "#F3F4F6",
+  },
+  summaryTableRow: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+  },
+  summaryTableHeaderRow: {
+    overflow: "hidden",
+    borderTopWidth: 1,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    backgroundColor: "#F3F4F6",
+  },
+  lastSummaryTableRow: {
+    overflow: "hidden",
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
+  },
+  summaryTableState: {
+    overflow: "hidden",
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "#E5E7EB",
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
+    backgroundColor: "#FFFFFF",
   },
   lastTableRow: {
     borderBottomWidth: 0,
@@ -614,7 +655,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   listContent: {
-    paddingBottom: 8,
+    paddingHorizontal: 16,
   },
   tableList: {
     flex: 1,
