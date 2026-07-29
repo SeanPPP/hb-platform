@@ -112,12 +112,14 @@ export function CashierLoginScreen({
   controller,
   language = "zh",
   onManualInputFocusChange,
+  onSwitchLanguage,
   onSuccess,
   runtime,
 }: Readonly<{
   controller?: CashierLoginController;
   language?: string;
   onManualInputFocusChange?(focused: boolean): void;
+  onSwitchLanguage?: () => void;
   onSuccess(): void;
   runtime: CashierLoginRuntime;
 }>) {
@@ -247,7 +249,10 @@ export function CashierLoginScreen({
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <PosStatusStrip />
+      <PosStatusStrip
+        language={locale}
+        {...(onSwitchLanguage ? { onSwitchLanguage } : {})}
+      />
       <View style={styles.page}>
         <View style={styles.contextPanel}>
           <View style={styles.brandMark}>

@@ -384,7 +384,12 @@ export function SalesScreen({
             testID="sales-new-sale"
           />
         </View>
-        {showStatusStrip ? <PosStatusStrip /> : null}
+        {showStatusStrip ? (
+          <PosStatusStrip
+            language={locale}
+            {...(onSwitchLanguage ? { onSwitchLanguage } : {})}
+          />
+        ) : null}
       </SafeAreaView>
     );
   }
@@ -404,7 +409,12 @@ export function SalesScreen({
             </Text>
           </View>
         </View>
-        {showStatusStrip ? <PosStatusStrip /> : null}
+        {showStatusStrip ? (
+          <PosStatusStrip
+            language={locale}
+            {...(onSwitchLanguage ? { onSwitchLanguage } : {})}
+          />
+        ) : null}
       </SafeAreaView>
     );
   }
@@ -536,14 +546,6 @@ export function SalesScreen({
       tone: "secondary",
     },
     {
-      accessibilityLabel: t("header.languageSwitchHint"),
-      id: "language",
-      label: t("header.language"),
-      onPress: () => onSwitchLanguage?.(),
-      testID: "sales-switch-language",
-      tone: "quiet",
-    },
-    {
       disabled: !state.capabilities.lock,
       id: "lock",
       label: t("header.lock"),
@@ -577,7 +579,12 @@ export function SalesScreen({
         />
       </View>
 
-      {showStatusStrip ? <PosStatusStrip /> : null}
+      {showStatusStrip ? (
+        <PosStatusStrip
+          language={locale}
+          {...(onSwitchLanguage ? { onSwitchLanguage } : {})}
+        />
+      ) : null}
 
       {runtimeUnavailable ? (
         <View

@@ -603,6 +603,36 @@ body {
   right: 0;
 }
 
+.login-language-switch.ant-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  color: #0958d9;
+  background: #edf3ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+}
+
+.login-language-switch.ant-btn:hover {
+  color: #003eb3;
+  background: #dce9ff;
+  border-color: #91caff;
+}
+
+.login-language-switch.ant-btn:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+.login-language-switch .language-target-glyph {
+  min-width: 1.5em;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
 @keyframes login-aurora {
   0% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }

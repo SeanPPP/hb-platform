@@ -16,6 +16,15 @@ import { SalesScreen } from "./sales-screen";
 import { createAud, type CartLine, type CartSnapshot } from "@/core/contracts";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 
+let mockStatusStripProps: any;
+
+jest.mock("@/ui/shell/status-strip", () => ({
+  PosStatusStrip: (props: unknown) => {
+    mockStatusStripProps = props;
+    return null;
+  },
+}));
+
 const ALL_CAPABILITIES: SalesCapabilities = {
   catalog: true,
   cartEditing: true,
@@ -243,12 +252,13 @@ function presenter(
 }
 
 afterEach(() => {
+  mockStatusStripProps = null;
   usePosShellStore.getState().reset();
   jest.restoreAllMocks();
 });
 
 describe("SalesScreen", () => {
-  it("语言切换操作只使用当前界面语言，并保留 44pt 触控目标", async () => {
+  it("语言切换入口移入状态条并从销售工具栏移除", async () => {
     const onSwitchLanguage = jest.fn();
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
     const screen = await render(
@@ -256,19 +266,15 @@ describe("SalesScreen", () => {
         locale="zh"
         onSwitchLanguage={onSwitchLanguage}
         presenter={salesPresenter}
-        showStatusStrip={false}
       />,
     );
 
-    const languageAction = screen.getByTestId("sales-switch-language");
-    expect(screen.getByText("语言")).toBeTruthy();
-    expect(languageAction.props.accessibilityLabel).toBe(
-      "将界面语言切换为英文",
-    );
-    expect(
-      StyleSheet.flatten(languageAction.props.style).minHeight,
-    ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
-    await fireEvent.press(languageAction);
+    expect(screen.queryByTestId("sales-switch-language")).toBeNull();
+    expect(mockStatusStripProps).toMatchObject({
+      language: "zh",
+      onSwitchLanguage,
+    });
+    mockStatusStripProps.onSwitchLanguage();
     expect(onSwitchLanguage).toHaveBeenCalledTimes(1);
 
     salesPresenter.destroy();
@@ -282,17 +288,13 @@ describe("SalesScreen", () => {
         locale="en"
         onSwitchLanguage={onSwitchLanguage}
         presenter={englishPresenter}
-        showStatusStrip={false}
       />,
     );
-    const englishLanguageAction = englishScreen.getByTestId(
-      "sales-switch-language",
-    );
-    expect(englishScreen.getByText("Language")).toBeTruthy();
-    expect(englishLanguageAction.props.accessibilityLabel).toBe(
-      "Switch interface language to Chinese",
-    );
-    expect(englishScreen.queryByText("中文")).toBeNull();
+    expect(englishScreen.queryByTestId("sales-switch-language")).toBeNull();
+    expect(mockStatusStripProps).toMatchObject({
+      language: "en",
+      onSwitchLanguage,
+    });
     englishPresenter.destroy();
     await englishScreen.unmount();
   });
@@ -972,6 +974,7 @@ describe("SalesScreen", () => {
     const addByLookupCode = jest.fn(async (_lookupCode: string) => undefined);
     const holdCart = jest.fn(async () => undefined);
     const lockTerminal = jest.fn(async () => undefined);
+    const onSwitchLanguage = jest.fn();
     const injectedWorkflow: SalesWorkflowPort = {
       ...workflow(),
       searchProducts,
@@ -985,8 +988,8 @@ describe("SalesScreen", () => {
     const screen = await render(
       <SalesScreen
         locale="en"
+        onSwitchLanguage={onSwitchLanguage}
         presenter={salesPresenter}
-        showStatusStrip={false}
       />,
     );
 
@@ -1004,9 +1007,14 @@ describe("SalesScreen", () => {
 
     await fireEvent.press(screen.getByTestId("sales-hold"));
     expect(holdCart).toHaveBeenCalledTimes(1);
+    mockStatusStripProps = null;
     await fireEvent.press(screen.getByTestId("sales-lock"));
     expect(lockTerminal).toHaveBeenCalledTimes(1);
     expect(await screen.findByTestId("sales-locked")).toBeTruthy();
+    expect(mockStatusStripProps).toMatchObject({
+      language: "en",
+      onSwitchLanguage,
+    });
 
     salesPresenter.destroy();
     await screen.unmount();
@@ -1018,6 +1026,7 @@ describe("SalesScreen", () => {
       resolveCompletion = resolve;
     });
     const completeCash = jest.fn(() => pending);
+    const onSwitchLanguage = jest.fn();
     const cart = new ScreenCartPort(cartSnapshot());
     const salesPresenter = presenter(cart, {
       workflow: workflow(completeCash),
@@ -1025,8 +1034,8 @@ describe("SalesScreen", () => {
     const screen = await render(
       <SalesScreen
         locale="en"
+        onSwitchLanguage={onSwitchLanguage}
         presenter={salesPresenter}
-        showStatusStrip={false}
       />,
     );
 
@@ -1041,6 +1050,7 @@ describe("SalesScreen", () => {
     await fireEvent.press(confirm);
     expect(completeCash).toHaveBeenCalledTimes(1);
 
+    mockStatusStripProps = null;
     await act(async () => {
       resolveCompletion?.({
         completed: true,
@@ -1054,6 +1064,10 @@ describe("SalesScreen", () => {
     });
 
     expect(await screen.findByTestId("sales-success")).toBeTruthy();
+    expect(mockStatusStripProps).toMatchObject({
+      language: "en",
+      onSwitchLanguage,
+    });
     expect(screen.getByText("$0.05")).toBeTruthy();
     expect(cart.clearSignals).toEqual(["order-ui-safe"]);
 

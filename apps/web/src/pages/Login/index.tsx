@@ -99,7 +99,7 @@ export default function LoginPage() {
               <Typography.Text type="secondary" style={{ fontSize: 14 }}>
                 {t('login.subtitle')}
               </Typography.Text>
-              <LanguageSwitch className="login-language-switch" size="small" />
+              <LanguageSwitch className="login-language-switch" size="small" variant="target-icon" />
             </div>
 
             {errorMessage ? <Alert type="error" showIcon message={errorMessage} /> : null}

@@ -8,6 +8,7 @@ import {
   CashierLoginScreen,
   useCashierLoginStore,
 } from "@/features/cashier-login";
+import { toggleAppLanguage } from "@/i18n";
 import { RouteHidScannerCapture } from "@/ui/scanner/scanner-route-bridge";
 
 export default function LoginRoute() {
@@ -58,6 +59,9 @@ export default function LoginRoute() {
     },
     [runtime],
   );
+  const handleSwitchLanguage = useCallback(() => {
+    void toggleAppLanguage();
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -78,6 +82,7 @@ export default function LoginRoute() {
       <CashierLoginScreen
         language={i18n.resolvedLanguage ?? i18n.language}
         onManualInputFocusChange={handleManualInputFocusChange}
+        onSwitchLanguage={handleSwitchLanguage}
         onSuccess={() => router.replace("/sales" as Href)}
         // 登录屏幕只得到受限 runtime facade；不从路由注入门店、设备或授权票据。
         runtime={runtime}

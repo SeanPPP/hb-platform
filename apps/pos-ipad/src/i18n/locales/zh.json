@@ -65,6 +65,8 @@
   "status.printer": "打印机",
   "status.scanner": "扫码",
   "status.display": "客显",
+  "status.languageSwitchLabel": "将界面语言切换为英文",
+  "status.languageSwitchHint": "将所有界面文字显示为英文。",
   "status.peripheral.unavailable": "不可用",
   "status.peripheral.disconnected": "未连接",
   "status.peripheral.scanning": "扫描中",

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { usePosShellStore } from "./pos-shell-store";
 
@@ -12,6 +12,11 @@ type StatusIndicatorProps = {
   value: string;
   tone: IndicatorTone;
 };
+
+type PosStatusStripProps = Readonly<{
+  language?: string;
+  onSwitchLanguage?: () => void;
+}>;
 
 function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
   return (
@@ -30,8 +35,11 @@ function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
   );
 }
 
-export function PosStatusStrip() {
-  const { t } = useTranslation();
+export function PosStatusStrip({
+  language,
+  onSwitchLanguage,
+}: PosStatusStripProps = {}) {
+  const { i18n, t } = useTranslation();
   const {
     connectivity,
     deviceGate,
@@ -40,6 +48,13 @@ export function PosStatusStrip() {
     printer,
     scanner,
   } = usePosShellStore();
+  const currentLanguage =
+    language ?? i18n.resolvedLanguage ?? i18n.language;
+  const targetLanguageGlyph = currentLanguage
+    .toLowerCase()
+    .startsWith("zh")
+    ? "EN"
+    : "中";
 
   return (
     <View style={styles.container}>
@@ -73,6 +88,28 @@ export function PosStatusStrip() {
         tone={display === "ready" ? "good" : display === "failed" ? "danger" : "neutral"}
         value={t(`status.peripheral.${display}`)}
       />
+      {onSwitchLanguage ? (
+        <Pressable
+          accessibilityHint={t("status.languageSwitchHint")}
+          accessibilityLabel={t("status.languageSwitchLabel")}
+          accessibilityRole="button"
+          hitSlop={4}
+          onPress={onSwitchLanguage}
+          style={({ pressed }) => [
+            styles.languageButton,
+            pressed && styles.languageButtonPressed,
+          ]}
+          testID="status-strip-language-switch"
+        >
+          <Text
+            accessible={false}
+            style={styles.languageTargetGlyph}
+            testID="status-strip-language-icon"
+          >
+            {targetLanguageGlyph}
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -108,9 +145,26 @@ const styles = StyleSheet.create({
   },
   indicator: {
     alignItems: "center",
+    flexShrink: 1,
     flexDirection: "row",
     gap: 6,
     minWidth: 0,
+  },
+  languageButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: "auto",
+    minHeight: 44,
+    minWidth: 44,
+  },
+  languageButtonPressed: {
+    backgroundColor: posColors.mutedInk,
+  },
+  languageTargetGlyph: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+    lineHeight: 16,
   },
   label: {
     color: "#B9C5D1",

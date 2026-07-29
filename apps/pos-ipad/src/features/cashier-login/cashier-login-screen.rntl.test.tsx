@@ -12,12 +12,17 @@ import { CashierLoginScreen } from "./cashier-login-screen";
 import { HbposApiError } from "@/core/api/hbpos-api";
 import type { PosCashierSummary } from "@/core/runtime/production-pos-service-composition";
 
+let mockStatusStripProps: any;
+
 jest.mock("@expo/vector-icons", () => ({
   MaterialCommunityIcons: () => null,
 }));
 
 jest.mock("@/ui/shell/status-strip", () => ({
-  PosStatusStrip: () => null,
+  PosStatusStrip: (props: unknown) => {
+    mockStatusStripProps = props;
+    return null;
+  },
 }));
 
 function runtime(
@@ -44,6 +49,28 @@ function cashier(): PosCashierSummary {
 function store(): CashierLoginStorePort {
   return { clearActiveCashier: jest.fn(), setActiveCashier: jest.fn() };
 }
+
+test("登录屏把当前语言和切换回调传给状态条", async () => {
+  const onSwitchLanguage = jest.fn();
+  mockStatusStripProps = null;
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="en-AU"
+      onSuccess={jest.fn()}
+      onSwitchLanguage={onSwitchLanguage}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  expect(mockStatusStripProps).toMatchObject({
+    language: "en",
+    onSwitchLanguage,
+  });
+  mockStatusStripProps.onSwitchLanguage();
+  expect(onSwitchLanguage).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
 
 test("手动输入和 HID 回车都经同一安全 controller 成功后才进入 sales", async () => {
   const onSuccess = jest.fn();

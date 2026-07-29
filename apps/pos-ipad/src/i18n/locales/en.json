@@ -65,6 +65,8 @@
   "status.printer": "Printer",
   "status.scanner": "Scanner",
   "status.display": "Display",
+  "status.languageSwitchLabel": "Switch interface language to Chinese",
+  "status.languageSwitchHint": "Show all interface text in Chinese.",
   "status.peripheral.unavailable": "Unavailable",
   "status.peripheral.disconnected": "Disconnected",
   "status.peripheral.scanning": "Scanning",

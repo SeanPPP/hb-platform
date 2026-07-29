@@ -7,6 +7,7 @@ let mockRuntime: any;
 let mockRouteCaptureProps: any;
 let mockScreenProps: any;
 const mockRouterReplace = jest.fn();
+const mockToggleAppLanguage = jest.fn<() => Promise<"en" | "zh">>();
 
 jest.mock("expo-router", () => ({
   router: { replace: (...args: unknown[]) => mockRouterReplace(...args) },
@@ -16,6 +17,10 @@ jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     i18n: { language: "en", resolvedLanguage: "en" },
   }),
+}));
+
+jest.mock("@/i18n", () => ({
+  toggleAppLanguage: () => mockToggleAppLanguage(),
 }));
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
@@ -57,6 +62,7 @@ test("登录路由只传受限 runtime facade，成功后替换为销售页", as
   };
   mockRouteCaptureProps = null;
   mockScreenProps = null;
+  mockToggleAppLanguage.mockResolvedValue("zh");
   const screen = await render(<LoginRoute />);
 
   expect(screen.getByTestId("cashier-login")).toBeTruthy();
@@ -69,6 +75,12 @@ test("登录路由只传受限 runtime facade，成功后替换为销售页", as
   expect(mockScreenProps).not.toHaveProperty("storeCode");
   expect(mockScreenProps).not.toHaveProperty("deviceCode");
   expect(mockScreenProps).not.toHaveProperty("token");
+
+  await act(async () => {
+    mockScreenProps.onSwitchLanguage();
+    await Promise.resolve();
+  });
+  expect(mockToggleAppLanguage).toHaveBeenCalledTimes(1);
 
   await act(async () => {
     mockScreenProps.onManualInputFocusChange(true);
