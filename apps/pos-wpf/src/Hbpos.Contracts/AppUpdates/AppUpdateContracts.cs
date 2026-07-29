@@ -81,3 +81,14 @@ public sealed record AppUpdateCheckResponse
             ErrorMessage = errorMessage
         };
 }
+
+/// <summary>
+/// iPad Unlisted App 的更新合同；与 Windows 的 EXE/MSI 更新合同严格隔离。
+/// </summary>
+public sealed record PosIpadAppUpdateResponse(
+    bool Enabled,
+    string? MinimumSupportedVersion,
+    string? LatestVersion,
+    bool ForceUpdate,
+    string? AppStoreUrl,
+    string? ReleaseMessage);

@@ -69,6 +69,11 @@ test("启动、前台和联网刷新共享 single-flight，并向订阅者发布
   assert.equal(startup, foreground);
   assert.equal(startup, network);
   assert.equal(calls, 1);
+  assert.deepEqual(coordinator.getGate(), {
+    state: "unchecked",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
   release();
   await startup;
 
@@ -81,7 +86,31 @@ test("启动、前台和联网刷新共享 single-flight，并向订阅者发布
   unsubscribe();
 });
 
-test("网络刷新失败回退合法缓存；无缓存时保持 unchecked 且 fail-closed", async () => {
+test("首次策略检查完成前阻止新交易，旧 enabled false 在验证后不再阻止", async () => {
+  const coordinator = new AppUpdateCoordinator({
+    metadata,
+    policyStore: new MemoryPolicyStore(),
+    remote: {
+      async getPolicy() {
+        return { ...enabledPolicy, enabled: false };
+      },
+    },
+  });
+
+  assert.deepEqual(coordinator.getGate(), {
+    state: "unchecked",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
+  await coordinator.refreshOnStartup();
+  assert.deepEqual(coordinator.getGate(), {
+    state: "enabled",
+    canStartNewTransaction: true,
+    canContinueRecovery: true,
+  });
+});
+
+test("网络刷新失败回退合法缓存；无有效缓存时保持未检查门禁", async () => {
   const cachedForcePolicy: PosIpadUpdatePolicy = Object.freeze({
     ...enabledPolicy,
     forceUpdate: true,
@@ -130,10 +159,10 @@ test("网络刷新失败回退合法缓存；无缓存时保持 unchecked 且 fa
   assert.equal(malformedCache.getGate().state, "unchecked");
 });
 
-test("已验证的受限内存策略优先于旧 enabled 缓存，缓存写失败后不得被离线刷新放宽", async () => {
-  for (const [restrictedPolicy, expectedState] of [
-    [{ ...enabledPolicy, enabled: false }, "disabled"],
-    [{ ...enabledPolicy, forceUpdate: true }, "force-update"],
+test("已验证的内存更新策略优先于旧缓存，只有强制升级继续限制新交易", async () => {
+  for (const [remotePolicy, expectedState, canStartNewTransaction] of [
+    [{ ...enabledPolicy, enabled: false }, "enabled", true],
+    [{ ...enabledPolicy, forceUpdate: true }, "force-update", false],
   ] as const) {
     let remoteCalls = 0;
     let cacheReads = 0;
@@ -153,7 +182,7 @@ test("已验证的受限内存策略优先于旧 enabled 缓存，缓存写失�
       remote: {
         async getPolicy() {
           remoteCalls += 1;
-          if (remoteCalls === 1) return restrictedPolicy;
+          if (remoteCalls === 1) return remotePolicy;
           throw new Error("offline");
         },
       },
@@ -163,17 +192,20 @@ test("已验证的受限内存策略优先于旧 enabled 缓存，缓存写失�
     assert.equal(coordinator.getGate().state, expectedState);
     assert.equal((await coordinator.refreshOnForeground()).source, "memory");
     assert.equal(coordinator.getGate().state, expectedState);
-    assert.equal(coordinator.getGate().canStartNewTransaction, false);
+    assert.equal(
+      coordinator.getGate().canStartNewTransaction,
+      canStartNewTransaction,
+    );
     assert.equal(coordinator.getGate().canContinueRecovery, true);
     assert.equal(cacheReads, 0);
     assert.equal(cacheWrites, 1);
   }
 });
 
-test("disabled 与 force-update 都阻止新交易，但恢复永远开放", async () => {
-  for (const policy of [
-    { ...enabledPolicy, enabled: false },
-    { ...enabledPolicy, forceUpdate: true },
+test("旧 enabled false 不再阻止交易，force-update 仍阻止且恢复永远开放", async () => {
+  for (const [policy, canStartNewTransaction] of [
+    [{ ...enabledPolicy, enabled: false }, true],
+    [{ ...enabledPolicy, forceUpdate: true }, false],
   ] as const) {
     const coordinator = new AppUpdateCoordinator({
       metadata,
@@ -181,7 +213,10 @@ test("disabled 与 force-update 都阻止新交易，但恢复永远开放", asy
       remote: { async getPolicy() { return policy; } },
     });
     await coordinator.refreshOnStartup();
-    assert.equal(coordinator.getGate().canStartNewTransaction, false);
+    assert.equal(
+      coordinator.getGate().canStartNewTransaction,
+      canStartNewTransaction,
+    );
     assert.equal(coordinator.getGate().canContinueRecovery, true);
   }
 });

@@ -125,6 +125,29 @@ test("iPad 更新策略在本地同时门禁离线现金，但始终开放恢复
   );
 });
 
+test("设备已授权后忽略旧 enabled 开关，仅强制升级可以阻止新交易", () => {
+  assert.deepEqual(
+    deriveNewTransactionGate({
+      enabled: false,
+      minimumSupportedVersion: null,
+      latestVersion: null,
+      forceUpdate: false,
+      appStoreUrl: null,
+      releaseMessage: null,
+    }),
+    {
+      state: "enabled",
+      canStartNewTransaction: true,
+      canContinueRecovery: true,
+    },
+  );
+  assert.deepEqual(deriveNewTransactionGate(null), {
+    state: "unchecked",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
+});
+
 test("iPad 更新策略必须显式拥有六个字段，nullable 字段只能用 null 表示空值", () => {
   const complete: Record<string, unknown> = {
     enabled: true,

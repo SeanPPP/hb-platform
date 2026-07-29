@@ -22,14 +22,14 @@ export interface PosIpadUpdatePolicyStorePort {
 export function deriveNewTransactionGate(
   policy: PosIpadUpdatePolicy | null,
 ): NewTransactionGate {
+  // 设备注册与鉴权是新交易准入条件；旧 enabled 字段只为协议兼容保留。
+  // 首次更新策略尚未完成时保持失败关闭，避免短暂绕过强制升级。
   const state =
     policy === null
       ? "unchecked"
       : policy.forceUpdate
         ? "force-update"
-        : policy.enabled
-          ? "enabled"
-          : "disabled";
+        : "enabled";
   return Object.freeze({
     state,
     canStartNewTransaction: state === "enabled",

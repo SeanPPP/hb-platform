@@ -45,6 +45,7 @@ public static class ServiceRegistration
         services.AddScoped<IEmergencyGrantAuthorizationService, EmergencyGrantAuthorizationService>();
         services.AddOptions<SquareWebhookOptions>();
         services.AddOptions<AppUpdateOptions>();
+        services.AddOptions<PosIpadOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -64,6 +65,7 @@ public static class ServiceRegistration
             services.Configure<SquareWebhookOptions>(configuration.GetSection("Square"));
             services.Configure<SquareTerminalRestOptions>(configuration.GetSection("Square"));
             services.Configure<AppUpdateOptions>(configuration.GetSection("AppUpdate"));
+            services.Configure<PosIpadOptions>(configuration.GetSection("PosIpad"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
