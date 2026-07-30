@@ -233,7 +233,16 @@ export async function calculateCatalogPageChecksum(
 ): Promise<string> {
   const spec = CHECKSUM_SPECS[version];
   const canonical = buildCanonicalPage(items, version);
-  const hex = (await digest(canonical)).trim().toLowerCase();
+  let digestResult: string;
+  try {
+    digestResult = await digest(canonical);
+  } catch {
+    throw new HbposApiError("Catalog page digest is unavailable.", {
+      kind: "envelope",
+      code: "CATALOG_PAGE_DIGEST_UNAVAILABLE",
+    });
+  }
+  const hex = digestResult.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hex)) {
     throw new HbposApiError("Catalog page digest returned an invalid SHA256 value.", {
       kind: "envelope",
@@ -250,7 +259,16 @@ export async function calculateCatalogDeltaPageChecksum(input: Readonly<{
   deletedLookups: readonly CatalogDeletedLookup[];
 }>, digest: CatalogPageDigest = expoSha256): Promise<string> {
   const canonical = buildCanonicalDeltaPage(input);
-  const hex = (await digest(canonical)).trim().toLowerCase();
+  let digestResult: string;
+  try {
+    digestResult = await digest(canonical);
+  } catch {
+    throw new HbposApiError("Catalog delta page digest is unavailable.", {
+      kind: "envelope",
+      code: "CATALOG_DELTA_PAGE_DIGEST_UNAVAILABLE",
+    });
+  }
+  const hex = digestResult.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hex)) {
     throw new HbposApiError("Catalog delta digest returned an invalid SHA256 value.", {
       kind: "envelope",
@@ -413,16 +431,16 @@ function normalizeItem(item: GeneratedCatalogItem): CatalogLookupItem {
     storeCode: requiredText(item.storeCode, "item.storeCode"),
     productCode: requiredText(item.productCode, "item.productCode"),
     referenceCode: optionalText(item.referenceCode, "item.referenceCode"),
-    displayName: requiredText(item.displayName, "item.displayName"),
+    displayName: requiredRepairableText(item.displayName, "item.displayName"),
     lookupCode: requiredText(item.lookupCode, "item.lookupCode"),
     lookupCodeNormalized: requiredText(item.lookupCodeNormalized, "item.lookupCodeNormalized"),
     itemNumber: optionalText(item.itemNumber, "item.itemNumber"),
     barcode: optionalText(item.barcode, "item.barcode"),
     retailPrice: requiredFiniteNumber(item.retailPrice, "item.retailPrice"),
     priceSource: requiredPriceSource(item.priceSource),
-    priceSourceLabel: requiredText(item.priceSourceLabel, "item.priceSourceLabel"),
+    priceSourceLabel: requiredRepairableText(item.priceSourceLabel, "item.priceSourceLabel"),
     quantityFactor: requiredFiniteNumber(item.quantityFactor, "item.quantityFactor"),
-    updatedAt: optionalTimestamp(item.updatedAt, "item.updatedAt"),
+    updatedAt: optionalText(item.updatedAt, "item.updatedAt"),
     rowVersion: optionalText(item.rowVersion, "item.rowVersion"),
     productImage: optionalText(item.productImage, "item.productImage"),
     discountRate: optionalFiniteNumber(item.discountRate, "item.discountRate"),
@@ -570,6 +588,14 @@ function formatCanonicalNumberV2(value: number): string {
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
+    throw invalidPage(field);
+  }
+  return value;
+}
+
+function requiredRepairableText(value: unknown, field: string): string {
+  // 商品展示内容先按原文参与摘要；空白内容由 staging 安全回退，不影响身份校验。
+  if (typeof value !== "string") {
     throw invalidPage(field);
   }
   return value;

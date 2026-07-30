@@ -7,8 +7,12 @@ import {
   collectElementBreakOffsets,
   formatDocumentFileDate,
   formatPrintDate,
+  getCurrentReadyPdfPageElement,
   getPdfSliceImageData,
   paintPdfSlice,
+  preparePdfPrintFrame,
+  printPdfFrameAfterLayout,
+  waitForStablePdfPageElements,
 } from './printUtils'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,6 +34,22 @@ function assertEqual<T>(actual: T, expected: T, label: string) {
 function runTest(name: string, execute: () => void) {
   execute()
   console.log(`ok - ${name}`)
+}
+
+async function runAsyncTest(name: string, execute: () => Promise<void>) {
+  await execute()
+  console.log(`ok - ${name}`)
+}
+
+async function assertRejects(execute: () => Promise<unknown>, expectedMessage: string, label: string) {
+  try {
+    await execute()
+  } catch (error) {
+    assertEqual(error instanceof Error ? error.message : String(error), expectedMessage, label)
+    return
+  }
+
+  throw new Error(`${label}。Expected promise to reject`)
 }
 
 // 这里锁定 PDF 切片规则，避免浮点高度和空白切片重新引入 wrong PNG signature。
@@ -164,17 +184,158 @@ runTest('分页 PDF 应逐页渲染 A4 页面并写入 jsPDF', () => {
   const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/printUtils.ts'), 'utf8')
   assertEqual(printUtilsSource.includes('createPdfDocumentFromPages'), true, '应提供分页 PDF 生成函数')
   assertEqual(printUtilsSource.includes("querySelectorAll<HTMLElement>(pageSelector)"), true, '分页 PDF 应按页面选择器逐页读取 DOM')
+  assertEqual(printUtilsSource.includes('waitForStablePdfPageElements'), true, '分页 PDF 应等待当前 DOM 布局稳定后再截图')
+  assertEqual(printUtilsSource.includes('getCurrentReadyPdfPageElement'), true, '分页 PDF 每页截图前后应重新取得当前 DOM 节点')
+  assertEqual(printUtilsSource.includes('currentPageElement !== pageElement'), true, '截图期间页面节点被替换时应停止生成 PDF')
   assertEqual(printUtilsSource.includes('pdf.addPage()'), true, '分页 PDF 多页时应追加 PDF 页面')
   assertEqual(printUtilsSource.includes('pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, 210, 297)'), true, '每个分页应按 A4 尺寸写入 PDF')
 })
 
+await runAsyncTest('分页 PDF 应等待连续两帧布局一致后返回当前页面节点', async () => {
+  let frameIndex = -1
+  const widths = [780, 794, 794]
+  const rowCounts = [25, 26, 26]
+  const page = {
+    isConnected: true,
+    get scrollWidth() {
+      return widths[Math.max(0, frameIndex)]
+    },
+    scrollHeight: 1123,
+    getBoundingClientRect: () => ({
+      width: widths[Math.max(0, frameIndex)],
+      height: 1123,
+    }),
+    querySelectorAll: () => Array.from({ length: rowCounts[Math.max(0, frameIndex)] }),
+  } as unknown as HTMLElement
+  const root = {
+    isConnected: true,
+    querySelectorAll: () => [page],
+  } as unknown as HTMLElement
+
+  const pages = await waitForStablePdfPageElements(root, {
+    maxFrames: 6,
+    waitForFrame: async () => {
+      frameIndex += 1
+    },
+  })
+
+  assertEqual(frameIndex + 1, 3, '布局变化后应再等待一帧确认稳定')
+  assertEqual(pages[0], page, '应返回稳定后的当前页面节点')
+})
+
+runTest('分页 PDF 应按索引重新取得当前页面节点并拒绝页数变化', () => {
+  const createPage = () => ({
+    isConnected: true,
+    scrollWidth: 794,
+    scrollHeight: 1123,
+    getBoundingClientRect: () => ({ width: 794, height: 1123 }),
+    querySelectorAll: () => Array.from({ length: 26 }),
+  } as unknown as HTMLElement)
+  const firstPage = createPage()
+  const replacementPage = createPage()
+  let currentPages = [firstPage]
+  const root = {
+    isConnected: true,
+    querySelectorAll: () => currentPages,
+  } as unknown as HTMLElement
+
+  assertEqual(
+    getCurrentReadyPdfPageElement(root, '.store-order-pdf-page', 0, 1, '布局未就绪'),
+    firstPage,
+    '首次应取得当前页面节点',
+  )
+  currentPages = [replacementPage]
+  assertEqual(
+    getCurrentReadyPdfPageElement(root, '.store-order-pdf-page', 0, 1, '布局未就绪'),
+    replacementPage,
+    'React 替换页面后应重新取得新节点，不能继续持有旧引用',
+  )
+  currentPages = [replacementPage, createPage()]
+  try {
+    getCurrentReadyPdfPageElement(root, '.store-order-pdf-page', 0, 1, '布局未就绪')
+  } catch (error) {
+    assertEqual(error instanceof Error ? error.message : String(error), '布局未就绪', '页数变化应返回布局未就绪错误')
+    return
+  }
+
+  throw new Error('页数变化时应拒绝继续生成 PDF')
+})
+
+await runAsyncTest('分页 PDF 遇到断开或零尺寸节点时应停止生成', async () => {
+  const errorMessage = '打印内容尚未准备完成'
+  const disconnectedRoot = {
+    isConnected: false,
+    querySelectorAll: () => [],
+  } as unknown as HTMLElement
+  await assertRejects(
+    () => waitForStablePdfPageElements(disconnectedRoot, {
+      layoutNotReadyErrorMessage: errorMessage,
+      waitForFrame: async () => {},
+    }),
+    errorMessage,
+    '打印根节点断开时应返回布局未就绪错误',
+  )
+
+  const zeroSizePage = {
+    isConnected: true,
+    scrollWidth: 0,
+    scrollHeight: 0,
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    querySelectorAll: () => [],
+  } as unknown as HTMLElement
+  const zeroSizeRoot = {
+    isConnected: true,
+    querySelectorAll: () => [zeroSizePage],
+  } as unknown as HTMLElement
+  await assertRejects(
+    () => waitForStablePdfPageElements(zeroSizeRoot, {
+      layoutNotReadyErrorMessage: errorMessage,
+      maxFrames: 2,
+      waitForFrame: async () => {},
+    }),
+    errorMessage,
+    '零尺寸页面在限定帧数内未恢复时应返回布局未就绪错误',
+  )
+})
+
+await runAsyncTest('PDF 打印 iframe 应使用屏幕外 A4 尺寸并等待两帧再打印', async () => {
+  const events: string[] = []
+  const frame = {
+    style: {},
+    contentWindow: {
+      focus: () => events.push('focus'),
+      print: () => events.push('print'),
+    },
+  } as unknown as HTMLIFrameElement
+
+  preparePdfPrintFrame(frame, 'blob:test')
+  assertEqual(frame.style.left, '-10000px', '打印 iframe 应移出可视区域')
+  assertEqual(frame.style.width, '210mm', '打印 iframe 应使用非零 A4 宽度')
+  assertEqual(frame.style.height, '297mm', '打印 iframe 应使用非零 A4 高度')
+  assertEqual(frame.src, 'blob:test', '打印 iframe 应加载临时 PDF URL')
+
+  await printPdfFrameAfterLayout(frame, async () => {
+    events.push('frame')
+  })
+  assertDeepEqual(events, ['frame', 'frame', 'focus', 'print'], 'PDF viewer 应得到两帧布局时间后再触发打印')
+})
+
 runTest('分页 PDF 打印应使用临时 Blob URL 并清理资源', () => {
   const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/printUtils.ts'), 'utf8')
+  const printFunctionSource = printUtilsSource.slice(printUtilsSource.indexOf('export async function printElementPagesAsPdf'))
   assertEqual(printUtilsSource.includes("pdf.output('blob')"), true, '打印 PDF 应输出 Blob')
   assertEqual(printUtilsSource.includes('URL.createObjectURL(blob)'), true, '打印 PDF 应创建临时 URL')
-  assertEqual(printUtilsSource.includes('frame.contentWindow?.print()'), true, '打印 PDF 应触发 iframe 打印')
+  assertEqual(printUtilsSource.includes('printPdfFrameAfterLayout'), true, '打印 PDF 应等待 iframe 布局稳定后再打印')
+  assertEqual(printUtilsSource.includes("addEventListener('afterprint'"), true, '打印完成后应通过 afterprint 清理 iframe')
   assertEqual(printUtilsSource.includes('URL.revokeObjectURL(url)'), true, '打印完成后应清理临时 URL')
   assertEqual(printUtilsSource.includes('frame.remove()'), true, '打印完成后应移除临时 iframe')
+  assertEqual(
+    printFunctionSource.includes(
+      "void printPdfFrameAfterLayout(frame)\n      .then(() => {\n        if (!cleaned) {\n          cleanupTimer = window.setTimeout(cleanup, 60_000)",
+    ),
+    true,
+    '超时清理应在触发打印后才开始计时，避免 PDF 加载或打印对话框停留期间提前移除 iframe',
+  )
 })
 
 console.log('printUtils.test: ok')

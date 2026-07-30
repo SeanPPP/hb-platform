@@ -8,6 +8,7 @@ using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -15,6 +16,50 @@ namespace Hbpos.Api.Tests;
 
 public sealed class PosIpadUpdateDecisionGatewayTests
 {
+    [Fact]
+    public async Task ActivatorUtilities_prefers_production_constructor_and_uses_central_policy()
+    {
+        var gateway = new RecordingGateway
+        {
+            NativeDecision = new PosIpadNativeUpdateDecision(
+                "required",
+                "12",
+                "1.4.0",
+                "1.5.0",
+                "https://apps.apple.com/au/app/example/id123",
+                "必须升级")
+        };
+        var services = new ServiceCollection();
+        services.AddSingleton<IOptions<PosIpadOptions>>(
+            Options.Create(new PosIpadOptions()));
+        services.AddSingleton<IOptions<AppUpdateOptions>>(
+            Options.Create(new AppUpdateOptions { CentralPolicyEnabled = true }));
+        services.AddSingleton<IPosIpadUpdateDecisionGateway>(gateway);
+        using var provider = services.BuildServiceProvider();
+
+        var factory = ActivatorUtilities.CreateFactory(
+            typeof(PosIpadAppUpdateController),
+            Type.EmptyTypes);
+        var controller = Assert.IsType<PosIpadAppUpdateController>(factory(provider, null));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new System.Security.Claims.ClaimsPrincipal(
+                    new System.Security.Claims.ClaimsIdentity(
+                        [new(DeviceAuthConstants.StoreCodeClaim, "0247")],
+                        DeviceAuthConstants.Scheme))
+            }
+        };
+
+        var response = GetOk(
+            await controller.Check("1.3.0", "7", "1.3.0", CancellationToken.None));
+
+        Assert.Equal("0247", gateway.NativeStoreCode);
+        Assert.True(response.ForceUpdate);
+        Assert.Equal("1.5.0", response.LatestVersion);
+    }
+
     [Fact]
     public async Task Native_check_defaults_to_legacy_policy_without_calling_central_gateway()
     {

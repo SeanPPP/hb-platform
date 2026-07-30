@@ -5,6 +5,7 @@ using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
 
@@ -19,6 +20,8 @@ public sealed class PosIpadAppUpdateController : ControllerBase
     private readonly IOptions<AppUpdateOptions> _appUpdateOptions;
     private readonly IPosIpadUpdateDecisionGateway? _gateway;
 
+    // 生产 DI 必须选择同时接入中央策略和迁移开关的完整构造函数。
+    [ActivatorUtilitiesConstructor]
     public PosIpadAppUpdateController(
         IOptions<PosIpadOptions> options,
         IOptions<AppUpdateOptions> appUpdateOptions,

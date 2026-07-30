@@ -97,6 +97,7 @@ type PresentationListener = (presentation: AppUpdatePresentation) => void;
  */
 export class AppUpdateOrchestrator {
   private presentation: AppUpdatePresentation;
+  private gate: NewTransactionGate;
   private safeSelectionKey: string | null = null;
   private safeForCompletion: boolean | null = null;
   private safetyInFlight: Promise<AppUpdatePresentation> | null = null;
@@ -114,6 +115,7 @@ export class AppUpdateOrchestrator {
       options.ota.getPolicy(),
       options.installedVersion,
     );
+    this.gate = this.calculateGate();
     this.unsubscribeNative = options.native.subscribe(() => {
       this.recompute();
     });
@@ -121,6 +123,7 @@ export class AppUpdateOrchestrator {
       this.recompute();
     });
     this.unsubscribeTransition = options.transition.subscribe(() => {
+      this.recomputeGate();
       for (const listener of this.gateListeners) this.notifyGate(listener);
     });
   }
@@ -138,6 +141,10 @@ export class AppUpdateOrchestrator {
   }
 
   public getGate(): NewTransactionGate {
+    return this.gate;
+  }
+
+  private calculateGate(): NewTransactionGate {
     const nativeGate = this.options.native.getGate();
     if (this.options.transition.isTransitionActive()) {
       return requiredGate(
@@ -168,7 +175,11 @@ export class AppUpdateOrchestrator {
         canContinueRecovery: true,
       });
     }
-    return nativeGate;
+    return Object.freeze({
+      state: nativeGate.state,
+      canStartNewTransaction: nativeGate.canStartNewTransaction,
+      canContinueRecovery: nativeGate.canContinueRecovery,
+    });
   }
 
   public subscribe(listener: GateListener): () => void {
@@ -405,6 +416,7 @@ export class AppUpdateOrchestrator {
             blocking: true,
           })
         : next;
+    this.recomputeGate();
     for (const listener of this.gateListeners) this.notifyGate(listener);
     for (const listener of this.presentationListeners) {
       this.notifyPresentation(listener);
@@ -417,6 +429,11 @@ export class AppUpdateOrchestrator {
     } catch {
       // 单个 route 订阅故障不能改变交易准入。
     }
+  }
+
+  private recomputeGate(): void {
+    const next = this.calculateGate();
+    if (!sameGate(this.gate, next)) this.gate = next;
   }
 
   private notifyPresentation(listener: PresentationListener): void {
@@ -540,6 +557,14 @@ function samePresentation(
     left.blocking === right.blocking &&
     left.releaseMessage === right.releaseMessage &&
     left.appStoreUrl === right.appStoreUrl
+  );
+}
+
+function sameGate(left: NewTransactionGate, right: NewTransactionGate): boolean {
+  return (
+    left.state === right.state &&
+    left.canStartNewTransaction === right.canStartNewTransaction &&
+    left.canContinueRecovery === right.canContinueRecovery
   );
 }
 

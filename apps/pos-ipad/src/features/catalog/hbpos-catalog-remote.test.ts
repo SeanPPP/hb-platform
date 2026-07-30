@@ -405,6 +405,42 @@ test("checksum digest 与 canonical 数值异常返回稳定目录校验码", as
   );
 });
 
+test("checksum digest 抛错时仅返回安全稳定错误码", async () => {
+  const throwingDigest: CatalogPageDigest = async (payload) => {
+    throw new Error(
+      `digest failed url=https://secret.example/catalog body=${payload}`,
+    );
+  };
+
+  await assert.rejects(
+    () => calculateCatalogPageChecksum([canonicalItem], throwingDigest),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "envelope"
+      && error.code === "CATALOG_PAGE_DIGEST_UNAVAILABLE"
+      && error.message === "Catalog page digest is unavailable."
+      && !error.message.includes("secret.example")
+      && !error.message.includes(canonicalItem.displayName)
+      && !error.message.includes(canonicalItem.barcode ?? ""),
+  );
+  await assert.rejects(
+    () => calculateCatalogDeltaPageChecksum({
+      baseCatalogVersion: "catalog-v1:base",
+      targetCatalogVersion: "catalog-v1:target",
+      items: [canonicalItem],
+      deletedLookups: [],
+    }, throwingDigest),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "envelope"
+      && error.code === "CATALOG_DELTA_PAGE_DIGEST_UNAVAILABLE"
+      && error.message === "Catalog delta page digest is unavailable."
+      && !error.message.includes("secret.example")
+      && !error.message.includes(canonicalItem.displayName)
+      && !error.message.includes(canonicalItem.barcode ?? ""),
+  );
+});
+
 test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", async () => {
   const calls: HbposTransportRequest[] = [];
   const transport: HbposTransport = {
@@ -515,6 +551,48 @@ test("Hbpos catalog adapter 接受服务端可选字段的空字符串并规范�
   assert.equal(page.items[0]?.itemNumber, null);
   assert.equal(page.items[0]?.barcode, null);
   assert.equal(page.items[0]?.productImage, null);
+});
+
+test("Hbpos catalog adapter 校验原始摘要后保留可修正商品内容给 staging 归一化", async () => {
+  const repairableItem: CatalogLookupItem = {
+    ...canonicalItem,
+    displayName: "",
+    priceSourceLabel: "",
+    updatedAt: "2026-02-30T00:00:00.000Z",
+  };
+  const pageChecksum = await calculateCatalogPageChecksum([repairableItem], digest, 2);
+  const transport: HbposTransport = {
+    async request<T>() {
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: {
+            storeCode: "S01",
+            generatedAt: "2026-07-28T01:02:03.456Z",
+            cursor: null,
+            items: [repairableItem],
+            deletedLookups: [],
+            nextCursor: null,
+            hasMore: false,
+            totalCount: 1,
+            catalogVersion: "catalog-v1:server",
+            pageChecksum,
+          },
+        } as T,
+      };
+    },
+  };
+
+  const page = await new HbposCatalogPageApi(transport, digest).getPage({
+    storeCode: "S01",
+    cursor: null,
+    pageSize: 500,
+  });
+
+  assert.equal(page.items[0]?.displayName, "");
+  assert.equal(page.items[0]?.priceSourceLabel, "");
+  assert.equal(page.items[0]?.updatedAt, "2026-02-30T00:00:00.000Z");
 });
 
 test("Hbpos catalog adapter 在落库前拒绝被篡改的页面", async () => {

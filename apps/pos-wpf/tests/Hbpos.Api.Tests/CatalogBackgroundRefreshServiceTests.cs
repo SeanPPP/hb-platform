@@ -59,6 +59,54 @@ public sealed class CatalogBackgroundRefreshServiceTests
     }
 
     [Fact]
+    public async Task QueueRefreshAsync_RequeuesSameStoreFromCompletionContinuation()
+    {
+        var firstRefreshStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowFirstRefreshToComplete = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshCount = 0;
+        var services = new ServiceCollection();
+        services.AddScoped<ICatalogIndexRefreshWorker>(_ =>
+            new DelegateRefreshWorker(async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref refreshCount) == 1)
+                {
+                    firstRefreshStarted.TrySetResult();
+                    await allowFirstRefreshToComplete.Task.WaitAsync(cancellationToken);
+                }
+            }));
+        await using var provider = services.BuildServiceProvider();
+        using var service = new CatalogBackgroundRefreshService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<CatalogBackgroundRefreshService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var firstRefresh = service.QueueRefreshAsync("S01");
+            await firstRefreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            // 内联调度器让 continuation 在首次完成的同步窗口内立即重排，稳定复现终态去重键的竞态。
+            var secondRefresh = firstRefresh.ContinueWith(
+                _ => service.QueueRefreshAsync(" s01 "),
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                InlineTaskScheduler.Instance).Unwrap();
+
+            allowFirstRefreshToComplete.TrySetResult();
+            await Task.WhenAll(firstRefresh, secondRefresh).WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(2, Volatile.Read(ref refreshCount));
+        }
+        finally
+        {
+            allowFirstRefreshToComplete.TrySetResult();
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task QueueRefreshAsync_RetriesFailedStoreWithoutOccupyingBuildSlot()
     {
         var retryDelayStarted = new TaskCompletionSource(
@@ -172,6 +220,26 @@ public sealed class CatalogBackgroundRefreshServiceTests
             CancellationToken cancellationToken)
         {
             return refreshAsync(storeCode, cancellationToken);
+        }
+    }
+
+    private sealed class InlineTaskScheduler : TaskScheduler
+    {
+        public static InlineTaskScheduler Instance { get; } = new();
+
+        protected override IEnumerable<Task> GetScheduledTasks()
+        {
+            return [];
+        }
+
+        protected override void QueueTask(Task task)
+        {
+            TryExecuteTask(task);
+        }
+
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued)
+        {
+            return TryExecuteTask(task);
         }
     }
 }

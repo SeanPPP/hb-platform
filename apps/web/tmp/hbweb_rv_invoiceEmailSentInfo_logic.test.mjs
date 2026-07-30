@@ -24,14 +24,14 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/.pnpm/dayjs@1.11.21/node_modules/dayjs/dayjs.min.js
+// node_modules/dayjs/dayjs.min.js
 var require_dayjs_min = __commonJS({
-  "node_modules/.pnpm/dayjs@1.11.21/node_modules/dayjs/dayjs.min.js"(exports, module) {
+  "node_modules/dayjs/dayjs.min.js"(exports, module) {
     !function(t, e) {
       "object" == typeof exports && "undefined" != typeof module ? module.exports = e() : "function" == typeof define && define.amd ? define(e) : (t = "undefined" != typeof globalThis ? globalThis : t || self).dayjs = e();
     }(exports, function() {
       "use strict";
-      var t = 1e3, e = 6e4, n = 36e5, r = "millisecond", i = "second", s = "minute", u = "hour", a = "day", o = "week", c = "month", f = "quarter", h = "year", d = "date", l = "Invalid Date", $ = /^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{0,2})[Tt\s]*(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?[.:]?(\d+)?$/, y = /\[([^\]]+)]|YYYY|YY|M{1,4}|D{1,2}|d{1,4}|H{1,2}|h{1,2}|a|A|m{1,2}|s{1,2}|Z{1,2}|SSS/g, M = { name: "en", weekdays: "Sunday_Monday_Tuesday_Wednesday_Thursday_Friday_Saturday".split("_"), months: "January_February_March_April_May_June_July_August_September_October_November_December".split("_"), ordinal: function(t2) {
+      var t = 1e3, e = 6e4, n = 36e5, r = "millisecond", i = "second", s = "minute", u = "hour", a = "day", o = "week", c = "month", f = "quarter", h = "year", d = "date", l = "Invalid Date", $ = /^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{0,2})[Tt\s]*(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?[.:]?(\d+)?$/, y = /\[([^\]]+)]|Y{1,4}|M{1,4}|D{1,2}|d{1,4}|H{1,2}|h{1,2}|a|A|m{1,2}|s{1,2}|Z{1,2}|SSS/g, M = { name: "en", weekdays: "Sunday_Monday_Tuesday_Wednesday_Thursday_Friday_Saturday".split("_"), months: "January_February_March_April_May_June_July_August_September_October_November_December".split("_"), ordinal: function(t2) {
         var e2 = ["th", "st", "nd", "rd"], n2 = t2 % 100;
         return "[" + t2 + (e2[(n2 - 20) % 10] || e2[n2] || e2[0]) + "]";
       } }, m = function(t2, e2, n2) {
@@ -290,9 +290,9 @@ var require_dayjs_min = __commonJS({
         }, m2.toString = function() {
           return this.$d.toUTCString();
         }, M2;
-      }(), Y = _.prototype;
-      return O.prototype = Y, [["$ms", r], ["$s", i], ["$m", s], ["$H", u], ["$W", a], ["$M", c], ["$y", h], ["$D", d]].forEach(function(t2) {
-        Y[t2[1]] = function(e2) {
+      }(), k = _.prototype;
+      return O.prototype = k, [["$ms", r], ["$s", i], ["$m", s], ["$H", u], ["$W", a], ["$M", c], ["$y", h], ["$D", d]].forEach(function(t2) {
+        k[t2[1]] = function(e2) {
           return this.$g(e2, t2[0], t2[1]);
         };
       }), O.extend = function(t2, e2) {
@@ -448,6 +448,7 @@ var en_default = {
       batchEditEnglishName: "Batch Edit English Name",
       clearEnglishNames: "Clear English Names",
       batchSetCategory: "Batch Set Category",
+      manageCategories: "Manage Categories",
       translateHqData: "Translate HQ Data",
       createNewProducts: "Create New Products",
       submitContainer: "Submit Container",
@@ -620,12 +621,20 @@ var en_default = {
       savePendingPriceDetailsExistingRetailHint: "Retail prices for existing products will update the live warehouse retail price and this container detail's OEM price.",
       savePendingPriceDetailsNewRetailHint: "Retail prices for new products are saved only to this container detail and will be used when products are created later.",
       savePendingPriceDetailsRetryHint: "If saving fails, pending changes remain available for retry.",
+      savePendingDetailsTitle: "Confirm Detail Save",
+      savePendingDetailsUpdateTitle: "Update notes",
+      savePendingDetailsSummary: "This affects {{total}} details: {{importPriceCount}} import prices, {{retailPriceCount}} retail prices, {{englishNameCount}} English names, and {{clearEnglishNameCount}} English-name clears.",
+      savePendingDetailsExistingRetailHint: "Retail prices for existing products will update the live warehouse retail price and this container detail's OEM price.",
+      savePendingDetailsNewRetailHint: "Retail prices for new products are saved only to this container detail and will be used when products are created later.",
+      savePendingDetailsInvalidEnglishHint: "{{count}} English names are blank or contain Chinese. They will remain pending and will not be saved.",
+      savePendingDetailsRetryHint: "If saving fails, pending changes remain available for retry.",
       alignDomesticProductCodeTitle: "Align Domestic Product Code",
       alignDomesticProductCodeContent: "Change domestic product code {{oldCode}} to local master code {{newCode}}?",
       alignDomesticProductCodeConflictHint: "If the target domestic code already exists, the backend will reject this alignment without merging or overwriting.",
       batchCategoryTitle: "Batch Set Category",
       batchCategoryContent: "Choose a target category. The warehouse products linked to the current target details will be assigned to it.",
       rowCategoryTitle: "Edit Target Category",
+      categoryManageTitle: "Manage Categories",
       hqTranslationResultTitle: "HQ Translation Result",
       exportAllDetailsTitle: "Export All Matching Products",
       exportAllDetailsContent: "No products are selected. Export all matching products using the current filters and sorting, {{count}} rows total. Continue?",
@@ -670,20 +679,30 @@ var en_default = {
       missingContainerNumberForHqTranslation: "The current container is missing a container number, so HQ data cannot be translated.",
       noNamesToTranslate: "No product names to translate",
       namesTranslated: "Translated {{count}} product names",
+      namesTranslatedPending: "Generated {{count}} English names. Click Save Details to submit them.",
       invalidTranslatedNamesSkipped: "{{count}} translation results still contain Chinese and were skipped",
       enterEnglishName: "Enter an English name",
+      enterValidEnglishName: "Enter an English name without Chinese characters",
       englishNamesUpdated: "Updated {{count}} English names",
       englishNamesUpdateFailed: "Failed to batch edit English names",
       englishNamesCleared: "Cleared {{count}} English names",
+      englishNamesPending: "Added {{count}} English-name changes. Click Save Details to submit them.",
+      englishNamesClearPending: "Added {{count}} English-name clears. Click Save Details to submit them.",
+      englishNameContainsChinese: "English names cannot contain Chinese characters",
+      emptyEnglishNameNotSaved: "A blank English name is not saved. Use Clear English Names to remove it.",
       noCategoryFilterRows: "No visible details can be categorized",
       noProductsForCategoryAssign: "The current target details have no existing products to categorize",
       batchCategoryUpdated: "Set category for {{count}} products",
       batchCategorySkippedMissingCode: "Skipped {{count}} details without product codes",
       selectedRowsHidden: "Selected details are not visible in the current filters. Please select them again before operating.",
       savePendingPriceDetailsFirst: "Save pending import/RRP changes first.",
+      savePendingDetailsFirst: "Click Save Details to save pending detail changes first.",
       detailSaveFailed: "Failed to save container details. Please try again later.",
       noPendingPriceDetails: "No pending detail prices to save",
       detailPricesSaved: "Saved prices for {{count}} details",
+      noPendingDetails: "No pending detail changes to save",
+      detailsSaved: "Saved {{count}} details",
+      detailFieldsNotSaved: "{{count}} details have fields that were not saved: {{reasons}}",
       noMatchableDetails: "No matchable details",
       missingMatchableProductIdentity: "Current details are missing product codes or item numbers for matching",
       noDomesticDataToUpdate: "No domestic data needs updating",
@@ -1863,7 +1882,9 @@ var en_default = {
       selectProductsFirst: "Please select products to update first",
       domesticSupplier: "Domestic Supplier",
       confirmDelete: "Delete this category?",
-      deleteBlockedHint: "If this category has child categories, the backend will block deletion.",
+      deleteBlockedHint: "If this category has child categories or linked products, the backend will block deletion.",
+      refreshAfterMutationFailed: "The change succeeded, but the category list could not be refreshed. Select Retry to refresh it.",
+      refreshSuccess: "The category list has been refreshed.",
       noCategoryData: "No category data",
       searchPlaceholder: "Search category name",
       uncategorizedOption: "Uncategorized Products",
@@ -2150,6 +2171,7 @@ var en_default = {
       exportExcelFailed: "Failed to export picking list Excel",
       downloadPdfFailed: "Failed to download picking list PDF",
       createPdfCanvasFailed: "Failed to create the temporary canvas for the picking list PDF",
+      layoutNotReady: "The print content is not ready yet. Please try again.",
       excel: {
         sheetName: "Picking List",
         orderNo: "Order No.",
@@ -2383,6 +2405,14 @@ var en_default = {
     suppliers: {
       title: "Supplier Management",
       sync: "Sync",
+      syncFromHq: "Sync from HQ",
+      syncToHq: "Sync selected to HQ",
+      syncToHqTitle: "Sync Australian suppliers to HQ",
+      syncToHqConfirm: "Sync the selected {{count}} Australian suppliers to HQ? Code, name, contact and email will be written.",
+      confirmSync: "Sync",
+      selectSyncFirst: "Select Australian suppliers to sync first",
+      syncToHqComplete: "Sync complete: {{created}} created, {{updated}} updated, {{skipped}} skipped",
+      syncToHqFailed: "Failed to sync to HQ",
       createSupplier: "New Supplier",
       syncComplete: "Sync complete: {{created}} created, {{updated}} updated, {{deactivated}} deactivated",
       syncFailed: "Sync failed",
@@ -2879,9 +2909,12 @@ var en_default = {
         publishWeek: "Publish This Week",
         approve: "Approve",
         reject: "Reject",
+        approveOvertime: "Approve overtime",
+        rejectOvertime: "Reject overtime",
         viewMap: "Map",
         viewSamples: "Samples",
-        openExternalMap: "Open external map"
+        openExternalMap: "Open external map",
+        loadTrajectoryMap: "Load trajectory map"
       },
       drawer: {
         createSchedule: "New Schedule",
@@ -2892,7 +2925,8 @@ var en_default = {
         approve: "Approve Review",
         reject: "Reject Review",
         locationMap: "Location Map",
-        locationSamples: "Shift Location Samples"
+        locationSamples: "Shift Location Samples",
+        locationTrajectory: "Shift Location Trajectory"
       },
       fields: {
         store: "Store",
@@ -2912,8 +2946,19 @@ var en_default = {
         locationAccuracy: "Accuracy",
         locationCapturedAt: "Captured At",
         deviceSystem: "Device System",
+        segment: "Segment",
+        trajectoryRange: "Trajectory period",
+        sampleCount: "Shift samples",
         applicant: "Applicant",
         sourceType: "Source",
+        approvalDetail: "Request details / audit",
+        originalPunchTime: "Original punch",
+        requestedPunchTime: "Requested punch",
+        effectivePunchTime: "Effective punch",
+        reason: "Reason",
+        candidateOvertime: "Candidate: {{minutes}} min",
+        approvedOvertime: "Approved: {{minutes}} min",
+        approvedOvertimeMinutes: "Approved overtime minutes",
         reviewedAt: "Reviewed At",
         holidayDate: "Holiday Date",
         holidayName: "Holiday Name",
@@ -2928,6 +2973,26 @@ var en_default = {
         requireApprovalForNoSchedule: "Require Approval for No-schedule Punch",
         updatedAt: "Last Updated",
         reviewRemark: "Review Remark"
+      },
+      approvalPresentation: {
+        Punch: {
+          title: "Punch exception",
+          detail: "Punch exception on {{workDate}}"
+        },
+        Leave: {
+          title: "Leave request",
+          detail: "Leave request starting {{workDate}}"
+        },
+        PunchAdjustment: {
+          title: "Punch correction"
+        },
+        Overtime: {
+          title: "Overtime approval"
+        },
+        MissingClockOut: {
+          title: "Missing clock-out",
+          detail: "An open shift remains after the scheduled end on {{workDate}}."
+        }
       },
       status: {
         schedule: {
@@ -2957,7 +3022,10 @@ var en_default = {
         },
         sourceType: {
           Punch: "Punch Exception",
-          Leave: "Leave Request"
+          Leave: "Leave Request",
+          PunchAdjustment: "Punch correction",
+          Overtime: "Overtime",
+          MissingClockOut: "Missing clock-out"
         },
         holiday: {
           Open: "Open",
@@ -2968,7 +3036,12 @@ var en_default = {
       validation: {
         userGuidRequired: "Please enter employee GUID",
         holidayNameRequired: "Please enter holiday name",
-        storeCodesRequired: "Please select at least one store"
+        storeCodesRequired: "Please select at least one store",
+        overtime: {
+          outOfRange: "Approved overtime must be between 0 and the candidate minutes",
+          invalidIncrement: "Approved overtime must be a multiple of 15 minutes",
+          remarkRequired: "A review note is required when reducing or rejecting overtime"
+        }
       },
       weekdays: {
         "0": "Mon",
@@ -3013,10 +3086,33 @@ var en_default = {
         publishWeekFailed: "Failed to publish this week's schedule",
         reviewSuccess: "Review submitted",
         reviewFailed: "Failed to submit review",
+        previewRevisionMissing: "The server preview did not include a revision. Run preview again before saving.",
+        directAdjustment: "Manager self-adjustment",
         locationNotRecorded: "Location not recorded",
         externalMapNotice: "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",
         loadLocationSamplesFailed: "Failed to load shift location samples",
-        locationSamplesEmpty: "No shift location samples"
+        locationSamplesEmpty: "No shift location samples",
+        trajectoryInProgress: "In progress",
+        trajectoryOpen: "In progress: this is a partial trajectory from clock-in to the latest query time.",
+        trajectoryNoSamples: "No shift location samples were recorded for this segment; punch endpoints are still shown.",
+        trajectoryMapNeedsTwoPoints: "At least two valid coordinates are required to draw a trajectory map.",
+        trajectoryMapPrivacy: "The map is not loaded by default. Loading it requests map tiles for the trajectory area from OpenStreetMap.",
+        trajectoryMapDisclaimer: "The line only connects recorded points in time order; it is not a road or navigation route.",
+        trajectoryMapAria: "Shift location trajectory map",
+        trajectoryMapLoadFailed: "The trajectory map could not be initialized. The timeline remains available.",
+        trajectoryTileLoadFailed: "Some map tiles failed to load. Trajectory points and the timeline are unaffected.",
+        trajectorySamplesTooDense: "There are too many location samples in a single day to load the complete trajectory safely.",
+        trajectoryPointClockIn: "Clock in",
+        trajectoryPointSample: "Shift sample",
+        trajectoryPointClockOut: "Clock out",
+        trajectoryReason: {
+          INVALID_SELECTED_TIME: "The selected punch has no valid UTC time, so a trajectory cannot be generated.",
+          SUPERSEDE_CYCLE: "The punch replacement chain is invalid, so the effective punch cannot be determined.",
+          SUPERSEDE_TARGET_MISSING: "The punch replacement chain is missing its original record, so the effective punch cannot be determined.",
+          EFFECTIVE_PUNCH_NOT_FOUND: "The final effective punch for the selected record could not be found.",
+          SEGMENT_NOT_FOUND: "The segment containing the selected punch could not be uniquely identified.",
+          INVALID_DATE_RANGE: "The segment date range is invalid, so location samples cannot be queried."
+        }
       }
     },
     devices: {
@@ -3033,6 +3129,7 @@ var en_default = {
       hardwareId: "Hardware ID",
       deviceType: "Device Type",
       deviceSystem: "System",
+      deviceSystemOther: "Other",
       onlineStatus: "Online",
       online: "Online",
       offline: "Offline",
@@ -3711,7 +3808,8 @@ var en_default = {
       installmentRepaymentComplete: "Complete Installment Repayment",
       installmentRepaymentCancel: "Cancel Installment Repayment",
       dailyCloseSave: "Save Daily Close",
-      dailyCloseReprint: "Reprint Daily Close"
+      dailyCloseReprint: "Reprint Daily Close",
+      cardPaymentSupervisorResolution: "Card Payment Supervisor Resolution"
     }
   },
   system: {
@@ -3744,14 +3842,28 @@ var en_default = {
       target: "Current Target",
       forceStatus: "Force Status",
       updatedAt: "Updated At",
-      setCurrentConfirm: "Set this as the current release?",
-      setCurrent: "Set Current",
+      viewQrCode: "View QR Code",
+      qrCodeTitle: "WPF Download QR Code",
+      setCurrentConfirm: "Set this version as the release target? Clients will receive it the next time they check for updates.",
+      setCurrent: "Set as Release Target",
       rollback: "Rollback",
       upload: "Upload Version",
       readOnlyHint: "This account can view WPF versions, but cannot publish, roll back, or enforce updates.",
       currentVersion: "Current Version",
       minimumSupportedVersion: "Minimum Supported Version",
       forceUpdate: "Force Update",
+      targetScope: "Update Scope",
+      targetAll: "All Machines",
+      targetStores: "Selected Stores",
+      targetDevices: "Selected Machines",
+      targetAllSummary: "All machines",
+      targetStoresSummary: "{{count}} selected stores",
+      targetDevicesSummary: "{{count}} selected machines",
+      targetRequired: "Select at least one target for a targeted policy",
+      targetOptionsLoadFailed: "Failed to load targeted update options",
+      selectStores: "Select stores",
+      searchDevices: "Search machine number, store, or remarks",
+      policyUpdated: "Policy Updated",
       objectKeyPrefix: "COS Path",
       policyTitle: "Release Policy",
       targetVersion: "Target Version",
@@ -3989,6 +4101,7 @@ var en_default = {
       storeCode: "Store Code",
       brandName: "Brand Name",
       abn: "ABN",
+      timeZone: "Time Zone",
       contactPhone: "Contact Phone",
       contactEmail: "Contact Email",
       cashRegisterEnabled: "Cash Register Enabled",
@@ -3997,6 +4110,7 @@ var en_default = {
       address: "Address",
       storeNameRequired: "Please enter store name",
       storeCodeRequired: "Please enter store code",
+      timeZoneRequired: "Please select a time zone",
       storeNameMaxLength: "Store name cannot exceed 100 characters",
       storeCodeMaxLength: "Store code cannot exceed 20 characters",
       brandNameMaxLength: "Brand name cannot exceed 100 characters",
@@ -4428,6 +4542,115 @@ var en_default = {
         rollbackCommandFailed: "Failed to generate rollback command",
         rollbackCommandCopySuccess: "Rollback command copied"
       },
+      updatePolicy: {
+        title: "iOS / iPad Update Policies",
+        subtitle: "Release facts and rollout policies are independent. Registering a release never activates it; clients execute only the enabled policy.",
+        loadFailed: "Failed to load app update policies",
+        mobileLoadFailed: "Failed to load Mobile native releases and policy",
+        ipadNativeLoadFailed: "Failed to load iPad native releases and policy",
+        ipadOtaLoadFailed: "Failed to load iPad OTA releases and rollout policy",
+        storeOptionsLoadFailed: "Failed to load store options",
+        storeOptionsFallback: "Existing policy targets remain visible using Store GUID fallbacks. Selected-store scopes cannot be saved until store options reload; Mobile and all-store policies remain available.",
+        storeOptionsSaveBlocked: "Store options are unavailable. Reload them before saving a selected-store scope.",
+        retry: "Retry",
+        readOnly: "Your account has view-only access. Policies and rollout settings cannot be changed.",
+        tabs: {
+          mobile: "Mobile Native",
+          ipadNative: "iPad Native",
+          ipadOta: "iPad OTA"
+        },
+        releaseFacts: "Release Facts",
+        policy: "Native Update Policy",
+        rollout: "OTA Rollout Policy",
+        registerRelease: "Register App Store Release",
+        registerTitle: "{{app}} \xB7 Register Release",
+        verifyAndRegister: "Verify and Register",
+        registerFinalConfirmTitle: "Confirm Apple Verification and Registration",
+        registerFinalConfirmDescription: "This will call Apple Lookup and append an immutable release fact after download availability is verified. It will not activate an update policy.",
+        registerTargetApp: "Target App",
+        appStoreId: "App Store ID",
+        appStoreIdRequired: "Enter the App Store ID",
+        appStoreIdInvalid: "App Store ID must contain 6 to 20 digits",
+        buildNumber: "Build Number",
+        buildNumberRequired: "Enter the build number",
+        buildNumberInvalid: "Build number may contain letters, numbers, dots, underscores, and hyphens only",
+        ipadBuildNumberInvalid: "iPad build number must be an integer from 0 to 2147483647",
+        ipadBuildNotVerifiedWarning: "Apple Lookup does not verify the iPad build number. Cross-check it manually in App Store Connect.",
+        ipadBuildDoubleConfirmDescription: "A final confirmation follows submission. Verify the App Store ID, build number, and storefront in both steps.",
+        ipadPolicyBuildConfirmDescription: "Before activating the iPad native policy, verify the target release build again; Apple Lookup did not validate that build number.",
+        storefront: "Storefront",
+        storefrontRequired: "Enter the storefront",
+        storefrontInvalid: "Storefront must be two letters",
+        appleVerificationHint: "The backend verifies releases with Apple Lookup",
+        registrationNotActivation: "Only versions available from Apple can be registered. Registration does not activate a policy, and the build number is for audit only.",
+        registerConfirmDescription: "The backend will query the Apple storefront and verify that the version is available. A successful check only records the release fact and does not activate it.",
+        registerSuccess: "App Store release verified and registered",
+        registerFailed: "Failed to verify or register the App Store release",
+        status: "Status",
+        active: "Active",
+        verified: "Apple Verified",
+        registered: "Registered",
+        rollback: "Rollback Release",
+        enabled: "Enabled",
+        disabled: "Disabled",
+        policyVersion: "Policy Version",
+        versionBuild: "Version / Build",
+        bundle: "Bundle ID",
+        verifiedAt: "Apple Verified At",
+        openStore: "Open App Store",
+        openDashboard: "Open Dashboard",
+        noReleases: "No registered releases",
+        latestVersion: "Latest Version",
+        updatedAt: "Last Updated",
+        updatedBy: "Updated By",
+        policyStatus: "Policy Status",
+        rolloutStatus: "Rollout Status",
+        release: "Target Release",
+        selectRelease: "Select a registered release",
+        releaseRequired: "Select a release before enabling",
+        minimumVersion: "Minimum Supported Version (Optional)",
+        minimumVersionPlaceholder: "Example: 1.2.0",
+        minimumVersionHelp: "Leave blank for optional prompts only. Clients below a value entered here must update.",
+        minimumBuild: "Minimum Supported Build (Optional)",
+        minimumBuildPlaceholder: "Example: 28",
+        minimumBuildHelp: "Applies only to the iPad native policy and requires a minimum supported version.",
+        minimumBuildRequiresVersion: "Enter a minimum supported version before setting a minimum build",
+        releaseMessage: "Release Message",
+        releaseMessagePlaceholder: "Explain this update to the client",
+        targetScope: "Rollout Scope",
+        targetAll: "All Stores",
+        targetStores: "Selected Stores",
+        selectStores: "Select Stores",
+        storesRequired: "Select at least one store for a targeted rollout",
+        forceUpdate: "Required Update",
+        activateNativeConfirmTitle: "Activate this native update policy?",
+        activateNativeConfirmDescription: "The target App Store release has passed Apple Lookup verification. This action only activates the native update policy; it does not register or publish a new release.",
+        activateOtaConfirmTitle: "Activate this OTA rollout?",
+        activateOtaConfirmDescription: "The target OTA was registered by the iPad EAS release script. This action only activates the rollout policy; Web does not run an EAS publish.",
+        confirmRelease: "Target Release",
+        confirmScope: "Rollout Scope",
+        confirmUpdateMode: "Update Mode",
+        confirmMinimumBuild: "Minimum Supported Build",
+        confirmSelectedStores: "Selected Stores ({{count}})",
+        confirmNativeOptionalMode: "Optional update prompt",
+        confirmNativeRequiredMode: "Clients below {{version}} must update",
+        confirmOtaOptionalMode: "Optional OTA update",
+        confirmOtaRequiredMode: "Required OTA update",
+        disableConfirmTitle: "Disable this update policy?",
+        disableConfirmDescription: "Clients will stop matching this policy. Saving also clears its target release and rollout scope.",
+        saveSuccess: "Update policy saved",
+        saveFailed: "Failed to save update policy",
+        versionConflict: "Another operation updated this policy. The authoritative state was reloaded and your change was not replayed; review it and confirm again.",
+        versionConflictReloadSuperseded: "Another operation updated this policy. Your change was not replayed, and a newer refresh replaced this reload; wait for it to finish, then review and confirm again.",
+        versionConflictReloadFailed: "Another operation updated this policy, but the authoritative state could not be reloaded. Your change was not replayed; reload this section before confirming again.",
+        otaScriptHint: "Web only shows registered OTA releases and activates rollouts. Publishing and registration must be performed by the iPad EAS release script; Web never runs EAS CLI.",
+        environment: "Environment",
+        channel: "Channel",
+        runtime: "Runtime",
+        iosUpdateId: "iOS Update ID",
+        updateGroupId: "Update Group ID",
+        publishedAt: "Published At"
+      },
       serviceTokens: {
         title: "Service API Tokens",
         empty: "No service API tokens",
@@ -4439,6 +4662,17 @@ var en_default = {
         name: "Name",
         namePlaceholder: "Example: OTA automation",
         nameRequired: "Enter a token name",
+        purpose: "Purpose",
+        purposes: {
+          "mobile-ota-publisher": {
+            label: "Mobile OTA Publisher",
+            description: "For Mobile OTA registration only. The environment variables remain HBWEB_API_BASE_URL / HBWEB_API_TOKEN."
+          },
+          "pos-ipad-update-decision-reader": {
+            label: "iPad Update Decision Reader",
+            description: "For POS API iPad update-decision reads only. Use HBPOS_APP_UPDATE_DECISION_READ_TOKEN."
+          }
+        },
         tokenPrefix: "Token Prefix",
         scopes: "Scopes",
         status: "Status",
@@ -4958,6 +5192,16 @@ var en_default = {
     perItemSelect: "\u9010\u9879\u9009\u62E9",
     duplicateCount: "\u91CD\u590D\u6570\u91CF",
     mergedQuantity: "\u5408\u5E76\u540E\u4EF6\u6570",
+    mergedPackingQuantity: "Merged pack quantity",
+    mergedUnitVolume: "Merged volume",
+    mergeValidation: "Validation",
+    mergeReady: "Ready",
+    mergeQuantityField: "quantity",
+    mergePackingQuantityField: "pack quantity",
+    mergeVolumeField: "volume",
+    mergeInvalidFields: "Invalid: {{fields}}",
+    mergeBlockedSummary: "{{count}} group(s) have incomplete data. Fix the table and run detection again.",
+    mergeBlockedDetails: "Unable to merge these item numbers. Fix quantity, pack quantity and volume: {{details}}",
     foundDuplicateGroups: "\u53D1\u73B0 {{count}} \u7EC4\u91CD\u590D\u8D27\u53F7",
     mergeDuplicates: "\u5408\u5E76\u91CD\u590D",
     duplicateWarning: "\u4EE5\u4E0B\u8D27\u53F7\u5728\u5BFC\u5165\u6570\u636E\u4E2D\u5B58\u5728\u91CD\u590D\uFF0C\u5EFA\u8BAE\u5408\u5E76\u540E\u518D\u6267\u884C\u68C0\u6D4B\u5339\u914D\uFF1A",
@@ -5097,6 +5341,7 @@ var en_default = {
     amount: "Amount",
     viewDetail: "View Order Detail",
     noMatchOrders: "No matching orders were found. Try adjusting the search filters.",
+    loadFailed: "Failed to load order history. Please try again.",
     noHistoryOrders: "No historical orders were found for the current filters."
   },
   shopOrderDetail: {
@@ -6021,6 +6266,7 @@ var zh_default = {
       batchEditEnglishName: "\u6279\u91CF\u4FEE\u6539\u82F1\u6587\u540D\u79F0",
       clearEnglishNames: "\u6E05\u9664\u82F1\u6587\u540D\u79F0",
       batchSetCategory: "\u6279\u91CF\u5206\u7C7B",
+      manageCategories: "\u7BA1\u7406\u5206\u7C7B",
       translateHqData: "\u7FFB\u8BD1 HQ\u6570\u636E",
       createNewProducts: "\u521B\u5EFA\u65B0\u5546\u54C1",
       submitContainer: "\u63D0\u4EA4\u8D27\u67DC",
@@ -6193,12 +6439,20 @@ var zh_default = {
       savePendingPriceDetailsExistingRetailHint: "\u5DF2\u6709\u5546\u54C1\u96F6\u552E\u4EF7\u4F1A\u540C\u6B65\u66F4\u65B0\u4ED3\u5E93\u5546\u54C1\u5B9E\u65F6\u96F6\u552E\u4EF7\uFF0C\u5E76\u540C\u6B65\u672C\u8D27\u67DC\u660E\u7EC6\u8D34\u724C\u4EF7\u683C\u3002",
       savePendingPriceDetailsNewRetailHint: "\u65B0\u5546\u54C1\u96F6\u552E\u4EF7\u53EA\u4FDD\u5B58\u5230\u672C\u8D27\u67DC\u660E\u7EC6\uFF0C\u540E\u7EED\u521B\u5EFA\u5546\u54C1\u65F6\u7EE7\u7EED\u4F7F\u7528\u8BE5\u4EF7\u683C\u3002",
       savePendingPriceDetailsRetryHint: "\u5982\u679C\u4FDD\u5B58\u5931\u8D25\uFF0C\u5F85\u4FDD\u5B58\u72B6\u6001\u4F1A\u4FDD\u7559\uFF0C\u53EF\u4FEE\u6B63\u540E\u91CD\u8BD5\u3002",
+      savePendingDetailsTitle: "\u786E\u8BA4\u4FDD\u5B58\u660E\u7EC6",
+      savePendingDetailsUpdateTitle: "\u66F4\u65B0\u8BF4\u660E",
+      savePendingDetailsSummary: "\u672C\u6B21\u6D89\u53CA {{total}} \u6761\u660E\u7EC6\uFF1A\u8FDB\u53E3\u4EF7 {{importPriceCount}} \u6761\u3001\u96F6\u552E\u4EF7 {{retailPriceCount}} \u6761\u3001\u82F1\u6587\u540D\u79F0 {{englishNameCount}} \u6761\u3001\u6E05\u9664\u82F1\u6587\u540D\u79F0 {{clearEnglishNameCount}} \u6761\u3002",
+      savePendingDetailsExistingRetailHint: "\u5DF2\u6709\u5546\u54C1\u96F6\u552E\u4EF7\u4F1A\u540C\u6B65\u66F4\u65B0\u4ED3\u5E93\u5546\u54C1\u5B9E\u65F6\u96F6\u552E\u4EF7\uFF0C\u5E76\u540C\u6B65\u672C\u8D27\u67DC\u660E\u7EC6\u8D34\u724C\u4EF7\u683C\u3002",
+      savePendingDetailsNewRetailHint: "\u65B0\u5546\u54C1\u96F6\u552E\u4EF7\u53EA\u4FDD\u5B58\u5230\u672C\u8D27\u67DC\u660E\u7EC6\uFF0C\u540E\u7EED\u521B\u5EFA\u5546\u54C1\u65F6\u7EE7\u7EED\u4F7F\u7528\u8BE5\u4EF7\u683C\u3002",
+      savePendingDetailsInvalidEnglishHint: "{{count}} \u6761\u82F1\u6587\u540D\u79F0\u4E3A\u7A7A\u6216\u5305\u542B\u4E2D\u6587\uFF0C\u672C\u6B21\u4E0D\u4F1A\u4FDD\u5B58\u5E76\u4F1A\u7EE7\u7EED\u4FDD\u7559\u3002",
+      savePendingDetailsRetryHint: "\u5982\u679C\u4FDD\u5B58\u5931\u8D25\uFF0C\u5F85\u4FDD\u5B58\u72B6\u6001\u4F1A\u4FDD\u7559\uFF0C\u53EF\u4FEE\u6B63\u540E\u91CD\u8BD5\u3002",
       alignDomesticProductCodeTitle: "\u5BF9\u9F50\u56FD\u5185\u5546\u54C1\u7F16\u7801",
       alignDomesticProductCodeContent: "\u786E\u8BA4\u628A\u56FD\u5185\u5546\u54C1\u7F16\u7801 {{oldCode}} \u6539\u4E3A\u672C\u5730\u4E3B\u6863\u7F16\u7801 {{newCode}}\uFF1F",
       alignDomesticProductCodeConflictHint: "\u5982\u679C\u76EE\u6807\u56FD\u5185\u7F16\u7801\u5DF2\u5B58\u5728\uFF0C\u540E\u7AEF\u4F1A\u62D2\u7EDD\u672C\u6B21\u5BF9\u9F50\uFF0C\u4E0D\u4F1A\u81EA\u52A8\u5408\u5E76\u6216\u8986\u76D6\u3002",
       batchCategoryTitle: "\u6279\u91CF\u8BBE\u7F6E\u5206\u7C7B",
       batchCategoryContent: "\u8BF7\u9009\u62E9\u76EE\u6807\u5206\u7C7B\uFF0C\u786E\u8BA4\u540E\u4F1A\u628A\u5F53\u524D\u76EE\u6807\u660E\u7EC6\u5BF9\u5E94\u7684\u4ED3\u5E93\u5546\u54C1\u8BBE\u7F6E\u5230\u8BE5\u5206\u7C7B\u3002",
       rowCategoryTitle: "\u76EE\u6807\u5206\u7C7B\u4FEE\u6539",
+      categoryManageTitle: "\u7BA1\u7406\u5206\u7C7B",
       hqTranslationResultTitle: "HQ \u6570\u636E\u7FFB\u8BD1\u7ED3\u679C",
       exportAllDetailsTitle: "\u5BFC\u51FA\u5168\u90E8\u5339\u914D\u5546\u54C1",
       exportAllDetailsContent: "\u672A\u9009\u62E9\u5546\u54C1\uFF0C\u5C06\u6309\u5F53\u524D\u7B5B\u9009\u548C\u6392\u5E8F\u5BFC\u51FA\u5168\u90E8\u5339\u914D\u5546\u54C1\uFF0C\u5171 {{count}} \u6761\u3002\u662F\u5426\u7EE7\u7EED\uFF1F",
@@ -6243,20 +6497,30 @@ var zh_default = {
       missingContainerNumberForHqTranslation: "\u5F53\u524D\u8D27\u67DC\u7F3A\u5C11\u8D27\u67DC\u7F16\u53F7\uFF0C\u65E0\u6CD5\u7FFB\u8BD1 HQ \u6570\u636E",
       noNamesToTranslate: "\u6CA1\u6709\u53EF\u7FFB\u8BD1\u7684\u5546\u54C1\u540D\u79F0",
       namesTranslated: "\u5DF2\u7FFB\u8BD1 {{count}} \u6761\u5546\u54C1\u540D\u79F0",
+      namesTranslatedPending: "\u5DF2\u751F\u6210 {{count}} \u6761\u82F1\u6587\u540D\u79F0\uFF0C\u8BF7\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u63D0\u4EA4",
       invalidTranslatedNamesSkipped: "\u6709 {{count}} \u6761\u7FFB\u8BD1\u7ED3\u679C\u4ECD\u5305\u542B\u4E2D\u6587\uFF0C\u5DF2\u8DF3\u8FC7",
       enterEnglishName: "\u8BF7\u8F93\u5165\u82F1\u6587\u540D\u79F0",
+      enterValidEnglishName: "\u8BF7\u8F93\u5165\u4E0D\u542B\u4E2D\u6587\u7684\u82F1\u6587\u540D\u79F0",
       englishNamesUpdated: "\u5DF2\u4FEE\u6539 {{count}} \u6761\u82F1\u6587\u540D\u79F0",
       englishNamesUpdateFailed: "\u6279\u91CF\u4FEE\u6539\u82F1\u6587\u540D\u79F0\u5931\u8D25",
       englishNamesCleared: "\u5DF2\u6E05\u9664 {{count}} \u6761\u82F1\u6587\u540D\u79F0",
+      englishNamesPending: "\u5DF2\u6DFB\u52A0 {{count}} \u6761\u82F1\u6587\u540D\u79F0\u4FEE\u6539\uFF0C\u8BF7\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u63D0\u4EA4",
+      englishNamesClearPending: "\u5DF2\u6DFB\u52A0 {{count}} \u6761\u6E05\u9664\u82F1\u6587\u540D\u79F0\u64CD\u4F5C\uFF0C\u8BF7\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u63D0\u4EA4",
+      englishNameContainsChinese: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587",
+      emptyEnglishNameNotSaved: "\u7A7A\u767D\u82F1\u6587\u540D\u79F0\u4E0D\u4F1A\u4FDD\u5B58\uFF0C\u5982\u9700\u6E05\u7A7A\u8BF7\u4F7F\u7528\u201C\u6E05\u9664\u82F1\u6587\u540D\u79F0\u201D",
       noCategoryFilterRows: "\u5F53\u524D\u6CA1\u6709\u53EF\u5206\u7C7B\u7684\u660E\u7EC6",
       noProductsForCategoryAssign: "\u5F53\u524D\u76EE\u6807\u660E\u7EC6\u6CA1\u6709\u53EF\u5206\u7C7B\u7684\u5DF2\u6709\u5546\u54C1",
       batchCategoryUpdated: "\u5DF2\u8BBE\u7F6E {{count}} \u4E2A\u5546\u54C1\u5206\u7C7B",
       batchCategorySkippedMissingCode: "\u5DF2\u8DF3\u8FC7 {{count}} \u6761\u7F3A\u5C11\u5546\u54C1\u7F16\u7801\u7684\u660E\u7EC6",
       selectedRowsHidden: "\u5DF2\u9009\u660E\u7EC6\u4E0D\u5728\u5F53\u524D\u7B5B\u9009\u7ED3\u679C\u4E2D\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u518D\u64CD\u4F5C",
       savePendingPriceDetailsFirst: "\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u8FDB\u53E3\u4EF7\u683C/\u96F6\u552E\u4EF7",
+      savePendingDetailsFirst: "\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u5F85\u63D0\u4EA4\u7684\u660E\u7EC6\u4FEE\u6539",
       detailSaveFailed: "\u8D27\u67DC\u660E\u7EC6\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5",
       noPendingPriceDetails: "\u6CA1\u6709\u5F85\u4FDD\u5B58\u7684\u660E\u7EC6\u4EF7\u683C",
       detailPricesSaved: "\u5DF2\u4FDD\u5B58 {{count}} \u6761\u660E\u7EC6\u4EF7\u683C",
+      noPendingDetails: "\u6CA1\u6709\u5F85\u4FDD\u5B58\u7684\u660E\u7EC6\u4FEE\u6539",
+      detailsSaved: "\u5DF2\u4FDD\u5B58 {{count}} \u6761\u660E\u7EC6",
+      detailFieldsNotSaved: "{{count}} \u6761\u660E\u7EC6\u6709\u5B57\u6BB5\u672A\u4FDD\u5B58\uFF1A{{reasons}}",
       noMatchableDetails: "\u6CA1\u6709\u53EF\u5339\u914D\u7684\u660E\u7EC6",
       missingMatchableProductIdentity: "\u5F53\u524D\u660E\u7EC6\u7F3A\u5C11\u53EF\u5339\u914D\u7684\u5546\u54C1\u7F16\u7801\u6216\u8D27\u53F7",
       noDomesticDataToUpdate: "\u6CA1\u6709\u9700\u8981\u66F4\u65B0\u7684\u56FD\u5185\u6570\u636E",
@@ -7436,7 +7700,9 @@ var zh_default = {
       selectProductsFirst: "\u8BF7\u5148\u9009\u62E9\u8981\u66F4\u65B0\u5206\u7C7B\u7684\u5546\u54C1",
       domesticSupplier: "\u56FD\u5185\u4F9B\u5E94\u5546",
       confirmDelete: "\u786E\u8BA4\u5220\u9664\u8BE5\u5206\u7C7B\uFF1F",
-      deleteBlockedHint: "\u82E5\u8BE5\u5206\u7C7B\u5B58\u5728\u5B50\u5206\u7C7B\uFF0C\u540E\u7AEF\u4F1A\u963B\u6B62\u5220\u9664\u3002",
+      deleteBlockedHint: "\u82E5\u8BE5\u5206\u7C7B\u5B58\u5728\u5B50\u5206\u7C7B\u6216\u5173\u8054\u5546\u54C1\uFF0C\u540E\u7AEF\u4F1A\u963B\u6B62\u5220\u9664\u3002",
+      refreshAfterMutationFailed: "\u64CD\u4F5C\u5DF2\u6210\u529F\uFF0C\u4F46\u5206\u7C7B\u5217\u8868\u5237\u65B0\u5931\u8D25\uFF0C\u8BF7\u70B9\u51FB\u201C\u91CD\u8BD5\u201D\u5237\u65B0\u3002",
+      refreshSuccess: "\u5206\u7C7B\u5217\u8868\u5DF2\u5237\u65B0",
       noCategoryData: "\u6682\u65E0\u5206\u7C7B\u6570\u636E",
       searchPlaceholder: "\u641C\u7D22\u5206\u7C7B\u540D\u79F0",
       uncategorizedOption: "\u672A\u5206\u7C7B\u5546\u54C1",
@@ -7723,6 +7989,7 @@ var zh_default = {
       exportExcelFailed: "\u5BFC\u51FA\u914D\u8D27\u5355 Excel \u5931\u8D25",
       downloadPdfFailed: "\u4E0B\u8F7D\u914D\u8D27\u5355 PDF \u5931\u8D25",
       createPdfCanvasFailed: "\u521B\u5EFA\u914D\u8D27\u5355 PDF \u4E34\u65F6\u753B\u5E03\u5931\u8D25",
+      layoutNotReady: "\u6253\u5370\u5185\u5BB9\u5C1A\u672A\u51C6\u5907\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5",
       excel: {
         sheetName: "\u914D\u8D27\u5355",
         orderNo: "\u8BA2\u5355\u53F7",
@@ -7956,6 +8223,14 @@ var zh_default = {
     suppliers: {
       title: "\u4F9B\u5E94\u5546\u7BA1\u7406",
       sync: "\u540C\u6B65",
+      syncFromHq: "\u4ECE HQ \u540C\u6B65",
+      syncToHq: "\u540C\u6B65\u6240\u9009\u5230 HQ",
+      syncToHqTitle: "\u540C\u6B65\u6FB3\u6D32\u4F9B\u5E94\u5546\u5230 HQ",
+      syncToHqConfirm: "\u786E\u8BA4\u5C06\u9009\u4E2D\u7684 {{count}} \u4E2A\u6FB3\u6D32\u4F9B\u5E94\u5546\u540C\u6B65\u5230 HQ\uFF1F\u5C06\u5199\u5165\u4EE3\u7801\u3001\u540D\u79F0\u3001\u8054\u7CFB\u4EBA\u548C Email\u3002",
+      confirmSync: "\u786E\u8BA4\u540C\u6B65",
+      selectSyncFirst: "\u8BF7\u5148\u9009\u62E9\u8981\u540C\u6B65\u7684\u6FB3\u6D32\u4F9B\u5E94\u5546",
+      syncToHqComplete: "\u540C\u6B65\u5B8C\u6210\uFF1A\u65B0\u589E{{created}}\uFF0C\u66F4\u65B0{{updated}}\uFF0C\u8DF3\u8FC7{{skipped}}",
+      syncToHqFailed: "\u540C\u6B65\u5230 HQ \u5931\u8D25",
       createSupplier: "\u65B0\u5EFA\u4F9B\u5E94\u5546",
       syncComplete: "\u540C\u6B65\u5B8C\u6210\uFF1A\u65B0\u589E{{created}}\uFF0C\u66F4\u65B0{{updated}}\uFF0C\u505C\u7528{{deactivated}}",
       syncFailed: "\u540C\u6B65\u5931\u8D25",
@@ -8452,9 +8727,12 @@ var zh_default = {
         publishWeek: "\u53D1\u5E03\u672C\u5468",
         approve: "\u901A\u8FC7",
         reject: "\u62D2\u7EDD",
+        approveOvertime: "\u6279\u51C6\u52A0\u73ED",
+        rejectOvertime: "\u62D2\u7EDD\u52A0\u73ED",
         viewMap: "\u5730\u56FE",
         viewSamples: "\u6837\u672C",
-        openExternalMap: "\u6253\u5F00\u5916\u90E8\u5730\u56FE"
+        openExternalMap: "\u6253\u5F00\u5916\u90E8\u5730\u56FE",
+        loadTrajectoryMap: "\u52A0\u8F7D\u8F68\u8FF9\u5730\u56FE"
       },
       drawer: {
         createSchedule: "\u65B0\u5EFA\u6392\u73ED",
@@ -8465,7 +8743,8 @@ var zh_default = {
         approve: "\u901A\u8FC7\u5BA1\u6838",
         reject: "\u62D2\u7EDD\u5BA1\u6838",
         locationMap: "\u4F4D\u7F6E\u5730\u56FE",
-        locationSamples: "\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C"
+        locationSamples: "\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C",
+        locationTrajectory: "\u73ED\u4E2D\u4F4D\u7F6E\u8F68\u8FF9"
       },
       fields: {
         store: "\u5206\u5E97",
@@ -8485,8 +8764,19 @@ var zh_default = {
         locationAccuracy: "\u5B9A\u4F4D\u7CBE\u5EA6",
         locationCapturedAt: "\u91C7\u96C6\u65F6\u95F4",
         deviceSystem: "\u8BBE\u5907\u7CFB\u7EDF",
+        segment: "\u73ED\u6BB5",
+        trajectoryRange: "\u8F68\u8FF9\u65F6\u6BB5",
+        sampleCount: "\u73ED\u4E2D\u6837\u672C",
         applicant: "\u7533\u8BF7\u4EBA",
         sourceType: "\u6765\u6E90",
+        approvalDetail: "\u7533\u8BF7\u660E\u7EC6 / \u5BA1\u8BA1",
+        originalPunchTime: "\u539F\u59CB\u6253\u5361",
+        requestedPunchTime: "\u7533\u8BF7\u6253\u5361",
+        effectivePunchTime: "\u6709\u6548\u6253\u5361",
+        reason: "\u539F\u56E0",
+        candidateOvertime: "\u5019\u9009\uFF1A{{minutes}} \u5206\u949F",
+        approvedOvertime: "\u6279\u51C6\uFF1A{{minutes}} \u5206\u949F",
+        approvedOvertimeMinutes: "\u6279\u51C6\u52A0\u73ED\u5206\u949F",
         reviewedAt: "\u5BA1\u6838\u65F6\u95F4",
         holidayDate: "\u5047\u671F\u65E5\u671F",
         holidayName: "\u5047\u671F\u540D\u79F0",
@@ -8501,6 +8791,26 @@ var zh_default = {
         requireApprovalForNoSchedule: "\u672A\u6392\u73ED\u6253\u5361\u9700\u8981\u5BA1\u6838",
         updatedAt: "\u6700\u540E\u66F4\u65B0",
         reviewRemark: "\u5BA1\u6838\u5907\u6CE8"
+      },
+      approvalPresentation: {
+        Punch: {
+          title: "\u6253\u5361\u5F02\u5E38",
+          detail: "{{workDate}} \u7684\u6253\u5361\u5F02\u5E38"
+        },
+        Leave: {
+          title: "\u8BF7\u5047\u7533\u8BF7",
+          detail: "{{workDate}} \u5F00\u59CB\u7684\u8BF7\u5047\u7533\u8BF7"
+        },
+        PunchAdjustment: {
+          title: "\u8865\u5361\u7533\u8BF7"
+        },
+        Overtime: {
+          title: "\u52A0\u73ED\u5BA1\u6279"
+        },
+        MissingClockOut: {
+          title: "\u6F0F\u4E0B\u73ED\u5F85\u5904\u7406",
+          detail: "{{workDate}} \u6392\u73ED\u7ED3\u675F\u540E\u4ECD\u5B58\u5728\u672A\u95ED\u5408\u73ED\u6BB5\u3002"
+        }
       },
       status: {
         schedule: {
@@ -8530,7 +8840,10 @@ var zh_default = {
         },
         sourceType: {
           Punch: "\u6253\u5361\u5F02\u5E38",
-          Leave: "\u8BF7\u5047\u7533\u8BF7"
+          Leave: "\u8BF7\u5047\u7533\u8BF7",
+          PunchAdjustment: "\u8865\u5361",
+          Overtime: "\u52A0\u73ED",
+          MissingClockOut: "\u6F0F\u4E0B\u73ED"
         },
         holiday: {
           Open: "\u8425\u4E1A",
@@ -8541,7 +8854,12 @@ var zh_default = {
       validation: {
         userGuidRequired: "\u8BF7\u8F93\u5165\u5458\u5DE5 GUID",
         holidayNameRequired: "\u8BF7\u8F93\u5165\u5047\u671F\u540D\u79F0",
-        storeCodesRequired: "\u8BF7\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u5206\u5E97"
+        storeCodesRequired: "\u8BF7\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u5206\u5E97",
+        overtime: {
+          outOfRange: "\u6279\u51C6\u52A0\u73ED\u5FC5\u987B\u5728 0 \u5230\u5019\u9009\u5206\u949F\u4E4B\u95F4",
+          invalidIncrement: "\u6279\u51C6\u52A0\u73ED\u5FC5\u987B\u4E3A 15 \u5206\u949F\u500D\u6570",
+          remarkRequired: "\u4E0B\u8C03\u6216\u62D2\u7EDD\u52A0\u73ED\u65F6\u5FC5\u987B\u586B\u5199\u5BA1\u6838\u5907\u6CE8"
+        }
       },
       weekdays: {
         "0": "\u5468\u4E00",
@@ -8586,10 +8904,33 @@ var zh_default = {
         publishWeekFailed: "\u53D1\u5E03\u672C\u5468\u6392\u73ED\u5931\u8D25",
         reviewSuccess: "\u5BA1\u6838\u5DF2\u63D0\u4EA4",
         reviewFailed: "\u63D0\u4EA4\u5BA1\u6838\u5931\u8D25",
+        previewRevisionMissing: "\u670D\u52A1\u7AEF\u9884\u89C8\u672A\u8FD4\u56DE\u7248\u672C\u53F7\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8\u540E\u518D\u4FDD\u5B58\u3002",
+        directAdjustment: "\u5E97\u957F\u672C\u4EBA\u76F4\u63A5\u8C03\u6574",
         locationNotRecorded: "\u672A\u8BB0\u5F55\u4F4D\u7F6E",
         externalMapNotice: "\u9ED8\u8BA4\u4E0D\u52A0\u8F7D\u7B2C\u4E09\u65B9\u5730\u56FE\u3002\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u4F1A\u628A\u8BE5\u5750\u6807\u53D1\u9001\u7ED9\u5916\u90E8\u5730\u56FE\u670D\u52A1\u3002",
         loadLocationSamplesFailed: "\u52A0\u8F7D\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C\u5931\u8D25",
-        locationSamplesEmpty: "\u6682\u65E0\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C"
+        locationSamplesEmpty: "\u6682\u65E0\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C",
+        trajectoryInProgress: "\u8FDB\u884C\u4E2D",
+        trajectoryOpen: "\u8FDB\u884C\u4E2D\uFF1A\u5F53\u524D\u4EC5\u5C55\u793A\u4E0A\u73ED\u6253\u5361\u81F3\u6700\u65B0\u67E5\u8BE2\u65F6\u95F4\u7684\u90E8\u5206\u8F68\u8FF9\u3002",
+        trajectoryNoSamples: "\u8BE5\u73ED\u6BB5\u6682\u65E0\u73ED\u4E2D\u5B9A\u4F4D\u6837\u672C\uFF0C\u4ECD\u4FDD\u7559\u4E0A\u4E0B\u73ED\u6253\u5361\u7AEF\u70B9\u3002",
+        trajectoryMapNeedsTwoPoints: "\u81F3\u5C11\u9700\u8981\u4E24\u4E2A\u6709\u6548\u5750\u6807\u624D\u80FD\u7ED8\u5236\u8F68\u8FF9\u5730\u56FE\u3002",
+        trajectoryMapPrivacy: "\u5730\u56FE\u9ED8\u8BA4\u4E0D\u52A0\u8F7D\u3002\u70B9\u51FB\u540E\u4F1A\u5411 OpenStreetMap \u8BF7\u6C42\u8F68\u8FF9\u8303\u56F4\u5185\u7684\u5730\u56FE\u56FE\u5757\u3002",
+        trajectoryMapDisclaimer: "\u6298\u7EBF\u4EC5\u6309\u65F6\u95F4\u8FDE\u63A5\u5B9E\u9645\u91C7\u96C6\u70B9\uFF0C\u4E0D\u4EE3\u8868\u5B9E\u9645\u884C\u8D70\u9053\u8DEF\u6216\u5BFC\u822A\u8DEF\u7EBF\u3002",
+        trajectoryMapAria: "\u73ED\u4E2D\u4F4D\u7F6E\u8F68\u8FF9\u5730\u56FE",
+        trajectoryMapLoadFailed: "\u8F68\u8FF9\u5730\u56FE\u521D\u59CB\u5316\u5931\u8D25\uFF0C\u65F6\u95F4\u8F74\u4ECD\u53EF\u6B63\u5E38\u67E5\u770B\u3002",
+        trajectoryTileLoadFailed: "\u90E8\u5206\u5730\u56FE\u56FE\u5757\u52A0\u8F7D\u5931\u8D25\uFF0C\u8F68\u8FF9\u70B9\u548C\u65F6\u95F4\u8F74\u4E0D\u53D7\u5F71\u54CD\u3002",
+        trajectorySamplesTooDense: "\u5355\u65E5\u5B9A\u4F4D\u6837\u672C\u8FC7\u591A\uFF0C\u65E0\u6CD5\u5B89\u5168\u52A0\u8F7D\u5B8C\u6574\u8F68\u8FF9\u3002",
+        trajectoryPointClockIn: "\u4E0A\u73ED\u6253\u5361",
+        trajectoryPointSample: "\u73ED\u4E2D\u6837\u672C",
+        trajectoryPointClockOut: "\u4E0B\u73ED\u6253\u5361",
+        trajectoryReason: {
+          INVALID_SELECTED_TIME: "\u6240\u9009\u6253\u5361\u7F3A\u5C11\u6709\u6548 UTC \u65F6\u95F4\uFF0C\u65E0\u6CD5\u751F\u6210\u8F68\u8FF9\u3002",
+          SUPERSEDE_CYCLE: "\u6253\u5361\u66FF\u4EE3\u5173\u7CFB\u5F02\u5E38\uFF0C\u65E0\u6CD5\u786E\u5B9A\u6700\u7EC8\u6709\u6548\u6253\u5361\u3002",
+          SUPERSEDE_TARGET_MISSING: "\u6253\u5361\u66FF\u4EE3\u5173\u7CFB\u7F3A\u5C11\u539F\u59CB\u8BB0\u5F55\uFF0C\u65E0\u6CD5\u786E\u5B9A\u6700\u7EC8\u6709\u6548\u6253\u5361\u3002",
+          EFFECTIVE_PUNCH_NOT_FOUND: "\u65E0\u6CD5\u627E\u5230\u6240\u9009\u8BB0\u5F55\u5BF9\u5E94\u7684\u6700\u7EC8\u6709\u6548\u6253\u5361\u3002",
+          SEGMENT_NOT_FOUND: "\u65E0\u6CD5\u552F\u4E00\u8BC6\u522B\u6240\u9009\u6253\u5361\u6240\u5C5E\u73ED\u6BB5\u3002",
+          INVALID_DATE_RANGE: "\u73ED\u6BB5\u65E5\u671F\u8303\u56F4\u5F02\u5E38\uFF0C\u65E0\u6CD5\u67E5\u8BE2\u5B9A\u4F4D\u6837\u672C\u3002"
+        }
       }
     },
     devices: {
@@ -8606,6 +8947,7 @@ var zh_default = {
       hardwareId: "\u786C\u4EF6\u6807\u8BC6",
       deviceType: "\u8BBE\u5907\u7C7B\u578B",
       deviceSystem: "\u7CFB\u7EDF",
+      deviceSystemOther: "\u5176\u4ED6",
       onlineStatus: "\u5728\u7EBF\u72B6\u6001",
       online: "\u5728\u7EBF",
       offline: "\u79BB\u7EBF",
@@ -9284,7 +9626,8 @@ var zh_default = {
       installmentRepaymentComplete: "\u5B8C\u6210\u5206\u671F\u8FD8\u6B3E",
       installmentRepaymentCancel: "\u53D6\u6D88\u5206\u671F\u8FD8\u6B3E",
       dailyCloseSave: "\u4FDD\u5B58\u65E5\u7ED3",
-      dailyCloseReprint: "\u8865\u6253\u65E5\u7ED3"
+      dailyCloseReprint: "\u8865\u6253\u65E5\u7ED3",
+      cardPaymentSupervisorResolution: "\u4E3B\u7BA1\u4ED8\u6B3E\u7ED3\u6848"
     }
   },
   system: {
@@ -9317,14 +9660,28 @@ var zh_default = {
       target: "\u5F53\u524D\u76EE\u6807",
       forceStatus: "\u5F3A\u5236\u72B6\u6001",
       updatedAt: "\u66F4\u65B0\u65F6\u95F4",
-      setCurrentConfirm: "\u8BBE\u4E3A\u5F53\u524D\u53D1\u5E03\u7248\u672C\uFF1F",
-      setCurrent: "\u8BBE\u4E3A\u5F53\u524D",
+      viewQrCode: "\u67E5\u770B\u4E8C\u7EF4\u7801",
+      qrCodeTitle: "WPF \u4E0B\u8F7D\u4E8C\u7EF4\u7801",
+      setCurrentConfirm: "\u5C06\u6B64\u7248\u672C\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807\uFF1F\u5BA2\u6237\u7AEF\u5C06\u5728\u4E0B\u6B21\u68C0\u67E5\u66F4\u65B0\u65F6\u83B7\u53D6\u8BE5\u7248\u672C\u3002",
+      setCurrent: "\u8BBE\u4E3A\u53D1\u5E03\u76EE\u6807",
       rollback: "\u56DE\u9000",
       upload: "\u4E0A\u4F20\u7248\u672C",
       readOnlyHint: "\u5F53\u524D\u8D26\u53F7\u53EF\u67E5\u770B WPF \u7248\u672C\uFF0C\u4F46\u6CA1\u6709\u53D1\u5E03\u3001\u56DE\u9000\u6216\u5F3A\u5236\u66F4\u65B0\u6743\u9650\u3002",
       currentVersion: "\u5F53\u524D\u7248\u672C",
       minimumSupportedVersion: "\u6700\u4F4E\u652F\u6301\u7248\u672C",
       forceUpdate: "\u5F3A\u5236\u66F4\u65B0",
+      targetScope: "\u66F4\u65B0\u8303\u56F4",
+      targetAll: "\u5168\u90E8\u673A\u5668",
+      targetStores: "\u6307\u5B9A\u5206\u5E97",
+      targetDevices: "\u6307\u5B9A\u673A\u5668",
+      targetAllSummary: "\u5168\u90E8\u673A\u5668",
+      targetStoresSummary: "\u6307\u5B9A {{count}} \u4E2A\u5206\u5E97",
+      targetDevicesSummary: "\u6307\u5B9A {{count}} \u53F0\u673A\u5668",
+      targetRequired: "\u6307\u5B9A\u8303\u56F4\u65F6\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u76EE\u6807",
+      targetOptionsLoadFailed: "\u52A0\u8F7D\u5B9A\u5411\u66F4\u65B0\u76EE\u6807\u5931\u8D25",
+      selectStores: "\u9009\u62E9\u5206\u5E97",
+      searchDevices: "\u641C\u7D22\u673A\u5668\u7F16\u53F7\u3001\u5206\u5E97\u6216\u5907\u6CE8",
+      policyUpdated: "\u7B56\u7565\u66F4\u65B0",
       objectKeyPrefix: "COS \u8DEF\u5F84",
       policyTitle: "\u53D1\u5E03\u7B56\u7565",
       targetVersion: "\u76EE\u6807\u7248\u672C",
@@ -9562,6 +9919,7 @@ var zh_default = {
       storeCode: "\u5206\u5E97\u7F16\u7801",
       brandName: "\u54C1\u724C\u540D\u79F0",
       abn: "ABN",
+      timeZone: "\u65F6\u533A",
       contactPhone: "\u8054\u7CFB\u7535\u8BDD",
       contactEmail: "\u8054\u7CFB\u90AE\u7BB1",
       cashRegisterEnabled: "\u662F\u5426\u542F\u7528\u6536\u94F6\u7CFB\u7EDF",
@@ -9570,6 +9928,7 @@ var zh_default = {
       address: "\u5730\u5740",
       storeNameRequired: "\u8BF7\u8F93\u5165\u5206\u5E97\u540D\u79F0",
       storeCodeRequired: "\u8BF7\u8F93\u5165\u5206\u5E97\u7F16\u7801",
+      timeZoneRequired: "\u8BF7\u9009\u62E9\u65F6\u533A",
       storeNameMaxLength: "\u5206\u5E97\u540D\u79F0\u4E0D\u80FD\u8D85\u8FC7 100 \u4E2A\u5B57\u7B26",
       storeCodeMaxLength: "\u5206\u5E97\u7F16\u7801\u4E0D\u80FD\u8D85\u8FC7 20 \u4E2A\u5B57\u7B26",
       brandNameMaxLength: "\u54C1\u724C\u540D\u79F0\u4E0D\u80FD\u8D85\u8FC7 100 \u4E2A\u5B57\u7B26",
@@ -10001,6 +10360,115 @@ var zh_default = {
         rollbackCommandFailed: "\u751F\u6210\u56DE\u64A4\u547D\u4EE4\u5931\u8D25",
         rollbackCommandCopySuccess: "\u56DE\u64A4\u547D\u4EE4\u5DF2\u590D\u5236"
       },
+      updatePolicy: {
+        title: "iOS / iPad \u66F4\u65B0\u7B56\u7565",
+        subtitle: "\u53D1\u5E03\u4E8B\u5B9E\u4E0E\u6295\u653E\u7B56\u7565\u76F8\u4E92\u72EC\u7ACB\uFF1B\u767B\u8BB0\u53D1\u5E03\u4E0D\u4F1A\u81EA\u52A8\u6FC0\u6D3B\uFF0C\u5BA2\u6237\u7AEF\u53EA\u6267\u884C\u5F53\u524D\u5DF2\u542F\u7528\u7B56\u7565\u3002",
+        loadFailed: "\u52A0\u8F7D App \u66F4\u65B0\u7B56\u7565\u5931\u8D25",
+        mobileLoadFailed: "\u52A0\u8F7D Mobile \u539F\u751F\u53D1\u5E03\u4E0E\u7B56\u7565\u5931\u8D25",
+        ipadNativeLoadFailed: "\u52A0\u8F7D iPad \u539F\u751F\u53D1\u5E03\u4E0E\u7B56\u7565\u5931\u8D25",
+        ipadOtaLoadFailed: "\u52A0\u8F7D iPad OTA \u53D1\u5E03\u4E0E\u6295\u653E\u7B56\u7565\u5931\u8D25",
+        storeOptionsLoadFailed: "\u52A0\u8F7D\u5206\u5E97\u9009\u9879\u5931\u8D25",
+        storeOptionsFallback: "\u73B0\u6709\u7B56\u7565\u4ECD\u4EE5 Store GUID \u56DE\u9000\u663E\u793A\uFF1B\u91CD\u65B0\u52A0\u8F7D\u5206\u5E97\u9009\u9879\u524D\uFF0C\u4E0D\u80FD\u4FDD\u5B58\u201C\u6307\u5B9A\u5206\u5E97\u201D\u8303\u56F4\u3002Mobile \u548C\u201C\u5168\u90E8\u5206\u5E97\u201D\u7B56\u7565\u4E0D\u53D7\u5F71\u54CD\u3002",
+        storeOptionsSaveBlocked: "\u5206\u5E97\u9009\u9879\u5C1A\u4E0D\u53EF\u7528\uFF0C\u4E0D\u80FD\u4FDD\u5B58\u201C\u6307\u5B9A\u5206\u5E97\u201D\u8303\u56F4\uFF0C\u8BF7\u5148\u91CD\u8BD5\u52A0\u8F7D\u3002",
+        retry: "\u91CD\u8BD5",
+        readOnly: "\u5F53\u524D\u8D26\u53F7\u53EA\u6709\u67E5\u770B\u6743\u9650\uFF0C\u7B56\u7565\u548C\u6295\u653E\u914D\u7F6E\u5747\u4E3A\u53EA\u8BFB\u3002",
+        tabs: {
+          mobile: "Mobile \u539F\u751F",
+          ipadNative: "iPad \u539F\u751F",
+          ipadOta: "iPad OTA"
+        },
+        releaseFacts: "\u53D1\u5E03\u4E8B\u5B9E",
+        policy: "\u539F\u751F\u66F4\u65B0\u7B56\u7565",
+        rollout: "OTA \u6295\u653E\u7B56\u7565",
+        registerRelease: "\u767B\u8BB0 App Store \u53D1\u5E03",
+        registerTitle: "{{app}} \xB7 \u767B\u8BB0\u53D1\u5E03",
+        verifyAndRegister: "\u9A8C\u8BC1\u5E76\u767B\u8BB0",
+        registerFinalConfirmTitle: "\u786E\u8BA4 Apple \u9A8C\u8BC1\u5E76\u767B\u8BB0",
+        registerFinalConfirmDescription: "\u786E\u8BA4\u540E\u5C06\u8C03\u7528 Apple Lookup\uFF0C\u5E76\u5728\u9A8C\u8BC1\u53EF\u4E0B\u8F7D\u540E\u8FFD\u52A0\u4E0D\u53EF\u53D8\u53D1\u5E03\u4E8B\u5B9E\u3002\u6B64\u64CD\u4F5C\u4E0D\u4F1A\u6FC0\u6D3B\u66F4\u65B0\u7B56\u7565\u3002",
+        registerTargetApp: "\u76EE\u6807 App",
+        appStoreId: "App Store ID",
+        appStoreIdRequired: "\u8BF7\u8F93\u5165 App Store ID",
+        appStoreIdInvalid: "App Store ID \u5FC5\u987B\u4E3A 6 \u81F3 20 \u4F4D\u6570\u5B57",
+        buildNumber: "\u6784\u5EFA\u53F7",
+        buildNumberRequired: "\u8BF7\u8F93\u5165\u6784\u5EFA\u53F7",
+        buildNumberInvalid: "\u6784\u5EFA\u53F7\u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u6216\u8FDE\u5B57\u7B26",
+        ipadBuildNumberInvalid: "iPad \u6784\u5EFA\u53F7\u5FC5\u987B\u662F 0 \u81F3 2147483647 \u7684\u6574\u6570",
+        ipadBuildNotVerifiedWarning: "Apple Lookup \u4E0D\u4F1A\u9A8C\u8BC1 iPad \u6784\u5EFA\u53F7\uFF0C\u8BF7\u52A1\u5FC5\u5BF9\u7167 App Store Connect \u624B\u5DE5\u6838\u5BF9\u3002",
+        ipadBuildDoubleConfirmDescription: "\u63D0\u4EA4\u540E\u8FD8\u4F1A\u663E\u793A\u6700\u7EC8\u786E\u8BA4\uFF1B\u4E24\u6B21\u90FD\u5E94\u6838\u5BF9 App Store ID\u3001\u6784\u5EFA\u53F7\u548C Storefront\u3002",
+        ipadPolicyBuildConfirmDescription: "\u6FC0\u6D3B iPad \u539F\u751F\u7B56\u7565\u524D\uFF0C\u8BF7\u518D\u6B21\u6838\u5BF9\u76EE\u6807\u53D1\u5E03\u7684\u6784\u5EFA\u53F7\uFF1B\u8BE5\u6784\u5EFA\u53F7\u4E0D\u662F Apple Lookup \u7684\u9A8C\u8BC1\u7ED3\u679C\u3002",
+        storefront: "Storefront",
+        storefrontRequired: "\u8BF7\u8F93\u5165 Storefront",
+        storefrontInvalid: "Storefront \u5FC5\u987B\u662F\u4E24\u4E2A\u82F1\u6587\u5B57\u6BCD",
+        appleVerificationHint: "\u53D1\u5E03\u7248\u672C\u7531\u540E\u53F0\u901A\u8FC7 Apple Lookup \u9A8C\u8BC1",
+        registrationNotActivation: "\u53EA\u6709 Apple \u5DF2\u53EF\u4E0B\u8F7D\u7684\u7248\u672C\u624D\u80FD\u767B\u8BB0\uFF1B\u767B\u8BB0\u6210\u529F\u4E0D\u4EE3\u8868\u7B56\u7565\u5DF2\u6FC0\u6D3B\uFF0C\u6784\u5EFA\u53F7\u4EC5\u7528\u4E8E\u5BA1\u8BA1\u3002",
+        registerConfirmDescription: "\u540E\u53F0\u5C06\u67E5\u8BE2 Apple Storefront \u5E76\u9A8C\u8BC1\u7248\u672C\u786E\u5B9E\u53EF\u4E0B\u8F7D\u3002\u9A8C\u8BC1\u6210\u529F\u540E\u53EA\u767B\u8BB0\u53D1\u5E03\u4E8B\u5B9E\uFF0C\u4E0D\u4F1A\u81EA\u52A8\u6FC0\u6D3B\u66F4\u65B0\u3002",
+        registerSuccess: "App Store \u53D1\u5E03\u5DF2\u9A8C\u8BC1\u5E76\u767B\u8BB0",
+        registerFailed: "\u9A8C\u8BC1\u6216\u767B\u8BB0 App Store \u53D1\u5E03\u5931\u8D25",
+        status: "\u72B6\u6001",
+        active: "\u5DF2\u6FC0\u6D3B",
+        verified: "Apple \u5DF2\u9A8C\u8BC1",
+        registered: "\u5DF2\u767B\u8BB0",
+        rollback: "\u56DE\u9000\u53D1\u5E03",
+        enabled: "\u5DF2\u542F\u7528",
+        disabled: "\u5DF2\u505C\u7528",
+        policyVersion: "\u7B56\u7565\u7248\u672C",
+        versionBuild: "\u7248\u672C / \u6784\u5EFA\u53F7",
+        bundle: "Bundle ID",
+        verifiedAt: "Apple \u9A8C\u8BC1\u65F6\u95F4",
+        openStore: "\u6253\u5F00 App Store",
+        openDashboard: "\u6253\u5F00 Dashboard",
+        noReleases: "\u6682\u65E0\u5DF2\u767B\u8BB0\u53D1\u5E03",
+        latestVersion: "\u6700\u65B0\u7248\u672C",
+        updatedAt: "\u6700\u540E\u66F4\u65B0",
+        updatedBy: "\u64CD\u4F5C\u4EBA",
+        policyStatus: "\u7B56\u7565\u72B6\u6001",
+        rolloutStatus: "\u6295\u653E\u72B6\u6001",
+        release: "\u76EE\u6807\u53D1\u5E03",
+        selectRelease: "\u9009\u62E9\u5DF2\u767B\u8BB0\u53D1\u5E03",
+        releaseRequired: "\u542F\u7528\u524D\u5FC5\u987B\u9009\u62E9\u53D1\u5E03",
+        minimumVersion: "\u6700\u4F4E\u652F\u6301\u7248\u672C\uFF08\u53EF\u9009\uFF09",
+        minimumVersionPlaceholder: "\u4F8B\u5982 1.2.0",
+        minimumVersionHelp: "\u7559\u7A7A\u65F6\u53EA\u63D0\u793A\u53EF\u9009\u66F4\u65B0\uFF1B\u586B\u5199\u540E\uFF0C\u4F4E\u4E8E\u8BE5\u7248\u672C\u7684\u5BA2\u6237\u7AEF\u5FC5\u987B\u66F4\u65B0\u3002",
+        minimumBuild: "\u6700\u4F4E\u652F\u6301\u6784\u5EFA\u53F7\uFF08\u53EF\u9009\uFF09",
+        minimumBuildPlaceholder: "\u4F8B\u5982 28",
+        minimumBuildHelp: "\u4EC5\u7528\u4E8E iPad \u539F\u751F\u7B56\u7565\uFF1B\u5FC5\u987B\u540C\u65F6\u586B\u5199\u6700\u4F4E\u652F\u6301\u7248\u672C\u3002",
+        minimumBuildRequiresVersion: "\u8BBE\u7F6E\u6700\u4F4E\u652F\u6301\u6784\u5EFA\u53F7\u524D\u5FC5\u987B\u586B\u5199\u6700\u4F4E\u652F\u6301\u7248\u672C",
+        releaseMessage: "\u66F4\u65B0\u8BF4\u660E",
+        releaseMessagePlaceholder: "\u5411\u5BA2\u6237\u7AEF\u8BF4\u660E\u672C\u6B21\u66F4\u65B0\u5185\u5BB9",
+        targetScope: "\u6295\u653E\u8303\u56F4",
+        targetAll: "\u5168\u90E8\u5206\u5E97",
+        targetStores: "\u6307\u5B9A\u5206\u5E97",
+        selectStores: "\u9009\u62E9\u5206\u5E97",
+        storesRequired: "\u6307\u5B9A\u5206\u5E97\u6295\u653E\u65F6\u81F3\u5C11\u9009\u62E9\u4E00\u5BB6\u5206\u5E97",
+        forceUpdate: "\u5F3A\u5236\u66F4\u65B0",
+        activateNativeConfirmTitle: "\u786E\u8BA4\u6FC0\u6D3B\u539F\u751F\u66F4\u65B0\u7B56\u7565\uFF1F",
+        activateNativeConfirmDescription: "\u76EE\u6807 App Store \u53D1\u5E03\u5DF2\u901A\u8FC7 Apple Lookup \u9A8C\u8BC1\uFF1B\u672C\u64CD\u4F5C\u53EA\u6FC0\u6D3B\u539F\u751F\u66F4\u65B0\u7B56\u7565\uFF0C\u4E0D\u4F1A\u767B\u8BB0\u6216\u53D1\u5E03\u65B0\u7248\u672C\u3002",
+        activateOtaConfirmTitle: "\u786E\u8BA4\u6FC0\u6D3B OTA \u6295\u653E\uFF1F",
+        activateOtaConfirmDescription: "\u76EE\u6807 OTA \u5DF2\u7531 iPad EAS \u53D1\u5E03\u811A\u672C\u767B\u8BB0\uFF1B\u672C\u64CD\u4F5C\u53EA\u6FC0\u6D3B\u6295\u653E\u7B56\u7565\uFF0CWeb \u4E0D\u4F1A\u6267\u884C EAS \u53D1\u5E03\u3002",
+        confirmRelease: "\u76EE\u6807\u53D1\u5E03",
+        confirmScope: "\u6295\u653E\u8303\u56F4",
+        confirmUpdateMode: "\u66F4\u65B0\u65B9\u5F0F",
+        confirmMinimumBuild: "\u6700\u4F4E\u652F\u6301\u6784\u5EFA\u53F7",
+        confirmSelectedStores: "\u6307\u5B9A\u5206\u5E97\uFF08{{count}}\uFF09",
+        confirmNativeOptionalMode: "\u53EF\u9009\u66F4\u65B0\u63D0\u9192",
+        confirmNativeRequiredMode: "\u4F4E\u4E8E {{version}} \u7684\u5BA2\u6237\u7AEF\u5FC5\u987B\u66F4\u65B0",
+        confirmOtaOptionalMode: "\u53EF\u9009 OTA \u66F4\u65B0",
+        confirmOtaRequiredMode: "\u5F3A\u5236 OTA \u66F4\u65B0",
+        disableConfirmTitle: "\u786E\u8BA4\u505C\u7528\u66F4\u65B0\u7B56\u7565\uFF1F",
+        disableConfirmDescription: "\u505C\u7528\u540E\u5BA2\u6237\u7AEF\u5C06\u4E0D\u518D\u547D\u4E2D\u6B64\u7B56\u7565\uFF0C\u672C\u6B21\u4FDD\u5B58\u4E5F\u4F1A\u6E05\u9664\u76EE\u6807\u53D1\u5E03\u548C\u6295\u653E\u8303\u56F4\u3002",
+        saveSuccess: "\u66F4\u65B0\u7B56\u7565\u5DF2\u4FDD\u5B58",
+        saveFailed: "\u4FDD\u5B58\u66F4\u65B0\u7B56\u7565\u5931\u8D25",
+        versionConflict: "\u7B56\u7565\u5DF2\u88AB\u5176\u4ED6\u64CD\u4F5C\u66F4\u65B0\uFF0C\u5DF2\u91CD\u65B0\u52A0\u8F7D\u6743\u5A01\u72B6\u6001\uFF1B\u672C\u6B21\u4FEE\u6539\u6CA1\u6709\u81EA\u52A8\u91CD\u653E\uFF0C\u8BF7\u6838\u5BF9\u540E\u91CD\u65B0\u786E\u8BA4\u3002",
+        versionConflictReloadSuperseded: "\u7B56\u7565\u5DF2\u88AB\u5176\u4ED6\u64CD\u4F5C\u66F4\u65B0\uFF0C\u672C\u6B21\u4FEE\u6539\u6CA1\u6709\u81EA\u52A8\u91CD\u653E\uFF1B\u672C\u6B21\u91CD\u8F7D\u5DF2\u7531\u66F4\u65B0\u7684\u5237\u65B0\u53D6\u4EE3\uFF0C\u8BF7\u7B49\u5F85\u5237\u65B0\u5B8C\u6210\u540E\u6838\u5BF9\u5E76\u91CD\u65B0\u786E\u8BA4\u3002",
+        versionConflictReloadFailed: "\u7B56\u7565\u5DF2\u88AB\u5176\u4ED6\u64CD\u4F5C\u66F4\u65B0\uFF0C\u4F46\u6743\u5A01\u72B6\u6001\u52A0\u8F7D\u5931\u8D25\uFF1B\u672C\u6B21\u4FEE\u6539\u6CA1\u6709\u81EA\u52A8\u91CD\u653E\uFF0C\u8BF7\u5148\u91CD\u65B0\u52A0\u8F7D\u8BE5\u533A\u57DF\u518D\u91CD\u65B0\u786E\u8BA4\u3002",
+        otaScriptHint: "Web \u53EA\u5C55\u793A\u5DF2\u767B\u8BB0 OTA \u5E76\u6FC0\u6D3B\u6295\u653E\uFF1B\u53D1\u5E03\u53CA\u767B\u8BB0\u5FC5\u987B\u7531 iPad EAS \u53D1\u5E03\u811A\u672C\u5B8C\u6210\uFF0CWeb \u4E0D\u6267\u884C EAS CLI\u3002",
+        environment: "\u73AF\u5883",
+        channel: "Channel",
+        runtime: "Runtime",
+        iosUpdateId: "iOS Update ID",
+        updateGroupId: "Update Group ID",
+        publishedAt: "\u53D1\u5E03\u65F6\u95F4"
+      },
       serviceTokens: {
         title: "\u670D\u52A1 API Token",
         empty: "\u6682\u65E0\u670D\u52A1 API Token",
@@ -10012,6 +10480,17 @@ var zh_default = {
         name: "\u540D\u79F0",
         namePlaceholder: "\u4F8B\u5982 OTA \u81EA\u52A8\u53D1\u5E03",
         nameRequired: "\u8BF7\u8F93\u5165 Token \u540D\u79F0",
+        purpose: "\u7528\u9014",
+        purposes: {
+          "mobile-ota-publisher": {
+            label: "Mobile OTA \u53D1\u5E03\u5668",
+            description: "\u4EC5\u7528\u4E8E Mobile OTA \u53D1\u5E03\u767B\u8BB0\uFF1B\u73AF\u5883\u53D8\u91CF\u4FDD\u6301 HBWEB_API_BASE_URL / HBWEB_API_TOKEN\u3002"
+          },
+          "pos-ipad-update-decision-reader": {
+            label: "iPad \u66F4\u65B0\u51B3\u7B56\u8BFB\u53D6\u5668",
+            description: "\u4EC5\u7528\u4E8E POS API \u8BFB\u53D6 iPad \u66F4\u65B0\u51B3\u7B56\uFF1B\u73AF\u5883\u53D8\u91CF\u4E3A HBPOS_APP_UPDATE_DECISION_READ_TOKEN\u3002"
+          }
+        },
         tokenPrefix: "Token \u524D\u7F00",
         scopes: "Scopes",
         status: "\u72B6\u6001",
@@ -10531,6 +11010,16 @@ var zh_default = {
     perItemSelect: "\u9010\u9879\u9009\u62E9",
     duplicateCount: "\u91CD\u590D\u6570\u91CF",
     mergedQuantity: "\u5408\u5E76\u540E\u4EF6\u6570",
+    mergedPackingQuantity: "\u5408\u5E76\u540E\u88C5\u7BB1\u6570",
+    mergedUnitVolume: "\u5408\u5E76\u540E\u4F53\u79EF",
+    mergeValidation: "\u6821\u9A8C",
+    mergeReady: "\u53EF\u5408\u5E76",
+    mergeQuantityField: "\u4EF6\u6570",
+    mergePackingQuantityField: "\u5355\u4EF6\u88C5\u7BB1\u6570",
+    mergeVolumeField: "\u5355\u4EF6\u4F53\u79EF",
+    mergeInvalidFields: "\u65E0\u6548\u5B57\u6BB5\uFF1A{{fields}}",
+    mergeBlockedSummary: "{{count}} \u7EC4\u6570\u636E\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u8FD4\u56DE\u8868\u683C\u4FEE\u6B63\u540E\u91CD\u65B0\u68C0\u6D4B\u3002",
+    mergeBlockedDetails: "\u65E0\u6CD5\u5408\u5E76\u4EE5\u4E0B\u8D27\u53F7\uFF0C\u8BF7\u4FEE\u6B63\u4EF6\u6570\u3001\u88C5\u7BB1\u6570\u548C\u4F53\u79EF\uFF1A{{details}}",
     foundDuplicateGroups: "\u53D1\u73B0 {{count}} \u7EC4\u91CD\u590D\u8D27\u53F7",
     mergeDuplicates: "\u5408\u5E76\u91CD\u590D",
     duplicateWarning: "\u4EE5\u4E0B\u8D27\u53F7\u5728\u5BFC\u5165\u6570\u636E\u4E2D\u5B58\u5728\u91CD\u590D\uFF0C\u5EFA\u8BAE\u5408\u5E76\u540E\u518D\u6267\u884C\u68C0\u6D4B\u5339\u914D\uFF1A",
@@ -10670,6 +11159,7 @@ var zh_default = {
     amount: "\u91D1\u989D",
     viewDetail: "\u67E5\u770B\u8BA2\u5355\u660E\u7EC6",
     noMatchOrders: "\u6CA1\u6709\u5339\u914D\u5230\u8BA2\u5355\uFF0C\u8BF7\u8C03\u6574\u641C\u7D22\u6761\u4EF6\u3002",
+    loadFailed: "\u5386\u53F2\u8BA2\u5355\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002",
     noHistoryOrders: "\u5F53\u524D\u7B5B\u9009\u6761\u4EF6\u4E0B\u6682\u65E0\u5386\u53F2\u8BA2\u5355\u3002"
   },
   shopOrderDetail: {

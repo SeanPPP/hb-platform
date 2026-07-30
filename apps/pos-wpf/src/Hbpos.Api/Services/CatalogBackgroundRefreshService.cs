@@ -93,7 +93,7 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
                 return request.Completion.Task;
             }
 
-            _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(key, request));
+            RemoveScheduledRequest(request);
             var exception = new InvalidOperationException("Catalog refresh queue is not accepting work.");
             request.Completion.TrySetException(exception);
             _logger.LogWarning(
@@ -136,8 +136,8 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
             var worker = scope.ServiceProvider.GetRequiredService<ICatalogIndexRefreshWorker>();
             await worker.RefreshCatalogIndexAsync(request.Key.StoreCode, stoppingToken);
 
+            RemoveScheduledRequest(request);
             request.Completion.TrySetResult();
-            _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
             _logger.LogInformation(
                 "Catalog background refresh completed store={StoreCode} attempt={Attempt}",
                 request.Key.StoreCode,
@@ -145,8 +145,8 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
+            RemoveScheduledRequest(request);
             request.Completion.TrySetCanceled(stoppingToken);
-            _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
             _logger.LogInformation(
                 "Catalog background refresh cancelled store={StoreCode} attempt={Attempt}",
                 request.Key.StoreCode,
@@ -167,8 +167,8 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
             }
             else
             {
+                RemoveScheduledRequest(request);
                 request.Completion.TrySetException(exception);
-                _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
                 _logger.LogError(
                     exception,
                     "Catalog background refresh failed permanently store={StoreCode} attempts={AttemptCount}",
@@ -204,13 +204,13 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
+            RemoveScheduledRequest(request);
             request.Completion.TrySetCanceled(stoppingToken);
-            _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
         }
         catch (Exception exception)
         {
+            RemoveScheduledRequest(request);
             request.Completion.TrySetException(exception);
-            _scheduled.TryRemove(new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
             _logger.LogError(
                 exception,
                 "Catalog background refresh retry could not be queued store={StoreCode} attempt={Attempt}",
@@ -256,11 +256,19 @@ public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalo
     {
         foreach (var pair in _scheduled)
         {
-            if (_scheduled.TryRemove(pair))
+            if (RemoveScheduledRequest(pair.Value))
             {
                 pair.Value.Completion.TrySetCanceled();
             }
         }
+    }
+
+    private bool RemoveScheduledRequest(CatalogRefreshRequest request)
+    {
+        // 终态先按键和值移除自身，completion 的 continuation 才能立即创建下一次刷新；
+        // 值匹配也避免旧请求误删同门店后来入队的新请求。
+        return _scheduled.TryRemove(
+            new KeyValuePair<CatalogRefreshKey, CatalogRefreshRequest>(request.Key, request));
     }
 
     private static TimeSpan? GetRetryDelay(int attempt)

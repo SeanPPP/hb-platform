@@ -586,6 +586,8 @@ runTest('配货单 PDF 页码应包含中英文翻译', () => {
 
   assertEqual(zhLocale.warehouse.pickingList.pageNumber, '第 {{current}} / {{total}} 页', '中文 PDF 页码应显示第 x / y 页')
   assertEqual(enLocale.warehouse.pickingList.pageNumber, 'Page {{current}} / {{total}}', '英文 PDF 页码应显示 Page x / y')
+  assertEqual(zhLocale.warehouse.pickingList.layoutNotReady, '打印内容尚未准备完成，请稍后重试', '中文应提示打印布局未就绪')
+  assertEqual(enLocale.warehouse.pickingList.layoutNotReady, 'The print content is not ready yet. Please try again.', '英文应提示打印布局未就绪')
 })
 
 console.log('pickingListLogic.test: ok')

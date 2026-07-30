@@ -1277,7 +1277,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task Failed_old_owner_releases_only_its_same_version_pending_reservation()
+    public async Task Invalidated_old_owner_releases_its_pending_reservation_after_persistence_failure()
     {
         var store = new OverlappingSnapshotStore();
         var cache = CreateOverlappingPendingCache(store);
@@ -1298,7 +1298,7 @@ public sealed class CatalogIndexCacheTests
         await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         store.CompleteFirst(new IOException("first owner failed"));
-        await Assert.ThrowsAsync<IOException>(() => firstOwner);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
 
         Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
         Assert.Null(cache.GetByVersion("S01", null, pending.CatalogIndex.CatalogVersion));
@@ -1312,7 +1312,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task Successful_same_version_owners_each_release_their_pending_reservation()
+    public async Task Invalidated_old_owner_releases_its_pending_reservation_before_same_version_republish()
     {
         var store = new OverlappingSnapshotStore();
         var cache = CreateOverlappingPendingCache(store);
@@ -1333,7 +1333,7 @@ public sealed class CatalogIndexCacheTests
         await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         store.CompleteFirst();
-        Assert.NotNull(await firstOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
         Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
 
         store.CompleteSecond();
@@ -1375,7 +1375,7 @@ public sealed class CatalogIndexCacheTests
             cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
 
         store.CompleteFirst(new IOException("first owner failed"));
-        await Assert.ThrowsAsync<IOException>(() => firstOwner);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
         Assert.NotNull(cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
 
         store.CompleteSecond();
@@ -1498,7 +1498,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task Active_cas_invalidation_keeps_already_persisted_version_pinned()
+    public async Task Active_cas_invalidation_fails_force_waiter_but_keeps_durable_version_pinned()
     {
         var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var allowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1516,10 +1516,112 @@ public sealed class CatalogIndexCacheTests
         Assert.Null(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
         allowPublish.SetResult();
 
-        Assert.Equal(
-            result.CatalogIndex.CatalogVersion,
-            (await force)?.CatalogIndex.CatalogVersion);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => force);
         Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task InvalidateStore_during_durable_publication_fails_all_waiters_but_keeps_version_pinned()
+    {
+        var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingSnapshotStore(publishStarted, allowPublish);
+        var cache = new CatalogIndexCache(store);
+        var result = CreateResult("S01", "catalog-v1:invalidated-durable");
+
+        var force = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(result),
+            CancellationToken.None);
+        await publishStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var fresh = cache.GetOrBuildFreshAsync(
+            "S01",
+            null,
+            _ => throw new InvalidOperationException("同一 flight 不应重新构建"),
+            CancellationToken.None);
+        var legacy = cache.GetOrBuildAsync(
+            "S01",
+            null,
+            _ => throw new InvalidOperationException("同一 flight 不应重新构建"),
+            CancellationToken.None);
+
+        cache.InvalidateStore("S01");
+        Assert.Null(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+        allowPublish.SetResult();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => force);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fresh);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => legacy);
+        Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task InvalidateStore_after_durable_pin_before_active_cas_fails_force_waiter()
+    {
+        var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeCasReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowActiveCas = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingSnapshotStore(publishStarted, allowPublish);
+        var cache = new CatalogIndexCache(store)
+        {
+            BeforeActivePublicationCasForTests = () =>
+            {
+                activeCasReady.TrySetResult();
+                allowActiveCas.Task.GetAwaiter().GetResult();
+            }
+        };
+        var result = CreateResult("S01", "catalog-v1:active-cas-race");
+
+        var force = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(result),
+            CancellationToken.None);
+        await publishStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        allowPublish.SetResult();
+        await activeCasReady.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+        cache.InvalidateStore("S01");
+        allowActiveCas.SetResult();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => force);
+        Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task InvalidateStore_after_generation_capture_before_install_overrides_persistence_failure()
+    {
+        var cache = new CatalogIndexCache(new ThrowingSnapshotStore());
+        cache.AfterStorePublicationGenerationCapturedForTests =
+            () => cache.InvalidateStore("S01");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            cache.ForceRefreshAndPublishAsync(
+                "S01",
+                null,
+                _ => Task.FromResult<CatalogIndexBuildResult?>(
+                    CreateResult("S01", "catalog-v1:captured-generation")),
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task InvalidateStore_after_generation_capture_before_install_overrides_build_failure()
+    {
+        var cache = new CatalogIndexCache();
+        cache.AfterStorePublicationGenerationCapturedForTests =
+            () => cache.InvalidateStore("S01");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            cache.ForceRefreshAndPublishAsync(
+                "S01",
+                null,
+                _ => Task.FromException<CatalogIndexBuildResult?>(
+                    new InvalidDataException("构建失败")),
+                CancellationToken.None));
     }
 
     [Fact]

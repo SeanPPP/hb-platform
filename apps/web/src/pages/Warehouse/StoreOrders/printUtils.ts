@@ -20,12 +20,23 @@ interface DownloadPdfOptions {
 
 interface PagedPdfOptions {
   createCanvasContextErrorMessage?: string
+  layoutNotReadyErrorMessage?: string
   pageSelector?: string
+}
+
+interface WaitForStablePdfPageElementsOptions {
+  layoutNotReadyErrorMessage?: string
+  maxFrames?: number
+  pageSelector?: string
+  waitForFrame?: () => Promise<void>
 }
 
 export const PDF_IMAGE_FORMAT = 'JPEG'
 export const PDF_IMAGE_MIME_TYPE = 'image/jpeg'
 export const PDF_IMAGE_QUALITY = 0.95
+const A4_ASPECT_RATIO = 297 / 210
+const A4_ASPECT_RATIO_TOLERANCE = 0.02
+const DEFAULT_LAYOUT_STABILITY_FRAMES = 6
 
 export interface PdfSlicePlanItem {
   offsetY: number
@@ -202,6 +213,107 @@ export function collectElementBreakOffsets(root: HTMLElement, rowSelector: strin
   return offsets.filter((offset) => Number.isFinite(offset) && offset > 0)
 }
 
+function waitForAnimationFrame() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
+}
+
+function getPdfPageElements(root: HTMLElement, pageSelector: string) {
+  const pages = Array.from(root.querySelectorAll<HTMLElement>(pageSelector))
+  return pages.length > 0 ? pages : [root]
+}
+
+function getPdfPageLayoutSignature(pageElements: HTMLElement[]) {
+  const pageSignatures = pageElements.map((pageElement) => {
+    const rect = pageElement.getBoundingClientRect()
+    const aspectRatio = rect.width > 0 ? rect.height / rect.width : 0
+    const hasA4Geometry =
+      rect.width > 0 &&
+      rect.height > 0 &&
+      Math.abs(aspectRatio - A4_ASPECT_RATIO) <= A4_ASPECT_RATIO_TOLERANCE
+
+    if (!pageElement.isConnected || !hasA4Geometry) {
+      return null
+    }
+
+    const rowCount = pageElement.querySelectorAll('tbody tr').length
+    return [
+      Math.round(rect.width * 100) / 100,
+      Math.round(rect.height * 100) / 100,
+      pageElement.scrollWidth,
+      pageElement.scrollHeight,
+      rowCount,
+    ].join(':')
+  })
+
+  return pageSignatures.every((signature): signature is string => Boolean(signature))
+    ? pageSignatures.join('|')
+    : null
+}
+
+export async function waitForStablePdfPageElements(
+  root: HTMLElement,
+  options: WaitForStablePdfPageElementsOptions = {},
+) {
+  const errorMessage = options.layoutNotReadyErrorMessage || '打印内容尚未准备完成，请稍后重试'
+  const maxFrames = Math.max(2, Math.floor(options.maxFrames ?? DEFAULT_LAYOUT_STABILITY_FRAMES))
+  const pageSelector = options.pageSelector || '.store-order-pdf-page'
+  const waitForFrame = options.waitForFrame || waitForAnimationFrame
+  let previousSignature: string | null = null
+
+  if (!root.isConnected) {
+    throw new Error(errorMessage)
+  }
+
+  for (let frameIndex = 0; frameIndex < maxFrames; frameIndex += 1) {
+    await waitForFrame()
+    if (!root.isConnected) {
+      throw new Error(errorMessage)
+    }
+
+    // 每帧重新读取当前节点，避免 React/KeepAlive 更新后继续截图旧 DOM 引用。
+    const pageElements = getPdfPageElements(root, pageSelector)
+    const signature = getPdfPageLayoutSignature(pageElements)
+    if (!signature) {
+      previousSignature = null
+      continue
+    }
+
+    if (signature === previousSignature) {
+      return pageElements
+    }
+    previousSignature = signature
+  }
+
+  throw new Error(errorMessage)
+}
+
+export function getCurrentReadyPdfPageElement(
+  root: HTMLElement,
+  pageSelector: string,
+  pageIndex: number,
+  expectedPageCount: number,
+  errorMessage = '打印内容尚未准备完成，请稍后重试',
+) {
+  if (!root.isConnected) {
+    throw new Error(errorMessage)
+  }
+
+  // 按当前根节点重新查询，避免多页截图期间继续使用 React/KeepAlive 已替换的节点。
+  const currentPageElements = getPdfPageElements(root, pageSelector)
+  const currentPageElement = currentPageElements[pageIndex]
+  if (
+    currentPageElements.length !== expectedPageCount ||
+    !currentPageElement ||
+    !getPdfPageLayoutSignature([currentPageElement])
+  ) {
+    throw new Error(errorMessage)
+  }
+
+  return currentPageElement
+}
+
 async function createPdfDocumentFromElement(element: HTMLElement, options?: DownloadPdfOptions) {
   const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
   const canvas = await html2canvas(element, {
@@ -247,18 +359,40 @@ async function createPdfDocumentFromElement(element: HTMLElement, options?: Down
 
 async function createPdfDocumentFromPages(root: HTMLElement, options?: PagedPdfOptions) {
   const pageSelector = options?.pageSelector || '.store-order-pdf-page'
-  const pages = Array.from(root.querySelectorAll<HTMLElement>(pageSelector))
-  const pageElements = pages.length > 0 ? pages : [root]
   const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+  const pageElements = await waitForStablePdfPageElements(root, {
+    layoutNotReadyErrorMessage: options?.layoutNotReadyErrorMessage,
+    pageSelector,
+  })
+  const errorMessage = options?.layoutNotReadyErrorMessage || '打印内容尚未准备完成，请稍后重试'
+  const expectedPageCount = pageElements.length
   const pdf = new jsPDF('p', 'mm', 'a4')
 
-  for (const [pageIndex, pageElement] of pageElements.entries()) {
+  for (let pageIndex = 0; pageIndex < expectedPageCount; pageIndex += 1) {
+    const pageElement = getCurrentReadyPdfPageElement(
+      root,
+      pageSelector,
+      pageIndex,
+      expectedPageCount,
+      errorMessage,
+    )
     const canvas = await html2canvas(pageElement, {
       scale: 2,
       useCORS: true,
       logging: false,
       backgroundColor: '#ffffff',
     })
+    const currentPageElement = getCurrentReadyPdfPageElement(
+      root,
+      pageSelector,
+      pageIndex,
+      expectedPageCount,
+      errorMessage,
+    )
+    if (currentPageElement !== pageElement) {
+      throw new Error(errorMessage)
+    }
+
     const context = canvas.getContext('2d')
     if (!context) {
       // 分页 PDF 逐页渲染，任何一页拿不到画布上下文都要中断，避免输出坏 PDF。
@@ -276,12 +410,28 @@ async function createPdfDocumentFromPages(root: HTMLElement, options?: PagedPdfO
   return pdf
 }
 
-function cleanupPdfPrintFrame(frame: HTMLIFrameElement, url: string) {
-  // Blob URL 和临时 iframe 都只服务本次打印，清理可避免连续打印时泄漏内存。
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url)
-    frame.remove()
-  }, 60_000)
+export function preparePdfPrintFrame(frame: HTMLIFrameElement, url: string) {
+  frame.style.position = 'fixed'
+  frame.style.left = '-10000px'
+  frame.style.top = '0'
+  frame.style.width = '210mm'
+  frame.style.height = '297mm'
+  frame.style.border = '0'
+  frame.style.opacity = '0'
+  frame.style.pointerEvents = 'none'
+  frame.src = url
+}
+
+export async function printPdfFrameAfterLayout(
+  frame: HTMLIFrameElement,
+  waitForFrame: () => Promise<void> = waitForAnimationFrame,
+) {
+  await waitForFrame()
+  await waitForFrame()
+
+  // PDF viewer 需要先在非零 iframe 内完成布局，Edge 首次打开预览才不会使用未完成的页面几何。
+  frame.contentWindow?.focus()
+  frame.contentWindow?.print()
 }
 
 export async function createElementPdfBase64(element: HTMLElement, options?: DownloadPdfOptions) {
@@ -308,23 +458,42 @@ export async function printElementPagesAsPdf(element: HTMLElement, options?: Pag
   const blob = pdf.output('blob') as Blob
   const url = URL.createObjectURL(blob)
   const frame = document.createElement('iframe')
-
-  frame.style.position = 'fixed'
-  frame.style.right = '0'
-  frame.style.bottom = '0'
-  frame.style.width = '0'
-  frame.style.height = '0'
-  frame.style.border = '0'
-  frame.src = url
-  frame.onload = () => {
-    try {
-      // 打印临时 PDF 而不是当前 HTML，避开浏览器自动 URL、标题和日期页脚。
-      frame.contentWindow?.focus()
-      frame.contentWindow?.print()
-    } finally {
-      cleanupPdfPrintFrame(frame, url)
+  let cleaned = false
+  let cleanupTimer: number | undefined
+  const cleanup = () => {
+    if (cleaned) {
+      return
     }
+    cleaned = true
+    if (cleanupTimer !== undefined) {
+      window.clearTimeout(cleanupTimer)
+    }
+    URL.revokeObjectURL(url)
+    frame.remove()
   }
 
+  preparePdfPrintFrame(frame, url)
+  frame.onload = () => {
+    const printWindow = frame.contentWindow
+    if (!printWindow) {
+      cleanup()
+      return
+    }
+
+    printWindow.addEventListener('afterprint', cleanup, { once: true })
+    // 打印临时 PDF 而不是当前 HTML，避开浏览器自动 URL、标题和日期页脚。
+    void printPdfFrameAfterLayout(frame)
+      .then(() => {
+        if (!cleaned) {
+          cleanupTimer = window.setTimeout(cleanup, 60_000)
+        }
+      })
+      .catch((error) => {
+        console.error(error)
+        cleanup()
+      })
+  }
+
+  // afterprint 在部分 Chromium 版本中可能不触发；真正触发打印后再启动资源回收兜底。
   document.body.appendChild(frame)
 }

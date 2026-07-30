@@ -680,5 +680,7 @@ runTest("\u914D\u8D27\u5355 PDF \u9875\u7801\u5E94\u5305\u542B\u4E2D\u82F1\u6587
   const enLocale = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8"));
   assertEqual(zhLocale.warehouse.pickingList.pageNumber, "\u7B2C {{current}} / {{total}} \u9875", "\u4E2D\u6587 PDF \u9875\u7801\u5E94\u663E\u793A\u7B2C x / y \u9875");
   assertEqual(enLocale.warehouse.pickingList.pageNumber, "Page {{current}} / {{total}}", "\u82F1\u6587 PDF \u9875\u7801\u5E94\u663E\u793A Page x / y");
+  assertEqual(zhLocale.warehouse.pickingList.layoutNotReady, "\u6253\u5370\u5185\u5BB9\u5C1A\u672A\u51C6\u5907\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5", "\u4E2D\u6587\u5E94\u63D0\u793A\u6253\u5370\u5E03\u5C40\u672A\u5C31\u7EEA");
+  assertEqual(enLocale.warehouse.pickingList.layoutNotReady, "The print content is not ready yet. Please try again.", "\u82F1\u6587\u5E94\u63D0\u793A\u6253\u5370\u5E03\u5C40\u672A\u5C31\u7EEA");
 });
 console.log("pickingListLogic.test: ok");

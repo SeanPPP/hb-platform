@@ -407,6 +407,18 @@ async function main() {
         `${pageName}应在成功后记录可展示订单，且首次加载失败才清空当前内容`,
       )
     }
+    assert(
+      pickingListSource.includes("import { useKeepAliveContext } from 'keepalive-for-react'") &&
+        pickingListSource.includes('const { active } = useKeepAliveContext()') &&
+        pickingListSource.includes('const activeRef = useRef(active)') &&
+        pickingListSource.includes('activeRef.current = active') &&
+        pickingListSource.includes('if (!active) return') &&
+        pickingListSource.includes('let cancelled = false') &&
+        pickingListSource.includes('if (cancelled || !activeRef.current) return') &&
+        pickingListSource.includes('cancelled = true') &&
+        pickingListSource.includes('}, [active, id])'),
+      '配货单页缺少 KeepAlive active/异步结果守卫，隐藏 Tab 不应跟随全局路由加载或继续打印',
+    )
   })
   if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
 
@@ -433,10 +445,12 @@ async function main() {
       beforePrintSource.includes('WarehouseStaff 可打印/下载配货单') &&
         beforePrintSource.includes('if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted)') &&
         beforePrintSource.includes('await startPickingStoreOrder(order.orderGUID)') &&
+        beforePrintSource.includes('if (!activeRef.current)') &&
+        beforePrintSource.includes('loadedOrderIdRef.current = null') &&
         pickingListSource.includes('await handleBeforePrint()') &&
         pickingListSource.includes('await printElementPagesAsPdf') &&
         pickingListSource.includes('await downloadElementPagesAsPdf'),
-      '配货单打印/下载前只有仓库管理员可自动开始配货，WarehouseStaff 不能触发 start-picking 写接口',
+      '配货单打印/下载前只有仓库管理员可自动开始配货，且切换 Tab 后不能继续生成旧页面 PDF',
     )
   })
   if (warehouseStaffPickingPrintFailure) failures.push(warehouseStaffPickingPrintFailure)

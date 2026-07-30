@@ -1510,15 +1510,120 @@ test("同商品可保留多条售卖码，但重复规范化 lookup 在落库前
   assert.equal(storage.active.has("old"), true);
 });
 
-test("超过两位小数或超出安全整数范围的远端售价不会进入 SQLCipher", () => {
-  assert.throws(
-    () => mapCatalogLookupToStagedItem(item("A", { retailPrice: 1.001 })),
-    catalogError("CATALOG_PRICE_INVALID"),
+test("商品字段级脏数据归一化后仍可激活本地目录", async () => {
+  const storage = new MemoryCatalogStorage();
+  const service = new CatalogSnapshotService(storage, remote([
+    page({
+      cursor: null,
+      nextCursor: null,
+      items: [
+        item("NEGATIVE", {
+          retailPrice: -0.01,
+          quantityFactor: 0,
+          discountRate: -0.25,
+          updatedAt: "invalid timestamp",
+        }),
+        item("FRACTIONAL", {
+          retailPrice: 1.001,
+          quantityFactor: -3,
+          discountRate: 1.25,
+          displayName: "   ",
+          priceSourceLabel: "   ",
+          referenceCode: "   ",
+        }),
+        item("UNSAFE", {
+          retailPrice: Number.MAX_SAFE_INTEGER,
+          quantityFactor: Number.POSITIVE_INFINITY,
+          discountRate: Number.NaN,
+        }),
+      ],
+      totalCount: 3,
+    }),
+  ]), { createSnapshotId: () => "normalized" });
+
+  const result = await service.downloadAndActivate({ storeCode: "S1" });
+  const active = storage.active.get("normalized");
+
+  assert.equal(result.snapshotId, "normalized");
+  assert.equal(active?.length, 3);
+  assert.deepEqual(
+    active?.map((entry) => ({
+      lookupCode: entry.lookupCode,
+      retailPriceCents: entry.retailPriceCents,
+      quantityFactor: entry.quantityFactor,
+      discountRate: entry.discountRate,
+      updatedAtIso: entry.updatedAtIso,
+      displayName: entry.displayName,
+      priceSourceLabel: entry.priceSourceLabel,
+      referenceCode: entry.referenceCode,
+    })),
+    [
+      {
+        lookupCode: "NEGATIVE",
+        retailPriceCents: 0,
+        quantityFactor: 1,
+        discountRate: 0,
+        updatedAtIso: null,
+        displayName: "商品 NEGATIVE",
+        priceSourceLabel: "product",
+        referenceCode: null,
+      },
+      {
+        lookupCode: "FRACTIONAL",
+        retailPriceCents: 100,
+        quantityFactor: 1,
+        discountRate: 1,
+        updatedAtIso: "2026-07-28T00:00:00.000Z",
+        displayName: "I-FRACTIONAL",
+        priceSourceLabel: "catalog",
+        referenceCode: null,
+      },
+      {
+        lookupCode: "UNSAFE",
+        retailPriceCents: 0,
+        quantityFactor: 1,
+        discountRate: null,
+        updatedAtIso: "2026-07-28T00:00:00.000Z",
+        displayName: "商品 UNSAFE",
+        priceSourceLabel: "product",
+        referenceCode: null,
+      },
+    ],
   );
-  assert.throws(
-    () => mapCatalogLookupToStagedItem(item("B", { retailPrice: Number.MAX_SAFE_INTEGER })),
-    catalogError("CATALOG_PRICE_INVALID"),
-  );
+});
+
+test("售价按十进制半分舍入，溯源字段保真且非法日历日期归空", () => {
+  const halfCent = mapCatalogLookupToStagedItem(item("HALF-CENT", {
+    retailPrice: 1.005,
+    referenceCode: " REF-001 ",
+    itemNumber: " ITEM-001 ",
+    barcode: " BARCODE-001 ",
+    rowVersion: " ROW-001 ",
+    productImage: " https://example.test/product.png ",
+    updatedAt: "2026-02-30T00:00:00.000Z",
+  }));
+  const offsetTimestamp = mapCatalogLookupToStagedItem(item("OFFSET", {
+    retailPrice: 10.075,
+    updatedAt: "2026-07-28T11:12:13+10:00",
+  }));
+  const largeWholeCent = mapCatalogLookupToStagedItem(item("LARGE", {
+    retailPrice: 40_000_000_000_000,
+  }));
+  const largerWholeCent = mapCatalogLookupToStagedItem(item("LARGER", {
+    retailPrice: 90_000_000_000_000,
+  }));
+
+  assert.equal(halfCent.retailPriceCents, 101);
+  assert.equal(halfCent.referenceCode, " REF-001 ");
+  assert.equal(halfCent.itemNumber, " ITEM-001 ");
+  assert.equal(halfCent.barcode, " BARCODE-001 ");
+  assert.equal(halfCent.rowVersion, " ROW-001 ");
+  assert.equal(halfCent.productImage, " https://example.test/product.png ");
+  assert.equal(halfCent.updatedAtIso, null);
+  assert.equal(offsetTimestamp.retailPriceCents, 1_008);
+  assert.equal(offsetTimestamp.updatedAtIso, "2026-07-28T11:12:13+10:00");
+  assert.equal(largeWholeCent.retailPriceCents, 4_000_000_000_000_000);
+  assert.equal(largerWholeCent.retailPriceCents, 9_000_000_000_000_000);
 });
 
 function catalogError(code: string): (error: unknown) => boolean {

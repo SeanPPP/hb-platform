@@ -185,6 +185,139 @@ public sealed class CatalogSnapshotStoreTests
     }
 
     [Fact]
+    public void Save_ManifestWriteFailure_RemovesOnlyNewUnpublishedBodyAndPreservesLastGoodVersion()
+    {
+        using var directory = new TemporaryDirectory();
+        var lastGood = CreateSnapshot("S01", "catalog-v1:last-good");
+        var original = new GzipCatalogSnapshotStore(directory.Path);
+        original.Save(lastGood);
+
+        var manifestPath = Path.Combine(directory.Path, "manifest.json");
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        var originalBodyPath = Assert.Single(Directory.GetFiles(
+            directory.Path,
+            "*.json.gz",
+            SearchOption.AllDirectories));
+
+        var failing = new GzipCatalogSnapshotStore(
+            directory.Path,
+            manifestWriteFailure: () => true);
+        var unpublished = CreateSnapshot("S01", "catalog-v1:unpublished");
+
+        Assert.Throws<IOException>(() => failing.Save(unpublished));
+
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+        var restored = Assert.Single(original.LoadAll(GeneratedAt.AddMinutes(1)));
+        Assert.Equal(lastGood.CatalogVersion, restored.CatalogVersion);
+        Assert.Equal(
+            [originalBodyPath],
+            Directory.GetFiles(directory.Path, "*.json.gz", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void Save_ManifestWriteFailure_PreservesExistingTarget()
+    {
+        using var directory = new TemporaryDirectory();
+        var original = new GzipCatalogSnapshotStore(directory.Path);
+        original.Save(CreateSnapshot("S01", "catalog-v1:last-good"));
+        var priorBodyPaths = Directory.GetFiles(
+                directory.Path,
+                "*.json.gz",
+                SearchOption.AllDirectories)
+            .ToHashSet(StringComparer.Ordinal);
+        var existing = CreateSnapshot("S01", "catalog-v1:existing");
+        original.Save(existing);
+
+        var manifestPath = Path.Combine(directory.Path, "manifest.json");
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        var existingBodyPath = Assert.Single(Directory.GetFiles(
+            directory.Path,
+            "*.json.gz",
+            SearchOption.AllDirectories),
+            path => !priorBodyPaths.Contains(path));
+
+        var failing = new GzipCatalogSnapshotStore(
+            directory.Path,
+            manifestWriteFailure: () => true);
+
+        Assert.Throws<IOException>(() => failing.Save(existing));
+
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+        Assert.True(File.Exists(existingBodyPath));
+        Assert.Equal(2, Directory.GetFiles(directory.Path, "*.json.gz", SearchOption.AllDirectories).Length);
+    }
+
+    [Fact]
+    public void Save_ManifestWriteFailure_DoesNotOverwriteExistingVersionLastGoodBody()
+    {
+        using var directory = new TemporaryDirectory();
+        var original = new GzipCatalogSnapshotStore(directory.Path);
+        var lastGood = CreateSnapshot("S01", "catalog-v1:same-version");
+        original.Save(lastGood);
+
+        var manifestPath = Path.Combine(directory.Path, "manifest.json");
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        var originalBodyPath = Assert.Single(Directory.GetFiles(
+            directory.Path,
+            "*.json.gz",
+            SearchOption.AllDirectories));
+        var originalBody = File.ReadAllBytes(originalBodyPath);
+        var replacementGeneratedAt = GeneratedAt.AddMinutes(1);
+        var replacement = CreateSnapshot("S01", lastGood.CatalogVersion) with
+        {
+            GeneratedAt = replacementGeneratedAt,
+            ExpiresAt = replacementGeneratedAt.AddHours(3),
+            SellableItems = [new SellableItemDto(
+                "S01",
+                "P02",
+                null,
+                "替换商品",
+                "P02",
+                null,
+                null,
+                98.76m,
+                PriceSourceKind.StoreRetailPrice,
+                "门店价",
+                1m,
+                replacementGeneratedAt)]
+        };
+        var failing = new GzipCatalogSnapshotStore(
+            directory.Path,
+            manifestWriteFailure: () => true);
+
+        Assert.Throws<IOException>(() => failing.Save(replacement));
+
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+        Assert.Equal(originalBody, File.ReadAllBytes(originalBodyPath));
+        var restored = Assert.Single(original.LoadAll(GeneratedAt.AddMinutes(2)));
+        Assert.Equal(lastGood.StoreCode, restored.StoreCode);
+        Assert.Equal(lastGood.Since, restored.Since);
+        Assert.Equal(lastGood.GeneratedAt, restored.GeneratedAt);
+        Assert.Equal(lastGood.ExpiresAt, restored.ExpiresAt);
+        Assert.Equal(lastGood.CatalogVersion, restored.CatalogVersion);
+        Assert.Equal(lastGood.SellableItems, restored.SellableItems);
+    }
+
+    [Fact]
+    public void Save_SuccessfullyPublishedManifestCleansUnreferencedGzipBodies()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        store.Save(CreateSnapshot("S01", "catalog-v1:last-good"));
+
+        var orphanPath = Path.Combine(directory.Path, "snapshots", "orphan", "old.json.gz");
+        var pendingTemporaryPath = $"{orphanPath}.{Guid.NewGuid():N}.tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(orphanPath)!);
+        File.WriteAllBytes(orphanPath, [0x1F, 0x8B, 0x08]);
+        File.WriteAllBytes(pendingTemporaryPath, [0x1F, 0x8B, 0x08]);
+
+        store.Save(CreateSnapshot("S01", "catalog-v1:published"));
+
+        Assert.False(File.Exists(orphanPath));
+        Assert.True(File.Exists(pendingTemporaryPath));
+    }
+
+    [Fact]
     public void RefreshExpiration_ExtendsManifestWithoutRewritingGzipBody()
     {
         using var directory = new TemporaryDirectory();

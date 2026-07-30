@@ -929,22 +929,22 @@ export function mapCatalogLookupToStagedItem(item: CatalogLookupItem): CatalogSt
   return {
     storeCode: item.storeCode,
     productCode: item.productCode,
-    referenceCode: item.referenceCode,
-    itemNumber: item.itemNumber,
-    displayName: item.displayName,
-    barcode: item.barcode,
+    referenceCode: normalizeOptionalOpaqueText(item.referenceCode),
+    itemNumber: normalizeOptionalOpaqueText(item.itemNumber),
+    displayName: normalizeRequiredText(item.displayName, item.itemNumber, item.productCode),
+    barcode: normalizeOptionalOpaqueText(item.barcode),
     lookupCode: item.lookupCode,
     lookupCodeNormalized: item.lookupCodeNormalized,
     retailPriceCents: toIntegerCents(item.retailPrice),
     priceSource: item.priceSource,
-    priceSourceLabel: item.priceSourceLabel,
-    quantityFactor: item.quantityFactor,
+    priceSourceLabel: normalizeRequiredText(item.priceSourceLabel, "catalog"),
+    quantityFactor: normalizeQuantityFactor(item.quantityFactor),
     // 当前 Hbpos CatalogLookupItemDto 没有税率字段；定价层按既有 GST 规则计算。
     taxRateBasisPoints: null,
-    updatedAtIso: item.updatedAt,
-    rowVersion: item.rowVersion,
-    productImage: item.productImage,
-    discountRate: item.discountRate,
+    updatedAtIso: normalizeOptionalTimestamp(item.updatedAt),
+    rowVersion: normalizeOptionalOpaqueText(item.rowVersion),
+    productImage: normalizeOptionalOpaqueText(item.productImage),
+    discountRate: normalizeDiscountRate(item.discountRate),
     isSpecialProduct: item.isSpecialProduct,
   };
 }
@@ -1015,22 +1015,100 @@ function assertUniqueLookupKeys(items: readonly CatalogStagedItem[], seen: Set<s
 }
 
 function toIntegerCents(value: number): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw catalogVerificationError(
-      "Catalog retail price must be a non-negative finite number.",
-      "CATALOG_PRICE_INVALID",
-    );
+  // 商品字段脏数据不应阻断整店目录；不可安全表示的价格统一按 0 写入本地目录。
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/u.exec(String(value).toLowerCase());
+  if (match === null) return 0;
+
+  // 按 number 的规范十进制文本做 half-up，避免二进制乘 100 在半分或大额时漂移。
+  const fraction = match[2] ?? "";
+  const exponent = Number(match[3] ?? "0");
+  const digits = BigInt(`${match[1]}${fraction}`);
+  const decimalPlaces = fraction.length - exponent;
+  let cents: bigint;
+  if (decimalPlaces <= 2) {
+    cents = digits * (10n ** BigInt(2 - decimalPlaces));
+  } else {
+    const divisor = 10n ** BigInt(decimalPlaces - 2);
+    const quotient = digits / divisor;
+    const remainder = digits % divisor;
+    cents = quotient + (remainder * 2n >= divisor ? 1n : 0n);
   }
-  const scaled = value * 100;
-  const rounded = Math.round(scaled);
-  const tolerance = Number.EPSILON * Math.max(1, Math.abs(scaled)) * 8;
-  if (!Number.isSafeInteger(rounded) || Math.abs(scaled - rounded) > tolerance) {
-    throw catalogVerificationError(
-      "Catalog retail price cannot be represented as integer cents.",
-      "CATALOG_PRICE_INVALID",
-    );
+  return cents <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(cents) : 0;
+}
+
+function normalizeQuantityFactor(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function normalizeDiscountRate(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.min(1, Math.max(0, value));
+}
+
+function normalizeOptionalTimestamp(value: string | null): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/u.exec(
+    normalized,
+  );
+  if (match === null) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const zone = match[7] ?? "";
+  const maxDay = daysInGregorianMonth(year, month);
+  if (
+    year < 1
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > maxDay
+    || hour > 23
+    || minute > 59
+    || second > 59
+  ) {
+    return null;
   }
-  return rounded;
+  if (zone !== "Z") {
+    const zoneHour = Number(zone.slice(1, 3));
+    const zoneMinute = Number(zone.slice(4, 6));
+    if (zoneHour > 14 || zoneMinute > 59 || (zoneHour === 14 && zoneMinute !== 0)) {
+      return null;
+    }
+  }
+  return Number.isFinite(Date.parse(normalized)) ? normalized : null;
+}
+
+function daysInGregorianMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+function normalizeOptionalOpaqueText(value: string | null): string | null {
+  if (value === null) return null;
+  // 标识符和版本令牌只把纯空白修成 null；非空内容必须逐字保真。
+  return value.trim().length > 0 ? value : null;
+}
+
+function normalizeRequiredText(
+  value: string,
+  ...fallbacks: readonly (string | null)[]
+): string {
+  const normalized = value.trim();
+  if (normalized.length > 0) return normalized;
+  for (const fallback of fallbacks) {
+    const normalizedFallback = fallback?.trim() ?? "";
+    if (normalizedFallback.length > 0) return normalizedFallback;
+  }
+  return "catalog";
 }
 
 function catalogVerificationError(message: string, code: string): HbposApiError {

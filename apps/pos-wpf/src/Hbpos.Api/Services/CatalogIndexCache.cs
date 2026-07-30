@@ -60,6 +60,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private const int DefaultSoftItemCapacity = 1_500_000;
     private const int DefaultHardItemCapacity = 2_500_000;
     private readonly ConcurrentDictionary<CatalogIndexCacheKey, CacheEntry> _entries = new();
+    private readonly ConcurrentDictionary<string, long> _storePublicationGenerations =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CatalogSnapshotCacheKey, SnapshotEntry> _snapshots = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, PendingSnapshotEntry> _pendingSnapshots = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, CatalogSnapshotDescriptor> _lazySnapshotDescriptors = [];
@@ -67,6 +69,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private readonly HashSet<CatalogSnapshotCacheKey> _rawArtifactVersions = [];
     private readonly LinkedList<CatalogSnapshotCacheKey> _rawArtifactLru = [];
     private readonly object _snapshotGate = new();
+    private readonly object _publicationGate = new();
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _ttl;
     private readonly TimeSpan _snapshotTtl;
@@ -255,6 +258,12 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
     public CatalogDownloadLeaseRegistry DownloadLeases => _downloadLeases;
 
+    // 仅供并发回归测试稳定控制 durable pin 与 active CAS 之间的窗口。
+    internal Action? BeforeActivePublicationCasForTests { get; set; }
+
+    // 仅供回归测试稳定控制门店 generation 捕获与 entry 安装之间的窗口。
+    internal Action? AfterStorePublicationGenerationCapturedForTests { get; set; }
+
     internal long PinnedItemCountForTests
     {
         get
@@ -380,11 +389,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             }
 
             var staleResult = GetCompletedResult(existing) ?? GetLatestSnapshot(key, _timeProvider.GetUtcNow());
-            var refreshEntry = CreateBuildingEntry(key, staleResult, buildAsync);
-            var installed = existing is null
-                ? _entries.TryAdd(key, refreshEntry)
-                : _entries.TryUpdate(key, refreshEntry, existing);
-            if (!installed)
+            if (!TryInstallBuildingEntry(key, existing, staleResult, buildAsync, out var refreshEntry))
             {
                 continue;
             }
@@ -458,25 +463,16 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 return ProjectLegacySince(existing, staleResult, since);
             }
 
-            var newEntry = CreateBuildingEntry(key, staleResult, buildAsync);
-
-            if (existing is null)
+            if (TryInstallBuildingEntry(key, existing, staleResult, buildAsync, out var newEntry))
             {
-                if (_entries.TryAdd(key, newEntry))
+                if (existing is null)
                 {
                     Log($"cache miss store={key.StoreCode} since={FormatSince(key.Since)} ttlSeconds={_ttl.TotalSeconds:0}");
-                    PublishWhenCompleted(key, newEntry);
-                    var built = await AwaitBuildAsync(newEntry, cancellationToken);
-                    await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
-                    return ProjectLegacySince(newEntry, built, since);
                 }
-
-                continue;
-            }
-
-            if (_entries.TryUpdate(key, newEntry, existing))
-            {
-                Log($"cache expired store={key.StoreCode} since={FormatSince(key.Since)} ttlSeconds={_ttl.TotalSeconds:0}");
+                else
+                {
+                    Log($"cache expired store={key.StoreCode} since={FormatSince(key.Since)} ttlSeconds={_ttl.TotalSeconds:0}");
+                }
                 PublishWhenCompleted(key, newEntry);
                 var built = await AwaitBuildAsync(newEntry, cancellationToken);
                 await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
@@ -542,19 +538,59 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     public void InvalidateStore(string storeCode)
     {
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
-        foreach (var key in _entries.Keys.Where(key =>
-            string.Equals(key.StoreCode, normalizedStoreCode, StringComparison.OrdinalIgnoreCase)))
+        lock (_publicationGate)
         {
-            _entries.TryRemove(key, out _);
+            _storePublicationGenerations.AddOrUpdate(
+                normalizedStoreCode,
+                addValue: 1,
+                static (_, generation) => checked(generation + 1));
+            foreach (var key in _entries.Keys.Where(key =>
+                string.Equals(key.StoreCode, normalizedStoreCode, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (_entries.TryRemove(key, out var entry))
+                {
+                    // TCS 是本次发布的线性化点：失效先赢时，所有 waiter 都必须看到 Invalidated。
+                    entry.PublicationCompletion.TrySetResult(
+                        new CatalogPublicationOutcome(PublicationStatus.Invalidated));
+                }
+            }
         }
 
         Log($"cache invalidated store={normalizedStoreCode}");
     }
 
+    private bool TryInstallBuildingEntry(
+        CatalogIndexCacheKey key,
+        CacheEntry? existing,
+        CatalogIndexBuildResult? staleResult,
+        Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
+        out CacheEntry entry)
+    {
+        lock (_publicationGate)
+        {
+            var generation = GetStorePublicationGeneration(key.StoreCode);
+            // generation 捕获与 entry CAS 必须同属一个临界区，避免失效扫空后旧 flight 又重新装入。
+            AfterStorePublicationGenerationCapturedForTests?.Invoke();
+            entry = CreateBuildingEntry(key, staleResult, buildAsync, generation);
+            var installed = existing is null
+                ? _entries.TryAdd(key, entry)
+                : _entries.TryUpdate(key, entry, existing);
+            if (installed && generation != GetStorePublicationGeneration(key.StoreCode))
+            {
+                // 测试 reentrant 或未来新增同步回调时，同样不能让旧 generation 的早退结果覆盖失效。
+                entry.PublicationCompletion.TrySetResult(
+                    new CatalogPublicationOutcome(PublicationStatus.Invalidated));
+            }
+
+            return installed;
+        }
+    }
+
     private CacheEntry CreateBuildingEntry(
         CatalogIndexCacheKey key,
         CatalogIndexBuildResult? staleResult,
-        Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync)
+        Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
+        long storePublicationGeneration)
     {
         var sharedBuildCancellationToken = _applicationLifetime?.ApplicationStopping ?? CancellationToken.None;
         return new CacheEntry(
@@ -570,7 +606,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 LazyThreadSafetyMode.ExecutionAndPublication),
             CreatePublication(),
             staleResult,
-            new CatalogLegacySinceCache());
+            new CatalogLegacySinceCache(),
+            storePublicationGeneration);
     }
 
     private static CatalogIndexBuildResult? GetCompletedResult(CacheEntry? entry)
@@ -602,13 +639,20 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         catch
         {
             // 构建故障返回调用方前先等发布观察器移除失败 flight，下一次调用可立即重建。
+            CatalogPublicationOutcome? outcome = null;
             try
             {
-                await entry.PublicationCompletion.Task;
+                outcome = await entry.PublicationCompletion.Task;
             }
             catch
             {
                 // 调用方继续收到原始构建异常。
+            }
+
+            if (outcome?.Status == PublicationStatus.Invalidated)
+            {
+                // 门店失效是本次 flight 的最终合同，不能再被随后暴露的构建异常覆盖。
+                throw CreateInvalidatedPublicationException();
             }
 
             throw;
@@ -634,7 +678,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             case PublicationStatus.PersistenceFailed:
                 throw outcome.Error ?? new IOException("Catalog snapshot persistence failed.");
             case PublicationStatus.Invalidated:
-                throw new InvalidOperationException("目录构建在发布完成前已失效。");
+                throw CreateInvalidatedPublicationException();
             default:
                 throw new InvalidOperationException("未知的目录发布状态。");
         }
@@ -682,21 +726,36 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 return;
             }
 
-            var completedEntry = entry with
+            if (entry.StorePublicationGeneration != GetStorePublicationGeneration(key.StoreCode))
             {
-                ExpiresAt = CalculateActiveExpiry(_timeProvider.GetUtcNow(), cacheResult.SourceValidUntil),
-                BuildTask = new Lazy<Task<CatalogIndexBuildResult?>>(
-                    () => Task.FromResult<CatalogIndexBuildResult?>(cacheResult),
-                    LazyThreadSafetyMode.ExecutionAndPublication)
-            };
-            if (_entries.TryUpdate(key, completedEntry, entry))
-            {
+                // 失效发生在 durable 保存期间时，版本仍可按 pin 续读，但本次发布不能向 waiter 报成功。
+                _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
                 entry.PublicationCompletion.TrySetResult(
-                    new CatalogPublicationOutcome(PublicationStatus.Published));
+                    new CatalogPublicationOutcome(PublicationStatus.Invalidated));
+                return;
             }
-            else
+
+            BeforeActivePublicationCasForTests?.Invoke();
+
+            lock (_publicationGate)
             {
-                // 版本正文和 pinned snapshot 已完成发布；active CAS 失效只阻止其成为当前版本。
+                if (entry.StorePublicationGeneration != GetStorePublicationGeneration(key.StoreCode))
+                {
+                    _entries.TryRemove(new KeyValuePair<CatalogIndexCacheKey, CacheEntry>(key, entry));
+                    entry.PublicationCompletion.TrySetResult(
+                        new CatalogPublicationOutcome(PublicationStatus.Invalidated));
+                    return;
+                }
+
+                var completedEntry = entry with
+                {
+                    ExpiresAt = CalculateActiveExpiry(_timeProvider.GetUtcNow(), cacheResult.SourceValidUntil),
+                    BuildTask = new Lazy<Task<CatalogIndexBuildResult?>>(
+                        () => Task.FromResult<CatalogIndexBuildResult?>(cacheResult),
+                        LazyThreadSafetyMode.ExecutionAndPublication)
+                };
+                _entries.TryUpdate(key, completedEntry, entry);
+                // 同代次的 owner 替换不等同于门店失效，durable version 仍可正常发布给 waiter。
                 entry.PublicationCompletion.TrySetResult(
                     new CatalogPublicationOutcome(PublicationStatus.Published));
             }
@@ -1304,6 +1363,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         return value.Trim().ToUpperInvariant();
     }
 
+    private long GetStorePublicationGeneration(string storeCode)
+    {
+        return _storePublicationGenerations.GetOrAdd(storeCode, 0);
+    }
+
     private static bool IsBuildRunning(CacheEntry entry)
     {
         return !entry.PublicationCompletion.Task.IsCompleted;
@@ -1324,12 +1388,18 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         Lazy<Task<CatalogIndexBuildResult?>> BuildTask,
         TaskCompletionSource<CatalogPublicationOutcome> PublicationCompletion,
         CatalogIndexBuildResult? StaleResult = null,
-        CatalogLegacySinceCache? LegacySinceCache = null);
+        CatalogLegacySinceCache? LegacySinceCache = null,
+        long StorePublicationGeneration = 0);
 
     private static TaskCompletionSource<CatalogPublicationOutcome> CreatePublication()
     {
         return new TaskCompletionSource<CatalogPublicationOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private static InvalidOperationException CreateInvalidatedPublicationException()
+    {
+        return new InvalidOperationException("目录构建在发布完成前已失效。");
     }
 
     private static TaskCompletionSource<CatalogPublicationOutcome> CreateCompletedPublication()

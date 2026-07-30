@@ -131,6 +131,95 @@ test("两种策略分别刷新；optional 主动提示但绝不阻止业务页�
   assert.ok(observed.length >= 1);
 });
 
+test("交易门禁快照在语义未变时保持身份，并与订阅者共享同一对象", () => {
+  const native = new FakeNative(nativeEnabled);
+  const ota = new FakeOta(otaOptional);
+  const orchestrator = new AppUpdateOrchestrator({
+    installedVersion: "1.0.0",
+    native,
+    ota,
+    ...transitionDependencies(),
+    safety: {
+      getSafetySnapshot: () => safeSnapshot(),
+    },
+  });
+  const observed: NewTransactionGate[] = [];
+  const first = orchestrator.getGate();
+  const unsubscribe = orchestrator.subscribe((gate) => observed.push(gate));
+
+  assert.strictEqual(orchestrator.getGate(), first);
+  assert.strictEqual(observed.at(-1), first);
+
+  native.setPolicy(Object.freeze({ ...nativeEnabled }));
+  assert.strictEqual(orchestrator.getGate(), first);
+  assert.strictEqual(observed.at(-1), first);
+
+  native.setPolicy(null);
+  const changed = orchestrator.getGate();
+  assert.notStrictEqual(changed, first);
+  assert.strictEqual(observed.at(-1), changed);
+  unsubscribe();
+});
+
+test("四种门禁语义的重复 getGate 均复用同一快照", () => {
+  const cases = [
+    { native: null, ota: null, state: "unchecked" },
+    { native: nativeRequired, ota: otaOptional, state: "force-update" },
+    { native: nativeEnabled, ota: otaRequired, state: "ota-update" },
+    { native: nativeEnabled, ota: otaOptional, state: "enabled" },
+  ] as const;
+
+  for (const scenario of cases) {
+    const orchestrator = new AppUpdateOrchestrator({
+      installedVersion: "1.0.0",
+      native: new FakeNative(scenario.native),
+      ota: new FakeOta(scenario.ota),
+      ...transitionDependencies(),
+      safety: {
+        getSafetySnapshot: () => safeSnapshot(),
+      },
+    });
+    const first = orchestrator.getGate();
+
+    assert.equal(first.state, scenario.state);
+    assert.strictEqual(orchestrator.getGate(), first);
+  }
+});
+
+test("真实 transition 状态切换更换门禁快照并向订阅者发送当前对象", async () => {
+  const native = new FakeNative(nativeEnabled);
+  const ota = new FakeOta(otaOptional);
+  const transition = configuredTransition();
+  const completion = deferred<void>();
+  const orchestrator = new AppUpdateOrchestrator({
+    installedVersion: "1.0.0",
+    native,
+    ota,
+    transition,
+    appStore: {
+      async open() {},
+    },
+    safety: {
+      getSafetySnapshot: () => safeSnapshot(),
+    },
+  });
+  const observed: NewTransactionGate[] = [];
+  const unsubscribe = orchestrator.subscribe((gate) => observed.push(gate));
+  const beforeTransition = orchestrator.getGate();
+
+  const transitionRun = transition.runTransition(() => completion.promise);
+  const duringTransition = orchestrator.getGate();
+  assert.notStrictEqual(duringTransition, beforeTransition);
+  assert.strictEqual(observed.at(-1), duringTransition);
+
+  completion.resolve();
+  await transitionRun;
+  const afterTransition = orchestrator.getGate();
+  assert.notStrictEqual(afterTransition, duringTransition);
+  assert.strictEqual(observed.at(-1), afterTransition);
+  unsubscribe();
+});
+
 test("安全快照 await 期间策略变化时 fail-closed，绝不使用已过期 App Store 目标", async () => {
   const safety = deferred<{
     hasActiveCart: boolean;

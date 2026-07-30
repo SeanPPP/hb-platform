@@ -1,6 +1,7 @@
 import { DownloadOutlined, FileExcelOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Space, Spin, message } from 'antd'
 import ExcelJS from 'exceljs'
+import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -24,9 +25,12 @@ export default function PickingListPage() {
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
+  const { active } = useKeepAliveContext()
   const { access } = useAuthStore()
   const printRootRef = useRef<HTMLDivElement | null>(null)
   const pdfRootRef = useRef<HTMLDivElement | null>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
   // 记录当前配货单已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
   const loadedOrderIdRef = useRef<string | null>(null)
   const visibleOrderIdRef = useRef<string | null>(null)
@@ -53,9 +57,13 @@ export default function PickingListPage() {
   )
 
   useEffect(() => {
+    if (!active) return
+
     if (!id) {
       return
     }
+
+    let cancelled = false
 
     const load = async (showLoading = true) => {
       if (showLoading) {
@@ -63,6 +71,8 @@ export default function PickingListPage() {
       }
       try {
         const detail = await getStoreOrderDetail(id)
+        if (cancelled || !activeRef.current) return
+
         if (!detail) {
           if (showLoading) {
             loadedOrderIdRef.current = null
@@ -74,10 +84,7 @@ export default function PickingListPage() {
           return
         }
 
-        loadedOrderIdRef.current = detail.orderGUID || id
-        visibleOrderIdRef.current = detail.orderGUID || id
-        setOrder(detail)
-
+        let nextStore: StoreDto | null = null
         // WarehouseStaff 无需加载完整分店下拉；配货单只读展示直接使用订单详情里的分店名称。
         if (detail.storeCode && canUseWarehouseManagerActions) {
           const storeResult = await getStores({
@@ -85,11 +92,18 @@ export default function PickingListPage() {
             page: 1,
             pageSize: 1,
           })
-          setStore(storeResult.items[0] ?? null)
-        } else {
-          setStore(null)
+          if (cancelled || !activeRef.current) return
+          nextStore = storeResult.items[0] ?? null
         }
+
+        // 仅在当前激活请求完整结束后一次性提交，避免隐藏 Tab 回写半套打印数据。
+        loadedOrderIdRef.current = detail.orderGUID || id
+        visibleOrderIdRef.current = detail.orderGUID || id
+        setOrder(detail)
+        setStore(nextStore)
       } catch (error) {
+        if (cancelled || !activeRef.current) return
+
         console.error(error)
         const errorMessage = error instanceof Error ? error.message : t('warehouse.pickingList.loadFailed')
         if (showLoading) {
@@ -99,7 +113,7 @@ export default function PickingListPage() {
         }
         message.error(errorMessage)
       } finally {
-        if (showLoading) {
+        if (showLoading && !cancelled && activeRef.current) {
           setLoading(false)
         }
       }
@@ -120,7 +134,11 @@ export default function PickingListPage() {
       visibleDetailId: visibleOrderIdRef.current,
     })
     void load(shouldShowInitialLoading)
-  }, [id])
+
+    return () => {
+      cancelled = true
+    }
+  }, [active, id])
 
   const sortedItems = useMemo(() => {
     if (!order?.items) {
@@ -172,9 +190,18 @@ export default function PickingListPage() {
       return true
     }
 
+    if (!activeRef.current) {
+      throw new Error(t('warehouse.pickingList.layoutNotReady'))
+    }
+
     // WarehouseStaff 可打印/下载配货单，但不能借打印动作触发订单状态流转。
     if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted) {
       await startPickingStoreOrder(order.orderGUID)
+      if (!activeRef.current) {
+        // 状态写入已经成功，但当前打印 DOM 已隐藏；恢复页面后重新加载最新订单再允许打印。
+        loadedOrderIdRef.current = null
+        return true
+      }
       setOrder((current) =>
         current
           ? {
@@ -188,16 +215,26 @@ export default function PickingListPage() {
     return true
   }
 
+  const getActivePdfRoot = () => {
+    const root = pdfRootRef.current
+    if (!activeRef.current || !root?.isConnected) {
+      throw new Error(t('warehouse.pickingList.layoutNotReady'))
+    }
+    return root
+  }
+
   const handlePrint = async () => {
-    if (!pdfRootRef.current || !order) {
+    if (!order) {
       return
     }
 
     setPrinting(true)
     try {
+      getActivePdfRoot()
       await handleBeforePrint()
-      await printElementPagesAsPdf(pdfRootRef.current, {
+      await printElementPagesAsPdf(getActivePdfRoot(), {
         createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
+        layoutNotReadyErrorMessage: t('warehouse.pickingList.layoutNotReady'),
       })
     } catch (error) {
       console.error(error)
@@ -208,15 +245,16 @@ export default function PickingListPage() {
   }
 
   const handleDownload = async () => {
-    if (!pdfRootRef.current || !order) {
+    if (!order) {
       return
     }
 
     setDownloading(true)
     try {
+      getActivePdfRoot()
       await handleBeforePrint()
       await downloadElementPagesAsPdf(
-        pdfRootRef.current,
+        getActivePdfRoot(),
         buildDocumentFileName(
           t('warehouse.pickingList.fileName'),
           store?.storeName || order.storeName || order.storeCode,
@@ -229,6 +267,7 @@ export default function PickingListPage() {
         ),
         {
           createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
+          layoutNotReadyErrorMessage: t('warehouse.pickingList.layoutNotReady'),
         },
       )
     } catch (error) {

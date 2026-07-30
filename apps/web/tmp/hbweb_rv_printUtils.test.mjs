@@ -2,6 +2,9 @@
 var PDF_IMAGE_FORMAT = "JPEG";
 var PDF_IMAGE_MIME_TYPE = "image/jpeg";
 var PDF_IMAGE_QUALITY = 0.95;
+var A4_ASPECT_RATIO = 297 / 210;
+var A4_ASPECT_RATIO_TOLERANCE = 0.02;
+var DEFAULT_LAYOUT_STABILITY_FRAMES = 6;
 function normalizePrintLocale(locale) {
   return locale?.toLowerCase().startsWith("en") ? "en-US" : "zh-CN";
 }
@@ -112,6 +115,89 @@ function collectElementBreakOffsets(root, rowSelector, footerSelector) {
   offsets.push(root.scrollHeight);
   return offsets.filter((offset) => Number.isFinite(offset) && offset > 0);
 }
+function waitForAnimationFrame() {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+function getPdfPageElements(root, pageSelector) {
+  const pages = Array.from(root.querySelectorAll(pageSelector));
+  return pages.length > 0 ? pages : [root];
+}
+function getPdfPageLayoutSignature(pageElements) {
+  const pageSignatures = pageElements.map((pageElement) => {
+    const rect = pageElement.getBoundingClientRect();
+    const aspectRatio = rect.width > 0 ? rect.height / rect.width : 0;
+    const hasA4Geometry = rect.width > 0 && rect.height > 0 && Math.abs(aspectRatio - A4_ASPECT_RATIO) <= A4_ASPECT_RATIO_TOLERANCE;
+    if (!pageElement.isConnected || !hasA4Geometry) {
+      return null;
+    }
+    const rowCount = pageElement.querySelectorAll("tbody tr").length;
+    return [
+      Math.round(rect.width * 100) / 100,
+      Math.round(rect.height * 100) / 100,
+      pageElement.scrollWidth,
+      pageElement.scrollHeight,
+      rowCount
+    ].join(":");
+  });
+  return pageSignatures.every((signature) => Boolean(signature)) ? pageSignatures.join("|") : null;
+}
+async function waitForStablePdfPageElements(root, options = {}) {
+  const errorMessage = options.layoutNotReadyErrorMessage || "\u6253\u5370\u5185\u5BB9\u5C1A\u672A\u51C6\u5907\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5";
+  const maxFrames = Math.max(2, Math.floor(options.maxFrames ?? DEFAULT_LAYOUT_STABILITY_FRAMES));
+  const pageSelector = options.pageSelector || ".store-order-pdf-page";
+  const waitForFrame = options.waitForFrame || waitForAnimationFrame;
+  let previousSignature = null;
+  if (!root.isConnected) {
+    throw new Error(errorMessage);
+  }
+  for (let frameIndex = 0; frameIndex < maxFrames; frameIndex += 1) {
+    await waitForFrame();
+    if (!root.isConnected) {
+      throw new Error(errorMessage);
+    }
+    const pageElements = getPdfPageElements(root, pageSelector);
+    const signature = getPdfPageLayoutSignature(pageElements);
+    if (!signature) {
+      previousSignature = null;
+      continue;
+    }
+    if (signature === previousSignature) {
+      return pageElements;
+    }
+    previousSignature = signature;
+  }
+  throw new Error(errorMessage);
+}
+function getCurrentReadyPdfPageElement(root, pageSelector, pageIndex, expectedPageCount, errorMessage = "\u6253\u5370\u5185\u5BB9\u5C1A\u672A\u51C6\u5907\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5") {
+  if (!root.isConnected) {
+    throw new Error(errorMessage);
+  }
+  const currentPageElements = getPdfPageElements(root, pageSelector);
+  const currentPageElement = currentPageElements[pageIndex];
+  if (currentPageElements.length !== expectedPageCount || !currentPageElement || !getPdfPageLayoutSignature([currentPageElement])) {
+    throw new Error(errorMessage);
+  }
+  return currentPageElement;
+}
+function preparePdfPrintFrame(frame, url) {
+  frame.style.position = "fixed";
+  frame.style.left = "-10000px";
+  frame.style.top = "0";
+  frame.style.width = "210mm";
+  frame.style.height = "297mm";
+  frame.style.border = "0";
+  frame.style.opacity = "0";
+  frame.style.pointerEvents = "none";
+  frame.src = url;
+}
+async function printPdfFrameAfterLayout(frame, waitForFrame = waitForAnimationFrame) {
+  await waitForFrame();
+  await waitForFrame();
+  frame.contentWindow?.focus();
+  frame.contentWindow?.print();
+}
 
 // src/pages/Warehouse/StoreOrders/printUtils.test.ts
 import fs from "node:fs";
@@ -131,6 +217,19 @@ function assertEqual(actual, expected, label) {
 function runTest(name, execute) {
   execute();
   console.log(`ok - ${name}`);
+}
+async function runAsyncTest(name, execute) {
+  await execute();
+  console.log(`ok - ${name}`);
+}
+async function assertRejects(execute, expectedMessage, label) {
+  try {
+    await execute();
+  } catch (error) {
+    assertEqual(error instanceof Error ? error.message : String(error), expectedMessage, label);
+    return;
+  }
+  throw new Error(`${label}\u3002Expected promise to reject`);
 }
 runTest("\u5207\u7247\u9AD8\u5EA6\u5E94\u5411\u4E0B\u53D6\u6574\u4E3A\u6574\u6570\u50CF\u7D20\uFF0C\u5E76\u5B8C\u6574\u8986\u76D6\u5269\u4F59\u9AD8\u5EA6", () => {
   const slices = buildPdfSlicePlan(250, 104.7);
@@ -249,15 +348,147 @@ runTest("\u5206\u9875 PDF \u5E94\u9010\u9875\u6E32\u67D3 A4 \u9875\u9762\u5E76\u
   const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), "src/pages/Warehouse/StoreOrders/printUtils.ts"), "utf8");
   assertEqual(printUtilsSource.includes("createPdfDocumentFromPages"), true, "\u5E94\u63D0\u4F9B\u5206\u9875 PDF \u751F\u6210\u51FD\u6570");
   assertEqual(printUtilsSource.includes("querySelectorAll<HTMLElement>(pageSelector)"), true, "\u5206\u9875 PDF \u5E94\u6309\u9875\u9762\u9009\u62E9\u5668\u9010\u9875\u8BFB\u53D6 DOM");
+  assertEqual(printUtilsSource.includes("waitForStablePdfPageElements"), true, "\u5206\u9875 PDF \u5E94\u7B49\u5F85\u5F53\u524D DOM \u5E03\u5C40\u7A33\u5B9A\u540E\u518D\u622A\u56FE");
+  assertEqual(printUtilsSource.includes("getCurrentReadyPdfPageElement"), true, "\u5206\u9875 PDF \u6BCF\u9875\u622A\u56FE\u524D\u540E\u5E94\u91CD\u65B0\u53D6\u5F97\u5F53\u524D DOM \u8282\u70B9");
+  assertEqual(printUtilsSource.includes("currentPageElement !== pageElement"), true, "\u622A\u56FE\u671F\u95F4\u9875\u9762\u8282\u70B9\u88AB\u66FF\u6362\u65F6\u5E94\u505C\u6B62\u751F\u6210 PDF");
   assertEqual(printUtilsSource.includes("pdf.addPage()"), true, "\u5206\u9875 PDF \u591A\u9875\u65F6\u5E94\u8FFD\u52A0 PDF \u9875\u9762");
   assertEqual(printUtilsSource.includes("pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, 210, 297)"), true, "\u6BCF\u4E2A\u5206\u9875\u5E94\u6309 A4 \u5C3A\u5BF8\u5199\u5165 PDF");
 });
+await runAsyncTest("\u5206\u9875 PDF \u5E94\u7B49\u5F85\u8FDE\u7EED\u4E24\u5E27\u5E03\u5C40\u4E00\u81F4\u540E\u8FD4\u56DE\u5F53\u524D\u9875\u9762\u8282\u70B9", async () => {
+  let frameIndex = -1;
+  const widths = [780, 794, 794];
+  const rowCounts = [25, 26, 26];
+  const page = {
+    isConnected: true,
+    get scrollWidth() {
+      return widths[Math.max(0, frameIndex)];
+    },
+    scrollHeight: 1123,
+    getBoundingClientRect: () => ({
+      width: widths[Math.max(0, frameIndex)],
+      height: 1123
+    }),
+    querySelectorAll: () => Array.from({ length: rowCounts[Math.max(0, frameIndex)] })
+  };
+  const root = {
+    isConnected: true,
+    querySelectorAll: () => [page]
+  };
+  const pages = await waitForStablePdfPageElements(root, {
+    maxFrames: 6,
+    waitForFrame: async () => {
+      frameIndex += 1;
+    }
+  });
+  assertEqual(frameIndex + 1, 3, "\u5E03\u5C40\u53D8\u5316\u540E\u5E94\u518D\u7B49\u5F85\u4E00\u5E27\u786E\u8BA4\u7A33\u5B9A");
+  assertEqual(pages[0], page, "\u5E94\u8FD4\u56DE\u7A33\u5B9A\u540E\u7684\u5F53\u524D\u9875\u9762\u8282\u70B9");
+});
+runTest("\u5206\u9875 PDF \u5E94\u6309\u7D22\u5F15\u91CD\u65B0\u53D6\u5F97\u5F53\u524D\u9875\u9762\u8282\u70B9\u5E76\u62D2\u7EDD\u9875\u6570\u53D8\u5316", () => {
+  const createPage = () => ({
+    isConnected: true,
+    scrollWidth: 794,
+    scrollHeight: 1123,
+    getBoundingClientRect: () => ({ width: 794, height: 1123 }),
+    querySelectorAll: () => Array.from({ length: 26 })
+  });
+  const firstPage = createPage();
+  const replacementPage = createPage();
+  let currentPages = [firstPage];
+  const root = {
+    isConnected: true,
+    querySelectorAll: () => currentPages
+  };
+  assertEqual(
+    getCurrentReadyPdfPageElement(root, ".store-order-pdf-page", 0, 1, "\u5E03\u5C40\u672A\u5C31\u7EEA"),
+    firstPage,
+    "\u9996\u6B21\u5E94\u53D6\u5F97\u5F53\u524D\u9875\u9762\u8282\u70B9"
+  );
+  currentPages = [replacementPage];
+  assertEqual(
+    getCurrentReadyPdfPageElement(root, ".store-order-pdf-page", 0, 1, "\u5E03\u5C40\u672A\u5C31\u7EEA"),
+    replacementPage,
+    "React \u66FF\u6362\u9875\u9762\u540E\u5E94\u91CD\u65B0\u53D6\u5F97\u65B0\u8282\u70B9\uFF0C\u4E0D\u80FD\u7EE7\u7EED\u6301\u6709\u65E7\u5F15\u7528"
+  );
+  currentPages = [replacementPage, createPage()];
+  try {
+    getCurrentReadyPdfPageElement(root, ".store-order-pdf-page", 0, 1, "\u5E03\u5C40\u672A\u5C31\u7EEA");
+  } catch (error) {
+    assertEqual(error instanceof Error ? error.message : String(error), "\u5E03\u5C40\u672A\u5C31\u7EEA", "\u9875\u6570\u53D8\u5316\u5E94\u8FD4\u56DE\u5E03\u5C40\u672A\u5C31\u7EEA\u9519\u8BEF");
+    return;
+  }
+  throw new Error("\u9875\u6570\u53D8\u5316\u65F6\u5E94\u62D2\u7EDD\u7EE7\u7EED\u751F\u6210 PDF");
+});
+await runAsyncTest("\u5206\u9875 PDF \u9047\u5230\u65AD\u5F00\u6216\u96F6\u5C3A\u5BF8\u8282\u70B9\u65F6\u5E94\u505C\u6B62\u751F\u6210", async () => {
+  const errorMessage = "\u6253\u5370\u5185\u5BB9\u5C1A\u672A\u51C6\u5907\u5B8C\u6210";
+  const disconnectedRoot = {
+    isConnected: false,
+    querySelectorAll: () => []
+  };
+  await assertRejects(
+    () => waitForStablePdfPageElements(disconnectedRoot, {
+      layoutNotReadyErrorMessage: errorMessage,
+      waitForFrame: async () => {
+      }
+    }),
+    errorMessage,
+    "\u6253\u5370\u6839\u8282\u70B9\u65AD\u5F00\u65F6\u5E94\u8FD4\u56DE\u5E03\u5C40\u672A\u5C31\u7EEA\u9519\u8BEF"
+  );
+  const zeroSizePage = {
+    isConnected: true,
+    scrollWidth: 0,
+    scrollHeight: 0,
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    querySelectorAll: () => []
+  };
+  const zeroSizeRoot = {
+    isConnected: true,
+    querySelectorAll: () => [zeroSizePage]
+  };
+  await assertRejects(
+    () => waitForStablePdfPageElements(zeroSizeRoot, {
+      layoutNotReadyErrorMessage: errorMessage,
+      maxFrames: 2,
+      waitForFrame: async () => {
+      }
+    }),
+    errorMessage,
+    "\u96F6\u5C3A\u5BF8\u9875\u9762\u5728\u9650\u5B9A\u5E27\u6570\u5185\u672A\u6062\u590D\u65F6\u5E94\u8FD4\u56DE\u5E03\u5C40\u672A\u5C31\u7EEA\u9519\u8BEF"
+  );
+});
+await runAsyncTest("PDF \u6253\u5370 iframe \u5E94\u4F7F\u7528\u5C4F\u5E55\u5916 A4 \u5C3A\u5BF8\u5E76\u7B49\u5F85\u4E24\u5E27\u518D\u6253\u5370", async () => {
+  const events = [];
+  const frame = {
+    style: {},
+    contentWindow: {
+      focus: () => events.push("focus"),
+      print: () => events.push("print")
+    }
+  };
+  preparePdfPrintFrame(frame, "blob:test");
+  assertEqual(frame.style.left, "-10000px", "\u6253\u5370 iframe \u5E94\u79FB\u51FA\u53EF\u89C6\u533A\u57DF");
+  assertEqual(frame.style.width, "210mm", "\u6253\u5370 iframe \u5E94\u4F7F\u7528\u975E\u96F6 A4 \u5BBD\u5EA6");
+  assertEqual(frame.style.height, "297mm", "\u6253\u5370 iframe \u5E94\u4F7F\u7528\u975E\u96F6 A4 \u9AD8\u5EA6");
+  assertEqual(frame.src, "blob:test", "\u6253\u5370 iframe \u5E94\u52A0\u8F7D\u4E34\u65F6 PDF URL");
+  await printPdfFrameAfterLayout(frame, async () => {
+    events.push("frame");
+  });
+  assertDeepEqual(events, ["frame", "frame", "focus", "print"], "PDF viewer \u5E94\u5F97\u5230\u4E24\u5E27\u5E03\u5C40\u65F6\u95F4\u540E\u518D\u89E6\u53D1\u6253\u5370");
+});
 runTest("\u5206\u9875 PDF \u6253\u5370\u5E94\u4F7F\u7528\u4E34\u65F6 Blob URL \u5E76\u6E05\u7406\u8D44\u6E90", () => {
   const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), "src/pages/Warehouse/StoreOrders/printUtils.ts"), "utf8");
+  const printFunctionSource = printUtilsSource.slice(printUtilsSource.indexOf("export async function printElementPagesAsPdf"));
   assertEqual(printUtilsSource.includes("pdf.output('blob')"), true, "\u6253\u5370 PDF \u5E94\u8F93\u51FA Blob");
   assertEqual(printUtilsSource.includes("URL.createObjectURL(blob)"), true, "\u6253\u5370 PDF \u5E94\u521B\u5EFA\u4E34\u65F6 URL");
-  assertEqual(printUtilsSource.includes("frame.contentWindow?.print()"), true, "\u6253\u5370 PDF \u5E94\u89E6\u53D1 iframe \u6253\u5370");
+  assertEqual(printUtilsSource.includes("printPdfFrameAfterLayout"), true, "\u6253\u5370 PDF \u5E94\u7B49\u5F85 iframe \u5E03\u5C40\u7A33\u5B9A\u540E\u518D\u6253\u5370");
+  assertEqual(printUtilsSource.includes("addEventListener('afterprint'"), true, "\u6253\u5370\u5B8C\u6210\u540E\u5E94\u901A\u8FC7 afterprint \u6E05\u7406 iframe");
   assertEqual(printUtilsSource.includes("URL.revokeObjectURL(url)"), true, "\u6253\u5370\u5B8C\u6210\u540E\u5E94\u6E05\u7406\u4E34\u65F6 URL");
   assertEqual(printUtilsSource.includes("frame.remove()"), true, "\u6253\u5370\u5B8C\u6210\u540E\u5E94\u79FB\u9664\u4E34\u65F6 iframe");
+  assertEqual(
+    printFunctionSource.includes(
+      "void printPdfFrameAfterLayout(frame)\n      .then(() => {\n        if (!cleaned) {\n          cleanupTimer = window.setTimeout(cleanup, 60_000)"
+    ),
+    true,
+    "\u8D85\u65F6\u6E05\u7406\u5E94\u5728\u89E6\u53D1\u6253\u5370\u540E\u624D\u5F00\u59CB\u8BA1\u65F6\uFF0C\u907F\u514D PDF \u52A0\u8F7D\u6216\u6253\u5370\u5BF9\u8BDD\u6846\u505C\u7559\u671F\u95F4\u63D0\u524D\u79FB\u9664 iframe"
+  );
 });
 console.log("printUtils.test: ok");

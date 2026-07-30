@@ -62,9 +62,13 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _rootPath;
     private readonly int _maxSnapshotsPerStore;
+    private readonly Func<bool>? _manifestWriteFailure;
     private readonly object _gate = new();
 
-    public GzipCatalogSnapshotStore(string rootPath, int maxSnapshotsPerStore = 3)
+    public GzipCatalogSnapshotStore(
+        string rootPath,
+        int maxSnapshotsPerStore = 3,
+        Func<bool>? manifestWriteFailure = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
         if (maxSnapshotsPerStore <= 0)
@@ -74,6 +78,7 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
 
         _rootPath = Path.GetFullPath(rootPath);
         _maxSnapshotsPerStore = maxSnapshotsPerStore;
+        _manifestWriteFailure = manifestWriteFailure;
         Directory.CreateDirectory(_rootPath);
     }
 
@@ -139,13 +144,25 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
             var manifest = ReadManifest(failClosedOnInvalid: true);
             var storeHash = HashText(snapshot.StoreCode.Trim().ToUpperInvariant());
             var versionHash = HashText(snapshot.CatalogVersion.Trim());
-            var relativeFileName = Path.Combine("snapshots", storeHash, $"{versionHash}.json.gz");
+            // 正文必须不可变：manifest 尚未发布时绝不能覆盖旧 entry 正在引用的 LKG 文件。
+            var relativeFileName = Path.Combine(
+                "snapshots",
+                storeHash,
+                $"{versionHash}-{Guid.NewGuid():N}.json.gz");
             var targetPath = ResolveRelativePath(relativeFileName);
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
 
+            // 只有本次确实创建了新 target，且旧 manifest 未引用它，发布失败后才允许清理。
+            // 已存在或同版本的正文归属无法可靠判定，宁可保留也不能误删 LKG。
+            var targetExistedBeforeWrite = File.Exists(targetPath);
+            var targetWasReferencedByOldManifest = manifest.Snapshots!.Any(entry =>
+                string.Equals(entry.FileName, relativeFileName, StringComparison.Ordinal));
             var sha256 = WriteSnapshotBody(targetPath, snapshot);
             var manifestSnapshots = manifest.Snapshots!;
-            manifestSnapshots.RemoveAll(entry => string.Equals(entry.FileName, relativeFileName, StringComparison.Ordinal));
+            manifestSnapshots.RemoveAll(entry =>
+                string.Equals(entry.StoreCode, snapshot.StoreCode.Trim(), StringComparison.OrdinalIgnoreCase)
+                && entry.Since == snapshot.Since
+                && string.Equals(entry.CatalogVersion, snapshot.CatalogVersion.Trim(), StringComparison.Ordinal));
             manifestSnapshots.Add(new CatalogSnapshotManifestEntry(
                 snapshot.StoreCode.Trim(),
                 snapshot.Since,
@@ -168,11 +185,26 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
             }
 
             // manifest 是发布点：只有正文和 manifest 都完整后，新的版本才可被启动恢复。
-            AtomicWrite(ManifestPath, JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
+            try
+            {
+                WriteManifest(manifest);
+            }
+            catch
+            {
+                TryDeleteNewUnpublishedBody(
+                    targetPath,
+                    relativeFileName,
+                    targetExistedBeforeWrite,
+                    targetWasReferencedByOldManifest);
+                throw;
+            }
+
             foreach (var entry in evicted)
             {
                 TryDelete(ResolveRelativePath(entry.FileName));
             }
+
+            CleanupUnreferencedSnapshotBodies(manifest);
         }
     }
 
@@ -206,11 +238,22 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
             }
 
             manifestSnapshots[index] = manifestSnapshots[index] with { ExpiresAt = expiresAt };
-            AtomicWrite(ManifestPath, JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
+            WriteManifest(manifest);
         }
     }
 
     private string ManifestPath => Path.Combine(_rootPath, ManifestFileName);
+
+    private void WriteManifest(CatalogSnapshotManifest manifest)
+    {
+        // 仅供测试稳定复现“正文已移动、manifest 未发布”的故障窗口；生产默认仍走原子写入。
+        if (_manifestWriteFailure?.Invoke() == true)
+        {
+            throw new IOException("目录快照 manifest 写入故障注入。");
+        }
+
+        AtomicWrite(ManifestPath, JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
+    }
 
     private CatalogSnapshotManifest ReadManifest(bool failClosedOnInvalid = false)
     {
@@ -452,6 +495,69 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
         if (File.Exists(path))
         {
             File.Delete(path);
+        }
+    }
+
+    private void TryDeleteNewUnpublishedBody(
+        string targetPath,
+        string relativeFileName,
+        bool targetExistedBeforeWrite,
+        bool targetWasReferencedByOldManifest)
+    {
+        if (targetExistedBeforeWrite || targetWasReferencedByOldManifest)
+        {
+            return;
+        }
+
+        try
+        {
+            // 再次以磁盘 manifest 确认未发布，防止写入错误发生在原子替换之后时误删新 LKG。
+            var published = ReadManifest(failClosedOnInvalid: true);
+            if (published.Snapshots!.Any(entry =>
+                    string.Equals(entry.FileName, relativeFileName, StringComparison.Ordinal)))
+            {
+                Log($"snapshot cleanup skipped reason=manifest-references-target file={relativeFileName}");
+                return;
+            }
+
+            TryDelete(targetPath);
+        }
+        catch (Exception exception)
+        {
+            // 清理无法安全判断或失败时保留正文，避免遮蔽原始 manifest 发布异常。
+            Log($"snapshot cleanup skipped reason=verification-failed file={relativeFileName} error={exception.GetType().Name}");
+        }
+    }
+
+    private void CleanupUnreferencedSnapshotBodies(CatalogSnapshotManifest manifest)
+    {
+        try
+        {
+            var snapshotsPath = Path.Combine(_rootPath, "snapshots");
+            if (!Directory.Exists(snapshotsPath))
+            {
+                return;
+            }
+
+            var referencedPaths = manifest.Snapshots!
+                .Select(entry => ResolveRelativePath(entry.FileName))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var path in Directory.EnumerateFiles(
+                         snapshotsPath,
+                         "*.json.gz",
+                         SearchOption.AllDirectories))
+            {
+                if (!referencedPaths.Contains(path))
+                {
+                    // 仅扫描最终 gzip 名称；写入中的 .tmp 文件不会落入清理范围。
+                    TryDelete(path);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            // 发布已成功时，历史垃圾的清理不能反过来影响本次可用的 manifest。
+            Log($"snapshot cleanup skipped reason=enumeration-failed error={exception.GetType().Name}");
         }
     }
 
