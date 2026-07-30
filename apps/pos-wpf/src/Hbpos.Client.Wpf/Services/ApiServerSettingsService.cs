@@ -64,10 +64,12 @@ public sealed class ApiServerSettingsService
             throw new ArgumentException("服务器地址只支持 HTTP 或 HTTPS。", nameof(address));
         }
 
-        // 公网地址必须使用 HTTPS；HTTP 仅保留给本机开发服务。
-        if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback)
+        // 公网地址必须使用 HTTPS；HTTP 仅允许本机和 RFC1918 局域网 IPv4 服务。
+        if (uri.Scheme == Uri.UriSchemeHttp &&
+            !uri.IsLoopback &&
+            !IsPrivateIpv4Address(uri.Host))
         {
-            throw new ArgumentException("非本机服务器地址必须使用 HTTPS。", nameof(address));
+            throw new ArgumentException("公网服务器地址必须使用 HTTPS。", nameof(address));
         }
 
         if (!string.IsNullOrEmpty(uri.UserInfo) ||
@@ -80,6 +82,20 @@ public sealed class ApiServerSettingsService
 
         var normalized = uri.AbsoluteUri;
         return normalized.EndsWith('/') ? normalized : normalized + "/";
+    }
+
+    private static bool IsPrivateIpv4Address(string host)
+    {
+        if (!System.Net.IPAddress.TryParse(host, out var address))
+        {
+            return false;
+        }
+
+        var bytes = address.GetAddressBytes();
+        return bytes.Length == 4 &&
+               (bytes[0] == 10 ||
+                (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
+                (bytes[0] == 192 && bytes[1] == 168));
     }
 
     private static bool HasUserInfoSeparator(string address)

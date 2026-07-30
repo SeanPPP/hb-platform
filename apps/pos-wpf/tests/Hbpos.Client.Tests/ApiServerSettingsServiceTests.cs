@@ -19,6 +19,11 @@ public sealed class ApiServerSettingsServiceTests
     [InlineData("https://api.example.com/store", "https://api.example.com/store/")]
     [InlineData("http://localhost:5159", "http://localhost:5159/")]
     [InlineData("http://127.0.0.1:5159", "http://127.0.0.1:5159/")]
+    [InlineData("http://10.0.0.5:5159", "http://10.0.0.5:5159/")]
+    [InlineData("http://172.16.0.1:5159", "http://172.16.0.1:5159/")]
+    [InlineData("http://172.31.255.254:5159", "http://172.31.255.254:5159/")]
+    [InlineData("http://192.168.31.246", "http://192.168.31.246/")]
+    [InlineData("http://192.168.31.246:5159", "http://192.168.31.246:5159/")]
     public void NormalizeAddress_normalizes_supported_server_addresses(string input, string expected)
     {
         Assert.Equal(expected, ApiServerSettingsService.NormalizeAddress(input));
@@ -29,6 +34,13 @@ public sealed class ApiServerSettingsServiceTests
     [InlineData("/relative")]
     [InlineData("ftp://localhost/")]
     [InlineData("http://api.example.com/")]
+    [InlineData("http://172.15.255.255/")]
+    [InlineData("http://172.32.0.1/")]
+    [InlineData("http://192.167.255.255/")]
+    [InlineData("http://8.8.8.8/")]
+    [InlineData("http://user:password@192.168.31.246/")]
+    [InlineData("http://192.168.31.246/?store=1")]
+    [InlineData("http://192.168.31.246/#fragment")]
     [InlineData("https://user:password@api.example.com/")]
     [InlineData("https://@api.example.com/")]
     [InlineData("https://api.example.com/?store=1")]
