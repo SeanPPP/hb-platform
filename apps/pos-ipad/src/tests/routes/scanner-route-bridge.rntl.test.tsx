@@ -77,3 +77,66 @@ test("路由切换和主管弹窗只把完整 HID 条码交给当前 context，�
   scanner.acceptHidText("SKU-3\n");
   expect(onScan).toHaveBeenCalledTimes(2);
 });
+
+test("同一次 HID 回车同时触发 keyPress 和 submitEditing 时只提交一次条码", async () => {
+  const scanner = new HidScannerRouter();
+  const onScan = jest.fn<(value: string) => void>();
+  mockRuntime = {
+    services: {
+      operationAuthorization: {
+        status: "available",
+        getState: () => ({ kind: "idle" }),
+        subscribe: () => () => undefined,
+      },
+      scanner: { router: scanner },
+    },
+  };
+
+  const screen = await render(
+    <ScannerRouteProvider>
+      <RouteHidScannerCapture
+        context="product"
+        onScan={onScan}
+        path="/sales"
+      />
+    </ScannerRouteProvider>,
+  );
+
+  const hidInput = () => {
+    const matches = screen.container.queryAll(
+      (instance) => instance.props.caretHidden === true,
+      { matchDeepestOnly: true },
+    );
+    expect(matches).toHaveLength(1);
+    return matches[0]!;
+  };
+  scanner.setCaptureActive(true);
+  await act(async () => {
+    hidInput().props.onChangeText("930000000001");
+  });
+  await act(async () => {
+    hidInput().props.onKeyPress({
+      nativeEvent: { key: "Enter" },
+    });
+    hidInput().props.onSubmitEditing({
+      nativeEvent: { text: "930000000001" },
+    });
+  });
+
+  expect(onScan).toHaveBeenCalledTimes(1);
+  expect(onScan).toHaveBeenCalledWith("930000000001");
+
+  await act(async () => {
+    hidInput().props.onChangeText("930000000001");
+  });
+  await act(async () => {
+    hidInput().props.onKeyPress({
+      nativeEvent: { key: "Enter" },
+    });
+    hidInput().props.onSubmitEditing({
+      nativeEvent: { text: "930000000001" },
+    });
+  });
+  expect(onScan).toHaveBeenCalledTimes(2);
+  await screen.unmount();
+});

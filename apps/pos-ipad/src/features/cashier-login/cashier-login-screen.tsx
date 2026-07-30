@@ -232,10 +232,13 @@ export function CashierLoginScreen({
       return;
     }
     setError(null);
+    const submittedBarcode = barcode;
+    // 扫码提交后立即清空可见输入，登录失败复焦时下一次 HID 从空值开始。
+    setBarcode("");
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      await activeController.login(barcode, runtime);
+      await activeController.login(submittedBarcode, runtime);
       onSuccess();
     } catch (nextError: unknown) {
       setError(errorText(nextError, text));

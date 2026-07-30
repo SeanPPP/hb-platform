@@ -307,6 +307,51 @@ test("登录失败在输入恢复 editable 后重新取得扫码焦点", async (
   expect(onManualInputFocusChange.mock.calls).toEqual([[true]]);
 });
 
+test("登录提交后清空已扫描内容，失败重试不会与下一条码拼接", async () => {
+  const signIn = jest.fn(async () => {
+    throw new Error("rejected");
+  });
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="zh"
+      onSuccess={jest.fn()}
+      runtime={runtime(signIn)}
+    />,
+  );
+
+  await act(async () => {
+    fireEvent.changeText(
+      screen.getByTestId("cashier-login-barcode"),
+      "HID-FIRST",
+    );
+  });
+  await act(async () => {
+    screen.getByTestId("cashier-login-barcode").props.onSubmitEditing();
+  });
+  await waitFor(() => {
+    expect(signIn).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("cashier-login-error")).toBeTruthy();
+  });
+  expect(screen.getByTestId("cashier-login-barcode").props.value).toBe("");
+
+  await act(async () => {
+    const previousValue =
+      screen.getByTestId("cashier-login-barcode").props.value;
+    fireEvent.changeText(
+      screen.getByTestId("cashier-login-barcode"),
+      `${previousValue}HID-SECOND`,
+    );
+  });
+  await act(async () => {
+    screen.getByTestId("cashier-login-barcode").props.onSubmitEditing();
+  });
+  await waitFor(() => {
+    expect(signIn.mock.calls).toEqual([["HID-FIRST"], ["HID-SECOND"]]);
+  });
+  await screen.unmount();
+});
+
 test("紧急二维码时钟回拨显示专用安全提示且不进入 sales", async () => {
   const onSuccess = jest.fn();
   const screen = await render(

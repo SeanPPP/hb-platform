@@ -95,6 +95,42 @@ test("TypeScript 与服务端共享 IEEE-754 SHA256 v2 测试向量", async () =
   );
 });
 
+test("checksum 将等价的 DateTimeOffset JSON 规范化为服务端 UTC 毫秒格式", async () => {
+  const offsetItem = {
+    ...canonicalItem,
+    updatedAt: "2026-07-28T11:02:03.4560000+10:00",
+  };
+  assert.equal(
+    await calculateCatalogPageChecksum([offsetItem], digest, 2),
+    await calculateCatalogPageChecksum([canonicalItem], digest, 2),
+  );
+
+  const canonicalDeleted = {
+    storeCode: "S01",
+    lookupCode: "A",
+    lookupCodeNormalized: "A",
+    deletedAt: "2026-07-28T01:02:03.456Z",
+  };
+  const offsetDeleted = {
+    ...canonicalDeleted,
+    deletedAt: "2026-07-28T11:02:03.4560000+10:00",
+  };
+  assert.equal(
+    await calculateCatalogDeltaPageChecksum({
+      baseCatalogVersion: "v1",
+      targetCatalogVersion: "v2",
+      items: [offsetItem],
+      deletedLookups: [offsetDeleted],
+    }, digest),
+    await calculateCatalogDeltaPageChecksum({
+      baseCatalogVersion: "v1",
+      targetCatalogVersion: "v2",
+      items: [canonicalItem],
+      deletedLookups: [canonicalDeleted],
+    }, digest),
+  );
+});
+
 test("delta checksum 覆盖 base/target、upsert 与 delete，且按规范化售卖码稳定排序", async () => {
   const checksum = await calculateCatalogDeltaPageChecksum({
     baseCatalogVersion: "v1",

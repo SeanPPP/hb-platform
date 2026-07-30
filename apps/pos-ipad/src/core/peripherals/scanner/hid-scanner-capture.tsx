@@ -26,6 +26,19 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
     const inputRef = useRef<TextInputInstance>(null);
     const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [value, setValue] = useState("");
+    const valueRef = useRef("");
+    const setCapturedValue = (nextValue: string): void => {
+      valueRef.current = nextValue;
+      setValue(nextValue);
+    };
+    const submitCapturedValue = (): void => {
+      const capturedValue = valueRef.current;
+      if (!capturedValue) return;
+      // iPad HID 回车可能连续触发 keyPress 与 submitEditing；同步清空可阻止第二次重放。
+      valueRef.current = "";
+      const result = scanner.submitTextInput(capturedValue);
+      setCapturedValue(result.valueToRender);
+    };
     const updateCaptureState = useCallback((nextFocused: boolean) => {
       scanner.setCaptureActive(active && nextFocused);
       onCaptureStatusChange?.(scanner.getCaptureStatus());
@@ -38,7 +51,7 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
       idleTimerRef.current = setTimeout(() => {
         idleTimerRef.current = null;
         if (scanner.resetPartialIfIdle()) {
-          setValue("");
+          setCapturedValue("");
         }
       }, 85);
     };
@@ -58,7 +71,7 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
     useEffect(() => {
       if (!active) {
         inputRef.current?.blur();
-        setValue("");
+        setCapturedValue("");
         updateCaptureState(false);
         return;
       }
@@ -94,20 +107,16 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
         onBlur={() => updateCaptureState(false)}
         onChangeText={(nextValue) => {
           const result = scanner.acceptTextInputValue(nextValue);
-          setValue(result.valueToRender);
+          setCapturedValue(result.valueToRender);
           scheduleIdleReset();
         }}
         onFocus={() => updateCaptureState(true)}
         onKeyPress={(event) => {
           if (event.nativeEvent.key === "Enter") {
-            const result = scanner.submitTextInput(value);
-            setValue(result.valueToRender);
+            submitCapturedValue();
           }
         }}
-        onSubmitEditing={(event) => {
-          const result = scanner.submitTextInput(event.nativeEvent.text || value);
-          setValue(result.valueToRender);
-        }}
+        onSubmitEditing={submitCapturedValue}
         showSoftInputOnFocus={false}
         style={styles.hiddenInput}
         value={value}

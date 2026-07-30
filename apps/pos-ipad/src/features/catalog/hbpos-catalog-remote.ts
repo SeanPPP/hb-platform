@@ -485,7 +485,8 @@ function buildCanonicalPage(
       number(item.priceSource),
       item.priceSourceLabel,
       number(item.quantityFactor),
-      item.updatedAt ?? "",
+      // 服务端按 UTC 毫秒格式计算摘要；JSON 中等价的 DateTimeOffset 文本必须先对齐。
+      optionalTimestamp(item.updatedAt, "item.updatedAt") ?? "",
       item.productImage ?? "",
       item.discountRate === null ? "" : number(item.discountRate),
       item.isSpecialProduct ? "1" : "0",
@@ -517,7 +518,8 @@ function buildCanonicalDeltaPage(input: Readonly<{
         "U", item.storeCode, item.productCode, item.referenceCode ?? "", item.displayName,
         item.lookupCode, item.lookupCodeNormalized, item.itemNumber ?? "", item.barcode ?? "",
         formatCanonicalNumberV1(item.retailPrice), formatCanonicalNumberV1(item.priceSource),
-        item.priceSourceLabel, formatCanonicalNumberV1(item.quantityFactor), item.updatedAt ?? "",
+        item.priceSourceLabel, formatCanonicalNumberV1(item.quantityFactor),
+        optionalTimestamp(item.updatedAt, "item.updatedAt") ?? "",
         item.productImage ?? "", item.discountRate === null ? "" : formatCanonicalNumberV1(item.discountRate),
         item.isSpecialProduct ? "1" : "0",
       );
@@ -525,7 +527,7 @@ function buildCanonicalDeltaPage(input: Readonly<{
       const deleted = operation.deleted;
       values.push(
         "D", deleted.storeCode, deleted.lookupCode, deleted.lookupCodeNormalized,
-        deleted.deletedAt ?? "",
+        optionalTimestamp(deleted.deletedAt, "deletedLookup.deletedAt") ?? "",
       );
     }
   }
