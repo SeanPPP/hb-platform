@@ -18,12 +18,72 @@ public sealed class CatalogControllerTests
     public void SyncEndpoints_KeepExpectedRoutes()
     {
         Assert.Equal("sellable-items/page", GetHttpGetTemplate(nameof(CatalogController.GetSellableItemsPage)));
+        Assert.Equal("sync-plan", GetHttpGetTemplate(nameof(CatalogController.GetCatalogSyncPlan)));
+        Assert.Equal("delta/page", GetHttpGetTemplate(nameof(CatalogController.GetCatalogDeltaPage)));
         Assert.Equal("sellable-items/lookup", GetHttpGetTemplate(nameof(CatalogController.LookupSellableItem)));
         Assert.Equal("special-products/page", GetHttpGetTemplate(nameof(CatalogController.GetSpecialProductsPage)));
         Assert.Equal("promotions", GetHttpGetTemplate(nameof(CatalogController.GetPromotionRules)));
         Assert.Equal("sellable-items/compare", GetHttpPostTemplate(nameof(CatalogController.CompareSellableItems)));
         Assert.Equal("special-products/mark", GetHttpPostTemplate(nameof(CatalogController.MarkSpecialProduct)));
         Assert.Equal("sellable-items", GetHttpGetTemplate(nameof(CatalogController.GetSellableItems)));
+    }
+
+    [Fact]
+    public async Task GetCatalogSyncPlan_forwards_base_version_and_wraps_response()
+    {
+        var expected = new CatalogSyncPlanResponse(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            CatalogSyncModes.Delta,
+            "catalog-v1:base",
+            "catalog-v1:target",
+            3);
+        var service = new FakeCatalogService { SyncPlanResponse = expected };
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetCatalogSyncPlan(
+            "S01",
+            "catalog-v1:base",
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogSyncPlanResponse>>(ok.Value);
+        Assert.Same(expected, apiResult.Data);
+        Assert.Equal(("S01", "catalog-v1:base"), service.LastSyncPlanRequest);
+    }
+
+    [Fact]
+    public void CatalogSyncPlanResponse_serializes_mode_as_stable_lower_camel_case_contract()
+    {
+        var response = new CatalogSyncPlanResponse(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            CatalogSyncModes.NoChange,
+            "catalog-v1:current",
+            "catalog-v1:current",
+            3);
+
+        var json = JsonSerializer.Serialize(response, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"mode\":\"noChange\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetCatalogDeltaPage_returns_conflict_when_fixed_snapshot_has_expired()
+    {
+        var controller = new CatalogController(new FakeCatalogService { ThrowDeltaSnapshotExpired = true });
+
+        var result = await controller.GetCatalogDeltaPage(
+            "S01",
+            "catalog-v1:base",
+            "catalog-v1:target",
+            cursor: null,
+            pageSize: 100,
+            cancellationToken: CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogDeltaPageResponse>>(conflict.Value);
+        Assert.Equal("CATALOG_SNAPSHOT_EXPIRED", apiResult.ErrorCode);
     }
 
     [Fact]
@@ -446,6 +506,10 @@ public sealed class CatalogControllerTests
     {
         public CatalogSyncPageResponse? PageResponse { get; init; }
 
+        public CatalogSyncPlanResponse? SyncPlanResponse { get; init; }
+
+        public CatalogDeltaPageResponse? DeltaPageResponse { get; init; }
+
         public CatalogCompareResponse? CompareResponse { get; init; }
 
         public CatalogLookupResponse? LookupResponse { get; init; }
@@ -456,6 +520,8 @@ public sealed class CatalogControllerTests
 
         public bool ThrowSnapshotExpired { get; init; }
 
+        public bool ThrowDeltaSnapshotExpired { get; init; }
+
         public (
             string StoreCode,
             DateTimeOffset? Since,
@@ -465,6 +531,10 @@ public sealed class CatalogControllerTests
             int ChecksumVersion)? LastPageRequest { get; private set; }
 
         public CatalogCompareRequest? LastCompareRequest { get; private set; }
+
+        public (string StoreCode, string? BaseCatalogVersion)? LastSyncPlanRequest { get; private set; }
+
+        public (string StoreCode, string BaseCatalogVersion, string TargetCatalogVersion, string? Cursor, int PageSize)? LastDeltaPageRequest { get; private set; }
 
         public (string StoreCode, string? LookupCode, string? LookupCodeNormalized)? LastLookupRequest { get; private set; }
 
@@ -514,6 +584,61 @@ public sealed class CatalogControllerTests
                 ? Task.FromException<CatalogSyncPageResponse?>(
                     new CatalogSnapshotExpiredException(storeCode, catalogVersion ?? string.Empty))
                 : Task.FromResult(PageResponse);
+        }
+
+        public Task<CatalogSyncPageResponse?> GetSellableItemsPageWithLeaseAsync(
+            string storeCode, DateTimeOffset? since, string? cursor, int pageSize,
+            CancellationToken cancellationToken, string? catalogVersion, int checksumVersion, string? downloadLeaseId)
+        {
+            return GetSellableItemsPageAsync(storeCode, since, cursor, pageSize, cancellationToken, catalogVersion, checksumVersion);
+        }
+
+        public Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanAsync(
+            string storeCode,
+            string? baseCatalogVersion,
+            CancellationToken cancellationToken)
+        {
+            LastSyncPlanRequest = (storeCode, baseCatalogVersion);
+            return Task.FromResult(SyncPlanResponse);
+        }
+
+        public Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanWithLeaseAsync(
+            string storeCode, string? baseCatalogVersion, CancellationToken cancellationToken)
+        {
+            return GetCatalogSyncPlanAsync(storeCode, baseCatalogVersion, cancellationToken);
+        }
+
+        public Task<CatalogDeltaPageResponse> GetCatalogDeltaPageAsync(
+            string storeCode,
+            string baseCatalogVersion,
+            string targetCatalogVersion,
+            string? cursor,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            LastDeltaPageRequest = (storeCode, baseCatalogVersion, targetCatalogVersion, cursor, pageSize);
+            return ThrowDeltaSnapshotExpired
+                ? Task.FromException<CatalogDeltaPageResponse>(
+                    new CatalogSnapshotExpiredException(storeCode, baseCatalogVersion))
+                : Task.FromResult(DeltaPageResponse ?? new CatalogDeltaPageResponse(
+                    storeCode,
+                    DateTimeOffset.UnixEpoch,
+                    baseCatalogVersion,
+                    targetCatalogVersion,
+                    cursor,
+                    [],
+                    [],
+                    null,
+                    false,
+                    0,
+                    string.Empty));
+        }
+
+        public Task<CatalogDeltaPageResponse> GetCatalogDeltaPageWithLeaseAsync(
+            string storeCode, string baseCatalogVersion, string targetCatalogVersion, string? cursor,
+            int pageSize, CancellationToken cancellationToken, string? downloadLeaseId)
+        {
+            return GetCatalogDeltaPageAsync(storeCode, baseCatalogVersion, targetCatalogVersion, cursor, pageSize, cancellationToken);
         }
 
         public Task<CatalogCompareResponse?> CompareSellableItemsAsync(

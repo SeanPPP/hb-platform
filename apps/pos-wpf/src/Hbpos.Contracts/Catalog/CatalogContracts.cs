@@ -98,7 +98,47 @@ public sealed record CatalogSyncPageResponse(
     bool HasMore,
     int TotalCount,
     string CatalogVersion = "",
-    string PageChecksum = "");
+    string PageChecksum = "",
+    string? DownloadLeaseId = null);
+
+/// <summary>
+/// 同一门店目录的同步决策：首次、本地快照过期时全量；版本相同无需目录下载；
+/// 仅在基准版本仍可读取时才允许使用增量。
+/// </summary>
+public static class CatalogSyncModes
+{
+    public const string NoChange = "noChange";
+    public const string Delta = "delta";
+    public const string Full = "full";
+}
+
+public sealed record CatalogSyncPlanResponse(
+    string StoreCode,
+    DateTimeOffset GeneratedAt,
+    string Mode,
+    string? BaseCatalogVersion,
+    string TargetCatalogVersion,
+    int TargetTotal,
+    string? DownloadLeaseId = null,
+    int? DeltaOperationCount = null);
+
+/// <summary>
+/// 一个不可变基准版本到目标版本的增量页。Items 是 upsert，DeletedLookups 是精确删除；
+/// 两类操作按 LookupCodeNormalized 合并排序并共同受 cursor/checksum 保护。
+/// </summary>
+public sealed record CatalogDeltaPageResponse(
+    string StoreCode,
+    DateTimeOffset GeneratedAt,
+    string BaseCatalogVersion,
+    string TargetCatalogVersion,
+    string? Cursor,
+    IReadOnlyList<CatalogLookupItemDto> Items,
+    IReadOnlyList<DeletedLookupDto> DeletedLookups,
+    string? NextCursor,
+    bool HasMore,
+    int TargetTotal,
+    string PageChecksum,
+    string? DownloadLeaseId = null);
 
 public sealed record CatalogPromotionProductDto(
     string ProductCode,

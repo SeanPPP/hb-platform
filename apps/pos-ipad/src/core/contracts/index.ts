@@ -21,4 +21,4 @@ export * from "./state-machines";
 export * from "./sync";
 export * from "./terminal-cart";
 
-export const CORE_CONTRACT_VERSION = 3 as const;
+export const CORE_CONTRACT_VERSION = 4 as const;

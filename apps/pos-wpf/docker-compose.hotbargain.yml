@@ -12,6 +12,11 @@ services:
       - ASPNETCORE_URLS=http://+:5003
       - ASPNETCORE_HTTP_PORTS=5003
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
+      - CatalogSnapshot__RootPath=/app/App_Data/CatalogSnapshots
+      # 紧急回滚时设为 false，sync-plan 将只发放 full 租约。
+      - CatalogSync__DeltaEnabled=${HBPOS_CATALOG_DELTA_ENABLED:-true}
+      # 生产 compose 显式开启每日 01:00 Brisbane 预构建；紧急回滚时可设为 false。
+      - CatalogDailyPrebuild__Enabled=${HBPOS_CATALOG_DAILY_PREBUILD_ENABLED:-true}
       - AttendanceQrDataProtection__KeysPath=/app/App_Data/AttendanceQrDataProtectionKeys
       - AttendanceQrDataProtection__LegacyProtectedKeyCutoffUtc=${ATTENDANCE_QR_LEGACY_PROTECTED_KEY_CUTOFF_UTC:-}
       # WPF API 主库与 POSM 库复用服务器 .env，仓库内不保存连接串明文。
@@ -49,6 +54,8 @@ services:
       - hbpos-api-logs:/app/logs
       # POS 全局票据 ring 独立持久化，不得复用主 backend 的全局 ring。
       - hbpos-api-data-protection-keys:/app/App_Data/DataProtectionKeys
+      # 目录版本快照独立持久化；容器重启后可恢复最近可校验版本。
+      - hbpos-api-catalog-snapshots:/app/App_Data/CatalogSnapshots
       # 考勤 ring 必须显式挂载到主 backend 共用的宿主机目录，缺失时拒绝启动 compose。
       - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
     restart: unless-stopped
@@ -70,4 +77,6 @@ volumes:
   hbpos-api-logs:
     driver: local
   hbpos-api-data-protection-keys:
+    driver: local
+  hbpos-api-catalog-snapshots:
     driver: local

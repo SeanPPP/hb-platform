@@ -1,0 +1,532 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text.Json;
+using Hbpos.Contracts.Catalog;
+
+namespace Hbpos.Api.Services;
+
+/// <summary>
+/// 目录快照的磁盘配置。第一版仅使用 BCL gzip，保留 codec 字段便于后续无缝加入 zstd。
+/// </summary>
+public sealed class CatalogSnapshotOptions
+{
+    public string? RootPath { get; set; }
+
+    public int MaxSnapshotsPerStore { get; set; } = 3;
+}
+
+public sealed record CatalogPersistedSnapshot(
+    string StoreCode,
+    DateTimeOffset? Since,
+    DateTimeOffset GeneratedAt,
+    DateTimeOffset ExpiresAt,
+    string CatalogVersion,
+    IReadOnlyList<SellableItemDto> SellableItems);
+
+public sealed record CatalogSnapshotDescriptor(
+    string StoreCode,
+    DateTimeOffset? Since,
+    DateTimeOffset GeneratedAt,
+    DateTimeOffset ExpiresAt,
+    string CatalogVersion);
+
+public interface ICatalogSnapshotStore
+{
+    IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now);
+
+    CatalogPersistedSnapshot? Load(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion);
+
+    IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now);
+
+    void Save(CatalogPersistedSnapshot snapshot);
+
+    void RefreshExpiration(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion,
+        DateTimeOffset expiresAt);
+}
+
+/// <summary>
+/// 单容器部署下的本地版本化目录快照仓库。
+/// manifest 和 gzip 正文均以临时文件落盘后原子替换，读取时同时核对 SHA-256；
+/// 因此异常写入或单个损坏版本只会降级为重新构建，不会污染已发布版本。
+/// </summary>
+public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
+{
+    private const string ManifestFileName = "manifest.json";
+    private const string Codec = "gzip";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly string _rootPath;
+    private readonly int _maxSnapshotsPerStore;
+    private readonly object _gate = new();
+
+    public GzipCatalogSnapshotStore(string rootPath, int maxSnapshotsPerStore = 3)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
+        if (maxSnapshotsPerStore <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxSnapshotsPerStore));
+        }
+
+        _rootPath = Path.GetFullPath(rootPath);
+        _maxSnapshotsPerStore = maxSnapshotsPerStore;
+        Directory.CreateDirectory(_rootPath);
+    }
+
+    public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            var manifest = ReadManifest();
+            return manifest.Snapshots!
+                .Select(ToDescriptor)
+                .ToArray();
+        }
+    }
+
+    public CatalogPersistedSnapshot? Load(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeCode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogVersion);
+
+        lock (_gate)
+        {
+            var normalizedStoreCode = storeCode.Trim();
+            var normalizedCatalogVersion = catalogVersion.Trim();
+            var entry = ReadManifest().Snapshots!.FirstOrDefault(candidate =>
+                string.Equals(
+                    candidate.StoreCode,
+                    normalizedStoreCode,
+                    StringComparison.OrdinalIgnoreCase)
+                && candidate.Since == since
+                && string.Equals(
+                    candidate.CatalogVersion,
+                    normalizedCatalogVersion,
+                    StringComparison.Ordinal));
+            return entry is null ? null : TryReadSnapshot(entry);
+        }
+    }
+
+    public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            var manifest = ReadManifest();
+            return manifest.Snapshots!
+                .Select(TryReadSnapshot)
+                .Where(snapshot => snapshot is not null)
+                .Select(snapshot => snapshot!)
+                .ToArray();
+        }
+    }
+
+    public void Save(CatalogPersistedSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshot.StoreCode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshot.CatalogVersion);
+
+        lock (_gate)
+        {
+            // 写入前必须先确认现有发布点可读，避免不兼容或损坏的 manifest 被空清单覆盖。
+            var manifest = ReadManifest(failClosedOnInvalid: true);
+            var storeHash = HashText(snapshot.StoreCode.Trim().ToUpperInvariant());
+            var versionHash = HashText(snapshot.CatalogVersion.Trim());
+            var relativeFileName = Path.Combine("snapshots", storeHash, $"{versionHash}.json.gz");
+            var targetPath = ResolveRelativePath(relativeFileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+
+            var sha256 = WriteSnapshotBody(targetPath, snapshot);
+            var manifestSnapshots = manifest.Snapshots!;
+            manifestSnapshots.RemoveAll(entry => string.Equals(entry.FileName, relativeFileName, StringComparison.Ordinal));
+            manifestSnapshots.Add(new CatalogSnapshotManifestEntry(
+                snapshot.StoreCode.Trim(),
+                snapshot.Since,
+                snapshot.GeneratedAt,
+                snapshot.ExpiresAt,
+                snapshot.CatalogVersion.Trim(),
+                relativeFileName,
+                sha256,
+                Codec));
+
+            var evicted = manifestSnapshots
+                .Where(entry => string.Equals(entry.StoreCode, snapshot.StoreCode.Trim(), StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(entry => entry.GeneratedAt)
+                .ThenByDescending(entry => entry.CatalogVersion, StringComparer.Ordinal)
+                .Skip(_maxSnapshotsPerStore)
+                .ToArray();
+            foreach (var entry in evicted)
+            {
+                manifestSnapshots.Remove(entry);
+            }
+
+            // manifest 是发布点：只有正文和 manifest 都完整后，新的版本才可被启动恢复。
+            AtomicWrite(ManifestPath, JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
+            foreach (var entry in evicted)
+            {
+                TryDelete(ResolveRelativePath(entry.FileName));
+            }
+        }
+    }
+
+    public void RefreshExpiration(
+        string storeCode,
+        DateTimeOffset? since,
+        string catalogVersion,
+        DateTimeOffset expiresAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeCode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogVersion);
+
+        lock (_gate)
+        {
+            var manifest = ReadManifest(failClosedOnInvalid: true);
+            var manifestSnapshots = manifest.Snapshots!;
+            var index = manifestSnapshots.FindIndex(entry =>
+                string.Equals(entry.StoreCode, storeCode.Trim(), StringComparison.OrdinalIgnoreCase)
+                && entry.Since == since
+                && string.Equals(entry.CatalogVersion, catalogVersion.Trim(), StringComparison.Ordinal));
+            if (index < 0)
+            {
+                throw new InvalidDataException("目录快照 manifest 中找不到要刷新的版本。");
+            }
+
+            // expiresAt 现在表示建议刷新时间，而不是快照失效时间。
+            // 只有正文仍通过 checksum、解压和元数据校验时，才允许推进刷新时间。
+            if (TryReadSnapshot(manifestSnapshots[index]) is null)
+            {
+                throw new InvalidDataException("目录快照正文损坏，不能更新刷新时间。");
+            }
+
+            manifestSnapshots[index] = manifestSnapshots[index] with { ExpiresAt = expiresAt };
+            AtomicWrite(ManifestPath, JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
+        }
+    }
+
+    private string ManifestPath => Path.Combine(_rootPath, ManifestFileName);
+
+    private CatalogSnapshotManifest ReadManifest(bool failClosedOnInvalid = false)
+    {
+        if (!File.Exists(ManifestPath))
+        {
+            return new CatalogSnapshotManifest();
+        }
+
+        try
+        {
+            var manifest = JsonSerializer.Deserialize<CatalogSnapshotManifest>(
+                File.ReadAllBytes(ManifestPath),
+                JsonOptions);
+            if (!IsSupportedManifest(manifest))
+            {
+                Log("manifest skipped reason=invalid-contract");
+                if (failClosedOnInvalid)
+                {
+                    throw new InvalidDataException("目录快照 manifest 的版本或编码不受支持。");
+                }
+
+                return new CatalogSnapshotManifest();
+            }
+
+            return manifest!;
+        }
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        {
+            // 损坏 manifest 不能覆盖磁盘正文；保留现场并让本次退化为冷构建。
+            Log($"manifest skipped reason=invalid-json error={exception.GetType().Name}");
+            if (failClosedOnInvalid)
+            {
+                throw new InvalidDataException("目录快照 manifest 已损坏。", exception);
+            }
+
+            return new CatalogSnapshotManifest();
+        }
+    }
+
+    private static bool IsSupportedManifest(CatalogSnapshotManifest? manifest)
+    {
+        if (manifest is null ||
+            manifest.SchemaVersion != 1 ||
+            !string.Equals(manifest.Codec, Codec, StringComparison.Ordinal) ||
+            manifest.Snapshots is null)
+        {
+            return false;
+        }
+
+        return manifest.Snapshots.All(entry =>
+            entry is not null &&
+            !string.IsNullOrWhiteSpace(entry.StoreCode) &&
+            !string.IsNullOrWhiteSpace(entry.CatalogVersion) &&
+            !string.IsNullOrWhiteSpace(entry.FileName) &&
+            !Path.IsPathRooted(entry.FileName) &&
+            entry.GeneratedAt != default &&
+            entry.ExpiresAt > entry.GeneratedAt &&
+            string.Equals(entry.Codec, Codec, StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(entry.Sha256) &&
+            entry.Sha256.Length == 64 &&
+            entry.Sha256.All(Uri.IsHexDigit));
+    }
+
+    private static CatalogSnapshotDescriptor ToDescriptor(
+        CatalogSnapshotManifestEntry entry)
+    {
+        return new CatalogSnapshotDescriptor(
+            entry.StoreCode,
+            entry.Since,
+            entry.GeneratedAt,
+            entry.ExpiresAt,
+            entry.CatalogVersion);
+    }
+
+    private CatalogPersistedSnapshot? TryReadSnapshot(
+        CatalogSnapshotManifestEntry entry)
+    {
+        try
+        {
+            var path = ResolveRelativePath(entry.FileName);
+            if (!File.Exists(path)
+                || !string.Equals(
+                    ComputeSha256(path),
+                    entry.Sha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"snapshot skipped reason=checksum store={entry.StoreCode} version={entry.CatalogVersion}");
+                return null;
+            }
+
+            var snapshot = ReadSnapshot(path);
+            if (!string.Equals(
+                    snapshot.StoreCode,
+                    entry.StoreCode,
+                    StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(
+                    snapshot.CatalogVersion,
+                    entry.CatalogVersion,
+                    StringComparison.Ordinal)
+                || snapshot.Since != entry.Since
+                || snapshot.GeneratedAt != entry.GeneratedAt)
+            {
+                Log($"snapshot skipped reason=metadata-mismatch store={entry.StoreCode} version={entry.CatalogVersion}");
+                return null;
+            }
+
+            // manifest 是发布点，也负责无内容变化时续期；gzip 正文无需重复改写。
+            return snapshot with { ExpiresAt = entry.ExpiresAt };
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or JsonException
+            or CryptographicException
+            or ArgumentException)
+        {
+            Log($"snapshot skipped reason=read-failed store={entry.StoreCode} version={entry.CatalogVersion} error={exception.GetType().Name}");
+            return null;
+        }
+    }
+
+    private CatalogPersistedSnapshot ReadSnapshot(string path)
+    {
+        using var input = File.OpenRead(path);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        return JsonSerializer.Deserialize<CatalogPersistedSnapshot>(gzip, JsonOptions)
+            ?? throw new InvalidDataException("目录快照正文为空。");
+    }
+
+    private string WriteSnapshotBody(
+        string targetPath,
+        CatalogPersistedSnapshot snapshot)
+    {
+        var temporaryPath = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            string sha256;
+            using (var output = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 64 * 1024,
+                       FileOptions.WriteThrough))
+            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            {
+                // 压缩字节直接流入临时文件，并在同一遍写入中计算发布清单所需的 SHA-256。
+                using var hashingOutput = new HashingWriteStream(output, hash);
+                using (var gzip = new GZipStream(
+                           hashingOutput,
+                           CompressionLevel.Fastest,
+                           leaveOpen: true))
+                {
+                    JsonSerializer.Serialize(gzip, snapshot, JsonOptions);
+                }
+
+                hashingOutput.Flush();
+                output.Flush(flushToDisk: true);
+                sha256 = Convert.ToHexString(hash.GetHashAndReset());
+            }
+
+            if (!string.Equals(ComputeSha256(temporaryPath), sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("目录快照临时文件 SHA-256 校验失败。");
+            }
+
+            var staged = ReadSnapshot(temporaryPath);
+            if (!string.Equals(staged.StoreCode, snapshot.StoreCode, StringComparison.OrdinalIgnoreCase)
+                || staged.Since != snapshot.Since
+                || staged.GeneratedAt != snapshot.GeneratedAt
+                || !string.Equals(staged.CatalogVersion, snapshot.CatalogVersion, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("目录快照临时文件元数据校验失败。");
+            }
+
+            File.Move(temporaryPath, targetPath, overwrite: true);
+            return sha256;
+        }
+        finally
+        {
+            TryDelete(temporaryPath);
+        }
+    }
+
+    private void AtomicWrite(string targetPath, byte[] contents)
+    {
+        var temporaryPath = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 64 * 1024,
+                       FileOptions.WriteThrough))
+            {
+                stream.Write(contents);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(temporaryPath);
+        }
+    }
+
+    private string ResolveRelativePath(string relativePath)
+    {
+        var fullPath = Path.GetFullPath(Path.Combine(_rootPath, relativePath));
+        if (!fullPath.StartsWith(_rootPath + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(fullPath, _rootPath, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("目录快照路径越界。");
+        }
+
+        return fullPath;
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static string ComputeSha256(byte[] bytes)
+    {
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    private static string HashText(string value)
+    {
+        return ComputeSha256(System.Text.Encoding.UTF8.GetBytes(value));
+    }
+
+    private static void TryDelete(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void Log(string message)
+    {
+        Console.WriteLine($"[HBPOS][Api][CatalogSnapshotStore] {DateTimeOffset.Now:O} {message}");
+    }
+
+    private sealed class HashingWriteStream(
+        Stream inner,
+        IncrementalHash hash) : Stream
+    {
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+            inner.Flush();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            hash.AppendData(buffer, offset, count);
+            inner.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            hash.AppendData(buffer);
+            inner.Write(buffer);
+        }
+    }
+
+    private sealed class CatalogSnapshotManifest
+    {
+        public int SchemaVersion { get; init; } = 1;
+
+        public string Codec { get; init; } = GzipCatalogSnapshotStore.Codec;
+
+        public List<CatalogSnapshotManifestEntry>? Snapshots { get; init; } = [];
+    }
+
+    private sealed record CatalogSnapshotManifestEntry(
+        string StoreCode,
+        DateTimeOffset? Since,
+        DateTimeOffset GeneratedAt,
+        DateTimeOffset ExpiresAt,
+        string CatalogVersion,
+        string FileName,
+        string Sha256,
+        string Codec);
+}

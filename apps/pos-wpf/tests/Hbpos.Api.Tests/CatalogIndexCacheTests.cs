@@ -1,4 +1,5 @@
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Api.Tests;
 
@@ -47,6 +48,57 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
+    public async Task GetOrBuildAsync_ReusesPublishedVersionWhenContentIsUnchanged()
+    {
+        var timeProvider = new MutableTimeProvider(GeneratedAt);
+        var cache = new CatalogIndexCache(timeProvider, TimeSpan.FromMinutes(2));
+        var buildCount = 0;
+
+        var first = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        timeProvider.Advance(TimeSpan.FromMinutes(3));
+        var rebuilt = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+
+        Assert.Equal(2, buildCount);
+        Assert.Equal("catalog-v1:build-1", first?.CatalogIndex.CatalogVersion);
+        Assert.Equal(first?.CatalogIndex.CatalogVersion, rebuilt?.CatalogIndex.CatalogVersion);
+        Assert.NotSame(first, rebuilt);
+
+        Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
+        {
+            buildCount++;
+            return Task.FromResult<CatalogIndexBuildResult?>(
+                CreateResult(
+                    "S01",
+                    $"catalog-v1:build-{buildCount}",
+                    contentMarker: "unchanged"));
+        }
+    }
+
+    [Fact]
+    public async Task GetOrBuildAsync_DoesNotOutliveSharedBaseDataValidity()
+    {
+        var timeProvider = new MutableTimeProvider(GeneratedAt);
+        var cache = new CatalogIndexCache(timeProvider, TimeSpan.FromMinutes(20));
+        var buildCount = 0;
+
+        await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        timeProvider.Advance(TimeSpan.FromMinutes(2));
+        await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+
+        Assert.Equal(2, buildCount);
+
+        Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
+        {
+            buildCount++;
+            return Task.FromResult<CatalogIndexBuildResult?>(
+                CreateResult(
+                    "S01",
+                    $"catalog-v1:{buildCount}",
+                    sourceValidUntil: GeneratedAt.AddMinutes(1)));
+        }
+    }
+
+    [Fact]
     public async Task GetOrBuildAsync_StartsTtlAfterSuccessfulLongBuild()
     {
         var timeProvider = new MutableTimeProvider(GeneratedAt);
@@ -61,8 +113,10 @@ public sealed class CatalogIndexCacheTests
 
         timeProvider.Advance(TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(1));
         var rebuilt = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        var reused = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
 
         Assert.NotSame(first, rebuilt);
+        Assert.Same(rebuilt, reused);
         Assert.Equal(2, buildCount);
 
         Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
@@ -93,8 +147,10 @@ public sealed class CatalogIndexCacheTests
 
         timeProvider.Advance(TimeSpan.FromSeconds(2));
         var rebuilt = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        var reused = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
 
         Assert.NotSame(first, rebuilt);
+        Assert.Same(rebuilt, reused);
         Assert.Equal(2, buildCount);
 
         Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
@@ -102,6 +158,243 @@ public sealed class CatalogIndexCacheTests
             buildCount++;
             return Task.FromResult<CatalogIndexBuildResult?>(CreateResult("S01"));
         }
+    }
+
+    [Fact]
+    public async Task GetOrBuildAsync_ReturnsLastGoodSnapshotWhileRefreshRuns()
+    {
+        var timeProvider = new MutableTimeProvider(GeneratedAt);
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = CreateSnapshotCache(timeProvider, scheduler);
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(CreateResult("S01", "catalog-v1:old")),
+            CancellationToken.None);
+        timeProvider.Advance(TimeSpan.FromMinutes(3));
+
+        var stale = cache.GetOrBuildAsync("S01", since: null, RefreshAsync, CancellationToken.None);
+
+        Assert.Same(first, await stale.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, scheduler.QueueCount);
+        Assert.False(refreshStarted.Task.IsCompleted);
+
+        var fresh = cache.GetOrBuildFreshAsync(
+            "S01",
+            since: null,
+            RefreshAsync,
+            CancellationToken.None);
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var secondStale = await cache.GetOrBuildAsync("S01", since: null, RefreshAsync, CancellationToken.None);
+        Assert.Same(first, secondStale);
+
+        allowRefresh.SetResult();
+        var refreshed = await fresh;
+        Assert.Equal("catalog-v1:new", refreshed?.CatalogIndex.CatalogVersion);
+
+        async Task<CatalogIndexBuildResult?> RefreshAsync(CancellationToken cancellationToken)
+        {
+            refreshStarted.SetResult();
+            await allowRefresh.Task.WaitAsync(cancellationToken);
+            return CreateResult("S01", "catalog-v1:new");
+        }
+    }
+
+    [Fact]
+    public async Task ForceRefreshAndPublishAsync_RebuildsFreshEntryAndWaitsForDiskPublication()
+    {
+        var publishStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowPublish = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingSnapshotStore(publishStarted, allowPublish);
+        var cache = new CatalogIndexCache(store);
+        var oldResult = CreateResult("S01", "catalog-v1:old", "old");
+        var initialBuild = Task.Run(() => cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(oldResult),
+            CancellationToken.None));
+        await publishStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(initialBuild.IsCompleted);
+        allowPublish.TrySetResult();
+        await store.PublishCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var current = await initialBuild;
+        Assert.Same(oldResult, current);
+
+        store.ResetPublication();
+        var allowBuild = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var newResult = CreateResult("S01", "catalog-v1:new", "new");
+        var refresh = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            since: null,
+            async cancellationToken =>
+            {
+                await allowBuild.Task.WaitAsync(cancellationToken);
+                return newResult;
+            },
+            CancellationToken.None);
+        allowBuild.TrySetResult();
+        await store.PublishStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.False(refresh.IsCompleted);
+        var duringPublish = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => throw new InvalidOperationException("发布期间不应重复构建"),
+            CancellationToken.None);
+        Assert.Equal(oldResult.CatalogIndex.CatalogVersion, duringPublish?.CatalogIndex.CatalogVersion);
+
+        store.AllowPublish.TrySetResult();
+        Assert.Equal(
+            newResult.CatalogIndex.CatalogVersion,
+            (await refresh.WaitAsync(TimeSpan.FromSeconds(1)))?.CatalogIndex.CatalogVersion);
+    }
+
+    [Fact]
+    public async Task CatalogIndexCache_RestoresPersistedSnapshotAsActiveEntry()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        store.Save(new CatalogPersistedSnapshot(
+            "S01",
+            Since: null,
+            now,
+            now.AddHours(1),
+            "catalog-v1:restored",
+            []));
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = new CatalogIndexCache(store, scheduler);
+
+        var restored = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromException<CatalogIndexBuildResult?>(new InvalidOperationException("不应冷构建")),
+            CancellationToken.None);
+
+        Assert.NotNull(restored);
+        Assert.Equal("catalog-v1:restored", restored.CatalogIndex.CatalogVersion);
+        Assert.Equal(1, scheduler.QueueCount);
+    }
+
+    [Fact]
+    public void Restored_snapshot_without_raw_candidates_refuses_legacy_since_projection()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        store.Save(new CatalogPersistedSnapshot(
+            "S01", null, now, now.AddHours(1), "catalog-v1:restored",
+            [new SellableItemDto("S01", "P01", null, "Item", "ITEM", null, null, 1m,
+                PriceSourceKind.ProductBase, "product", 1m, now)]));
+        var cache = new CatalogIndexCache(store);
+
+        Assert.Throws<CatalogSnapshotExpiredException>(() =>
+            cache.GetByVersion("S01", now.AddMinutes(-1), "catalog-v1:restored"));
+    }
+
+    [Fact]
+    public async Task InvalidateStore_ReturnsPinnedSnapshotWhileItRefreshes()
+    {
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = CreateSnapshotCache(new MutableTimeProvider(GeneratedAt), scheduler);
+        var first = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(CreateResult("S01", "catalog-v1:old")),
+            CancellationToken.None);
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        cache.InvalidateStore("S01");
+        var stale = await cache.GetOrBuildAsync("S01", since: null, RefreshAsync, CancellationToken.None);
+
+        Assert.Same(first, stale);
+        Assert.Equal(1, scheduler.QueueCount);
+        Assert.False(refreshStarted.Task.IsCompleted);
+
+        var fresh = cache.GetOrBuildFreshAsync(
+            "S01",
+            since: null,
+            RefreshAsync,
+            CancellationToken.None);
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(fresh.IsCompleted);
+        allowRefresh.SetResult();
+        Assert.Equal("catalog-v1:new", (await fresh)!.CatalogIndex.CatalogVersion);
+
+        async Task<CatalogIndexBuildResult?> RefreshAsync(CancellationToken cancellationToken)
+        {
+            refreshStarted.SetResult();
+            await allowRefresh.Task.WaitAsync(cancellationToken);
+            return CreateResult("S01", "catalog-v1:new");
+        }
+    }
+
+    [Fact]
+    public async Task CatalogIndexCache_RestoresNewestVersionAsActiveEntry()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        store.Save(new CatalogPersistedSnapshot("S01", null, now.AddMinutes(-1), now.AddHours(1), "catalog-v1:old", []));
+        store.Save(new CatalogPersistedSnapshot("S01", null, now, now.AddHours(1), "catalog-v1:new", []));
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = new CatalogIndexCache(store, scheduler);
+
+        var restored = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromException<CatalogIndexBuildResult?>(new InvalidOperationException("不应冷构建")),
+            CancellationToken.None);
+
+        Assert.Equal("catalog-v1:new", restored?.CatalogIndex.CatalogVersion);
+        Assert.Equal(1, scheduler.QueueCount);
+    }
+
+    [Fact]
+    public async Task Lazy_snapshot_load_skips_a_corrupt_newer_version_and_uses_the_last_good_one()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var store = new RecordingSnapshotStore(
+            [
+                new CatalogSnapshotDescriptor("S01", null, now, now.AddHours(1), "catalog-v1:new"),
+                new CatalogSnapshotDescriptor("S01", null, now.AddMinutes(-1), now.AddHours(1), "catalog-v1:old")
+            ],
+            version => version == "catalog-v1:new"
+                ? throw new InvalidDataException("corrupt")
+                : new CatalogPersistedSnapshot("S01", null, now.AddMinutes(-1), now.AddHours(1), version, []));
+        var cache = new CatalogIndexCache(store, new RecordingRefreshScheduler());
+
+        var result = await cache.GetOrBuildAsync("S01", null,
+            _ => Task.FromException<CatalogIndexBuildResult?>(new InvalidOperationException("不应冷构建")),
+            CancellationToken.None);
+
+        Assert.Equal("catalog-v1:old", result!.CatalogIndex.CatalogVersion);
+    }
+
+    [Fact]
+    public void Refresh_due_lazy_descriptor_remains_available_as_last_good()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var store = new RecordingSnapshotStore(
+            [new CatalogSnapshotDescriptor("S01", null, now.AddHours(-2), now.AddMinutes(-1), "catalog-v1:expired")],
+            version => new CatalogPersistedSnapshot(
+                "S01",
+                null,
+                now.AddHours(-2),
+                now.AddMinutes(-1),
+                version,
+                []));
+        var cache = new CatalogIndexCache(store);
+
+        var restored = cache.GetByVersion("S01", null, "catalog-v1:expired");
+
+        Assert.Equal("catalog-v1:expired", restored?.CatalogIndex.CatalogVersion);
     }
 
     [Fact]
@@ -124,6 +417,75 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
+    public async Task GetOrBuildAsync_LegacySinceDerivesFromTheSameStoreArtifact()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
+        var buildCount = 0;
+        var items = new SellableItemDto[]
+        {
+            new("S01", "P-OLD", null, "Old", "OLD", null, null, 1m,
+                PriceSourceKind.ProductBase, "product", 1m, GeneratedAt.AddMinutes(-10)),
+            new("S01", "P-NEW", null, "New", "NEW", null, null, 1m,
+                PriceSourceKind.ProductBase, "product", 1m, GeneratedAt)
+        };
+
+        var full = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        var incremental = await cache.GetOrBuildAsync(
+            "S01",
+            since: GeneratedAt.AddMinutes(-1),
+            BuildAsync,
+            CancellationToken.None);
+
+        Assert.Equal(1, buildCount);
+        Assert.Equal(["OLD", "NEW"], full!.SellableItems.Select(item => item.LookupCode));
+        Assert.Equal(["NEW"], incremental!.SellableItems.Select(item => item.LookupCode));
+
+        Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
+        {
+            buildCount++;
+            return Task.FromResult<CatalogIndexBuildResult?>(new CatalogIndexBuildResult(
+                "S01",
+                GeneratedAt,
+                items,
+                new CatalogSellableIndex("S01", GeneratedAt, items, "catalog-v1:full")));
+        }
+    }
+
+    [Fact]
+    public async Task GetOrBuildAsync_LegacySinceDerivationsUseLruCapacityEight()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
+        var buildCount = 0;
+        var item = new SellableItemDto(
+            "S01", "P01", null, "Item", "ITEM", null, null, 1m,
+            PriceSourceKind.ProductBase, "product", 1m, GeneratedAt);
+
+        Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken _)
+        {
+            buildCount++;
+            return Task.FromResult<CatalogIndexBuildResult?>(new CatalogIndexBuildResult(
+                "S01",
+                GeneratedAt,
+                [item],
+                new CatalogSellableIndex("S01", GeneratedAt, [item], "catalog-v1:full")));
+        }
+
+        var oldest = await cache.GetOrBuildAsync(
+            "S01", GeneratedAt.AddMinutes(-1), BuildAsync, CancellationToken.None);
+        for (var minute = 2; minute <= 9; minute++)
+        {
+            _ = await cache.GetOrBuildAsync(
+                "S01", GeneratedAt.AddMinutes(-minute), BuildAsync, CancellationToken.None);
+        }
+
+        var rebuiltOldest = await cache.GetOrBuildAsync(
+            "S01", GeneratedAt.AddMinutes(-1), BuildAsync, CancellationToken.None);
+
+        Assert.Equal(1, buildCount);
+        Assert.NotSame(oldest, rebuiltOldest);
+    }
+
+    [Fact]
     public async Task GetOrBuildAsync_CoalescesConcurrentBuildsForSameStore()
     {
         var timeProvider = new MutableTimeProvider(GeneratedAt);
@@ -134,7 +496,7 @@ public sealed class CatalogIndexCacheTests
 
         var first = cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
         await buildStarted.Task;
-        var second = cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        var second = cache.GetOrBuildAsync(" s01 ", since: null, BuildAsync, CancellationToken.None);
 
         allowBuildToFinish.SetResult();
         var results = await Task.WhenAll(first, second);
@@ -185,6 +547,46 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
+    public async Task GetOrBuildFreshAsync_FirstWaiterCancellationDoesNotCancelSharedBuild()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(2));
+        var buildStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var firstWaiterCancellation = new CancellationTokenSource();
+        var allowBuildToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildCount = 0;
+
+        var first = cache.GetOrBuildFreshAsync(
+            "S01",
+            since: null,
+            async cancellationToken =>
+            {
+                buildCount++;
+                Assert.False(cancellationToken.CanBeCanceled);
+                buildStarted.TrySetResult();
+                await allowBuildToFinish.Task.WaitAsync(cancellationToken);
+                return CreateResult("S01");
+            },
+            firstWaiterCancellation.Token);
+        await buildStarted.Task;
+
+        firstWaiterCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+
+        var second = cache.GetOrBuildFreshAsync(
+            "S01",
+            since: null,
+            _ => throw new InvalidOperationException("不应启动第二个共享构建"),
+            CancellationToken.None);
+        allowBuildToFinish.SetResult();
+
+        Assert.NotNull(await second);
+        Assert.Equal(1, buildCount);
+    }
+
+    [Fact]
     public async Task GetOrBuildAsync_RebuildsAfterBuildFaults()
     {
         var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
@@ -227,7 +629,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task InvalidateStore_DuringBuildPreventsOldOwnerFromRevivingEntry()
+    public async Task InvalidateStore_DuringBuildPreventsOldOwnerFromPublishingPinnedSnapshot()
     {
         var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
         var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -239,10 +641,11 @@ public sealed class CatalogIndexCacheTests
 
         cache.InvalidateStore("S01");
         allowBuildToFinish.SetResult();
-        var oldResult = await oldOwner;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => oldOwner);
         var rebuilt = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
+        var cached = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
 
-        Assert.NotSame(oldResult, rebuilt);
+        Assert.Same(rebuilt, cached);
         Assert.Equal(2, buildCount);
 
         async Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken cancellationToken)
@@ -272,14 +675,13 @@ public sealed class CatalogIndexCacheTests
         var second = cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
 
         firstCancellation.Cancel();
-        Assert.False(first.IsCompleted);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
         allowBuildToFinish.SetResult();
 
-        var results = await Task.WhenAll(first, second);
+        var completed = await second;
         var cached = await cache.GetOrBuildAsync("S01", since: null, BuildAsync, CancellationToken.None);
 
-        Assert.Same(results[0], results[1]);
-        Assert.Same(results[0], cached);
+        Assert.Same(completed, cached);
         Assert.Equal(1, buildCount);
 
         async Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken cancellationToken)
@@ -311,7 +713,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task InvalidateStore_DuringBuildStillPinsCompletedSnapshot()
+    public async Task InvalidateStore_DuringBuildDoesNotPinInvalidatedSnapshot()
     {
         var cache = CreateSnapshotCache(new MutableTimeProvider(GeneratedAt));
         var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -321,14 +723,14 @@ public sealed class CatalogIndexCacheTests
         await buildStarted.Task;
         cache.InvalidateStore("S01");
         allowBuildToFinish.SetResult();
-        var completed = await owner;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => owner);
 
         var pinned = cache.GetByVersion(
             "S01",
             since: null,
-            completed!.CatalogIndex.CatalogVersion);
+            CreateResult("S01").CatalogIndex.CatalogVersion);
 
-        Assert.Same(completed, pinned);
+        Assert.Null(pinned);
 
         async Task<CatalogIndexBuildResult?> BuildAsync(CancellationToken cancellationToken)
         {
@@ -339,7 +741,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task GetByVersion_ExpiresSnapshotAfterThirtyMinutes()
+    public async Task GetByVersion_KeepsLastGoodSnapshotAfterRefreshTime()
     {
         var timeProvider = new MutableTimeProvider(GeneratedAt);
         var cache = CreateSnapshotCache(timeProvider);
@@ -354,7 +756,7 @@ public sealed class CatalogIndexCacheTests
         Assert.Same(completed, cache.GetByVersion("S01", since: null, version));
 
         timeProvider.Advance(TimeSpan.FromSeconds(2));
-        Assert.Null(cache.GetByVersion("S01", since: null, version));
+        Assert.Same(completed, cache.GetByVersion("S01", since: null, version));
     }
 
     [Fact]
@@ -372,6 +774,7 @@ public sealed class CatalogIndexCacheTests
                 _ => Task.FromResult<CatalogIndexBuildResult?>(
                     CreateResult("S01", version)),
                 CancellationToken.None);
+
             completed.Add(result!);
             cache.InvalidateStore("S01");
         }
@@ -404,7 +807,7 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
-    public async Task ConcurrentBuilds_PinTwoVersionsForTheSameStore()
+    public async Task LegacySince_DoesNotPublishASecondSnapshotForTheSameStore()
     {
         var cache = CreateSnapshotCache(new MutableTimeProvider(GeneratedAt));
         var first = cache.GetOrBuildAsync(
@@ -423,16 +826,104 @@ public sealed class CatalogIndexCacheTests
 
         var results = await Task.WhenAll(first, second);
 
+        var full = Assert.IsType<CatalogIndexBuildResult>(results[0]);
+        var legacySince = Assert.IsType<CatalogIndexBuildResult>(results[1]);
+        Assert.Equal("catalog-v1:full", full.CatalogIndex.CatalogVersion);
+        Assert.NotEqual(full.CatalogIndex.CatalogVersion, legacySince.CatalogIndex.CatalogVersion);
         Assert.Same(
-            results[0],
+            full,
             cache.GetByVersion("S01", since: null, "catalog-v1:full"));
-        Assert.Same(
-            results[1],
-            cache.GetByVersion("S01", secondSince, "catalog-v1:delta"));
+        Assert.Null(cache.GetByVersion("S01", since: null, legacySince.CatalogIndex.CatalogVersion));
     }
 
     [Fact]
-    public async Task SnapshotEviction_DoesNotRemoveCurrentActiveEntry()
+    public async Task LegacySince_FiltersSourceCandidatesBeforeResolvingLookupPriority()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2));
+        var since = GeneratedAt.AddMinutes(-5);
+        var input = new PriceIndexInput(
+            Since: null,
+            Products:
+            [
+                new ProductPriceRecord("P01", "新基础价", null, "X", 10m, GeneratedAt)
+            ],
+            StoreRetailPrices: [],
+            StoreMultiCodeProducts: [],
+            StoreClearancePrices:
+            [
+                // 清仓价优先级更高，但已经早于 since，不能继续遮蔽新的基础价。
+                new StoreClearancePriceRecord("P01", "X", 5m, GeneratedAt.AddMinutes(-10))
+            ],
+            ProductSetCodes: []);
+        var fullItems = new PriceIndexBuilder().Build("S01", input);
+        var buildCount = 0;
+
+        var full = await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ =>
+            {
+                buildCount++;
+                return Task.FromResult<CatalogIndexBuildResult?>(new CatalogIndexBuildResult(
+                    "S01",
+                    GeneratedAt,
+                    fullItems,
+                    new CatalogSellableIndex("S01", GeneratedAt, fullItems, "catalog-v1:full"),
+                    RawPriceIndexInput: input));
+            },
+            CancellationToken.None);
+        var legacy = await cache.GetOrBuildAsync(
+            "S01",
+            since,
+            _ => throw new InvalidOperationException("legacy since 不应触发第二次数据库构建"),
+            CancellationToken.None);
+
+        Assert.Equal(1, buildCount);
+        Assert.Equal(PriceSourceKind.StoreClearancePrice, Assert.Single(full!.SellableItems).PriceSource);
+        var item = Assert.Single(legacy!.SellableItems);
+        Assert.Equal(PriceSourceKind.ProductBase, item.PriceSource);
+        Assert.Equal(10m, item.RetailPrice);
+    }
+
+    [Fact]
+    public async Task LegacySince_rebuilds_raw_artifact_after_global_lru_eviction()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20));
+        var since = GeneratedAt.AddMinutes(-5);
+        var builds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var storeCode in new[] { "S01", "S02", "S03" })
+        {
+            await cache.GetOrBuildAsync(storeCode, null, token => Build(storeCode, token), CancellationToken.None);
+        }
+
+        var legacy = await cache.GetOrBuildAsync("S01", since, token => Build("S01", token), CancellationToken.None);
+
+        Assert.Equal(2, builds["S01"]);
+        Assert.Equal(1, builds["S02"]);
+        Assert.Equal(1, builds["S03"]);
+        Assert.Equal(PriceSourceKind.ProductBase, Assert.Single(legacy!.SellableItems).PriceSource);
+
+        Task<CatalogIndexBuildResult?> Build(string storeCode, CancellationToken _)
+        {
+            builds[storeCode] = builds.GetValueOrDefault(storeCode) + 1;
+            var input = new PriceIndexInput(
+                Since: null,
+                Products: [new ProductPriceRecord("P01", "Base", null, "X", 10m, GeneratedAt)],
+                StoreRetailPrices: [],
+                StoreMultiCodeProducts: [],
+                StoreClearancePrices: [new StoreClearancePriceRecord("P01", "X", 5m, GeneratedAt.AddMinutes(-10))],
+                ProductSetCodes: []);
+            var items = new PriceIndexBuilder().Build(storeCode, input);
+            return Task.FromResult<CatalogIndexBuildResult?>(new CatalogIndexBuildResult(
+                storeCode, GeneratedAt, items,
+                new CatalogSellableIndex(storeCode, GeneratedAt, items, $"catalog-v1:{storeCode}"),
+                RawPriceIndexInput: input));
+        }
+    }
+
+    [Fact]
+    public async Task LegacySince_DoesNotEvictTheSingleStoreArtifact()
     {
         var cache = CreateSnapshotCache(new MutableTimeProvider(GeneratedAt));
         var buildCount = 0;
@@ -459,8 +950,8 @@ public sealed class CatalogIndexCacheTests
             CancellationToken.None);
 
         Assert.Same(first, activeAgain);
-        Assert.Equal(3, buildCount);
-        Assert.Null(cache.GetByVersion("S01", since: null, "catalog-v1:active"));
+        Assert.Equal(1, buildCount);
+        Assert.Same(first, cache.GetByVersion("S01", since: null, "catalog-v1:active"));
 
         Task<CatalogIndexBuildResult?> Build(string version)
         {
@@ -470,24 +961,715 @@ public sealed class CatalogIndexCacheTests
         }
     }
 
-    private static CatalogIndexCache CreateSnapshotCache(MutableTimeProvider timeProvider)
+    [Fact]
+    public void Plan_capacity_counts_an_unpinned_target_and_rejects_it_at_the_hard_limit()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            softItemCapacity: 2,
+            hardItemCapacity: 3);
+
+        cache.EnsurePlanCapacity(CreateSizedResult("S01", "catalog-v1:fits", 3));
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.EnsurePlanCapacity(CreateSizedResult("S01", "catalog-v1:too-large", 4)));
+    }
+
+    [Fact]
+    public async Task Plan_capacity_preserves_pinned_target_and_existing_lease_when_rejecting_a_new_plan()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(30), 8, 1, 3);
+        var existing = CreateSizedResult("S01", "catalog-v1:existing", 2);
+        await cache.GetOrBuildAsync("S01", null, _ => Task.FromResult<CatalogIndexBuildResult?>(existing), CancellationToken.None);
+        await Task.Yield();
+        cache.EnsurePlanCapacity(existing);
+        Assert.NotNull(cache.GetByVersion("S01", null, "catalog-v1:existing"));
+
+        var lease = cache.DownloadLeases.CreateFull(existing);
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.EnsurePlanCapacity(CreateSizedResult("S02", "catalog-v1:new", 2)));
+        Assert.Same(existing, cache.DownloadLeases.GetAndTouch(lease.LeaseId, "S01", null, "catalog-v1:existing").Target);
+    }
+
+    [Fact]
+    public async Task Atomic_lease_admission_allows_only_one_concurrent_unpinned_target()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(30), 8, 1, 2);
+        var attempts = await Task.WhenAll(
+            Task.Run(() => TryCreate("S01", "catalog-v1:one")),
+            Task.Run(() => TryCreate("S02", "catalog-v1:two")));
+
+        Assert.Equal(1, attempts.Count(lease => lease is not null));
+
+        CatalogDownloadLease? TryCreate(string storeCode, string version)
+        {
+            try
+            {
+                return cache.CreateFullLease(CreateSizedResult(storeCode, version, 2));
+            }
+            catch (CatalogCapacityBusyException)
+            {
+                return null;
+            }
+        }
+    }
+
+    [Fact]
+    public void Delta_lease_admission_counts_unpinned_baseline_and_target_together()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(30), 8, 1, 3);
+
+        Assert.Throws<CatalogCapacityBusyException>(() => cache.CreateDeltaLease(
+            CreateSizedResult("S01", "catalog-v1:base", 2),
+            CreateSizedResult("S01", "catalog-v1:target", 2),
+            []));
+    }
+
+    [Fact]
+    public async Task Oversized_normal_build_is_not_published_and_rebuilds()
+    {
+        var cache = new CatalogIndexCache(new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(30), 8, 1, 3);
+        var builds = 0;
+
+        var first = await cache.GetOrBuildAsync("S01", null, _ =>
+        {
+            builds++;
+            return Task.FromResult<CatalogIndexBuildResult?>(CreateSizedResult("S01", "catalog-v1:oversized", 4));
+        }, CancellationToken.None);
+        await Task.Yield();
+
+        Assert.NotNull(first);
+        Assert.Null(cache.GetByVersion("S01", null, "catalog-v1:oversized"));
+        Assert.Equal(0, cache.PinnedItemCountForTests);
+
+        var second = await cache.GetOrBuildAsync("S01", null, _ =>
+        {
+            builds++;
+            return Task.FromResult<CatalogIndexBuildResult?>(CreateSizedResult("S01", "catalog-v1:oversized", 4));
+        }, CancellationToken.None);
+        Assert.NotNull(second);
+        Assert.Equal(2, builds);
+    }
+
+    [Fact]
+    public void Oversized_lazy_descriptor_is_not_admitted_to_memory()
+    {
+        var now = GeneratedAt;
+        var store = new RecordingSnapshotStore(
+            [new CatalogSnapshotDescriptor("S01", null, now, now.AddHours(1), "catalog-v1:oversized")],
+            _ => new CatalogPersistedSnapshot("S01", null, now, now.AddHours(1), "catalog-v1:oversized",
+                CreateSizedResult("S01", "catalog-v1:oversized", 4).SellableItems));
+        var cache = new CatalogIndexCache(new MutableTimeProvider(now), TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(30), 8, store, 1, 3);
+
+        Assert.Null(cache.GetByVersion("S01", null, "catalog-v1:oversized"));
+        Assert.Equal(0, cache.PinnedItemCountForTests);
+    }
+
+    [Fact]
+    public async Task Normal_first_and_force_refresh_join_the_same_store_flight()
+    {
+        var cache = new CatalogIndexCache();
+        var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowBuild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildCount = 0;
+
+        var normal = cache.GetOrBuildAsync("S01", null, Build, CancellationToken.None);
+        await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var force = cache.ForceRefreshAndPublishAsync(
+            " s01 ",
+            null,
+            _ => throw new InvalidOperationException("force 不应启动第二个 builder"),
+            CancellationToken.None);
+
+        allowBuild.SetResult();
+        var results = await Task.WhenAll(normal, force).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, buildCount);
+        Assert.Equal(results[0]!.CatalogIndex.CatalogVersion, results[1]!.CatalogIndex.CatalogVersion);
+
+        async Task<CatalogIndexBuildResult?> Build(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref buildCount);
+            buildStarted.TrySetResult();
+            await allowBuild.Task.WaitAsync(cancellationToken);
+            return CreateResult("S01", "catalog-v1:shared");
+        }
+    }
+
+    [Fact]
+    public async Task Force_first_and_fresh_http_join_the_same_store_flight()
+    {
+        var cache = new CatalogIndexCache();
+        var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowBuild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildCount = 0;
+
+        var force = cache.ForceRefreshAndPublishAsync("S01", null, Build, CancellationToken.None);
+        await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var fresh = cache.GetOrBuildFreshAsync(
+            "S01",
+            null,
+            _ => throw new InvalidOperationException("fresh HTTP 不应启动第二个 builder"),
+            CancellationToken.None);
+
+        allowBuild.SetResult();
+        var results = await Task.WhenAll(force, fresh).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, buildCount);
+        Assert.Equal(results[0]!.CatalogIndex.CatalogVersion, results[1]!.CatalogIndex.CatalogVersion);
+
+        async Task<CatalogIndexBuildResult?> Build(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref buildCount);
+            buildStarted.TrySetResult();
+            await allowBuild.Task.WaitAsync(cancellationToken);
+            return CreateResult("S01", "catalog-v1:shared");
+        }
+    }
+
+    [Fact]
+    public async Task Fresh_and_force_waiters_observe_the_same_capacity_failure()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            8,
+            softItemCapacity: 1,
+            hardItemCapacity: 3);
+        var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowBuild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buildCount = 0;
+
+        var fresh = cache.GetOrBuildFreshAsync("S01", null, Build, CancellationToken.None);
+        await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var force = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => throw new InvalidOperationException("不应启动第二个 builder"),
+            CancellationToken.None);
+        allowBuild.SetResult();
+
+        await Assert.ThrowsAsync<CatalogCapacityBusyException>(() => fresh);
+        await Assert.ThrowsAsync<CatalogCapacityBusyException>(() => force);
+        Assert.Equal(1, buildCount);
+
+        async Task<CatalogIndexBuildResult?> Build(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref buildCount);
+            buildStarted.TrySetResult();
+            await allowBuild.Task.WaitAsync(cancellationToken);
+            return CreateSizedResult("S01", "catalog-v1:oversized", 4);
+        }
+    }
+
+    [Fact]
+    public void Per_store_limit_counts_unique_leased_versions_but_not_duplicate_leases()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            softItemCapacity: 100,
+            hardItemCapacity: 100);
+        var versions = Enumerable.Range(1, 8)
+            .Select(number => CreateSizedResult("S01", $"catalog-v1:{number}", 1))
+            .ToArray();
+
+        foreach (var version in versions)
+        {
+            cache.CreateFullLease(version);
+        }
+
+        Assert.NotNull(cache.CreateFullLease(versions[0]));
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.CreateFullLease(CreateSizedResult("S01", "catalog-v1:9", 1)));
+    }
+
+    [Fact]
+    public async Task Lease_admission_evicts_an_unleased_old_version_before_rejecting()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 2,
+            softItemCapacity: 100,
+            hardItemCapacity: 100);
+        var first = await Publish("catalog-v1:1");
+        cache.InvalidateStore("S01");
+        var second = await Publish("catalog-v1:2");
+        cache.CreateFullLease(first);
+
+        var third = CreateSizedResult("S01", "catalog-v1:3", 1);
+        cache.CreateFullLease(third);
+
+        Assert.Equal(
+            first.CatalogIndex.CatalogVersion,
+            cache.GetByVersion("S01", null, first.CatalogIndex.CatalogVersion)?.CatalogIndex.CatalogVersion);
+        Assert.Null(cache.GetByVersion("S01", null, second.CatalogIndex.CatalogVersion));
+
+        async Task<CatalogIndexBuildResult> Publish(string version)
+        {
+            return (await cache.GetOrBuildAsync(
+                "S01",
+                null,
+                _ => Task.FromResult<CatalogIndexBuildResult?>(
+                    CreateResult("S01", version, contentMarker: version)),
+                CancellationToken.None))!;
+        }
+    }
+
+    [Fact]
+    public async Task Impossible_target_rejection_does_not_evict_existing_snapshot()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            8,
+            softItemCapacity: 1,
+            hardItemCapacity: 3);
+        var existing = CreateSizedResult("S01", "catalog-v1:existing", 2);
+        await cache.GetOrBuildAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(existing),
+            CancellationToken.None);
+
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.EnsurePlanCapacity(CreateSizedResult("S02", "catalog-v1:impossible", 4)));
+        Assert.Same(existing, cache.GetByVersion("S01", null, existing.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task Pending_durable_save_reserves_capacity_and_deduplicates_the_same_version()
+    {
+        var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingSnapshotStore(publishStarted, allowPublish);
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            store,
+            softItemCapacity: 1,
+            hardItemCapacity: 3);
+        var pending = CreateSizedResult("S01", "catalog-v1:pending", 2);
+
+        var force = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(pending),
+            CancellationToken.None);
+        await publishStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.NotNull(cache.CreateFullLease(pending));
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        allowPublish.SetResult();
+        Assert.NotNull(await force.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task Failed_old_owner_releases_only_its_same_version_pending_reservation()
+    {
+        var store = new OverlappingSnapshotStore();
+        var cache = CreateOverlappingPendingCache(store);
+        var pending = CreateSizedResult("S01", "catalog-v1:shared-pending", 2);
+
+        var firstOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(pending),
+            CancellationToken.None);
+        await store.FirstSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cache.InvalidateStore("S01");
+        var secondOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(pending),
+            CancellationToken.None);
+        await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        store.CompleteFirst(new IOException("first owner failed"));
+        await Assert.ThrowsAsync<IOException>(() => firstOwner);
+
+        Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
+        Assert.Null(cache.GetByVersion("S01", null, pending.CatalogIndex.CatalogVersion));
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        store.CompleteSecond();
+        Assert.NotNull(await secondOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.NotNull(cache.GetByVersion("S01", null, pending.CatalogIndex.CatalogVersion));
+        Assert.Equal(0, cache.PendingSnapshotOwnerCountForTests);
+    }
+
+    [Fact]
+    public async Task Successful_same_version_owners_each_release_their_pending_reservation()
+    {
+        var store = new OverlappingSnapshotStore();
+        var cache = CreateOverlappingPendingCache(store);
+        var pending = CreateSizedResult("S01", "catalog-v1:shared-pending", 2);
+
+        var firstOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(pending),
+            CancellationToken.None);
+        await store.FirstSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cache.InvalidateStore("S01");
+        var secondOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(pending),
+            CancellationToken.None);
+        await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        store.CompleteFirst();
+        Assert.NotNull(await firstOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
+
+        store.CompleteSecond();
+        Assert.NotNull(await secondOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(0, cache.PendingSnapshotOwnerCountForTests);
+        Assert.NotNull(cache.GetByVersion("S01", null, pending.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task Same_version_pending_capacity_uses_the_largest_owner_artifact()
+    {
+        var store = new OverlappingSnapshotStore();
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            store,
+            softItemCapacity: 1,
+            hardItemCapacity: 5);
+        var large = CreateSizedResult("S01", "catalog-v1:shared-pending", 4);
+        var small = CreateSizedResult("S01", "catalog-v1:shared-pending", 2);
+
+        var firstOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(large),
+            CancellationToken.None);
+        await store.FirstSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cache.InvalidateStore("S01");
+        var secondOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(small),
+            CancellationToken.None);
+        await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        store.CompleteFirst(new IOException("first owner failed"));
+        await Assert.ThrowsAsync<IOException>(() => firstOwner);
+        Assert.NotNull(cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        store.CompleteSecond();
+        Assert.NotNull(await secondOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(0, cache.PendingSnapshotOwnerCountForTests);
+    }
+
+    private static CatalogIndexCache CreateOverlappingPendingCache(
+        ICatalogSnapshotStore store)
     {
         return new CatalogIndexCache(
-            timeProvider,
-            TimeSpan.FromMinutes(2),
-            snapshotTtl: TimeSpan.FromMinutes(30),
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            store,
+            softItemCapacity: 1,
+            hardItemCapacity: 3);
+    }
+
+    [Fact]
+    public void Lazy_capacity_rejection_keeps_descriptor_for_retry_after_leases_expire()
+    {
+        var time = new MutableTimeProvider(GeneratedAt);
+        var loadCount = 0;
+        var descriptor = new CatalogSnapshotDescriptor(
+            "S01",
+            null,
+            GeneratedAt,
+            GeneratedAt.AddHours(1),
+            "catalog-v1:9");
+        var persisted = new CatalogPersistedSnapshot(
+            "S01",
+            null,
+            GeneratedAt,
+            GeneratedAt.AddHours(1),
+            descriptor.CatalogVersion,
+            CreateSizedResult("S01", descriptor.CatalogVersion, 1).SellableItems);
+        var store = new RecordingSnapshotStore(
+            [descriptor],
+            _ =>
+            {
+                loadCount++;
+                return persisted;
+            });
+        var cache = new CatalogIndexCache(
+            time,
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            8,
+            store,
+            softItemCapacity: 100,
+            hardItemCapacity: 100);
+        foreach (var number in Enumerable.Range(1, 8))
+        {
+            cache.CreateFullLease(CreateSizedResult("S01", $"catalog-v1:{number}", 1));
+        }
+
+        Assert.Null(cache.GetByVersion("S01", null, descriptor.CatalogVersion));
+        time.Advance(TimeSpan.FromMinutes(31));
+        Assert.NotNull(cache.GetByVersion("S01", null, descriptor.CatalogVersion));
+        Assert.Equal(2, loadCount);
+    }
+
+    [Fact]
+    public void Missing_lazy_body_removes_descriptor_instead_of_reloading_it()
+    {
+        var loadCount = 0;
+        var descriptor = new CatalogSnapshotDescriptor(
+            "S01",
+            null,
+            GeneratedAt,
+            GeneratedAt.AddHours(1),
+            "catalog-v1:missing");
+        var store = new RecordingSnapshotStore(
+            [descriptor],
+            _ =>
+            {
+                loadCount++;
+                return null;
+            });
+        var cache = new CatalogIndexCache(store);
+
+        Assert.Null(cache.GetByVersion("S01", null, descriptor.CatalogVersion));
+        Assert.Null(cache.GetByVersion("S01", null, descriptor.CatalogVersion));
+        Assert.Equal(1, loadCount);
+    }
+
+    [Fact]
+    public async Task Force_refresh_persists_a_new_version_to_the_real_gzip_store()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        var cache = new CatalogIndexCache(store);
+        var result = CreateResult("S01", "catalog-v1:durable");
+
+        var published = await cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(result),
+            CancellationToken.None);
+
+        Assert.Equal(result.CatalogIndex.CatalogVersion, published!.CatalogIndex.CatalogVersion);
+        Assert.NotNull(store.Load("S01", null, result.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task Force_refresh_propagates_snapshot_persistence_failure()
+    {
+        var cache = new CatalogIndexCache(new ThrowingSnapshotStore());
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            cache.ForceRefreshAndPublishAsync(
+                "S01",
+                null,
+                _ => Task.FromResult<CatalogIndexBuildResult?>(
+                    CreateResult("S01", "catalog-v1:not-durable")),
+                CancellationToken.None));
+        Assert.Null(cache.GetByVersion("S01", null, "catalog-v1:not-durable"));
+    }
+
+    [Fact]
+    public async Task Active_cas_invalidation_keeps_already_persisted_version_pinned()
+    {
+        var publishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingSnapshotStore(publishStarted, allowPublish);
+        var cache = new CatalogIndexCache(store);
+        var result = CreateResult("S01", "catalog-v1:persisted");
+
+        var force = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(result),
+            CancellationToken.None);
+        await publishStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cache.InvalidateStore("S01");
+        Assert.Null(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+        allowPublish.SetResult();
+
+        Assert.Equal(
+            result.CatalogIndex.CatalogVersion,
+            (await force)?.CatalogIndex.CatalogVersion);
+        Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task Permanent_snapshot_eviction_removes_raw_version_markers()
+    {
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
             maxSnapshotsPerStore: 2);
+
+        foreach (var number in Enumerable.Range(1, 3))
+        {
+            var version = $"catalog-v1:{number}";
+            await cache.GetOrBuildAsync(
+                "S01",
+                null,
+                _ => Task.FromResult<CatalogIndexBuildResult?>(CreateRawResult("S01", version)),
+                CancellationToken.None);
+            cache.InvalidateStore("S01");
+        }
+
+        Assert.Equal(2, cache.RawArtifactVersionCountForTests);
+    }
+
+    [Fact]
+    public async Task Raw_lru_eviction_does_not_break_first_batch_legacy_waiters()
+    {
+        var store = new CountingBlockingSnapshotStore(expectedSaves: 3);
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            store,
+            softItemCapacity: 100,
+            hardItemCapacity: 100);
+        var buildCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var since = GeneratedAt.AddMinutes(-5);
+
+        var first = cache.GetOrBuildAsync("S01", since, token => Build("S01", token), CancellationToken.None);
+        await store.FirstSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var second = cache.GetOrBuildAsync("S01", since, token => Build("S01", token), CancellationToken.None);
+        var otherOne = cache.GetOrBuildAsync("S02", null, token => Build("S02", token), CancellationToken.None);
+        var otherTwo = cache.GetOrBuildAsync("S03", null, token => Build("S03", token), CancellationToken.None);
+        await store.ExpectedSavesStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        store.AllowSaves.SetResult();
+
+        var results = await Task.WhenAll(first, second, otherOne, otherTwo)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, buildCounts["S01"]);
+        Assert.Equal(PriceSourceKind.ProductBase, Assert.Single(results[0]!.SellableItems).PriceSource);
+        Assert.Equal(PriceSourceKind.ProductBase, Assert.Single(results[1]!.SellableItems).PriceSource);
+
+        Task<CatalogIndexBuildResult?> Build(string storeCode, CancellationToken _)
+        {
+            buildCounts[storeCode] = buildCounts.GetValueOrDefault(storeCode) + 1;
+            return Task.FromResult<CatalogIndexBuildResult?>(
+                CreateRawResult(storeCode, $"catalog-v1:{storeCode}"));
+        }
+    }
+
+    private static CatalogIndexBuildResult CreateSizedResult(string storeCode, string version, int count)
+    {
+        var items = Enumerable.Range(0, count)
+            .Select(index => new SellableItemDto(storeCode, $"P{index}", null, "Item", $"L{index}", null, null,
+                1m, PriceSourceKind.ProductBase, "product", 1m, GeneratedAt))
+            .ToArray();
+        return new CatalogIndexBuildResult(
+            storeCode,
+            GeneratedAt,
+            items,
+            new CatalogSellableIndex(storeCode, GeneratedAt, items, version));
+    }
+
+    private static CatalogIndexBuildResult CreateRawResult(string storeCode, string version)
+    {
+        var input = new PriceIndexInput(
+            Since: null,
+            Products:
+            [
+                new ProductPriceRecord($"P-{version}", "Base", null, $"X-{version}", 10m, GeneratedAt)
+            ],
+            StoreRetailPrices: [],
+            StoreMultiCodeProducts: [],
+            StoreClearancePrices:
+            [
+                new StoreClearancePriceRecord(
+                    $"P-{version}",
+                    $"X-{version}",
+                    5m,
+                    GeneratedAt.AddMinutes(-10))
+            ],
+            ProductSetCodes: []);
+        var items = new PriceIndexBuilder().Build(storeCode, input);
+        return new CatalogIndexBuildResult(
+            storeCode,
+            GeneratedAt,
+            items,
+            new CatalogSellableIndex(storeCode, GeneratedAt, items, version),
+            RawPriceIndexInput: input);
+    }
+
+    private static CatalogIndexCache CreateSnapshotCache(
+        MutableTimeProvider timeProvider,
+        ICatalogBackgroundRefreshScheduler? scheduler = null)
+    {
+        return scheduler is null
+            ? new CatalogIndexCache(
+                timeProvider,
+                TimeSpan.FromMinutes(2),
+                snapshotTtl: TimeSpan.FromMinutes(30),
+                maxSnapshotsPerStore: 2)
+            : new CatalogIndexCache(
+                timeProvider,
+                TimeSpan.FromMinutes(2),
+                snapshotTtl: TimeSpan.FromMinutes(30),
+                maxSnapshotsPerStore: 2,
+                backgroundRefreshScheduler: scheduler);
     }
 
     private static CatalogIndexBuildResult CreateResult(
         string storeCode,
-        string? catalogVersion = null)
+        string? catalogVersion = null,
+        string? contentMarker = null,
+        DateTimeOffset? sourceValidUntil = null)
     {
+        contentMarker ??= catalogVersion;
+        IReadOnlyList<SellableItemDto> items = contentMarker is null
+            ? []
+            : [new SellableItemDto(
+                storeCode,
+                contentMarker,
+                null,
+                contentMarker,
+                contentMarker,
+                null,
+                null,
+                1m,
+                PriceSourceKind.StoreRetailPrice,
+                "门店价",
+                1m,
+                GeneratedAt)];
         return new CatalogIndexBuildResult(
             storeCode,
             GeneratedAt,
-            [],
-            new CatalogSellableIndex(storeCode, GeneratedAt, [], catalogVersion));
+            items,
+            new CatalogSellableIndex(storeCode, GeneratedAt, items, catalogVersion),
+            sourceValidUntil);
     }
 
     private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
@@ -502,6 +1684,248 @@ public sealed class CatalogIndexCacheTests
         public void Advance(TimeSpan delta)
         {
             _utcNow = _utcNow.Add(delta);
+        }
+    }
+
+    private sealed class RecordingRefreshScheduler : ICatalogBackgroundRefreshScheduler
+    {
+        public int QueueCount { get; private set; }
+
+        public void QueueRefresh(string storeCode)
+        {
+            QueueCount++;
+        }
+    }
+
+    private sealed class RecordingSnapshotStore(
+        IReadOnlyList<CatalogSnapshotDescriptor> descriptors,
+        Func<string, CatalogPersistedSnapshot?> load) : ICatalogSnapshotStore
+    {
+        public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now) => descriptors;
+
+        public CatalogPersistedSnapshot? Load(string storeCode, DateTimeOffset? since, string catalogVersion) => load(catalogVersion);
+
+        public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now) => [];
+
+        public void Save(CatalogPersistedSnapshot snapshot) { }
+
+        public void RefreshExpiration(string storeCode, DateTimeOffset? since, string catalogVersion, DateTimeOffset expiresAt) { }
+    }
+
+    private sealed class BlockingSnapshotStore(
+        TaskCompletionSource publishStarted,
+        TaskCompletionSource allowPublish) : ICatalogSnapshotStore
+    {
+        public TaskCompletionSource PublishStarted { get; private set; } = publishStarted;
+
+        public TaskCompletionSource AllowPublish { get; private set; } = allowPublish;
+
+        public TaskCompletionSource PublishCompleted { get; private set; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now) => [];
+
+        public CatalogPersistedSnapshot? Load(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion) => null;
+
+        public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now) => [];
+
+        public void Save(CatalogPersistedSnapshot snapshot)
+        {
+            PublishStarted.TrySetResult();
+            AllowPublish.Task.GetAwaiter().GetResult();
+            PublishCompleted.TrySetResult();
+        }
+
+        public void RefreshExpiration(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion,
+            DateTimeOffset expiresAt)
+        {
+            Save(new CatalogPersistedSnapshot(
+                storeCode,
+                since,
+                GeneratedAt,
+                expiresAt,
+                catalogVersion,
+                []));
+        }
+
+        public void ResetPublication()
+        {
+            PublishStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            AllowPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            PublishCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    private sealed class ThrowingSnapshotStore : ICatalogSnapshotStore
+    {
+        public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now) => [];
+
+        public CatalogPersistedSnapshot? Load(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion) => null;
+
+        public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now) => [];
+
+        public void Save(CatalogPersistedSnapshot snapshot)
+        {
+            throw new IOException("disk unavailable");
+        }
+
+        public void RefreshExpiration(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion,
+            DateTimeOffset expiresAt)
+        {
+            throw new IOException("disk unavailable");
+        }
+    }
+
+    private sealed class OverlappingSnapshotStore : ICatalogSnapshotStore
+    {
+        private readonly TaskCompletionSource<Exception?> _firstOutcome =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<Exception?> _secondOutcome =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _saveCount;
+
+        public TaskCompletionSource FirstSaveStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondSaveStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now) => [];
+
+        public CatalogPersistedSnapshot? Load(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion) => null;
+
+        public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now) => [];
+
+        public void Save(CatalogPersistedSnapshot snapshot)
+        {
+            var call = Interlocked.Increment(ref _saveCount);
+            var outcome = call switch
+            {
+                1 => WaitForOutcome(FirstSaveStarted, _firstOutcome),
+                2 => WaitForOutcome(SecondSaveStarted, _secondOutcome),
+                _ => throw new InvalidOperationException("unexpected save")
+            };
+            if (outcome is not null)
+            {
+                throw outcome;
+            }
+        }
+
+        public void RefreshExpiration(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion,
+            DateTimeOffset expiresAt)
+        {
+            Save(new CatalogPersistedSnapshot(
+                storeCode,
+                since,
+                GeneratedAt,
+                expiresAt,
+                catalogVersion,
+                []));
+        }
+
+        public void CompleteFirst(Exception? exception = null)
+        {
+            _firstOutcome.TrySetResult(exception);
+        }
+
+        public void CompleteSecond(Exception? exception = null)
+        {
+            _secondOutcome.TrySetResult(exception);
+        }
+
+        private static Exception? WaitForOutcome(
+            TaskCompletionSource started,
+            TaskCompletionSource<Exception?> outcome)
+        {
+            started.TrySetResult();
+            return outcome.Task.GetAwaiter().GetResult();
+        }
+    }
+
+    private sealed class CountingBlockingSnapshotStore(int expectedSaves) : ICatalogSnapshotStore
+    {
+        private int _saveCount;
+
+        public TaskCompletionSource FirstSaveStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ExpectedSavesStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowSaves { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<CatalogSnapshotDescriptor> LoadDescriptors(DateTimeOffset now) => [];
+
+        public CatalogPersistedSnapshot? Load(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion) => null;
+
+        public IReadOnlyList<CatalogPersistedSnapshot> LoadAll(DateTimeOffset now) => [];
+
+        public void Save(CatalogPersistedSnapshot snapshot)
+        {
+            var count = Interlocked.Increment(ref _saveCount);
+            FirstSaveStarted.TrySetResult();
+            if (count >= expectedSaves)
+            {
+                ExpectedSavesStarted.TrySetResult();
+            }
+
+            AllowSaves.Task.GetAwaiter().GetResult();
+        }
+
+        public void RefreshExpiration(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion,
+            DateTimeOffset expiresAt)
+        {
+            Save(new CatalogPersistedSnapshot(
+                storeCode,
+                since,
+                GeneratedAt,
+                expiresAt,
+                catalogVersion,
+                []));
+        }
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"hbpos-catalog-cache-tests-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
         }
     }
 }

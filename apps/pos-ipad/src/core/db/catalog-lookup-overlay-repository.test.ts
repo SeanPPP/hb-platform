@@ -64,6 +64,70 @@ test("M23 从 M22 增量新增目录在线校准覆盖层", async () => {
   });
 });
 
+test("M25 从 M24 增量补齐目录代次与 delta tombstone，并可重复开库", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 24),
+    );
+    await insertSnapshot(connection, "snapshot-before-m25", "active");
+
+    await applyMigrations(connection, () => T1);
+    assert.equal(await schemaVersion(connection), 25);
+
+    const snapshotColumns = await connection.getAll<{ name: string }>(
+      "PRAGMA table_info('catalog_snapshots')",
+    );
+    assert.deepEqual(
+      snapshotColumns.map((column) => column.name),
+      [
+        "snapshot_id",
+        "catalog_version",
+        "checksum",
+        "state",
+        "downloaded_at_iso",
+        "activated_at_iso",
+        "generation_id",
+        "sync_mode",
+        "base_snapshot_id",
+        "base_catalog_version",
+      ],
+    );
+    const migratedSnapshot = await connection.getFirst<{
+        generation_id: string;
+        sync_mode: string;
+        base_snapshot_id: string | null;
+        base_catalog_version: string | null;
+      }>(
+        `SELECT generation_id, sync_mode, base_snapshot_id, base_catalog_version
+         FROM catalog_snapshots
+         WHERE snapshot_id = 'snapshot-before-m25'`,
+      );
+    assert.deepEqual(
+      migratedSnapshot ? { ...migratedSnapshot } : null,
+      {
+        generation_id: "snapshot-before-m25",
+        sync_mode: "full",
+        base_snapshot_id: null,
+        base_catalog_version: null,
+      },
+    );
+
+    const deletionColumns = await connection.getAll<{ name: string }>(
+      "PRAGMA table_info('catalog_delta_deletions')",
+    );
+    assert.deepEqual(
+      deletionColumns.map((column) => column.name),
+      ["snapshot_id", "store_code", "lookup_code_normalized"],
+    );
+
+    // 中文注释：已应用 M25 的数据库再次开库时，M17 目录结构核验也必须接受加法列。
+    await applyMigrations(connection, () => T1);
+    assert.equal(await schemaVersion(connection), 25);
+  });
+});
+
 test("在线命中按当前目录代次持久覆盖本地商品", async () => {
   await withMigratedDatabase(async (connection) => {
     await insertSnapshot(connection, "snapshot-1", "active");
@@ -112,6 +176,55 @@ test("在线命中按当前目录代次持久覆盖本地商品", async () => {
         rowVersion: "remote-v2",
       }),
     );
+  });
+});
+
+test("同一物理 active 原地换代后旧覆盖立即隔离，在途旧代次写入被拒绝", async () => {
+  await withMigratedDatabase(async (connection) => {
+    await insertSnapshot(connection, "snapshot-1", "active");
+    await insertCatalogItem(
+      connection,
+      "snapshot-1",
+      item({ displayName: "Active catalog tea" }),
+    );
+    const repository = createRepository(connection);
+
+    assert.equal(await repository.getActiveSnapshotId(), "snapshot-1");
+    assert.equal(
+      await repository.upsert({
+        baseSnapshotId: "snapshot-1",
+        item: item({ displayName: "Old generation remote tea" }),
+      }),
+      "applied",
+    );
+
+    await connection.run(
+      `UPDATE catalog_snapshots
+       SET generation_id = 'generation-2',
+           catalog_version = 'version-2'
+       WHERE snapshot_id = 'snapshot-1'`,
+    );
+
+    assert.equal(await repository.getActiveSnapshotId(), "generation-2");
+    assert.equal(
+      (await repository.findExact("STORE-1", "TEA-1"))?.displayName,
+      "Active catalog tea",
+    );
+    assert.equal(
+      await repository.upsert({
+        baseSnapshotId: "snapshot-1",
+        item: item({ displayName: "Late old result" }),
+      }),
+      "stale-generation",
+    );
+    assert.equal(
+      await repository.upsert({
+        baseSnapshotId: "generation-2",
+        item: item({ displayName: "Current generation remote tea" }),
+      }),
+      "applied",
+    );
+    assert.equal(await repository.cleanupOldGenerations(), 1);
   });
 });
 

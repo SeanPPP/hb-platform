@@ -715,6 +715,7 @@ export function createProductionPosRuntimeServices(
       nowIso: input.clock.nowIso,
     },
   );
+  catalogue.resumeRetiredCleanup();
   const catalogRefreshCoordinator = new CatalogRefreshCoordinator();
   const executeCatalogDownload = (
     cashierLease: TrustedCashierLease,

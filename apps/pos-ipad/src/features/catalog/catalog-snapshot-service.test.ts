@@ -5,6 +5,9 @@ import {
   CatalogSnapshotFailure,
   CatalogSnapshotService,
   mapCatalogLookupToStagedItem,
+  type ActiveCatalogSnapshotMetadata,
+  type CatalogDeltaPage,
+  type CatalogSyncPlan,
   type CatalogSnapshotStoragePort,
   type CatalogStagedItem,
   type CatalogSyncRemotePort,
@@ -66,6 +69,77 @@ class MemoryCatalogStorage implements CatalogSnapshotStoragePort {
   public readonly staged = new Map<string, readonly CatalogStagedItem[]>();
   public readonly appendBatchSizes: number[] = [];
   public activated: string | null = null;
+  public activeMetadata: ActiveCatalogSnapshotMetadata | null = null;
+  public promotionReplacements: string[] = [];
+  public deltaBegin: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    snapshotId: string;
+    catalogVersion: string;
+  }> | null = null;
+  public readonly deltaBatchSizes: number[] = [];
+  public readonly deltaDeleted = new Map<string, Set<string>>();
+  public deltaActivated: string | null = null;
+
+  public async getActiveMetadata(): Promise<ActiveCatalogSnapshotMetadata | null> {
+    return this.activeMetadata;
+  }
+
+  public async beginDeltaStaging(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    snapshotId: string;
+    catalogVersion: string;
+  }>): Promise<void> {
+    this.deltaBegin = input;
+    this.staged.set(input.snapshotId, []);
+    this.deltaDeleted.set(input.snapshotId, new Set());
+  }
+
+  public async appendDeltaBatch(snapshotId: string, batch: Readonly<{
+    items: readonly CatalogStagedItem[];
+    deletedLookups: CatalogDeltaPage["deletedLookups"];
+  }>): Promise<void> {
+    this.deltaBatchSizes.push(batch.items.length + batch.deletedLookups.length);
+    this.staged.set(snapshotId, [...(this.staged.get(snapshotId) ?? []), ...batch.items]);
+    const deleted = this.deltaDeleted.get(snapshotId) ?? new Set<string>();
+    for (const lookup of batch.deletedLookups) deleted.add(lookup.lookupCodeNormalized);
+    this.deltaDeleted.set(snapshotId, deleted);
+  }
+
+  public async activateDelta(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    stagingSnapshotId: string;
+    expectedItemCount: number;
+    activatedAtIso: string;
+  }>): Promise<ActiveCatalogSnapshotMetadata> {
+    const begin = this.deltaBegin;
+    assert.ok(begin);
+    const entries = new Map(
+      (this.active.get(input.sourceSnapshotId) ?? []).map((entry) => [entry.lookupCodeNormalized, entry]),
+    );
+    for (const lookup of this.deltaDeleted.get(input.stagingSnapshotId) ?? []) entries.delete(lookup);
+    for (const changed of this.staged.get(input.stagingSnapshotId) ?? []) {
+      entries.set(changed.lookupCodeNormalized, changed);
+    }
+    assert.equal(entries.size, input.expectedItemCount);
+    const metadata: ActiveCatalogSnapshotMetadata = {
+      snapshotId: input.sourceSnapshotId,
+      generationId: input.stagingSnapshotId,
+      storeCode: "S1",
+      catalogVersion: begin.catalogVersion,
+      itemCount: entries.size,
+      activatedAt: input.activatedAtIso,
+    };
+    this.active.set(input.sourceSnapshotId, [...entries.values()]);
+    this.activeMetadata = metadata;
+    this.staged.delete(input.stagingSnapshotId);
+    this.deltaDeleted.delete(input.stagingSnapshotId);
+    this.deltaActivated = input.stagingSnapshotId;
+    this.activated = input.sourceSnapshotId;
+    return metadata;
+  }
 
   public async beginStaging(snapshot: { snapshotId: string }): Promise<void> {
     this.staged.set(snapshot.snapshotId, []);
@@ -76,7 +150,9 @@ class MemoryCatalogStorage implements CatalogSnapshotStoragePort {
     this.staged.set(snapshotId, [...(this.staged.get(snapshotId) ?? []), ...items]);
   }
 
-  public async replacePromotions(): Promise<void> {}
+  public async replacePromotions(snapshotId: string): Promise<void> {
+    this.promotionReplacements.push(snapshotId);
+  }
 
   public async activate(snapshotId: string, expectedItemCount: number): Promise<void> {
     const staged = this.staged.get(snapshotId) ?? [];
@@ -84,11 +160,23 @@ class MemoryCatalogStorage implements CatalogSnapshotStoragePort {
     this.active.clear();
     this.active.set(snapshotId, staged);
     this.activated = snapshotId;
+    this.activeMetadata = {
+      snapshotId,
+      storeCode: "S1",
+      catalogVersion: "catalog-v2",
+      itemCount: expectedItemCount,
+      activatedAt: "2026-07-28T00:00:00.000Z",
+    };
   }
 
   public async discardStaging(snapshotId: string): Promise<void> {
     this.staged.delete(snapshotId);
   }
+
+}
+
+function syncPlan(input: CatalogSyncPlan): CatalogSyncPlan {
+  return input;
 }
 
 class AbortAfterBeginStorage extends MemoryCatalogStorage {
@@ -103,6 +191,44 @@ class AbortAfterBeginStorage extends MemoryCatalogStorage {
   }
 }
 
+class RetiredCleanupStorage extends MemoryCatalogStorage {
+  public retiredCleanupResults: number[] = [];
+  public readonly retiredCleanupBatchSizes: number[] = [];
+  public stagingCleanupResults: number[] = [];
+  public readonly stagingCleanupBatchSizes: number[] = [];
+
+  public async cleanupRetiredBatch(batchSize = 500): Promise<number> {
+    this.retiredCleanupBatchSizes.push(batchSize);
+    return this.retiredCleanupResults.shift() ?? 0;
+  }
+
+  public async cleanupStagingBatch(batchSize = 500): Promise<number> {
+    this.stagingCleanupBatchSizes.push(batchSize);
+    return this.stagingCleanupResults.shift() ?? 0;
+  }
+}
+
+class BoundedDiscardStorage extends MemoryCatalogStorage {
+  public readonly discardBatchSizes: number[] = [];
+
+  public async discardStagingBatch(
+    snapshotId: string,
+    batchSize = 500,
+  ): Promise<number> {
+    this.discardBatchSizes.push(batchSize);
+    const staged = this.staged.get(snapshotId);
+    if (!staged) return 0;
+    if (staged.length > 0) {
+      const deleted = Math.min(batchSize, staged.length);
+      this.staged.set(snapshotId, staged.slice(deleted));
+      return deleted;
+    }
+    // 中文注释：模拟子行清空后才删除 staging 父行，计入同一有界清理批次。
+    this.staged.delete(snapshotId);
+    return 1;
+  }
+}
+
 function remote(pages: readonly VerifiedCatalogSyncPage[]): CatalogSyncRemotePort {
   return {
     async getPage(input) {
@@ -112,6 +238,553 @@ function remote(pages: readonly VerifiedCatalogSyncPage[]): CatalogSyncRemotePor
     },
   };
 }
+
+test("首次下载或换店先用 null 基线取得 full 租约，再从固定 target 下载第一页", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.activeMetadata = {
+    snapshotId: "old-s2",
+    storeCode: "S2",
+    catalogVersion: "v1",
+    itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  let plans = 0;
+  const pageRequests: Parameters<CatalogSyncRemotePort["getPage"]>[0][] = [];
+  const service = new CatalogSnapshotService(storage, {
+    async getPage(input) {
+      pageRequests.push(input);
+      return page({
+        cursor: null,
+        nextCursor: null,
+        items: [item("A")],
+        totalCount: 1,
+        catalogVersion: "v2",
+      });
+    },
+    async getSyncPlan(input) {
+      plans += 1;
+      assert.equal(input.baseCatalogVersion, null);
+      return syncPlan({
+        mode: "full",
+        baseCatalogVersion: null,
+        targetCatalogVersion: "v2",
+        targetTotal: 1,
+        downloadLeaseId: "lease-full",
+        deltaOperationCount: null,
+      });
+    },
+  }, { createSnapshotId: () => "full-s1", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal(plans, 1);
+  assert.equal(pageRequests[0]?.catalogVersion, "v2");
+  assert.equal(
+    (pageRequests[0] as Readonly<{ downloadLeaseId?: string }> | undefined)?.downloadLeaseId,
+    "lease-full",
+  );
+  assert.equal(storage.activated, "full-s1");
+});
+
+test("启动及下一次 full 前按 500 行批次继续 retired janitor，并在批间让出队列", async () => {
+  const storage = new RetiredCleanupStorage();
+  storage.retiredCleanupResults = [500, 2, 0];
+  storage.stagingCleanupResults = [500, 1, 0];
+  let yields = 0;
+  const service = new CatalogSnapshotService(storage, remote([
+    page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1 }),
+  ]), {
+    createSnapshotId: () => "full-after-cleanup",
+    yieldControl: async () => { yields += 1; },
+  });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.deepEqual(storage.retiredCleanupBatchSizes.slice(0, 3), [500, 500, 500]);
+  assert.deepEqual(storage.stagingCleanupBatchSizes.slice(0, 3), [500, 500, 500]);
+  assert.equal(yields >= 4, true);
+  assert.equal(storage.activated, "full-after-cleanup");
+});
+
+test("同店相同版本不重下目录，仍更新促销并重载 active", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.activeMetadata = {
+    snapshotId: "active-s1",
+    storeCode: "S1",
+    catalogVersion: "v1",
+    itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  let afterActivated = 0;
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([]),
+    async getSyncPlan() {
+      return syncPlan({ mode: "noChange", baseCatalogVersion: "v1", targetCatalogVersion: "v1", targetTotal: 1 });
+    },
+    async getPromotions() { return []; },
+  }, { createSnapshotId: () => "unused", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  const result = await service.downloadAndActivate({
+    storeCode: "S1",
+    afterActivate: () => { afterActivated += 1; },
+  });
+
+  assert.equal(storage.activated, null);
+  assert.deepEqual(storage.promotionReplacements, ["active-s1"]);
+  assert.equal(afterActivated, 1);
+  assert.equal(result.snapshotId, "active-s1");
+});
+
+test("noChange 的 targetTotal 与 active 不一致时改取 null-base full，而不复用目录", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const requestedBases: (string | null)[] = [];
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan(input) {
+      requestedBases.push(input.baseCatalogVersion);
+      return input.baseCatalogVersion === null
+        ? syncPlan({ mode: "full", baseCatalogVersion: null, targetCatalogVersion: "v2", targetTotal: 2 })
+        : syncPlan({ mode: "noChange", baseCatalogVersion: "v1", targetCatalogVersion: "v1", targetTotal: 2 });
+    },
+    async getPage() {
+      return page({ cursor: null, nextCursor: null, items: [item("A"), item("B")], totalCount: 2, catalogVersion: "v2" });
+    },
+  }, { createSnapshotId: () => "full-after-bad-nochange" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.deepEqual(requestedBases, ["v1", null]);
+  assert.equal(storage.activated, "full-after-bad-nochange");
+});
+
+test("sync-plan 旧端点 404 时在尚未建 staging 前退回首包固定版本 full", async () => {
+  const storage = new MemoryCatalogStorage();
+  const pageCalls: Parameters<CatalogSyncRemotePort["getPage"]>[0][] = [];
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan() {
+      throw new HbposApiError("old backend", { kind: "http", status: 404 });
+    },
+    async getPage(input) {
+      pageCalls.push(input);
+      return page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, catalogVersion: "legacy-v1" });
+    },
+  }, { createSnapshotId: () => "legacy-full" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal("catalogVersion" in (pageCalls[0] ?? {}), false);
+  assert.equal(storage.activated, "legacy-full");
+});
+
+test("sync-plan 501 或明确 unsupported 同样只在未建 staging 时回退 legacy full", async () => {
+  const unsupportedErrors = [
+    new HbposApiError("not implemented", { kind: "http", status: 501 }),
+    Object.assign(new Error("unsupported"), { code: "CATALOG_SYNC_PLAN_UNSUPPORTED" }),
+  ];
+  for (const [index, unsupported] of unsupportedErrors.entries()) {
+    const storage = new MemoryCatalogStorage();
+    const service = new CatalogSnapshotService(storage, {
+      async getSyncPlan() { throw unsupported; },
+      async getPage() {
+        return page({ cursor: null, nextCursor: null, items: [item("A")], totalCount: 1, catalogVersion: "legacy-v1" });
+      },
+    }, { createSnapshotId: () => `legacy-full-${index}` });
+
+    await service.downloadAndActivate({ storeCode: "S1" });
+
+    assert.equal(storage.activated, `legacy-full-${index}`);
+  }
+});
+
+test("sync-plan 的冲突、服务不可用和校验错误绝不降级为 legacy full", async () => {
+  const errors = [
+    new HbposApiError("conflict", { kind: "http", status: 409, code: "CATALOG_DOWNLOAD_LEASE_CONFLICT" }),
+    new HbposApiError("unavailable", { kind: "http", status: 503 }),
+    new HbposApiError("invalid", { kind: "envelope", code: "CATALOG_SYNC_PLAN_INVALID" }),
+  ];
+  for (const failure of errors) {
+    const storage = new MemoryCatalogStorage();
+    const service = new CatalogSnapshotService(storage, {
+      async getSyncPlan() { throw failure; },
+      async getPage() { throw new Error("不得请求 legacy full"); },
+    }, { createSnapshotId: () => "must-not-fallback" });
+
+    await assert.rejects(() => service.downloadAndActivate({ storeCode: "S1" }), (error: unknown) => error === failure);
+    assert.equal(storage.staged.size, 0);
+  }
+});
+
+test("重置目录总是以 null-base full 计划重新下载，不接受 noChange 或 delta", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const requestedBases: (string | null)[] = [];
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan(input) {
+      requestedBases.push(input.baseCatalogVersion);
+      assert.equal(input.baseCatalogVersion, null);
+      return syncPlan({ mode: "full", baseCatalogVersion: null, targetCatalogVersion: "v2", targetTotal: 1 });
+    },
+    async getPage(input) {
+      assert.equal(input.catalogVersion, "v2");
+      return page({ cursor: null, nextCursor: null, items: [item("RESET")], totalCount: 1, catalogVersion: "v2" });
+    },
+  }, { createSnapshotId: () => "reset-full" });
+
+  await service.resetAndRedownload({ storeCode: "S1" });
+
+  assert.deepEqual(requestedBases, [null]);
+  assert.equal(storage.deltaBegin, null);
+  assert.equal(storage.activated, "reset-full");
+});
+
+test("重置目录的 null-base sync-plan 在旧后端 404 时回退 legacy full", async () => {
+  const storage = new MemoryCatalogStorage();
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan(input) {
+      assert.equal(input.baseCatalogVersion, null);
+      throw new HbposApiError("legacy sync plan", { kind: "http", status: 404 });
+    },
+    async getPage(input) {
+      assert.equal("catalogVersion" in input, false);
+      return page({ cursor: null, nextCursor: null, items: [item("RESET")], totalCount: 1, catalogVersion: "legacy-v1" });
+    },
+  }, { createSnapshotId: () => "reset-legacy-full" });
+
+  await service.resetAndRedownload({ storeCode: "S1" });
+
+  assert.equal(storage.activated, "reset-legacy-full");
+});
+
+test("同店 delta 只暂存变更并在原物理 snapshot 上原子激活新 generation", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD")), mapCatalogLookupToStagedItem(item("KEEP"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 2,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([]),
+    async getSyncPlan() {
+      return syncPlan({
+        mode: "delta",
+        baseCatalogVersion: "v1",
+        targetCatalogVersion: "v2",
+        targetTotal: 2,
+        downloadLeaseId: "lease-delta",
+        deltaOperationCount: 2,
+      });
+    },
+    async getDeltaPage(input) {
+      assert.equal(input.baseCatalogVersion, "v1");
+      assert.equal(
+        (input as Readonly<{ downloadLeaseId?: string }>).downloadLeaseId,
+        "lease-delta",
+      );
+      return {
+        ...page({ cursor: null, nextCursor: null, items: [item("NEW")], totalCount: 2, catalogVersion: "v2" }),
+        deletedLookups: [{ storeCode: "S1", lookupCode: "OLD", lookupCodeNormalized: "OLD", deletedAt: null }],
+      };
+    },
+    async getPromotions() { return []; },
+  }, { createSnapshotId: () => "delta-s1", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  const result = await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal(storage.deltaBegin?.sourceSnapshotId, "active-s1");
+  assert.equal(storage.deltaBegin?.baseCatalogVersion, "v1");
+  assert.deepEqual(storage.deltaBatchSizes, [2]);
+  assert.equal(storage.deltaActivated, "delta-s1");
+  assert.equal(storage.activated, "active-s1");
+  assert.deepEqual(storage.active.get("active-s1")?.map((entry) => entry.lookupCodeNormalized).sort(), ["KEEP", "NEW"]);
+  assert.equal(result.snapshotId, "active-s1");
+  assert.equal(result.catalogVersion, "v2");
+});
+
+test("delta 网络页按最多 500 个操作拆成短事务批次", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", []);
+  storage.activeMetadata = {
+    snapshotId: "active-s1",
+    storeCode: "S1",
+    catalogVersion: "v1",
+    itemCount: 0,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  let yields = 0;
+  const changed = Array.from({ length: 501 }, (_, index) => item(`DELTA-${index}`));
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([]),
+    async getSyncPlan() {
+      return syncPlan({
+        mode: "delta",
+        baseCatalogVersion: "v1",
+        targetCatalogVersion: "v2",
+        targetTotal: 501,
+        deltaOperationCount: 501,
+      });
+    },
+    async getDeltaPage() {
+      return {
+        ...page({
+          cursor: null,
+          nextCursor: null,
+          items: changed,
+          totalCount: 501,
+          catalogVersion: "v2",
+        }),
+        deletedLookups: [],
+      };
+    },
+  }, {
+    createSnapshotId: () => "delta-501",
+    yieldControl: async () => { yields += 1; },
+  });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.deepEqual(storage.deltaBatchSizes, [500, 1]);
+  assert.equal(yields, 1);
+  assert.equal(storage.active.get("active-s1")?.length, 501);
+});
+
+test("服务端误报超过 5000 条 delta 时不下载增量，重新取得 full 租约", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1",
+    storeCode: "S1",
+    catalogVersion: "v1",
+    itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  let deltaRequests = 0;
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan(input) {
+      return syncPlan(input.baseCatalogVersion === null
+        ? {
+          mode: "full",
+          baseCatalogVersion: null,
+          targetCatalogVersion: "v3",
+          targetTotal: 1,
+          downloadLeaseId: "lease-threshold-full",
+        }
+        : {
+          mode: "delta",
+          baseCatalogVersion: "v1",
+          targetCatalogVersion: "v2",
+          targetTotal: 1,
+          deltaOperationCount: 5_001,
+        });
+    },
+    async getDeltaPage() {
+      deltaRequests += 1;
+      throw new Error("不应请求超阈值增量");
+    },
+    async getPage(input) {
+      assert.equal(input.catalogVersion, "v3");
+      assert.equal(input.downloadLeaseId, "lease-threshold-full");
+      return page({
+        cursor: null,
+        nextCursor: null,
+        items: [item("FULL")],
+        totalCount: 1,
+        catalogVersion: "v3",
+      });
+    },
+  }, { createSnapshotId: () => "full-threshold" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal(deltaRequests, 0);
+  assert.equal(storage.activated, "full-threshold");
+});
+
+test("delta 实际操作数与计划不符时丢弃 staging 并保留旧 active", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1",
+    storeCode: "S1",
+    catalogVersion: "v1",
+    itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([]),
+    async getSyncPlan() {
+      return syncPlan({
+        mode: "delta",
+        baseCatalogVersion: "v1",
+        targetCatalogVersion: "v2",
+        targetTotal: 1,
+        deltaOperationCount: 2,
+      });
+    },
+    async getDeltaPage() {
+      return {
+        ...page({
+          cursor: null,
+          nextCursor: null,
+          items: [item("NEW")],
+          totalCount: 1,
+          catalogVersion: "v2",
+        }),
+        deletedLookups: [],
+      };
+    },
+  }, { createSnapshotId: () => "bad-count" });
+
+  await assert.rejects(
+    () => service.downloadAndActivate({ storeCode: "S1" }),
+    catalogError("CATALOG_DELTA_OPERATION_COUNT_MISMATCH"),
+  );
+  assert.equal(storage.staged.has("bad-count"), false);
+  assert.deepEqual(
+    storage.active.get("active-s1")?.map((entry) => entry.lookupCodeNormalized),
+    ["OLD"],
+  );
+});
+
+test("服务端要求 full 或增量校验失败时，保留旧 active；full 则安全回退全量", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  let mode: "full" | "delta" = "full";
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([page({ cursor: null, nextCursor: null, items: [item("FULL")], totalCount: 1, catalogVersion: "v3" })]),
+    async getSyncPlan() {
+      return syncPlan(mode === "full"
+        ? { mode: "full", baseCatalogVersion: "v1", targetCatalogVersion: "v3", targetTotal: 1 }
+        : { mode: "delta", baseCatalogVersion: "v1", targetCatalogVersion: "v2", targetTotal: 1 });
+    },
+    async getDeltaPage() { throw new HbposApiError("checksum", { kind: "envelope", code: "CATALOG_DELTA_PAGE_CHECKSUM_MISMATCH" }); },
+  }, { createSnapshotId: () => mode === "full" ? "full-s1" : "failed-delta", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+  assert.equal(storage.activated, "full-s1");
+  storage.activeMetadata = {
+    snapshotId: "full-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  mode = "delta";
+  await assert.rejects(() => service.downloadAndActivate({ storeCode: "S1" }), /checksum/i);
+  assert.equal(storage.activated, "full-s1");
+  assert.equal(storage.staged.has("failed-delta"), false);
+});
+
+test("delta 基线在激活前改变时，同一次刷新清理 staging 并回退 null-base 全量", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const snapshotIds = ["expired-delta", "full-fallback"];
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([page({
+      cursor: null,
+      nextCursor: null,
+      items: [item("FULL")],
+      totalCount: 1,
+      catalogVersion: "v3",
+    })]),
+    async getSyncPlan(input) {
+      return syncPlan(input.baseCatalogVersion === null
+        ? {
+          mode: "full",
+          baseCatalogVersion: null,
+          targetCatalogVersion: "v3",
+          targetTotal: 1,
+          downloadLeaseId: "lease-full-fallback",
+        }
+        : {
+          mode: "delta",
+          baseCatalogVersion: "v1",
+          targetCatalogVersion: "v2",
+          targetTotal: 1,
+          downloadLeaseId: "lease-expired",
+          deltaOperationCount: 1,
+        });
+    },
+    async getDeltaPage() {
+      throw new HbposApiError("base changed", {
+        kind: "envelope",
+        code: "CATALOG_DELTA_BASE_CHANGED",
+        status: 409,
+      });
+    },
+  }, {
+    createSnapshotId: () => {
+      const snapshotId = snapshotIds.shift();
+      assert.ok(snapshotId);
+      return snapshotId;
+    },
+    nowIso: () => "2026-07-28T00:00:00.000Z",
+  });
+
+  const result = await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.equal(storage.staged.has("expired-delta"), false);
+  assert.equal(storage.activated, "full-fallback");
+  assert.equal(result.catalogVersion, "v3");
+  assert.deepEqual(
+    storage.active.get("full-fallback")?.map((entry) => entry.lookupCodeNormalized),
+    ["FULL"],
+  );
+});
+
+test("delta 回退的 null-base sync-plan 在旧后端 501 时继续走 legacy full", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1", storeCode: "S1", catalogVersion: "v1", itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const bases: (string | null)[] = [];
+  const snapshotIds = ["delta-staging", "legacy-full"];
+  const service = new CatalogSnapshotService(storage, {
+    async getSyncPlan(input) {
+      bases.push(input.baseCatalogVersion);
+      if (input.baseCatalogVersion === null) {
+        throw new HbposApiError("legacy sync plan", { kind: "http", status: 501 });
+      }
+      return syncPlan({
+        mode: "delta", baseCatalogVersion: "v1", targetCatalogVersion: "v2",
+        targetTotal: 1, deltaOperationCount: 1,
+      });
+    },
+    async getDeltaPage() {
+      throw new HbposApiError("base changed", {
+        kind: "envelope", code: "CATALOG_DELTA_BASE_CHANGED", status: 409,
+      });
+    },
+    async getPage(input) {
+      assert.equal("catalogVersion" in input, false);
+      return page({ cursor: null, nextCursor: null, items: [item("FULL")], totalCount: 1, catalogVersion: "legacy-v3" });
+    },
+  }, {
+    createSnapshotId: () => {
+      const snapshotId = snapshotIds.shift();
+      assert.ok(snapshotId);
+      return snapshotId;
+    },
+  });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+
+  assert.deepEqual(bases, ["v1", null]);
+  assert.equal(storage.staged.has("delta-staging"), false);
+  assert.equal(storage.activated, "legacy-full");
+});
 
 test("固定 lookup 快照分页下载，显式转整数分后才原子切换 active", async () => {
   const storage = new MemoryCatalogStorage();
@@ -383,6 +1056,31 @@ test("最终页数量与服务端 total 不闭合时不报告商品步骤百分�
     catalogError("CATALOG_ITEM_COUNT_MISMATCH"),
   );
   assert.deepEqual(productPercents, [0]);
+});
+
+test("接近完成的 full 校验失败按 500 行分批丢弃 staging，旧 active 保持可用", async () => {
+  const storage = new BoundedDiscardStorage();
+  storage.active.set("old", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  const items = Array.from({ length: 501 }, (_, index) => item(`NEW-${index}`));
+  let yields = 0;
+  const service = new CatalogSnapshotService(
+    storage,
+    remote([page({ cursor: null, nextCursor: null, items, totalCount: 502 })]),
+    {
+      createSnapshotId: () => "large-invalid-full",
+      yieldControl: async () => { yields += 1; },
+    },
+  );
+
+  await assert.rejects(
+    () => service.downloadAndActivate({ storeCode: "S1" }),
+    catalogError("CATALOG_ITEM_COUNT_MISMATCH"),
+  );
+
+  assert.deepEqual(storage.discardBatchSizes, [500, 500, 500, 500]);
+  assert.equal(yields, 3);
+  assert.equal(storage.staged.has("large-invalid-full"), false);
+  assert.equal(storage.active.has("old"), true);
 });
 
 test("取消在暂存后只清理 staging，既有 active 目录保持可用", async () => {

@@ -163,6 +163,7 @@ test("真实 SQLite：活动目录元数据返回同一快照的条数与激活�
 
     assert.deepEqual(await repository.getActiveMetadata(), {
       snapshotId: "active-one",
+      storeCode: "STORE-1",
       catalogVersion: "v1",
       itemCount: 2,
       activatedAt: NOW,

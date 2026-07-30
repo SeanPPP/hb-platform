@@ -43,6 +43,7 @@ import type {
   HbposTransport,
   HbposTransportRequest,
 } from "../api/hbpos-api";
+import { HbposApiError } from "../api/hbpos-api";
 import type {
   CustomerDisplaySnapshot,
   DailyCloseArchiveCommit,
@@ -1831,6 +1832,25 @@ test("激活后促销快照与目录不一致时返回告警", async () => {
   assert.equal(outcome.warningCode, "catalog-runtime-reload-failed");
 });
 
+test("运行时目录下载在旧后端 sync-plan 404 时回退首包固定版本 full", async () => {
+  const services = createTestComposition(
+    databaseFor([]),
+    {
+      cashierPermissions: [CATALOG_DOWNLOAD_PERMISSION],
+      transport: await catalogDownloadTransport({ syncPlanStatus: 404 }),
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const outcome = await services.catalog.downloadAndActivate({
+    storeCode: "S001",
+  });
+
+  assert.equal(outcome.kind, "activated-with-warning");
+  assert.equal(outcome.summary.catalogVersion, "catalog-v3");
+});
+
 test("settings 与维护页共享目录重载告警，已切换目录保持可用", async () => {
   const cases: readonly Readonly<{
     name: string;
@@ -2424,6 +2444,7 @@ function settingsRuntimeConfiguration(): ProductionSettingsRuntimeConfiguration 
 async function catalogDownloadTransport(
   options: Readonly<{
     beforePromotions?(): void | Promise<void>;
+    syncPlanStatus?: 404 | 501;
   }> = {},
 ): Promise<HbposTransport> {
   const item: CatalogLookupItem = {
@@ -2452,6 +2473,29 @@ async function catalogDownloadTransport(
   );
   return {
     async request<T>(request: HbposTransportRequest) {
+      if (request.url === "/api/v1/catalog/sync-plan") {
+        if (options.syncPlanStatus) {
+          throw new HbposApiError("legacy catalog backend", {
+            kind: "http",
+            status: options.syncPlanStatus,
+          });
+        }
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              storeCode: "S001",
+              generatedAt: "2026-07-28T00:00:00.000Z",
+              mode: "full",
+              baseCatalogVersion:
+                request.params?.baseCatalogVersion ?? null,
+              targetCatalogVersion: "catalog-v3",
+              targetTotal: 1,
+            },
+          } as T,
+        };
+      }
       if (request.url === "/api/v1/catalog/sellable-items/page") {
         return {
           status: 200,

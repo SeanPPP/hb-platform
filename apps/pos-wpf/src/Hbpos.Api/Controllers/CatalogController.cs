@@ -56,7 +56,8 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         [FromQuery] int pageSize = 500,
         CancellationToken cancellationToken = default,
         [FromQuery] string? catalogVersion = null,
-        [FromQuery] int checksumVersion = 1)
+        [FromQuery] int checksumVersion = 1,
+        [FromQuery] string? downloadLeaseId = null)
     {
         if (string.IsNullOrWhiteSpace(storeCode))
         {
@@ -94,14 +95,15 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         CatalogSyncPageResponse? response;
         try
         {
-            response = await catalogService.GetSellableItemsPageAsync(
+            response = await catalogService.GetSellableItemsPageWithLeaseAsync(
                 storeCode,
                 since,
                 cursor,
                 pageSize,
                 cancellationToken,
                 catalogVersion,
-                checksumVersion);
+                checksumVersion,
+                downloadLeaseId);
         }
         catch (CatalogSnapshotExpiredException)
         {
@@ -110,6 +112,13 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             return Conflict(ApiResult<CatalogSyncPageResponse>.Fail(
                 "CATALOG_SNAPSHOT_EXPIRED",
                 "catalog snapshot expired; restart the download"));
+        }
+        catch (CatalogSnapshotIsolationUnavailableException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogSyncPageResponse>.Fail(
+                    "CATALOG_SNAPSHOT_ISOLATION_UNAVAILABLE",
+                    "catalog snapshot isolation is unavailable"));
         }
 
         stopwatch.Stop();
@@ -120,6 +129,100 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
         return response is null
             ? NotFound(ApiResult<CatalogSyncPageResponse>.Fail("STORE_NOT_FOUND", "store was not found or inactive"))
             : Ok(ApiResult<CatalogSyncPageResponse>.Ok(response));
+    }
+
+    [HttpGet("sync-plan")]
+    public async Task<ActionResult<ApiResult<CatalogSyncPlanResponse>>> GetCatalogSyncPlan(
+        [FromQuery] string storeCode,
+        [FromQuery] string? baseCatalogVersion,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(storeCode))
+        {
+            return BadRequest(ApiResult<CatalogSyncPlanResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogSyncPlanResponse>("Device is not authorized for this store.");
+        }
+
+        CatalogSyncPlanResponse? response;
+        try
+        {
+            response = await catalogService.GetCatalogSyncPlanWithLeaseAsync(
+                storeCode,
+                baseCatalogVersion,
+                cancellationToken);
+        }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogSyncPlanResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
+        }
+        catch (CatalogSnapshotIsolationUnavailableException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogSyncPlanResponse>.Fail(
+                    "CATALOG_SNAPSHOT_ISOLATION_UNAVAILABLE",
+                    "catalog snapshot isolation is unavailable"));
+        }
+        return response is null
+            ? NotFound(ApiResult<CatalogSyncPlanResponse>.Fail("STORE_NOT_FOUND", "store was not found or inactive"))
+            : Ok(ApiResult<CatalogSyncPlanResponse>.Ok(response));
+    }
+
+    [HttpGet("delta/page")]
+    public async Task<ActionResult<ApiResult<CatalogDeltaPageResponse>>> GetCatalogDeltaPage(
+        [FromQuery] string storeCode,
+        [FromQuery] string baseCatalogVersion,
+        [FromQuery] string targetCatalogVersion,
+        [FromQuery] string? cursor,
+        [FromQuery] int pageSize = 500,
+        CancellationToken cancellationToken = default,
+        [FromQuery] string? downloadLeaseId = null)
+    {
+        if (string.IsNullOrWhiteSpace(storeCode))
+        {
+            return BadRequest(ApiResult<CatalogDeltaPageResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
+        }
+
+        if (string.IsNullOrWhiteSpace(baseCatalogVersion) || string.IsNullOrWhiteSpace(targetCatalogVersion))
+        {
+            return BadRequest(ApiResult<CatalogDeltaPageResponse>.Fail(
+                "CATALOG_VERSION_REQUIRED",
+                "baseCatalogVersion and targetCatalogVersion are required"));
+        }
+
+        if (pageSize <= 0 || pageSize > MaxPageSize)
+        {
+            return BadRequest(ApiResult<CatalogDeltaPageResponse>.Fail("PAGE_SIZE_INVALID", $"pageSize must be between 1 and {MaxPageSize}"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogDeltaPageResponse>("Device is not authorized for this store.");
+        }
+
+        try
+        {
+            var response = await catalogService.GetCatalogDeltaPageWithLeaseAsync(
+                storeCode,
+                baseCatalogVersion,
+                targetCatalogVersion,
+                cursor,
+                pageSize,
+                cancellationToken,
+                downloadLeaseId);
+            return Ok(ApiResult<CatalogDeltaPageResponse>.Ok(response));
+        }
+        catch (CatalogSnapshotExpiredException)
+        {
+            // 基准或目标快照任一过期都无法保证 delete 完整性，客户端必须回退全量。
+            return Conflict(ApiResult<CatalogDeltaPageResponse>.Fail(
+                "CATALOG_SNAPSHOT_EXPIRED",
+                "catalog snapshot expired; restart with a full download"));
+        }
     }
 
     [HttpPost("sellable-items/compare")]

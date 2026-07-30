@@ -350,6 +350,13 @@
               "format": "int32",
               "default": 1
             }
+          },
+          {
+            "name": "downloadLeaseId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -369,6 +376,126 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CatalogSyncPageResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/sync-plan": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "parameters": [
+          {
+            "name": "storeCode",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseCatalogVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSyncPlanResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSyncPlanResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSyncPlanResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/delta/page": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "parameters": [
+          {
+            "name": "storeCode",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseCatalogVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "targetCatalogVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 500
+            }
+          },
+          {
+            "name": "downloadLeaseId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDeltaPageResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDeltaPageResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogDeltaPageResponseApiResult"
                 }
               }
             }
@@ -2482,6 +2609,58 @@
         }
       }
     },
+    "/api/v1/app-updates/pos-ipad/ota": {
+      "get": {
+        "tags": [
+          "PosIpadAppUpdate"
+        ],
+        "parameters": [
+          {
+            "name": "runtimeVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currentUpdateId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currentUpdateGroupId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosIpadOtaUpdateResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosIpadOtaUpdateResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosIpadOtaUpdateResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/promotions/rules": {
       "get": {
         "tags": [
@@ -3845,6 +4024,85 @@
         },
         "additionalProperties": false
       },
+      "CatalogDeltaPageResponse": {
+        "type": "object",
+        "properties": {
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "baseCatalogVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetCatalogVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "cursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogLookupItemDto"
+            },
+            "nullable": true
+          },
+          "deletedLookups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletedLookupDto"
+            },
+            "nullable": true
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "targetTotal": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pageChecksum": {
+            "type": "string",
+            "nullable": true
+          },
+          "downloadLeaseId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CatalogDeltaPageResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CatalogDeltaPageResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CatalogLocalLookupVersionDto": {
         "type": "object",
         "properties": {
@@ -4267,6 +4525,10 @@
           "pageChecksum": {
             "type": "string",
             "nullable": true
+          },
+          "downloadLeaseId": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -4279,6 +4541,65 @@
           },
           "data": {
             "$ref": "#/components/schemas/CatalogSyncPageResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CatalogSyncPlanResponse": {
+        "type": "object",
+        "properties": {
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mode": {
+            "type": "string",
+            "nullable": true
+          },
+          "baseCatalogVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetCatalogVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetTotal": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "downloadLeaseId": {
+            "type": "string",
+            "nullable": true
+          },
+          "deltaOperationCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CatalogSyncPlanResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CatalogSyncPlanResponse"
           },
           "errorCode": {
             "type": "string",
@@ -7448,6 +7769,60 @@
           },
           "data": {
             "$ref": "#/components/schemas/PosIpadAppUpdateResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosIpadOtaUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "policyVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel": {
+            "type": "string",
+            "nullable": true
+          },
+          "runtimeVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "iosUpdateId": {
+            "type": "string",
+            "nullable": true
+          },
+          "updateGroupId": {
+            "type": "string",
+            "nullable": true
+          },
+          "releaseMessage": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosIpadOtaUpdateResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PosIpadOtaUpdateResponse"
           },
           "errorCode": {
             "type": "string",

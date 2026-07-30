@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -9,6 +10,7 @@ using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Catalog;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Hbpos.Api.Services;
@@ -37,6 +39,43 @@ public interface ICatalogService
         CancellationToken cancellationToken,
         string? catalogVersion,
         int checksumVersion);
+
+    Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanAsync(
+        string storeCode,
+        string? baseCatalogVersion,
+        CancellationToken cancellationToken);
+
+    Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanWithLeaseAsync(
+        string storeCode,
+        string? baseCatalogVersion,
+        CancellationToken cancellationToken);
+
+    Task<CatalogSyncPageResponse?> GetSellableItemsPageWithLeaseAsync(
+        string storeCode,
+        DateTimeOffset? since,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? catalogVersion,
+        int checksumVersion,
+        string? downloadLeaseId);
+
+    Task<CatalogDeltaPageResponse> GetCatalogDeltaPageAsync(
+        string storeCode,
+        string baseCatalogVersion,
+        string targetCatalogVersion,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken);
+
+    Task<CatalogDeltaPageResponse> GetCatalogDeltaPageWithLeaseAsync(
+        string storeCode,
+        string baseCatalogVersion,
+        string targetCatalogVersion,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? downloadLeaseId);
 
     Task<CatalogCompareResponse?> CompareSellableItemsAsync(
         CatalogCompareRequest request,
@@ -87,12 +126,38 @@ public sealed class CatalogSnapshotExpiredException(
     public string CatalogVersion { get; } = catalogVersion;
 }
 
+/// <summary>SQL Server 未启用 SNAPSHOT 时拒绝混合时点的目录构建，不能静默降级为脏读。</summary>
+public sealed class CatalogSnapshotIsolationUnavailableException(Exception innerException)
+    : Exception("SQL Server SNAPSHOT isolation is required for catalog reads.", innerException);
+
+public sealed class CatalogSyncOptions
+{
+    public bool DeltaEnabled { get; init; } = true;
+}
+
 public sealed class CatalogService(
     HbposSqlSugarContext dbContext,
     IPriceIndexBuilder priceIndexBuilder,
-    ICatalogIndexCache catalogIndexCache) : ICatalogService
+    ICatalogIndexCache catalogIndexCache,
+    ICatalogBaseDataCache catalogBaseDataCache,
+    IOptions<CatalogSyncOptions>? catalogSyncOptions = null)
+    : ICatalogService, ICatalogIndexRefreshWorker
 {
+    private const int CatalogSourceBatchSize = 100_000;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> StoreRetailPriceEnsureLocks = new(StringComparer.Ordinal);
+
+    public CatalogService(
+        HbposSqlSugarContext dbContext,
+        IPriceIndexBuilder priceIndexBuilder,
+        ICatalogIndexCache catalogIndexCache)
+        : this(
+            dbContext,
+            priceIndexBuilder,
+            catalogIndexCache,
+            new CatalogBaseDataCache(),
+            catalogSyncOptions: null)
+    {
+    }
 
     public async Task<IReadOnlyList<StoreDto>> GetStoresAsync(CancellationToken cancellationToken)
     {
@@ -164,6 +229,215 @@ public sealed class CatalogService(
         }
 
         return index?.CatalogIndex.GetPage(cursor, pageSize, checksumVersion);
+    }
+
+    public async Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanAsync(
+        string storeCode,
+        string? baseCatalogVersion,
+        CancellationToken cancellationToken)
+    {
+        // 目标版本始终从当前完整目录取得；增量仅使用已固定、仍可读取的旧版本。
+        var target = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
+        if (target is null)
+        {
+            return null;
+        }
+
+        var targetVersion = target.CatalogIndex.CatalogVersion;
+        var normalizedBaseVersion = baseCatalogVersion?.Trim();
+        if (!IsDeltaEnabled)
+        {
+            return new CatalogSyncPlanResponse(
+                target.StoreCode,
+                target.GeneratedAt,
+                CatalogSyncModes.Full,
+                normalizedBaseVersion,
+                targetVersion,
+                target.CatalogIndex.Items.Count);
+        }
+        if (string.IsNullOrEmpty(normalizedBaseVersion))
+        {
+            return new CatalogSyncPlanResponse(
+                target.StoreCode,
+                target.GeneratedAt,
+                CatalogSyncModes.Full,
+                null,
+                targetVersion,
+                target.CatalogIndex.Items.Count);
+        }
+
+        if (string.Equals(normalizedBaseVersion, targetVersion, StringComparison.Ordinal))
+        {
+            return new CatalogSyncPlanResponse(
+                target.StoreCode,
+                target.GeneratedAt,
+                CatalogSyncModes.NoChange,
+                normalizedBaseVersion,
+                targetVersion,
+                target.CatalogIndex.Items.Count);
+        }
+
+        var baseline = catalogIndexCache.GetByVersion(storeCode, since: null, normalizedBaseVersion);
+        // 基准快照过期时不能猜测删除项，明确要求客户端安全地退回全量下载。
+        return new CatalogSyncPlanResponse(
+            target.StoreCode,
+            target.GeneratedAt,
+            baseline is null ? CatalogSyncModes.Full : CatalogSyncModes.Delta,
+            normalizedBaseVersion,
+            targetVersion,
+            target.CatalogIndex.Items.Count);
+    }
+
+    public async Task<CatalogSyncPlanResponse?> GetCatalogSyncPlanWithLeaseAsync(
+        string storeCode,
+        string? baseCatalogVersion,
+        CancellationToken cancellationToken)
+    {
+        var target = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
+        if (target is null)
+        {
+            return null;
+        }
+
+        var normalizedBase = baseCatalogVersion?.Trim();
+        if (!IsDeltaEnabled)
+        {
+            var lease = catalogIndexCache.CreateFullLease(target);
+            return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.Full,
+                normalizedBase, target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count, lease.LeaseId);
+        }
+        if (string.IsNullOrEmpty(normalizedBase))
+        {
+            var lease = catalogIndexCache.CreateFullLease(target);
+            return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.Full, null,
+                target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count, lease.LeaseId);
+        }
+
+        if (string.Equals(normalizedBase, target.CatalogIndex.CatalogVersion, StringComparison.Ordinal))
+        {
+            return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.NoChange,
+                normalizedBase, target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count);
+        }
+
+        var baseline = catalogIndexCache.GetByVersion(storeCode, since: null, normalizedBase);
+        if (baseline is null)
+        {
+            var lease = catalogIndexCache.CreateFullLease(target);
+            return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.Full,
+                normalizedBase, target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count, lease.LeaseId);
+        }
+
+        var operations = target.CatalogIndex.GetDeltaOperations(baseline.CatalogIndex);
+        if (operations.Count > 5_000)
+        {
+            var lease = catalogIndexCache.CreateFullLease(target);
+            return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.Full,
+                normalizedBase, target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count, lease.LeaseId,
+                operations.Count);
+        }
+
+        var deltaLease = catalogIndexCache.CreateDeltaLease(baseline, target, operations);
+        return new CatalogSyncPlanResponse(target.StoreCode, target.GeneratedAt, CatalogSyncModes.Delta,
+            normalizedBase, target.CatalogIndex.CatalogVersion, target.CatalogIndex.Items.Count,
+            deltaLease.LeaseId, operations.Count);
+    }
+
+    public async Task<CatalogSyncPageResponse?> GetSellableItemsPageWithLeaseAsync(
+        string storeCode,
+        DateTimeOffset? since,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? catalogVersion,
+        int checksumVersion,
+        string? downloadLeaseId)
+    {
+        if (string.IsNullOrWhiteSpace(downloadLeaseId))
+        {
+            return await GetSellableItemsPageAsync(storeCode, since, cursor, pageSize, cancellationToken, catalogVersion, checksumVersion);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var lease = catalogIndexCache.DownloadLeases.GetAndTouch(
+            downloadLeaseId,
+            storeCode,
+            baseCatalogVersion: null,
+            catalogVersion ?? throw new CatalogSnapshotExpiredException(storeCode, string.Empty));
+        var page = lease.Target.CatalogIndex.GetPage(cursor, pageSize, checksumVersion);
+        cancellationToken.ThrowIfCancellationRequested();
+        catalogIndexCache.DownloadLeases.Touch(
+            downloadLeaseId,
+            storeCode,
+            baseCatalogVersion: null,
+            catalogVersion!);
+        return page with { DownloadLeaseId = lease.LeaseId };
+    }
+
+    public Task<CatalogDeltaPageResponse> GetCatalogDeltaPageWithLeaseAsync(
+        string storeCode,
+        string baseCatalogVersion,
+        string targetCatalogVersion,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? downloadLeaseId)
+    {
+        if (string.IsNullOrWhiteSpace(downloadLeaseId))
+        {
+            return GetCatalogDeltaPageAsync(storeCode, baseCatalogVersion, targetCatalogVersion, cursor, pageSize, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var lease = catalogIndexCache.DownloadLeases.GetAndTouch(downloadLeaseId, storeCode, baseCatalogVersion, targetCatalogVersion);
+        var page = CreateLeaseDeltaPage(lease, cursor, pageSize);
+        cancellationToken.ThrowIfCancellationRequested();
+        catalogIndexCache.DownloadLeases.Touch(downloadLeaseId, storeCode, baseCatalogVersion, targetCatalogVersion);
+        return Task.FromResult(page);
+    }
+
+    private static CatalogDeltaPageResponse CreateLeaseDeltaPage(
+        CatalogDownloadLease lease,
+        string? cursor,
+        int pageSize)
+    {
+        // DeltaOperations 已在 plan 阶段固定；当前索引对象同样由租约固定，
+        // 因而分页即使发生后续发布也只会读取这一对版本。
+        var page = lease.Target.CatalogIndex.GetDeltaPageFromOperations(
+            lease.Baseline!.CatalogIndex,
+            lease.DeltaOperations,
+            cursor,
+            pageSize);
+        return page with { DownloadLeaseId = lease.LeaseId };
+    }
+
+    public Task<CatalogDeltaPageResponse> GetCatalogDeltaPageAsync(
+        string storeCode,
+        string baseCatalogVersion,
+        string targetCatalogVersion,
+        string? cursor,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseCatalogVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetCatalogVersion);
+
+        var baseline = catalogIndexCache.GetByVersion(storeCode, since: null, baseCatalogVersion);
+        if (baseline is null)
+        {
+            throw new CatalogSnapshotExpiredException(storeCode, baseCatalogVersion);
+        }
+
+        var target = catalogIndexCache.GetByVersion(storeCode, since: null, targetCatalogVersion);
+        if (target is null)
+        {
+            throw new CatalogSnapshotExpiredException(storeCode, targetCatalogVersion);
+        }
+
+        return Task.FromResult(target.CatalogIndex.GetDeltaPage(
+            baseline.CatalogIndex,
+            cursor,
+            pageSize));
     }
 
     public async Task<CatalogCompareResponse?> CompareSellableItemsAsync(
@@ -651,7 +925,11 @@ public sealed class CatalogService(
         invalidateStopwatch.Stop();
 
         var indexStopwatch = Stopwatch.StartNew();
-        var index = await BuildSellableIndexAsync(normalizedStoreCode, since: null, cancellationToken);
+        var index = await BuildSellableIndexAsync(
+            normalizedStoreCode,
+            since: null,
+            cancellationToken,
+            requireFresh: true);
         indexStopwatch.Stop();
 
         var itemFilterStopwatch = Stopwatch.StartNew();
@@ -673,14 +951,46 @@ public sealed class CatalogService(
     private async Task<CatalogIndexBuildResult?> BuildSellableIndexAsync(
         string storeCode,
         DateTimeOffset? since,
+        CancellationToken cancellationToken,
+        bool requireFresh = false)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        var buildAsync = new Func<CancellationToken, Task<CatalogIndexBuildResult?>>(
+            // 共享缓存只构建完整门店目录；legacy since 在缓存内从该工件派生。
+            token => BuildSellableIndexCoreAsync(normalizedStoreCode, since: null, token));
+        return requireFresh
+            ? await catalogIndexCache.GetOrBuildFreshAsync(
+                normalizedStoreCode,
+                since,
+                buildAsync,
+                cancellationToken)
+            : await catalogIndexCache.GetOrBuildAsync(
+                normalizedStoreCode,
+                since,
+                buildAsync,
+                cancellationToken);
+    }
+
+    public async Task RefreshCatalogIndexAsync(
+        string storeCode,
         CancellationToken cancellationToken)
     {
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
-        return await catalogIndexCache.GetOrBuildAsync(
+        _ = await catalogIndexCache.ForceRefreshAndPublishAsync(
             normalizedStoreCode,
-            since,
-            token => BuildSellableIndexCoreAsync(normalizedStoreCode, since, token),
+            since: null,
+            token => BuildSellableIndexCoreAsync(normalizedStoreCode, since: null, token),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// 仅由 singleton 缓存协调器在自有 DI scope 中调用，绝不再捕获 HTTP scope 的 DbContext。
+    /// </summary>
+    public Task<CatalogIndexBuildResult?> BuildCatalogArtifactAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        return BuildSellableIndexCoreAsync(NormalizeStoreCode(storeCode), since: null, cancellationToken);
     }
 
     private async Task<CatalogIndexBuildResult?> BuildSellableIndexCoreAsync(
@@ -705,73 +1015,23 @@ public sealed class CatalogService(
         }
 
         stepStopwatch.Restart();
-        const int productBatchSize = 20_000;
-        var products = new List<ProductPriceRecord>();
-        string? lastProductCode = null;
-        string? lastProductUuid = null;
-
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var batchStopwatch = Stopwatch.StartNew();
-            var productQuery = dbContext.MainDb.Queryable<Product>()
-                .Where(x => x.IsActive && !x.IsDeleted && x.ProductCode != null && x.UUID != null);
-
-            if (lastProductCode is not null && lastProductUuid is not null)
-            {
-                // 按 ProductCode + UUID 键集翻页，避免完整目录后段产生 OFFSET 扫描。
-                productQuery = productQuery.Where(
-                    "(([ProductCode] > @lastProductCode) OR ([ProductCode] = @lastProductCode AND [UUID] > @lastUuid))",
-                    new { lastProductCode, lastUuid = lastProductUuid });
-            }
-
-            var productBatch = await productQuery
-                .OrderBy(x => x.ProductCode)
-                .OrderBy(x => x.UUID)
-                .Select(x => new Product
-                {
-                    ProductCode = x.ProductCode,
-                    ProductName = x.ProductName,
-                    ItemNumber = x.ItemNumber,
-                    Barcode = x.Barcode,
-                    RetailPrice = x.RetailPrice,
-                    UpdatedAt = x.UpdatedAt,
-                    CreatedAt = x.CreatedAt,
-                    ProductImage = x.ProductImage,
-                    UUID = x.UUID
-                })
-                .Take(productBatchSize)
-                .ToListAsync(cancellationToken);
-
-            products.AddRange(productBatch.Select(x => new ProductPriceRecord(
-                x.ProductCode,
-                x.ProductName,
-                x.ItemNumber,
-                x.Barcode,
-                x.RetailPrice,
-                ToOffset(x.UpdatedAt ?? x.CreatedAt),
-                x.ProductImage,
-                x.UUID)));
-            batchStopwatch.Stop();
-            Log($"products batch query store={normalizedStoreCode} rows={productBatch.Count} total={products.Count} elapsedMs={batchStopwatch.ElapsedMilliseconds}");
-
-            if (productBatch.Count < productBatchSize)
-            {
-                break;
-            }
-
-            var lastProduct = productBatch[^1];
-            lastProductCode = lastProduct.ProductCode;
-            lastProductUuid = lastProduct.UUID;
-        }
-
+        var baseData = await catalogBaseDataCache.GetOrCreateAsync(
+            BuildCatalogBaseDataAsync,
+            waiterCancellationToken: cancellationToken,
+            buildCancellationToken: cancellationToken);
         stepStopwatch.Stop();
-        Log($"products query store={normalizedStoreCode} count={products.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
+        Log($"base data ready store={normalizedStoreCode} products={baseData.Products.Count} setCodes={baseData.SetCodes.Count} generatedAt={baseData.GeneratedAt:O} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
 
+        // 门店价、多码、清仓价必须在同一个 SNAPSHOT 事务中读取，避免跨批次拼出不存在的目录。
+        List<StoreRetailPriceRecord> storeRetailPrices;
+        List<StoreMultiCodeProductRecord> multiCodeProducts;
+        List<StoreClearancePriceRecord> clearancePrices;
+        var storeReadTransactionStarted = await BeginCatalogSnapshotReadTransactionAsync(cancellationToken);
+        try
+        {
         stepStopwatch.Restart();
-        const int storeRetailPriceBatchSize = 20_000;
-        var storeRetailPrices = new List<StoreRetailPriceRecord>();
-        lastProductCode = null;
+        storeRetailPrices = new List<StoreRetailPriceRecord>();
+        string? lastProductCode = null;
         string? lastUuid = null;
 
         while (true)
@@ -779,6 +1039,7 @@ public sealed class CatalogService(
             cancellationToken.ThrowIfCancellationRequested();
             var batchStopwatch = Stopwatch.StartNew();
             var storeRetailPriceQuery = dbContext.MainDb.Queryable<StoreRetailPrice>()
+                .With(SqlWith.Null)
                 .Where(x => x.StoreCode == normalizedStoreCode
                     && x.IsActive
                     && !x.IsDeleted
@@ -806,7 +1067,7 @@ public sealed class CatalogService(
                     DiscountRate = x.DiscountRate,
                     IsSpecialProduct = x.IsSpecialProduct
                 })
-                .Take(storeRetailPriceBatchSize)
+                .Take(CatalogSourceBatchSize)
                 .ToListAsync(cancellationToken);
 
             storeRetailPrices.AddRange(storeRetailPriceBatch.Select(x => new StoreRetailPriceRecord(
@@ -819,7 +1080,7 @@ public sealed class CatalogService(
             batchStopwatch.Stop();
             Log($"store retail prices batch query store={normalizedStoreCode} rows={storeRetailPriceBatch.Count} total={storeRetailPrices.Count} elapsedMs={batchStopwatch.ElapsedMilliseconds}");
 
-            if (storeRetailPriceBatch.Count < storeRetailPriceBatchSize)
+            if (storeRetailPriceBatch.Count < CatalogSourceBatchSize)
             {
                 break;
             }
@@ -834,6 +1095,7 @@ public sealed class CatalogService(
 
         stepStopwatch.Restart();
         var multiCodeProductEntities = await dbContext.MainDb.Queryable<StoreMultiCodeProduct>()
+            .With(SqlWith.Null)
             .Where(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted)
             .Select(x => new StoreMultiCodeProduct
             {
@@ -849,7 +1111,7 @@ public sealed class CatalogService(
             .ToListAsync(cancellationToken);
         stepStopwatch.Stop();
         Log($"multi code products query store={normalizedStoreCode} count={multiCodeProductEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
-        var multiCodeProducts = multiCodeProductEntities
+        multiCodeProducts = multiCodeProductEntities
             .Select(x => new StoreMultiCodeProductRecord(
                 x.ProductCode,
                 x.MultiCodeProductCode,
@@ -862,6 +1124,7 @@ public sealed class CatalogService(
 
         stepStopwatch.Restart();
         var clearancePriceEntities = await dbContext.MainDb.Queryable<StoreClearancePrice>()
+            .With(SqlWith.Null)
             .Where(x => x.StoreCode == normalizedStoreCode && !x.IsDeleted)
             .Select(x => new StoreClearancePrice
             {
@@ -875,7 +1138,7 @@ public sealed class CatalogService(
             .ToListAsync(cancellationToken);
         stepStopwatch.Stop();
         Log($"clearance prices query store={normalizedStoreCode} count={clearancePriceEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
-        var clearancePrices = clearancePriceEntities
+        clearancePrices = clearancePriceEntities
             .Select(x => new StoreClearancePriceRecord(
                 x.ProductCode,
                 x.ClearanceBarcode,
@@ -884,8 +1147,118 @@ public sealed class CatalogService(
                 x.UUID))
             .ToList();
 
+        if (storeReadTransactionStarted)
+        {
+            await dbContext.MainDb.Ado.CommitTranAsync();
+        }
+        }
+        catch
+        {
+            if (storeReadTransactionStarted)
+            {
+                await dbContext.MainDb.Ado.RollbackTranAsync();
+            }
+
+            throw;
+        }
+
+        var input = new PriceIndexInput(
+            since,
+            baseData.Products,
+            storeRetailPrices,
+            multiCodeProducts,
+            clearancePrices,
+            baseData.SetCodes);
+
+        var generatedAt = DateTimeOffset.UtcNow;
         stepStopwatch.Restart();
+        var items = priceIndexBuilder.Build(store.StoreCode, input);
+        stepStopwatch.Stop();
+        totalStopwatch.Stop();
+        Log($"build index completed store={store.StoreCode} items={items.Count} buildElapsedMs={stepStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        return new CatalogIndexBuildResult(
+            store.StoreCode,
+            generatedAt,
+            items,
+            new CatalogSellableIndex(store.StoreCode, generatedAt, items),
+            baseData.ValidUntil,
+            // 完整工件保留只读候选，供 legacy since 在内存中重新投影；不会二次读数据库。
+            input);
+    }
+
+    private Task<CatalogBaseData> BuildCatalogBaseDataAsync(
+        CancellationToken cancellationToken)
+    {
+        return RunCatalogSnapshotReadAsync(BuildCatalogBaseDataCoreAsync, cancellationToken);
+    }
+
+    private async Task<CatalogBaseData> BuildCatalogBaseDataCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var products = new List<ProductPriceRecord>();
+        string? lastProductCode = null;
+        string? lastProductUuid = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batchStopwatch = Stopwatch.StartNew();
+            var productQuery = dbContext.MainDb.Queryable<Product>()
+                .With(SqlWith.Null)
+                .Where(x => x.IsActive && !x.IsDeleted && x.ProductCode != null && x.UUID != null);
+
+            if (lastProductCode is not null && lastProductUuid is not null)
+            {
+                // 全局商品基础按覆盖索引顺序键集读取；10 万批次减少重复 SQL 往返和范围扫描。
+                productQuery = productQuery.Where(
+                    "(([ProductCode] > @lastProductCode) OR ([ProductCode] = @lastProductCode AND [UUID] > @lastUuid))",
+                    new { lastProductCode, lastUuid = lastProductUuid });
+            }
+
+            var productBatch = await productQuery
+                .OrderBy(x => x.ProductCode)
+                .OrderBy(x => x.UUID)
+                .Select(x => new Product
+                {
+                    ProductCode = x.ProductCode,
+                    ProductName = x.ProductName,
+                    ItemNumber = x.ItemNumber,
+                    Barcode = x.Barcode,
+                    RetailPrice = x.RetailPrice,
+                    UpdatedAt = x.UpdatedAt,
+                    CreatedAt = x.CreatedAt,
+                    ProductImage = x.ProductImage,
+                    UUID = x.UUID
+                })
+                .Take(CatalogSourceBatchSize)
+                .ToListAsync(cancellationToken);
+
+            products.AddRange(productBatch.Select(x => new ProductPriceRecord(
+                x.ProductCode,
+                x.ProductName,
+                x.ItemNumber,
+                x.Barcode,
+                x.RetailPrice,
+                ToOffset(x.UpdatedAt ?? x.CreatedAt),
+                x.ProductImage,
+                x.UUID)));
+            batchStopwatch.Stop();
+            Log($"base products batch rows={productBatch.Count} total={products.Count} elapsedMs={batchStopwatch.ElapsedMilliseconds}");
+
+            if (productBatch.Count < CatalogSourceBatchSize)
+            {
+                break;
+            }
+
+            var lastProduct = productBatch[^1];
+            lastProductCode = lastProduct.ProductCode;
+            lastProductUuid = lastProduct.UUID;
+        }
+
+        var setCodeStopwatch = Stopwatch.StartNew();
         var setCodeEntities = await dbContext.MainDb.Queryable<ProductSetCode>()
+            .With(SqlWith.Null)
             .Where(x => x.IsActive && !x.IsDeleted)
             .Select(x => new ProductSetCode
             {
@@ -898,8 +1271,7 @@ public sealed class CatalogService(
                 SetCodeId = x.SetCodeId
             })
             .ToListAsync(cancellationToken);
-        stepStopwatch.Stop();
-        Log($"set codes query store={normalizedStoreCode} count={setCodeEntities.Count} elapsedMs={stepStopwatch.ElapsedMilliseconds}");
+        setCodeStopwatch.Stop();
         var setCodes = setCodeEntities
             .Select(x => new ProductSetCodeRecord(
                 x.ProductCode,
@@ -908,27 +1280,11 @@ public sealed class CatalogService(
                 x.SetRetailPrice,
                 ToOffset(x.UpdatedAt ?? x.CreatedAt),
                 x.SetCodeId))
-            .ToList();
-
-        var input = new PriceIndexInput(
-            since,
-            products,
-            storeRetailPrices,
-            multiCodeProducts,
-            clearancePrices,
-            setCodes);
-
-        var generatedAt = DateTimeOffset.UtcNow;
-        stepStopwatch.Restart();
-        var items = priceIndexBuilder.Build(store.StoreCode, input);
-        stepStopwatch.Stop();
+            .ToArray();
         totalStopwatch.Stop();
-        Log($"build index completed store={store.StoreCode} items={items.Count} buildElapsedMs={stepStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
-        return new CatalogIndexBuildResult(
-            store.StoreCode,
-            generatedAt,
-            items,
-            new CatalogSellableIndex(store.StoreCode, generatedAt, items));
+        var generatedAt = DateTimeOffset.UtcNow;
+        Log($"base data build completed products={products.Count} setCodes={setCodes.Length} setCodeElapsedMs={setCodeStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        return new CatalogBaseData(generatedAt, products.ToArray(), setCodes);
     }
 
     private async Task<CatalogLookupResponse> EnsureStoreRetailPriceAndLookupAsync(
@@ -1077,6 +1433,8 @@ public sealed class CatalogService(
             : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
     }
 
+    private bool IsDeltaEnabled => catalogSyncOptions?.Value.DeltaEnabled ?? true;
+
     private static string NormalizeStoreCode(string? value)
     {
         return (value ?? string.Empty).Trim();
@@ -1146,6 +1504,52 @@ public sealed class CatalogService(
             NormalizeProductCode(productCode).ToUpperInvariant());
     }
 
+    private async Task<T> RunCatalogSnapshotReadAsync<T>(
+        Func<CancellationToken, Task<T>> readAsync,
+        CancellationToken cancellationToken)
+    {
+        var transactionStarted = await BeginCatalogSnapshotReadTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await readAsync(cancellationToken);
+            if (transactionStarted)
+            {
+                await dbContext.MainDb.Ado.CommitTranAsync();
+            }
+
+            return result;
+        }
+        catch
+        {
+            if (transactionStarted)
+            {
+                await dbContext.MainDb.Ado.RollbackTranAsync();
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<bool> BeginCatalogSnapshotReadTransactionAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (dbContext.MainDb.CurrentConnectionConfig.DbType != SqlSugar.DbType.SqlServer)
+        {
+            // SQLite 单元测试不支持 SNAPSHOT；生产 MainDb 固定为 SQL Server，绝不在生产静默降级。
+            return false;
+        }
+
+        try
+        {
+            await dbContext.MainDb.Ado.BeginTranAsync(IsolationLevel.Snapshot);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            throw new CatalogSnapshotIsolationUnavailableException(exception);
+        }
+    }
+
     private static void Log(string message)
     {
         Console.WriteLine($"[HBPOS][Api][CatalogService] {DateTimeOffset.Now:O} {message}");
@@ -1161,6 +1565,8 @@ public sealed class CatalogSellableIndex
     private const string PageChecksumV1Prefix = "sha256-catalog-page-v1:";
     private const string PageChecksumV2AlgorithmMarker = "HBPOS-CATALOG-PAGE-CHECKSUM-V2";
     private const string PageChecksumV2Prefix = "sha256-catalog-page-v2:";
+    private const string DeltaPageChecksumV1AlgorithmMarker = "HBPOS-CATALOG-DELTA-PAGE-CHECKSUM-V1";
+    private const string DeltaPageChecksumV1Prefix = "sha256-catalog-delta-page-v1:";
     private readonly IReadOnlyDictionary<string, CatalogLookupItemDto> _itemsByNormalizedLookup;
 
     public CatalogSellableIndex(
@@ -1212,14 +1618,17 @@ public sealed class CatalogSellableIndex
 
         var normalizedCursor = NormalizeLookupCode(cursor);
         var take = Math.Clamp(pageSize, 1, MaxPageSize);
-        var pageCandidates = Items
-            .Where(x => string.IsNullOrEmpty(normalizedCursor)
-                || string.Compare(x.LookupCodeNormalized, normalizedCursor, StringComparison.Ordinal) > 0)
-            .Take(take + 1)
-            .ToArray();
+        var start = FindFirstAfter(normalizedCursor);
+        // 游标已通过二分定位；直接按索引拷贝窗口，不能用 Skip 从数组头线性重扫。
+        var remaining = Items.Count - start;
+        var pageLength = Math.Min(take, Math.Max(remaining, 0));
+        var pageItems = new CatalogLookupItemDto[pageLength];
+        for (var index = 0; index < pageLength; index++)
+        {
+            pageItems[index] = Items[start + index];
+        }
 
-        var pageItems = pageCandidates.Take(take).ToArray();
-        var hasMore = pageCandidates.Length > take;
+        var hasMore = remaining > take;
         var nextCursor = hasMore && pageItems.Length > 0
             ? pageItems[^1].LookupCodeNormalized
             : null;
@@ -1235,6 +1644,239 @@ public sealed class CatalogSellableIndex
             Items.Count,
             CatalogVersion,
             CreatePageChecksum(pageItems, checksumVersion));
+    }
+
+    /// <summary>
+    /// 两个不可变版本均按 lookup key 排序。此处只做有序归并，避免把客户端全量行版本上传后再比较；
+    /// 每个 key 最多生成一个操作，cursor 因而能稳定覆盖 upsert 与 delete 的混合序列。
+    /// </summary>
+    public CatalogDeltaPageResponse GetDeltaPage(
+        CatalogSellableIndex baseline,
+        string? cursor,
+        int pageSize)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        if (!string.Equals(StoreCode, baseline.StoreCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Catalog versions must belong to the same store.", nameof(baseline));
+        }
+
+        var normalizedCursor = NormalizeLookupCode(cursor);
+        var take = Math.Clamp(pageSize, 1, MaxPageSize);
+        var operations = new List<CatalogDeltaOperation>(take + 1);
+        var baselinePosition = 0;
+        var targetPosition = 0;
+
+        while (baselinePosition < baseline.Items.Count || targetPosition < Items.Count)
+        {
+            CatalogDeltaOperation? operation;
+            if (baselinePosition >= baseline.Items.Count)
+            {
+                var targetItem = Items[targetPosition++];
+                operation = CatalogDeltaOperation.Upsert(targetItem);
+            }
+            else if (targetPosition >= Items.Count)
+            {
+                var baselineItem = baseline.Items[baselinePosition++];
+                operation = CatalogDeltaOperation.Delete(new DeletedLookupDto(
+                    StoreCode,
+                    baselineItem.LookupCode,
+                    baselineItem.LookupCodeNormalized,
+                    GeneratedAt));
+            }
+            else
+            {
+                var baselineItem = baseline.Items[baselinePosition];
+                var targetItem = Items[targetPosition];
+                var comparison = string.Compare(
+                    baselineItem.LookupCodeNormalized,
+                    targetItem.LookupCodeNormalized,
+                    StringComparison.Ordinal);
+                if (comparison < 0)
+                {
+                    baselinePosition++;
+                    operation = CatalogDeltaOperation.Delete(new DeletedLookupDto(
+                        StoreCode,
+                        baselineItem.LookupCode,
+                        baselineItem.LookupCodeNormalized,
+                        GeneratedAt));
+                }
+                else if (comparison > 0)
+                {
+                    targetPosition++;
+                    operation = CatalogDeltaOperation.Upsert(targetItem);
+                }
+                else
+                {
+                    baselinePosition++;
+                    targetPosition++;
+                    operation = string.Equals(
+                        baselineItem.RowVersion,
+                        targetItem.RowVersion,
+                        StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : CatalogDeltaOperation.Upsert(targetItem);
+                }
+            }
+
+            if (operation is null ||
+                (!string.IsNullOrEmpty(normalizedCursor) &&
+                 string.Compare(operation.LookupCodeNormalized, normalizedCursor, StringComparison.Ordinal) <= 0))
+            {
+                continue;
+            }
+
+            operations.Add(operation);
+            if (operations.Count > take)
+            {
+                break;
+            }
+        }
+
+        var pageOperations = operations.Take(take).ToArray();
+        var hasMore = operations.Count > take;
+        var nextCursor = hasMore && pageOperations.Length > 0
+            ? pageOperations[^1].LookupCodeNormalized
+            : null;
+        var upserts = pageOperations
+            .Where(operation => operation.Item is not null)
+            .Select(operation => operation.Item!)
+            .ToArray();
+        var deletes = pageOperations
+            .Where(operation => operation.DeletedLookup is not null)
+            .Select(operation => operation.DeletedLookup!)
+            .ToArray();
+
+        return new CatalogDeltaPageResponse(
+            StoreCode,
+            GeneratedAt,
+            baseline.CatalogVersion,
+            CatalogVersion,
+            string.IsNullOrEmpty(normalizedCursor) ? null : normalizedCursor,
+            upserts,
+            deletes,
+            nextCursor,
+            hasMore,
+            Items.Count,
+            CreateDeltaPageChecksum(
+                baseline.CatalogVersion,
+                CatalogVersion,
+                pageOperations));
+    }
+
+    public IReadOnlyList<global::Hbpos.Api.Services.CatalogDeltaOperation> GetDeltaOperations(
+        CatalogSellableIndex baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        var operations = new List<global::Hbpos.Api.Services.CatalogDeltaOperation>();
+        var baselinePosition = 0;
+        var targetPosition = 0;
+        while (baselinePosition < baseline.Items.Count || targetPosition < Items.Count)
+        {
+            if (baselinePosition >= baseline.Items.Count)
+            {
+                operations.Add(global::Hbpos.Api.Services.CatalogDeltaOperation.Upsert(Items[targetPosition++]));
+                continue;
+            }
+
+            if (targetPosition >= Items.Count)
+            {
+                var item = baseline.Items[baselinePosition++];
+                operations.Add(global::Hbpos.Api.Services.CatalogDeltaOperation.Delete(
+                    new DeletedLookupDto(StoreCode, item.LookupCode, item.LookupCodeNormalized, GeneratedAt)));
+                continue;
+            }
+
+            var left = baseline.Items[baselinePosition];
+            var right = Items[targetPosition];
+            var comparison = string.Compare(left.LookupCodeNormalized, right.LookupCodeNormalized, StringComparison.Ordinal);
+            if (comparison < 0)
+            {
+                baselinePosition++;
+                operations.Add(global::Hbpos.Api.Services.CatalogDeltaOperation.Delete(
+                    new DeletedLookupDto(StoreCode, left.LookupCode, left.LookupCodeNormalized, GeneratedAt)));
+            }
+            else if (comparison > 0)
+            {
+                targetPosition++;
+                operations.Add(global::Hbpos.Api.Services.CatalogDeltaOperation.Upsert(right));
+            }
+            else
+            {
+                baselinePosition++;
+                targetPosition++;
+                if (!string.Equals(left.RowVersion, right.RowVersion, StringComparison.OrdinalIgnoreCase))
+                {
+                    operations.Add(global::Hbpos.Api.Services.CatalogDeltaOperation.Upsert(right));
+                }
+            }
+        }
+
+        return operations;
+    }
+
+    /// <summary>
+    /// 下载租约已在 plan 阶段固定完整差异；续页只在该不可变数组上二分切片，
+    /// 不再从两个目录版本重新归并。
+    /// </summary>
+    public CatalogDeltaPageResponse GetDeltaPageFromOperations(
+        CatalogSellableIndex baseline,
+        IReadOnlyList<global::Hbpos.Api.Services.CatalogDeltaOperation> operations,
+        string? cursor,
+        int pageSize)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        ArgumentNullException.ThrowIfNull(operations);
+        var normalizedCursor = NormalizeLookupCode(cursor);
+        var take = Math.Clamp(pageSize, 1, MaxPageSize);
+        var low = 0;
+        var high = operations.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (string.Compare(operations[middle].LookupCodeNormalized, normalizedCursor, StringComparison.Ordinal) <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        // 下载租约的差异数组已固定且有序；二分后的页仅复制当前窗口。
+        var remaining = operations.Count - low;
+        var pageLength = Math.Min(take, Math.Max(remaining, 0));
+        var pageOperations = new global::Hbpos.Api.Services.CatalogDeltaOperation[pageLength];
+        for (var index = 0; index < pageLength; index++)
+        {
+            pageOperations[index] = operations[low + index];
+        }
+
+        var hasMore = remaining > take;
+        var nextCursor = hasMore && pageOperations.Length > 0
+            ? pageOperations[^1].LookupCodeNormalized
+            : null;
+        var upserts = pageOperations.Where(operation => operation.Item is not null)
+            .Select(operation => operation.Item!).ToArray();
+        var deletes = pageOperations.Where(operation => operation.DeletedLookup is not null)
+            .Select(operation => operation.DeletedLookup!).ToArray();
+        var checksumOperations = pageOperations.Select(operation => operation.Item is { } item
+            ? CatalogDeltaOperation.Upsert(item)
+            : CatalogDeltaOperation.Delete(operation.DeletedLookup!)).ToArray();
+
+        return new CatalogDeltaPageResponse(
+            StoreCode,
+            GeneratedAt,
+            baseline.CatalogVersion,
+            CatalogVersion,
+            string.IsNullOrEmpty(normalizedCursor) ? null : normalizedCursor,
+            upserts,
+            deletes,
+            nextCursor,
+            hasMore,
+            Items.Count,
+            CreateDeltaPageChecksum(baseline.CatalogVersion, CatalogVersion, checksumOperations));
     }
 
     public CatalogCompareResponse Compare(CatalogCompareRequest request)
@@ -1329,6 +1971,31 @@ public sealed class CatalogSellableIndex
     public static string NormalizeLookupCode(string? value)
     {
         return (value ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    private int FindFirstAfter(string normalizedCursor)
+    {
+        if (string.IsNullOrEmpty(normalizedCursor))
+        {
+            return 0;
+        }
+
+        var low = 0;
+        var high = Items.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (string.Compare(Items[middle].LookupCodeNormalized, normalizedCursor, StringComparison.Ordinal) <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
     }
 
     private static CatalogLookupItemDto ToLookupItem(SellableItemDto item)
@@ -1469,6 +2136,59 @@ public sealed class CatalogSellableIndex
             Convert.ToHexString(hashBytes).ToLowerInvariant());
     }
 
+    /// <summary>
+    /// 增量页校验与全量页分域，避免客户端把 delete 漏掉仍通过校验。字段使用 v1 的
+    /// JavaScript 可观察数值格式；操作按归并后的 lookup key 顺序编码。
+    /// </summary>
+    private static string CreateDeltaPageChecksum(
+        string baseCatalogVersion,
+        string targetCatalogVersion,
+        IReadOnlyList<CatalogDeltaOperation> operations)
+    {
+        var builder = new StringBuilder();
+        AppendCanonical(builder, DeltaPageChecksumV1AlgorithmMarker);
+        AppendCanonical(builder, baseCatalogVersion);
+        AppendCanonical(builder, targetCatalogVersion);
+        AppendCanonical(builder, operations.Count.ToString(CultureInfo.InvariantCulture));
+
+        foreach (var operation in operations)
+        {
+            if (operation.Item is { } item)
+            {
+                AppendCanonical(builder, "U");
+                AppendCanonical(builder, item.StoreCode);
+                AppendCanonical(builder, item.ProductCode);
+                AppendCanonical(builder, item.ReferenceCode ?? string.Empty);
+                AppendCanonical(builder, item.DisplayName);
+                AppendCanonical(builder, item.LookupCode);
+                AppendCanonical(builder, item.LookupCodeNormalized);
+                AppendCanonical(builder, item.ItemNumber ?? string.Empty);
+                AppendCanonical(builder, item.Barcode ?? string.Empty);
+                AppendCanonical(builder, FormatCatalogNumber(item.RetailPrice));
+                AppendCanonical(builder, ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture));
+                AppendCanonical(builder, item.PriceSourceLabel);
+                AppendCanonical(builder, FormatCatalogNumber(item.QuantityFactor));
+                AppendCanonical(builder, FormatCatalogTimestamp(item.UpdatedAt));
+                AppendCanonical(builder, item.ProductImage ?? string.Empty);
+                AppendCanonical(builder, FormatNullableCatalogNumber(item.DiscountRate));
+                AppendCanonical(builder, item.IsSpecialProduct ? "1" : "0");
+                continue;
+            }
+
+            var deletedLookup = operation.DeletedLookup!;
+            AppendCanonical(builder, "D");
+            AppendCanonical(builder, deletedLookup.StoreCode);
+            AppendCanonical(builder, deletedLookup.LookupCode);
+            AppendCanonical(builder, deletedLookup.LookupCodeNormalized);
+            AppendCanonical(builder, FormatCatalogTimestamp(deletedLookup.DeletedAt));
+        }
+
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return string.Concat(
+            DeltaPageChecksumV1Prefix,
+            Convert.ToHexString(hashBytes).ToLowerInvariant());
+    }
+
     private static bool HasMatchingVersion(CatalogLocalLookupVersionDto local, CatalogLookupItemDto current)
     {
         var rowVersion = local.RowVersion?.Trim();
@@ -1503,6 +2223,18 @@ public sealed class CatalogSellableIndex
         return !string.IsNullOrEmpty(requestedLookupCodeNormalized)
             ? requestedLookupCodeNormalized
             : normalizedLookup;
+    }
+
+    private sealed record CatalogDeltaOperation(
+        string LookupCodeNormalized,
+        CatalogLookupItemDto? Item,
+        DeletedLookupDto? DeletedLookup)
+    {
+        public static CatalogDeltaOperation Upsert(CatalogLookupItemDto item) =>
+            new(item.LookupCodeNormalized, item, null);
+
+        public static CatalogDeltaOperation Delete(DeletedLookupDto deletedLookup) =>
+            new(deletedLookup.LookupCodeNormalized, null, deletedLookup);
     }
 
     private static void AppendCanonical(StringBuilder builder, string value)

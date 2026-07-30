@@ -4,12 +4,36 @@ using BlazorApp.Shared.Models;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Hbpos.Api.Tests;
 
 public sealed class CatalogServiceTests
 {
+    [Fact]
+    public void Snapshot_catalog_queries_opt_out_of_global_no_lock()
+    {
+        var client = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(local);Database=HBweb;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            MoreSettings = new ConnMoreSettings { IsWithNoLockQuery = true }
+        });
+
+        var sql = new[]
+        {
+            client.Queryable<Product>().With(SqlWith.Null).ToSql().Key,
+            client.Queryable<ProductSetCode>().With(SqlWith.Null).ToSql().Key,
+            client.Queryable<StoreRetailPrice>().With(SqlWith.Null).ToSql().Key,
+            client.Queryable<StoreMultiCodeProduct>().With(SqlWith.Null).ToSql().Key,
+            client.Queryable<StoreClearancePrice>().With(SqlWith.Null).ToSql().Key
+        };
+
+        Assert.All(sql, statement => Assert.DoesNotContain("NOLOCK", statement, StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public async Task LookupSellableItemAsync_creates_store_retail_price_from_product_base_price()
     {
@@ -402,7 +426,7 @@ public sealed class CatalogServiceTests
     [Fact]
     public async Task GetSellableItemsAsync_reads_store_retail_prices_in_projected_keyset_batches()
     {
-        const int storeRetailPriceCount = 20_001;
+        const int storeRetailPriceCount = 100_001;
         await using var fixture = await CatalogSqliteFixture.CreateAsync();
         await fixture.SeedStoreAsync("S01");
         await fixture.SeedProductAsync(new Product
@@ -423,7 +447,7 @@ public sealed class CatalogServiceTests
 
         var item = Assert.Single(response!.Items);
         Assert.Equal(987.65m, item.RetailPrice);
-        Assert.Equal("PRICE-UUID-20000", item.ReferenceCode);
+        Assert.Equal("PRICE-UUID-100000", item.ReferenceCode);
 
         var priceSelects = fixture.ExecutedCommands
             .Where(command => command.Sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
@@ -435,7 +459,7 @@ public sealed class CatalogServiceTests
         {
             var sql = command.Sql;
             Assert.Matches(@"(?is)\bORDER\s+BY\b.*\bProductCode\b.*\bASC\b.*\bUUID\b.*\bASC\b", sql);
-            Assert.Contains("20000", sql, StringComparison.Ordinal);
+            Assert.Contains("100000", sql, StringComparison.Ordinal);
 
             var fromIndex = sql.IndexOf("FROM", StringComparison.OrdinalIgnoreCase);
             Assert.True(fromIndex > 0, $"门店价查询缺少 FROM：{sql}");
@@ -465,13 +489,13 @@ public sealed class CatalogServiceTests
         var uuidCursor = Assert.Single(secondCommand.Parameters, parameter =>
             string.Equals(parameter.ParameterName, "@lastUuid", StringComparison.Ordinal));
         Assert.Equal("P20000", productCodeCursor.Value);
-        Assert.Equal("PRICE-UUID-19999", uuidCursor.Value);
+        Assert.Equal("PRICE-UUID-99998", uuidCursor.Value);
     }
 
     [Fact]
     public async Task GetSellableItemsAsync_reads_products_in_projected_keyset_batches()
     {
-        const int productCount = 20_001;
+        const int productCount = 100_001;
         await using var fixture = await CatalogSqliteFixture.CreateAsync();
         await fixture.SeedStoreAsync("S01");
         await fixture.SeedProductsAsync(productCount);
@@ -499,8 +523,67 @@ public sealed class CatalogServiceTests
             string.Equals(parameter.ParameterName, "@lastProductCode", StringComparison.Ordinal));
         var uuidCursor = Assert.Single(secondCommand.Parameters, parameter =>
             string.Equals(parameter.ParameterName, "@lastUuid", StringComparison.Ordinal));
-        Assert.Equal("P19999", productCodeCursor.Value);
-        Assert.Equal("PRODUCT-UUID-19999", uuidCursor.Value);
+        Assert.Equal("P99998", productCodeCursor.Value);
+        Assert.Equal("PRODUCT-UUID-99998", uuidCursor.Value);
+    }
+
+    [Fact]
+    public async Task Different_store_builds_share_global_product_and_set_code_queries()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedStoreAsync("S02");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-SHARED",
+            ProductCode = "P-SHARED",
+            ProductName = "Shared Product",
+            Barcode = "SHARED-BAR",
+            RetailPrice = 10m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedProductSetCodeAsync(
+            "P-SHARED",
+            "P-SHARED",
+            "SET-SHARED",
+            8m,
+            "SET-SHARED");
+        fixture.ExecutedCommands.Clear();
+        var baseDataCache = new CatalogBaseDataCache();
+
+        var firstService = new CatalogService(
+            fixture.DbContext,
+            new PriceIndexBuilder(),
+            new CatalogIndexCache(),
+            baseDataCache);
+        var secondService = new CatalogService(
+            fixture.DbContext,
+            new PriceIndexBuilder(),
+            new CatalogIndexCache(),
+            baseDataCache);
+
+        var first = await firstService.GetSellableItemsAsync(
+            "S01",
+            since: null,
+            CancellationToken.None);
+        var second = await secondService.GetSellableItemsAsync(
+            "S02",
+            since: null,
+            CancellationToken.None);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(
+            1,
+            fixture.ExecutedCommands.Count(command =>
+                command.Sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && ContainsTableSource(command.Sql, "Product")));
+        Assert.Equal(
+            1,
+            fixture.ExecutedCommands.Count(command =>
+                command.Sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && ContainsTableSource(command.Sql, "ProductSetCode")));
     }
 
     [Fact]
@@ -662,6 +745,118 @@ public sealed class CatalogServiceTests
                 CancellationToken.None,
                 catalogVersion: "catalog-v1:missing",
                 checksumVersion: 2));
+    }
+
+    [Fact]
+    public async Task Catalog_sync_plan_and_delta_use_pinned_versions_and_fall_back_when_base_is_missing()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        var cache = new CatalogIndexCache();
+        var baseIndex = new CatalogSellableIndex(
+            "S01",
+            DateTimeOffset.UnixEpoch,
+            [
+                CreateSellableItem("P01", "A-CODE", "Unchanged", 1m),
+                CreateSellableItem("P02", "B-CODE", "Removed", 2m),
+                CreateSellableItem("P03", "C-CODE", "Before", 3m)
+            ],
+            catalogVersion: "catalog-v1:base");
+        var baseResult = new CatalogIndexBuildResult("S01", DateTimeOffset.UnixEpoch, [], baseIndex);
+        await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(baseResult),
+            CancellationToken.None);
+        cache.InvalidateStore("S01");
+
+        var targetIndex = new CatalogSellableIndex(
+            "S01",
+            DateTimeOffset.UnixEpoch.AddMinutes(1),
+            [
+                CreateSellableItem("P01", "A-CODE", "Unchanged", 1m),
+                CreateSellableItem("P03", "C-CODE", "After", 4m),
+                CreateSellableItem("P04", "D-CODE", "Added", 5m)
+            ],
+            catalogVersion: "catalog-v1:target");
+        var targetResult = new CatalogIndexBuildResult("S01", DateTimeOffset.UnixEpoch.AddMinutes(1), [], targetIndex);
+        await cache.GetOrBuildAsync(
+            "S01",
+            since: null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(targetResult),
+            CancellationToken.None);
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), cache);
+
+        var deltaPlan = await service.GetCatalogSyncPlanAsync("S01", "catalog-v1:base", CancellationToken.None);
+        var noChangePlan = await service.GetCatalogSyncPlanAsync("S01", "catalog-v1:target", CancellationToken.None);
+        var fullPlan = await service.GetCatalogSyncPlanAsync("S01", "catalog-v1:expired", CancellationToken.None);
+        var delta = await service.GetCatalogDeltaPageAsync(
+            "S01",
+            "catalog-v1:base",
+            "catalog-v1:target",
+            cursor: null,
+            pageSize: 100,
+            CancellationToken.None);
+
+        Assert.Equal(CatalogSyncModes.Delta, deltaPlan!.Mode);
+        Assert.Equal(CatalogSyncModes.NoChange, noChangePlan!.Mode);
+        Assert.Equal(CatalogSyncModes.Full, fullPlan!.Mode);
+        Assert.Equal("catalog-v1:target", delta.TargetCatalogVersion);
+        Assert.Equal(["B-CODE"], delta.DeletedLookups.Select(item => item.LookupCodeNormalized));
+        Assert.Equal(["C-CODE", "D-CODE"], delta.Items.Select(item => item.LookupCodeNormalized));
+        Assert.Equal(3, delta.TargetTotal);
+
+        await Assert.ThrowsAsync<CatalogSnapshotExpiredException>(
+            () => service.GetCatalogDeltaPageAsync(
+                "S01",
+                "catalog-v1:expired",
+                "catalog-v1:target",
+                cursor: null,
+                pageSize: 100,
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Catalog_sync_plan_forces_full_lease_when_delta_is_disabled()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        var cache = new CatalogIndexCache();
+        var index = new CatalogSellableIndex("S01", DateTimeOffset.UnixEpoch,
+            [CreateSellableItem("P01", "A-CODE", "Item", 1m)], "catalog-v1:target");
+        await cache.GetOrBuildAsync("S01", null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(new CatalogIndexBuildResult("S01", DateTimeOffset.UnixEpoch, [], index)),
+            CancellationToken.None);
+        var service = new CatalogService(
+            fixture.DbContext,
+            new PriceIndexBuilder(),
+            cache,
+            new CatalogBaseDataCache(),
+            Options.Create(new CatalogSyncOptions { DeltaEnabled = false }));
+
+        var plan = await service.GetCatalogSyncPlanWithLeaseAsync("S01", "catalog-v1:target", CancellationToken.None);
+
+        Assert.Equal(CatalogSyncModes.Full, plan!.Mode);
+        Assert.NotNull(plan.DownloadLeaseId);
+    }
+
+    private static SellableItemDto CreateSellableItem(
+        string productCode,
+        string lookupCode,
+        string displayName,
+        decimal retailPrice)
+    {
+        return new SellableItemDto(
+            "S01",
+            productCode,
+            ReferenceCode: null,
+            displayName,
+            lookupCode,
+            ItemNumber: null,
+            Barcode: lookupCode,
+            retailPrice,
+            PriceSourceKind.ProductBase,
+            "product",
+            1m,
+            DateTimeOffset.UnixEpoch);
     }
 
     private static void AssertLookupItem(

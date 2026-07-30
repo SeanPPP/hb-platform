@@ -4271,6 +4271,57 @@ BEGIN
 END;
 `;
 
+const M25 = `
+-- generation_id 是逻辑目录代次；delta 激活时物理 snapshot_id 保持不变，
+-- 从而无需复制或重写数十万条 active 商品。
+ALTER TABLE catalog_snapshots
+  ADD COLUMN generation_id TEXT NULL CHECK (
+    generation_id IS NULL OR TRIM(generation_id) <> ''
+  );
+
+ALTER TABLE catalog_snapshots
+  ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'full' CHECK (
+    sync_mode IN ('full', 'delta')
+  );
+
+ALTER TABLE catalog_snapshots
+  ADD COLUMN base_snapshot_id TEXT NULL CHECK (
+    base_snapshot_id IS NULL OR TRIM(base_snapshot_id) <> ''
+  );
+
+ALTER TABLE catalog_snapshots
+  ADD COLUMN base_catalog_version TEXT NULL CHECK (
+    base_catalog_version IS NULL OR TRIM(base_catalog_version) <> ''
+  );
+
+UPDATE catalog_snapshots
+SET generation_id = snapshot_id
+WHERE generation_id IS NULL;
+
+-- 旧版 app 不认识 generation_id；触发器让其新增的 full staging 仍获得安全代次。
+CREATE TRIGGER trg_catalog_snapshots_generation_default
+AFTER INSERT ON catalog_snapshots
+FOR EACH ROW
+WHEN NEW.generation_id IS NULL
+BEGIN
+  UPDATE catalog_snapshots
+  SET generation_id = NEW.snapshot_id
+  WHERE snapshot_id = NEW.snapshot_id
+    AND generation_id IS NULL;
+END;
+
+CREATE TABLE catalog_delta_deletions (
+  snapshot_id TEXT NOT NULL
+    REFERENCES catalog_snapshots(snapshot_id) ON DELETE CASCADE,
+  store_code TEXT NOT NULL CHECK (TRIM(store_code) <> ''),
+  lookup_code_normalized TEXT NOT NULL CHECK (
+    TRIM(lookup_code_normalized) <> ''
+    AND lookup_code_normalized = UPPER(TRIM(lookup_code_normalized))
+  ),
+  PRIMARY KEY (snapshot_id, store_code, lookup_code_normalized)
+);
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -4296,6 +4347,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 22, name: "M22_installment_payment_ledger", sql: M22 },
   { version: 23, name: "M23_catalog_lookup_overlays", sql: M23 },
   { version: 24, name: "M24_mixed_cash_amount_facts", sql: M24 },
+  { version: 25, name: "M25_catalog_delta_generations", sql: M25 },
 ];
 
 export async function applyMigrations(
@@ -4353,6 +4405,9 @@ export async function applyMigrations(
         await assertDrawerEventsSchema(transaction);
       }
       if (migration.version === 17 && catalogMigrationWasAlreadyApplied) {
+        await assertCurrentCatalogSchema(transaction);
+      }
+      if (migration.version === 25) {
         await assertCurrentCatalogSchema(transaction);
       }
       await transaction.run(
@@ -4597,6 +4652,26 @@ const currentCatalogSchema = {
   readonly ExpectedSqliteColumn[]
 >;
 
+const m25CatalogSchema = {
+  ...currentCatalogSchema,
+  catalog_snapshots: [
+    ...currentCatalogSchema.catalog_snapshots,
+    ["generation_id", "TEXT", 0],
+    ["sync_mode", "TEXT", 0],
+    ["base_snapshot_id", "TEXT", 0],
+    ["base_catalog_version", "TEXT", 0],
+  ],
+} as const satisfies Record<
+  CatalogTableName,
+  readonly ExpectedSqliteColumn[]
+>;
+
+const m25DeltaDeletionSchema = [
+  ["snapshot_id", "TEXT", 1],
+  ["store_code", "TEXT", 2],
+  ["lookup_code_normalized", "TEXT", 3],
+] as const satisfies readonly ExpectedSqliteColumn[];
+
 const legacyM2SingleKeyCatalogSchema = {
   catalog_snapshots: currentCatalogSchema.catalog_snapshots,
   catalog_items: [
@@ -4688,7 +4763,10 @@ async function ensureCatalogSchemaForM17(
   transaction: SqliteConnectionPort,
 ): Promise<void> {
   const schema = await readCatalogSchema(transaction);
-  if (matchesCatalogSchema(schema, currentCatalogSchema)) {
+  if (
+    matchesCatalogSchema(schema, currentCatalogSchema) ||
+    matchesCatalogSchema(schema, m25CatalogSchema)
+  ) {
     await assertCurrentCatalogSchema(transaction, schema);
     return;
   }
@@ -4719,8 +4797,23 @@ async function assertCurrentCatalogSchema(
   schema: CatalogSchemaSnapshot | null = null,
 ): Promise<void> {
   const actual = schema ?? (await readCatalogSchema(transaction));
-  if (!matchesCatalogSchema(actual, currentCatalogSchema)) {
+  const isM25Schema = matchesCatalogSchema(actual, m25CatalogSchema);
+  if (
+    !matchesCatalogSchema(actual, currentCatalogSchema) &&
+    !isM25Schema
+  ) {
     throw new Error("CATALOG_SCHEMA_INVALID:CURRENT_SCHEMA_INCOMPLETE");
+  }
+  if (isM25Schema) {
+    const deltaDeletionColumns = await readTableColumns(
+      transaction,
+      "catalog_delta_deletions",
+    );
+    if (
+      !matchesTableColumns(deltaDeletionColumns, m25DeltaDeletionSchema)
+    ) {
+      throw new Error("CATALOG_SCHEMA_INVALID:M25_DELTA_DELETIONS_INCOMPLETE");
+    }
   }
   const activeIndex = await transaction.getFirst<{ name: unknown }>(
     `SELECT name
@@ -4753,21 +4846,26 @@ function matchesCatalogSchema(
   >,
 ): boolean {
   return catalogTableNames.every((tableName) => {
-    const actualColumns = actual[tableName];
-    const expectedColumns = expected[tableName];
-    if (actualColumns.length !== expectedColumns.length) {
-      return false;
-    }
-    const actualByName = new Map(
-      actualColumns.map((column) => [column.name, column]),
+    return matchesTableColumns(actual[tableName], expected[tableName]);
+  });
+}
+
+function matchesTableColumns(
+  actualColumns: readonly SqliteColumnInfo[],
+  expectedColumns: readonly ExpectedSqliteColumn[],
+): boolean {
+  if (actualColumns.length !== expectedColumns.length) {
+    return false;
+  }
+  const actualByName = new Map(
+    actualColumns.map((column) => [column.name, column]),
+  );
+  return expectedColumns.every(([name, type, primaryKeyOrder]) => {
+    const column = actualByName.get(name);
+    return (
+      normalizeSqliteType(column?.type) === type &&
+      Number(column?.pk) === primaryKeyOrder
     );
-    return expectedColumns.every(([name, type, primaryKeyOrder]) => {
-      const column = actualByName.get(name);
-      return (
-        normalizeSqliteType(column?.type) === type &&
-        Number(column?.pk) === primaryKeyOrder
-      );
-    });
   });
 }
 
@@ -4807,7 +4905,11 @@ async function assertDrawerEventsSchema(
 
 async function readTableColumns(
   transaction: SqliteConnectionPort,
-  tableName: "drawer_events" | "print_jobs" | CatalogTableName,
+  tableName:
+    | "drawer_events"
+    | "print_jobs"
+    | "catalog_delta_deletions"
+    | CatalogTableName,
 ): Promise<readonly SqliteColumnInfo[]> {
   const rows = await transaction.getAll<{
     name: unknown;

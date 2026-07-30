@@ -5,6 +5,7 @@ import test from "node:test";
 import type { CatalogPromotion } from "./catalog-snapshot-service";
 import {
   HbposCatalogPageApi,
+  calculateCatalogDeltaPageChecksum,
   calculateCatalogPageChecksum,
   type CatalogPageDigest,
   type CatalogLookupItem,
@@ -94,6 +95,296 @@ test("TypeScript 与服务端共享 IEEE-754 SHA256 v2 测试向量", async () =
   );
 });
 
+test("delta checksum 覆盖 base/target、upsert 与 delete，且按规范化售卖码稳定排序", async () => {
+  const checksum = await calculateCatalogDeltaPageChecksum({
+    baseCatalogVersion: "v1",
+    targetCatalogVersion: "v2",
+    items: [{ ...canonicalItem, lookupCode: "B", lookupCodeNormalized: "B" }],
+    deletedLookups: [{ storeCode: "S01", lookupCode: "A", lookupCodeNormalized: "A", deletedAt: null }],
+  }, digest);
+  assert.match(checksum, /^sha256-catalog-delta-page-v1:[0-9a-f]{64}$/);
+  assert.notEqual(checksum, await calculateCatalogDeltaPageChecksum({
+    baseCatalogVersion: "v0",
+    targetCatalogVersion: "v2",
+    items: [{ ...canonicalItem, lookupCode: "B", lookupCodeNormalized: "B" }],
+    deletedLookups: [{ storeCode: "S01", lookupCode: "A", lookupCodeNormalized: "A", deletedAt: null }],
+  }, digest));
+});
+
+test("Hbpos catalog adapter 使用 sync-plan 与 delta 合同，并校验 delta 与租约回显", async () => {
+  const deltaItem = { ...canonicalItem, lookupCode: "B", lookupCodeNormalized: "B" };
+  const deleted = { storeCode: "S01", lookupCode: "A", lookupCodeNormalized: "A", deletedAt: null };
+  const checksum = await calculateCatalogDeltaPageChecksum({
+    baseCatalogVersion: "v1", targetCatalogVersion: "v2", items: [deltaItem], deletedLookups: [deleted],
+  }, digest);
+  const calls: HbposTransportRequest[] = [];
+  const transport: HbposTransport = {
+    async request<T>(request: HbposTransportRequest) {
+      calls.push(request);
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: request.url.endsWith("sync-plan")
+            ? {
+              storeCode: "S01",
+              mode: "delta",
+              baseCatalogVersion: "v1",
+              targetCatalogVersion: "v2",
+              targetTotal: 1,
+              downloadLeaseId: "lease-delta",
+              deltaOperationCount: 2,
+            }
+            : {
+              storeCode: "S01", baseCatalogVersion: "v1", targetCatalogVersion: "v2",
+              cursor: null, items: [deltaItem], deletedLookups: [deleted], nextCursor: null,
+              hasMore: false, targetTotal: 1, pageChecksum: checksum,
+              downloadLeaseId: "lease-delta",
+            },
+        } as T,
+      };
+    },
+  };
+  const api = new HbposCatalogPageApi(transport, digest);
+
+  const plan = await api.getSyncPlan({ storeCode: "S01", baseCatalogVersion: "v1" });
+  const page = await api.getDeltaPage({
+    storeCode: "S01", baseCatalogVersion: "v1", targetCatalogVersion: "v2", cursor: null, pageSize: 500,
+    downloadLeaseId: "lease-delta",
+  });
+
+  assert.deepEqual(plan, {
+    mode: "delta",
+    baseCatalogVersion: "v1",
+    targetCatalogVersion: "v2",
+    targetTotal: 1,
+    downloadLeaseId: "lease-delta",
+    deltaOperationCount: 2,
+  });
+  assert.equal(page.catalogVersion, "v2");
+  assert.equal(calls[0]?.url, "/api/v1/catalog/sync-plan");
+  assert.equal(calls[1]?.url, "/api/v1/catalog/delta/page");
+  assert.equal(calls[1]?.params?.checksumVersion, 1);
+  assert.equal(calls[1]?.params?.downloadLeaseId, "lease-delta");
+});
+
+test("Hbpos catalog adapter 用 null 基线取得 full 租约，并校验固定版本全量页回显", async () => {
+  const calls: HbposTransportRequest[] = [];
+  const checksum = await calculateCatalogPageChecksum([canonicalItem], digest, 2);
+  const transport: HbposTransport = {
+    async request<T>(request: HbposTransportRequest) {
+      calls.push(request);
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: request.url.endsWith("sync-plan")
+            ? {
+              storeCode: "S01",
+              mode: "full",
+              baseCatalogVersion: null,
+              targetCatalogVersion: "v2",
+              targetTotal: 1,
+              downloadLeaseId: "lease-full",
+              deltaOperationCount: null,
+            }
+            : {
+              storeCode: "S01",
+              generatedAt: "2026-07-28T01:02:03.456Z",
+              cursor: null,
+              items: [canonicalItem],
+              deletedLookups: [],
+              nextCursor: null,
+              hasMore: false,
+              totalCount: 1,
+              catalogVersion: "v2",
+              pageChecksum: checksum,
+              downloadLeaseId: "lease-full",
+            },
+        } as T,
+      };
+    },
+  };
+  const api = new HbposCatalogPageApi(transport, digest);
+
+  const plan = await api.getSyncPlan({ storeCode: "S01", baseCatalogVersion: null });
+  await api.getPage({
+    storeCode: "S01",
+    cursor: null,
+    pageSize: 500,
+    catalogVersion: plan.targetCatalogVersion,
+    ...(plan.downloadLeaseId ? { downloadLeaseId: plan.downloadLeaseId } : {}),
+  });
+
+  assert.equal(calls[0]?.params?.baseCatalogVersion, undefined);
+  assert.equal(calls[1]?.params?.catalogVersion, "v2");
+  assert.equal(calls[1]?.params?.downloadLeaseId, "lease-full");
+});
+
+test("Hbpos catalog adapter 对带租约的 full/delta 页面缺失或错误回显均 fail-closed", async () => {
+  const fullChecksum = await calculateCatalogPageChecksum([canonicalItem], digest, 2);
+  const deltaItem = { ...canonicalItem, lookupCode: "B", lookupCodeNormalized: "B" };
+  const deleted = {
+    storeCode: "S01",
+    lookupCode: "A",
+    lookupCodeNormalized: "A",
+    deletedAt: null,
+  };
+  const deltaChecksum = await calculateCatalogDeltaPageChecksum({
+    baseCatalogVersion: "v1",
+    targetCatalogVersion: "v2",
+    items: [deltaItem],
+    deletedLookups: [deleted],
+  }, digest);
+  const cases = [
+    { label: "缺失回显", responseLeaseId: undefined },
+    { label: "错误回显", responseLeaseId: "lease-other" },
+  ] as const;
+
+  for (const entry of cases) {
+    const fullTransport: HbposTransport = {
+      async request<T>() {
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              storeCode: "S01",
+              generatedAt: "2026-07-28T01:02:03.456Z",
+              cursor: null,
+              items: [canonicalItem],
+              deletedLookups: [],
+              nextCursor: null,
+              hasMore: false,
+              totalCount: 1,
+              catalogVersion: "v2",
+              pageChecksum: fullChecksum,
+              ...(entry.responseLeaseId === undefined
+                ? {}
+                : { downloadLeaseId: entry.responseLeaseId }),
+            },
+          } as T,
+        };
+      },
+    };
+    await assert.rejects(
+      () => new HbposCatalogPageApi(fullTransport, digest).getPage({
+        storeCode: "S01",
+        cursor: null,
+        pageSize: 500,
+        catalogVersion: "v2",
+        downloadLeaseId: "lease-full",
+      }),
+      (error: unknown) =>
+        error instanceof HbposApiError
+        && error.kind === "envelope"
+        && error.code === "CATALOG_DOWNLOAD_LEASE_MISMATCH",
+      `full ${entry.label}`,
+    );
+
+    const deltaTransport: HbposTransport = {
+      async request<T>() {
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              storeCode: "S01",
+              baseCatalogVersion: "v1",
+              targetCatalogVersion: "v2",
+              cursor: null,
+              items: [deltaItem],
+              deletedLookups: [deleted],
+              nextCursor: null,
+              hasMore: false,
+              targetTotal: 1,
+              pageChecksum: deltaChecksum,
+              ...(entry.responseLeaseId === undefined
+                ? {}
+                : { downloadLeaseId: entry.responseLeaseId }),
+            },
+          } as T,
+        };
+      },
+    };
+    await assert.rejects(
+      () => new HbposCatalogPageApi(deltaTransport, digest).getDeltaPage({
+        storeCode: "S01",
+        baseCatalogVersion: "v1",
+        targetCatalogVersion: "v2",
+        cursor: null,
+        pageSize: 500,
+        downloadLeaseId: "lease-delta",
+      }),
+      (error: unknown) =>
+        error instanceof HbposApiError
+        && error.kind === "envelope"
+        && error.code === "CATALOG_DOWNLOAD_LEASE_MISMATCH",
+      `delta ${entry.label}`,
+    );
+  }
+});
+
+test("Hbpos catalog adapter 的无租约请求兼容旧后端未回显租约字段", async () => {
+  const fullChecksum = await calculateCatalogPageChecksum([canonicalItem], digest, 2);
+  const deltaChecksum = await calculateCatalogDeltaPageChecksum({
+    baseCatalogVersion: "v1",
+    targetCatalogVersion: "v2",
+    items: [],
+    deletedLookups: [],
+  }, digest);
+  const transport: HbposTransport = {
+    async request<T>(request: HbposTransportRequest) {
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: request.url.endsWith("delta/page")
+            ? {
+              storeCode: "S01",
+              baseCatalogVersion: "v1",
+              targetCatalogVersion: "v2",
+              cursor: null,
+              items: [],
+              deletedLookups: [],
+              nextCursor: null,
+              hasMore: false,
+              targetTotal: 0,
+              pageChecksum: deltaChecksum,
+            }
+            : {
+              storeCode: "S01",
+              generatedAt: "2026-07-28T01:02:03.456Z",
+              cursor: null,
+              items: [canonicalItem],
+              deletedLookups: [],
+              nextCursor: null,
+              hasMore: false,
+              totalCount: 1,
+              catalogVersion: "v2",
+              pageChecksum: fullChecksum,
+            },
+        } as T,
+      };
+    },
+  };
+  const api = new HbposCatalogPageApi(transport, digest);
+
+  await api.getPage({
+    storeCode: "S01",
+    cursor: null,
+    pageSize: 500,
+    catalogVersion: "v2",
+  });
+  await api.getDeltaPage({
+    storeCode: "S01",
+    baseCatalogVersion: "v1",
+    targetCatalogVersion: "v2",
+    cursor: null,
+    pageSize: 500,
+  });
+});
+
 test("checksum digest 与 canonical 数值异常返回稳定目录校验码", async () => {
   await assert.rejects(
     () => calculateCatalogPageChecksum([canonicalItem], async () => "invalid"),
@@ -168,6 +459,7 @@ test("Hbpos catalog adapter 映射分页合同并校验服务端 checksum", asyn
       cursor: undefined,
       pageSize: 500,
       catalogVersion: undefined,
+      downloadLeaseId: undefined,
       checksumVersion: 2,
     },
     signal: controller.signal,

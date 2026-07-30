@@ -16,6 +16,8 @@ for (const route of [
   "/api/v1/orders/sync",
   "/api/v1/catalog/sellable-items",
   "/api/v1/catalog/sellable-items/page",
+  "/api/v1/catalog/sync-plan",
+  "/api/v1/catalog/delta/page",
   "/api/v1/cashiers/barcode-login",
   "/api/v1/square/checkouts",
   "/api/v1/linkly/cloud-backend/transactions",
@@ -32,6 +34,24 @@ assert.ok(document.components?.schemas?.DeviceRegisterRequest?.properties?.devic
 assert.ok(document.components?.schemas?.DeviceVerifyRequest?.properties?.deviceSystem);
 assert.ok(document.components?.schemas?.CatalogSyncPageResponse?.properties?.catalogVersion);
 assert.ok(document.components?.schemas?.CatalogSyncPageResponse?.properties?.pageChecksum);
+assert.ok(document.components?.schemas?.CatalogSyncPlanResponse?.properties?.downloadLeaseId);
+assert.ok(document.components?.schemas?.CatalogSyncPlanResponse?.properties?.deltaOperationCount);
+assert.deepEqual(
+  new Set(
+    document.paths?.["/api/v1/catalog/sellable-items/page"]?.get?.parameters
+      ?.map(parameter => parameter.name)
+  ).has("downloadLeaseId"),
+  true,
+  "full page 必须暴露可选下载租约参数"
+);
+assert.deepEqual(
+  new Set(
+    document.paths?.["/api/v1/catalog/delta/page"]?.get?.parameters
+      ?.map(parameter => parameter.name)
+  ).has("downloadLeaseId"),
+  true,
+  "delta page 必须暴露可选下载租约参数"
+);
 assert.equal(
   document.components?.schemas?.LinklyCloudBackendSessionResponse?.properties?.cardTransaction?.$ref,
   "#/components/schemas/LinklyCloudBackendCardTransactionDto"

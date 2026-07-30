@@ -1,4 +1,8 @@
-import type { CatalogPromotion } from "./catalog-snapshot-service";
+import type {
+  CatalogDeltaPage,
+  CatalogPromotion,
+  CatalogSyncPlan,
+} from "./catalog-snapshot-service";
 
 import {
   HbposApiError,
@@ -21,7 +25,11 @@ const CHECKSUM_SPECS = {
 
 export type CatalogPageChecksumVersion = keyof typeof CHECKSUM_SPECS;
 
-type GeneratedCatalogPage = components["schemas"]["CatalogSyncPageResponse"] & {
+type GeneratedDownloadLeaseEcho = Readonly<{
+  downloadLeaseId?: string | null;
+}>;
+type GeneratedCatalogPage = components["schemas"]["CatalogSyncPageResponse"]
+& GeneratedDownloadLeaseEcho & {
   catalogVersion?: string | null;
   pageChecksum?: string | null;
 };
@@ -30,6 +38,16 @@ type GeneratedDeletedLookup = components["schemas"]["DeletedLookupDto"];
 type GeneratedCatalogPromotions = components["schemas"]["CatalogPromotionsResponse"];
 type GeneratedCatalogPromotion = components["schemas"]["CatalogPromotionRuleDto"];
 type GeneratedCatalogPromotionProduct = components["schemas"]["CatalogPromotionProductDto"];
+type GeneratedCatalogSyncPlan = components["schemas"]["CatalogSyncPlanResponse"];
+type GeneratedCatalogDeltaPage = components["schemas"]["CatalogDeltaPageResponse"]
+& GeneratedDownloadLeaseEcho;
+type GeneratedCatalogSyncPlanWithLease = GeneratedCatalogSyncPlan & Readonly<{
+  downloadLeaseId?: string | null;
+  deltaOperationCount?: number | null;
+}>;
+
+const DELTA_CHECKSUM_MARKER = "HBPOS-CATALOG-DELTA-PAGE-CHECKSUM-V1";
+const DELTA_CHECKSUM_PREFIX = "sha256-catalog-delta-page-v1:";
 
 export type CatalogLookupItem = Readonly<{
   storeCode: string;
@@ -84,6 +102,7 @@ export class HbposCatalogPageApi {
     cursor: string | null;
     pageSize: number;
     catalogVersion?: string;
+    downloadLeaseId?: string;
     signal?: AbortSignal;
   }>): Promise<VerifiedCatalogSyncPage> {
     const response = await this.transport.request<HbposEnvelope<GeneratedCatalogPage>>({
@@ -94,13 +113,16 @@ export class HbposCatalogPageApi {
         cursor: input.cursor ?? undefined,
         pageSize: input.pageSize,
         catalogVersion: input.catalogVersion ?? undefined,
+        downloadLeaseId: input.downloadLeaseId ?? undefined,
         checksumVersion: 2,
       },
       // WPF 目录下载同样不设隐藏固定超时；页面生命周期信号负责主动取消。
       timeoutMs: 0,
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    const page = normalizePage(unwrapHbposEnvelope(response.data));
+    const rawPage = unwrapHbposEnvelope(response.data);
+    verifyDownloadLeaseEcho(input.downloadLeaseId, rawPage.downloadLeaseId);
+    const page = normalizePage(rawPage);
     const calculatedChecksum = await calculateCatalogPageChecksum(
       page.items,
       this.digest,
@@ -110,6 +132,72 @@ export class HbposCatalogPageApi {
       throw new HbposApiError("Catalog page checksum verification failed.", {
         kind: "envelope",
         code: "CATALOG_PAGE_CHECKSUM_MISMATCH",
+      });
+    }
+    return page;
+  }
+
+  public async getSyncPlan(input: Readonly<{
+    storeCode: string;
+    baseCatalogVersion: string | null;
+    signal?: AbortSignal;
+  }>): Promise<CatalogSyncPlan> {
+    const response = await this.transport.request<HbposEnvelope<GeneratedCatalogSyncPlan>>({
+      method: "GET",
+      url: "/api/v1/catalog/sync-plan",
+      params: {
+        storeCode: input.storeCode,
+        baseCatalogVersion: input.baseCatalogVersion ?? undefined,
+      },
+      timeoutMs: 0,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return normalizeSyncPlan(unwrapHbposEnvelope(response.data), input);
+  }
+
+  public async getDeltaPage(input: Readonly<{
+    storeCode: string;
+    baseCatalogVersion: string;
+    targetCatalogVersion: string;
+    cursor: string | null;
+    pageSize: number;
+    downloadLeaseId?: string;
+    signal?: AbortSignal;
+  }>): Promise<CatalogDeltaPage> {
+    const response = await this.transport.request<HbposEnvelope<GeneratedCatalogDeltaPage>>({
+      method: "GET",
+      url: "/api/v1/catalog/delta/page",
+      params: {
+        storeCode: input.storeCode,
+        baseCatalogVersion: input.baseCatalogVersion,
+        targetCatalogVersion: input.targetCatalogVersion,
+        cursor: input.cursor ?? undefined,
+        pageSize: input.pageSize,
+        downloadLeaseId: input.downloadLeaseId ?? undefined,
+        checksumVersion: 1,
+      },
+      timeoutMs: 0,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const rawPage = unwrapHbposEnvelope(response.data);
+    verifyDownloadLeaseEcho(input.downloadLeaseId, rawPage.downloadLeaseId);
+    if (
+      requiredText(rawPage.baseCatalogVersion, "delta.baseCatalogVersion") !== input.baseCatalogVersion
+      || requiredText(rawPage.targetCatalogVersion, "delta.targetCatalogVersion") !== input.targetCatalogVersion
+    ) {
+      throw invalidPage("delta.version");
+    }
+    const page = normalizeDeltaPage(rawPage);
+    const calculatedChecksum = await calculateCatalogDeltaPageChecksum({
+      baseCatalogVersion: input.baseCatalogVersion,
+      targetCatalogVersion: input.targetCatalogVersion,
+      items: page.items,
+      deletedLookups: page.deletedLookups,
+    }, this.digest);
+    if (page.pageChecksum.toLowerCase() !== calculatedChecksum) {
+      throw new HbposApiError("Catalog delta page checksum verification failed.", {
+        kind: "envelope",
+        code: "CATALOG_DELTA_PAGE_CHECKSUM_MISMATCH",
       });
     }
     return page;
@@ -155,6 +243,23 @@ export async function calculateCatalogPageChecksum(
   return `${spec.prefix}${hex}`;
 }
 
+export async function calculateCatalogDeltaPageChecksum(input: Readonly<{
+  baseCatalogVersion: string;
+  targetCatalogVersion: string;
+  items: readonly CatalogLookupItem[];
+  deletedLookups: readonly CatalogDeletedLookup[];
+}>, digest: CatalogPageDigest = expoSha256): Promise<string> {
+  const canonical = buildCanonicalDeltaPage(input);
+  const hex = (await digest(canonical)).trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new HbposApiError("Catalog delta digest returned an invalid SHA256 value.", {
+      kind: "envelope",
+      code: "CATALOG_DELTA_PAGE_DIGEST_INVALID",
+    });
+  }
+  return `${DELTA_CHECKSUM_PREFIX}${hex}`;
+}
+
 function normalizePage(page: GeneratedCatalogPage): VerifiedCatalogSyncPage {
   const items = requiredArray(page.items, "items").map(normalizeItem);
   return {
@@ -168,6 +273,60 @@ function normalizePage(page: GeneratedCatalogPage): VerifiedCatalogSyncPage {
     totalCount: requiredNonNegativeInteger(page.totalCount, "totalCount"),
     catalogVersion: requiredText(page.catalogVersion, "catalogVersion"),
     pageChecksum: requiredText(page.pageChecksum, "pageChecksum"),
+  };
+}
+
+function verifyDownloadLeaseEcho(requestedLeaseId: string | undefined, echoedLeaseId: unknown): void {
+  // 只有新客户端主动携带租约时才强制回显；无租约请求继续兼容尚未返回该字段的旧后端。
+  if (requestedLeaseId === undefined || echoedLeaseId === requestedLeaseId) {
+    return;
+  }
+  throw new HbposApiError("Catalog download lease echo verification failed.", {
+    kind: "envelope",
+    code: "CATALOG_DOWNLOAD_LEASE_MISMATCH",
+  });
+}
+
+function normalizeSyncPlan(
+  source: GeneratedCatalogSyncPlanWithLease,
+  requested: Readonly<{ storeCode: string; baseCatalogVersion: string | null }>,
+): CatalogSyncPlan {
+  const mode = source.mode;
+  if (mode !== "noChange" && mode !== "delta" && mode !== "full") throw invalidPage("syncPlan.mode");
+  const storeCode = requiredText(source.storeCode, "syncPlan.storeCode");
+  if (storeCode !== requested.storeCode) throw invalidPage("syncPlan.storeCode");
+  const baseCatalogVersion = optionalText(source.baseCatalogVersion, "syncPlan.baseCatalogVersion");
+  if (baseCatalogVersion !== requested.baseCatalogVersion) throw invalidPage("syncPlan.baseCatalogVersion");
+  const targetCatalogVersion = requiredText(source.targetCatalogVersion, "syncPlan.targetCatalogVersion");
+  const targetTotal = requiredNonNegativeInteger(source.targetTotal, "syncPlan.targetTotal");
+  const downloadLeaseId = source.downloadLeaseId === undefined
+    ? undefined
+    : optionalText(source.downloadLeaseId, "syncPlan.downloadLeaseId");
+  const deltaOperationCount = source.deltaOperationCount === undefined
+    ? undefined
+    : optionalNonNegativeInteger(source.deltaOperationCount, "syncPlan.deltaOperationCount");
+  return {
+    mode,
+    baseCatalogVersion,
+    targetCatalogVersion,
+    targetTotal,
+    ...(downloadLeaseId === undefined ? {} : { downloadLeaseId }),
+    ...(deltaOperationCount === undefined ? {} : { deltaOperationCount }),
+  };
+}
+
+function normalizeDeltaPage(source: GeneratedCatalogDeltaPage): CatalogDeltaPage {
+  const targetCatalogVersion = requiredText(source.targetCatalogVersion, "delta.targetCatalogVersion");
+  return {
+    storeCode: requiredText(source.storeCode, "delta.storeCode"),
+    cursor: optionalText(source.cursor, "delta.cursor"),
+    items: requiredArray(source.items as readonly GeneratedCatalogItem[] | null | undefined, "delta.items").map(normalizeItem),
+    deletedLookups: requiredArray(source.deletedLookups as readonly GeneratedDeletedLookup[] | null | undefined, "delta.deletedLookups").map(normalizeDeletedLookup),
+    nextCursor: optionalText(source.nextCursor, "delta.nextCursor"),
+    hasMore: requiredBoolean(source.hasMore, "delta.hasMore"),
+    totalCount: requiredNonNegativeInteger(source.targetTotal, "delta.targetTotal"),
+    catalogVersion: targetCatalogVersion,
+    pageChecksum: requiredText(source.pageChecksum, "delta.pageChecksum"),
   };
 }
 
@@ -317,6 +476,44 @@ function buildCanonicalPage(
   return values.map((value) => `${value.length}:${value}|`).join("");
 }
 
+function buildCanonicalDeltaPage(input: Readonly<{
+  baseCatalogVersion: string;
+  targetCatalogVersion: string;
+  items: readonly CatalogLookupItem[];
+  deletedLookups: readonly CatalogDeletedLookup[];
+}>): string {
+  const operations = [
+    ...input.items.map((item) => ({ kind: "U" as const, key: item.lookupCodeNormalized, item })),
+    ...input.deletedLookups.map((deleted) => ({ kind: "D" as const, key: deleted.lookupCodeNormalized, deleted })),
+  ].sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+  const values = [
+    DELTA_CHECKSUM_MARKER,
+    input.baseCatalogVersion,
+    input.targetCatalogVersion,
+    formatCanonicalNumberV1(operations.length),
+  ];
+  for (const operation of operations) {
+    if (operation.kind === "U") {
+      const item = operation.item;
+      values.push(
+        "U", item.storeCode, item.productCode, item.referenceCode ?? "", item.displayName,
+        item.lookupCode, item.lookupCodeNormalized, item.itemNumber ?? "", item.barcode ?? "",
+        formatCanonicalNumberV1(item.retailPrice), formatCanonicalNumberV1(item.priceSource),
+        item.priceSourceLabel, formatCanonicalNumberV1(item.quantityFactor), item.updatedAt ?? "",
+        item.productImage ?? "", item.discountRate === null ? "" : formatCanonicalNumberV1(item.discountRate),
+        item.isSpecialProduct ? "1" : "0",
+      );
+    } else {
+      const deleted = operation.deleted;
+      values.push(
+        "D", deleted.storeCode, deleted.lookupCode, deleted.lookupCodeNormalized,
+        deleted.deletedAt ?? "",
+      );
+    }
+  }
+  return values.map((value) => `${value.length}:${value}|`).join("");
+}
+
 async function expoSha256(payload: string): Promise<string> {
   // 延迟加载避免 Node 合同测试解析 React Native 入口；真机仍使用 Expo 原生 SHA256。
   const Crypto = await import("expo-crypto");
@@ -431,6 +628,11 @@ function requiredNonNegativeInteger(value: unknown, field: string): number {
     throw invalidPage(field);
   }
   return Number(value);
+}
+
+function optionalNonNegativeInteger(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) return null;
+  return requiredNonNegativeInteger(value, field);
 }
 
 function requiredArray<T>(value: readonly T[] | null | undefined, field: string): readonly T[] {

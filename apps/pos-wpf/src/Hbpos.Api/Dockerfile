@@ -38,7 +38,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* && \
     adduser --disabled-password --gecos "" appuser && \
-    mkdir -p /app/logs && \
+    mkdir -p /app/logs /app/App_Data/CatalogSnapshots && \
     chown -R appuser /app
 
 COPY --from=publish --chown=appuser:appuser /app/publish .

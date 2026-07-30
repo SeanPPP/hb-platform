@@ -298,7 +298,10 @@ export class SqliteCatalogLookupOverlayRepository {
   }
 }
 
-type ActiveSnapshotRow = Readonly<{ snapshot_id: unknown }>;
+type ActiveSnapshotRow = Readonly<{
+  snapshot_id: unknown;
+  generation_id: unknown;
+}>;
 
 type CatalogLookupRow = Readonly<{
   store_code: unknown;
@@ -328,7 +331,9 @@ async function readActiveSnapshotId(
   db: SqliteConnectionPort,
 ): Promise<string | null> {
   const rows = await db.getAll<ActiveSnapshotRow>(
-    `SELECT snapshot_id
+    `SELECT
+       snapshot_id,
+       COALESCE(NULLIF(generation_id, ''), snapshot_id) AS generation_id
      FROM catalog_snapshots
      WHERE state = 'active'
      ORDER BY snapshot_id
@@ -338,14 +343,16 @@ async function readActiveSnapshotId(
     throw new Error("Catalog contains multiple active snapshots.");
   }
   return rows[0]
-    ? requiredText(rows[0].snapshot_id, "active catalog snapshot id")
+    ? requiredText(rows[0].generation_id, "active catalog generation id")
     : null;
 }
 
 function combinedCatalogSql(): string {
   return `
     WITH active_rows AS (
-      SELECT snapshot_id
+      SELECT
+        snapshot_id,
+        COALESCE(NULLIF(generation_id, ''), snapshot_id) AS generation_id
       FROM catalog_snapshots
       WHERE state = 'active'
       ORDER BY snapshot_id
@@ -353,7 +360,7 @@ function combinedCatalogSql(): string {
     ),
     active_scope AS (
       SELECT
-        COALESCE(MAX(snapshot_id), ?) AS generation_key,
+        COALESCE(MAX(generation_id), ?) AS generation_key,
         CASE
           WHEN COUNT(*) = 1 THEN MAX(snapshot_id)
           ELSE NULL

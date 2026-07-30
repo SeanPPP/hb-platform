@@ -427,6 +427,82 @@ public sealed class CatalogSellableIndexTests
         Assert.False(page.HasMore);
     }
 
+    [Fact]
+    public void GetDeltaPage_merges_fixed_versions_and_pages_upserts_and_deletes_by_lookup_key()
+    {
+        var baseIndex = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt,
+            [
+                CreateItem("P01", "a-code", "Unchanged", 1m),
+                CreateItem("P02", "b-code", "Removed", 2m),
+                CreateItem("P03", "c-code", "Changed before", 3m)
+            ],
+            catalogVersion: "catalog-v1:base");
+        var targetIndex = new CatalogSellableIndex(
+            "S01",
+            GeneratedAt.AddMinutes(1),
+            [
+                CreateItem("P01", "a-code", "Unchanged", 1m),
+                CreateItem("P03", "c-code", "Changed after", 4m),
+                CreateItem("P04", "d-code", "Added", 5m)
+            ],
+            catalogVersion: "catalog-v1:target");
+
+        var first = targetIndex.GetDeltaPage(baseIndex, cursor: null, pageSize: 2);
+        var second = targetIndex.GetDeltaPage(baseIndex, first.NextCursor, pageSize: 2);
+
+        Assert.Equal("catalog-v1:base", first.BaseCatalogVersion);
+        Assert.Equal("catalog-v1:target", first.TargetCatalogVersion);
+        Assert.Equal(3, first.TargetTotal);
+        Assert.Equal(["B-CODE"], first.DeletedLookups.Select(x => x.LookupCodeNormalized));
+        Assert.Equal(["C-CODE"], first.Items.Select(x => x.LookupCodeNormalized));
+        Assert.True(first.HasMore);
+        Assert.Equal("C-CODE", first.NextCursor);
+        Assert.StartsWith("sha256-catalog-delta-page-v1:", first.PageChecksum, StringComparison.Ordinal);
+
+        Assert.Empty(second.DeletedLookups);
+        Assert.Equal(["D-CODE"], second.Items.Select(x => x.LookupCodeNormalized));
+        Assert.False(second.HasMore);
+        Assert.Null(second.NextCursor);
+        Assert.NotEqual(first.PageChecksum, second.PageChecksum);
+    }
+
+    [Fact]
+    public void GetDeltaPageFromOperations_slices_precomputed_delta_without_remerging()
+    {
+        var baseline = CreateIndex(CreateItem("P01", "a", "Old", 1m));
+        var target = CreateIndex(
+            CreateItem("P01", "a", "Changed", 2m),
+            CreateItem("P02", "b", "Added", 3m));
+        var operations = target.GetDeltaOperations(baseline);
+
+        var first = target.GetDeltaPageFromOperations(baseline, operations, cursor: null, pageSize: 1);
+        var second = target.GetDeltaPageFromOperations(baseline, operations, first.NextCursor, pageSize: 1);
+
+        Assert.Equal(["A"], first.Items.Select(item => item.LookupCodeNormalized));
+        Assert.Equal(["B"], second.Items.Select(item => item.LookupCodeNormalized));
+        Assert.Equal(2, operations.Count);
+    }
+
+    [Fact]
+    public void Large_catalog_cursor_and_fixed_delta_page_start_after_the_exact_cursor()
+    {
+        const int total = 344_665;
+        var items = Enumerable.Range(0, total)
+            .Select(index => CreateItem($"P{index:D6}", $"K{index:D6}", "Item", 1m))
+            .ToArray();
+        var baseline = new CatalogSellableIndex("S01", GeneratedAt, [], "catalog-v1:base");
+        var target = new CatalogSellableIndex("S01", GeneratedAt, items, "catalog-v1:target");
+        var operations = target.GetDeltaOperations(baseline);
+
+        var full = target.GetPage("K300000", pageSize: 2);
+        var delta = target.GetDeltaPageFromOperations(baseline, operations, "K300000", pageSize: 2);
+
+        Assert.Equal(["K300001", "K300002"], full.Items.Select(item => item.LookupCodeNormalized));
+        Assert.Equal(["K300001", "K300002"], delta.Items.Select(item => item.LookupCodeNormalized));
+    }
+
     private static CatalogSellableIndex CreateIndex(params SellableItemDto[] items)
     {
         return new CatalogSellableIndex("S01", GeneratedAt, items);

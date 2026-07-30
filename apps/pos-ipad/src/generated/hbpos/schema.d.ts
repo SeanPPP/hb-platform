@@ -302,6 +302,7 @@ export interface paths {
                     pageSize?: number;
                     catalogVersion?: string;
                     checksumVersion?: number;
+                    downloadLeaseId?: string;
                 };
                 header?: never;
                 path?: never;
@@ -318,6 +319,90 @@ export interface paths {
                         "text/plain": components["schemas"]["CatalogSyncPageResponseApiResult"];
                         "application/json": components["schemas"]["CatalogSyncPageResponseApiResult"];
                         "text/json": components["schemas"]["CatalogSyncPageResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalog/sync-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    storeCode?: string;
+                    baseCatalogVersion?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["CatalogSyncPlanResponseApiResult"];
+                        "application/json": components["schemas"]["CatalogSyncPlanResponseApiResult"];
+                        "text/json": components["schemas"]["CatalogSyncPlanResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalog/delta/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    storeCode?: string;
+                    baseCatalogVersion?: string;
+                    targetCatalogVersion?: string;
+                    cursor?: string;
+                    pageSize?: number;
+                    downloadLeaseId?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["CatalogDeltaPageResponseApiResult"];
+                        "application/json": components["schemas"]["CatalogDeltaPageResponseApiResult"];
+                        "text/json": components["schemas"]["CatalogDeltaPageResponseApiResult"];
                     };
                 };
             };
@@ -2121,6 +2206,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/app-updates/pos-ipad/ota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    runtimeVersion?: string;
+                    currentUpdateId?: string;
+                    currentUpdateGroupId?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["PosIpadOtaUpdateResponseApiResult"];
+                        "application/json": components["schemas"]["PosIpadOtaUpdateResponseApiResult"];
+                        "text/json": components["schemas"]["PosIpadOtaUpdateResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/promotions/rules": {
         parameters: {
             query?: never;
@@ -3039,6 +3165,28 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        CatalogDeltaPageResponse: {
+            storeCode?: string | null;
+            /** Format: date-time */
+            generatedAt?: string;
+            baseCatalogVersion?: string | null;
+            targetCatalogVersion?: string | null;
+            cursor?: string | null;
+            items?: components["schemas"]["CatalogLookupItemDto"][] | null;
+            deletedLookups?: components["schemas"]["DeletedLookupDto"][] | null;
+            nextCursor?: string | null;
+            hasMore?: boolean;
+            /** Format: int32 */
+            targetTotal?: number;
+            pageChecksum?: string | null;
+            downloadLeaseId?: string | null;
+        };
+        CatalogDeltaPageResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["CatalogDeltaPageResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
         CatalogLocalLookupVersionDto: {
             storeCode?: string | null;
             lookupCode?: string | null;
@@ -3169,10 +3317,30 @@ export interface components {
             totalCount?: number;
             catalogVersion?: string | null;
             pageChecksum?: string | null;
+            downloadLeaseId?: string | null;
         };
         CatalogSyncPageResponseApiResult: {
             success?: boolean;
             data?: components["schemas"]["CatalogSyncPageResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        CatalogSyncPlanResponse: {
+            storeCode?: string | null;
+            /** Format: date-time */
+            generatedAt?: string;
+            mode?: string | null;
+            baseCatalogVersion?: string | null;
+            targetCatalogVersion?: string | null;
+            /** Format: int32 */
+            targetTotal?: number;
+            downloadLeaseId?: string | null;
+            /** Format: int32 */
+            deltaOperationCount?: number | null;
+        };
+        CatalogSyncPlanResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["CatalogSyncPlanResponse"];
             errorCode?: string | null;
             message?: string | null;
         };
@@ -4192,6 +4360,21 @@ export interface components {
         PosIpadAppUpdateResponseApiResult: {
             success?: boolean;
             data?: components["schemas"]["PosIpadAppUpdateResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        PosIpadOtaUpdateResponse: {
+            state?: string | null;
+            policyVersion?: string | null;
+            channel?: string | null;
+            runtimeVersion?: string | null;
+            iosUpdateId?: string | null;
+            updateGroupId?: string | null;
+            releaseMessage?: string | null;
+        };
+        PosIpadOtaUpdateResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["PosIpadOtaUpdateResponse"];
             errorCode?: string | null;
             message?: string | null;
         };

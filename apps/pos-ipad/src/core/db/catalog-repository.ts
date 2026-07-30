@@ -1,3 +1,7 @@
+import type {
+  ActiveCatalogSnapshotMetadata,
+} from "../../features/catalog/catalog-snapshot-service";
+
 import type { SqliteConnectionPort } from "./types";
 
 /** 目录持久化模型只保存收银必需字段；顾客资料和支付资料不属于目录。 */
@@ -31,6 +35,16 @@ export type CatalogStoredPromotion = Readonly<{
   priority: number;
 }>;
 
+export type CatalogDeltaDeletion = Readonly<{
+  storeCode: string;
+  lookupCodeNormalized: string;
+}>;
+
+export type CatalogDeltaStagingBatch = Readonly<{
+  items: readonly CatalogStoredItem[];
+  deletedLookups: readonly CatalogDeltaDeletion[];
+}>;
+
 export type LocalCatalogMatch = Readonly<{
   storeCode: string;
   productCode: string;
@@ -52,12 +66,21 @@ export type LocalCatalogMatch = Readonly<{
   isSpecialProduct: boolean;
 }>;
 
-export type ActiveCatalogMetadata = Readonly<{
-  snapshotId: string;
-  catalogVersion: string;
-  itemCount: number;
-  activatedAt: string;
+export type ActiveCatalogMetadata = ActiveCatalogSnapshotMetadata;
+
+export type ActivatedCatalogDeltaMetadata = ActiveCatalogMetadata & Readonly<{
+  generationId: string;
 }>;
+
+/** 增量基线在 staging 与激活之间漂移时，服务必须丢弃 staging 后改走全量。 */
+export class CatalogDeltaBaseChangedError extends Error {
+  public readonly code = "CATALOG_DELTA_BASE_CHANGED" as const;
+
+  public constructor() {
+    super("Catalog delta base is no longer active.");
+    this.name = "CatalogDeltaBaseChangedError";
+  }
+}
 
 /** 仅供定价引擎加载的 active 目录促销投影，绝不暴露裸 SQLite 行。 */
 export type ActiveCatalogPromotions = Readonly<{
@@ -76,35 +99,50 @@ export type ActiveCatalogPromotions = Readonly<{
 export class SqliteCatalogSnapshotRepository {
   public constructor(private readonly db: SqliteConnectionPort) {}
 
-  /**
-   * 单条查询读取全部快照状态并验证 active 唯一性；约束被破坏时也不能任选一行。
-   */
+  /** 只聚合 active 子树；历史 retired 数量不会拖慢开机或收银查询。 */
   public async getActiveMetadata(): Promise<ActiveCatalogMetadata | null> {
     const rows = await this.db.getAll<ActiveCatalogMetadataRow>(
-      `SELECT
+       `SELECT
          snapshots.snapshot_id,
          snapshots.catalog_version,
          snapshots.state,
          snapshots.activated_at_iso,
-         COUNT(items.lookup_code_normalized) AS item_count
+         COUNT(items.lookup_code_normalized) AS item_count,
+         MIN(items.store_code) AS store_code,
+         MAX(items.store_code) AS max_store_code
        FROM catalog_snapshots snapshots
        LEFT JOIN catalog_items items
          ON items.snapshot_id = snapshots.snapshot_id
+       WHERE snapshots.state = 'active'
        GROUP BY
          snapshots.snapshot_id,
+         snapshots.catalog_version,
          snapshots.state,
          snapshots.activated_at_iso
-       ORDER BY snapshots.snapshot_id`,
+       ORDER BY snapshots.snapshot_id
+       LIMIT 2`,
     );
     const active: ActiveCatalogMetadata[] = [];
     for (const row of rows) {
       const snapshotId = requiredCatalogSnapshotId(row.snapshot_id);
       const catalogVersion = requiredCatalogVersion(row.catalog_version);
       const state = catalogSnapshotState(row.state);
+      if (state !== "active") {
+        throw new Error("Invalid active catalog snapshot state.");
+      }
       const itemCount = requiredNonNegativeInteger(
         row.item_count,
         "catalog item count",
       );
+      const storeCode = row.store_code === null || row.store_code === undefined
+        ? null
+        : requiredCatalogStoreCode(row.store_code);
+      const maxStoreCode = row.max_store_code === null || row.max_store_code === undefined
+        ? null
+        : requiredCatalogStoreCode(row.max_store_code);
+      if (storeCode !== maxStoreCode) {
+        throw new Error("Active catalog snapshot spans multiple stores.");
+      }
       const activatedAt =
         row.activated_at_iso === null
           ? null
@@ -112,22 +150,16 @@ export class SqliteCatalogSnapshotRepository {
               row.activated_at_iso,
               "catalog activation timestamp",
             );
-      if (state === "staging" && activatedAt !== null) {
+      if (activatedAt === null) {
         throw new Error("Invalid catalog snapshot activation state.");
       }
-      if (state !== "staging") {
-        if (activatedAt === null) {
-          throw new Error("Invalid catalog snapshot activation state.");
-        }
-        if (state === "active") {
-          active.push({
-            snapshotId,
-            catalogVersion,
-            itemCount,
-            activatedAt,
-          });
-        }
-      }
+      active.push({
+        snapshotId,
+        storeCode,
+        catalogVersion,
+        itemCount,
+        activatedAt,
+      });
     }
     if (active.length > 1) {
       throw new Error("Multiple active catalog snapshots detected.");
@@ -215,9 +247,18 @@ export class SqliteCatalogSnapshotRepository {
       if (existing && existing.state !== "staging") throw new Error("Catalog snapshot id collision with a retained snapshot.");
       await deleteSnapshot(tx, snapshot.snapshotId, true);
       await tx.run(
-        `INSERT INTO catalog_snapshots (snapshot_id, catalog_version, checksum, state, downloaded_at_iso, activated_at_iso)
-         VALUES (?, ?, ?, 'staging', ?, NULL)`,
-        [snapshot.snapshotId, snapshot.catalogVersion, snapshot.checksum, snapshot.downloadedAtIso],
+        `INSERT INTO catalog_snapshots (
+           snapshot_id, catalog_version, checksum, state,
+           downloaded_at_iso, activated_at_iso, generation_id,
+           sync_mode, base_snapshot_id, base_catalog_version
+         ) VALUES (?, ?, ?, 'staging', ?, NULL, ?, 'full', NULL, NULL)`,
+        [
+          snapshot.snapshotId,
+          snapshot.catalogVersion,
+          snapshot.checksum,
+          snapshot.downloadedAtIso,
+          snapshot.snapshotId,
+        ],
       );
     });
   }
@@ -268,6 +309,138 @@ export class SqliteCatalogSnapshotRepository {
     });
   }
 
+  /**
+   * delta staging 只登记基线和目标，不复制 active 商品；旧 active 在最终事务前始终只读可用。
+   */
+  public async beginDeltaStaging(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    snapshotId: string;
+    catalogVersion: string;
+    checksum: string;
+    downloadedAtIso: string;
+  }>): Promise<void> {
+    const sourceSnapshotId = requiredCatalogSnapshotId(input.sourceSnapshotId);
+    const baseCatalogVersion = requiredCatalogVersion(input.baseCatalogVersion);
+    const snapshotId = requiredCatalogSnapshotId(input.snapshotId);
+    const catalogVersion = requiredCatalogVersion(input.catalogVersion);
+    if (sourceSnapshotId === snapshotId) {
+      throw new Error("Catalog delta generation must differ from its physical base.");
+    }
+    await this.db.withExclusiveTransaction(async (tx) => {
+      const source = await tx.getFirst<{
+        state: unknown;
+        catalog_version: unknown;
+      }>(
+        `SELECT state, catalog_version
+         FROM catalog_snapshots
+         WHERE snapshot_id = ?`,
+        [sourceSnapshotId],
+      );
+      if (
+        source?.state !== "active" ||
+        requiredCatalogVersion(source.catalog_version) !== baseCatalogVersion
+      ) {
+        throw new CatalogDeltaBaseChangedError();
+      }
+      const existing = await tx.getFirst<{ state: unknown }>(
+        "SELECT state FROM catalog_snapshots WHERE snapshot_id = ?",
+        [snapshotId],
+      );
+      if (existing && existing.state !== "staging") {
+        throw new Error("Catalog snapshot id collision with a retained snapshot.");
+      }
+      await deleteSnapshot(tx, snapshotId, true);
+      await tx.run(
+        `INSERT INTO catalog_snapshots (
+           snapshot_id, catalog_version, checksum, state,
+           downloaded_at_iso, activated_at_iso, generation_id,
+           sync_mode, base_snapshot_id, base_catalog_version
+         ) VALUES (?, ?, ?, 'staging', ?, NULL, ?, 'delta', ?, ?)`,
+        [
+          snapshotId,
+          catalogVersion,
+          input.checksum,
+          input.downloadedAtIso,
+          snapshotId,
+          sourceSnapshotId,
+          baseCatalogVersion,
+        ],
+      );
+    });
+  }
+
+  /**
+   * 每批最多 500 个操作并使用短事务；upsert 与 tombstone 仅写 delta staging。
+   */
+  public async appendDeltaBatch(
+    snapshotId: string,
+    batch: CatalogDeltaStagingBatch,
+  ): Promise<void> {
+    const scopedSnapshotId = requiredCatalogSnapshotId(snapshotId);
+    const operationCount = batch.items.length + batch.deletedLookups.length;
+    if (operationCount > 500) {
+      throw new Error("Catalog delta staging batch exceeds 500 operations.");
+    }
+    await this.db.withExclusiveTransaction(async (tx) => {
+      const staging = await tx.getFirst<{
+        state: unknown;
+        sync_mode: unknown;
+      }>(
+        `SELECT state, sync_mode
+         FROM catalog_snapshots
+         WHERE snapshot_id = ?`,
+        [scopedSnapshotId],
+      );
+      if (staging?.state !== "staging" || staging.sync_mode !== "delta") {
+        throw new Error("Catalog snapshot is not eligible for delta staging.");
+      }
+
+      for (const deleted of batch.deletedLookups) {
+        const storeCode = requiredCatalogStoreCode(deleted.storeCode);
+        const lookupCodeNormalized = requiredNormalizedLookupCode(
+          deleted.lookupCodeNormalized,
+        );
+        await tx.run(
+          `DELETE FROM special_products
+           WHERE snapshot_id = ?
+             AND store_code = ?
+             AND lookup_code_normalized = ?`,
+          [scopedSnapshotId, storeCode, lookupCodeNormalized],
+        );
+        await tx.run(
+          `DELETE FROM catalog_items
+           WHERE snapshot_id = ?
+             AND store_code = ?
+             AND lookup_code_normalized = ?`,
+          [scopedSnapshotId, storeCode, lookupCodeNormalized],
+        );
+        await tx.run(
+          `INSERT INTO catalog_delta_deletions (
+             snapshot_id, store_code, lookup_code_normalized
+           ) VALUES (?, ?, ?)
+           ON CONFLICT (
+             snapshot_id, store_code, lookup_code_normalized
+           ) DO NOTHING`,
+          [scopedSnapshotId, storeCode, lookupCodeNormalized],
+        );
+      }
+
+      for (const item of batch.items) {
+        assertStoredItem(item);
+        await tx.run(
+          `DELETE FROM catalog_delta_deletions
+           WHERE snapshot_id = ?
+             AND store_code = ?
+             AND lookup_code_normalized = ?`,
+          [scopedSnapshotId, item.storeCode, item.lookupCodeNormalized],
+        );
+        await upsertCatalogItem(tx, scopedSnapshotId, item);
+        await replaceStagedSpecialProduct(tx, scopedSnapshotId, item);
+      }
+    });
+  }
+
   public async replacePromotions(snapshotId: string, promotions: readonly CatalogStoredPromotion[]): Promise<void> {
     await this.db.withExclusiveTransaction(async (tx) => {
       await tx.run("DELETE FROM catalog_promotions WHERE snapshot_id = ?", [snapshotId]);
@@ -300,8 +473,284 @@ export class SqliteCatalogSnapshotRepository {
     });
   }
 
+  /**
+   * 在一个有界事务内把 delta 回放到物理 active。任一步失败都会恢复旧商品、
+   * 促销、目录版本和 generation，staging 仍可由失败路径安全清理。
+   */
+  public async activateDelta(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    stagingSnapshotId: string;
+    expectedItemCount: number;
+    activatedAtIso: string;
+  }>): Promise<ActivatedCatalogDeltaMetadata> {
+    const sourceSnapshotId = requiredCatalogSnapshotId(input.sourceSnapshotId);
+    const baseCatalogVersion = requiredCatalogVersion(input.baseCatalogVersion);
+    const stagingSnapshotId = requiredCatalogSnapshotId(input.stagingSnapshotId);
+    const expectedItemCount = requiredNonNegativeInteger(
+      input.expectedItemCount,
+      "catalog target item count",
+    );
+    const activatedAt = requiredCanonicalIso(
+      input.activatedAtIso,
+      "catalog activation timestamp",
+    );
+
+    return this.db.withExclusiveTransaction(async (tx) => {
+      const activeRows = await tx.getAll<{
+        snapshot_id: unknown;
+        catalog_version: unknown;
+      }>(
+        `SELECT snapshot_id, catalog_version
+         FROM catalog_snapshots
+         WHERE state = 'active'
+         ORDER BY snapshot_id
+         LIMIT 2`,
+      );
+      const active = activeRows[0];
+      if (
+        activeRows.length !== 1 ||
+        !active ||
+        requiredCatalogSnapshotId(active.snapshot_id) !== sourceSnapshotId ||
+        requiredCatalogVersion(active.catalog_version) !== baseCatalogVersion
+      ) {
+        throw new CatalogDeltaBaseChangedError();
+      }
+
+      const staging = await tx.getFirst<DeltaStagingMetadataRow>(
+        `SELECT
+           snapshot_id, catalog_version, checksum, state,
+           downloaded_at_iso, generation_id, sync_mode,
+           base_snapshot_id, base_catalog_version
+         FROM catalog_snapshots
+         WHERE snapshot_id = ?`,
+        [stagingSnapshotId],
+      );
+      if (
+        !staging ||
+        staging.state !== "staging" ||
+        staging.sync_mode !== "delta" ||
+        requiredCatalogSnapshotId(staging.generation_id) !== stagingSnapshotId ||
+        requiredCatalogSnapshotId(staging.base_snapshot_id) !== sourceSnapshotId ||
+        requiredCatalogVersion(staging.base_catalog_version) !==
+          baseCatalogVersion
+      ) {
+        throw new Error("Catalog delta staging does not match its active base.");
+      }
+      const targetCatalogVersion = requiredCatalogVersion(
+        staging.catalog_version,
+      );
+      const targetChecksum = requiredText(staging.checksum);
+      const downloadedAtIso = requiredCanonicalIso(
+        staging.downloaded_at_iso,
+        "catalog download timestamp",
+      );
+
+      // 中文注释：先删特殊商品子行，再删 active 商品，保持复合外键始终有效。
+      await tx.run(
+        `DELETE FROM special_products
+         WHERE snapshot_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM catalog_delta_deletions deletions
+             WHERE deletions.snapshot_id = ?
+               AND deletions.store_code = special_products.store_code
+               AND deletions.lookup_code_normalized =
+                 special_products.lookup_code_normalized
+           )`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+      await tx.run(
+        `DELETE FROM catalog_items
+         WHERE snapshot_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM catalog_delta_deletions deletions
+             WHERE deletions.snapshot_id = ?
+               AND deletions.store_code = catalog_items.store_code
+               AND deletions.lookup_code_normalized =
+                 catalog_items.lookup_code_normalized
+           )`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+
+      await tx.run(
+        `DELETE FROM special_products
+         WHERE snapshot_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM catalog_items staged
+             WHERE staged.snapshot_id = ?
+               AND staged.store_code = special_products.store_code
+               AND staged.lookup_code_normalized =
+                 special_products.lookup_code_normalized
+           )`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+      await tx.run(
+        `INSERT INTO catalog_items (
+           snapshot_id, store_code, lookup_code_normalized, product_code,
+           reference_code, item_number, barcode, lookup_code, display_name,
+           retail_price_cents, price_source, price_source_label,
+           quantity_factor, tax_rate_basis_points, row_version, product_image,
+           discount_rate, is_special_product, is_active, updated_at_iso
+         )
+         SELECT
+           ?, store_code, lookup_code_normalized, product_code,
+           reference_code, item_number, barcode, lookup_code, display_name,
+           retail_price_cents, price_source, price_source_label,
+           quantity_factor, tax_rate_basis_points, row_version, product_image,
+           discount_rate, is_special_product, is_active, updated_at_iso
+         FROM catalog_items
+         WHERE snapshot_id = ?
+         ON CONFLICT (
+           snapshot_id, store_code, lookup_code_normalized
+         ) DO UPDATE SET
+           product_code = excluded.product_code,
+           reference_code = excluded.reference_code,
+           item_number = excluded.item_number,
+           barcode = excluded.barcode,
+           lookup_code = excluded.lookup_code,
+           display_name = excluded.display_name,
+           retail_price_cents = excluded.retail_price_cents,
+           price_source = excluded.price_source,
+           price_source_label = excluded.price_source_label,
+           quantity_factor = excluded.quantity_factor,
+           tax_rate_basis_points = excluded.tax_rate_basis_points,
+           row_version = excluded.row_version,
+           product_image = excluded.product_image,
+           discount_rate = excluded.discount_rate,
+           is_special_product = excluded.is_special_product,
+           is_active = excluded.is_active,
+           updated_at_iso = excluded.updated_at_iso`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+      await tx.run(
+        `INSERT INTO special_products (
+           snapshot_id, store_code, lookup_code_normalized,
+           sort_order, is_marked, updated_at_iso
+         )
+         SELECT
+           ?, store_code, lookup_code_normalized,
+           sort_order, is_marked, updated_at_iso
+         FROM special_products
+         WHERE snapshot_id = ?`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+
+      await tx.run(
+        "DELETE FROM catalog_promotions WHERE snapshot_id = ?",
+        [sourceSnapshotId],
+      );
+      await tx.run(
+        `INSERT INTO catalog_promotions (
+           snapshot_id, promotion_id, definition_json,
+           valid_from_iso, valid_until_iso, priority
+         )
+         SELECT
+           ?, promotion_id, definition_json,
+           valid_from_iso, valid_until_iso, priority
+         FROM catalog_promotions
+         WHERE snapshot_id = ?`,
+        [sourceSnapshotId, stagingSnapshotId],
+      );
+
+      const countRow = await tx.getFirst<{
+        item_count: unknown;
+        store_code: unknown;
+        max_store_code: unknown;
+      }>(
+        `SELECT
+           COUNT(*) AS item_count,
+           MIN(store_code) AS store_code,
+           MAX(store_code) AS max_store_code
+         FROM catalog_items
+         WHERE snapshot_id = ?`,
+        [sourceSnapshotId],
+      );
+      const itemCount = requiredNonNegativeInteger(
+        countRow?.item_count,
+        "catalog item count",
+      );
+      if (itemCount !== expectedItemCount) {
+        throw new Error("Catalog delta target count verification failed.");
+      }
+      const storeCode = optionalCatalogStoreCode(countRow?.store_code);
+      const maxStoreCode = optionalCatalogStoreCode(countRow?.max_store_code);
+      if (storeCode !== maxStoreCode) {
+        throw new Error("Active catalog snapshot spans multiple stores.");
+      }
+
+      const updated = await tx.run(
+        `UPDATE catalog_snapshots
+         SET catalog_version = ?,
+             checksum = ?,
+             downloaded_at_iso = ?,
+             activated_at_iso = ?,
+             generation_id = ?,
+             sync_mode = 'delta',
+             base_snapshot_id = ?,
+             base_catalog_version = ?
+         WHERE snapshot_id = ?
+           AND state = 'active'
+           AND catalog_version = ?`,
+        [
+          targetCatalogVersion,
+          targetChecksum,
+          downloadedAtIso,
+          activatedAt,
+          stagingSnapshotId,
+          sourceSnapshotId,
+          baseCatalogVersion,
+          sourceSnapshotId,
+          baseCatalogVersion,
+        ],
+      );
+      if (updated.changes !== 1) {
+        // 中文注释：唯一 active 的物理 ID 或版本已漂移，不能把这个 staging 误激活到新基线。
+        throw new CatalogDeltaBaseChangedError();
+      }
+
+      await deleteSnapshot(tx, stagingSnapshotId, true);
+      return {
+        snapshotId: sourceSnapshotId,
+        generationId: stagingSnapshotId,
+        storeCode,
+        catalogVersion: targetCatalogVersion,
+        itemCount,
+        activatedAt,
+      };
+    });
+  }
+
   public async discardStaging(snapshotId: string): Promise<void> {
     await this.db.withExclusiveTransaction((tx) => deleteSnapshot(tx, snapshotId, true));
+  }
+
+  /** 已知 staging 在失败路径按 ≤500 行回收，避免大目录触发长时间级联删除。 */
+  public async discardStagingBatch(
+    snapshotId: string,
+    batchSize = 500,
+  ): Promise<number> {
+    return cleanupCatalogSnapshotsByState(
+      this.db,
+      "staging",
+      batchSize,
+      requiredCatalogSnapshotId(snapshotId),
+    );
+  }
+
+  /**
+   * 仅回收崩溃遗留的 staging，单次最多删除 500 个子行或父行。
+   * active/retired 不在查询条件内，断电恢复绝不影响可收银目录与审计保留目录。
+   */
+  public async cleanupStagingBatch(batchSize = 500): Promise<number> {
+    return cleanupCatalogSnapshotsByState(this.db, "staging", batchSize);
+  }
+
+  /** 每次最多回收 batchSize 行；调用方可在低优先级循环中让出全局 SQLite 队列。 */
+  public async cleanupRetiredBatch(batchSize = 500): Promise<number> {
+    return cleanupCatalogSnapshotsByState(this.db, "retired", batchSize);
   }
 
   /**
@@ -335,6 +784,19 @@ type ActiveCatalogMetadataRow = Readonly<{
   state: unknown;
   activated_at_iso: unknown;
   item_count: unknown;
+  store_code: unknown;
+  max_store_code: unknown;
+}>;
+type DeltaStagingMetadataRow = Readonly<{
+  snapshot_id: unknown;
+  catalog_version: unknown;
+  checksum: unknown;
+  state: unknown;
+  downloaded_at_iso: unknown;
+  generation_id: unknown;
+  sync_mode: unknown;
+  base_snapshot_id: unknown;
+  base_catalog_version: unknown;
 }>;
 type ActivePromotionScopeRow = Readonly<{
   snapshot_id: unknown;
@@ -358,14 +820,162 @@ function activeItemSql(where: string): string {
     WHERE s.state = 'active' AND i.is_active = 1 AND (${where})`;
 }
 
+async function cleanupCatalogSnapshotsByState(
+  db: SqliteConnectionPort,
+  state: "staging" | "retired",
+  batchSize: number,
+  requestedSnapshotId: string | undefined = undefined,
+): Promise<number> {
+  if (
+    !Number.isSafeInteger(batchSize)
+    || batchSize <= 0
+    || batchSize > 500
+  ) {
+    throw new Error("Catalog cleanup batch must be between 1 and 500.");
+  }
+  return db.withExclusiveTransaction(async (tx) => {
+    const candidate = await tx.getFirst<{ snapshot_id: unknown }>(
+      `SELECT snapshot_id
+       FROM catalog_snapshots
+       WHERE state = ?
+         ${requestedSnapshotId === undefined ? "" : "AND snapshot_id = ?"}
+       ORDER BY downloaded_at_iso ASC, snapshot_id ASC
+       LIMIT 1`,
+      requestedSnapshotId === undefined ? [state] : [state, requestedSnapshotId],
+    );
+    if (!candidate) return 0;
+    const snapshotId = requiredCatalogSnapshotId(candidate.snapshot_id);
+    let deleted = 0;
+    for (const tableName of [
+      "special_products",
+      "catalog_promotions",
+      "catalog_delta_deletions",
+      "catalog_items",
+    ] as const) {
+      const remaining = batchSize - deleted;
+      if (remaining <= 0) break;
+      const result = await tx.run(
+        `DELETE FROM ${tableName}
+         WHERE rowid IN (
+           SELECT rowid
+           FROM ${tableName}
+           WHERE snapshot_id = ?
+           LIMIT ?
+         )`,
+        [snapshotId, remaining],
+      );
+      deleted += result.changes;
+    }
+    if (deleted >= batchSize) return deleted;
+
+    const remainingChildren = await tx.getFirst<{ has_children: unknown }>(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM special_products WHERE snapshot_id = ?
+           UNION ALL
+           SELECT 1 FROM catalog_promotions WHERE snapshot_id = ?
+           UNION ALL
+           SELECT 1 FROM catalog_delta_deletions WHERE snapshot_id = ?
+           UNION ALL
+           SELECT 1 FROM catalog_items WHERE snapshot_id = ?
+         ) AS has_children`,
+      [snapshotId, snapshotId, snapshotId, snapshotId],
+    );
+    if (Number(remainingChildren?.has_children) !== 0) return deleted;
+    const result = await tx.run(
+      `DELETE FROM catalog_snapshots
+       WHERE snapshot_id = ?
+         AND state = ?`,
+      [snapshotId, state],
+    );
+    return deleted + result.changes;
+  });
+}
+
 async function deleteSnapshot(tx: SqliteConnectionPort, snapshotId: string, onlyStaging = false): Promise<void> {
   const guard = onlyStaging ? " AND state = 'staging'" : "";
   const snapshot = await tx.getFirst<{ snapshot_id: string }>(`SELECT snapshot_id FROM catalog_snapshots WHERE snapshot_id = ?${guard}`, [snapshotId]);
   if (!snapshot) return;
   await tx.run("DELETE FROM special_products WHERE snapshot_id = ?", [snapshotId]);
   await tx.run("DELETE FROM catalog_promotions WHERE snapshot_id = ?", [snapshotId]);
+  await tx.run("DELETE FROM catalog_delta_deletions WHERE snapshot_id = ?", [snapshotId]);
   await tx.run("DELETE FROM catalog_items WHERE snapshot_id = ?", [snapshotId]);
   await tx.run(`DELETE FROM catalog_snapshots WHERE snapshot_id = ?${guard}`, [snapshotId]);
+}
+
+async function upsertCatalogItem(
+  tx: SqliteConnectionPort,
+  snapshotId: string,
+  item: CatalogStoredItem,
+): Promise<void> {
+  await tx.run(
+    `INSERT INTO catalog_items (
+       snapshot_id, store_code, lookup_code_normalized, product_code,
+       reference_code, item_number, barcode, lookup_code, display_name,
+       retail_price_cents, price_source, price_source_label, quantity_factor,
+       tax_rate_basis_points, row_version, product_image, discount_rate,
+       is_special_product, is_active, updated_at_iso
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+     ON CONFLICT (
+       snapshot_id, store_code, lookup_code_normalized
+     ) DO UPDATE SET
+       product_code = excluded.product_code,
+       reference_code = excluded.reference_code,
+       item_number = excluded.item_number,
+       barcode = excluded.barcode,
+       lookup_code = excluded.lookup_code,
+       display_name = excluded.display_name,
+       retail_price_cents = excluded.retail_price_cents,
+       price_source = excluded.price_source,
+       price_source_label = excluded.price_source_label,
+       quantity_factor = excluded.quantity_factor,
+       tax_rate_basis_points = excluded.tax_rate_basis_points,
+       row_version = excluded.row_version,
+       product_image = excluded.product_image,
+       discount_rate = excluded.discount_rate,
+       is_special_product = excluded.is_special_product,
+       is_active = 1,
+       updated_at_iso = excluded.updated_at_iso`,
+    storedItemParameters(snapshotId, item),
+  );
+}
+
+async function replaceStagedSpecialProduct(
+  tx: SqliteConnectionPort,
+  snapshotId: string,
+  item: CatalogStoredItem,
+): Promise<void> {
+  await tx.run(
+    `DELETE FROM special_products
+     WHERE snapshot_id = ?
+       AND store_code = ?
+       AND lookup_code_normalized = ?`,
+    [snapshotId, item.storeCode, item.lookupCodeNormalized],
+  );
+  if (!item.isSpecialProduct) return;
+  await tx.run(
+    `INSERT INTO special_products (
+       snapshot_id, store_code, lookup_code_normalized,
+       sort_order, is_marked, updated_at_iso
+     ) VALUES (?, ?, ?, 0, 1, ?)`,
+    [
+      snapshotId,
+      item.storeCode,
+      item.lookupCodeNormalized,
+      item.updatedAtIso,
+    ],
+  );
+}
+
+function storedItemParameters(snapshotId: string, item: CatalogStoredItem) {
+  return [
+    snapshotId, item.storeCode, item.lookupCodeNormalized, item.productCode,
+    item.referenceCode, item.itemNumber, item.barcode, item.lookupCode,
+    item.displayName, item.retailPriceCents, item.priceSource, item.priceSourceLabel,
+    formatStoredDecimal(item.quantityFactor), item.taxRateBasisPoints, item.rowVersion,
+    item.productImage, item.discountRate === null ? null : formatStoredDecimal(item.discountRate),
+    item.isSpecialProduct ? 1 : 0, item.updatedAtIso,
+  ];
 }
 
 function mapMatch(row: CatalogRow): LocalCatalogMatch {
@@ -443,6 +1053,20 @@ function requiredCatalogStoreCode(value: unknown): string {
     throw new Error("Invalid catalog store code.");
   }
   return value;
+}
+
+function optionalCatalogStoreCode(value: unknown): string | null {
+  return value === null || value === undefined
+    ? null
+    : requiredCatalogStoreCode(value);
+}
+
+function requiredNormalizedLookupCode(value: unknown): string {
+  const lookupCode = requiredText(value);
+  if (normalizeLookupCode(lookupCode) !== lookupCode) {
+    throw new Error("Catalog lookup code must already be normalized.");
+  }
+  return lookupCode;
 }
 
 function requiredPromotionId(value: unknown): string {

@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import { SqliteCatalogSnapshotRepository } from "./catalog-repository";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import {
+  SqliteCatalogSnapshotRepository,
+  type CatalogStoredItem,
+} from "./catalog-repository";
+import { applyMigrations } from "./migrations";
+import type {
+  SqliteConnectionPort,
+  SqlRunResult,
+  SqlValue,
+} from "./types";
 
 class RecordingConnection implements SqliteConnectionPort {
   public readonly runs: { sql: string; parameters: readonly SqlValue[] }[] = [];
@@ -284,3 +296,582 @@ test("损坏的促销行 fail-closed，绝不把另一快照或空定义带入�
     /definition/i,
   );
 });
+
+test("delta staging 只保存变更，并在单事务原地更新 active 物理快照", async () => {
+  await withRealCatalogDatabase(async (connection) => {
+    await seedSnapshot(connection, {
+      snapshotId: "physical-active",
+      catalogVersion: "v1",
+      state: "active",
+    });
+    await seedCatalogItem(
+      connection,
+      "physical-active",
+      storedItem({ lookupCodeNormalized: "A", lookupCode: "A" }),
+    );
+    await seedCatalogItem(
+      connection,
+      "physical-active",
+      storedItem({
+        lookupCodeNormalized: "B",
+        lookupCode: "B",
+        isSpecialProduct: true,
+      }),
+    );
+    await seedCatalogItem(
+      connection,
+      "physical-active",
+      storedItem({ lookupCodeNormalized: "C", lookupCode: "C" }),
+    );
+    await connection.run(
+      `INSERT INTO catalog_promotions (
+         snapshot_id, promotion_id, definition_json,
+         valid_from_iso, valid_until_iso, priority
+       ) VALUES (?, 'OLD', '{"promotionId":"OLD"}', NULL, NULL, 1)`,
+      ["physical-active"],
+    );
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+
+    await repository.beginDeltaStaging({
+      sourceSnapshotId: "physical-active",
+      baseCatalogVersion: "v1",
+      snapshotId: "generation-2",
+      catalogVersion: "v2",
+      checksum: "delta-v2",
+      downloadedAtIso: "2026-07-30T00:00:00.000Z",
+    });
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_items WHERE snapshot_id = 'generation-2'",
+      ),
+      0,
+    );
+
+    await repository.appendDeltaBatch("generation-2", {
+      items: [
+        storedItem({
+          lookupCodeNormalized: "A",
+          lookupCode: "A",
+          displayName: "A updated",
+          isSpecialProduct: true,
+        }),
+        storedItem({
+          lookupCodeNormalized: "D",
+          lookupCode: "D",
+          displayName: "D new",
+        }),
+      ],
+      deletedLookups: [
+        { storeCode: "S1", lookupCodeNormalized: "B" },
+      ],
+    });
+    await repository.replacePromotions("generation-2", [
+      {
+        promotionId: "NEW",
+        definitionJson: '{"promotionId":"NEW"}',
+        validFromIso: null,
+        validUntilIso: null,
+        priority: 1,
+      },
+    ]);
+
+    const active = await repository.activateDelta({
+      sourceSnapshotId: "physical-active",
+      baseCatalogVersion: "v1",
+      stagingSnapshotId: "generation-2",
+      expectedItemCount: 3,
+      activatedAtIso: "2026-07-30T01:00:00.000Z",
+    });
+
+    assert.equal(active.snapshotId, "physical-active");
+    assert.equal(active.generationId, "generation-2");
+    assert.equal(active.catalogVersion, "v2");
+    assert.equal(active.itemCount, 3);
+    assert.equal(
+      (
+        await connection.getFirst<{ generation_id: string }>(
+          `SELECT generation_id
+           FROM catalog_snapshots
+           WHERE snapshot_id = 'physical-active'`,
+        )
+      )?.generation_id,
+      "generation-2",
+    );
+    assert.deepEqual(
+      (
+        await connection.getAll<{
+          lookup_code_normalized: string;
+          display_name: string;
+        }>(
+          `SELECT lookup_code_normalized, display_name
+           FROM catalog_items
+           WHERE snapshot_id = 'physical-active'
+           ORDER BY lookup_code_normalized`,
+        )
+      ).map((row) => [row.lookup_code_normalized, row.display_name]),
+      [
+        ["A", "A updated"],
+        ["C", "Item C"],
+        ["D", "D new"],
+      ],
+    );
+    assert.deepEqual(
+      (
+        await connection.getAll<{ lookup_code_normalized: string }>(
+          `SELECT lookup_code_normalized
+           FROM special_products
+           WHERE snapshot_id = 'physical-active'
+           ORDER BY lookup_code_normalized`,
+        )
+      ).map((row) => ({ ...row })),
+      [{ lookup_code_normalized: "A" }],
+    );
+    assert.deepEqual(
+      (
+        await connection.getAll<{ promotion_id: string }>(
+          `SELECT promotion_id
+           FROM catalog_promotions
+           WHERE snapshot_id = 'physical-active'`,
+        )
+      ).map((row) => ({ ...row })),
+      [{ promotion_id: "NEW" }],
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_id = 'generation-2'",
+      ),
+      0,
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_delta_deletions",
+      ),
+      0,
+    );
+  });
+});
+
+test("delta 数量或基线校验失败时完整回滚并保留旧 active", async () => {
+  await withRealCatalogDatabase(async (connection) => {
+    await seedSnapshot(connection, {
+      snapshotId: "physical-active",
+      catalogVersion: "v1",
+      state: "active",
+    });
+    await seedCatalogItem(connection, "physical-active", storedItem());
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+    await repository.beginDeltaStaging({
+      sourceSnapshotId: "physical-active",
+      baseCatalogVersion: "v1",
+      snapshotId: "generation-2",
+      catalogVersion: "v2",
+      checksum: "delta-v2",
+      downloadedAtIso: "2026-07-30T00:00:00.000Z",
+    });
+    await repository.appendDeltaBatch("generation-2", {
+      items: [],
+      deletedLookups: [
+        { storeCode: "S1", lookupCodeNormalized: "ITEM" },
+      ],
+    });
+
+    await assert.rejects(
+      () =>
+        repository.activateDelta({
+          sourceSnapshotId: "physical-active",
+          baseCatalogVersion: "v1",
+          stagingSnapshotId: "generation-2",
+          expectedItemCount: 99,
+          activatedAtIso: "2026-07-30T01:00:00.000Z",
+        }),
+      /count/i,
+    );
+    const activeAfterRollback = await connection.getFirst<{
+        catalog_version: string;
+        generation_id: string;
+        state: string;
+      }>(
+        `SELECT catalog_version, generation_id, state
+         FROM catalog_snapshots
+         WHERE snapshot_id = 'physical-active'`,
+      );
+    assert.deepEqual(
+      activeAfterRollback ? { ...activeAfterRollback } : null,
+      {
+        catalog_version: "v1",
+        generation_id: "physical-active",
+        state: "active",
+      },
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_items WHERE snapshot_id = 'physical-active'",
+      ),
+      1,
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_delta_deletions WHERE snapshot_id = 'generation-2'",
+      ),
+      1,
+    );
+
+    await connection.run(
+      `UPDATE catalog_snapshots
+       SET catalog_version = 'v1-replaced'
+       WHERE snapshot_id = 'physical-active'`,
+    );
+    await assert.rejects(
+      () =>
+        repository.activateDelta({
+          sourceSnapshotId: "physical-active",
+          baseCatalogVersion: "v1",
+          stagingSnapshotId: "generation-2",
+          expectedItemCount: 0,
+          activatedAtIso: "2026-07-30T01:00:00.000Z",
+        }),
+      (error: unknown) => {
+        assert.equal(
+          (error as Readonly<{ code?: unknown }>).code,
+          "CATALOG_DELTA_BASE_CHANGED",
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      (
+        await connection.getFirst<{ catalog_version: string }>(
+          `SELECT catalog_version
+           FROM catalog_snapshots
+           WHERE snapshot_id = 'physical-active'`,
+        )
+      )?.catalog_version,
+      "v1-replaced",
+    );
+  });
+});
+
+test("retired janitor 每次最多回收 500 行并最终只保留当前完整目录", async () => {
+  await withRealCatalogDatabase(async (connection) => {
+    await seedSnapshot(connection, {
+      snapshotId: "retired-large",
+      catalogVersion: "v1",
+      state: "retired",
+    });
+    for (let index = 0; index < 501; index += 1) {
+      const lookup = `ITEM-${String(index).padStart(3, "0")}`;
+      await seedCatalogItem(
+        connection,
+        "retired-large",
+        storedItem({ lookupCode: lookup, lookupCodeNormalized: lookup }),
+      );
+    }
+    await seedSnapshot(connection, {
+      snapshotId: "current",
+      catalogVersion: "v2",
+      state: "active",
+    });
+    await seedCatalogItem(connection, "current", storedItem());
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+
+    assert.equal(await repository.cleanupRetiredBatch(500), 500);
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_items WHERE snapshot_id = 'retired-large'",
+      ),
+      1,
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_id = 'retired-large'",
+      ),
+      1,
+    );
+
+    assert.equal(await repository.cleanupRetiredBatch(500), 2);
+    assert.equal(await repository.cleanupRetiredBatch(500), 0);
+    assert.deepEqual(
+      (
+        await connection.getAll<{ snapshot_id: string; state: string }>(
+          "SELECT snapshot_id, state FROM catalog_snapshots ORDER BY snapshot_id",
+        )
+      ).map((row) => ({ ...row })),
+      [{ snapshot_id: "current", state: "active" }],
+    );
+  });
+});
+
+test("staging janitor 断电重开后分批清理残留，绝不删除 active 或 retired", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hbpos-catalog-staging-"));
+  const databasePath = join(directory, "catalog.sqlite");
+  let connection: RealCatalogConnection | null = null;
+  try {
+    connection = new RealCatalogConnection(new DatabaseSync(databasePath));
+    await applyMigrations(connection, () => "2026-07-30T00:00:00.000Z");
+    await seedSnapshot(connection, {
+      snapshotId: "active-current",
+      catalogVersion: "v2",
+      state: "active",
+    });
+    await seedCatalogItem(connection, "active-current", storedItem());
+    await seedSnapshot(connection, {
+      snapshotId: "staging-crashed",
+      catalogVersion: "v3",
+      state: "staging",
+    });
+    await seedSnapshot(connection, {
+      snapshotId: "retired-history",
+      catalogVersion: "v1",
+      state: "retired",
+    });
+    for (let index = 0; index < 501; index += 1) {
+      const lookup = `STAGING-${String(index).padStart(3, "0")}`;
+      await seedCatalogItem(
+        connection,
+        "staging-crashed",
+        storedItem({ lookupCode: lookup, lookupCodeNormalized: lookup }),
+      );
+    }
+    await connection.close();
+    connection = new RealCatalogConnection(new DatabaseSync(databasePath));
+    const repository = new SqliteCatalogSnapshotRepository(connection);
+
+    assert.equal(
+      await repository.discardStagingBatch("staging-crashed", 500),
+      500,
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_items WHERE snapshot_id = 'active-current'",
+      ),
+      1,
+    );
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE snapshot_id = 'retired-history'",
+      ),
+      1,
+    );
+    assert.equal(await repository.cleanupStagingBatch(500), 2);
+    assert.equal(await repository.cleanupStagingBatch(500), 0);
+    assert.equal(
+      await scalarCount(
+        connection,
+        "SELECT COUNT(*) AS count FROM catalog_snapshots WHERE state = 'staging'",
+      ),
+      0,
+    );
+  } finally {
+    await connection?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+class RealCatalogConnection implements SqliteConnectionPort {
+  public constructor(private readonly database: DatabaseSync) {
+    this.database.exec("PRAGMA foreign_keys = ON;");
+  }
+
+  public async exec(sql: string): Promise<void> {
+    this.database.exec(sql);
+  }
+
+  public async run(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<SqlRunResult> {
+    const result = this.database
+      .prepare(sql)
+      .run(...parameters.map(toSqlInputValue));
+    return {
+      changes: Number(result.changes),
+      lastInsertRowId: Number(result.lastInsertRowid),
+    };
+  }
+
+  public async getFirst<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<T | null> {
+    return (
+      this.database
+        .prepare(sql)
+        .get(...parameters.map(toSqlInputValue)) as T | undefined
+    ) ?? null;
+  }
+
+  public async getAll<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<readonly T[]> {
+    return this.database
+      .prepare(sql)
+      .all(...parameters.map(toSqlInputValue)) as unknown as readonly T[];
+  }
+
+  public async withExclusiveTransaction<T>(
+    operation: (transaction: SqliteConnectionPort) => Promise<T>,
+  ): Promise<T> {
+    this.database.exec("BEGIN IMMEDIATE;");
+    const transaction = new RealCatalogTransaction(this.database);
+    try {
+      const result = await operation(transaction);
+      this.database.exec("COMMIT;");
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public async close(): Promise<void> {
+    this.database.close();
+  }
+}
+
+class RealCatalogTransaction extends RealCatalogConnection {
+  public override withExclusiveTransaction<T>(): Promise<T> {
+    return Promise.reject(new Error("Nested catalog test transaction."));
+  }
+
+  public override close(): Promise<void> {
+    return Promise.reject(new Error("Transaction cannot close catalog database."));
+  }
+}
+
+async function withRealCatalogDatabase(
+  operation: (connection: RealCatalogConnection) => Promise<void>,
+): Promise<void> {
+  const connection = new RealCatalogConnection(new DatabaseSync(":memory:"));
+  try {
+    await applyMigrations(connection, () => "2026-07-30T00:00:00.000Z");
+    await operation(connection);
+  } finally {
+    await connection.close();
+  }
+}
+
+function toSqlInputValue(value: SqlValue): SQLInputValue {
+  return value as SQLInputValue;
+}
+
+async function seedSnapshot(
+  connection: SqliteConnectionPort,
+  input: Readonly<{
+    snapshotId: string;
+    catalogVersion: string;
+    state: "staging" | "active" | "retired";
+  }>,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO catalog_snapshots (
+       snapshot_id, catalog_version, checksum, state,
+       downloaded_at_iso, activated_at_iso, generation_id,
+       sync_mode, base_snapshot_id, base_catalog_version
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'full', NULL, NULL)`,
+    [
+      input.snapshotId,
+      input.catalogVersion,
+      `checksum-${input.catalogVersion}`,
+      input.state,
+      "2026-07-30T00:00:00.000Z",
+      "2026-07-30T00:00:00.000Z",
+      input.snapshotId,
+    ],
+  );
+}
+
+async function seedCatalogItem(
+  connection: SqliteConnectionPort,
+  snapshotId: string,
+  item: CatalogStoredItem,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO catalog_items (
+       snapshot_id, store_code, lookup_code_normalized, product_code,
+       reference_code, item_number, barcode, lookup_code, display_name,
+       retail_price_cents, price_source, price_source_label, quantity_factor,
+       tax_rate_basis_points, row_version, product_image, discount_rate,
+       is_special_product, is_active, updated_at_iso
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [
+      snapshotId,
+      item.storeCode,
+      item.lookupCodeNormalized,
+      item.productCode,
+      item.referenceCode,
+      item.itemNumber,
+      item.barcode,
+      item.lookupCode,
+      item.displayName,
+      item.retailPriceCents,
+      item.priceSource,
+      item.priceSourceLabel,
+      String(item.quantityFactor),
+      item.taxRateBasisPoints,
+      item.rowVersion,
+      item.productImage,
+      item.discountRate === null ? null : String(item.discountRate),
+      item.isSpecialProduct ? 1 : 0,
+      item.updatedAtIso,
+    ],
+  );
+  if (item.isSpecialProduct) {
+    await connection.run(
+      `INSERT INTO special_products (
+         snapshot_id, store_code, lookup_code_normalized,
+         sort_order, is_marked, updated_at_iso
+       ) VALUES (?, ?, ?, 0, 1, ?)`,
+      [
+        snapshotId,
+        item.storeCode,
+        item.lookupCodeNormalized,
+        item.updatedAtIso,
+      ],
+    );
+  }
+}
+
+function storedItem(
+  overrides: Partial<CatalogStoredItem> = {},
+): CatalogStoredItem {
+  const lookupCodeNormalized = overrides.lookupCodeNormalized ?? "ITEM";
+  return {
+    storeCode: "S1",
+    productCode: `P-${lookupCodeNormalized}`,
+    referenceCode: null,
+    itemNumber: null,
+    displayName: `Item ${lookupCodeNormalized}`,
+    barcode: null,
+    lookupCode: lookupCodeNormalized,
+    lookupCodeNormalized,
+    retailPriceCents: 100,
+    priceSource: 0,
+    priceSourceLabel: "product",
+    quantityFactor: 1,
+    taxRateBasisPoints: null,
+    updatedAtIso: "2026-07-30T00:00:00.000Z",
+    rowVersion: null,
+    productImage: null,
+    discountRate: null,
+    isSpecialProduct: false,
+    ...overrides,
+  };
+}
+
+async function scalarCount(
+  connection: SqliteConnectionPort,
+  sql: string,
+): Promise<number> {
+  const row = await connection.getFirst<{ count: number | string }>(sql);
+  return Number(row?.count ?? 0);
+}

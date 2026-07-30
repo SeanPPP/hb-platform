@@ -3,6 +3,7 @@ import type {
   CatalogRefreshProgressObserver,
 } from "./catalog-refresh-contract";
 import type {
+  CatalogDeletedLookup,
   CatalogLookupItem,
   VerifiedCatalogSyncPage,
 } from "./hbpos-catalog-remote";
@@ -42,6 +43,30 @@ export type CatalogPromotion = Readonly<{
   priority: number;
 }>;
 
+/** 已激活目录的最小身份；门店不匹配时绝不可复用为增量基线。 */
+export type ActiveCatalogSnapshotMetadata = Readonly<{
+  snapshotId: string;
+  /** 同一物理 snapshot 增量激活后用新 generation 隔离 lookup overlay。 */
+  generationId?: string | null;
+  /** 旧本地快照未必可反推出门店；此时必须全量。 */
+  storeCode?: string | null;
+  catalogVersion: string;
+  itemCount: number;
+  activatedAt: string;
+}>;
+
+export type CatalogSyncPlan = Readonly<{
+  mode: "noChange" | "delta" | "full";
+  baseCatalogVersion: string | null;
+  targetCatalogVersion: string;
+  targetTotal: number;
+  downloadLeaseId?: string | null;
+  deltaOperationCount?: number | null;
+}>;
+
+/** 增量页不伪造全量快照生成时间，但 checksum 必须同时覆盖 upsert 与 delete。 */
+export type CatalogDeltaPage = Omit<VerifiedCatalogSyncPage, "generatedAt">;
+
 /** 远端调用端必须只返回一个服务器固定快照；绝不由离线本地搜索伪造在线结果。 */
 export interface CatalogSyncRemotePort {
   getPage(input: Readonly<{
@@ -49,8 +74,23 @@ export interface CatalogSyncRemotePort {
     cursor: string | null;
     pageSize: number;
     catalogVersion?: string;
+    downloadLeaseId?: string;
     signal?: AbortSignal;
   }>): Promise<VerifiedCatalogSyncPage>;
+  getSyncPlan?(input: Readonly<{
+    storeCode: string;
+    baseCatalogVersion: string | null;
+    signal?: AbortSignal;
+  }>): Promise<CatalogSyncPlan>;
+  getDeltaPage?(input: Readonly<{
+    storeCode: string;
+    baseCatalogVersion: string;
+    targetCatalogVersion: string;
+    cursor: string | null;
+    pageSize: number;
+    downloadLeaseId?: string;
+    signal?: AbortSignal;
+  }>): Promise<CatalogDeltaPage>;
   /** 当前 Hbpos lookup API 未返回促销定义；后端提供该合同时再由 adapter 实现。 */
   getPromotions?(input: Readonly<{
     storeCode: string;
@@ -66,6 +106,32 @@ export interface CatalogSnapshotStoragePort {
   /** 实现必须验证完整数量后，在同一独占事务中 retire 旧 active 并激活 snapshot。 */
   activate(snapshotId: string, expectedItemCount: number, activatedAtIso: string): Promise<void>;
   discardStaging(snapshotId: string): Promise<void>;
+  /** 已知 staging 的失败/取消清理可分批实现，避免大目录级联删除长期占用 SQLite。 */
+  discardStagingBatch?(snapshotId: string, batchSize?: number): Promise<number>;
+  /** 旧版实现可省略增量能力，服务将安全回退全量。 */
+  getActiveMetadata?(): Promise<ActiveCatalogSnapshotMetadata | null>;
+  beginDeltaStaging?(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    snapshotId: string;
+    catalogVersion: string;
+    checksum: string;
+    downloadedAtIso: string;
+  }>): Promise<void>;
+  appendDeltaBatch?(snapshotId: string, batch: Readonly<{
+    items: readonly CatalogStagedItem[];
+    deletedLookups: readonly CatalogDeletedLookup[];
+  }>): Promise<void>;
+  activateDelta?(input: Readonly<{
+    sourceSnapshotId: string;
+    baseCatalogVersion: string;
+    stagingSnapshotId: string;
+    expectedItemCount: number;
+    activatedAtIso: string;
+  }>): Promise<ActiveCatalogSnapshotMetadata>;
+  /** 每次只清理一个 staging 子树中的有限行，绝不触及 active/retired。 */
+  cleanupStagingBatch?(batchSize?: number): Promise<number>;
+  cleanupRetiredBatch?(batchSize?: number): Promise<number>;
 }
 
 export type CatalogSnapshotServiceOptions = Readonly<{
@@ -73,6 +139,7 @@ export type CatalogSnapshotServiceOptions = Readonly<{
   nowIso?: () => string;
   nowMilliseconds?: () => number;
   pageSize?: number;
+  yieldControl?: () => Promise<void>;
 }>;
 
 export type CatalogRefreshRequest = Readonly<{
@@ -121,7 +188,10 @@ export class CatalogSnapshotService {
   private readonly nowIso: () => string;
   private readonly nowMilliseconds: () => number;
   private readonly pageSize: number;
+  private readonly yieldControl: () => Promise<void>;
   private serial = Promise.resolve();
+  private retiredCleanup = Promise.resolve();
+  private stagingCleanup = Promise.resolve();
 
   public constructor(
     private readonly storage: CatalogSnapshotStoragePort,
@@ -131,6 +201,7 @@ export class CatalogSnapshotService {
     this.nowIso = options.nowIso ?? (() => new Date().toISOString());
     this.nowMilliseconds = options.nowMilliseconds ?? (() => Date.now());
     this.pageSize = options.pageSize ?? 5_000;
+    this.yieldControl = options.yieldControl ?? yieldToEventLoop;
   }
 
   public downloadAndActivate(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
@@ -143,7 +214,126 @@ export class CatalogSnapshotService {
     return operation;
   }
 
-  private async runDownloadAndActivate(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
+  /** 启动时低优先级续跑残留 staging 与 retired；失败不改变 active，下次下载会重新等待。 */
+  public resumeRetiredCleanup(): void {
+    void this.queueRetiredCleanup().catch(() => undefined);
+    void this.queueStagingCleanup().catch(() => undefined);
+  }
+
+  private queueRetiredCleanup(): Promise<void> {
+    const cleanupRetiredBatch = this.storage.cleanupRetiredBatch;
+    if (!cleanupRetiredBatch) return Promise.resolve();
+    const operation = this.retiredCleanup.then(async () => {
+      while (true) {
+        const deleted = await cleanupRetiredBatch.call(this.storage, 500);
+        if (deleted <= 0) return;
+        await this.yieldControl();
+      }
+    });
+    this.retiredCleanup = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private queueStagingCleanup(): Promise<void> {
+    const cleanupStagingBatch = this.storage.cleanupStagingBatch;
+    if (!cleanupStagingBatch) return Promise.resolve();
+    const operation = this.stagingCleanup.then(async () => {
+      while (true) {
+        const deleted = await cleanupStagingBatch.call(this.storage, 500);
+        if (deleted <= 0) return;
+        // 中文注释：断电恢复可能有大量暂存行，每批后让出 SQLite 队列避免阻塞收银。
+        await this.yieldControl();
+      }
+    });
+    this.stagingCleanup = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private runDownloadAndActivate(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
+    if (!this.storage.getActiveMetadata || !this.remote.getSyncPlan) {
+      return this.runFullDownloadAndActivate(input);
+    }
+    return this.runWithSyncPlan(input);
+  }
+
+  private async runWithSyncPlan(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
+    const active = await this.storage.getActiveMetadata!();
+    throwIfAborted(input.signal);
+    const getSyncPlan = this.remote.getSyncPlan;
+    if (!getSyncPlan) return this.runFullDownloadAndActivate(input);
+    const matchingActive = active !== null && active.storeCode === input.storeCode
+      ? active
+      : null;
+    let plan: CatalogSyncPlan;
+    try {
+      plan = await getSyncPlan.call(this.remote, {
+        storeCode: input.storeCode,
+        baseCatalogVersion: matchingActive?.catalogVersion ?? null,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    } catch (error) {
+      // 中文注释：仅旧端点明确不支持时才回落首包固定版本 full，不能吞掉冲突、租约或校验错误。
+      if (isSyncPlanUnsupported(error)) return this.runFullDownloadAndActivate(input);
+      throw error;
+    }
+    throwIfAborted(input.signal);
+    assertSyncPlan(plan, matchingActive?.catalogVersion ?? null);
+    if (matchingActive === null) {
+      if (plan.mode !== "full") {
+        throw catalogVerificationError(
+          "Catalog sync plan without a local base must be full.",
+          "CATALOG_SYNC_PLAN_INVALID",
+        );
+      }
+      return this.runFullDownloadAndActivate(input, plan);
+    }
+    if (plan.mode === "noChange") {
+      if (plan.targetTotal !== matchingActive.itemCount) {
+        return this.runFullWithFreshPlan(input);
+      }
+      return this.refreshPromotionsOnly(input, matchingActive, plan);
+    }
+    if (plan.mode === "delta") {
+      if ((plan.deltaOperationCount ?? 0) > 5_000) {
+        return this.runFullWithFreshPlan(input);
+      }
+      return this.runDeltaDownloadAndActivate(input, matchingActive, plan);
+    }
+    // 中文注释：服务端保留窗口外或无法证明连续性时，宁可全量也不能猜测增量。
+    return this.runFullDownloadAndActivate(input, plan);
+  }
+
+  private async runFullWithFreshPlan(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
+    const getSyncPlan = this.remote.getSyncPlan;
+    if (!getSyncPlan) return this.runFullDownloadAndActivate(input);
+    throwIfAborted(input.signal);
+    let plan: CatalogSyncPlan;
+    try {
+      plan = await getSyncPlan.call(this.remote, {
+        storeCode: input.storeCode,
+        baseCatalogVersion: null,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    } catch (error) {
+      // 中文注释：此处尚未创建 staging；仅旧端点不支持时可安全退回首包固定版本 full。
+      if (isSyncPlanUnsupported(error)) return this.runFullDownloadAndActivate(input);
+      throw error;
+    }
+    throwIfAborted(input.signal);
+    assertSyncPlan(plan, null);
+    if (plan.mode !== "full") {
+      throw catalogVerificationError(
+        "Catalog fallback plan without a base must be full.",
+        "CATALOG_SYNC_PLAN_INVALID",
+      );
+    }
+    return this.runFullDownloadAndActivate(input, plan);
+  }
+
+  private async runFullDownloadAndActivate(
+    input: CatalogRefreshRequest,
+    plan?: CatalogSyncPlan,
+  ): Promise<CatalogActivationResult> {
     const startedAtMilliseconds = this.nowMilliseconds();
     const progress = (
       event: Omit<CatalogRefreshProgressEvent, "elapsedMilliseconds">,
@@ -163,6 +353,13 @@ export class CatalogSnapshotService {
     let completedItemCount = 0;
     let totalItemCount: number | undefined;
     try {
+      // 上次异常遗留的 staging 和 retired 都须先有界回收，文件 freelist 才能稳定复用于本次 staging。
+      if (this.storage.cleanupStagingBatch) {
+        await this.queueStagingCleanup();
+      }
+      if (this.storage.cleanupRetiredBatch) {
+        await this.queueRetiredCleanup();
+      }
       throwIfAborted(input.signal);
       progress({ step: "prepare", percent: 0 });
       throwIfAborted(input.signal);
@@ -170,6 +367,10 @@ export class CatalogSnapshotService {
         storeCode: input.storeCode,
         cursor: null,
         pageSize: this.pageSize,
+        ...(plan ? { catalogVersion: plan.targetCatalogVersion } : {}),
+        ...(plan?.downloadLeaseId
+          ? { downloadLeaseId: plan.downloadLeaseId }
+          : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       });
       throwIfAborted(input.signal);
@@ -177,6 +378,18 @@ export class CatalogSnapshotService {
         requestedStoreCode: input.storeCode,
         requestedCursor: null,
       });
+      if (
+        plan
+        && (
+          first.catalogVersion !== plan.targetCatalogVersion
+          || first.totalCount !== plan.targetTotal
+        )
+      ) {
+        throw catalogVerificationError(
+          "Catalog full page does not match the pinned sync plan.",
+          "CATALOG_SYNC_PLAN_TARGET_CHANGED",
+        );
+      }
       totalItemCount = first.totalCount;
       const firstItems = first.items.map(mapCatalogLookupToStagedItem);
       throwIfAborted(input.signal);
@@ -311,6 +524,9 @@ export class CatalogSnapshotService {
             cursor: requestedCursor,
             pageSize: this.pageSize,
             catalogVersion: first.catalogVersion,
+            ...(plan?.downloadLeaseId
+              ? { downloadLeaseId: plan.downloadLeaseId }
+              : {}),
             ...(input.signal ? { signal: input.signal } : {}),
           });
           throwIfAborted(input.signal);
@@ -341,6 +557,7 @@ export class CatalogSnapshotService {
       const activatedAt = this.nowIso();
       await this.storage.activate(snapshotId, count, activatedAt);
       activated = true;
+      this.resumeRetiredCleanup();
       const result: CatalogActivationResult = {
         snapshotId,
         catalogVersion: first.catalogVersion,
@@ -353,7 +570,7 @@ export class CatalogSnapshotService {
       return result;
     } catch (error) {
       // 中文注释：active 已提交后，后置重载异常绝不能回到“切换前失败”的清理路径。
-      if (stagingStarted && !activated) await this.storage.discardStaging(snapshotId);
+      if (stagingStarted && !activated) await this.discardStaging(snapshotId);
       throw contextualizeCatalogFailure(error, {
         pageNumber,
         completedItemCount,
@@ -362,10 +579,270 @@ export class CatalogSnapshotService {
     }
   }
 
+  private async refreshPromotionsOnly(
+    input: CatalogRefreshRequest,
+    active: ActiveCatalogSnapshotMetadata,
+    plan: CatalogSyncPlan,
+  ): Promise<CatalogActivationResult> {
+    const startedAtMilliseconds = this.nowMilliseconds();
+    const progress = (event: Omit<CatalogRefreshProgressEvent, "elapsedMilliseconds">): void => {
+      reportProgress(input.onProgress, {
+        ...event,
+        elapsedMilliseconds: Math.max(0, this.nowMilliseconds() - startedAtMilliseconds),
+      });
+    };
+    progress({ step: "prepare", percent: 100 });
+    progress({ step: "products", percent: 100, completedItemCount: active.itemCount, totalItemCount: active.itemCount, completedPageCount: 0, totalPageCount: 0 });
+    progress({ step: "promotions", percent: 0 });
+    const promotions = await this.remote.getPromotions?.({
+      storeCode: input.storeCode,
+      ...(input.signal ? { signal: input.signal } : {}),
+    }) ?? [];
+    throwIfAborted(input.signal);
+    await input.beforeActivate?.();
+    throwIfAborted(input.signal);
+    await this.storage.replacePromotions(active.snapshotId, promotions);
+    progress({ step: "promotions", percent: 100 });
+    const result: CatalogActivationResult = {
+      snapshotId: active.snapshotId,
+      catalogVersion: plan.targetCatalogVersion,
+      itemCount: active.itemCount,
+      activatedAt: active.activatedAt,
+    };
+    progress({ step: "activate", percent: 0 });
+    await input.afterActivate?.(result);
+    progress({ step: "activate", percent: 100 });
+    return result;
+  }
+
+  private async runDeltaDownloadAndActivate(
+    input: CatalogRefreshRequest,
+    active: ActiveCatalogSnapshotMetadata,
+    plan: CatalogSyncPlan,
+  ): Promise<CatalogActivationResult> {
+    const beginDeltaStaging = this.storage.beginDeltaStaging;
+    const appendDeltaBatch = this.storage.appendDeltaBatch;
+    const activateDelta = this.storage.activateDelta;
+    const getDeltaPage = this.remote.getDeltaPage;
+    if (!beginDeltaStaging || !appendDeltaBatch || !activateDelta || !getDeltaPage) {
+      return this.runFullWithFreshPlan(input);
+    }
+    const startedAtMilliseconds = this.nowMilliseconds();
+    const progress = (event: Omit<CatalogRefreshProgressEvent, "elapsedMilliseconds">): void => {
+      reportProgress(input.onProgress, {
+        ...event,
+        elapsedMilliseconds: Math.max(0, this.nowMilliseconds() - startedAtMilliseconds),
+      });
+    };
+    const snapshotId = this.options.createSnapshotId();
+    let stagingStarted = false;
+    let activated = false;
+    let pageNumber = 1;
+    let completedItemCount = 0;
+    try {
+      progress({ step: "prepare", percent: 0 });
+      if (this.storage.cleanupStagingBatch) {
+        await this.queueStagingCleanup();
+      }
+      throwIfAborted(input.signal);
+      // 中文注释：delta staging 只保存 upsert/tombstone，绝不复制完整 active 子行。
+      await beginDeltaStaging.call(this.storage, {
+        sourceSnapshotId: active.snapshotId,
+        baseCatalogVersion: active.catalogVersion,
+        snapshotId,
+        catalogVersion: plan.targetCatalogVersion,
+        checksum: `delta:${plan.targetCatalogVersion}`,
+        downloadedAtIso: this.nowIso(),
+      });
+      stagingStarted = true;
+      progress({ step: "prepare", percent: 100 });
+      progress({ step: "products", percent: 0, completedItemCount: 0, totalItemCount: plan.targetTotal, completedPageCount: 0, totalPageCount: 0 });
+
+      const seenCursors = new Set<string>();
+      const seenUpserts = new Set<string>();
+      const seenDeletes = new Set<string>();
+      let cursor: string | null = null;
+      let completedPageCount = 0;
+      while (true) {
+        throwIfAborted(input.signal);
+        const page: CatalogDeltaPage = await getDeltaPage.call(this.remote, {
+          storeCode: input.storeCode,
+          baseCatalogVersion: active.catalogVersion,
+          targetCatalogVersion: plan.targetCatalogVersion,
+          cursor,
+          pageSize: this.pageSize,
+          ...(plan.downloadLeaseId
+            ? { downloadLeaseId: plan.downloadLeaseId }
+            : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        throwIfAborted(input.signal);
+        assertPageContract(page, { requestedStoreCode: input.storeCode, requestedCursor: cursor });
+        if (page.catalogVersion !== plan.targetCatalogVersion || page.totalCount !== plan.targetTotal) {
+          throw catalogVerificationError("Catalog delta target changed during paged download.", "CATALOG_DELTA_TARGET_CHANGED");
+        }
+        assertUniqueLookupKeys(page.items.map(mapCatalogLookupToStagedItem), seenUpserts);
+        if (page.items.some((item) => seenDeletes.has(item.lookupCodeNormalized))) {
+          throw catalogVerificationError("Catalog delta contains conflicting upsert identities.", "CATALOG_DELTA_INVALID");
+        }
+        for (const deleted of page.deletedLookups) {
+          if (deleted.storeCode !== input.storeCode || seenDeletes.has(deleted.lookupCodeNormalized) || seenUpserts.has(deleted.lookupCodeNormalized)) {
+            throw catalogVerificationError("Catalog delta contains conflicting delete identities.", "CATALOG_DELTA_INVALID");
+          }
+          seenDeletes.add(deleted.lookupCodeNormalized);
+        }
+
+        const stagedItems = page.items.map(mapCatalogLookupToStagedItem);
+        const operationCount = stagedItems.length + page.deletedLookups.length;
+        if (completedItemCount + operationCount > 5_000) {
+          await this.discardStaging(snapshotId);
+          stagingStarted = false;
+          return this.runFullWithFreshPlan(input);
+        }
+        const operations = [
+          ...stagedItems.map((item) => ({
+            kind: "upsert" as const,
+            key: item.lookupCodeNormalized,
+            item,
+          })),
+          ...page.deletedLookups.map((deleted) => ({
+            kind: "delete" as const,
+            key: deleted.lookupCodeNormalized,
+            deleted,
+          })),
+        ].sort((left, right) => left.key.localeCompare(right.key));
+        const localBatches = chunkItems(operations, 500);
+        for (const [batchIndex, batch] of localBatches.entries()) {
+          throwIfAborted(input.signal);
+          await appendDeltaBatch.call(this.storage, snapshotId, {
+            items: batch
+              .filter((operation) => operation.kind === "upsert")
+              .map((operation) => operation.item),
+            deletedLookups: batch
+              .filter((operation) => operation.kind === "delete")
+              .map((operation) => operation.deleted),
+          });
+          throwIfAborted(input.signal);
+          if (batchIndex < localBatches.length - 1 || page.nextCursor !== null) {
+            await this.yieldControl();
+          }
+        }
+        completedPageCount += 1;
+        completedItemCount += operationCount;
+        const finalPage = page.nextCursor === null;
+        if (
+          finalPage
+          && plan.deltaOperationCount !== undefined
+          && plan.deltaOperationCount !== null
+          && completedItemCount !== plan.deltaOperationCount
+        ) {
+          throw catalogVerificationError(
+            "Catalog delta operation count does not match the sync plan.",
+            "CATALOG_DELTA_OPERATION_COUNT_MISMATCH",
+          );
+        }
+        progress({
+          step: "products",
+          percent: finalPage ? 100 : Math.min(99, Math.max(1, completedPageCount)),
+          completedItemCount,
+          totalItemCount: plan.targetTotal,
+          completedPageCount,
+          totalPageCount: 0,
+        });
+        if (finalPage) break;
+        const nextCursor: string | null = page.nextCursor;
+        if (nextCursor === null || seenCursors.has(nextCursor)) {
+          throw catalogVerificationError("Catalog delta pagination cursor repeated.", "CATALOG_CURSOR_REPEATED");
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+        pageNumber += 1;
+      }
+
+      progress({ step: "promotions", percent: 0 });
+      const promotions = await this.remote.getPromotions?.({
+        storeCode: input.storeCode,
+        ...(input.signal ? { signal: input.signal } : {}),
+      }) ?? [];
+      throwIfAborted(input.signal);
+      await this.storage.replacePromotions(snapshotId, promotions);
+      progress({ step: "promotions", percent: 100 });
+      progress({ step: "activate", percent: 0 });
+      await input.beforeActivate?.();
+      throwIfAborted(input.signal);
+      const activatedAt = this.nowIso();
+      const activatedMetadata = await activateDelta.call(this.storage, {
+        sourceSnapshotId: active.snapshotId,
+        baseCatalogVersion: active.catalogVersion,
+        stagingSnapshotId: snapshotId,
+        expectedItemCount: plan.targetTotal,
+        activatedAtIso: activatedAt,
+      });
+      activated = true;
+      const result: CatalogActivationResult = {
+        snapshotId: activatedMetadata.snapshotId,
+        catalogVersion: plan.targetCatalogVersion,
+        itemCount: plan.targetTotal,
+        activatedAt: activatedMetadata.activatedAt,
+      };
+      await input.afterActivate?.(result);
+      progress({ step: "activate", percent: 100 });
+      return result;
+    } catch (error) {
+      if (stagingStarted && !activated) await this.discardStaging(snapshotId);
+      if (isCatalogDeltaFallback(error)) {
+        // base/target 可能在 sync-plan 与首个 delta page 之间过期；清理后同次安全回退全量。
+        return this.runFullWithFreshPlan(input);
+      }
+      throw contextualizeCatalogFailure(error, {
+        pageNumber,
+        completedItemCount,
+        totalItemCount: plan.targetTotal,
+      });
+    }
+  }
+
   /** “重置目录”不会先清空 active：它只是强制重新下载并以同一安全切换流程替换。 */
   public resetAndRedownload(input: CatalogRefreshRequest): Promise<CatalogActivationResult> {
-    return this.downloadAndActivate(input);
+    const operation = this.serial.then(
+      () => this.runFullWithFreshPlan(input),
+      () => this.runFullWithFreshPlan(input),
+    );
+    // 中文注释：reset 与普通刷新共用同一串行门，不能让旧 delta 在重置前插队。
+    this.serial = operation.then(() => undefined, () => undefined);
+    return operation;
   }
+
+  private async discardStaging(snapshotId: string): Promise<void> {
+    const discardStagingBatch = this.storage.discardStagingBatch;
+    if (!discardStagingBatch) {
+      await this.storage.discardStaging(snapshotId);
+      return;
+    }
+    while (true) {
+      const deleted = await discardStagingBatch.call(this.storage, snapshotId, 500);
+      if (deleted <= 0) return;
+      // 中文注释：失败恢复也不得让 30 万级目录的级联删除独占事件循环与 SQLite 队列。
+      await this.yieldControl();
+    }
+  }
+}
+
+function isSyncPlanUnsupported(error: unknown): boolean {
+  const candidate = error as Readonly<{ status?: unknown; code?: unknown }> | null;
+  return candidate?.status === 404
+    || candidate?.status === 501
+    || candidate?.code === "CATALOG_SYNC_PLAN_UNSUPPORTED";
+}
+
+function isCatalogDeltaFallback(error: unknown): boolean {
+  if (error instanceof CatalogSnapshotFailure) {
+    return error.context.code === "CATALOG_SNAPSHOT_EXPIRED"
+      || error.context.code === "CATALOG_DELTA_BASE_CHANGED";
+  }
+
+  const code = (error as Readonly<{ code?: unknown }> | null)?.code;
+  return code === "CATALOG_SNAPSHOT_EXPIRED" || code === "CATALOG_DELTA_BASE_CHANGED";
 }
 
 function contextualizeCatalogFailure(
@@ -390,6 +867,36 @@ function contextualizeCatalogFailure(
       ? { httpStatus: candidate.status }
       : {}),
   });
+}
+
+function assertSyncPlan(plan: CatalogSyncPlan, activeVersion: string | null): void {
+  if (
+    (plan.mode !== "noChange" && plan.mode !== "delta" && plan.mode !== "full")
+    || plan.baseCatalogVersion !== activeVersion
+    || !isCatalogVersion(plan.targetCatalogVersion)
+    || !Number.isSafeInteger(plan.targetTotal)
+    || plan.targetTotal < 0
+    || (
+      plan.deltaOperationCount !== undefined
+      && plan.deltaOperationCount !== null
+      && (
+        !Number.isSafeInteger(plan.deltaOperationCount)
+        || plan.deltaOperationCount < 0
+      )
+    )
+  ) {
+    throw catalogVerificationError("Catalog sync plan is invalid.", "CATALOG_SYNC_PLAN_INVALID");
+  }
+  if (
+    (plan.mode === "noChange" && plan.targetCatalogVersion !== activeVersion)
+    || (plan.mode === "delta" && activeVersion === null)
+  ) {
+    throw catalogVerificationError("Catalog no-change plan has a different target.", "CATALOG_SYNC_PLAN_INVALID");
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function chunkItems<T>(items: readonly T[], batchSize: number): readonly (readonly T[])[] {
@@ -443,7 +950,7 @@ export function mapCatalogLookupToStagedItem(item: CatalogLookupItem): CatalogSt
 }
 
 function assertPageContract(
-  page: VerifiedCatalogSyncPage,
+  page: Pick<VerifiedCatalogSyncPage, "storeCode" | "cursor" | "items" | "nextCursor" | "hasMore" | "totalCount" | "catalogVersion">,
   expected: Readonly<{ requestedStoreCode: string; requestedCursor: string | null }>,
 ): void {
   if (!isCatalogVersion(page.catalogVersion)) {

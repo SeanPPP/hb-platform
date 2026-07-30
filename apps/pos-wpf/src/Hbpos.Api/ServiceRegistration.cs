@@ -46,6 +46,9 @@ public static class ServiceRegistration
         services.AddOptions<SquareWebhookOptions>();
         services.AddOptions<AppUpdateOptions>();
         services.AddOptions<PosIpadOptions>();
+        services.AddOptions<CatalogSnapshotOptions>();
+        services.AddOptions<CatalogSyncOptions>();
+        services.AddOptions<CatalogDailyPrebuildOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -66,6 +69,9 @@ public static class ServiceRegistration
             services.Configure<SquareTerminalRestOptions>(configuration.GetSection("Square"));
             services.Configure<AppUpdateOptions>(configuration.GetSection("AppUpdate"));
             services.Configure<PosIpadOptions>(configuration.GetSection("PosIpad"));
+            services.Configure<CatalogSnapshotOptions>(configuration.GetSection("CatalogSnapshot"));
+            services.Configure<CatalogSyncOptions>(configuration.GetSection("CatalogSync"));
+            services.Configure<CatalogDailyPrebuildOptions>(configuration.GetSection("CatalogDailyPrebuild"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -82,7 +88,9 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRuntimeStatusSchemaSqlExecutor, SqlSugarDeviceRuntimeStatusSchemaSqlExecutor>();
         services.AddScoped<IDeviceRuntimeStatusSchemaInitializer, SqlSugarDeviceRuntimeStatusSchemaInitializer>();
         services.AddScoped<ICashierService, CashierService>();
-        services.AddScoped<ICatalogService, CatalogService>();
+        services.AddScoped<CatalogService>();
+        services.AddScoped<ICatalogService>(sp => sp.GetRequiredService<CatalogService>());
+        services.AddScoped<ICatalogIndexRefreshWorker>(sp => sp.GetRequiredService<CatalogService>());
         services.AddScoped<IPromotionRuleService, PromotionRuleService>();
         services.AddScoped<IAdvertisementPlaybackService, AdvertisementPlaybackService>();
         services.AddScoped<IStoreSchemaSqlExecutor, SqlSugarStoreSchemaSqlExecutor>();
@@ -145,7 +153,24 @@ public static class ServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddScoped<ISquareTerminalBackendService, SquareTerminalBackendService>();
+        services.AddSingleton<ICatalogSnapshotStore>(sp =>
+        {
+            var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions>>().Value;
+            var rootPath = string.IsNullOrWhiteSpace(options.RootPath)
+                ? Path.Combine(AppContext.BaseDirectory, "App_Data", "CatalogSnapshots")
+                : options.RootPath;
+            return new GzipCatalogSnapshotStore(rootPath, options.MaxSnapshotsPerStore);
+        });
+        services.AddSingleton<CatalogBackgroundRefreshService>();
+        services.AddSingleton<ICatalogBackgroundRefreshScheduler>(
+            sp => sp.GetRequiredService<CatalogBackgroundRefreshService>());
+        services.AddHostedService(
+            sp => sp.GetRequiredService<CatalogBackgroundRefreshService>());
+        services.AddSingleton<IActiveCatalogStoreProvider, CatalogActiveStoreProvider>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddHostedService<CatalogDailyPrebuildService>();
         services.AddSingleton<ICatalogIndexCache, CatalogIndexCache>();
+        services.AddSingleton<ICatalogBaseDataCache, CatalogBaseDataCache>();
         services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
         services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();
         services.AddScoped<IStoreVoucherReservationService, SqlSugarStoreVoucherReservationService>();
