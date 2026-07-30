@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -34,7 +35,7 @@ const HELP_TEXT = `
   --message <message>           EAS Update 发布说明。
   --project-id <uuid>           专用 EAS projectId；默认读取 EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID。
   --center-base-url <url>       Center 根地址；默认读取 HBPOS_OTA_CENTER_BASE_URL。
-  --access-token <jwt>          具备更新管理权限的三段 base64url 管理员 JWT；默认读取 HBPOS_OTA_CENTER_ACCESS_TOKEN。
+  --access-token-stdin          从标准输入读取管理员 JWT；默认读取 HBPOS_OTA_CENTER_ACCESS_TOKEN。
   --dry-run                     只打印 channel:create、update 和待登记 JSON，不执行 EAS、不发送网络写入。
   --mock-output-file <path>     dry-run 时解析保存的 eas update --json 输出。
   --help, -h                    显示帮助。
@@ -155,6 +156,7 @@ function buildEasEnvironment(options, environment) {
   // 管理员凭据绝不能进入 EAS；旧 service token 环境变量也只剔除、不兼容读取。
   const {
     HBPOS_OTA_CENTER_ACCESS_TOKEN: _accessToken,
+    HBPOS_OTA_ADMIN_JWT: _documentedAdminJwt,
     HBPOS_OTA_SERVICE_TOKEN: _legacyServiceToken,
     ...childEnvironment
   } = environment;
@@ -314,16 +316,18 @@ export async function runPublishPosIpadOtaRelease(
     environment = process.env,
     logger = console,
     preflightOtaReleaseFn = preflightOtaRelease,
+    readAccessTokenStdinFn = readAccessTokenFromStdin,
     readMockOutputFn = readMockOutput,
     registerOtaReleaseFn = registerOtaRelease,
     runCommandFn = runCommand,
   } = {},
 ) {
   validateOptions(options);
-  const configuration = resolveConfiguration(
+  const configuration = await resolveConfiguration(
     options,
     environment,
     options.dryRun !== true,
+    readAccessTokenStdinFn,
   );
   const channelCreateCommand = buildEasChannelCreateCommand(
     options,
@@ -431,6 +435,21 @@ export function parsePublishOtaArgs(argv) {
       options.dryRun = true;
       continue;
     }
+    if (argument === "--access-token-stdin") {
+      if (options.accessTokenStdin === true) {
+        throw new Error("参数 --access-token-stdin 不能重复");
+      }
+      options.accessTokenStdin = true;
+      continue;
+    }
+    if (
+      argument === "--access-token" ||
+      argument.startsWith("--access-token=")
+    ) {
+      throw new Error(
+        "禁止使用 --access-token 传递凭据；请改用 --access-token-stdin 或 HBPOS_OTA_CENTER_ACCESS_TOKEN",
+      );
+    }
     if (!argument.startsWith("--")) {
       throw new Error(`未知参数：${argument}`);
     }
@@ -454,9 +473,6 @@ export function parsePublishOtaArgs(argv) {
       case "--center-base-url":
         options.centerBaseUrl = value;
         break;
-      case "--access-token":
-        options.accessToken = value;
-        break;
       case "--mock-output-file":
         options.mockOutputFile = value;
         break;
@@ -477,14 +493,21 @@ function validateOptions(options) {
   requiredReleaseChannel(options.releaseChannel);
   requiredText(options.message, "--message", 1_000);
   if (options.accessToken !== undefined) {
-    requiredAccessToken(options.accessToken);
+    throw new Error(
+      "禁止通过 options.accessToken 传递凭据；请使用标准输入或环境变量",
+    );
   }
   if (options.mockOutputFile && options.dryRun !== true) {
     throw new Error("--mock-output-file 只能与 --dry-run 一起使用");
   }
 }
 
-function resolveConfiguration(options, environment, requireRegistration) {
+async function resolveConfiguration(
+  options,
+  environment,
+  requireRegistration,
+  readAccessTokenStdinFn,
+) {
   const projectId = requiredUuid(
     options.projectId ??
       environment.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID,
@@ -504,11 +527,46 @@ function resolveConfiguration(options, environment, requireRegistration) {
     2_048,
   );
   buildRegistrationUrl(centerBaseUrl);
+  const environmentAccessToken =
+    environment.HBPOS_OTA_CENTER_ACCESS_TOKEN;
+  if (
+    options.accessTokenStdin === true &&
+    environmentAccessToken !== undefined
+  ) {
+    throw new Error(
+      "--access-token-stdin 与 HBPOS_OTA_CENTER_ACCESS_TOKEN 不能同时使用",
+    );
+  }
   const accessToken = requiredAccessToken(
-    options.accessToken ??
-      environment.HBPOS_OTA_CENTER_ACCESS_TOKEN,
+    options.accessTokenStdin === true
+      ? await readAccessTokenStdinFn()
+      : environmentAccessToken,
   );
   return { projectId, centerBaseUrl, accessToken };
+}
+
+export async function readAccessTokenFromStdin(
+  input = process.stdin,
+) {
+  if (input.isTTY === true) {
+    throw new Error(
+      "--access-token-stdin 需要非交互标准输入，不能等待 TTY",
+    );
+  }
+  let byteLength = 0;
+  let content = "";
+  for await (const chunk of input) {
+    const buffer = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(String(chunk));
+    byteLength += buffer.byteLength;
+    if (byteLength > 4_096) {
+      throw new Error("管理员 access token 超过 4096 bytes");
+    }
+    content += buffer.toString("utf8");
+  }
+  // 管道工具通常会追加一个换行；只剥离一个行尾，其他空白仍由 JWT 校验拒绝。
+  return content.replace(/\r?\n$/u, "");
 }
 
 function requiredRegistrationGaps(payload) {
@@ -693,7 +751,7 @@ function runCommand({ command, args, env }) {
     const child = spawn(command, args, {
       cwd: process.cwd(),
       env,
-      stdio: ["inherit", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";

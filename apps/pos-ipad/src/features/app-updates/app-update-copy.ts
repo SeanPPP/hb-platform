@@ -14,7 +14,8 @@ export const appUpdateEnglishCopy = {
   "action.working": "Updating…",
   "action.later": "Later",
   "action.settings": "Settings",
-  "action.support": "Support & sync history",
+  "action.support": "Update support",
+  "action.registration": "Device registration",
   "error.notSafe":
     "Finish the current sale or payment recovery before updating.",
   "error.unavailable":
@@ -40,7 +41,8 @@ export const appUpdateChineseCopy: Record<
   "action.working": "正在更新…",
   "action.later": "稍后",
   "action.settings": "设置",
-  "action.support": "支持与同步历史",
+  "action.support": "更新支持",
+  "action.registration": "设备注册",
   "error.notSafe": "请先完成当前交易或支付恢复，再执行更新。",
   "error.unavailable": "已验证的更新暂不可用，请检查网络后重试。",
 };

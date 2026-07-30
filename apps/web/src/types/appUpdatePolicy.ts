@@ -23,6 +23,7 @@ export interface IosAppStoreReleaseCreateRequest {
 }
 
 export interface NativeUpdatePolicyRequest {
+  expectedPolicyVersion: number
   enabled: boolean
   releaseId: string | null
   minimumSupportedVersion: string | null
@@ -30,6 +31,7 @@ export interface NativeUpdatePolicyRequest {
 }
 
 export interface PosIpadNativeUpdatePolicyRequest extends NativeUpdatePolicyRequest {
+  minimumSupportedBuildNumber: number | null
   targetScope: AppUpdateTargetScope
   targetStoreGuids: string[]
 }
@@ -41,6 +43,7 @@ export interface NativeUpdatePolicy {
   releaseId: string | null
   latestVersion: string | null
   minimumSupportedVersion: string | null
+  minimumSupportedBuildNumber: number | null
   appStoreUrl: string | null
   releaseMessage: string | null
   targetScope: AppUpdateTargetScope
@@ -72,6 +75,7 @@ export interface PosIpadOtaRelease {
 }
 
 export interface PosIpadOtaRolloutRequest {
+  expectedPolicyVersion: number
   enabled: boolean
   releaseId: string | null
   forceUpdate: boolean

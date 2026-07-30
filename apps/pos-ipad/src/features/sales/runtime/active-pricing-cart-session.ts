@@ -68,6 +68,7 @@ export interface ActivePricingCartLease {
 export class ActivePricingCartSession {
   private cart: PricingCart;
   private readonly listeners = new Set<() => void>();
+  private readonly leaseReleaseWaiters = new Set<() => void>();
   private readonly committedOrderGuids = new Set<string>();
   private readonly committedOrderGuidOrder: string[] = [];
   private readonly committedOrderTombstoneLimit: number;
@@ -120,6 +121,17 @@ export class ActivePricingCartSession {
   /** EAS reload 只能在没有正在提交的 exclusive 操作时执行。 */
   public hasPendingExclusiveOperation(): boolean {
     return this.activeLeaseToken !== null;
+  }
+
+  /**
+   * 只等待调用时已存在的 lease。transition 已同步封闭新写入后可用此事件式等待，
+   * 避免支付或恢复长时间持锁时用零延迟 timer 轮询 JS 线程。
+   */
+  public waitForExclusiveLeaseRelease(): Promise<void> {
+    if (this.activeLeaseToken === null) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.leaseReleaseWaiters.add(resolve);
+    });
   }
 
   public addItem(input: AddCartItemInput): string {
@@ -627,6 +639,8 @@ export class ActivePricingCartSession {
   private releaseLease(token: symbol): void {
     if (this.activeLeaseToken === token) {
       this.activeLeaseToken = null;
+      for (const resolve of this.leaseReleaseWaiters) resolve();
+      this.leaseReleaseWaiters.clear();
     }
   }
 }

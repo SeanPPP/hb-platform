@@ -584,9 +584,6 @@ export function createProductionPosRuntimeServices(
         }
       : {},
   );
-  input.appUpdateTransition?.bindTransitionBarrier((operation) =>
-    runUpdateTransitionWithActiveCart(activePricingCart, operation),
-  );
   const catalogRepository = input.database.catalogSnapshots();
   const catalogLookupOverlay = input.database.catalogLookupOverlay();
   const localSalesCatalog = {
@@ -717,6 +714,25 @@ export function createProductionPosRuntimeServices(
   );
   catalogue.resumeRetiredCleanup();
   const catalogRefreshCoordinator = new CatalogRefreshCoordinator();
+  const runUpdateOperation = <T>(
+    operation: () => T | Promise<T>,
+  ): Promise<T> => {
+    if (input.appUpdateTransition) {
+      return input.appUpdateTransition.runOperation(operation);
+    }
+    try {
+      return Promise.resolve(operation());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  input.appUpdateTransition?.bindTransitionBarrier((operation) =>
+    // 固定锁序：transition 已封门并等普通 operation 清零，再取原始目录门，
+    // 最后等活动购物车并持锁完成最终安全快照与更新动作。
+    catalogRefreshCoordinator.runExclusive(() =>
+      runUpdateTransitionWithActiveCart(activePricingCart, operation),
+    ),
+  );
   const executeCatalogDownload = (
     cashierLease: TrustedCashierLease,
     requestedStoreCode: string,
@@ -748,28 +764,29 @@ export function createProductionPosRuntimeServices(
     requestedStoreCode: string,
     callerSignal?: AbortSignal | undefined,
     observer?: CatalogRefreshProgressObserver | undefined,
-  ) => {
-    throwIfCatalogRequestAborted(callerSignal);
-    const cashierLease = currentCashier.createLease();
-    const session = requireCatalogDownloadLease(
-      cashierLease,
-      input.auditMetadata,
-      requestedStoreCode,
-    );
-    return catalogRefreshCoordinator.start({
-      storeCode: session.storeCode,
-      execute: ({ signal, onProgress }) =>
-        executeCatalogDownload(
-          cashierLease,
-          session.storeCode,
-          signal,
-          (event) => {
-            onProgress(event);
-            observer?.(event);
-          },
-        ),
+  ) =>
+    runUpdateOperation(() => {
+      throwIfCatalogRequestAborted(callerSignal);
+      const cashierLease = currentCashier.createLease();
+      const session = requireCatalogDownloadLease(
+        cashierLease,
+        input.auditMetadata,
+        requestedStoreCode,
+      );
+      return catalogRefreshCoordinator.start({
+        storeCode: session.storeCode,
+        execute: ({ signal, onProgress }) =>
+          executeCatalogDownload(
+            cashierLease,
+            session.storeCode,
+            signal,
+            (event) => {
+              onProgress(event);
+              observer?.(event);
+            },
+          ),
+      });
     });
-  };
   const specialProducts: SpecialProductsRuntimeFactory = {
     createPresenter: () => {
       const cashierLease = currentCashier.createLease();
@@ -1012,36 +1029,37 @@ export function createProductionPosRuntimeServices(
       },
     });
   };
-  const startCatalogReset = (callerSignal: AbortSignal) => {
-    throwIfCatalogRequestAborted(callerSignal);
-    const cashierLease = currentCashier.createLease();
-    const session = requireSettingsCatalogSession(
-      cashierLease,
-      input.auditMetadata,
-      input.auditMetadata.storeCode,
-      SETTINGS_CATALOG_RESET_PERMISSION,
-    );
-    return catalogRefreshCoordinator.start({
-      storeCode: session.storeCode,
-      execute: async ({ signal, onProgress }) => {
-        const outcome = await downloadSettingsCatalog(
-          catalogue,
-          catalogRepository,
-          promotionSnapshotLoader,
-          cashierLease,
-          input.auditMetadata,
-          input.clock.nowIso,
-          true,
-          signal,
-          onProgress,
-        );
-        void catalogLookupOverlay
-          .cleanupOldGenerations()
-          .catch(() => undefined);
-        return outcome;
-      },
+  const startCatalogReset = (callerSignal: AbortSignal) =>
+    runUpdateOperation(() => {
+      throwIfCatalogRequestAborted(callerSignal);
+      const cashierLease = currentCashier.createLease();
+      const session = requireSettingsCatalogSession(
+        cashierLease,
+        input.auditMetadata,
+        input.auditMetadata.storeCode,
+        SETTINGS_CATALOG_RESET_PERMISSION,
+      );
+      return catalogRefreshCoordinator.start({
+        storeCode: session.storeCode,
+        execute: async ({ signal, onProgress }) => {
+          const outcome = await downloadSettingsCatalog(
+            catalogue,
+            catalogRepository,
+            promotionSnapshotLoader,
+            cashierLease,
+            input.auditMetadata,
+            input.clock.nowIso,
+            true,
+            signal,
+            onProgress,
+          );
+          void catalogLookupOverlay
+            .cleanupOldGenerations()
+            .catch(() => undefined);
+          return outcome;
+        },
+      });
     });
-  };
   const reprint = createAuthorizedFulfilmentAction({
     permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
     action: "reprint-last-receipt",
@@ -1169,7 +1187,9 @@ export function createProductionPosRuntimeServices(
           getRefreshState: catalogRefreshCoordinator.getState,
           subscribeRefresh: catalogRefreshCoordinator.subscribe,
           runExclusive: (operation) =>
-            catalogRefreshCoordinator.runExclusive(operation),
+            runUpdateOperation(() =>
+              catalogRefreshCoordinator.runExclusive(operation),
+            ),
           download: async (signal) =>
             (
               await startCatalogRefresh(
@@ -1314,16 +1334,17 @@ export function createProductionPosRuntimeServices(
     },
     getRefreshState: catalogRefreshCoordinator.getState,
     subscribeRefresh: catalogRefreshCoordinator.subscribe,
-    downloadAndActivate: (request) => {
-      throwIfCatalogRequestAborted(request.signal);
-      const cashierLease = currentCashier.createLease();
-      return executeCatalogDownload(
-        cashierLease,
-        request.storeCode,
-        request.signal ?? new AbortController().signal,
-        request.onProgress ?? (() => undefined),
-      );
-    },
+    downloadAndActivate: (request) =>
+      runUpdateOperation(() => {
+        throwIfCatalogRequestAborted(request.signal);
+        const cashierLease = currentCashier.createLease();
+        return executeCatalogDownload(
+          cashierLease,
+          request.storeCode,
+          request.signal ?? new AbortController().signal,
+          request.onProgress ?? (() => undefined),
+        );
+      }),
   };
 
   return {
@@ -1375,6 +1396,8 @@ export function createProductionPosRuntimeServices(
               input.appUpdateTransition?.isCriticalSectionActive() !==
                 true),
           hasRecoveryRequired,
+          hasCatalogRefreshInFlight:
+            catalogRefreshCoordinator.getState().kind === "running",
           hasSyncOrAuditInFlight: coordinator.isDraining(),
           hasFulfilmentInFlight: fulfilment.isHardwareBusy(),
         });
@@ -2507,17 +2530,8 @@ async function runUpdateTransitionWithActiveCart<T>(
 ): Promise<T> {
   // transition 已先同步关闭普通购物车入口；这里只等待此前已取得的 lease，
   // 不持有普通 operation lease，固定锁序因此不会形成 activeCart 反向等待。
-  while (activeCart.hasPendingExclusiveOperation()) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-  try {
-    return await activeCart.runUpdateTransitionExclusive(() =>
-      operation(),
-    );
-  } catch (error) {
-    if (!activeCart.hasPendingExclusiveOperation()) throw error;
-    return runUpdateTransitionWithActiveCart(activeCart, operation);
-  }
+  await activeCart.waitForExclusiveLeaseRelease();
+  return activeCart.runUpdateTransitionExclusive(() => operation());
 }
 
 function receiptSettingsService(

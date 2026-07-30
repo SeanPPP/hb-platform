@@ -14,7 +14,9 @@ function deferred<T>() {
 }
 
 function createDependencies(
-  results: AutomaticAppUpdateDependencies["checkAndDownload"] extends () => Promise<infer Result> ? Result[] : never[]
+  results: Awaited<
+    ReturnType<AutomaticAppUpdateDependencies["checkAndDownload"]>
+  >[],
 ) {
   const prompts: number[] = [];
   const calls: string[] = [];
@@ -285,6 +287,140 @@ async function run() {
 
     await assert.doesNotReject(apply(), "Alert 异步 onPress 错误必须在内部处理");
     assert.match(String(warnings[0]), /reload failed/);
+  }
+
+  {
+    const barrier = deferred<{ allowed: boolean; epoch: number }>();
+    const calls: string[] = [];
+    const controller = createAutomaticAppUpdateController({
+      checkAndDownload: async () => {
+        calls.push("expo-check");
+        return { status: "downloaded" };
+      },
+      promptRestart: () => {
+        calls.push("prompt");
+      },
+      warn: () => {
+        calls.push("warn");
+      },
+    });
+    controller.updateOptions({
+      enabled: true,
+      beforeCheck: () => barrier.promise,
+      getEpoch: () => 31,
+    });
+
+    const check = controller.check();
+    await Promise.resolve();
+    controller.updateOptions({ enabled: false });
+    controller.cancel();
+    barrier.resolve({ allowed: true, epoch: 31 });
+    await check;
+
+    assert.deepEqual(
+      calls,
+      [],
+      "原生 barrier await 期间禁用自动 OTA 后，不得继续 Expo 检查或提示",
+    );
+  }
+
+  {
+    const expoCheck = deferred<void>();
+    const calls: string[] = [];
+    const controller = createAutomaticAppUpdateController({
+      checkAndDownload: async (guard) => {
+        calls.push("expo-check");
+        await expoCheck.promise;
+        if (!guard.isCurrent()) {
+          return { status: "cancelled" };
+        }
+        calls.push("expo-fetch");
+        return { status: "downloaded" };
+      },
+      promptRestart: () => {
+        calls.push("prompt");
+      },
+      warn: () => {
+        calls.push("warn");
+      },
+    });
+    controller.updateOptions({ enabled: true });
+
+    const check = controller.check();
+    await Promise.resolve();
+    controller.cancel();
+    expoCheck.resolve(undefined);
+    await check;
+
+    assert.deepEqual(
+      calls,
+      ["expo-check"],
+      "Expo check await 期间取消后不得继续 fetch 或提示",
+    );
+  }
+
+  {
+    let firstBarrierCalls = 0;
+    let liveBarrierCalls = 0;
+    let beforeApply: (() => Promise<boolean>) | undefined;
+    const controller = createAutomaticAppUpdateController({
+      checkAndDownload: async () => ({ status: "downloaded" }),
+      promptRestart: (guard) => {
+        beforeApply = guard.beforeApply;
+      },
+      warn: () => undefined,
+    });
+    controller.updateOptions({
+      enabled: true,
+      beforeCheck: async () => {
+        firstBarrierCalls += 1;
+        return { allowed: true, epoch: 41 };
+      },
+      getEpoch: () => 41,
+    });
+
+    await controller.check();
+    controller.updateOptions({
+      enabled: true,
+      beforeCheck: async () => {
+        liveBarrierCalls += 1;
+        return { allowed: false, epoch: 42 };
+      },
+      getEpoch: () => 42,
+    });
+
+    assert.equal(await beforeApply!(), false);
+    assert.equal(firstBarrierCalls, 1, "下载后不得继续捕获旧 options");
+    assert.equal(
+      liveBarrierCalls,
+      1,
+      "用户点击应用时必须读取当前 render 的原生门禁 options",
+    );
+  }
+
+  {
+    const permission = deferred<boolean>();
+    let current = true;
+    let reloadCalls = 0;
+    const apply = createAutomaticAppUpdateApplyHandler({
+      beforeApply: () => permission.promise,
+      isCurrent: () => current,
+      apply: async () => {
+        reloadCalls += 1;
+      },
+      warn: () => undefined,
+    });
+
+    const press = apply();
+    current = false;
+    permission.resolve(true);
+    await press;
+
+    assert.equal(
+      reloadCalls,
+      0,
+      "点击后的异步门禁返回前 generation 失效时不得 reload",
+    );
   }
 
   console.log("automatic-app-update.test.ts: ok");

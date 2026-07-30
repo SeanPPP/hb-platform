@@ -87,6 +87,7 @@ BEGIN TRY
             [PolicyKey] nvarchar(40) NOT NULL,
             [ReleaseId] uniqueidentifier NULL,
             [MinimumSupportedVersion] nvarchar(64) NULL,
+            [MinimumSupportedBuildNumber] int NULL,
             [ReleaseMessage] nvarchar(1000) NULL,
             [TargetScope] nvarchar(16) NOT NULL,
             [Enabled] bit NOT NULL,
@@ -100,6 +101,10 @@ BEGIN TRY
                 CHECK ([TargetScope] IN (N'all', N'stores'))
         );
     END;
+
+    IF COL_LENGTH(N'[dbo].[PosIpadNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL
+        ALTER TABLE [dbo].[PosIpadNativeUpdatePolicy]
+            ADD [MinimumSupportedBuildNumber] int NULL;
 
     IF NOT EXISTS (
         SELECT 1 FROM sys.indexes

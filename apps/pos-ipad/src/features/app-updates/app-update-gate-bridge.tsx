@@ -37,8 +37,7 @@ const HIDDEN_PRESENTATION: AppUpdatePresentation = Object.freeze({
 
 const RECOVERY_ACCESS_PATHS = new Set([
   "/registration",
-  "/settings",
-  "/sync-history",
+  "/update-recovery",
 ]);
 
 export function AppUpdateGateBridge() {
@@ -185,7 +184,11 @@ export function AppUpdateGateBridge() {
             <>
               <Pressable
                 accessibilityRole="button"
-                onPress={() => router.push("/settings" as Href)}
+                onPress={() =>
+                  router.push(
+                    "/update-recovery?section=settings" as Href,
+                  )
+                }
                 style={styles.secondaryButton}
                 testID="app-update-settings-entry"
               >
@@ -195,12 +198,28 @@ export function AppUpdateGateBridge() {
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                onPress={() => router.push("/sync-history" as Href)}
+                onPress={() =>
+                  router.push(
+                    "/update-recovery?section=support" as Href,
+                  )
+                }
                 style={styles.secondaryButton}
                 testID="app-update-support-entry"
               >
                 <Text style={styles.secondaryButtonText}>
                   {copy["action.support"]}
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() =>
+                  router.push("/registration" as Href)
+                }
+                style={styles.secondaryButton}
+                testID="app-update-registration-entry"
+              >
+                <Text style={styles.secondaryButtonText}>
+                  {copy["action.registration"]}
                 </Text>
               </Pressable>
             </>

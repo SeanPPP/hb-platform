@@ -5,8 +5,11 @@ import {
   buildNativeUpdatePolicyRequest,
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
+  isAppUpdatePolicyVersionConflict,
+  isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
   resolveOtaReleaseStatus,
+  validateMinimumSupportedBuildNumber,
   validateTargetStores,
 } from './appUpdatePolicyLogic'
 
@@ -43,15 +46,18 @@ assertDeepEqual(
     enabled: true,
     releaseId: ' release-1 ',
     minimumSupportedVersion: ' 1.1.0 ',
+    minimumSupportedBuildNumber: 28,
     releaseMessage: ' 请升级 ',
     targetScope: 'stores',
     targetStoreGuids: [' store-2 ', 'store-1', 'store-2'],
-  }, true),
+  }, true, 7),
   {
+    expectedPolicyVersion: 7,
     enabled: true,
     releaseId: 'release-1',
     minimumSupportedVersion: '1.1.0',
     releaseMessage: '请升级',
+    minimumSupportedBuildNumber: 28,
     targetScope: 'stores',
     targetStoreGuids: ['store-2', 'store-1'],
   },
@@ -66,8 +72,9 @@ assertDeepEqual(
     releaseMessage: '',
     targetScope: 'stores',
     targetStoreGuids: ['store-1'],
-  }, false),
+  }, false, 5),
   {
+    expectedPolicyVersion: 5,
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: '1.0.0',
@@ -81,14 +88,26 @@ assertDeepEqual(
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: ' ',
-  }, false),
+  }, false, 0),
   {
+    expectedPolicyVersion: 0,
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: null,
     releaseMessage: null,
   },
   '原生策略最低版本留空时应仅提供可选更新，不得误启用强制门禁',
+)
+assertEqual(
+  buildNativeUpdatePolicyRequest({
+    enabled: true,
+    releaseId: 'release-ipad',
+    minimumSupportedVersion: ' ',
+    minimumSupportedBuildNumber: 28,
+    targetScope: 'all',
+  }, true, 4).minimumSupportedBuildNumber,
+  null,
+  'iPad 最低构建号不得脱离最低支持版本写入请求',
 )
 
 assertDeepEqual(
@@ -99,11 +118,13 @@ assertDeepEqual(
     releaseMessage: 'old',
     targetScope: 'stores',
     targetStoreGuids: ['store-1'],
-  }, true),
+  }, true, 9),
   {
+    expectedPolicyVersion: 9,
     enabled: false,
     releaseId: null,
     minimumSupportedVersion: null,
+    minimumSupportedBuildNumber: null,
     releaseMessage: null,
     targetScope: 'all',
     targetStoreGuids: [],
@@ -119,8 +140,9 @@ assertDeepEqual(
     targetScope: 'stores',
     targetStoreGuids: ['store-1'],
     releaseMessage: 'old',
-  }),
+  }, 11),
   {
+    expectedPolicyVersion: 11,
     enabled: false,
     releaseId: null,
     forceUpdate: false,
@@ -136,6 +158,7 @@ assertDeepEqual(
     enabled: true,
     releaseId: ' release-1 ',
     minimumSupportedVersion: ' 1.1.0 ',
+    minimumSupportedBuildNumber: 28,
     targetScope: 'stores',
     targetStoreGuids: [' store-2 ', 'store-1', 'store-2'],
   }, true),
@@ -145,8 +168,9 @@ assertDeepEqual(
     targetStoreGuids: ['store-2', 'store-1'],
     updateMode: 'required',
     minimumSupportedVersion: '1.1.0',
+    minimumSupportedBuildNumber: 28,
   },
-  'iPad 原生二次确认必须展示规范化后的发布、分店范围和最低支持版本',
+  'iPad 原生二次确认必须展示规范化后的发布、分店范围、最低支持版本和构建号',
 )
 
 assertDeepEqual(
@@ -163,6 +187,7 @@ assertDeepEqual(
     targetStoreGuids: [],
     updateMode: 'optional',
     minimumSupportedVersion: null,
+    minimumSupportedBuildNumber: null,
   },
   'Mobile 原生二次确认必须固定为全局范围，并明确可选更新',
 )
@@ -181,6 +206,7 @@ assertDeepEqual(
     targetStoreGuids: ['store-1'],
     updateMode: 'required',
     minimumSupportedVersion: null,
+    minimumSupportedBuildNumber: null,
   },
   'OTA 二次确认必须展示已登记发布、投放范围和强制状态',
 )
@@ -188,6 +214,65 @@ assertDeepEqual(
 assertEqual(validateTargetStores('all', []), true, '全部分店目标无需选择 GUID')
 assertEqual(validateTargetStores('stores', []), false, '指定分店至少选择一项')
 assertEqual(validateTargetStores('stores', ['store-1']), true, '指定分店有 GUID 时可保存')
+assertEqual(isValidPosIpadBuildNumber('0'), true, 'iPad 构建号允许 Int32 最小值 0')
+assertEqual(
+  isValidPosIpadBuildNumber('2147483647'),
+  true,
+  'iPad 构建号允许 Int32 最大值',
+)
+assertEqual(isValidPosIpadBuildNumber('-1'), false, 'iPad 构建号不允许负数')
+assertEqual(isValidPosIpadBuildNumber('1.5'), false, 'iPad 构建号不允许小数')
+assertEqual(
+  isValidPosIpadBuildNumber('2147483648'),
+  false,
+  'iPad 构建号不得超过 Int32 最大值',
+)
+assertEqual(isValidPosIpadBuildNumber('build-28'), false, 'iPad 构建号只允许整数')
+assertEqual(
+  validateMinimumSupportedBuildNumber('1.2.0', 28),
+  true,
+  '填写最低支持版本后才可设置 iPad 最低构建号',
+)
+assertEqual(
+  validateMinimumSupportedBuildNumber(' ', 28),
+  false,
+  'iPad 最低构建号不能脱离最低支持版本单独生效',
+)
+assertEqual(
+  validateMinimumSupportedBuildNumber('1.2.0', 2_147_483_648),
+  false,
+  'iPad 最低构建号表单不得接受超过 Int32 的数值',
+)
+assertEqual(
+  validateMinimumSupportedBuildNumber(null, null),
+  true,
+  '未设置最低构建号时无需最低支持版本',
+)
+
+assertEqual(
+  isAppUpdatePolicyVersionConflict({
+    status: 409,
+    payload: { errorCode: 'APP_UPDATE_POLICY_VERSION_CONFLICT' },
+  }),
+  true,
+  '策略版本冲突必须按 HTTP 409 和冻结错误码识别',
+)
+assertEqual(
+  isAppUpdatePolicyVersionConflict({
+    status: 409,
+    payload: { errorCode: 'APP_UPDATE_POLICY_VERSION_REQUIRED' },
+  }),
+  true,
+  '遗漏 expectedPolicyVersion 的 409 也必须重新加载权威状态',
+)
+assertEqual(
+  isAppUpdatePolicyVersionConflict({
+    status: 500,
+    payload: { errorCode: 'APP_UPDATE_POLICY_VERSION_CONFLICT' },
+  }),
+  false,
+  '非 409 响应不得误报并发冲突',
+)
 
 assertEqual(
   resolveNativeReleaseStatus('release-1', 'release-1', true),
@@ -212,6 +297,10 @@ assertEqual(
 
 const panelSource = readFileSync(
   'src/pages/System/AppDownloads/AppUpdatePolicyPanel.tsx',
+  'utf8',
+)
+const requestLogicSource = readFileSync(
+  'src/pages/System/AppDownloads/appUpdatePolicyRequestLogic.ts',
   'utf8',
 )
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
@@ -271,6 +360,71 @@ assertEqual(
   registerHandlerSource.includes('onOk:'),
   true,
   'App Store 不可变发布事实只能由二次确认的 onOk 发起登记',
+)
+for (const lane of [
+  'loadMobileNativeLane',
+  'loadIpadNativeLane',
+  'loadIpadOtaLane',
+  'loadStoreOptionsLane',
+]) {
+  assertEqual(
+    panelSource.includes(lane),
+    true,
+    `更新策略必须保留独立加载通道 ${lane}`,
+  )
+}
+assertEqual(
+  panelSource.includes('Promise.allSettled(['),
+  true,
+  '全局刷新必须并发启动四个独立加载通道',
+)
+assertEqual(
+  requestLogicSource.includes('new AbortController()'),
+  true,
+  '每个加载通道必须以 AbortController 取消旧请求',
+)
+assertEqual(
+  panelSource.includes('savePolicyWithConflictReload('),
+  true,
+  '409 并发冲突必须走显式识别和权威状态重载',
+)
+const storeOptionsLaneSource = panelSource.slice(
+  panelSource.indexOf('const loadStoreOptionsLane'),
+  panelSource.indexOf('const refreshAll'),
+)
+assertEqual(
+  storeOptionsLaneSource.includes('() => setStoreOptions([])'),
+  true,
+  'Store options 加载失败必须清除旧名称，让现有策略回退显示 GUID',
+)
+assertEqual(
+  panelSource.includes('storeOptionsUsable'),
+  true,
+  'Store options 不可用时必须阻止指定分店策略保存',
+)
+assertEqual(
+  panelSource.includes('minimumSupportedBuildNumber'),
+  true,
+  'iPad 原生策略表单和确认摘要必须接入最低支持构建号',
+)
+assertEqual(
+  panelSource.includes('ipadBuildNotVerifiedWarning'),
+  true,
+  'iPad App Store 登记必须明确提示 Apple Lookup 不校验构建号',
+)
+const policyConfirmSource = panelSource.slice(
+  panelSource.indexOf('function confirmPolicySave'),
+  panelSource.indexOf('async function saveNativePolicy'),
+)
+assertEqual(
+  policyConfirmSource.includes("nativeApp === 'pos-ipad'"),
+  true,
+  '只有 iPad 原生策略激活确认需要显示构建号人工核对警告',
+)
+assertEqual(
+  policyConfirmSource.includes('ipadPolicyBuildConfirmDescription'),
+  true,
+  'iPad 原生策略激活前必须再次确认 Apple Lookup 未验证构建号',
 )
 
 console.log('appUpdatePolicyLogic.test.ts: ok')

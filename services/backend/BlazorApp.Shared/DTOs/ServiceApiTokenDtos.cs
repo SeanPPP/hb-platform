@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -25,11 +26,14 @@ namespace BlazorApp.Shared.DTOs
         public string? LastUsedIp { get; set; }
     }
 
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed class ServiceApiTokenCreateRequestDto
     {
         [Required]
         [StringLength(120, MinimumLength = 1)]
         public string Name { get; set; } = string.Empty;
+
+        public string? Purpose { get; set; }
     }
 
     public sealed class ServiceApiTokenCreateResponseDto

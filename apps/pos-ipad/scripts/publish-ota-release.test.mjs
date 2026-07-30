@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
@@ -13,6 +14,7 @@ import {
   parseEasUpdateOutput,
   parsePublishOtaArgs,
   preflightOtaRelease,
+  readAccessTokenFromStdin,
   registerOtaRelease,
   runPublishPosIpadOtaRelease,
 } from "./publish-ota-release.mjs";
@@ -27,6 +29,7 @@ const liveEnvironment = Object.freeze({
   EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
   HBPOS_OTA_CENTER_BASE_URL: "https://center.example",
   HBPOS_OTA_CENTER_ACCESS_TOKEN: administratorAccessToken,
+  HBPOS_OTA_ADMIN_JWT: administratorAccessToken,
 });
 const jsonOutput = JSON.stringify([
   {
@@ -126,6 +129,11 @@ test("EAS 先创建独立 channel 再发布 iOS update，两个子进程都移�
   for (const command of [createCommand, updateCommand]) {
     assert.equal(command.env.HBPOS_OTA_CENTER_ACCESS_TOKEN, undefined);
     assert.equal(
+      command.env.HBPOS_OTA_ADMIN_JWT,
+      undefined,
+      "README 使用的管理员 JWT 变量也不得进入 EAS 子进程",
+    );
+    assert.equal(
       command.env.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID,
       projectId,
     );
@@ -201,13 +209,16 @@ test("dry-run 零网络零 EAS，只打印两个预期命令和待登记 payload
       message: "门店修复",
       releaseChannel,
       mockOutputFile: "mock.json",
-      accessToken: administratorAccessToken,
+      accessTokenStdin: true,
     },
     {
       environment: {
         EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
       },
       logger: { log: (value) => logs.push(String(value)) },
+      readAccessTokenStdinFn: async () => {
+        throw new Error("dry-run 不得读取标准输入");
+      },
       readMockOutputFn: async () => jsonOutput,
       runCommandFn: async () => {
         commands += 1;
@@ -802,7 +813,7 @@ test("EAS JSON 显式返回 channel 时必须与命令及 payload 一致", async
   assert.equal(registrations, 0);
 });
 
-test("CLI 只接受 --access-token，不保留 --service-token 误导别名", () => {
+test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
   assert.equal(
     parsePublishOtaArgs([
       "--runtime-version",
@@ -811,10 +822,39 @@ test("CLI 只接受 --access-token，不保留 --service-token 误导别名", ()
       releaseChannel,
       "--message",
       "门店修复",
-      "--access-token",
-      administratorAccessToken,
-    ]).accessToken,
-    administratorAccessToken,
+      "--access-token-stdin",
+    ]).accessTokenStdin,
+    true,
+  );
+  assert.throws(
+    () =>
+      parsePublishOtaArgs([
+        "--runtime-version",
+        "1.2.3",
+        "--release-channel",
+        releaseChannel,
+        "--message",
+        "门店修复",
+        "--access-token",
+        administratorAccessToken,
+      ]),
+    /禁止使用 --access-token/,
+  );
+  assert.throws(
+    () =>
+      parsePublishOtaArgs([
+        "--runtime-version",
+        "1.2.3",
+        "--release-channel",
+        releaseChannel,
+        "--message",
+        "门店修复",
+        `--access-token=${administratorAccessToken}`,
+      ]),
+    (error) =>
+      error instanceof Error &&
+      /禁止使用 --access-token/u.test(error.message) &&
+      !error.message.includes(administratorAccessToken),
   );
   assert.throws(
     () =>
@@ -829,5 +869,91 @@ test("CLI 只接受 --access-token，不保留 --service-token 误导别名", ()
         "hbsvc_read_only",
       ]),
     /未知参数.*--service-token/,
+  );
+});
+
+test("stdin token 仅允许单行有限 JWT，TTY、超长与环境变量冲突均在 EAS 前失败", async () => {
+  const baseOptions = {
+    accessTokenStdin: true,
+    runtimeVersion: "1.2.3",
+    message: "门店修复",
+    releaseChannel,
+  };
+  const baseEnvironment = {
+    EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
+    HBPOS_OTA_CENTER_BASE_URL: "https://center.example",
+  };
+  let commands = 0;
+  const dependencies = {
+    environment: baseEnvironment,
+    logger: { log() {} },
+    preflightOtaReleaseFn: async () => {},
+    registerOtaReleaseFn: async () => ({
+      url: "https://center.example/api/pos-ipad/ota-releases",
+    }),
+    runCommandFn: async () => {
+      commands += 1;
+      return { stdout: jsonOutput, stderr: "" };
+    },
+  };
+
+  await runPublishPosIpadOtaRelease(baseOptions, {
+    ...dependencies,
+    readAccessTokenStdinFn: async () => administratorAccessToken,
+  });
+  assert.equal(commands, 2);
+
+  for (const token of [
+    "",
+    "header.payload.signature\nsecond.token.value",
+    `header.payload.${"x".repeat(4_100)}`,
+  ]) {
+    commands = 0;
+    await assert.rejects(
+      () =>
+        runPublishPosIpadOtaRelease(baseOptions, {
+          ...dependencies,
+          readAccessTokenStdinFn: async () => token,
+        }),
+      /JWT|access token|4096/i,
+    );
+    assert.equal(commands, 0);
+  }
+
+  commands = 0;
+  await assert.rejects(
+    () =>
+      runPublishPosIpadOtaRelease(baseOptions, {
+        ...dependencies,
+        environment: {
+          ...baseEnvironment,
+          HBPOS_OTA_CENTER_ACCESS_TOKEN: administratorAccessToken,
+        },
+        readAccessTokenStdinFn: async () => {
+          throw new Error("冲突时不得读取 stdin");
+        },
+      }),
+    /不能同时使用/,
+  );
+  assert.equal(commands, 0);
+
+  const tty = Readable.from([]);
+  tty.isTTY = true;
+  await assert.rejects(
+    () => readAccessTokenFromStdin(tty),
+    /TTY/,
+  );
+  assert.equal(
+    await readAccessTokenFromStdin(
+      Readable.from([`${administratorAccessToken}\n`]),
+    ),
+    administratorAccessToken,
+  );
+  await assert.rejects(
+    () =>
+      readAccessTokenFromStdin(
+        Readable.from(["x".repeat(4_097)]),
+      ),
+    /4096/,
   );
 });

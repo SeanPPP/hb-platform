@@ -1,9 +1,11 @@
 using System.Security.Claims;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 namespace BlazorApp.Api.Authorization
 {
@@ -11,15 +13,19 @@ namespace BlazorApp.Api.Authorization
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly ILogger<PermissionAuthorizationHandler> _logger;
+        private readonly bool _allowLegacyManageTokenForAppUpdateDecisions;
 
         public PermissionAuthorizationHandler(
             IServiceScopeFactory serviceScopeFactory,
             IMemoryCache cache,
-            ILogger<PermissionAuthorizationHandler> logger
+            ILogger<PermissionAuthorizationHandler> logger,
+            IOptions<AppUpdatePolicyOptions> appUpdatePolicyOptions
         )
         {
             _serviceScopeFactory = serviceScopeFactory;
             _logger = logger;
+            _allowLegacyManageTokenForAppUpdateDecisions =
+                appUpdatePolicyOptions.Value.AllowLegacyManageTokenForAppUpdateDecisions;
         }
 
         protected override async Task HandleRequirementAsync(
@@ -32,6 +38,22 @@ namespace BlazorApp.Api.Authorization
                 // 关键位置：service token 只认认证 handler 写入的专用 scope，不能回落到用户角色或普通 permission claim。
                 if (HasServiceApiScope(context.User, requirement.Permission))
                 {
+                    context.Succeed(requirement);
+                }
+                else if (
+                    _allowLegacyManageTokenForAppUpdateDecisions
+                    && string.Equals(
+                        requirement.Permission,
+                        ServiceApiScopes.ReadAppUpdateDecisions,
+                        StringComparison.Ordinal
+                    )
+                    && HasServiceApiScope(
+                        context.User,
+                        Permissions.System.ManageAppDownloads
+                    )
+                )
+                {
+                    // 仅 decision-read policy 临时接受旧 scope，避免形成全局权限别名。
                     context.Succeed(requirement);
                 }
 

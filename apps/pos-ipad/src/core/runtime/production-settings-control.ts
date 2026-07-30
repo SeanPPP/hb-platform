@@ -193,7 +193,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
     signal: AbortSignal,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
-    if (action.kind === "reset-catalog") {
+    if (
+      action.kind === "reset-catalog" ||
+      action.kind === "restart-app"
+    ) {
+      // App 更新会自行取得 transition 的目录独占门；此处预拿普通门会与其等待
+      // operation 清零形成自锁。目录重置则由共享后台 coordinator 自己互斥。
       return this.executeDangerousActionGuarded(action, signal);
     }
     try {

@@ -82,6 +82,7 @@ test("required 在交易未安全时只阻止新交易，安全后升级为全�
           hasUnresolvedPayment: false,
           hasPendingDurableWrite: false,
           hasRecoveryRequired: false,
+          hasCatalogRefreshInFlight: false,
           hasSyncOrAuditInFlight: false,
           hasFulfilmentInFlight: false,
         };
@@ -136,6 +137,7 @@ test("安全快照 await 期间策略变化时 fail-closed，绝不使用已过�
     hasUnresolvedPayment: boolean;
     hasPendingDurableWrite: boolean;
     hasRecoveryRequired: boolean;
+    hasCatalogRefreshInFlight: boolean;
     hasSyncOrAuditInFlight: boolean;
     hasFulfilmentInFlight: boolean;
   }>();
@@ -429,6 +431,7 @@ function safeSnapshot() {
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
     hasRecoveryRequired: false,
+    hasCatalogRefreshInFlight: false,
     hasSyncOrAuditInFlight: false,
     hasFulfilmentInFlight: false,
   } as const;

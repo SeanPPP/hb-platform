@@ -204,6 +204,34 @@ test("安全重启探针只在 exclusive durable 操作期间报告 pending", as
   assert.equal(activeCart.hasPendingExclusiveOperation(), false);
 });
 
+test("更新切换以事件等待当前 lease，并在成功或异常释放后唤醒全部 waiter", async () => {
+  const activeCart = session(cartWithLine());
+  const release = deferred<void>();
+  const running = activeCart.runExclusive(async () => {
+    await release.promise;
+    throw new Error("durable operation failed");
+  });
+  let firstReleased = false;
+  let secondReleased = false;
+  const first = activeCart.waitForExclusiveLeaseRelease().then(() => {
+    firstReleased = true;
+  });
+  const second = activeCart.waitForExclusiveLeaseRelease().then(() => {
+    secondReleased = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(firstReleased, false);
+  assert.equal(secondReleased, false);
+
+  release.resolve();
+  await assert.rejects(running, /durable operation failed/u);
+  await Promise.all([first, second]);
+  assert.equal(firstReleased, true);
+  assert.equal(secondReleased, true);
+  await activeCart.waitForExclusiveLeaseRelease();
+});
+
 test("可选更新 guard 仅在 transition 活跃时拒绝新 mutation，默认与 finally 恢复后行为不变", async () => {
   let transitionActive = false;
   const activeCart = new ActivePricingCartSession(

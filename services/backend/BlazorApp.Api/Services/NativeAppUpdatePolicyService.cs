@@ -31,6 +31,19 @@ public sealed class NativeAppUpdatePolicyService(
         string currentUser
     )
     {
+        if (!request.ExpectedPolicyVersion.HasValue)
+        {
+            var current = await db.Queryable<MobileIosNativeUpdatePolicy>()
+                .FirstAsync(item =>
+                    item.PolicyKey == MobilePolicyKey && !item.IsDeleted
+                );
+            return PolicyVersionError(
+                AppUpdatePolicyErrorCodes.VersionRequired,
+                request.ExpectedPolicyVersion,
+                current?.PolicyVersion ?? 0
+            );
+        }
+
         var validation = await ValidateNativePolicyAsync(
             request,
             AppUpdateApps.MobileIos
@@ -43,6 +56,7 @@ public sealed class NativeAppUpdatePolicyService(
         for (var attempt = 0; attempt < 2; attempt++)
         {
             NativeUpdatePolicyDto? saved = null;
+            ApiResponse<NativeUpdatePolicyDto>? mutationError = null;
             var transaction = await db.Ado.UseTranAsync(async () =>
             {
                 await AppUpdatePolicyMutationLock.AcquireAsync(
@@ -56,18 +70,32 @@ public sealed class NativeAppUpdatePolicyService(
                 Guid? releaseId = request.Enabled ? validation.Release!.Id : null;
                 var minimumVersion = request.Enabled ? validation.MinimumVersion : null;
                 var releaseMessage = request.Enabled ? validation.ReleaseMessage : null;
+                var actualPolicyVersion = existing?.PolicyVersion ?? 0;
                 if (
-                    existing is not null
-                    && IsSameMobilePolicy(
-                        existing,
-                        request.Enabled,
-                        releaseId,
-                        minimumVersion,
-                        releaseMessage
-                    )
+                    existing is null
+                        ? !request.Enabled
+                        : IsSameMobilePolicy(
+                            existing,
+                            request.Enabled,
+                            releaseId,
+                            minimumVersion,
+                            releaseMessage
+                        )
                 )
                 {
-                    saved = await MapMobilePolicyAsync(existing);
+                    saved = existing is null
+                        ? EmptyPolicy()
+                        : await MapMobilePolicyAsync(existing);
+                    return;
+                }
+
+                if (request.ExpectedPolicyVersion.Value != actualPolicyVersion)
+                {
+                    mutationError = PolicyVersionError(
+                        AppUpdatePolicyErrorCodes.VersionConflict,
+                        request.ExpectedPolicyVersion,
+                        actualPolicyVersion
+                    );
                     return;
                 }
 
@@ -99,6 +127,11 @@ public sealed class NativeAppUpdatePolicyService(
 
                 saved = await MapMobilePolicyAsync(entity);
             });
+
+            if (mutationError is not null)
+            {
+                return mutationError;
+            }
 
             if (transaction.IsSuccess && saved is not null)
             {
@@ -145,6 +178,19 @@ public sealed class NativeAppUpdatePolicyService(
         string currentUser
     )
     {
+        if (!request.ExpectedPolicyVersion.HasValue)
+        {
+            var current = await db.Queryable<PosIpadNativeUpdatePolicy>()
+                .FirstAsync(item =>
+                    item.PolicyKey == PosIpadPolicyKey && !item.IsDeleted
+                );
+            return PolicyVersionError(
+                AppUpdatePolicyErrorCodes.VersionRequired,
+                request.ExpectedPolicyVersion,
+                current?.PolicyVersion ?? 0
+            );
+        }
+
         var validation = await ValidateNativePolicyAsync(request, AppUpdateApps.PosIpad);
         if (!validation.Success)
         {
@@ -192,27 +238,45 @@ public sealed class NativeAppUpdatePolicyService(
                 var minimumVersion = request.Enabled
                     ? validation.MinimumVersion
                     : null;
+                var minimumBuildNumber = request.Enabled
+                    ? validation.MinimumBuildNumber
+                    : null;
                 var releaseMessage = request.Enabled
                     ? validation.ReleaseMessage
                     : null;
                 var targetScope = request.Enabled
                     ? targetValidation.TargetScope
                     : AppUpdateTargetScopes.All;
+                var actualPolicyVersion = existing?.PolicyVersion ?? 0;
                 if (
-                    existing is not null
-                    && IsSamePosIpadPolicy(
-                        existing,
-                        existingTargets,
-                        request.Enabled,
-                        releaseId,
-                        minimumVersion,
-                        releaseMessage,
-                        targetScope,
-                        targetValidation.StoreGuids
-                    )
+                    existing is null
+                        ? !request.Enabled
+                        : IsSamePosIpadPolicy(
+                            existing,
+                            existingTargets,
+                            request.Enabled,
+                            releaseId,
+                            minimumVersion,
+                            minimumBuildNumber,
+                            releaseMessage,
+                            targetScope,
+                            targetValidation.StoreGuids
+                        )
                 )
                 {
-                    saved = await MapPosIpadPolicyAsync(existing);
+                    saved = existing is null
+                        ? EmptyPolicy()
+                        : await MapPosIpadPolicyAsync(existing);
+                    return;
+                }
+
+                if (request.ExpectedPolicyVersion.Value != actualPolicyVersion)
+                {
+                    validationError = PolicyVersionError(
+                        AppUpdatePolicyErrorCodes.VersionConflict,
+                        request.ExpectedPolicyVersion,
+                        actualPolicyVersion
+                    );
                     return;
                 }
 
@@ -228,6 +292,7 @@ public sealed class NativeAppUpdatePolicyService(
                 entity.Enabled = request.Enabled;
                 entity.ReleaseId = releaseId;
                 entity.MinimumSupportedVersion = minimumVersion;
+                entity.MinimumSupportedBuildNumber = minimumBuildNumber;
                 entity.ReleaseMessage = releaseMessage;
                 entity.TargetScope = targetScope;
                 entity.PolicyVersion = (existing?.PolicyVersion ?? 0) + 1;
@@ -349,7 +414,6 @@ public sealed class NativeAppUpdatePolicyService(
         PosIpadNativeDecisionRequest request
     )
     {
-        _ = request.Build;
         var store = await ResolveActiveStoreAsync(request.StoreCode);
         if (store is null)
         {
@@ -370,11 +434,13 @@ public sealed class NativeAppUpdatePolicyService(
         var release = await LoadVerifiedReleaseAsync(policy.ReleaseId.Value, AppUpdateApps.PosIpad);
         return release is null
             ? NoNativeDecision()
-            : BuildNativeDecision(
+            : BuildPosIpadNativeDecision(
                 request.Version,
+                request.Build,
                 policy.PolicyVersion,
                 release,
                 policy.MinimumSupportedVersion,
+                policy.MinimumSupportedBuildNumber,
                 policy.ReleaseMessage
             );
     }
@@ -415,7 +481,19 @@ public sealed class NativeAppUpdatePolicyService(
             );
         }
 
-        if (!AppMarketingVersion.TryParse(release.Version, out var latest))
+        var isPosIpad = string.Equals(
+            expectedApp,
+            AppUpdateApps.PosIpad,
+            StringComparison.Ordinal
+        );
+        if (
+            isPosIpad
+                ? !PosIpadEffectiveVersion.TryParseMarketing(
+                    release.Version,
+                    out _
+                )
+                : !AppMarketingVersion.TryParse(release.Version, out _)
+        )
         {
             return NativePolicyValidation.Fail(
                 "LATEST_VERSION_INVALID",
@@ -423,27 +501,101 @@ public sealed class NativeAppUpdatePolicyService(
             );
         }
 
+        PosIpadEffectiveVersion latestIpadVersion = default;
+        if (
+            isPosIpad
+            && !PosIpadEffectiveVersion.TryCreate(
+                release.Version,
+                release.BuildNumber,
+                out latestIpadVersion
+            )
+        )
+        {
+            return NativePolicyValidation.Fail(
+                "LATEST_BUILD_NUMBER_INVALID",
+                "iPad App Store 发布 build 必须是 0 到 Int32.MaxValue 的整数"
+            );
+        }
+
         var minimum = NormalizeOptional(request.MinimumSupportedVersion);
+        var minimumBuild = isPosIpad
+            ? ((PosIpadNativeUpdatePolicyRequest)request).MinimumSupportedBuildNumber
+            : null;
+        if (minimumBuild.HasValue && minimum is null)
+        {
+            return NativePolicyValidation.Fail(
+                "MINIMUM_BUILD_REQUIRES_VERSION",
+                "设置最低支持 build 时必须同时设置最低支持版本"
+            );
+        }
+
+        if (minimumBuild < 0)
+        {
+            return NativePolicyValidation.Fail(
+                "MINIMUM_BUILD_INVALID",
+                "最低支持 build 必须是非负整数"
+            );
+        }
+
         if (minimum is not null)
         {
-            if (!AppMarketingVersion.TryParse(minimum, out var parsedMinimum))
+            if (isPosIpad)
             {
-                return NativePolicyValidation.Fail(
-                    "MINIMUM_VERSION_INVALID",
-                    "最低支持版本无效"
-                );
-            }
+                if (
+                    !PosIpadEffectiveVersion.TryCreate(
+                        minimum,
+                        minimumBuild ?? 0,
+                        out var minimumIpadVersion
+                    )
+                )
+                {
+                    return NativePolicyValidation.Fail(
+                        "MINIMUM_VERSION_INVALID",
+                        "最低支持版本无效"
+                    );
+                }
 
-            if (parsedMinimum.CompareTo(latest) > 0)
+                if (minimumIpadVersion.CompareTo(latestIpadVersion) > 0)
+                {
+                    var errorCode =
+                        minimumIpadVersion.Major == latestIpadVersion.Major
+                        && minimumIpadVersion.Minor == latestIpadVersion.Minor
+                        && minimumIpadVersion.Patch == latestIpadVersion.Patch
+                            ? "MINIMUM_BUILD_ABOVE_LATEST"
+                            : "MINIMUM_VERSION_ABOVE_LATEST";
+                    return NativePolicyValidation.Fail(
+                        errorCode,
+                        "最低支持版本不能高于 App Store 最新版本"
+                    );
+                }
+            }
+            else
             {
-                return NativePolicyValidation.Fail(
-                    "MINIMUM_VERSION_ABOVE_LATEST",
-                    "最低支持版本不能高于 App Store 最新版本"
-                );
+                if (!AppMarketingVersion.TryParse(minimum, out var parsedMinimum))
+                {
+                    return NativePolicyValidation.Fail(
+                        "MINIMUM_VERSION_INVALID",
+                        "最低支持版本无效"
+                    );
+                }
+
+                AppMarketingVersion.TryParse(release.Version, out var latest);
+                if (parsedMinimum.CompareTo(latest) > 0)
+                {
+                    return NativePolicyValidation.Fail(
+                        "MINIMUM_VERSION_ABOVE_LATEST",
+                        "最低支持版本不能高于 App Store 最新版本"
+                    );
+                }
             }
         }
 
-        return NativePolicyValidation.Ok(release, minimum, message);
+        return NativePolicyValidation.Ok(
+            release,
+            minimum,
+            minimumBuild,
+            message
+        );
     }
 
     private async Task<TargetValidation> ValidateTargetsAsync(
@@ -601,6 +753,138 @@ public sealed class NativeAppUpdatePolicyService(
         };
     }
 
+    private static NativeAppUpdateDecisionDto BuildPosIpadNativeDecision(
+        string? currentVersion,
+        string? currentBuild,
+        long policyVersion,
+        IosAppStoreRelease release,
+        string? minimumVersion,
+        int? minimumBuildNumber,
+        string? releaseMessage
+    )
+    {
+        if (
+            !PosIpadEffectiveVersion.TryCreate(
+                release.Version,
+                release.BuildNumber,
+                out var latest
+            )
+        )
+        {
+            return NoNativeDecision();
+        }
+
+        PosIpadEffectiveVersion? minimum = null;
+        if (minimumVersion is not null)
+        {
+            if (
+                !PosIpadEffectiveVersion.TryCreate(
+                    minimumVersion,
+                    minimumBuildNumber ?? 0,
+                    out var parsedMinimum
+                )
+            )
+            {
+                return NoNativeDecision();
+            }
+
+            minimum = parsedMinimum;
+        }
+
+        if (
+            !PosIpadEffectiveVersion.TryCreate(
+                currentVersion,
+                0,
+                out var currentMarketing
+            )
+        )
+        {
+            return BuildPosIpadDecision(
+                minimum.HasValue
+                    ? AppUpdateStates.Required
+                    : AppUpdateStates.Optional,
+                policyVersion,
+                latest,
+                minimum,
+                release,
+                releaseMessage
+            );
+        }
+
+        var hasCurrentBuild = PosIpadEffectiveVersion.TryParseBuild(
+            currentBuild,
+            out var parsedCurrentBuild
+        );
+        if (minimum.HasValue)
+        {
+            var minimumMarketingComparison = currentMarketing.CompareMarketingTo(
+                minimum.Value
+            );
+            if (
+                minimumMarketingComparison < 0
+                || (
+                    minimumMarketingComparison == 0
+                    && (
+                        !hasCurrentBuild
+                        || parsedCurrentBuild < minimum.Value.Build
+                    )
+                )
+            )
+            {
+                return BuildPosIpadDecision(
+                    AppUpdateStates.Required,
+                    policyVersion,
+                    latest,
+                    minimum,
+                    release,
+                    releaseMessage
+                );
+            }
+        }
+
+        var latestMarketingComparison = currentMarketing.CompareMarketingTo(latest);
+        if (
+            latestMarketingComparison < 0
+            || (
+                latestMarketingComparison == 0
+                && (!hasCurrentBuild || parsedCurrentBuild < latest.Build)
+            )
+        )
+        {
+            return BuildPosIpadDecision(
+                AppUpdateStates.Optional,
+                policyVersion,
+                latest,
+                minimum,
+                release,
+                releaseMessage
+            );
+        }
+
+        return NoNativeDecision();
+    }
+
+    private static NativeAppUpdateDecisionDto BuildPosIpadDecision(
+        string state,
+        long policyVersion,
+        PosIpadEffectiveVersion latest,
+        PosIpadEffectiveVersion? minimum,
+        IosAppStoreRelease release,
+        string? releaseMessage
+    )
+    {
+        return new NativeAppUpdateDecisionDto
+        {
+            State = state,
+            PolicyVersion = policyVersion.ToString(CultureInfo.InvariantCulture),
+            // 决策 DTO 字段保持冻结，iPad 用四段有效版本承载营销版本与 build。
+            LatestVersion = latest.ToString(),
+            MinimumSupportedVersion = minimum?.ToString(),
+            AppStoreUrl = release.AppStoreUrl,
+            ReleaseMessage = releaseMessage,
+        };
+    }
+
     private async Task<NativeUpdatePolicyDto> MapMobilePolicyAsync(
         MobileIosNativeUpdatePolicy policy
     )
@@ -642,6 +926,7 @@ public sealed class NativeAppUpdatePolicyService(
             ReleaseId = policy.ReleaseId,
             LatestVersion = release?.Version,
             MinimumSupportedVersion = policy.MinimumSupportedVersion,
+            MinimumSupportedBuildNumber = policy.MinimumSupportedBuildNumber,
             AppStoreUrl = release?.AppStoreUrl,
             ReleaseMessage = policy.ReleaseMessage,
             TargetScope = policy.TargetScope,
@@ -677,6 +962,7 @@ public sealed class NativeAppUpdatePolicyService(
         bool enabled,
         Guid? releaseId,
         string? minimumVersion,
+        int? minimumBuildNumber,
         string? releaseMessage,
         string targetScope,
         IReadOnlyCollection<string> targetStoreGuids
@@ -688,6 +974,7 @@ public sealed class NativeAppUpdatePolicyService(
             minimumVersion,
             StringComparison.Ordinal
         )
+        && existing.MinimumSupportedBuildNumber == minimumBuildNumber
         && string.Equals(
             existing.ReleaseMessage,
             releaseMessage,
@@ -706,6 +993,23 @@ public sealed class NativeAppUpdatePolicyService(
 
     private static NativeAppUpdateDecisionDto NoNativeDecision() => new();
 
+    private static ApiResponse<NativeUpdatePolicyDto> PolicyVersionError(
+        string errorCode,
+        long? expectedPolicyVersion,
+        long actualPolicyVersion
+    ) =>
+        ApiResponse<NativeUpdatePolicyDto>.Error(
+            errorCode == AppUpdatePolicyErrorCodes.VersionRequired
+                ? "expectedPolicyVersion 不能为空"
+                : "更新策略版本已变化，请刷新后重试",
+            errorCode,
+            new
+            {
+                ExpectedPolicyVersion = expectedPolicyVersion,
+                ActualPolicyVersion = actualPolicyVersion,
+            }
+        );
+
     private static string NormalizeUser(string? value) =>
         NormalizeOptional(value) ?? "System";
 
@@ -719,22 +1023,25 @@ public sealed class NativeAppUpdatePolicyService(
         bool Success,
         IosAppStoreRelease? Release,
         string? MinimumVersion,
+        int? MinimumBuildNumber,
         string? ReleaseMessage,
         ApiResponse<NativeUpdatePolicyDto>? Error
     )
     {
         public static NativePolicyValidation Disabled { get; } =
-            new(true, null, null, null, null);
+            new(true, null, null, null, null, null);
 
         public static NativePolicyValidation Ok(
             IosAppStoreRelease release,
             string? minimum,
+            int? minimumBuild,
             string? message
-        ) => new(true, release, minimum, message, null);
+        ) => new(true, release, minimum, minimumBuild, message, null);
 
         public static NativePolicyValidation Fail(string code, string message) =>
             new(
                 false,
+                null,
                 null,
                 null,
                 null,

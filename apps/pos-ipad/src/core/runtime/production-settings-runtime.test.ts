@@ -155,6 +155,44 @@ test("危险动作只能在组合根独占区执行，并在动作完成后再�
   ]);
 });
 
+test("App 重启跳过普通购物车独占，但动作完成后仍复核可信 cashier lease", async () => {
+  const events: string[] = [];
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.AppUpdate",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      executeDangerousAction: async (action) => {
+        assert.equal(action.kind, "restart-app");
+        events.push("danger");
+        return { status: "completed", kind: "restart-app" };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      events.push("exclusive:must-not-run");
+      throw new Error("restart must not acquire the ordinary cart lease");
+    },
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  events.length = 0;
+
+  assert.equal(presenter.requestAppRestart(), true);
+  await presenter.confirmDangerousAction();
+  assert.deepEqual(events, ["lease", "danger", "lease"]);
+});
+
 function fakeControl(
   overrides: Partial<SettingsControlPort>,
 ): SettingsControlPort {

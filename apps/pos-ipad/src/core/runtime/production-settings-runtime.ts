@@ -65,12 +65,17 @@ function securedSettingsPort(
     signal: AbortSignal,
   ): Promise<SettingsDangerousActionResult> => {
     assertSameSession(lease.get(), identity);
-    return input.runDangerousExclusive(async () => {
+    const execute = async () => {
       const result =
         await input.control.executeDangerousAction(action, signal);
       assertSameSession(lease.get(), identity);
       return result;
-    });
+    };
+    // restart-app 的最终互斥由 update transition 按目录→购物车顺序取得；
+    // 若这里先持有普通购物车 lease，transition 会等待当前动作自身而永久自锁。
+    return action.kind === "restart-app"
+      ? execute()
+      : input.runDangerousExclusive(execute);
   };
 
   const secured: SettingsControlPort = {

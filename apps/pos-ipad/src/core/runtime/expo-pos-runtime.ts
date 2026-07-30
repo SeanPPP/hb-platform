@@ -1,3 +1,4 @@
+import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
 import * as ExpoNetwork from "expo-network";
@@ -7,6 +8,8 @@ import { Linking } from "react-native";
 import {
   AppUpdateCoordinator,
   AppUpdateOrchestrator,
+  type AppUpdateRecoveryRuntimePort,
+  createAppUpdateRecoveryRuntimeSnapshot,
   ExpoOtaUpdatePort,
   HbposPosIpadOtaUpdateApi,
   HbposPosIpadUpdateApi,
@@ -122,6 +125,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     cashierSessionInvalidation: PosCashierInvalidationRuntimeService;
     externalDisplay: ExternalCustomerDisplayPort;
     appUpdates: AppUpdateOrchestrator;
+    appUpdateRecovery: AppUpdateRecoveryRuntimePort;
     scanner: Readonly<{ router: HidScannerRouter }>;
   }>;
 
@@ -721,6 +725,19 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       cashierSessionInvalidation: publicCashierSessionInvalidation,
       externalDisplay,
       appUpdates,
+      appUpdateRecovery: Object.freeze({
+        readSnapshot: () =>
+          Promise.resolve(
+            createAppUpdateRecoveryRuntimeSnapshot({
+              appVersion,
+              buildNumber:
+                Application.nativeBuildVersion ?? "unknown",
+              runtimeVersion,
+              channel: updateChannel,
+              apiOrigin: updateCacheScope.apiOrigin,
+            }),
+          ),
+      }),
       scanner: Object.freeze({ router: scannerRouter }),
       shutdown: async () => {
         // 先覆盖公共外屏，再与 401/403/手动锁屏使用同一可信桥撤销可信会话。

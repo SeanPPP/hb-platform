@@ -240,11 +240,6 @@ public class ControllerAuthorizationMetadataTests
             nameof(ServiceApiTokensController.Revoke),
             Permissions.System.ManageAppDownloads
         );
-        yield return Policy<ServiceApiTokensController>(
-            nameof(ServiceApiTokensController.Current),
-            Permissions.System.ManageAppDownloads
-        );
-
         yield return Policy<DomesticProductsController>(
             nameof(DomesticProductsController.GetDomesticProducts),
             Permissions.Products.View
@@ -805,7 +800,7 @@ public class ControllerAuthorizationMetadataTests
                 .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
         );
 
-        Assert.Equal(Permissions.System.ManageAppDownloads, authorizeAttribute.Policy);
+        Assert.True(string.IsNullOrEmpty(authorizeAttribute.Policy));
         Assert.Equal(
             ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
             authorizeAttribute.AuthenticationSchemes

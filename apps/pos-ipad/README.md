@@ -43,15 +43,21 @@ channel。中央后台会拒绝重复登记已被其他 release 使用的 channe
 发布并登记 release 使用专用脚本：
 
 ```bash
-HBPOS_OTA_CENTER_BASE_URL=https://<center-host> \
-HBPOS_OTA_CENTER_ACCESS_TOKEN=<administrator-access-token> \
-EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID=<dedicated-project-uuid> \
-EXPO_PUBLIC_HBPOS_UPDATES_URL=https://u.expo.dev/<dedicated-project-uuid> \
-npm run ota:publish -- \
+read -rs HBPOS_OTA_ADMIN_JWT
+printf '%s' "$HBPOS_OTA_ADMIN_JWT" | \
+  HBPOS_OTA_CENTER_BASE_URL=https://<center-host> \
+  EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID=<dedicated-project-uuid> \
+  EXPO_PUBLIC_HBPOS_UPDATES_URL=https://u.expo.dev/<dedicated-project-uuid> \
+  npm run ota:publish -- \
   --runtime-version <runtime-version> \
   --release-channel pos-ipad-release-<unique-release-key> \
-  --message "<release-message>"
+  --message "<release-message>" \
+  --access-token-stdin
+unset HBPOS_OTA_ADMIN_JWT
 ```
+
+管理员 JWT 必须保持为未 `export` 的 shell 变量并仅通过 stdin 交给脚本；脚本也会
+从 EAS 子进程环境中显式剔除该变量以及兼容期 token 变量。
 
 正式流程固定为：使用管理员 JWT 调用
 `POST /api/pos-ipad/ota-releases/preflight`，通过后执行
@@ -65,9 +71,11 @@ npm run ota:publish -- \
 可先用 `--dry-run`，并用 `--mock-output-file <path>` 验证已保存的 EAS JSON；
 它只打印预期的 channel 创建命令、update 命令和登记 payload，全程不调用 Center
 或 EAS。正式流程需要具备 `System.ManageAppDownloads` 权限的三段 base64url
-管理员 JWT，也可通过 `--access-token <token>` 显式传入；只读 `hbsvc_` service
-token 或非 JWT token 会在任何网络/EAS 写入前被拒绝，管理员 token 也不会进入
-EAS 子进程或命令日志。
+管理员 JWT。交互执行应使用无值参数 `--access-token-stdin` 从管道读取；
+自动化仍可只设置 `HBPOS_OTA_CENTER_ACCESS_TOKEN`。两种来源不能同时使用，
+`--access-token <token>` 会在任何网络/EAS 调用前被拒绝，避免凭据进入 shell
+history 或进程参数。只读 `hbsvc_` service token、非 JWT、空值、多行或超过
+4096 bytes 的输入同样会失败，管理员 token 也不会进入 EAS 子进程或命令日志。
 
 如果 EAS update 已成功但 Center 登记失败，脚本会打印可重试登记 payload。
 此时不得重新运行发布命令；应保留已经创建的 channel，并使用打印的 payload

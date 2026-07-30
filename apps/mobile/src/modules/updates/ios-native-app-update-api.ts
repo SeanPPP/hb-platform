@@ -15,6 +15,7 @@ type PublicDecisionRequestConfig = {
   headers: {
     Accept: string;
   };
+  signal?: AbortSignal;
 };
 
 type PublicDecisionHttpGet = (
@@ -119,6 +120,7 @@ function assertExactDecisionContract(value: unknown): asserts value is IosNative
 export async function fetchIosNativeUpdateDecision(
   context: IosNativeUpdateContext,
   httpGet: PublicDecisionHttpGet = (url, config) => axios.get(url, config),
+  signal?: AbortSignal,
 ) {
   const apiBaseUrl = context.apiBaseUrl.trim().replace(/\/+$/, "");
   const response = await httpGet(`${apiBaseUrl}/app-updates/mobile-ios`, {
@@ -131,6 +133,7 @@ export async function fetchIosNativeUpdateDecision(
     headers: {
       Accept: "application/json",
     },
+    signal,
   });
 
   const decision = unwrapApiEnvelope<unknown>(response.data);

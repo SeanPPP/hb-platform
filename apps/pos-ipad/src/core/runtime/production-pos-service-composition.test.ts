@@ -26,8 +26,10 @@ import {
 import { PricingCart } from "../../features/sales/domain";
 import { SALES_PERMISSIONS } from "../../features/sales/runtime/sales-operation-security";
 import {
+  SETTINGS_APP_UPDATE_PERMISSION,
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
   SETTINGS_CATALOG_RESET_PERMISSION,
+  SETTINGS_DEVICE_REGISTRATION_PERMISSION,
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type {
@@ -98,6 +100,17 @@ function deferred<T>(): Readonly<{
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+class RecordingUpdateTransitionLeaseCoordinator extends UpdateTransitionLeaseCoordinator {
+  public operationCalls = 0;
+
+  public override runOperation<T>(
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    this.operationCalls += 1;
+    return super.runOperation(operation);
+  }
 }
 
 test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutService 提交现金订单", async () => {
@@ -1411,6 +1424,123 @@ test("生产组合绑定全局 transition：自身 cart lease 不误报 durable 
   );
 });
 
+test("目录刷新登记覆盖完整生命周期，transition 等完成后才在双独占锁内重读安全快照", async () => {
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const catalogEntered = deferred<void>();
+  const catalogRelease = deferred<void>();
+  const transitionEntered = deferred<void>();
+  const transitionRelease = deferred<void>();
+  const services = createTestComposition(databaseFor([]), {
+    appUpdateTransition: transition,
+    cashierPermissions: [
+      SETTINGS_VIEW_PERMISSION,
+      SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+    ],
+    settings: settingsRuntimeConfiguration(),
+    transport: await catalogDownloadTransport({
+      beforePromotions: async () => {
+        catalogEntered.resolve();
+        await catalogRelease.promise;
+      },
+    }),
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await catalogEntered.promise;
+  assert.equal(
+    (await services.appUpdateSafety.getSnapshot())
+      .hasCatalogRefreshInFlight,
+    true,
+  );
+
+  const update = transition.runTransition(async () => {
+    const snapshot = await services.appUpdateSafety.getSnapshot();
+    assert.equal(snapshot.hasCatalogRefreshInFlight, false);
+    assert.equal(snapshot.hasPendingDurableWrite, false);
+    transitionEntered.resolve();
+    await transitionRelease.promise;
+  });
+  await Promise.resolve();
+  assert.equal(transition.isTransitionActive(), true);
+  let entered = false;
+  void transitionEntered.promise.then(() => {
+    entered = true;
+  });
+  await Promise.resolve();
+  assert.equal(entered, false);
+
+  catalogRelease.resolve();
+  await download;
+  await transitionEntered.promise;
+  assert.equal(entered, true);
+
+  transitionRelease.resolve();
+  await update;
+  assert.equal(transition.isTransitionActive(), false);
+  presenter.destroy();
+});
+
+test("四个目录顶层入口各登记一次，Settings 重启直接进入 transition 不发生嵌套自锁", async () => {
+  const transition = new RecordingUpdateTransitionLeaseCoordinator();
+  const settingsConfiguration = settingsRuntimeConfiguration();
+  const services = createTestComposition(databaseFor([]), {
+    appUpdateTransition: transition,
+    cashierPermissions: [
+      CATALOG_DOWNLOAD_PERMISSION,
+      SETTINGS_VIEW_PERMISSION,
+      SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+      SETTINGS_CATALOG_RESET_PERMISSION,
+      SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+      SETTINGS_APP_UPDATE_PERMISSION,
+    ],
+    settings: {
+      ...settingsConfiguration,
+      appUpdate: {
+        ...settingsConfiguration.appUpdate,
+        restart: async () => {
+          await transition.runTransition(async () => undefined);
+          return true;
+        },
+      },
+    },
+    transport: await catalogDownloadTransport(),
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+  const baseline = transition.operationCalls;
+
+  await services.catalog.downloadAndActivate({ storeCode: "S001" });
+  assert.equal(transition.operationCalls, baseline + 1);
+
+  await presenter.downloadCatalog();
+  assert.equal(transition.operationCalls, baseline + 2);
+
+  assert.equal(presenter.requestCatalogReset(), true);
+  await presenter.confirmDangerousAction();
+  assert.equal(transition.operationCalls, baseline + 3);
+
+  presenter.setApiAddressDraft("https://next.example.test/pos");
+  assert.equal(presenter.requestApiAddressChange(), true);
+  await presenter.confirmDangerousAction();
+  assert.equal(transition.operationCalls, baseline + 4);
+
+  assert.equal(presenter.requestAppRestart(), true);
+  await presenter.confirmDangerousAction();
+  assert.equal(transition.operationCalls, baseline + 4);
+  assert.equal(transition.isTransitionActive(), false);
+  presenter.destroy();
+});
+
 test("生产退货组合必须取得二次加密退款券材料端口，不能保留不可用占位渲染器", async () => {
   let protectedMaterialFacadeCalls = 0;
   const services = createTestComposition(
@@ -1512,6 +1642,7 @@ test("生产更新门禁阻止空车开始普通或特殊商品交易，但不�
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
     hasRecoveryRequired: false,
+    hasCatalogRefreshInFlight: false,
     hasSyncOrAuditInFlight: false,
     hasFulfilmentInFlight: false,
   });
@@ -1534,6 +1665,7 @@ test("生产更新门禁阻止空车开始普通或特殊商品交易，但不�
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
     hasRecoveryRequired: false,
+    hasCatalogRefreshInFlight: false,
     hasSyncOrAuditInFlight: false,
     hasFulfilmentInFlight: false,
   });

@@ -5,6 +5,7 @@ using Hbpos.Contracts.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace Hbpos.Api.Tests;
 
@@ -24,6 +25,40 @@ public sealed class PosIpadAppUpdateContractsTests
         Assert.True(response.Enabled);
         Assert.Equal("1.0.1", response.LatestVersion);
         Assert.False(response.ForceUpdate);
+    }
+
+    [Fact]
+    public void Response_json_keeps_the_exact_six_field_contract()
+    {
+        var response = new PosIpadAppUpdateResponse(
+            Enabled: true,
+            MinimumSupportedVersion: "1.5.0.42",
+            LatestVersion: "1.5.0.88",
+            ForceUpdate: true,
+            AppStoreUrl: "https://apps.apple.com/au/app/example/id123",
+            ReleaseMessage: "同版本构建升级");
+
+        using var document = JsonDocument.Parse(
+            JsonSerializer.Serialize(
+                response,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var fields = document.RootElement
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                "appStoreUrl",
+                "enabled",
+                "forceUpdate",
+                "latestVersion",
+                "minimumSupportedVersion",
+                "releaseMessage"
+            },
+            fields);
     }
 
     [Fact]

@@ -23,11 +23,14 @@ public sealed class PosIpadOtaRolloutController(IPosIpadOtaPolicyService service
     [Authorize(Policy = Permissions.System.ManageAppDownloads)]
     public async Task<IActionResult> Put([FromBody] PosIpadOtaRolloutRequest request)
     {
-        return Ok(
-            await service.SetRolloutAsync(
-                request,
-                User.Identity?.Name ?? "System"
-            )
+        var response = await service.SetRolloutAsync(
+            request,
+            User.Identity?.Name ?? "System"
         );
+        return response.ErrorCode
+            is AppUpdatePolicyErrorCodes.VersionRequired
+                or AppUpdatePolicyErrorCodes.VersionConflict
+            ? Conflict(response)
+            : Ok(response);
     }
 }

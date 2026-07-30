@@ -93,12 +93,11 @@ export default function RootLayout() {
     beforeCheck: iosNativeUpdateEnabled
       ? async () => {
           const receipt = await iosNativeUpdate.recheck();
-          return receipt
-            ? deriveIosNativeOtaBarrier(receipt)
-            : {
-                allowed: true,
-                epoch: iosNativeUpdate.getCheckEpoch(),
-              };
+          // null 只表示检查被取消/失效；真实离线会携带 source=none 的 receipt 并按既定策略放行。
+          return deriveIosNativeOtaBarrier(
+            receipt,
+            iosNativeUpdate.getCheckEpoch(),
+          );
         }
       : undefined,
     getEpoch: iosNativeUpdateEnabled

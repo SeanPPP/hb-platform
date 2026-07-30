@@ -55,8 +55,7 @@ namespace BlazorApp.Api.Controllers
 
         [HttpGet("current")]
         [Authorize(
-            AuthenticationSchemes = ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
-            Policy = Permissions.System.ManageAppDownloads
+            AuthenticationSchemes = ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
         )]
         public IActionResult Current()
         {

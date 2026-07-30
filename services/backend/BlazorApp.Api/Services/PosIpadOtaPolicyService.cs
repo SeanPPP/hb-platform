@@ -257,9 +257,27 @@ public sealed class PosIpadOtaPolicyService(
         string currentUser
     )
     {
+        if (!request.ExpectedPolicyVersion.HasValue)
+        {
+            var current = await db.Queryable<PosIpadOtaRollout>()
+                .Where(item =>
+                    item.Environment == ProductionEnvironment && !item.IsDeleted
+                )
+                .OrderByDescending(item => item.PolicyVersion)
+                .FirstAsync();
+            return RolloutVersionError(
+                AppUpdatePolicyErrorCodes.VersionRequired,
+                request.ExpectedPolicyVersion,
+                current?.PolicyVersion ?? 0
+            );
+        }
+
         if (!request.Enabled)
         {
-            return await DisableRolloutAsync(currentUser);
+            return await DisableRolloutAsync(
+                currentUser,
+                request.ExpectedPolicyVersion.Value
+            );
         }
 
         if (request.ReleaseId is null)
@@ -319,6 +337,9 @@ public sealed class PosIpadOtaPolicyService(
                 .Where(item => item.Environment == ProductionEnvironment && !item.IsDeleted)
                 .ToListAsync();
             var activeRows = rows.Where(item => item.Enabled).ToList();
+            var actualPolicyVersion = rows.Count == 0
+                ? 0
+                : rows.Max(item => item.PolicyVersion);
             if (activeRows.Count == 1)
             {
                 var active = activeRows[0];
@@ -343,6 +364,16 @@ public sealed class PosIpadOtaPolicyService(
                     saved = await MapRolloutAsync(active, release);
                     return;
                 }
+            }
+
+            if (request.ExpectedPolicyVersion.Value != actualPolicyVersion)
+            {
+                validationError = RolloutVersionError(
+                    AppUpdatePolicyErrorCodes.VersionConflict,
+                    request.ExpectedPolicyVersion,
+                    actualPolicyVersion
+                );
+                return;
             }
 
             var now = DateTime.UtcNow;
@@ -477,10 +508,12 @@ public sealed class PosIpadOtaPolicyService(
     }
 
     private async Task<ApiResponse<PosIpadOtaRolloutDto>> DisableRolloutAsync(
-        string currentUser
+        string currentUser,
+        long expectedPolicyVersion
     )
     {
         PosIpadOtaRolloutDto? saved = null;
+        ApiResponse<PosIpadOtaRolloutDto>? validationError = null;
         var transaction = await db.Ado.UseTranAsync(async () =>
         {
             await AppUpdatePolicyMutationLock.AcquireAsync(
@@ -496,6 +529,9 @@ public sealed class PosIpadOtaPolicyService(
                 .Where(item => item.Enabled)
                 .OrderByDescending(item => item.PolicyVersion)
                 .ToList();
+            var actualPolicyVersion = rows.Count == 0
+                ? 0
+                : rows.Max(item => item.PolicyVersion);
             if (activeRows.Count == 0)
             {
                 var latest = rows
@@ -504,6 +540,16 @@ public sealed class PosIpadOtaPolicyService(
                 saved = latest is null
                     ? EmptyRollout()
                     : await MapRolloutAsync(latest);
+                return;
+            }
+
+            if (expectedPolicyVersion != actualPolicyVersion)
+            {
+                validationError = RolloutVersionError(
+                    AppUpdatePolicyErrorCodes.VersionConflict,
+                    expectedPolicyVersion,
+                    actualPolicyVersion
+                );
                 return;
             }
 
@@ -559,6 +605,11 @@ public sealed class PosIpadOtaPolicyService(
 
             saved = await MapRolloutAsync(disabledEvent);
         });
+
+        if (validationError is not null)
+        {
+            return validationError;
+        }
 
         if (!transaction.IsSuccess || saved is null)
         {
@@ -856,6 +907,23 @@ public sealed class PosIpadOtaPolicyService(
         string code,
         string message
     ) => ApiResponse<PosIpadOtaRolloutDto>.Error(message, code);
+
+    private static ApiResponse<PosIpadOtaRolloutDto> RolloutVersionError(
+        string errorCode,
+        long? expectedPolicyVersion,
+        long actualPolicyVersion
+    ) =>
+        ApiResponse<PosIpadOtaRolloutDto>.Error(
+            errorCode == AppUpdatePolicyErrorCodes.VersionRequired
+                ? "expectedPolicyVersion 不能为空"
+                : "更新策略版本已变化，请刷新后重试",
+            errorCode,
+            new
+            {
+                ExpectedPolicyVersion = expectedPolicyVersion,
+                ActualPolicyVersion = actualPolicyVersion,
+            }
+        );
 
     private sealed record NormalizedOtaReleaseFacts(
         string UpdateGroupId,

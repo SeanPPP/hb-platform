@@ -43,6 +43,9 @@ public sealed class HttpPosIpadUpdateDecisionGateway(
     ILogger<HttpPosIpadUpdateDecisionGateway> logger)
     : IPosIpadUpdateDecisionGateway
 {
+    internal const string DecisionReadTokenEnvironmentVariable =
+        "HBPOS_APP_UPDATE_DECISION_READ_TOKEN";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> NativeDecisionFields = new(
         [
@@ -209,6 +212,13 @@ public sealed class HttpPosIpadUpdateDecisionGateway(
     }
 
     private static string? ResolveServiceToken(AppUpdateOptions configuration)
+        => ResolveServiceToken(
+            configuration,
+            Environment.GetEnvironmentVariable);
+
+    internal static string? ResolveServiceToken(
+        AppUpdateOptions configuration,
+        Func<string, string?> readEnvironmentVariable)
     {
         var configured = configuration.ServiceApiToken?.Trim();
         if (configured?.StartsWith("hbsvc_", StringComparison.Ordinal) == true)
@@ -216,8 +226,9 @@ public sealed class HttpPosIpadUpdateDecisionGateway(
             return configured;
         }
 
-        var environment = Environment.GetEnvironmentVariable(
-            "HBPOS_APP_UPDATE_SERVICE_TOKEN")?.Trim();
+        // 读取决策的窄权限令牌不得回退到 Mobile OTA publisher 的旧变量。
+        var environment = readEnvironmentVariable(
+            DecisionReadTokenEnvironmentVariable)?.Trim();
         return environment?.StartsWith("hbsvc_", StringComparison.Ordinal) == true
             ? environment
             : null;

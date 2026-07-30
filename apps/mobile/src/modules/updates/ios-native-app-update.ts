@@ -182,8 +182,15 @@ export function shouldActivateIosNativeOptionalPrompt(input: {
 }
 
 export function deriveIosNativeOtaBarrier(
-  receipt: IosNativeUpdateCheckReceipt,
+  receipt: IosNativeUpdateCheckReceipt | null,
+  currentEpoch = receipt?.epoch ?? 0,
 ): IosNativeOtaBarrier {
+  if (!receipt) {
+    return {
+      allowed: false,
+      epoch: currentEpoch,
+    };
+  }
   const { decision, shouldPromptOptional } = receipt.outcome;
   return {
     allowed:
@@ -194,6 +201,16 @@ export function deriveIosNativeOtaBarrier(
       }),
     epoch: receipt.epoch,
   };
+}
+
+function throwIfIosNativeCheckAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  const error = new Error("iOS native update check was aborted");
+  error.name = "AbortError";
+  throw error;
 }
 
 export function shouldCheckIosNativeUpdateOnAppStateChange(
@@ -341,18 +358,25 @@ export async function checkIosNativeAppUpdate(input: {
   context: IosNativeUpdateContext;
   storage: IosNativeUpdateStorage;
   now: () => number;
-  fetchDecision: () => Promise<unknown>;
+  signal?: AbortSignal;
+  fetchDecision: (signal?: AbortSignal) => Promise<unknown>;
   optionalReminderSession?: IosNativeOptionalReminderSession;
   memoryRequiredDecision?: IosNativeUpdateDecision | null;
 }): Promise<IosNativeUpdateCheckOutcome> {
+  throwIfIosNativeCheckAborted(input.signal);
   let decision: IosNativeUpdateDecision;
   try {
-    decision = normalizeIosNativeUpdateDecision(await input.fetchDecision());
+    decision = normalizeIosNativeUpdateDecision(
+      await input.fetchDecision(input.signal),
+    );
+    throwIfIosNativeCheckAborted(input.signal);
   } catch (error) {
+    throwIfIosNativeCheckAborted(input.signal);
     const cachedDecision = await readCachedIosNativeRequiredDecision(
       input.storage,
       input.context,
     );
+    throwIfIosNativeCheckAborted(input.signal);
     const memoryRequiredDecision =
       input.memoryRequiredDecision?.state === "required"
         ? input.memoryRequiredDecision
@@ -372,6 +396,7 @@ export async function checkIosNativeAppUpdate(input: {
 
   let storageError: unknown;
   try {
+    throwIfIosNativeCheckAborted(input.signal);
     if (decision.state === "required") {
       await saveRequiredDecision(input.storage, input.context, decision);
     } else {
@@ -381,13 +406,16 @@ export async function checkIosNativeAppUpdate(input: {
     if (decision.state === "none") {
       await input.storage.removeItem(IOS_NATIVE_OPTIONAL_REMINDER_KEY);
     }
+    throwIfIosNativeCheckAborted(input.signal);
   } catch (error) {
+    throwIfIosNativeCheckAborted(input.signal);
     // 服务端决策仍然可信；缓存故障只能影响离线延续，不能解除本次强制门禁。
     storageError = error;
   }
 
   let shouldPromptOptional = false;
   if (decision.state === "optional") {
+    throwIfIosNativeCheckAborted(input.signal);
     if (!input.optionalReminderSession?.hasSeen(input.context, decision)) {
       try {
         shouldPromptOptional = await shouldPromptOptionalDecision(
@@ -396,7 +424,9 @@ export async function checkIosNativeAppUpdate(input: {
           decision,
           input.now(),
         );
+        throwIfIosNativeCheckAborted(input.signal);
       } catch (error) {
+        throwIfIosNativeCheckAborted(input.signal);
         // 持久化不可用时本进程仍提示首次；会话去重会避免后续重复弹窗和 OTA 饥饿。
         shouldPromptOptional = true;
         storageError ??= error;

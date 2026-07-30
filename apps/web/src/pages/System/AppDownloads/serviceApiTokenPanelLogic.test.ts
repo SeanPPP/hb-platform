@@ -14,12 +14,22 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
 const envSnippet = buildServiceApiTokenEnvSnippet(
   'https://hotbargain.vip/api/',
   ' hbsvc_test_token ',
+  'mobile-ota-publisher',
 )
 
 assertEqual(
   envSnippet,
   'HBWEB_API_BASE_URL=https://hotbargain.vip/api\nHBWEB_API_TOKEN=hbsvc_test_token',
   '环境变量片段应保留既有 OTA 脚本协议并清理空白',
+)
+assertEqual(
+  buildServiceApiTokenEnvSnippet(
+    'https://hotbargain.vip/api/',
+    ' hbsvc_reader_token ',
+    'pos-ipad-update-decision-reader',
+  ),
+  'HBPOS_APP_UPDATE_DECISION_READ_TOKEN=hbsvc_reader_token',
+  'iPad 决策读取 Token 必须输出 POS API 专用环境变量且不得混入发布凭据',
 )
 assertEqual(
   resolveServiceApiTokenApiBaseUrl('/api', 'https://hotbargain.vip/system/app-downloads'),

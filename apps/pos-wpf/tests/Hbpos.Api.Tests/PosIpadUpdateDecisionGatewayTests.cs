@@ -242,6 +242,46 @@ public sealed class PosIpadUpdateDecisionGatewayTests
     }
 
     [Fact]
+    public void Http_gateway_only_reads_the_narrow_decision_token_environment_variable()
+    {
+        var requestedNames = new List<string>();
+
+        var token = HttpPosIpadUpdateDecisionGateway.ResolveServiceToken(
+            new AppUpdateOptions(),
+            name =>
+            {
+                requestedNames.Add(name);
+                return name == "HBPOS_APP_UPDATE_DECISION_READ_TOKEN"
+                    ? " hbsvc_reader "
+                    : "hbsvc_publisher";
+            });
+
+        Assert.Equal("hbsvc_reader", token);
+        Assert.Equal(
+            ["HBPOS_APP_UPDATE_DECISION_READ_TOKEN"],
+            requestedNames);
+    }
+
+    [Fact]
+    public void Http_gateway_does_not_fall_back_when_the_narrow_reader_token_is_invalid()
+    {
+        var requestedNames = new List<string>();
+
+        var token = HttpPosIpadUpdateDecisionGateway.ResolveServiceToken(
+            new AppUpdateOptions(),
+            name =>
+            {
+                requestedNames.Add(name);
+                return "publisher-token";
+            });
+
+        Assert.Null(token);
+        Assert.Equal(
+            ["HBPOS_APP_UPDATE_DECISION_READ_TOKEN"],
+            requestedNames);
+    }
+
+    [Fact]
     public async Task Http_gateway_rejects_public_http_before_sending_service_token()
     {
         var requestCount = 0;
@@ -354,6 +394,24 @@ public sealed class PosIpadUpdateDecisionGatewayTests
         Assert.NotNull(decision);
         Assert.Equal("required", decision.State);
         Assert.Equal("https://itunes.apple.com/au/app/example/id123", decision.AppStoreUrl);
+    }
+
+    [Fact]
+    public async Task Http_gateway_accepts_four_part_effective_versions_without_changing_shape()
+    {
+        var gateway = CreateHttpGateway(
+            """
+            {"success":true,"data":{"state":"required","policyVersion":"18","latestVersion":"1.5.0.88","minimumSupportedVersion":"1.5.0.42","appStoreUrl":"https://apps.apple.com/au/app/example/id123","releaseMessage":"同版本构建升级"}}
+            """);
+
+        var decision = await gateway.GetNativeDecisionAsync(
+            new PosIpadNativeUpdateDecisionRequest("0247", "1.5.0", "41"),
+            CancellationToken.None);
+
+        Assert.NotNull(decision);
+        Assert.Equal("required", decision.State);
+        Assert.Equal("1.5.0.42", decision.MinimumSupportedVersion);
+        Assert.Equal("1.5.0.88", decision.LatestVersion);
     }
 
     [Fact]

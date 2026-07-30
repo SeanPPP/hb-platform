@@ -1,4 +1,12 @@
 export type ServiceApiTokenStatus = 'active' | 'revoked' | 'expired' | string
+export type ServiceApiTokenPurpose =
+  | 'mobile-ota-publisher'
+  | 'pos-ipad-update-decision-reader'
+
+export interface ServiceApiTokenCreateRequest {
+  name: string
+  purpose: ServiceApiTokenPurpose
+}
 
 export interface ServiceApiToken {
   id: string

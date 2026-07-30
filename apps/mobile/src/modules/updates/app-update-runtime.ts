@@ -3,8 +3,10 @@ import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import {
   resolveAppUpdateCheckAvailability,
+  runAppUpdateCheck,
   type AppUpdateCheckResult,
   type AppUpdateInfo,
+  type AppUpdateRunGuard,
 } from "./app-update-info";
 
 export function getCurrentAppUpdateInfo(): AppUpdateInfo {
@@ -18,26 +20,30 @@ export function getCurrentAppUpdateInfo(): AppUpdateInfo {
   };
 }
 
-export async function checkAndDownloadAppUpdate(): Promise<AppUpdateCheckResult> {
+export async function checkAndDownloadAppUpdate(
+  guard?: AppUpdateRunGuard,
+): Promise<AppUpdateCheckResult> {
   // expo-updates 的手动检查 API 在开发模式会抛错；这里直接兜底成不可用状态。
   const availability = resolveAppUpdateCheckAvailability({
     isDev: __DEV__,
     isEnabled: Updates.isEnabled,
   });
-  if (availability !== "available") {
-    return { status: availability };
-  }
-
-  const update = await Updates.checkForUpdateAsync();
-  if (!update.isAvailable) {
-    return { status: "not-available" };
-  }
-
-  await Updates.fetchUpdateAsync();
-  return { status: "downloaded" };
+  return runAppUpdateCheck(
+    {
+      availability,
+      checkForUpdate: Updates.checkForUpdateAsync,
+      fetchUpdate: Updates.fetchUpdateAsync,
+    },
+    guard,
+  );
 }
 
-export async function reloadAppToApplyUpdate(): Promise<void> {
+export async function reloadAppToApplyUpdate(
+  guard?: AppUpdateRunGuard,
+): Promise<void> {
+  if (guard && !guard.isCurrent()) {
+    return;
+  }
   // 更新包已下载后由用户确认重启，避免在扫码、保存等操作中突然重载 App。
   await Updates.reloadAsync();
 }

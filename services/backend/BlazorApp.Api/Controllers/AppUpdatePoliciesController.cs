@@ -23,12 +23,11 @@ public sealed class AppUpdatePoliciesController(INativeAppUpdatePolicyService se
     [Authorize(Policy = Permissions.System.ManageAppDownloads)]
     public async Task<IActionResult> PutMobileIos([FromBody] NativeUpdatePolicyRequest request)
     {
-        return Ok(
-            await service.SetMobileIosPolicyAsync(
-                request,
-                User.Identity?.Name ?? "System"
-            )
+        var response = await service.SetMobileIosPolicyAsync(
+            request,
+            User.Identity?.Name ?? "System"
         );
+        return ToMutationResult(response);
     }
 
     [HttpGet("pos-ipad/native")]
@@ -44,18 +43,24 @@ public sealed class AppUpdatePoliciesController(INativeAppUpdatePolicyService se
         [FromBody] PosIpadNativeUpdatePolicyRequest request
     )
     {
-        return Ok(
-            await service.SetPosIpadNativePolicyAsync(
-                request,
-                User.Identity?.Name ?? "System"
-            )
+        var response = await service.SetPosIpadNativePolicyAsync(
+            request,
+            User.Identity?.Name ?? "System"
         );
+        return ToMutationResult(response);
     }
 
     [HttpGet("pos-ipad/store-options")]
-    [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
     public async Task<IActionResult> GetPosIpadStoreOptions()
     {
         return Ok(await service.GetStoreOptionsAsync());
     }
+
+    private IActionResult ToMutationResult<T>(ApiResponse<T> response) =>
+        response.ErrorCode
+            is AppUpdatePolicyErrorCodes.VersionRequired
+                or AppUpdatePolicyErrorCodes.VersionConflict
+            ? Conflict(response)
+            : Ok(response);
 }

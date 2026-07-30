@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -15,6 +16,16 @@ namespace BlazorApp.Api.Tests;
 
 public class PermissionAuthorizationHandlerTests
 {
+    [Fact]
+    public void AppUpdatePolicyOptions_旧Scope兼容开关默认关闭()
+    {
+        var property = typeof(BlazorApp.Api.Services.AppUpdatePolicyOptions)
+            .GetProperty("AllowLegacyManageTokenForAppUpdateDecisions");
+
+        Assert.Equal(typeof(bool), property?.PropertyType);
+        Assert.False((bool)property!.GetValue(new BlazorApp.Api.Services.AppUpdatePolicyOptions())!);
+    }
+
     [Theory]
     [InlineData(Permissions.LocalPurchase.View)]
     [InlineData("LocalInvocie.View")]
@@ -281,6 +292,51 @@ public class PermissionAuthorizationHandlerTests
     }
 
     [Fact]
+    public async Task AppUpdateDecisionScope_仅在开关开启时兼容旧ManageScope()
+    {
+        var roleService = new Mock<IRoleService>();
+        var disabledHandler = CreateConfiguredHandler(roleService, allowLegacyScope: false);
+        var enabledHandler = CreateConfiguredHandler(roleService, allowLegacyScope: true);
+        var decisionRequirement = new PermissionRequirement(
+            "Service.ReadAppUpdateDecisions"
+        );
+        var disabledContext = new AuthorizationHandlerContext(
+            new[] { decisionRequirement },
+            CreateServiceTokenUser(Permissions.System.ManageAppDownloads),
+            resource: null
+        );
+        var enabledContext = new AuthorizationHandlerContext(
+            new[] { decisionRequirement },
+            CreateServiceTokenUser(Permissions.System.ManageAppDownloads),
+            resource: null
+        );
+        var unrelatedRequirement = new PermissionRequirement(
+            Permissions.System.ViewAppDownloads
+        );
+        var unrelatedContext = new AuthorizationHandlerContext(
+            new[] { unrelatedRequirement },
+            CreateServiceTokenUser(Permissions.System.ManageAppDownloads),
+            resource: null
+        );
+
+        await disabledHandler.HandleAsync(disabledContext);
+        await enabledHandler.HandleAsync(enabledContext);
+        await enabledHandler.HandleAsync(unrelatedContext);
+
+        Assert.False(disabledContext.HasSucceeded);
+        Assert.True(enabledContext.HasSucceeded);
+        Assert.False(unrelatedContext.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+        roleService.Verify(
+            service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+    }
+
+    [Fact]
     public async Task StoreManagerRoleClaim_DoesNotUnlockManagedStorePermissionWithoutDatabaseGrant()
     {
         var roleService = new Mock<IRoleService>();
@@ -450,8 +506,41 @@ public class PermissionAuthorizationHandlerTests
         return new PermissionAuthorizationHandler(
             scopeFactory.Object,
             new MemoryCache(new MemoryCacheOptions()),
-            Mock.Of<ILogger<PermissionAuthorizationHandler>>()
+            Mock.Of<ILogger<PermissionAuthorizationHandler>>(),
+            Options.Create(new BlazorApp.Api.Services.AppUpdatePolicyOptions())
         );
+    }
+
+    private static PermissionAuthorizationHandler CreateConfiguredHandler(
+        Mock<IRoleService> roleService,
+        bool allowLegacyScope
+    )
+    {
+        roleService
+            .Setup(service => service.UserHasRoleAsync("user-1", It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+
+        var serviceProvider = new Mock<IServiceProvider>();
+        serviceProvider
+            .Setup(provider => provider.GetService(typeof(IRoleService)))
+            .Returns(roleService.Object);
+        var scope = new Mock<IServiceScope>();
+        scope.SetupGet(item => item.ServiceProvider).Returns(serviceProvider.Object);
+        var scopeFactory = new Mock<IServiceScopeFactory>();
+        scopeFactory.Setup(factory => factory.CreateScope()).Returns(scope.Object);
+
+        return (PermissionAuthorizationHandler)Activator.CreateInstance(
+            typeof(PermissionAuthorizationHandler),
+            scopeFactory.Object,
+            new MemoryCache(new MemoryCacheOptions()),
+            Mock.Of<ILogger<PermissionAuthorizationHandler>>(),
+            Options.Create(
+                new BlazorApp.Api.Services.AppUpdatePolicyOptions
+                {
+                    AllowLegacyManageTokenForAppUpdateDecisions = allowLegacyScope,
+                }
+            )
+        )!;
     }
 
     private static ClaimsPrincipal CreateUser(params Claim[] claims)

@@ -8,6 +8,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Table,
   Tag,
@@ -22,7 +23,11 @@ import {
   getServiceApiTokens,
   revokeServiceApiToken,
 } from '../../../services/serviceApiTokenService'
-import type { ServiceApiToken, ServiceApiTokenCreateResponse } from '../../../types/serviceApiToken'
+import type {
+  ServiceApiToken,
+  ServiceApiTokenCreateResponse,
+  ServiceApiTokenPurpose,
+} from '../../../types/serviceApiToken'
 import { formatAppDownloadLocalDateTime } from './time'
 import {
   buildServiceApiTokenEnvSnippet,
@@ -30,6 +35,8 @@ import {
   resolveServiceApiTokenApiBaseUrl,
   resolveServiceApiTokenStatusColor,
 } from './serviceApiTokenPanelLogic'
+
+const DEFAULT_TOKEN_PURPOSE: ServiceApiTokenPurpose = 'mobile-ota-publisher'
 
 function resolveBrowserApiBaseUrl() {
   const envBaseUrl = (((import.meta as ImportMeta & { env?: ImportMetaEnv }).env?.VITE_API_BASE_URL) || '').trim()
@@ -44,8 +51,12 @@ export default function ServiceApiTokensPanel() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [tokenName, setTokenName] = useState('')
+  const [tokenPurpose, setTokenPurpose] = useState<ServiceApiTokenPurpose>(
+    DEFAULT_TOKEN_PURPOSE,
+  )
   const [creating, setCreating] = useState(false)
   const [createdToken, setCreatedToken] = useState<ServiceApiTokenCreateResponse | null>(null)
+  const [createdPurpose, setCreatedPurpose] = useState<ServiceApiTokenPurpose | null>(null)
   const [revokingId, setRevokingId] = useState<string | null>(null)
 
   async function copyText(value: string, successMessage: string, failedMessage: string) {
@@ -83,8 +94,9 @@ export default function ServiceApiTokensPanel() {
 
     setCreating(true)
     try {
-      const result = await createServiceApiToken(name)
+      const result = await createServiceApiToken(name, tokenPurpose)
       setCreatedToken(result)
+      setCreatedPurpose(tokenPurpose)
       setTokenName('')
       message.success(t('system.appDownloads.serviceTokens.createSuccess'))
       await loadTokens()
@@ -111,12 +123,18 @@ export default function ServiceApiTokensPanel() {
   function closeCreateModal() {
     setCreateOpen(false)
     setCreatedToken(null)
+    setCreatedPurpose(null)
     setTokenName('')
+    setTokenPurpose(DEFAULT_TOKEN_PURPOSE)
   }
 
   const apiBaseUrl = useMemo(() => resolveBrowserApiBaseUrl(), [])
   const envSnippet = createdToken
-    ? buildServiceApiTokenEnvSnippet(apiBaseUrl, createdToken.token)
+    ? buildServiceApiTokenEnvSnippet(
+        apiBaseUrl,
+        createdToken.token,
+        createdPurpose ?? DEFAULT_TOKEN_PURPOSE,
+      )
     : ''
 
   const columns: ColumnsType<ServiceApiToken> = [
@@ -289,6 +307,13 @@ export default function ServiceApiTokensPanel() {
             <Typography.Text strong>
               {t('system.appDownloads.serviceTokens.envSnippet')}
             </Typography.Text>
+            <Typography.Text type="secondary">
+              {t(
+                `system.appDownloads.serviceTokens.purposes.${
+                  createdPurpose ?? DEFAULT_TOKEN_PURPOSE
+                }.description`,
+              )}
+            </Typography.Text>
             <Typography.Paragraph
               copyable={{ text: envSnippet }}
               style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
@@ -307,6 +332,33 @@ export default function ServiceApiTokensPanel() {
               onChange={(event) => setTokenName(event.target.value)}
               onPressEnter={() => void handleCreate()}
             />
+            <Typography.Text>
+              {t('system.appDownloads.serviceTokens.purpose')}
+            </Typography.Text>
+            <Select<ServiceApiTokenPurpose>
+              aria-label={t('system.appDownloads.serviceTokens.purpose')}
+              value={tokenPurpose}
+              onChange={setTokenPurpose}
+              options={[
+                {
+                  value: 'mobile-ota-publisher',
+                  label: t(
+                    'system.appDownloads.serviceTokens.purposes.mobile-ota-publisher.label',
+                  ),
+                },
+                {
+                  value: 'pos-ipad-update-decision-reader',
+                  label: t(
+                    'system.appDownloads.serviceTokens.purposes.pos-ipad-update-decision-reader.label',
+                  ),
+                },
+              ]}
+            />
+            <Typography.Text type="secondary">
+              {t(
+                `system.appDownloads.serviceTokens.purposes.${tokenPurpose}.description`,
+              )}
+            </Typography.Text>
           </Space>
         )}
       </Modal>

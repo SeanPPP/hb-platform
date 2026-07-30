@@ -16,18 +16,19 @@ import request, { unwrapApiData } from '../utils/request'
 
 type TransportOptions = {
   params?: Record<string, unknown>
+  signal?: AbortSignal
 }
 
 export interface AppUpdatePolicyTransport {
   get(url: string, options?: TransportOptions): Promise<unknown>
-  post(url: string, payload?: unknown): Promise<unknown>
-  put(url: string, payload?: unknown): Promise<unknown>
+  post(url: string, payload?: unknown, options?: TransportOptions): Promise<unknown>
+  put(url: string, payload?: unknown, options?: TransportOptions): Promise<unknown>
 }
 
 const defaultTransport: AppUpdatePolicyTransport = {
   get: (url, options) => request.get(url, options),
-  post: (url, payload) => request.post(url, payload),
-  put: (url, payload) => request.put(url, payload),
+  post: (url, payload, options) => request.post(url, payload, options),
+  put: (url, payload, options) => request.put(url, payload, options),
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -53,6 +54,18 @@ function boolean(raw: Record<string, unknown>, key: string) {
 function number(raw: Record<string, unknown>, key: string) {
   const value = Number(raw[key])
   return Number.isFinite(value) ? value : 0
+}
+
+function nullableInt32(raw: Record<string, unknown>, key: string) {
+  const value = raw[key]
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 2_147_483_647
+    ? parsed
+    : null
 }
 
 function targetScope(raw: Record<string, unknown>): AppUpdateTargetScope {
@@ -95,6 +108,7 @@ export function normalizeNativeUpdatePolicy(value: unknown): NativeUpdatePolicy 
     releaseId: nullableText(raw, 'releaseId'),
     latestVersion: nullableText(raw, 'latestVersion'),
     minimumSupportedVersion: nullableText(raw, 'minimumSupportedVersion'),
+    minimumSupportedBuildNumber: nullableInt32(raw, 'minimumSupportedBuildNumber'),
     appStoreUrl: nullableText(raw, 'appStoreUrl'),
     releaseMessage: nullableText(raw, 'releaseMessage'),
     targetScope: targetScope(raw),
@@ -154,58 +168,89 @@ export function normalizePosIpadOtaRollout(value: unknown): PosIpadOtaRollout {
 
 export function createAppUpdatePolicyService(transport: AppUpdatePolicyTransport) {
   return {
-    async getIosAppStoreReleases(app: AppUpdateApp) {
+    async getIosAppStoreReleases(app: AppUpdateApp, signal?: AbortSignal) {
       const response = await transport.get('/api/app-update-releases/ios', {
         params: { app, storefront: 'au' },
+        signal,
       })
       const payload = unwrap<unknown[]>(response)
       return Array.isArray(payload) ? payload.map(normalizeIosAppStoreRelease) : []
     },
 
-    async createIosAppStoreRelease(payload: IosAppStoreReleaseCreateRequest) {
-      const response = await transport.post('/api/app-update-releases/ios', payload)
+    async createIosAppStoreRelease(
+      payload: IosAppStoreReleaseCreateRequest,
+      signal?: AbortSignal,
+    ) {
+      const response = await transport.post(
+        '/api/app-update-releases/ios',
+        payload,
+        { signal },
+      )
       return normalizeIosAppStoreRelease(unwrap(response))
     },
 
-    async getMobileIosNativePolicy() {
-      const response = await transport.get('/api/app-update-policies/mobile-ios')
+    async getMobileIosNativePolicy(signal?: AbortSignal) {
+      const response = await transport.get('/api/app-update-policies/mobile-ios', { signal })
       return normalizeNativeUpdatePolicy(unwrap(response))
     },
 
-    async saveMobileIosNativePolicy(payload: NativeUpdatePolicyRequest) {
-      const response = await transport.put('/api/app-update-policies/mobile-ios', payload)
+    async saveMobileIosNativePolicy(
+      payload: NativeUpdatePolicyRequest,
+      signal?: AbortSignal,
+    ) {
+      const response = await transport.put(
+        '/api/app-update-policies/mobile-ios',
+        payload,
+        { signal },
+      )
       return normalizeNativeUpdatePolicy(unwrap(response))
     },
 
-    async getPosIpadNativePolicy() {
-      const response = await transport.get('/api/app-update-policies/pos-ipad/native')
+    async getPosIpadNativePolicy(signal?: AbortSignal) {
+      const response = await transport.get(
+        '/api/app-update-policies/pos-ipad/native',
+        { signal },
+      )
       return normalizeNativeUpdatePolicy(unwrap(response))
     },
 
-    async savePosIpadNativePolicy(payload: PosIpadNativeUpdatePolicyRequest) {
-      const response = await transport.put('/api/app-update-policies/pos-ipad/native', payload)
+    async savePosIpadNativePolicy(
+      payload: PosIpadNativeUpdatePolicyRequest,
+      signal?: AbortSignal,
+    ) {
+      const response = await transport.put(
+        '/api/app-update-policies/pos-ipad/native',
+        payload,
+        { signal },
+      )
       return normalizeNativeUpdatePolicy(unwrap(response))
     },
 
-    async getPosIpadStoreOptions() {
-      const response = await transport.get('/api/app-update-policies/pos-ipad/store-options')
+    async getPosIpadStoreOptions(signal?: AbortSignal) {
+      const response = await transport.get(
+        '/api/app-update-policies/pos-ipad/store-options',
+        { signal },
+      )
       const payload = unwrap<unknown[]>(response)
       return Array.isArray(payload) ? payload.map(normalizeAppUpdateStoreOption) : []
     },
 
-    async getPosIpadOtaReleases() {
-      const response = await transport.get('/api/pos-ipad/ota-releases')
+    async getPosIpadOtaReleases(signal?: AbortSignal) {
+      const response = await transport.get('/api/pos-ipad/ota-releases', { signal })
       const payload = unwrap<unknown[]>(response)
       return Array.isArray(payload) ? payload.map(normalizePosIpadOtaRelease) : []
     },
 
-    async getPosIpadOtaRollout() {
-      const response = await transport.get('/api/pos-ipad/ota-rollout')
+    async getPosIpadOtaRollout(signal?: AbortSignal) {
+      const response = await transport.get('/api/pos-ipad/ota-rollout', { signal })
       return normalizePosIpadOtaRollout(unwrap(response))
     },
 
-    async savePosIpadOtaRollout(payload: PosIpadOtaRolloutRequest) {
-      const response = await transport.put('/api/pos-ipad/ota-rollout', payload)
+    async savePosIpadOtaRollout(
+      payload: PosIpadOtaRolloutRequest,
+      signal?: AbortSignal,
+    ) {
+      const response = await transport.put('/api/pos-ipad/ota-rollout', payload, { signal })
       return normalizePosIpadOtaRollout(unwrap(response))
     },
   }

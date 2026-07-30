@@ -1,5 +1,6 @@
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -8,7 +9,10 @@ namespace BlazorApp.Api.Controllers;
 
 [ApiController]
 [Route("api/internal/app-update-decisions/pos-ipad")]
-[Authorize(AuthenticationSchemes = ServiceApiTokenAuthenticationDefaults.AuthenticationScheme)]
+[Authorize(
+    AuthenticationSchemes = ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
+    Policy = ServiceApiScopes.ReadAppUpdateDecisions
+)]
 public sealed class InternalAppUpdateDecisionsController(
     INativeAppUpdatePolicyService nativeService,
     IPosIpadOtaPolicyService otaService

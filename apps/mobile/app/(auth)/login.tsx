@@ -1,5 +1,4 @@
 import { useRouter } from "expo-router";
-import Constants from "expo-constants";
 import {
   View,
   StyleSheet,
@@ -44,9 +43,6 @@ import {
 } from "@/modules/attendance/required-location";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
-import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
-import { checkLoginUpdateRestartPrompt } from "@/modules/updates/login-update-restart-prompt";
-import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "@/modules/updates/app-update-runtime";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
@@ -152,7 +148,6 @@ export default function Login() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
-  const [updateRestartReady, setUpdateRestartReady] = useState(false);
   const reviewBuildEnabled = isIosReviewBuildEnabled(getIosReviewBuildContext());
   const shouldRunLoginSideEffects = Boolean(
     rememberReady &&
@@ -208,38 +203,6 @@ export default function Login() {
       return;
     }
     void identifyRegisteredDevice();
-  }, [shouldRunLoginSideEffects]);
-
-  useEffect(() => {
-    if (
-      !shouldRunLoginSideEffects ||
-      !shouldRunAutomaticAppUpdatesForProfile(
-        Constants.expoConfig?.extra?.nativeAppBuildProfile
-      )
-    ) {
-      return;
-    }
-
-    let mounted = true;
-
-    async function checkLoginUpdate() {
-      const shouldPrompt = await checkLoginUpdateRestartPrompt({
-        checkAndDownload: checkAndDownloadAppUpdate,
-        warn: (error) => {
-          console.warn("[updates] login OTA check failed", error);
-        },
-      });
-
-      if (mounted && shouldPrompt) {
-        setUpdateRestartReady(true);
-      }
-    }
-
-    void checkLoginUpdate();
-
-    return () => {
-      mounted = false;
-    };
   }, [shouldRunLoginSideEffects]);
 
   useEffect(() => {
@@ -463,10 +426,6 @@ export default function Login() {
       void identifyRegisteredDevice();
     });
   };
-  const handleRestartForUpdate = () => {
-    void reloadAppToApplyUpdate();
-  };
-
   return (
     <KeyboardAvoidingView
       style={styles.root}
@@ -520,22 +479,6 @@ export default function Login() {
         {/* ── 表单区 ── */}
         <View style={styles.formSection}>
           <View style={styles.formCard}>
-            {updateRestartReady ? (
-              <View style={styles.updatePrompt}>
-                <Text style={styles.updatePromptText}>{t("updateRestart.message")}</Text>
-                <Button
-                  compact
-                  mode="contained"
-                  buttonColor={BRAND_RED}
-                  textColor="#FFFFFF"
-                  onPress={handleRestartForUpdate}
-                  style={styles.updatePromptButton}
-                >
-                  {t("updateRestart.action")}
-                </Button>
-              </View>
-            ) : null}
-
             {registeredDevice ? (
               <View style={styles.loginModeRow}>
                 <Button
@@ -851,28 +794,6 @@ const styles = StyleSheet.create({
   loginModeButton: {
     flex: 1,
     borderColor: BRAND_RED,
-  },
-  updatePrompt: {
-    alignItems: "center",
-    backgroundColor: "#FFF7F6",
-    borderColor: "#F2D7D5",
-    borderRadius: 12,
-    borderWidth: 1,
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  updatePromptText: {
-    color: "#5C1F1B",
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  updatePromptButton: {
-    borderRadius: 10,
-    flexShrink: 0,
   },
   input: { marginBottom: 14, backgroundColor: "#FAFAFA" },
   deviceCard: { gap: 12 },

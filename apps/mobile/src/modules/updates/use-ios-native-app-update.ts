@@ -81,6 +81,7 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const inFlightRef = useRef<{
     generation: number;
+    controller: AbortController;
     promise: Promise<IosNativeUpdateCheckReceipt | null>;
   } | null>(null);
   const runServerCheckRef = useRef<
@@ -103,116 +104,141 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
 
     const epoch = updateEpochRef.current + 1;
     updateEpochRef.current = epoch;
+    const controller = new AbortController();
+    const isCurrent = () => (
+      enabledRef.current
+      && generationRef.current === generation
+      && !controller.signal.aborted
+    );
     setChecking(true);
     const promise = (async () => {
-      const outcome = await checkIosNativeAppUpdate({
-        context,
-        storage: AppAsyncStorage,
-        now: Date.now,
-        fetchDecision: () => fetchIosNativeUpdateDecision(context),
-        optionalReminderSession: optionalReminderSessionRef.current,
-        // 同一 generation 已见 required 时，缓存写失败与后续离线都不能把门禁降级为首次放行。
-        memoryRequiredDecision:
-          snapshotRef.current.decision?.state === "required"
-            ? snapshotRef.current.decision
-            : null,
-      });
+      try {
+        const outcome = await checkIosNativeAppUpdate({
+          context,
+          storage: AppAsyncStorage,
+          now: Date.now,
+          signal: controller.signal,
+          fetchDecision: (signal) =>
+            fetchIosNativeUpdateDecision(context, undefined, signal),
+          optionalReminderSession: optionalReminderSessionRef.current,
+          // 同一 generation 已见 required 时，缓存写失败与后续离线都不能把门禁降级为首次放行。
+          memoryRequiredDecision:
+            snapshotRef.current.decision?.state === "required"
+              ? snapshotRef.current.decision
+              : null,
+        });
 
-      if (!enabledRef.current || generationRef.current !== generation) {
-        return null;
-      }
-
-      const optionalPromptActive = shouldActivateIosNativeOptionalPrompt({
-        decision: outcome.decision,
-        shouldPromptOptional: outcome.shouldPromptOptional,
-      });
-      const nextSnapshot = {
-        initialized: true,
-        decision: outcome.decision,
-        // 决策与弹窗占用状态必须同一批提交，不能在持久化提醒期间提前恢复 OTA。
-        optionalPromptActive,
-      };
-      snapshotRef.current = nextSnapshot;
-      setSnapshot(nextSnapshot);
-
-      if (outcome.error) {
-        console.warn("[updates] iOS App Store update check failed", outcome.error);
-      }
-      if (outcome.storageError) {
-        console.warn("[updates] persist iOS App Store update state failed", outcome.storageError);
-      }
-
-      if (
-        optionalPromptActive
-        && outcome.decision?.state === "optional"
-        && outcome.decision.appStoreUrl
-      ) {
-        // 先记录提醒时间，避免 AppState 短时间抖动造成重复弹窗。
-        try {
-          await markIosNativeOptionalReminder(
-            AppAsyncStorage,
-            context,
-            outcome.decision,
-            Date.now(),
-          );
-        } catch (error) {
-          console.warn("[updates] persist iOS App Store reminder failed", error);
-        }
-        if (!enabledRef.current || generationRef.current !== generation) {
+        if (!isCurrent()) {
           return null;
         }
 
-        const decision = outcome.decision;
-        // Alert 即将展示时先记入进程内会话；即使持久化失败，用户处理后也不会立刻再弹。
-        optionalReminderSessionRef.current.markSeen(context, decision);
-        const resolveOptionalPrompt = () => {
-          if (!enabledRef.current || generationRef.current !== generation) {
-            return;
+        const optionalPromptActive = shouldActivateIosNativeOptionalPrompt({
+          decision: outcome.decision,
+          shouldPromptOptional: outcome.shouldPromptOptional,
+        });
+        const nextSnapshot = {
+          initialized: true,
+          decision: outcome.decision,
+          // 决策与弹窗占用状态必须同一批提交，不能在持久化提醒期间提前恢复 OTA。
+          optionalPromptActive,
+        };
+        snapshotRef.current = nextSnapshot;
+        setSnapshot(nextSnapshot);
+
+        if (outcome.error) {
+          console.warn("[updates] iOS App Store update check failed", outcome.error);
+        }
+        if (outcome.storageError) {
+          console.warn("[updates] persist iOS App Store update state failed", outcome.storageError);
+        }
+
+        if (
+          optionalPromptActive
+          && outcome.decision?.state === "optional"
+          && outcome.decision.appStoreUrl
+        ) {
+          // 先记录提醒时间，避免 AppState 短时间抖动造成重复弹窗。
+          try {
+            await markIosNativeOptionalReminder(
+              AppAsyncStorage,
+              context,
+              outcome.decision,
+              Date.now(),
+            );
+          } catch (error) {
+            if (isCurrent()) {
+              console.warn("[updates] persist iOS App Store reminder failed", error);
+            }
           }
-          setSnapshot((current) => ({
+          if (!isCurrent()) {
+            return null;
+          }
+
+          const decision = outcome.decision;
+          // Alert 即将展示时先记入进程内会话；即使持久化失败，用户处理后也不会立刻再弹。
+          optionalReminderSessionRef.current.markSeen(context, decision);
+          const resolveOptionalPrompt = () => {
+            if (!isCurrent()) {
+              return false;
+            }
+            setSnapshot((current) => ({
               ...current,
               optionalPromptActive: false,
             }));
-          snapshotRef.current = {
-            ...snapshotRef.current,
-            optionalPromptActive: false,
+            snapshotRef.current = {
+              ...snapshotRef.current,
+              optionalPromptActive: false,
+            };
+            return true;
           };
-        };
-        Alert.alert(
-          i18n.t("settings:dialogs.iosNativeUpdateAvailableTitle"),
-          decision.releaseMessage
-            || i18n.t("settings:dialogs.iosNativeUpdateAvailableMessage", {
-              version: decision.latestVersion,
-            }),
-          [
-            {
-              text: i18n.t("settings:dialogs.iosNativeUpdateLaterAction"),
-              style: "cancel",
-              onPress: resolveOptionalPrompt,
-            },
-            {
-              text: i18n.t("settings:dialogs.iosNativeUpdateOpenStoreAction"),
-              onPress: () => {
-                resolveOptionalPrompt();
-                void openAppStore(decision.appStoreUrl!);
+          Alert.alert(
+            i18n.t("settings:dialogs.iosNativeUpdateAvailableTitle"),
+            decision.releaseMessage
+              || i18n.t("settings:dialogs.iosNativeUpdateAvailableMessage", {
+                version: decision.latestVersion,
+              }),
+            [
+              {
+                text: i18n.t("settings:dialogs.iosNativeUpdateLaterAction"),
+                style: "cancel",
+                onPress: resolveOptionalPrompt,
               },
-            },
-          ],
-        );
+              {
+                text: i18n.t("settings:dialogs.iosNativeUpdateOpenStoreAction"),
+                onPress: () => {
+                  if (resolveOptionalPrompt()) {
+                    void openAppStore(decision.appStoreUrl!);
+                  }
+                },
+              },
+            ],
+          );
+        }
+        return { epoch, outcome };
+      } catch (error) {
+        if (!isCurrent()) {
+          // AbortSignal 与 generation 失效统一返回 null；真实网络失败由 outcome receipt 表达。
+          return null;
+        }
+        throw error;
       }
-      return { epoch, outcome };
     })().finally(() => {
-      if (inFlightRef.current?.generation === generation) {
+      if (
+        inFlightRef.current?.generation === generation
+        && inFlightRef.current.controller === controller
+      ) {
         inFlightRef.current = null;
         setChecking(false);
       }
     });
 
-    inFlightRef.current = { generation, promise };
+    inFlightRef.current = { generation, controller, promise };
     return promise;
   };
 
   useEffect(() => {
+    inFlightRef.current?.controller.abort();
+    inFlightRef.current = null;
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     // 构建资格切换也会使既有 OTA 检查凭据失效。
@@ -267,6 +293,15 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
         setSnapshot(failedSnapshot);
       }
     })();
+
+    return () => {
+      if (generationRef.current === generation) {
+        generationRef.current += 1;
+        updateEpochRef.current += 1;
+      }
+      inFlightRef.current?.controller.abort();
+      inFlightRef.current = null;
+    };
   }, [options.enabled]);
 
   useEffect(() => {
@@ -291,6 +326,9 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
     ...snapshot,
     checking,
     openRequiredUpdate: () => {
+      if (!enabledRef.current) {
+        return;
+      }
       const url = snapshotRef.current.decision?.appStoreUrl;
       if (url) {
         void openAppStore(url);

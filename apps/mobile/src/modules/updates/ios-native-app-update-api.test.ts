@@ -75,6 +75,36 @@ async function run() {
     "公开决策请求不应携带登录或设备凭据",
   );
 
+  {
+    const abortController = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    await fetchIosNativeUpdateDecision(
+      context,
+      async (_url, config) => {
+        requestSignal = config.signal;
+        return {
+          data: {
+            success: true,
+            data: {
+              state: "none",
+              policyVersion: "none",
+              latestVersion: null,
+              minimumSupportedVersion: null,
+              appStoreUrl: null,
+              releaseMessage: null,
+            },
+          },
+        };
+      },
+      abortController.signal,
+    );
+    assert.equal(
+      requestSignal,
+      abortController.signal,
+      "原生更新请求必须把 generation AbortSignal 传给真实 HTTP 层",
+    );
+  }
+
   assert.deepEqual(
     await fetchDecision({
       state: "required",

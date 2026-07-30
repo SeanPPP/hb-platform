@@ -58,6 +58,7 @@ test("required 安全后显示不可关闭的全屏门，UI 只触发持租约�
   expect(screen.queryByTestId("app-update-dismiss")).toBeNull();
   expect(screen.getByTestId("app-update-settings-entry")).toBeTruthy();
   expect(screen.getByTestId("app-update-support-entry")).toBeTruthy();
+  expect(screen.getByTestId("app-update-registration-entry")).toBeTruthy();
 
   await act(async () => {
     fireEvent.press(screen.getByTestId("app-update-action"));
@@ -68,7 +69,7 @@ test("required 安全后显示不可关闭的全屏门，UI 只触发持租约�
   );
 });
 
-test("required 业务门提供设置和支持入口，且升级动作始终保留", async () => {
+test("required 业务门提供只读设置、支持和注册入口，且升级动作始终保留", async () => {
   const updates = updateService({
     key: "native:required:2.0.0",
     kind: "native",
@@ -84,15 +85,25 @@ test("required 业务门提供设置和支持入口，且升级动作始终保�
   await act(async () => {
     fireEvent.press(screen.getByTestId("app-update-settings-entry"));
   });
-  expect(mockPush).toHaveBeenLastCalledWith("/settings");
+  expect(mockPush).toHaveBeenLastCalledWith(
+    "/update-recovery?section=settings",
+  );
   await act(async () => {
     fireEvent.press(screen.getByTestId("app-update-support-entry"));
   });
-  expect(mockPush).toHaveBeenLastCalledWith("/sync-history");
+  expect(mockPush).toHaveBeenLastCalledWith(
+    "/update-recovery?section=support",
+  );
+  await act(async () => {
+    fireEvent.press(
+      screen.getByTestId("app-update-registration-entry"),
+    );
+  });
+  expect(mockPush).toHaveBeenLastCalledWith("/registration");
   expect(screen.getByTestId("app-update-action")).toBeTruthy();
 });
 
-test.each(["/registration", "/settings", "/sync-history"])(
+test.each(["/registration", "/update-recovery"])(
   "required 在恢复与支持路由 %s 不覆盖页面交互，同时保留升级入口",
   async (pathname) => {
     mockPathname = pathname;
@@ -114,6 +125,29 @@ test.each(["/registration", "/settings", "/sync-history"])(
         .pointerEvents,
     ).toBe("box-none");
     expect(screen.getByTestId("app-update-action")).toBeTruthy();
+  },
+);
+
+test.each(["/login", "/settings", "/sync-history"])(
+  "required 不放开完整业务路由 %s",
+  async (pathname) => {
+    mockPathname = pathname;
+    const updates = updateService({
+      key: "native:required:2.0.0",
+      kind: "native",
+      requirement: "required",
+      phase: "blocking",
+      blocking: true,
+      releaseMessage: null,
+      appStoreUrl: "https://apps.apple.com/app/id123",
+    });
+    mockRuntime = { services: { appUpdates: updates } };
+
+    const screen = await render(<AppUpdateGateBridge />);
+    expect(screen.getByTestId("app-update-blocking-gate")).toBeTruthy();
+    expect(
+      screen.queryByTestId("app-update-recovery-access"),
+    ).toBeNull();
   },
 );
 

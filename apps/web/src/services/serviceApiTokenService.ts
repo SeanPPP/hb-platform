@@ -1,5 +1,10 @@
 import type { ApiResponse } from '../types/api'
-import type { ServiceApiToken, ServiceApiTokenCreateResponse } from '../types/serviceApiToken'
+import type {
+  ServiceApiToken,
+  ServiceApiTokenCreateRequest,
+  ServiceApiTokenCreateResponse,
+  ServiceApiTokenPurpose,
+} from '../types/serviceApiToken'
 import request, { unwrapApiData } from '../utils/request'
 
 const SERVICE_API_TOKENS_API = '/api/service-api-tokens'
@@ -59,10 +64,23 @@ export async function getServiceApiTokens() {
   return Array.isArray(payload) ? payload.map((item) => normalizeServiceApiToken(asRecord(item))) : []
 }
 
-export async function createServiceApiToken(name: string) {
+export function buildServiceApiTokenCreateRequest(
+  name: string,
+  purpose: ServiceApiTokenPurpose,
+): ServiceApiTokenCreateRequest {
+  return {
+    name: name.trim(),
+    purpose,
+  }
+}
+
+export async function createServiceApiToken(
+  name: string,
+  purpose: ServiceApiTokenPurpose,
+) {
   const response = await request.post<
     ApiResponse<Record<string, unknown>> | Record<string, unknown>
-  >(SERVICE_API_TOKENS_API, { name })
+  >(SERVICE_API_TOKENS_API, buildServiceApiTokenCreateRequest(name, purpose))
   return normalizeServiceApiTokenCreateResponse(asRecord(unwrapApiData(response)))
 }
 

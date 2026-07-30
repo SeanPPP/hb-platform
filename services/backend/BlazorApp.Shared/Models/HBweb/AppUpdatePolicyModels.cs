@@ -86,6 +86,9 @@ public sealed class PosIpadNativeUpdatePolicy : BaseEntity
     [SugarColumn(Length = 64, IsNullable = true)]
     public string? MinimumSupportedVersion { get; set; }
 
+    [SugarColumn(IsNullable = true)]
+    public int? MinimumSupportedBuildNumber { get; set; }
+
     [SugarColumn(Length = 1000, IsNullable = true)]
     public string? ReleaseMessage { get; set; }
 

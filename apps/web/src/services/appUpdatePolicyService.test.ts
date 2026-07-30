@@ -22,12 +22,18 @@ type TransportCall = {
   url: string
   payload?: unknown
   params?: Record<string, unknown>
+  signal?: AbortSignal
 }
 
 const calls: TransportCall[] = []
 const transport: AppUpdatePolicyTransport = {
   async get(url, options) {
-    calls.push({ method: 'get', url, params: options?.params })
+    calls.push({
+      method: 'get',
+      url,
+      params: options?.params,
+      signal: options?.signal,
+    })
     if (url === '/api/app-update-releases/ios') {
       return {
         success: true,
@@ -99,6 +105,7 @@ const transport: AppUpdatePolicyTransport = {
         releaseId: null,
         latestVersion: null,
         minimumSupportedVersion: null,
+        minimumSupportedBuildNumber: null,
         appStoreUrl: null,
         releaseMessage: null,
         targetScope: 'all',
@@ -108,8 +115,8 @@ const transport: AppUpdatePolicyTransport = {
       },
     }
   },
-  async post(url, payload) {
-    calls.push({ method: 'post', url, payload })
+  async post(url, payload, options) {
+    calls.push({ method: 'post', url, payload, signal: options?.signal })
     return {
       success: true,
       data: {
@@ -127,8 +134,8 @@ const transport: AppUpdatePolicyTransport = {
       },
     }
   },
-  async put(url, payload) {
-    calls.push({ method: 'put', url, payload })
+  async put(url, payload, options) {
+    calls.push({ method: 'put', url, payload, signal: options?.signal })
     return {
       success: true,
       data: url === '/api/pos-ipad/ota-rollout'
@@ -152,6 +159,7 @@ const transport: AppUpdatePolicyTransport = {
             releaseId: 'release-mobile',
             latestVersion: '1.2.0',
             minimumSupportedVersion: '1.1.0',
+            minimumSupportedBuildNumber: null,
             appStoreUrl: 'https://apps.apple.com/au/app/id6786073002',
             releaseMessage: '请升级',
             targetScope: 'all',
@@ -165,8 +173,9 @@ const transport: AppUpdatePolicyTransport = {
 
 async function run() {
   const service = createAppUpdatePolicyService(transport)
+  const controller = new AbortController()
 
-  const releases = await service.getIosAppStoreReleases('mobile-ios')
+  const releases = await service.getIosAppStoreReleases('mobile-ios', controller.signal)
   assertEqual(releases[0]?.app, 'mobile-ios', 'App Store 发布事实应解包标准 ApiResponse')
   assertDeepEqual(
     calls[calls.length - 1],
@@ -174,8 +183,9 @@ async function run() {
       method: 'get',
       url: '/api/app-update-releases/ios',
       params: { app: 'mobile-ios', storefront: 'au' },
+      signal: controller.signal,
     },
-    '发布事实查询必须按 app 和 AU storefront 隔离',
+    '发布事实查询必须按 app 和 AU storefront 隔离，并透传 AbortSignal',
   )
 
   await service.createIosAppStoreRelease({
@@ -190,10 +200,16 @@ async function run() {
     'Web 只调用后台 Apple Lookup 登记入口',
   )
 
-  await service.getMobileIosNativePolicy()
+  await service.getMobileIosNativePolicy(controller.signal)
   assertEqual(calls[calls.length - 1]?.url, '/api/app-update-policies/mobile-ios', 'Mobile 策略 GET 路径应固定')
+  assertEqual(
+    calls[calls.length - 1]?.signal,
+    controller.signal,
+    'Mobile 策略 GET 必须透传 AbortSignal',
+  )
 
   await service.saveMobileIosNativePolicy({
+    expectedPolicyVersion: 1,
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: '1.1.0',
@@ -205,6 +221,7 @@ async function run() {
       method: 'put',
       url: '/api/app-update-policies/mobile-ios',
       payload: {
+        expectedPolicyVersion: 1,
         enabled: true,
         releaseId: 'release-mobile',
         minimumSupportedVersion: '1.1.0',
@@ -217,6 +234,31 @@ async function run() {
   await service.getPosIpadNativePolicy()
   assertEqual(calls[calls.length - 1]?.url, '/api/app-update-policies/pos-ipad/native', 'iPad 原生策略路径应固定')
 
+  await service.savePosIpadNativePolicy({
+    expectedPolicyVersion: 2,
+    enabled: true,
+    releaseId: 'release-ipad',
+    minimumSupportedVersion: '2.0.0',
+    minimumSupportedBuildNumber: 28,
+    releaseMessage: '请升级',
+    targetScope: 'all',
+    targetStoreGuids: [],
+  })
+  assertDeepEqual(
+    calls[calls.length - 1]?.payload,
+    {
+      expectedPolicyVersion: 2,
+      enabled: true,
+      releaseId: 'release-ipad',
+      minimumSupportedVersion: '2.0.0',
+      minimumSupportedBuildNumber: 28,
+      releaseMessage: '请升级',
+      targetScope: 'all',
+      targetStoreGuids: [],
+    },
+    'iPad 原生策略 PUT 必须携带策略版本和最低支持构建号',
+  )
+
   const stores = await service.getPosIpadStoreOptions()
   assertEqual(stores[0]?.storeGuid, 'store-1', '分店选项必须使用可信 Store GUID')
 
@@ -227,6 +269,7 @@ async function run() {
   assertEqual(rollout.forceUpdate, true, 'OTA rollout 应保留强制更新开关')
 
   await service.savePosIpadOtaRollout({
+    expectedPolicyVersion: 3,
     enabled: true,
     releaseId: 'ota-1',
     forceUpdate: true,

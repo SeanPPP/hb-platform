@@ -1,4 +1,7 @@
-import type { ServiceApiTokenStatus } from '../../../types/serviceApiToken'
+import type {
+  ServiceApiTokenPurpose,
+  ServiceApiTokenStatus,
+} from '../../../types/serviceApiToken'
 
 export function resolveServiceApiTokenApiBaseUrl(baseUrl: string, origin?: string) {
   const trimmed = baseUrl.trim()
@@ -17,7 +20,15 @@ export function resolveServiceApiTokenApiBaseUrl(baseUrl: string, origin?: strin
   }
 }
 
-export function buildServiceApiTokenEnvSnippet(baseUrl: string, token: string) {
+export function buildServiceApiTokenEnvSnippet(
+  baseUrl: string,
+  token: string,
+  purpose: ServiceApiTokenPurpose,
+) {
+  if (purpose === 'pos-ipad-update-decision-reader') {
+    return `HBPOS_APP_UPDATE_DECISION_READ_TOKEN=${token.trim()}`
+  }
+
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
   return [`HBWEB_API_BASE_URL=${normalizedBaseUrl}`, `HBWEB_API_TOKEN=${token.trim()}`].join('\n')
 }

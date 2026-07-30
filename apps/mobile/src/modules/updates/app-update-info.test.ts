@@ -3,9 +3,18 @@ import {
   buildAppUpdateInfoRows,
   formatAppPackageVersion,
   resolveAppUpdateCheckAvailability,
+  runAppUpdateCheck,
 } from "./app-update-info";
 
-function run() {
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+async function run() {
   const rows = buildAppUpdateInfoRows({
     appVersion: "1.0.1",
     appBuildVersion: "7",
@@ -88,7 +97,39 @@ function run() {
     "生产未启用 OTA 应暴露为配置异常",
   );
 
+  {
+    const expoCheck = deferred<{ isAvailable: boolean }>();
+    let current = true;
+    let fetchCalls = 0;
+    const resultPromise = runAppUpdateCheck(
+      {
+        availability: "available",
+        checkForUpdate: () => expoCheck.promise,
+        fetchUpdate: async () => {
+          fetchCalls += 1;
+        },
+      },
+      {
+        isCurrent: () => current,
+      },
+    );
+
+    current = false;
+    expoCheck.resolve({ isAvailable: true });
+
+    assert.deepEqual(
+      await resultPromise,
+      { status: "cancelled" },
+      "Expo check await 期间 generation 失效时必须返回取消状态",
+    );
+    assert.equal(
+      fetchCalls,
+      0,
+      "检查被取消后不得继续下载 OTA",
+    );
+  }
+
   console.log("app-update-info.test.ts: ok");
 }
 
-run();
+void run();

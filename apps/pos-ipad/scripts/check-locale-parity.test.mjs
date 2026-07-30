@@ -26,6 +26,7 @@ const registeredPageCopySurfaces = {
   "app/settings.tsx": "src/features/settings/settings-copy.ts",
   "app/special-products.tsx": "src/features/special-products/special-products-copy.ts",
   "app/sync-history.tsx": "src/features/sync-history/sync-history-copy.ts",
+  "app/update-recovery.tsx": "src/features/app-updates/app-update-recovery-screen.tsx",
 };
 
 const requiredCustomerDisplayKeys = [

@@ -1,5 +1,8 @@
 import type { AppStateStatus } from "react-native";
-import type { AppUpdateCheckResult } from "./app-update-info";
+import type {
+  AppUpdateCheckResult,
+  AppUpdateRunGuard,
+} from "./app-update-info";
 
 export type AutomaticAppUpdateOptions = {
   enabled: boolean;
@@ -11,29 +14,46 @@ export type AutomaticAppUpdateOptions = {
 };
 
 export type AutomaticAppUpdateDependencies = {
-  checkAndDownload: () => Promise<AppUpdateCheckResult>;
+  checkAndDownload: (
+    guard: AutomaticAppUpdateRunGuard,
+  ) => Promise<AppUpdateCheckResult>;
   promptRestart: (guard: {
     expectedEpoch: number;
     beforeApply: () => Promise<boolean>;
+    isCurrent: () => boolean;
   }) => void;
   warn: (error: unknown) => void;
 };
 
+export type AutomaticAppUpdateRunGuard = AppUpdateRunGuard & {
+  signal: AbortSignal;
+};
+
+type AutomaticAppUpdateInFlight = {
+  generation: number;
+  controller: AbortController;
+  promise: Promise<void>;
+};
+
 export type AutomaticAppUpdateController = {
-  check: (options: AutomaticAppUpdateOptions) => Promise<void>;
+  updateOptions: (options: AutomaticAppUpdateOptions) => void;
+  cancel: () => void;
+  check: (options?: AutomaticAppUpdateOptions) => Promise<void>;
   handleAppStateChange: (
     previousState: AppStateStatus,
     nextState: AppStateStatus,
-    options: AutomaticAppUpdateOptions
+    options?: AutomaticAppUpdateOptions
   ) => Promise<void>;
 };
 
 export function createAutomaticAppUpdateApplyHandler(input: {
   beforeApply: () => Promise<boolean>;
+  isCurrent?: () => boolean;
   apply: () => Promise<void>;
   warn: (error: unknown) => void;
 }) {
   let inFlight: Promise<void> | null = null;
+  const isCurrent = input.isCurrent ?? (() => true);
 
   return () => {
     if (inFlight) {
@@ -42,9 +62,14 @@ export function createAutomaticAppUpdateApplyHandler(input: {
 
     inFlight = (async () => {
       try {
-        if (await input.beforeApply()) {
-          await input.apply();
+        if (!isCurrent()) {
+          return;
         }
+        const allowed = await input.beforeApply();
+        if (!allowed || !isCurrent()) {
+          return;
+        }
+        await input.apply();
       } catch (error) {
         input.warn(error);
       } finally {
@@ -62,92 +87,176 @@ function shouldCheckOnAppStateChange(previousState: AppStateStatus, nextState: A
 export function createAutomaticAppUpdateController(
   dependencies: AutomaticAppUpdateDependencies
 ): AutomaticAppUpdateController {
-  let inFlight = false;
+  let liveOptions: AutomaticAppUpdateOptions = { enabled: false };
+  let runGeneration = 0;
+  let inFlight: AutomaticAppUpdateInFlight | null = null;
   let downloaded = false;
 
-  async function check(options: AutomaticAppUpdateOptions) {
-    if (!options.enabled || inFlight || downloaded) {
+  function updateOptions(options: AutomaticAppUpdateOptions) {
+    liveOptions = options;
+  }
+
+  function cancel() {
+    runGeneration += 1;
+    inFlight?.controller.abort();
+    downloaded = false;
+  }
+
+  function isGenerationCurrent(
+    generation: number,
+    controller: AbortController,
+  ) {
+    return (
+      liveOptions.enabled
+      && runGeneration === generation
+      && !controller.signal.aborted
+    );
+  }
+
+  function isEpochCurrent(expectedEpoch: number) {
+    return (
+      liveOptions.getEpoch === undefined
+      || liveOptions.getEpoch() === expectedEpoch
+    );
+  }
+
+  async function check(
+    options?: AutomaticAppUpdateOptions,
+  ): Promise<void> {
+    if (options) {
+      updateOptions(options);
+    }
+    if (!liveOptions.enabled || downloaded) {
       return;
     }
-
-    inFlight = true;
-    try {
-      let barrier = {
-        allowed: true,
-        epoch: options.getEpoch?.() ?? 0,
-      };
-      if (options.beforeCheck) {
-        barrier = await options.beforeCheck();
+    if (inFlight) {
+      if (inFlight.generation === runGeneration) {
+        return inFlight.promise;
       }
-      if (
-        !barrier.allowed ||
-        downloaded ||
-        !isBarrierCurrent(options, barrier.epoch)
-      ) {
-        return;
-      }
+      // 已取消的 Expo Promise 无法物理中止；等它退出后再启动新代，避免原生 API 并发。
+      return inFlight.promise.then(() => check());
+    }
 
-      const result = await dependencies.checkAndDownload();
-      if (
-        result.status === "downloaded" &&
-        isBarrierCurrent(options, barrier.epoch)
-      ) {
-        // 更新包只需要提示一次，避免用户回到前台时反复被打断。
+    const generation = runGeneration + 1;
+    runGeneration = generation;
+    const controller = new AbortController();
+    let expectedEpoch: number | null = null;
+    const runGuard: AutomaticAppUpdateRunGuard = {
+      signal: controller.signal,
+      isCurrent: () => (
+        isGenerationCurrent(generation, controller)
+        && (
+          expectedEpoch === null
+          || isEpochCurrent(expectedEpoch)
+        )
+      ),
+    };
+    let task!: AutomaticAppUpdateInFlight;
+    const promise = (async () => {
+      try {
+        const barrierOptions = liveOptions;
+        let barrier = {
+          allowed: true,
+          epoch: barrierOptions.getEpoch?.() ?? 0,
+        };
+        if (barrierOptions.beforeCheck) {
+          barrier = await barrierOptions.beforeCheck();
+        }
+        if (!isGenerationCurrent(generation, controller)) {
+          return;
+        }
+
+        expectedEpoch = barrier.epoch;
+        if (
+          !barrier.allowed
+          || downloaded
+          || !isEpochCurrent(expectedEpoch)
+        ) {
+          return;
+        }
+
+        const result = await dependencies.checkAndDownload(runGuard);
+        if (
+          result.status !== "downloaded"
+          || downloaded
+          || !runGuard.isCurrent()
+        ) {
+          return;
+        }
+
+        // 更新包只提示一次；取消会使本 generation 和旧 Alert 的点击守卫同时失效。
         downloaded = true;
-        const expectedEpoch = barrier.epoch;
         dependencies.promptRestart({
           expectedEpoch,
+          isCurrent: runGuard.isCurrent,
           beforeApply: async () => {
             try {
-              if (!options.beforeCheck) {
-                // 非 iOS 或未接原生版本协调器时保持原有直接应用行为。
-                return isBarrierCurrent(options, expectedEpoch);
+              if (!isGenerationCurrent(generation, controller)) {
+                return false;
               }
 
-              // Alert 可能停留很久；点击时必须重新获取原生决策，并紧接着核对 fresh epoch。
-              const freshBarrier = await options.beforeCheck();
+              const applyOptions = liveOptions;
+              if (!applyOptions.beforeCheck) {
+                return (
+                  expectedEpoch !== null
+                  && isEpochCurrent(expectedEpoch)
+                );
+              }
+
+              // Alert 可停留很久；点击时读取 live options 并重新建立 fresh epoch。
+              const freshBarrier = await applyOptions.beforeCheck();
+              if (!isGenerationCurrent(generation, controller)) {
+                return false;
+              }
+              expectedEpoch = freshBarrier.epoch;
               return (
-                freshBarrier.allowed &&
-                isBarrierCurrent(options, freshBarrier.epoch)
+                freshBarrier.allowed
+                && isEpochCurrent(expectedEpoch)
               );
             } catch (error) {
-              // 应用前校验失败按 fail-closed 处理，避免未处理 Promise 或绕过新 required。
-              dependencies.warn(error);
+              if (isGenerationCurrent(generation, controller)) {
+                dependencies.warn(error);
+              }
               return false;
             }
           },
         });
+      } catch (error) {
+        // 被 cancel 的旧代静默退出；真实检查失败仍记录供日志观察。
+        if (isGenerationCurrent(generation, controller)) {
+          dependencies.warn(error);
+        }
       }
-    } catch (error) {
-      // 自动检查失败不打断门店操作，只记录给调试和日志系统观察。
-      dependencies.warn(error);
-    } finally {
-      inFlight = false;
-    }
+    })().finally(() => {
+      if (inFlight === task) {
+        inFlight = null;
+      }
+    });
+
+    task = { generation, controller, promise };
+    inFlight = task;
+    return promise;
   }
 
   async function handleAppStateChange(
     previousState: AppStateStatus,
     nextState: AppStateStatus,
-    options: AutomaticAppUpdateOptions
+    options?: AutomaticAppUpdateOptions
   ) {
+    if (options) {
+      updateOptions(options);
+    }
     if (!shouldCheckOnAppStateChange(previousState, nextState)) {
       return;
     }
 
-    await check(options);
+    await check();
   }
 
-  return { check, handleAppStateChange };
-}
-
-function isBarrierCurrent(
-  options: AutomaticAppUpdateOptions,
-  expectedEpoch: number,
-) {
-  return (
-    options.enabled &&
-    (options.getEpoch === undefined ||
-      options.getEpoch() === expectedEpoch)
-  );
+  return {
+    updateOptions,
+    cancel,
+    check,
+    handleAppStateChange,
+  };
 }

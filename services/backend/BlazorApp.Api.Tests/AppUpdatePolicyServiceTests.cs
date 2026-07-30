@@ -12,9 +12,11 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -57,6 +59,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var saved = await service.SetMobileIosPolicyAsync(
             new NativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = release.Id,
                 MinimumSupportedVersion = "1.5.0",
@@ -92,6 +95,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var mobileFirst = await service.SetMobileIosPolicyAsync(
             new NativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = mobileRelease.Id,
                 MinimumSupportedVersion = "1.5.0",
@@ -102,6 +106,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var mobileRepeated = await service.SetMobileIosPolicyAsync(
             new NativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = mobileRelease.Id,
                 MinimumSupportedVersion = " 1.5.0 ",
@@ -112,6 +117,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var mobileChanged = await service.SetMobileIosPolicyAsync(
             new NativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 1,
                 Enabled = true,
                 ReleaseId = mobileRelease.Id,
                 MinimumSupportedVersion = "1.5.0",
@@ -123,6 +129,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var ipadFirst = await service.SetPosIpadNativePolicyAsync(
             new PosIpadNativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = ipadRelease.Id,
                 TargetScope = AppUpdateTargetScopes.Stores,
@@ -134,6 +141,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var ipadRepeated = await service.SetPosIpadNativePolicyAsync(
             new PosIpadNativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = ipadRelease.Id,
                 TargetScope = AppUpdateTargetScopes.Stores,
@@ -150,6 +158,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var ipadChanged = await service.SetPosIpadNativePolicyAsync(
             new PosIpadNativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 1,
                 Enabled = true,
                 ReleaseId = ipadRelease.Id,
                 TargetScope = AppUpdateTargetScopes.Stores,
@@ -184,6 +193,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var saved = await service.SetPosIpadNativePolicyAsync(
             new PosIpadNativeUpdatePolicyRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = release.Id,
                 MinimumSupportedVersion = "2.5.0",
@@ -224,6 +234,240 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Ipad原生决策_按营销版本和Build组成四段有效版本()
+    {
+        await SeedStoreAsync("BRI", "Brisbane");
+        var release = await SeedIosReleaseAsync(AppUpdateApps.PosIpad, "3.2");
+        release.BuildNumber = "120";
+        await _db.Updateable(release).ExecuteCommandAsync();
+        var service = CreateNativeService();
+
+        var saved = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                MinimumSupportedVersion = "3.2",
+                MinimumSupportedBuildNumber = 100,
+            },
+            "admin"
+        );
+
+        Assert.True(saved.Success);
+        Assert.Equal("3.2", saved.Data!.LatestVersion);
+        Assert.Equal("3.2", saved.Data.MinimumSupportedVersion);
+        Assert.Equal(100, saved.Data.MinimumSupportedBuildNumber);
+
+        var required = await service.GetPosIpadNativeDecisionAsync(
+            new PosIpadNativeDecisionRequest
+            {
+                StoreCode = "BRI",
+                Version = "3.2",
+                Build = "99",
+            }
+        );
+        var optional = await service.GetPosIpadNativeDecisionAsync(
+            new PosIpadNativeDecisionRequest
+            {
+                StoreCode = "BRI",
+                Version = "3.2.0",
+                Build = "119",
+            }
+        );
+        var none = await service.GetPosIpadNativeDecisionAsync(
+            new PosIpadNativeDecisionRequest
+            {
+                StoreCode = "BRI",
+                Version = "3.2",
+                Build = "120",
+            }
+        );
+
+        Assert.Equal(AppUpdateStates.Required, required.State);
+        Assert.Equal("3.2.0.120", required.LatestVersion);
+        Assert.Equal("3.2.0.100", required.MinimumSupportedVersion);
+        Assert.Equal(AppUpdateStates.Optional, optional.State);
+        Assert.Equal(AppUpdateStates.None, none.State);
+    }
+
+    [Fact]
+    public async Task Ipad原生决策_先比较Marketing再按同版本Build判定()
+    {
+        await SeedStoreAsync("BRI", "Brisbane");
+        var release = await SeedIosReleaseAsync(AppUpdateApps.PosIpad, "3.2");
+        release.BuildNumber = "120";
+        await _db.Updateable(release).ExecuteCommandAsync();
+        var service = CreateNativeService();
+        var saved = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                MinimumSupportedVersion = "3.1",
+                MinimumSupportedBuildNumber = 50,
+            },
+            "admin"
+        );
+        Assert.True(saved.Success);
+
+        (string Version, string? Build, string Expected)[] cases =
+        {
+            ("bad", "60", AppUpdateStates.Required),
+            ("3.0", "999", AppUpdateStates.Required),
+            ("3.1", null, AppUpdateStates.Required),
+            ("3.1", "49", AppUpdateStates.Required),
+            ("3.1", "50", AppUpdateStates.Optional),
+            ("3.1.5", "bad", AppUpdateStates.Optional),
+            ("3.2", null, AppUpdateStates.Optional),
+            ("3.2", "bad", AppUpdateStates.Optional),
+            ("3.2", "119", AppUpdateStates.Optional),
+            ("3.2", "120", AppUpdateStates.None),
+            ("3.3", null, AppUpdateStates.None),
+        };
+
+        foreach (var item in cases)
+        {
+            var decision = await service.GetPosIpadNativeDecisionAsync(
+                new PosIpadNativeDecisionRequest
+                {
+                    StoreCode = "BRI",
+                    Version = item.Version,
+                    Build = item.Build,
+                }
+            );
+
+            Assert.Equal(item.Expected, decision.State);
+        }
+    }
+
+    [Fact]
+    public async Task Ipad原生策略_校验营销版本ReleaseBuild与MinimumBuild关系()
+    {
+        var fourPartRelease = await SeedIosReleaseAsync(AppUpdateApps.PosIpad, "3.0.0.1");
+        var invalidBuildRelease = await SeedIosReleaseAsync(AppUpdateApps.PosIpad, "3.1.0");
+        invalidBuildRelease.BuildNumber = "2147483648";
+        await _db.Updateable(invalidBuildRelease).ExecuteCommandAsync();
+        var validRelease = await SeedIosReleaseAsync(AppUpdateApps.PosIpad, "3.2.0");
+        validRelease.BuildNumber = "120";
+        await _db.Updateable(validRelease).ExecuteCommandAsync();
+        var service = CreateNativeService();
+
+        var invalidMarketing = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = fourPartRelease.Id,
+            },
+            "admin"
+        );
+        var invalidBuild = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = invalidBuildRelease.Id,
+            },
+            "admin"
+        );
+        var buildWithoutMinimum = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedBuildNumber = 100,
+            },
+            "admin"
+        );
+        var minimumAboveRelease = await service.SetPosIpadNativePolicyAsync(
+            new PosIpadNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedVersion = "3.2",
+                MinimumSupportedBuildNumber = 121,
+            },
+            "admin"
+        );
+
+        Assert.Equal("LATEST_VERSION_INVALID", invalidMarketing.ErrorCode);
+        Assert.Equal("LATEST_BUILD_NUMBER_INVALID", invalidBuild.ErrorCode);
+        Assert.Equal("MINIMUM_BUILD_REQUIRES_VERSION", buildWithoutMinimum.ErrorCode);
+        Assert.Equal("MINIMUM_BUILD_ABOVE_LATEST", minimumAboveRelease.ErrorCode);
+        Assert.Equal(0, await _db.Queryable<PosIpadNativeUpdatePolicy>().CountAsync());
+    }
+
+    [Fact]
+    public async Task 原生策略_expectedVersion缺失冲突且stale同内容幂等不同内容不写()
+    {
+        var release = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "2.0.0");
+        var service = CreateNativeService();
+        var missing = await service.SetMobileIosPolicyAsync(
+            new NativeUpdatePolicyRequest
+            {
+                Enabled = true,
+                ReleaseId = release.Id,
+            },
+            "admin"
+        );
+
+        AssertPolicyVersionError(
+            missing,
+            "APP_UPDATE_POLICY_VERSION_REQUIRED",
+            null,
+            0
+        );
+        Assert.Equal(0, await _db.Queryable<MobileIosNativeUpdatePolicy>().CountAsync());
+
+        var first = await service.SetMobileIosPolicyAsync(
+            new NativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ReleaseMessage = " 首次发布 ",
+            },
+            "admin"
+        );
+        var staleSame = await service.SetMobileIosPolicyAsync(
+            new NativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ReleaseMessage = "首次发布",
+            },
+            "publisher"
+        );
+        var staleChanged = await service.SetMobileIosPolicyAsync(
+            new NativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ReleaseMessage = "并发覆盖",
+            },
+            "publisher"
+        );
+
+        Assert.Equal(1, first.Data!.PolicyVersion);
+        Assert.Equal(1, staleSame.Data!.PolicyVersion);
+        AssertPolicyVersionError(
+            staleChanged,
+            "APP_UPDATE_POLICY_VERSION_CONFLICT",
+            0,
+            1
+        );
+        var stored = await _db.Queryable<MobileIosNativeUpdatePolicy>().SingleAsync();
+        Assert.Equal(1, stored.PolicyVersion);
+        Assert.Equal("首次发布", stored.ReleaseMessage);
+    }
+
+    [Fact]
     public async Task IpadOta决策_校验分店_runtime和当前updateId()
     {
         var target = await SeedStoreAsync("BRI", "Brisbane");
@@ -233,6 +477,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var rollout = await service.SetRolloutAsync(
             new PosIpadOtaRolloutRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = release.Id,
                 ForceUpdate = true,
@@ -283,6 +528,134 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IpadOtaRollout_expectedVersion缺失冲突且stale同内容幂等不同内容不写()
+    {
+        var release = await SeedOtaReleaseAsync();
+        var service = CreateOtaService();
+        var missing = await service.SetRolloutAsync(
+            new PosIpadOtaRolloutRequest
+            {
+                Enabled = true,
+                ReleaseId = release.Id,
+            },
+            "admin"
+        );
+
+        AssertPolicyVersionError(
+            missing,
+            "APP_UPDATE_POLICY_VERSION_REQUIRED",
+            null,
+            0
+        );
+        Assert.Equal(0, await _db.Queryable<PosIpadOtaRollout>().CountAsync());
+
+        var first = await service.SetRolloutAsync(
+            new PosIpadOtaRolloutRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ReleaseMessage = " 首次投放 ",
+            },
+            "admin"
+        );
+        var staleSame = await service.SetRolloutAsync(
+            new PosIpadOtaRolloutRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ReleaseMessage = "首次投放",
+            },
+            "publisher"
+        );
+        var staleChanged = await service.SetRolloutAsync(
+            new PosIpadOtaRolloutRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+                ForceUpdate = true,
+                ReleaseMessage = "首次投放",
+            },
+            "publisher"
+        );
+
+        Assert.Equal(1, first.Data!.PolicyVersion);
+        Assert.Equal(1, staleSame.Data!.PolicyVersion);
+        AssertPolicyVersionError(
+            staleChanged,
+            "APP_UPDATE_POLICY_VERSION_CONFLICT",
+            0,
+            1
+        );
+        var stored = await _db.Queryable<PosIpadOtaRollout>().SingleAsync();
+        Assert.Equal(1, stored.PolicyVersion);
+        Assert.False(stored.ForceUpdate);
+    }
+
+    [Fact]
+    public async Task 策略控制器_版本前置条件错误映射HTTP409()
+    {
+        var nativeError = ApiResponse<NativeUpdatePolicyDto>.Error(
+            "expectedPolicyVersion 不能为空",
+            "APP_UPDATE_POLICY_VERSION_REQUIRED",
+            new { ExpectedPolicyVersion = (long?)null, ActualPolicyVersion = 0L }
+        );
+        var nativeService = new Mock<INativeAppUpdatePolicyService>();
+        nativeService
+            .Setup(service =>
+                service.SetMobileIosPolicyAsync(
+                    It.IsAny<NativeUpdatePolicyRequest>(),
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync(nativeError);
+        var nativeController = new AppUpdatePoliciesController(nativeService.Object)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext(),
+            },
+        };
+
+        var nativeResult = await nativeController.PutMobileIos(
+            new NativeUpdatePolicyRequest()
+        );
+
+        Assert.Same(
+            nativeError,
+            Assert.IsType<ConflictObjectResult>(nativeResult).Value
+        );
+
+        var otaError = ApiResponse<PosIpadOtaRolloutDto>.Error(
+            "策略版本已变化",
+            "APP_UPDATE_POLICY_VERSION_CONFLICT",
+            new { ExpectedPolicyVersion = 0L, ActualPolicyVersion = 1L }
+        );
+        var otaService = new Mock<IPosIpadOtaPolicyService>();
+        otaService
+            .Setup(service =>
+                service.SetRolloutAsync(
+                    It.IsAny<PosIpadOtaRolloutRequest>(),
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync(otaError);
+        var otaController = new PosIpadOtaRolloutController(otaService.Object)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext(),
+            },
+        };
+
+        var otaResult = await otaController.Put(new PosIpadOtaRolloutRequest());
+
+        Assert.Same(otaError, Assert.IsType<ConflictObjectResult>(otaResult).Value);
+    }
+
+    [Fact]
     public async Task IpadOta激活新版本_同一环境只保留一个活动rollout()
     {
         await SeedStoreAsync("BRI", "Brisbane");
@@ -301,6 +674,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
                 await service.SetRolloutAsync(
                     new PosIpadOtaRolloutRequest
                     {
+                        ExpectedPolicyVersion = 0,
                         Enabled = true,
                         ReleaseId = first.Id,
                         TargetScope = AppUpdateTargetScopes.All,
@@ -312,6 +686,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var secondResult = await service.SetRolloutAsync(
             new PosIpadOtaRolloutRequest
             {
+                ExpectedPolicyVersion = 1,
                 Enabled = true,
                 ReleaseId = second.Id,
                 TargetScope = AppUpdateTargetScopes.All,
@@ -335,6 +710,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var service = CreateOtaService();
         var request = new PosIpadOtaRolloutRequest
         {
+            ExpectedPolicyVersion = 0,
             Enabled = true,
             ReleaseId = release.Id,
             ForceUpdate = true,
@@ -347,6 +723,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var repeated = await service.SetRolloutAsync(
             new PosIpadOtaRolloutRequest
             {
+                ExpectedPolicyVersion = 0,
                 Enabled = true,
                 ReleaseId = release.Id,
                 ForceUpdate = true,
@@ -362,11 +739,19 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             "publisher"
         );
         var disabled = await service.SetRolloutAsync(
-            new PosIpadOtaRolloutRequest { Enabled = false },
+            new PosIpadOtaRolloutRequest
+            {
+                ExpectedPolicyVersion = 1,
+                Enabled = false,
+            },
             "admin"
         );
         var disabledAgain = await service.SetRolloutAsync(
-            new PosIpadOtaRolloutRequest { Enabled = false },
+            new PosIpadOtaRolloutRequest
+            {
+                ExpectedPolicyVersion = 1,
+                Enabled = false,
+            },
             "publisher"
         );
         var latest = await service.GetRolloutAsync();
@@ -900,6 +1285,11 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
             internalAuthorize!.AuthenticationSchemes
         );
+        Assert.Equal("Service.ReadAppUpdateDecisions", internalAuthorize.Policy);
+        AssertPolicy<AppUpdatePoliciesController>(
+            nameof(AppUpdatePoliciesController.GetPosIpadStoreOptions),
+            Permissions.System.ViewAppDownloads
+        );
         Assert.NotNull(
             GetMethod<MobileIosAppUpdatesController>(
                     nameof(MobileIosAppUpdatesController.Check)
@@ -933,6 +1323,42 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
+    public void 更新策略管理合同_包含冻结的乐观并发与IpadBuild字段()
+    {
+        Assert.Equal(
+            typeof(long?),
+            typeof(NativeUpdatePolicyRequest)
+                .GetProperty("ExpectedPolicyVersion")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(long?),
+            typeof(PosIpadOtaRolloutRequest)
+                .GetProperty("ExpectedPolicyVersion")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(int?),
+            typeof(PosIpadNativeUpdatePolicyRequest)
+                .GetProperty("MinimumSupportedBuildNumber")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(int?),
+            typeof(NativeUpdatePolicyDto)
+                .GetProperty("MinimumSupportedBuildNumber")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(int?),
+            typeof(PosIpadNativeUpdatePolicy)
+                .GetProperty("MinimumSupportedBuildNumber")
+                ?.PropertyType
+        );
+        Assert.Equal(6, typeof(NativeAppUpdateDecisionDto).GetProperties().Length);
+    }
+
+    [Fact]
     public void Schema迁移_独立接入并包含幂等表与活动rollout唯一索引()
     {
         var backendRoot = FindBackendRoot();
@@ -948,6 +1374,11 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         Assert.Contains("IF OBJECT_ID(N'[dbo].[IosAppStoreRelease]', N'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[MobileIosNativeUpdatePolicy]', N'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[PosIpadNativeUpdatePolicy]', N'U') IS NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH(N'[dbo].[PosIpadNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL",
+            migrator
+        );
+        Assert.Contains("ALTER TABLE [dbo].[PosIpadNativeUpdatePolicy]", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[PosIpadOtaRelease]', N'U') IS NULL", migrator);
         Assert.Contains(
             "UX_PosIpadOtaRelease_Environment_Channel",
@@ -1171,6 +1602,32 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     private static MethodInfo GetMethod<TController>(string methodName) =>
         typeof(TController).GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance)
         ?? throw new InvalidOperationException($"{typeof(TController).Name}.{methodName} missing.");
+
+    private static void AssertPolicyVersionError<T>(
+        ApiResponse<T> response,
+        string errorCode,
+        long? expectedPolicyVersion,
+        long actualPolicyVersion
+    )
+    {
+        Assert.False(response.Success);
+        Assert.Equal(errorCode, response.ErrorCode);
+        var details = JsonSerializer.SerializeToElement(response.Details);
+        var expected = details.GetProperty("ExpectedPolicyVersion");
+        if (expectedPolicyVersion.HasValue)
+        {
+            Assert.Equal(expectedPolicyVersion.Value, expected.GetInt64());
+        }
+        else
+        {
+            Assert.Equal(JsonValueKind.Null, expected.ValueKind);
+        }
+
+        Assert.Equal(
+            actualPolicyVersion,
+            details.GetProperty("ActualPolicyVersion").GetInt64()
+        );
+    }
 
     private static string FindBackendRoot([System.Runtime.CompilerServices.CallerFilePath] string path = "")
     {

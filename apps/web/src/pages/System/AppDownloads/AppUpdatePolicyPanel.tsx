@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Alert,
@@ -9,6 +17,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Modal,
   Radio,
   Row,
@@ -44,14 +53,22 @@ import {
   buildNativeUpdatePolicyRequest,
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
+  isAppUpdatePolicyVersionConflict,
+  isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
   resolveOtaReleaseStatus,
+  validateMinimumSupportedBuildNumber,
   type AppStoreReleaseRegistrationFormValue,
   type AppStoreReleaseRegistrationSummary,
   type AppUpdatePolicyConfirmationSummary,
   type NativeUpdatePolicyFormValue,
   type OtaRolloutFormValue,
 } from './appUpdatePolicyLogic'
+import {
+  executeLatestRequestLane,
+  LatestRequestLane,
+  savePolicyWithConflictReload,
+} from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
 
 interface AppUpdatePolicyPanelProps {
@@ -60,10 +77,25 @@ interface AppUpdatePolicyPanelProps {
 
 interface PolicySaveConfirmation {
   kind: 'native' | 'ota'
+  nativeApp?: AppUpdateApp
   enabled: boolean
   summary: AppUpdatePolicyConfirmationSummary
   releaseLabel: string
   onOk: () => Promise<void>
+}
+
+type LoadLaneKey = 'mobileNative' | 'ipadNative' | 'ipadOta' | 'storeOptions'
+
+interface LoadLaneStatus {
+  loading: boolean
+  loaded: boolean
+  failed: boolean
+}
+
+const EMPTY_LOAD_LANE_STATUS: LoadLaneStatus = {
+  loading: false,
+  loaded: false,
+  failed: false,
 }
 
 const EMPTY_NATIVE_POLICY: NativeUpdatePolicy = {
@@ -73,6 +105,7 @@ const EMPTY_NATIVE_POLICY: NativeUpdatePolicy = {
   releaseId: null,
   latestVersion: null,
   minimumSupportedVersion: null,
+  minimumSupportedBuildNumber: null,
   appStoreUrl: null,
   releaseMessage: null,
   targetScope: 'all',
@@ -100,6 +133,7 @@ function toNativeFormValue(policy: NativeUpdatePolicy): NativeUpdatePolicyFormVa
     enabled: policy.enabled,
     releaseId: policy.releaseId,
     minimumSupportedVersion: policy.minimumSupportedVersion,
+    minimumSupportedBuildNumber: policy.minimumSupportedBuildNumber,
     releaseMessage: policy.releaseMessage,
     targetScope: policy.targetScope,
     targetStoreGuids: policy.targetStoreGuids,
@@ -156,15 +190,29 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [ipadPolicy, setIpadPolicy] = useState<NativeUpdatePolicy | null>(null)
   const [otaRollout, setOtaRollout] = useState<PosIpadOtaRollout | null>(null)
   const [storeOptions, setStoreOptions] = useState<AppUpdateTargetStoreOption[]>([])
-  const [loading, setLoading] = useState(false)
-  const [loaded, setLoaded] = useState(false)
-  const [loadFailed, setLoadFailed] = useState(false)
+  const [mobileLoadState, setMobileLoadState] = useState<LoadLaneStatus>(
+    () => ({ ...EMPTY_LOAD_LANE_STATUS }),
+  )
+  const [ipadLoadState, setIpadLoadState] = useState<LoadLaneStatus>(
+    () => ({ ...EMPTY_LOAD_LANE_STATUS }),
+  )
+  const [otaLoadState, setOtaLoadState] = useState<LoadLaneStatus>(
+    () => ({ ...EMPTY_LOAD_LANE_STATUS }),
+  )
+  const [storeLoadState, setStoreLoadState] = useState<LoadLaneStatus>(
+    () => ({ ...EMPTY_LOAD_LANE_STATUS }),
+  )
   const [mobileSaving, setMobileSaving] = useState(false)
   const [ipadSaving, setIpadSaving] = useState(false)
   const [otaSaving, setOtaSaving] = useState(false)
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
-  const loadRequestIdRef = useRef(0)
+  const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
+    mobileNative: new LatestRequestLane(),
+    ipadNative: new LatestRequestLane(),
+    ipadOta: new LatestRequestLane(),
+    storeOptions: new LatestRequestLane(),
+  })
 
   const mobileEnabled = Form.useWatch('enabled', mobileForm) ?? false
   const ipadEnabled = Form.useWatch('enabled', ipadForm) ?? false
@@ -172,68 +220,139 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const otaEnabled = Form.useWatch('enabled', otaForm) ?? false
   const otaTargetScope = Form.useWatch('targetScope', otaForm) ?? 'all'
 
-  const loadData = useCallback(async () => {
-    const requestId = loadRequestIdRef.current + 1
-    loadRequestIdRef.current = requestId
-    setLoading(true)
-    setLoadFailed(false)
-
-    try {
-      const [
-        nextMobileReleases,
-        nextMobilePolicy,
-        nextIpadReleases,
-        nextIpadPolicy,
-        nextOtaReleases,
-        nextOtaRollout,
-        nextStoreOptions,
-      ] = await Promise.all([
-        appUpdatePolicyService.getIosAppStoreReleases('mobile-ios'),
-        appUpdatePolicyService.getMobileIosNativePolicy(),
-        appUpdatePolicyService.getIosAppStoreReleases('pos-ipad'),
-        appUpdatePolicyService.getPosIpadNativePolicy(),
-        appUpdatePolicyService.getPosIpadOtaReleases(),
-        appUpdatePolicyService.getPosIpadOtaRollout(),
-        canManage
-          ? appUpdatePolicyService.getPosIpadStoreOptions()
-          : Promise.resolve([]),
-      ])
-
-      if (requestId !== loadRequestIdRef.current) {
-        return
-      }
-
-      setMobileReleases(nextMobileReleases)
-      setMobilePolicy(nextMobilePolicy)
-      mobileForm.setFieldsValue(toNativeFormValue(nextMobilePolicy))
-      setIpadReleases(nextIpadReleases)
-      setIpadPolicy(nextIpadPolicy)
-      ipadForm.setFieldsValue(toNativeFormValue(nextIpadPolicy))
-      setOtaReleases(nextOtaReleases)
-      setOtaRollout(nextOtaRollout)
-      otaForm.setFieldsValue(toOtaFormValue(nextOtaRollout))
-      setStoreOptions(nextStoreOptions)
-      setLoaded(true)
-    } catch (error) {
-      if (requestId !== loadRequestIdRef.current) {
-        return
-      }
-      console.error('Failed to load app update policies', error)
-      setLoadFailed(true)
-      message.error(t('system.appDownloads.updatePolicy.loadFailed'))
-    } finally {
-      if (requestId === loadRequestIdRef.current) {
-        setLoading(false)
-      }
+  const runLoadLane = useCallback(async <T,>(
+    key: LoadLaneKey,
+    setStatus: Dispatch<SetStateAction<LoadLaneStatus>>,
+    load: (signal: AbortSignal) => Promise<T>,
+    commit: (value: T) => void,
+    failedMessage: string,
+    onFailure?: () => void,
+  ) => {
+    setStatus((current) => ({ ...current, loading: true, failed: false }))
+    const result = await executeLatestRequestLane(
+      laneRequestsRef.current[key],
+      load,
+      commit,
+    )
+    if (result.status === 'stale') {
+      return 'stale' as const
     }
-  }, [canManage, ipadForm, mobileForm, otaForm, t])
+    if (result.status === 'failed') {
+      console.error(`Failed to load app update policy lane: ${key}`, result.error)
+      onFailure?.()
+      setStatus((status) => ({ ...status, loading: false, failed: true }))
+      message.error(failedMessage)
+      return 'failed' as const
+    }
+
+    setStatus({ loading: false, loaded: true, failed: false })
+    return 'applied' as const
+  }, [])
+
+  const invalidateLoadLane = useCallback((
+    key: LoadLaneKey,
+    setStatus: Dispatch<SetStateAction<LoadLaneStatus>>,
+  ) => {
+    laneRequestsRef.current[key].invalidate()
+    setStatus((status) => ({ ...status, loading: false }))
+  }, [])
+
+  const loadMobileNativeLane = useCallback(
+    () => runLoadLane(
+      'mobileNative',
+      setMobileLoadState,
+      async (signal) => Promise.all([
+        appUpdatePolicyService.getIosAppStoreReleases('mobile-ios', signal),
+        appUpdatePolicyService.getMobileIosNativePolicy(signal),
+      ]),
+      ([releases, policy]) => {
+        setMobileReleases(releases)
+        setMobilePolicy(policy)
+        mobileForm.setFieldsValue(toNativeFormValue(policy))
+      },
+      t('system.appDownloads.updatePolicy.mobileLoadFailed'),
+    ),
+    [mobileForm, runLoadLane, t],
+  )
+
+  const loadIpadNativeLane = useCallback(
+    () => runLoadLane(
+      'ipadNative',
+      setIpadLoadState,
+      async (signal) => Promise.all([
+        appUpdatePolicyService.getIosAppStoreReleases('pos-ipad', signal),
+        appUpdatePolicyService.getPosIpadNativePolicy(signal),
+      ]),
+      ([releases, policy]) => {
+        setIpadReleases(releases)
+        setIpadPolicy(policy)
+        ipadForm.setFieldsValue(toNativeFormValue(policy))
+      },
+      t('system.appDownloads.updatePolicy.ipadNativeLoadFailed'),
+    ),
+    [ipadForm, runLoadLane, t],
+  )
+
+  const loadIpadOtaLane = useCallback(
+    () => runLoadLane(
+      'ipadOta',
+      setOtaLoadState,
+      async (signal) => Promise.all([
+        appUpdatePolicyService.getPosIpadOtaReleases(signal),
+        appUpdatePolicyService.getPosIpadOtaRollout(signal),
+      ]),
+      ([releases, rollout]) => {
+        setOtaReleases(releases)
+        setOtaRollout(rollout)
+        otaForm.setFieldsValue(toOtaFormValue(rollout))
+      },
+      t('system.appDownloads.updatePolicy.ipadOtaLoadFailed'),
+    ),
+    [otaForm, runLoadLane, t],
+  )
+
+  const loadStoreOptionsLane = useCallback(
+    () => runLoadLane(
+      'storeOptions',
+      setStoreLoadState,
+      (signal) => appUpdatePolicyService.getPosIpadStoreOptions(signal),
+      setStoreOptions,
+      t('system.appDownloads.updatePolicy.storeOptionsLoadFailed'),
+      () => setStoreOptions([]),
+    ),
+    [runLoadLane, t],
+  )
+
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([
+      loadMobileNativeLane(),
+      loadIpadNativeLane(),
+      loadIpadOtaLane(),
+      loadStoreOptionsLane(),
+    ])
+  }, [
+    loadIpadNativeLane,
+    loadIpadOtaLane,
+    loadMobileNativeLane,
+    loadStoreOptionsLane,
+  ])
 
   useEffect(() => {
-    void loadData()
+    void refreshAll()
     return () => {
-      loadRequestIdRef.current += 1
+      for (const key of Object.keys(laneRequestsRef.current) as LoadLaneKey[]) {
+        laneRequestsRef.current[key].invalidate()
+      }
     }
-  }, [loadData])
+  }, [refreshAll])
+
+  const storeOptionsUsable = storeLoadState.loaded
+    && !storeLoadState.loading
+    && !storeLoadState.failed
+  const anyLaneLoading = mobileLoadState.loading
+    || ipadLoadState.loading
+    || otaLoadState.loading
+    || storeLoadState.loading
 
   const mergedStoreOptions = useMemo(() => {
     const options = new Map(
@@ -289,6 +408,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           <Typography.Text>
             {t('system.appDownloads.updatePolicy.registerFinalConfirmDescription')}
           </Typography.Text>
+          {app === 'pos-ipad' ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
+            />
+          ) : null}
           <Descriptions size="small" bordered column={1}>
             <Descriptions.Item
               label={t('system.appDownloads.updatePolicy.registerTargetApp')}
@@ -326,24 +452,21 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     app: AppUpdateApp,
     summary: AppStoreReleaseRegistrationSummary,
   ) {
+    const isIpad = app === 'pos-ipad'
+    invalidateLoadLane(
+      isIpad ? 'ipadNative' : 'mobileNative',
+      isIpad ? setIpadLoadState : setMobileLoadState,
+    )
     setRegisterSaving(true)
     try {
-      const release = await appUpdatePolicyService.createIosAppStoreRelease({
+      await appUpdatePolicyService.createIosAppStoreRelease({
         app,
         ...summary,
       })
-      const updateReleases = (items: IosAppStoreRelease[]) => [
-        release,
-        ...items.filter((item) => item.id !== release.id),
-      ]
-      if (app === 'mobile-ios') {
-        setMobileReleases(updateReleases)
-      } else {
-        setIpadReleases(updateReleases)
-      }
       message.success(t('system.appDownloads.updatePolicy.registerSuccess'))
       setRegisterApp(null)
       registerForm.resetFields()
+      await (isIpad ? loadIpadNativeLane() : loadMobileNativeLane())
     } catch (error) {
       console.error('Failed to register App Store release', error)
       message.error(t('system.appDownloads.updatePolicy.registerFailed'))
@@ -354,6 +477,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
 
   function confirmPolicySave({
     kind,
+    nativeApp,
     enabled,
     summary,
     releaseLabel,
@@ -419,6 +543,18 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                     : 'system.appDownloads.updatePolicy.activateOtaConfirmDescription',
                 )}
               </Typography.Text>
+              {kind === 'native' && nativeApp === 'pos-ipad' ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t(
+                    'system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning',
+                  )}
+                  description={t(
+                    'system.appDownloads.updatePolicy.ipadPolicyBuildConfirmDescription',
+                  )}
+                />
+              ) : null}
               <Descriptions size="small" bordered column={1}>
                 <Descriptions.Item
                   label={t('system.appDownloads.updatePolicy.confirmRelease')}
@@ -437,6 +573,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 >
                   {updateMode}
                 </Descriptions.Item>
+                {kind === 'native' && summary.minimumSupportedBuildNumber !== null ? (
+                  <Descriptions.Item
+                    label={t('system.appDownloads.updatePolicy.confirmMinimumBuild')}
+                  >
+                    {summary.minimumSupportedBuildNumber}
+                  </Descriptions.Item>
+                ) : null}
               </Descriptions>
             </Space>
           )
@@ -452,27 +595,51 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   async function saveNativePolicy(
     app: AppUpdateApp,
     values: NativeUpdatePolicyFormValue,
+    expectedPolicyVersion: number,
   ) {
     const isIpad = app === 'pos-ipad'
     const setSaving = isIpad ? setIpadSaving : setMobileSaving
+    const setLoadState = isIpad ? setIpadLoadState : setMobileLoadState
+    const loadLane = isIpad ? loadIpadNativeLane : loadMobileNativeLane
+    if (
+      isIpad
+      && values.enabled
+      && values.targetScope === 'stores'
+      && !storeOptionsUsable
+    ) {
+      message.error(t('system.appDownloads.updatePolicy.storeOptionsSaveBlocked'))
+      return
+    }
+
+    invalidateLoadLane(
+      isIpad ? 'ipadNative' : 'mobileNative',
+      setLoadState,
+    )
     setSaving(true)
     try {
-      const nextPolicy = isIpad
-        ? await appUpdatePolicyService.savePosIpadNativePolicy(
-            buildNativeUpdatePolicyRequest(values, true),
-          )
-        : await appUpdatePolicyService.saveMobileIosNativePolicy(
-            buildNativeUpdatePolicyRequest(values, false),
-          )
-
-      if (isIpad) {
-        setIpadPolicy(nextPolicy)
-        ipadForm.setFieldsValue(toNativeFormValue(nextPolicy))
-      } else {
-        setMobilePolicy(nextPolicy)
-        mobileForm.setFieldsValue(toNativeFormValue(nextPolicy))
+      const result = await savePolicyWithConflictReload(
+        () => isIpad
+          ? appUpdatePolicyService.savePosIpadNativePolicy(
+              buildNativeUpdatePolicyRequest(values, true, expectedPolicyVersion),
+            )
+          : appUpdatePolicyService.saveMobileIosNativePolicy(
+              buildNativeUpdatePolicyRequest(values, false, expectedPolicyVersion),
+            ),
+        loadLane,
+        isAppUpdatePolicyVersionConflict,
+      )
+      if (result !== 'saved') {
+        const messageKey = result === 'conflict-reloaded'
+          ? 'system.appDownloads.updatePolicy.versionConflict'
+          : result === 'conflict-reload-superseded'
+            ? 'system.appDownloads.updatePolicy.versionConflictReloadSuperseded'
+            : 'system.appDownloads.updatePolicy.versionConflictReloadFailed'
+        message.warning(t(messageKey))
+        return
       }
+
       message.success(t('system.appDownloads.updatePolicy.saveSuccess'))
+      await loadLane()
     } catch (error) {
       console.error('Failed to save native update policy', error)
       message.error(t('system.appDownloads.updatePolicy.saveFailed'))
@@ -487,29 +654,71 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     values: NativeUpdatePolicyFormValue,
   ) {
     const isIpad = app === 'pos-ipad'
+    const currentPolicy = isIpad ? ipadPolicy : mobilePolicy
+    if (!currentPolicy) {
+      message.error(t('system.appDownloads.updatePolicy.loadFailed'))
+      return
+    }
+    if (
+      isIpad
+      && values.enabled
+      && values.targetScope === 'stores'
+      && !storeOptionsUsable
+    ) {
+      message.error(t('system.appDownloads.updatePolicy.storeOptionsSaveBlocked'))
+      return
+    }
+
     const summary = buildNativePolicyConfirmationSummary(values, isIpad)
     const releases = isIpad ? ipadReleases : mobileReleases
     const release = releases.find((item) => item.id === summary.releaseId)
     confirmPolicySave({
       kind: 'native',
+      nativeApp: app,
       enabled: values.enabled,
       summary,
       releaseLabel: release
         ? formatNativeReleaseLabel(release)
         : summary.releaseId ?? '--',
-      onOk: () => saveNativePolicy(app, values),
+      onOk: () => saveNativePolicy(app, values, currentPolicy.policyVersion),
     })
   }
 
-  async function saveOtaRollout(values: OtaRolloutFormValue) {
+  async function saveOtaRollout(
+    values: OtaRolloutFormValue,
+    expectedPolicyVersion: number,
+  ) {
+    if (
+      values.enabled
+      && values.targetScope === 'stores'
+      && !storeOptionsUsable
+    ) {
+      message.error(t('system.appDownloads.updatePolicy.storeOptionsSaveBlocked'))
+      return
+    }
+
+    invalidateLoadLane('ipadOta', setOtaLoadState)
     setOtaSaving(true)
     try {
-      const nextRollout = await appUpdatePolicyService.savePosIpadOtaRollout(
-        buildOtaRolloutRequest(values),
+      const result = await savePolicyWithConflictReload(
+        () => appUpdatePolicyService.savePosIpadOtaRollout(
+          buildOtaRolloutRequest(values, expectedPolicyVersion),
+        ),
+        loadIpadOtaLane,
+        isAppUpdatePolicyVersionConflict,
       )
-      setOtaRollout(nextRollout)
-      otaForm.setFieldsValue(toOtaFormValue(nextRollout))
+      if (result !== 'saved') {
+        const messageKey = result === 'conflict-reloaded'
+          ? 'system.appDownloads.updatePolicy.versionConflict'
+          : result === 'conflict-reload-superseded'
+            ? 'system.appDownloads.updatePolicy.versionConflictReloadSuperseded'
+            : 'system.appDownloads.updatePolicy.versionConflictReloadFailed'
+        message.warning(t(messageKey))
+        return
+      }
+
       message.success(t('system.appDownloads.updatePolicy.saveSuccess'))
+      await loadIpadOtaLane()
     } catch (error) {
       console.error('Failed to save iPad OTA rollout', error)
       message.error(t('system.appDownloads.updatePolicy.saveFailed'))
@@ -520,6 +729,19 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   }
 
   function handleOtaFinish(values: OtaRolloutFormValue) {
+    if (!otaRollout) {
+      message.error(t('system.appDownloads.updatePolicy.loadFailed'))
+      return
+    }
+    if (
+      values.enabled
+      && values.targetScope === 'stores'
+      && !storeOptionsUsable
+    ) {
+      message.error(t('system.appDownloads.updatePolicy.storeOptionsSaveBlocked'))
+      return
+    }
+
     const summary = buildOtaPolicyConfirmationSummary(values)
     const release = otaReleases.find((item) => item.id === summary.releaseId)
     confirmPolicySave({
@@ -529,7 +751,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       releaseLabel: release
         ? formatOtaReleaseLabel(release)
         : summary.releaseId ?? '--',
-      onOk: () => saveOtaRollout(values),
+      onOk: () => saveOtaRollout(values, otaRollout.policyVersion),
     })
   }
 
@@ -687,6 +909,49 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     [otaRollout?.enabled, otaRollout?.releaseId, t],
   )
 
+  function renderLoadFailure(
+    state: LoadLaneStatus,
+    retry: () => Promise<'applied' | 'stale' | 'failed'>,
+    messageKey: string,
+  ) {
+    return state.failed ? (
+      <Alert
+        type="error"
+        showIcon
+        message={t(messageKey)}
+        action={
+          <Button
+            size="small"
+            loading={state.loading}
+            onClick={() => void retry()}
+          >
+            {t('system.appDownloads.updatePolicy.retry')}
+          </Button>
+        }
+      />
+    ) : null
+  }
+
+  function renderStoreOptionsFailure() {
+    return storeLoadState.failed ? (
+      <Alert
+        type="warning"
+        showIcon
+        message={t('system.appDownloads.updatePolicy.storeOptionsLoadFailed')}
+        description={t('system.appDownloads.updatePolicy.storeOptionsFallback')}
+        action={
+          <Button
+            size="small"
+            loading={storeLoadState.loading}
+            onClick={() => void loadStoreOptionsLane()}
+          >
+            {t('system.appDownloads.updatePolicy.retry')}
+          </Button>
+        }
+      />
+    ) : null
+  }
+
   function renderPolicyMetadata(
     policy: NativeUpdatePolicy | PosIpadOtaRollout,
     forceUpdate?: boolean,
@@ -756,9 +1021,15 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               mode="multiple"
               allowClear
               showSearch
+              loading={storeLoadState.loading}
               optionFilterProp="label"
               options={mergedStoreOptions}
-              disabled={!canManage || !enabled || targetScope !== 'stores'}
+              disabled={
+                !canManage
+                || !enabled
+                || targetScope !== 'stores'
+                || !storeOptionsUsable
+              }
               placeholder={t('system.appDownloads.updatePolicy.selectStores')}
             />
           </Form.Item>
@@ -775,13 +1046,21 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     enabled: boolean,
     targetScope: string,
     saving: boolean,
+    loadState: LoadLaneStatus,
   ) {
     const isIpad = app === 'pos-ipad'
+    const fieldColumn = isIpad ? 6 : 8
+    const domainReady = loadState.loaded && !loadState.loading && !loadState.failed
+    const storeScopeBlocked = isIpad
+      && enabled
+      && targetScope === 'stores'
+      && !storeOptionsUsable
     return (
       <Card
         size="small"
         title={t('system.appDownloads.updatePolicy.policy')}
         extra={renderPolicyMetadata(policy)}
+        loading={loadState.loading && !loadState.loaded}
       >
         <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} style={{ marginBottom: 16 }}>
           <Descriptions.Item label={t('system.appDownloads.updatePolicy.latestVersion')}>
@@ -793,6 +1072,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           <Descriptions.Item label={t('system.appDownloads.updatePolicy.updatedBy')}>
             {policy.updatedBy || '--'}
           </Descriptions.Item>
+          {isIpad ? (
+            <Descriptions.Item
+              label={t('system.appDownloads.updatePolicy.minimumBuild')}
+            >
+              {policy.minimumSupportedBuildNumber ?? '--'}
+            </Descriptions.Item>
+          ) : null}
         </Descriptions>
 
         <Form<NativeUpdatePolicyFormValue>
@@ -802,7 +1088,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           onFinish={(values) => handleNativeFinish(app, values)}
         >
           <Row gutter={[16, 0]}>
-            <Col xs={24} md={8}>
+            <Col xs={24} md={fieldColumn}>
               <Form.Item
                 name="enabled"
                 label={t('system.appDownloads.updatePolicy.policyStatus')}
@@ -814,7 +1100,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} md={8}>
+            <Col xs={24} md={fieldColumn}>
               <Form.Item
                 name="releaseId"
                 label={t('system.appDownloads.updatePolicy.release')}
@@ -841,7 +1127,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} md={8}>
+            <Col xs={24} md={fieldColumn}>
               <Form.Item
                 name="minimumSupportedVersion"
                 label={t('system.appDownloads.updatePolicy.minimumVersion')}
@@ -853,6 +1139,44 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 />
               </Form.Item>
             </Col>
+            {isIpad ? (
+              <Col xs={24} md={fieldColumn}>
+                <Form.Item
+                  name="minimumSupportedBuildNumber"
+                  label={t('system.appDownloads.updatePolicy.minimumBuild')}
+                  extra={t('system.appDownloads.updatePolicy.minimumBuildHelp')}
+                  dependencies={['enabled', 'minimumSupportedVersion']}
+                  rules={[
+                    ({ getFieldValue }) => ({
+                      validator: async (_rule, value?: number | null) => {
+                        if (
+                          getFieldValue('enabled')
+                          && !validateMinimumSupportedBuildNumber(
+                            getFieldValue('minimumSupportedVersion'),
+                            value,
+                          )
+                        ) {
+                          throw new Error(
+                            t('system.appDownloads.updatePolicy.minimumBuildRequiresVersion'),
+                          )
+                        }
+                      },
+                    }),
+                  ]}
+                >
+                  <InputNumber
+                    min={0}
+                    max={2_147_483_647}
+                    precision={0}
+                    style={{ width: '100%' }}
+                    disabled={!canManage || !enabled}
+                    placeholder={t(
+                      'system.appDownloads.updatePolicy.minimumBuildPlaceholder',
+                    )}
+                  />
+                </Form.Item>
+              </Col>
+            ) : null}
             {isIpad ? renderTargetFields(enabled, targetScope) : null}
             <Col span={24}>
               <Form.Item
@@ -875,7 +1199,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               htmlType="submit"
               icon={<SaveOutlined />}
               loading={saving}
-              disabled={!loaded}
+              disabled={!domainReady || storeScopeBlocked}
             >
               {t('common.save')}
             </Button>
@@ -893,9 +1217,21 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     enabled: boolean,
     targetScope: string,
     saving: boolean,
+    loadState: LoadLaneStatus,
+    retry: () => Promise<'applied' | 'stale' | 'failed'>,
   ) {
+    const isIpad = app === 'pos-ipad'
+    const domainReady = loadState.loaded && !loadState.loading && !loadState.failed
     return (
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {renderLoadFailure(
+          loadState,
+          retry,
+          isIpad
+            ? 'system.appDownloads.updatePolicy.ipadNativeLoadFailed'
+            : 'system.appDownloads.updatePolicy.mobileLoadFailed',
+        )}
+        {isIpad ? renderStoreOptionsFailure() : null}
         <Card
           size="small"
           title={t('system.appDownloads.updatePolicy.releaseFacts')}
@@ -903,6 +1239,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             canManage ? (
               <Button
                 icon={<AppstoreAddOutlined />}
+                disabled={!domainReady}
                 onClick={() => openRegisterModal(app)}
               >
                 {t('system.appDownloads.updatePolicy.registerRelease')}
@@ -922,6 +1259,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             size="small"
             columns={nativeReleaseColumns(policy)}
             dataSource={releases}
+            loading={loadState.loading}
             scroll={{ x: 860 }}
             locale={{
               emptyText: <Empty description={t('system.appDownloads.updatePolicy.noReleases')} />,
@@ -937,10 +1275,18 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           enabled,
           targetScope,
           saving,
+          loadState,
         )}
       </Space>
     )
   }
+
+  const otaDomainReady = otaLoadState.loaded
+    && !otaLoadState.loading
+    && !otaLoadState.failed
+  const otaStoreScopeBlocked = otaEnabled
+    && otaTargetScope === 'stores'
+    && !storeOptionsUsable
 
   const tabs = [
     {
@@ -954,6 +1300,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         mobileEnabled,
         'all',
         mobileSaving,
+        mobileLoadState,
+        loadMobileNativeLane,
       ),
     },
     {
@@ -967,6 +1315,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         ipadEnabled,
         ipadTargetScope,
         ipadSaving,
+        ipadLoadState,
+        loadIpadNativeLane,
       ),
     },
     {
@@ -974,6 +1324,12 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       label: t('system.appDownloads.updatePolicy.tabs.ipadOta'),
       children: (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {renderLoadFailure(
+            otaLoadState,
+            loadIpadOtaLane,
+            'system.appDownloads.updatePolicy.ipadOtaLoadFailed',
+          )}
+          {renderStoreOptionsFailure()}
           <Card size="small" title={t('system.appDownloads.updatePolicy.releaseFacts')}>
             <Alert
               type="info"
@@ -986,6 +1342,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               size="small"
               columns={otaReleaseColumns}
               dataSource={otaReleases}
+              loading={otaLoadState.loading}
               scroll={{ x: 1420 }}
               locale={{
                 emptyText: <Empty description={t('system.appDownloads.updatePolicy.noReleases')} />,
@@ -1001,6 +1358,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               otaRollout ?? EMPTY_OTA_ROLLOUT,
               otaRollout?.enabled && otaRollout.forceUpdate,
             )}
+            loading={otaLoadState.loading && !otaLoadState.loaded}
           >
             <Descriptions
               size="small"
@@ -1091,7 +1449,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   htmlType="submit"
                   icon={<SaveOutlined />}
                   loading={otaSaving}
-                  disabled={!loaded}
+                  disabled={!otaDomainReady || otaStoreScopeBlocked}
                 >
                   {t('common.save')}
                 </Button>
@@ -1110,13 +1468,12 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         extra={
           <Button
             icon={<ReloadOutlined />}
-            loading={loading}
-            onClick={() => void loadData()}
+            loading={anyLaneLoading}
+            onClick={() => void refreshAll()}
           >
             {t('common.refresh')}
           </Button>
         }
-        loading={loading && !loaded}
       >
         <Typography.Paragraph type="secondary">
           {t('system.appDownloads.updatePolicy.subtitle')}
@@ -1129,20 +1486,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             message={t('system.appDownloads.updatePolicy.readOnly')}
           />
         ) : null}
-        {loadFailed ? (
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={t('system.appDownloads.updatePolicy.loadFailed')}
-            action={
-              <Button size="small" onClick={() => void loadData()}>
-                {t('system.appDownloads.updatePolicy.retry')}
-              </Button>
-            }
-          />
-        ) : null}
-        {loaded ? <Tabs items={tabs} destroyInactiveTabPane={false} /> : null}
+        <Tabs items={tabs} destroyInactiveTabPane={false} />
       </Card>
 
       <Modal
@@ -1174,6 +1518,17 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           style={{ marginBottom: 16 }}
           message={t('system.appDownloads.updatePolicy.registerConfirmDescription')}
         />
+        {registerApp === 'pos-ipad' ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
+            description={t(
+              'system.appDownloads.updatePolicy.ipadBuildDoubleConfirmDescription',
+            )}
+          />
+        ) : null}
         <Form<AppStoreReleaseRegistrationFormValue>
           form={registerForm}
           layout="vertical"
@@ -1205,18 +1560,34 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             rules={[
               {
                 validator: async (_rule, value?: string) => {
-                  if (!value?.trim()) {
+                  const normalized = value?.trim() ?? ''
+                  if (!normalized) {
                     throw new Error(t('system.appDownloads.updatePolicy.buildNumberRequired'))
+                  }
+                  if (
+                    registerApp === 'pos-ipad'
+                    && !isValidPosIpadBuildNumber(normalized)
+                  ) {
+                    throw new Error(
+                      t('system.appDownloads.updatePolicy.ipadBuildNumberInvalid'),
+                    )
+                  }
+                  if (
+                    registerApp !== 'pos-ipad'
+                    && !/^[0-9A-Za-z._-]{1,64}$/.test(normalized)
+                  ) {
+                    throw new Error(
+                      t('system.appDownloads.updatePolicy.buildNumberInvalid'),
+                    )
                   }
                 },
               },
-              {
-                pattern: /^[0-9A-Za-z._-]{1,64}$/,
-                message: t('system.appDownloads.updatePolicy.buildNumberInvalid'),
-              },
             ]}
           >
-            <Input autoComplete="off" />
+            <Input
+              autoComplete="off"
+              inputMode={registerApp === 'pos-ipad' ? 'numeric' : undefined}
+            />
           </Form.Item>
           <Form.Item
             name="storefront"

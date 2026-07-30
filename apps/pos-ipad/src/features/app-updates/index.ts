@@ -1,4 +1,6 @@
 export * from "./app-update-coordinator";
+export * from "./app-update-recovery-contract";
+export * from "./app-update-recovery-screen";
 export * from "./app-update-gate-bridge";
 export * from "./app-update-orchestrator";
 export * from "./expo-app-update-restart";

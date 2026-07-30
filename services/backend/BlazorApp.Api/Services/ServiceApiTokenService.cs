@@ -21,10 +21,14 @@ namespace BlazorApp.Api.Services
         private const string ActiveStatus = "active";
         private const string RevokedStatus = "revoked";
         private const string ExpiredStatus = "expired";
-        private static readonly List<string> FixedScopes = new()
-        {
-            Permissions.System.ManageAppDownloads,
-        };
+        private static readonly IReadOnlyDictionary<string, string[]> PurposeScopes =
+            new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                [ServiceApiTokenPurposes.MobileOtaPublisher] =
+                    [Permissions.System.ManageAppDownloads],
+                [ServiceApiTokenPurposes.PosIpadUpdateDecisionReader] =
+                    [ServiceApiScopes.ReadAppUpdateDecisions],
+            };
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ServiceApiTokenService> _logger;
 
@@ -67,6 +71,15 @@ namespace BlazorApp.Api.Services
                 );
             }
 
+            var purpose = NormalizePurpose(request.Purpose);
+            if (!PurposeScopes.TryGetValue(purpose, out var scopes))
+            {
+                return ApiResponse<ServiceApiTokenCreateResponseDto>.Error(
+                    "Token purpose 不受支持",
+                    "SERVICE_API_TOKEN_PURPOSE_INVALID"
+                );
+            }
+
             var now = DateTime.UtcNow;
             var plaintextToken = GenerateToken();
             var entity = new ServiceApiToken
@@ -75,7 +88,7 @@ namespace BlazorApp.Api.Services
                 Name = name,
                 TokenHash = HashToken(plaintextToken),
                 TokenPrefix = plaintextToken[..TokenPrefixDisplayLength],
-                Scopes = JsonSerializer.Serialize(FixedScopes),
+                Scopes = JsonSerializer.Serialize(scopes),
                 CreatedAt = now,
                 CreatedBy = NormalizeActor(createdBy),
                 UpdatedAt = now,
@@ -296,6 +309,11 @@ namespace BlazorApp.Api.Services
         }
 
         private static string NormalizeName(string? value) => (value ?? string.Empty).Trim();
+
+        private static string NormalizePurpose(string? value) =>
+            string.IsNullOrWhiteSpace(value)
+                ? ServiceApiTokenPurposes.MobileOtaPublisher
+                : value.Trim().ToLowerInvariant();
 
         private static string NormalizeActor(string? value)
         {

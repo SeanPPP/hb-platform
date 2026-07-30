@@ -428,7 +428,7 @@ test("开发豁免只允许 API 切换跨过待处理门禁，其他危险动作
   assert.equal(events.includes("catalog:reset"), false);
 });
 
-test("所有会重绑运行时的危险动作都持有目录协调器独占门闩", async () => {
+test("除 App 更新与目录重置外，会重绑运行时的危险动作仍持有目录独占门闩", async () => {
   let exclusiveCalls = 0;
   const subject = new ProductionSettingsControl(
     deps({
@@ -494,7 +494,47 @@ test("所有会重绑运行时的危险动作都持有目录协调器独占门�
   await subject.executeDangerousAction({ kind: "restart-app" }, signal);
   await subject.executeDangerousAction({ kind: "reset-catalog" }, signal);
 
-  assert.equal(exclusiveCalls, 4);
+  assert.equal(exclusiveCalls, 3);
+});
+
+test("App 重启不预拿普通目录门，避免 transition 等待自身 operation 自锁", async () => {
+  let restartCalls = 0;
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      catalog: {
+        getRefreshState: () => ({ kind: "idle" }),
+        subscribeRefresh: () => () => undefined,
+        runExclusive: async () => {
+          throw new Error("restart must not acquire ordinary catalog lease");
+        },
+        download: async () => {
+          throw new Error("not implemented");
+        },
+        reset: async () => {
+          throw new Error("not implemented");
+        },
+      },
+      appUpdate: {
+        check: async () => {
+          throw new Error("not implemented");
+        },
+        restart: async () => {
+          restartCalls += 1;
+          return true;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { kind: "restart-app" },
+      new AbortController().signal,
+    ),
+    { status: "completed", kind: "restart-app" },
+  );
+  assert.equal(restartCalls, 1);
 });
 
 test("支付配置只把公开白名单传给保存端，Abort 后不执行", async () => {

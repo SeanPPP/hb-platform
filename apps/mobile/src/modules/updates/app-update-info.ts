@@ -27,12 +27,57 @@ export type AppUpdateCheckResult =
   | { status: "development-disabled" }
   | { status: "configuration-disabled" }
   | { status: "not-available" }
+  | { status: "cancelled" }
   | { status: "downloaded" };
 
 export type AppUpdateCheckAvailability =
   | "available"
   | "development-disabled"
   | "configuration-disabled";
+
+export type AppUpdateRunGuard = {
+  isCurrent: () => boolean;
+};
+
+export type AppUpdateCheckOperations = {
+  availability: AppUpdateCheckAvailability;
+  checkForUpdate: () => Promise<{ isAvailable: boolean }>;
+  fetchUpdate: () => Promise<unknown>;
+};
+
+const ALWAYS_CURRENT_UPDATE_RUN: AppUpdateRunGuard = {
+  isCurrent: () => true,
+};
+
+export async function runAppUpdateCheck(
+  operations: AppUpdateCheckOperations,
+  guard: AppUpdateRunGuard = ALWAYS_CURRENT_UPDATE_RUN,
+): Promise<AppUpdateCheckResult> {
+  if (operations.availability === "development-disabled") {
+    return { status: "development-disabled" };
+  }
+  if (operations.availability === "configuration-disabled") {
+    return { status: "configuration-disabled" };
+  }
+  if (!guard.isCurrent()) {
+    return { status: "cancelled" };
+  }
+
+  const update = await operations.checkForUpdate();
+  // expo-updates 本身不能取消 Promise；每个 await 返回后先核验代次，避免继续下载。
+  if (!guard.isCurrent()) {
+    return { status: "cancelled" };
+  }
+  if (!update.isAvailable) {
+    return { status: "not-available" };
+  }
+
+  await operations.fetchUpdate();
+  if (!guard.isCurrent()) {
+    return { status: "cancelled" };
+  }
+  return { status: "downloaded" };
+}
 
 export function resolveAppUpdateCheckAvailability(options: {
   isDev: boolean;

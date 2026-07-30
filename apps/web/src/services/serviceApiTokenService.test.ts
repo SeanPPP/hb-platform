@@ -1,4 +1,5 @@
 import {
+  buildServiceApiTokenCreateRequest,
   normalizeServiceApiToken,
   normalizeServiceApiTokenCreateResponse,
 } from './serviceApiTokenService'
@@ -54,5 +55,23 @@ const created = normalizeServiceApiTokenCreateResponse({
 })
 
 assertEqual(created.token, 'hbsvc_full_plaintext', '创建响应应保留一次性明文 token')
+
+const createRequest = buildServiceApiTokenCreateRequest(
+  ' iPad 策略读取 ',
+  'pos-ipad-update-decision-reader',
+)
+assertDeepEqual(
+  createRequest,
+  {
+    name: 'iPad 策略读取',
+    purpose: 'pos-ipad-update-decision-reader',
+  },
+  '创建请求只能提交显式 allowlist purpose，不得由浏览器提交 scopes',
+)
+assertEqual(
+  Object.prototype.hasOwnProperty.call(createRequest, 'scopes'),
+  false,
+  'Service Token 创建请求严禁提交 scopes',
+)
 
 console.log('serviceApiTokenService.test.ts: ok')

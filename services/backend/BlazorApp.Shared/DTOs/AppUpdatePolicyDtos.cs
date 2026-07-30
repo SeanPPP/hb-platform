@@ -15,6 +15,12 @@ public static class AppUpdateStates
     public const string Required = "required";
 }
 
+public static class AppUpdatePolicyErrorCodes
+{
+    public const string VersionRequired = "APP_UPDATE_POLICY_VERSION_REQUIRED";
+    public const string VersionConflict = "APP_UPDATE_POLICY_VERSION_CONFLICT";
+}
+
 public static class AppUpdateTargetScopes
 {
     public const string All = "all";
@@ -52,6 +58,7 @@ public sealed class IosAppStoreReleaseDto
 
 public class NativeUpdatePolicyRequest
 {
+    public long? ExpectedPolicyVersion { get; set; }
     public bool Enabled { get; set; }
     public Guid? ReleaseId { get; set; }
     public string? MinimumSupportedVersion { get; set; }
@@ -60,6 +67,7 @@ public class NativeUpdatePolicyRequest
 
 public sealed class PosIpadNativeUpdatePolicyRequest : NativeUpdatePolicyRequest
 {
+    public int? MinimumSupportedBuildNumber { get; set; }
     public string? TargetScope { get; set; } = AppUpdateTargetScopes.All;
     public List<string> TargetStoreGuids { get; set; } = new();
 }
@@ -72,6 +80,7 @@ public sealed class NativeUpdatePolicyDto
     public Guid? ReleaseId { get; set; }
     public string? LatestVersion { get; set; }
     public string? MinimumSupportedVersion { get; set; }
+    public int? MinimumSupportedBuildNumber { get; set; }
     public string? AppStoreUrl { get; set; }
     public string? ReleaseMessage { get; set; }
     public string TargetScope { get; set; } = AppUpdateTargetScopes.All;
@@ -155,6 +164,7 @@ public sealed class PosIpadOtaReleaseDto
 
 public sealed class PosIpadOtaRolloutRequest
 {
+    public long? ExpectedPolicyVersion { get; set; }
     public bool Enabled { get; set; }
     public Guid? ReleaseId { get; set; }
     public bool ForceUpdate { get; set; }

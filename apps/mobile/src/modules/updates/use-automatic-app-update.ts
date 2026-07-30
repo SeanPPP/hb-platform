@@ -9,17 +9,15 @@ import {
 import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "./app-update-runtime";
 
 export function useAutomaticAppUpdate(options: AutomaticAppUpdateOptions) {
-  const optionsRef = useRef(options);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const controllerRef = useRef(
     createAutomaticAppUpdateController({
       checkAndDownload: checkAndDownloadAppUpdate,
-      promptRestart: ({ beforeApply }) => {
+      promptRestart: ({ beforeApply, isCurrent }) => {
         const applyUpdate = createAutomaticAppUpdateApplyHandler({
-          beforeApply: async () => (
-            optionsRef.current.enabled && await beforeApply()
-          ),
-          apply: reloadAppToApplyUpdate,
+          beforeApply,
+          isCurrent,
+          apply: () => reloadAppToApplyUpdate({ isCurrent }),
           warn: (error) => {
             console.warn("[updates] automatic OTA apply failed", error);
           },
@@ -47,16 +45,21 @@ export function useAutomaticAppUpdate(options: AutomaticAppUpdateOptions) {
     })
   );
 
-  // 前置原生检查完成后 React 可能已提交新门禁；同步更新 ref，避免读取旧 render。
-  optionsRef.current = options;
+  // 控制器跨 render 存活，异步边界始终读取这一份 live options。
+  controllerRef.current.updateOptions(options);
 
   useEffect(() => {
     if (!options.enabled) {
+      controllerRef.current.cancel();
       return;
     }
 
     // 启动准备完成后执行一次自动检查；控制器会处理并发与重复提示。
-    void controllerRef.current.check(optionsRef.current);
+    void controllerRef.current.check();
+
+    return () => {
+      controllerRef.current.cancel();
+    };
   }, [options.enabled]);
 
   useEffect(() => {
@@ -65,11 +68,12 @@ export function useAutomaticAppUpdate(options: AutomaticAppUpdateOptions) {
       appStateRef.current = nextState;
 
       // App 从后台回到前台时再检查一次，让长时间运行的门店设备也能拿到更新。
-      void controllerRef.current.handleAppStateChange(previousState, nextState, optionsRef.current);
+      void controllerRef.current.handleAppStateChange(previousState, nextState);
     });
 
     return () => {
       subscription.remove();
+      controllerRef.current.cancel();
     };
   }, []);
 }

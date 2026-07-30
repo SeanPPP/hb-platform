@@ -82,6 +82,16 @@ async function run() {
     "切回用户模式必须统一经过 rearm 与设备查询失效逻辑"
   );
   assert.match(loginScreen, /handleSelectDeviceMode/);
+  assert.doesNotMatch(
+    loginScreen,
+    /checkLoginUpdateRestartPrompt|checkAndDownloadAppUpdate|reloadAppToApplyUpdate|updateRestartReady/,
+    "登录页不得再拥有独立自动 OTA、restart-ready 或直接 reload 路径",
+  );
+  assert.equal(
+    rootLayout.match(/useAutomaticAppUpdate\(\{/g)?.length,
+    1,
+    "Root 必须是自动 OTA 的唯一 owner",
+  );
 
   const authLoginSource = authStore.slice(
     authStore.indexOf("async login(payload)"),

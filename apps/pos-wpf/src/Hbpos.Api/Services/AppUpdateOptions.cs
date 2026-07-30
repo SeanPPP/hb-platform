@@ -13,7 +13,7 @@ public sealed class AppUpdateOptions
     public string? CenterApiKey { get; set; }
 
     /// <summary>
-    /// 中央更新决策接口使用的 hbsvc_ 服务令牌；生产环境应通过 secret/env 注入。
+    /// 中央更新决策接口使用的只读 hbsvc_ 服务令牌；生产环境应通过 secret/env 注入。
     /// </summary>
     public string? ServiceApiToken { get; set; }
 

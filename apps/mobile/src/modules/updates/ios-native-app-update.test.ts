@@ -32,6 +32,14 @@ class MemoryStorage implements IosNativeUpdateStorage {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 const context = {
   apiBaseUrl: "https://hotbargain.vip/api",
   installedVersion: "1.0.2",
@@ -227,6 +235,11 @@ async function run() {
       { allowed: true, epoch: 14 },
       "原生 none 应继续 OTA",
     );
+    assert.deepEqual(
+      deriveIosNativeOtaBarrier(null, 15),
+      { allowed: false, epoch: 15 },
+      "原生检查被取消或失效时没有 receipt，Root 必须 fail-closed",
+    );
     assert.equal(
       shouldCheckIosNativeUpdateOnAppStateChange("background", "active"),
       true,
@@ -393,6 +406,47 @@ async function run() {
 
     assert.equal(outcome.source, "none");
     assert.equal(outcome.decision, null, "首次离线且无可信缓存时必须放行");
+    assert.deepEqual(
+      deriveIosNativeOtaBarrier({
+        epoch: 16,
+        outcome,
+      }),
+      { allowed: true, epoch: 16 },
+      "真实网络失败仍应返回合法 receipt，首次离线策略保持放行",
+    );
+  }
+
+  {
+    const storage = new MemoryStorage();
+    const fetchResult = deferred<typeof requiredDecision>();
+    const abortController = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const check = checkIosNativeAppUpdate({
+      context,
+      storage,
+      now: () => 1_000,
+      signal: abortController.signal,
+      fetchDecision: async (signal) => {
+        receivedSignal = signal;
+        return fetchResult.promise;
+      },
+    });
+
+    abortController.abort();
+    fetchResult.resolve(requiredDecision);
+
+    await assert.rejects(
+      check,
+      (error: unknown) =>
+        error instanceof Error && error.name === "AbortError",
+      "generation 失效后，迟到的原生决策必须作为取消而不是网络失败 receipt",
+    );
+    assert.equal(receivedSignal, abortController.signal);
+    assert.equal(
+      await storage.getObject(IOS_NATIVE_REQUIRED_CACHE_KEY),
+      null,
+      "取消后的迟到响应不得继续写入本轮 required 缓存",
+    );
   }
 
   {
