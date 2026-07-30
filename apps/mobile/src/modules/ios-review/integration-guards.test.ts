@@ -175,6 +175,16 @@ async function run() {
   assert.match(rootLayout, /!iosReviewOfflineGuardActive/);
   assert.match(rootLayout, /usePrinterAutoConnect\(\{\s*enabled:\s*sideEffectsEnabled\s*}\)/);
   assert.match(rootLayout, /<IosReviewBanner\s*\/>/);
+  assert.match(
+    rootLayout,
+    /const iosNativeUpdateEnabled\s*=\s*sideEffectsEnabled\s*&&\s*shouldEnableIosNativeUpdate/,
+    "production 登录前的 review pre-auth 守卫应跳过原生更新网络检查",
+  );
+  assert.match(
+    rootLayout,
+    /<IosNativeUpdateBoundary[\s\S]*enabled={iosNativeUpdateEnabled}[\s\S]*initialized={iosNativeUpdate\.initialized}/,
+    "普通认证成功解除 guard 后，业务内容必须先经过原生更新 checking/required 门禁",
+  );
 
   assert.match(tabsLayout, /sessionKind\s*===\s*"iosReview"/);
   assert.match(tabsLayout, /enabled:\s*!isIosReviewSession\s*&&\s*heartbeatReady/);

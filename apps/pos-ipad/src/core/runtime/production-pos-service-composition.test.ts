@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  UPDATE_TRANSITION_IN_PROGRESS,
+  UpdateTransitionLeaseCoordinator,
+} from "../../features/app-updates/update-transition-lease-coordinator";
+import {
   calculateCatalogPageChecksum,
   type CatalogPageDigest,
   type CatalogLookupItem,
@@ -83,6 +87,17 @@ const ids = [
 
 const nodeCatalogPageDigest: CatalogPageDigest = async (payload) =>
   createHash("sha256").update(payload, "utf8").digest("hex");
+
+function deferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+}> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
 
 test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutService 提交现金订单", async () => {
   let nextId = 0;
@@ -1349,6 +1364,52 @@ test("生产退货服务按可信收银员作用域启用，缺少主管授权�
   });
 });
 
+test("生产更新安全快照把可信门店作用域内的退货恢复标记为阻断", async () => {
+  const services = createTestComposition(
+    databaseFor([], { returnRecoveryRequired: true }),
+    {
+      cashierPermissions: ["Permissions.PosTerminal.Returns.View"],
+      supervisorPermissions: [],
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const snapshot = await services.appUpdateSafety.getSnapshot();
+  assert.equal(snapshot.hasRecoveryRequired, true);
+});
+
+test("生产组合绑定全局 transition：自身 cart lease 不误报 durable write，封门期间拒绝新同步", async () => {
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const services = createTestComposition(databaseFor([]), {
+    appUpdateTransition: transition,
+  });
+  await services.initialize();
+
+  const release = deferred<void>();
+  const action = transition.runTransition(async () => {
+    const snapshot = await services.appUpdateSafety.getSnapshot();
+    assert.equal(snapshot.hasPendingDurableWrite, false);
+    await assert.rejects(
+      services.sync.requestDrain(),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as Error & { code?: string }).code ===
+          UPDATE_TRANSITION_IN_PROGRESS,
+    );
+    await release.promise;
+  });
+  await Promise.resolve();
+  assert.equal(transition.isTransitionActive(), true);
+  release.resolve();
+  await action;
+  assert.equal(transition.isTransitionActive(), false);
+  assert.equal(
+    await transition.runOperation(async () => "released"),
+    "released",
+  );
+});
+
 test("生产退货组合必须取得二次加密退款券材料端口，不能保留不可用占位渲染器", async () => {
   let protectedMaterialFacadeCalls = 0;
   const services = createTestComposition(
@@ -1449,6 +1510,9 @@ test("生产更新门禁阻止空车开始普通或特殊商品交易，但不�
     hasActiveCart: false,
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
+    hasRecoveryRequired: false,
+    hasSyncOrAuditInFlight: false,
+    hasFulfilmentInFlight: false,
   });
   sales.setQuery("930000000001");
   assert.equal(await sales.addLookupCode(), false);
@@ -1468,6 +1532,9 @@ test("生产更新门禁阻止空车开始普通或特殊商品交易，但不�
     hasActiveCart: true,
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
+    hasRecoveryRequired: false,
+    hasSyncOrAuditInFlight: false,
+    hasFulfilmentInFlight: false,
   });
 
   canStartNewTransaction = false;
@@ -2161,6 +2228,7 @@ function createTestComposition(
     onDrawerOpen?(actionId: string): void;
     installmentBootstrap?: PaymentProviderRuntimeBootstrap;
     settings?: ProductionSettingsRuntimeConfiguration;
+    appUpdateTransition?: UpdateTransitionLeaseCoordinator;
   }> = {},
 ) {
   let nextId = 0;
@@ -2252,6 +2320,9 @@ function createTestComposition(
         canContinueRecovery: true,
       }),
     },
+    ...(options.appUpdateTransition
+      ? { appUpdateTransition: options.appUpdateTransition }
+      : {}),
     ...(supervisorPermissions
       ? {
           operationAuthorization: {
@@ -2545,6 +2616,7 @@ function databaseFor(
     dailyClose?: DailyCloseRepositoryPort;
     onSyncHistoryRestore?(): void;
     onRefundVoucherPrintMaterialCreated?(): void;
+    returnRecoveryRequired?: boolean;
     activeCatalogPromotions?: ActiveCatalogPromotions | null;
     activeCatalogMetadata?: ActiveCatalogMetadata | null;
     onCatalogActivate?(): void;
@@ -2812,7 +2884,9 @@ function databaseFor(
     }),
     returnExecutionLedger: () => ({
       async listRecoverable() {
-        return [];
+        return options.returnRecoveryRequired
+          ? [{} as never]
+          : [];
       },
     }),
     returnFulfilmentPlans: () => ({

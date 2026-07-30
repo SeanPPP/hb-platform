@@ -1,3 +1,4 @@
+import type { UpdateOperationLeasePort } from "../../features/app-updates/update-transition-lease-coordinator";
 import type { AuditEventDraft } from "../contracts/order";
 import type { AuditRepositoryPort, OutboxLease, OutboxRepositoryPort } from "../contracts/repositories";
 import type { OrderSyncPort, SyncOrderResult } from "../contracts/sync";
@@ -52,6 +53,7 @@ export type PosSyncCoordinatorOptions = Readonly<{
   retryBaseMs?: number;
   retryMaxMs?: number;
   retryJitterRatio?: number;
+  operationLease?: UpdateOperationLeasePort;
 }>;
 
 const auditBatchSize = 100;
@@ -83,11 +85,21 @@ export class PosSyncCoordinator {
     this.retryJitterRatio = options.retryJitterRatio ?? 0.2;
   }
 
+  /** 仅暴露当前单飞 drain 是否仍在执行，不泄漏队列内容或改变重试状态。 */
+  public isDraining(): boolean {
+    return this.inFlight !== undefined;
+  }
+
   public requestDrain(): Promise<SyncDrainReport> {
     if (this.inFlight) {
       return this.inFlight;
     }
-    this.inFlight = this.drainInternal().finally(() => {
+    const drain = () => this.drainInternal();
+    this.inFlight = (
+      this.options.operationLease
+        ? this.options.operationLease.runOperation(drain)
+        : drain()
+    ).finally(() => {
       this.inFlight = undefined;
     });
     return this.inFlight;

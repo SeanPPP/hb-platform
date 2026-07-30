@@ -25,6 +25,7 @@ const mockCatalogFindExact =
   jest.fn<(lookupCode: string) => Promise<any>>();
 const mockReprintReceipt = jest.fn<() => Promise<any>>();
 const mockOpenCashDrawer = jest.fn<() => Promise<any>>();
+const mockPerformSelectedUpdate = jest.fn<() => Promise<any>>();
 const mockSetQuery = jest.fn();
 const mockToggleAppLanguage = jest.fn<() => Promise<"en" | "zh">>();
 const mockReadSalesToolbarOrder = jest.fn<() => string[] | null>();
@@ -159,6 +160,10 @@ beforeEach(() => {
   mockOpenCashDrawer.mockResolvedValue({
     state: "Completed",
     errorCode: null,
+  });
+  mockPerformSelectedUpdate.mockResolvedValue({
+    action: "open-app-store",
+    url: "https://apps.apple.com/au/app/hb-pos/id123456789",
   });
   mockRandomUUID.mockReturnValue("123e4567-e89b-42d3-a456-426614174000");
   mockToggleAppLanguage.mockResolvedValue("zh");
@@ -585,6 +590,30 @@ test("检测到冷恢复时先转到支付页，不创建销售 presenter", asyn
   expect(screen.getByTestId("bootstrap")).toBeTruthy();
 });
 
+test("销售页强制升级入口只触发 orchestrator，不在 route 内旁路打开 App Store", async () => {
+  mockUpdateGate = {
+    state: "force-update",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  };
+  mockUpdatePolicy = {
+    ...mockUpdatePolicy,
+    forceUpdate: true,
+    appStoreUrl:
+      "https://apps.apple.com/au/app/hb-pos/id123456789",
+  };
+  await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(mockSalesScreenProps).not.toBeNull();
+  });
+
+  await act(async () => {
+    mockSalesScreenProps.onOpenRequiredUpdate();
+    await Promise.resolve();
+  });
+  expect(mockPerformSelectedUpdate).toHaveBeenCalledTimes(1);
+});
+
 test("普通支付稳定后检测到分期恢复时转到统一支付页", async () => {
   mockInstallmentHasRecoveryRequired.mockResolvedValue(true);
   const screen = await render(<SalesRoute />);
@@ -639,6 +668,7 @@ function readyRuntime() {
       appUpdates: {
         getGate: () => mockUpdateGate,
         getPolicy: () => mockUpdatePolicy,
+        performSelectedUpdate: mockPerformSelectedUpdate,
         subscribe: (listener: (gate: unknown) => void) => {
           listener(mockUpdateGate);
           return () => undefined;

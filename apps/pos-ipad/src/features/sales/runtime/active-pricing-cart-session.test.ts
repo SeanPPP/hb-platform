@@ -5,6 +5,7 @@ import {
   ACTIVE_PRICING_CART_BUSY,
   ACTIVE_PRICING_CART_STALE_LEASE,
   ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED,
+  ACTIVE_PRICING_CART_UPDATE_TRANSITION,
   ActivePricingCartSession,
   type ActivePricingCartLease,
 } from "./active-pricing-cart-session";
@@ -201,6 +202,51 @@ test("安全重启探针只在 exclusive durable 操作期间报告 pending", as
   operation.resolve();
   await pending;
   assert.equal(activeCart.hasPendingExclusiveOperation(), false);
+});
+
+test("可选更新 guard 仅在 transition 活跃时拒绝新 mutation，默认与 finally 恢复后行为不变", async () => {
+  let transitionActive = false;
+  const activeCart = new ActivePricingCartSession(
+    new PricingCart(),
+    () => new PricingCart(),
+    {
+      canStartMutation: () => !transitionActive,
+    },
+  );
+  const input = {
+    lineId: "guarded-line",
+    productCode: "P-GUARD",
+    itemNumber: null,
+    lookupCode: "guard",
+    displayName: "Guarded",
+    unitPrice: { currency: "AUD" as const, cents: 500 },
+    syncProvenance: { referenceCode: null, priceSource: 0 as const },
+  };
+
+  activeCart.addItem(input);
+  transitionActive = true;
+  assert.throws(
+    () =>
+      activeCart.addItem({
+        ...input,
+        lineId: "must-not-add",
+      }),
+    hasCode(ACTIVE_PRICING_CART_UPDATE_TRANSITION),
+  );
+  await assert.rejects(
+    activeCart.runExclusive(async () => undefined),
+    hasCode(ACTIVE_PRICING_CART_UPDATE_TRANSITION),
+  );
+  await activeCart.runUpdateTransitionExclusive(async (lease) => {
+    assert.equal(lease.read().cart.lines.length, 1);
+  });
+
+  transitionActive = false;
+  activeCart.addItem({ ...input, lineId: "after-transition" });
+  await activeCart.runExclusive(async (lease) => {
+    assert.equal(lease.read().cart.lines.length, 1);
+    assert.equal(lease.read().cart.lines[0]?.quantity, "2");
+  });
 });
 
 test("监听器异常被隔离，且 committed OrderGuid tombstone 令重复 clear 幂等", () => {

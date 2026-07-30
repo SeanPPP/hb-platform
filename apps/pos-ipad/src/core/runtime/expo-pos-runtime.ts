@@ -2,11 +2,17 @@ import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
 import * as ExpoNetwork from "expo-network";
 import * as Updates from "expo-updates";
+import { Linking } from "react-native";
 
 import {
   AppUpdateCoordinator,
-  ExpoAppUpdateRestartPort,
+  AppUpdateOrchestrator,
+  ExpoOtaUpdatePort,
+  HbposPosIpadOtaUpdateApi,
   HbposPosIpadUpdateApi,
+  OtaUpdateCoordinator,
+  shouldCheckOtaPolicy,
+  UpdateTransitionLeaseCoordinator,
 } from "../../features/app-updates";
 import {
   HbposAttendanceSecurityApi,
@@ -100,6 +106,8 @@ const POS_APP_ID = "com.hbweb.posipad";
 type HbposExtraConfig = Readonly<{
   hbpos?: Readonly<{
     apiBaseUrl?: string;
+    automaticOtaChecks?: boolean;
+    buildProfile?: string;
     businessTimeZone?: string;
     trustedApiOrigins?: readonly string[];
   }>;
@@ -113,7 +121,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     deviceSession: PosDeviceSessionRuntimeService;
     cashierSessionInvalidation: PosCashierInvalidationRuntimeService;
     externalDisplay: ExternalCustomerDisplayPort;
-    appUpdates: AppUpdateCoordinator;
+    appUpdates: AppUpdateOrchestrator;
     scanner: Readonly<{ router: HidScannerRouter }>;
   }>;
 
@@ -422,33 +430,73 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       Constants.nativeAppVersion ??
       Constants.expoConfig?.version ??
       "0.0.0";
+    const runtimeVersion = Updates.runtimeVersion ?? appVersion;
     let appUpdateSafety:
       | ProductionPosRuntimeServices["appUpdateSafety"]
       | null = null;
-    const appUpdateRestart = new ExpoAppUpdateRestartPort({
-      getSafetySnapshot: () => {
-        if (!appUpdateSafety) {
-          throw new Error(
-            "App update restart safety is not initialized.",
-          );
-        }
-        return appUpdateSafety.getSnapshot();
+    const updateCacheScope = Object.freeze({
+      apiOrigin: new URL(apiBaseUrl).origin,
+      storeCode: runtimeCredentials?.storeCode ?? "unregistered",
+      runtimeVersion,
+      installedVersion: appVersion,
+    });
+    const nativeAppUpdates = new AppUpdateCoordinator({
+      metadata: {
+        version: appVersion,
+        build: Constants.nativeBuildVersion ?? "0",
+        runtimeVersion,
       },
+      policyStore: database.appUpdatePolicy(updateCacheScope),
+      remote: new HbposPosIpadUpdateApi(transport),
+    });
+    const otaInstaller = new ExpoOtaUpdatePort({
+      enabled: Updates.isEnabled,
+      runtimeVersion: Updates.runtimeVersion,
       updates: {
+        setUpdateRequestHeadersOverride: (headers) =>
+          Updates.setUpdateRequestHeadersOverride(headers),
         checkForUpdateAsync: () => Updates.checkForUpdateAsync(),
         fetchUpdateAsync: () => Updates.fetchUpdateAsync(),
         reloadAsync: () => Updates.reloadAsync(),
       },
     });
-    const appUpdates = new AppUpdateCoordinator({
+    const otaAppUpdates = new OtaUpdateCoordinator({
+      automaticChecksEnabled: shouldCheckOtaPolicy({
+        automaticChecksConfigured:
+          publicExtra?.hbpos?.automaticOtaChecks === true,
+        updatesEnabled: Updates.isEnabled,
+      }),
       metadata: {
-        version: appVersion,
-        build: Constants.nativeBuildVersion ?? "0",
-        runtimeVersion: Updates.runtimeVersion ?? appVersion,
+        runtimeVersion,
+        currentUpdateId: Updates.updateId,
+        currentUpdateGroupId: readCurrentUpdateGroupId(
+          Updates.manifest,
+        ),
       },
-      policyStore: database.appUpdatePolicy(),
-      remote: new HbposPosIpadUpdateApi(transport),
-      restart: appUpdateRestart,
+      policyStore: database.otaUpdatePolicy(updateCacheScope),
+      remote: new HbposPosIpadOtaUpdateApi(transport),
+      installer: otaInstaller,
+    });
+    const appUpdateTransition =
+      new UpdateTransitionLeaseCoordinator();
+    const appUpdates = new AppUpdateOrchestrator({
+      installedVersion: appVersion,
+      native: nativeAppUpdates,
+      ota: otaAppUpdates,
+      transition: appUpdateTransition,
+      appStore: {
+        open: (url) => Linking.openURL(url),
+      },
+      safety: {
+        getSafetySnapshot: () => {
+          if (!appUpdateSafety) {
+            throw new Error(
+              "App update safety is not initialized.",
+            );
+          }
+          return appUpdateSafety.getSnapshot();
+        },
+      },
     });
     const printer = createLazyExpoPrinterAdapter();
     const scannerRouter = new HidScannerRouter();
@@ -554,6 +602,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           cashierSessionInvalidation.subscribe(() => listener()),
       },
       newTransactionGate: appUpdates,
+      appUpdateTransition,
       operationAuthorization: {
         cashierAuthentication: supervisorAuthentication,
       },
@@ -682,6 +731,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
             .catch(() => undefined);
         }
         cashierSessionInvalidation.notify("manual-lock");
+        appUpdates.dispose();
         // 页面离开不会取消目录刷新；只有 runtime 关闭会先中止并等待 staging 清理。
         await shutdownBackgroundWork();
         await database.close();
@@ -696,6 +746,31 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     await database.close();
     throw error;
   }
+}
+
+function readCurrentUpdateGroupId(manifest: unknown): string | null {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return null;
+  }
+  const record = manifest as Record<string, unknown>;
+  const metadata =
+    record.metadata &&
+    typeof record.metadata === "object" &&
+    !Array.isArray(record.metadata)
+      ? (record.metadata as Record<string, unknown>)
+      : null;
+  const candidate =
+    metadata?.updateGroupId ??
+    metadata?.updateGroup ??
+    record.updateGroupId ??
+    null;
+  if (typeof candidate !== "string") return null;
+  const normalized = candidate.trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+    normalized,
+  )
+    ? normalized
+    : null;
 }
 
 export function createExpoPosRuntimeController(): PosRuntimeController<ExpoPosRuntimeServices> {

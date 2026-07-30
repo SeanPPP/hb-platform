@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Stack } from "expo-router";
 import Constants from "expo-constants";
 import * as SplashScreen from "expo-splash-screen";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { Image, Platform, StyleSheet, Text, View } from "react-native";
 import { PaperProvider, MD3LightTheme } from "react-native-paper";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider } from "react-i18next";
@@ -11,8 +11,15 @@ import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
 import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
+import { IosNativeUpdateBoundary } from "@/modules/updates/IosNativeUpdateBoundary";
+import {
+  deriveIosNativeOtaBarrier,
+  shouldEnableIosNativeUpdate,
+  shouldPauseAutomaticOtaForIosNativeUpdate,
+} from "@/modules/updates/ios-native-app-update";
 import { useAutomaticAppUpdate } from "@/modules/updates/use-automatic-app-update";
 import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-native-app-update";
+import { useIosNativeAppUpdate } from "@/modules/updates/use-ios-native-app-update";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { queryClient } from "@/shared/api/query-client";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
@@ -55,14 +62,49 @@ export default function RootLayout() {
   const isIosReviewSession = sessionKind === "iosReview";
   const sideEffectsEnabled =
     appReady && !startupError && !iosReviewOfflineGuardActive;
+  const nativeAppBuildProfile =
+    Constants.expoConfig?.extra?.nativeAppBuildProfile;
   const automaticUpdatesEnabled =
     sideEffectsEnabled &&
     shouldRunAutomaticAppUpdatesForProfile(
-      Constants.expoConfig?.extra?.nativeAppBuildProfile
+      nativeAppBuildProfile
     );
+  const iosNativeUpdateEnabled =
+    sideEffectsEnabled &&
+    shouldEnableIosNativeUpdate({
+      platform: Platform.OS,
+      buildProfile: nativeAppBuildProfile,
+      isDevelopment: __DEV__,
+      reviewGuardActive: iosReviewOfflineGuardActive,
+    });
+  const iosNativeUpdate = useIosNativeAppUpdate({
+    enabled: iosNativeUpdateEnabled,
+  });
+  const pauseAutomaticOta = shouldPauseAutomaticOtaForIosNativeUpdate({
+    enabled: iosNativeUpdateEnabled,
+    initialized: iosNativeUpdate.initialized,
+    state: iosNativeUpdate.decision?.state ?? null,
+    optionalPromptActive: iosNativeUpdate.optionalPromptActive,
+  });
 
   usePrinterAutoConnect({ enabled: sideEffectsEnabled });
-  useAutomaticAppUpdate({ enabled: automaticUpdatesEnabled });
+  useAutomaticAppUpdate({
+    enabled: automaticUpdatesEnabled && !pauseAutomaticOta,
+    beforeCheck: iosNativeUpdateEnabled
+      ? async () => {
+          const receipt = await iosNativeUpdate.recheck();
+          return receipt
+            ? deriveIosNativeOtaBarrier(receipt)
+            : {
+                allowed: true,
+                epoch: iosNativeUpdate.getCheckEpoch(),
+              };
+        }
+      : undefined,
+    getEpoch: iosNativeUpdateEnabled
+      ? iosNativeUpdate.getCheckEpoch
+      : undefined,
+  });
   useAutomaticNativeAppUpdate({ enabled: automaticUpdatesEnabled });
 
   useEffect(() => {
@@ -167,16 +209,27 @@ export default function RootLayout() {
           <PaperProvider theme={theme}>
             {/* 浅色业务页面统一使用深色系统图标，避免白底白字看不清。 */}
             <StatusBar style="dark" />
-            <View style={styles.appContent}>
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="index" />
-                <Stack.Screen name="(auth)" />
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="preorders" />
-                <Stack.Screen name="employee-profile-review" />
-              </Stack>
-              {isIosReviewSession ? <IosReviewBanner /> : null}
-            </View>
+            <IosNativeUpdateBoundary
+              enabled={iosNativeUpdateEnabled}
+              initialized={iosNativeUpdate.initialized}
+              checking={iosNativeUpdate.checking}
+              decision={iosNativeUpdate.decision}
+              onOpenRequiredUpdate={iosNativeUpdate.openRequiredUpdate}
+              onRetryRequiredUpdate={() => {
+                void iosNativeUpdate.recheck();
+              }}
+            >
+              <View style={styles.appContent}>
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="(auth)" />
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="preorders" />
+                  <Stack.Screen name="employee-profile-review" />
+                </Stack>
+                {isIosReviewSession ? <IosReviewBanner /> : null}
+              </View>
+            </IosNativeUpdateBoundary>
           </PaperProvider>
         </I18nextProvider>
       </QueryClientProvider>

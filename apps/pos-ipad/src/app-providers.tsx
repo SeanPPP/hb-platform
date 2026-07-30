@@ -10,6 +10,7 @@ import {
   PosRuntimeProvider,
   usePosRuntime,
 } from "@/core/runtime/pos-runtime-context";
+import { AppUpdateGateBridge } from "@/features/app-updates";
 import { CashierSessionInvalidationBridge } from "@/features/cashier-login";
 import { OperationAuthorizationModal } from "@/features/operation-authorization/operation-authorization-modal";
 import { NetworkStatusBridge } from "@/ui/shell/network-status-bridge";
@@ -46,6 +47,7 @@ export function AppProviders({ children }: PropsWithChildren) {
             <RuntimeWorkBridge />
             <OperationAuthorizationModalBridge />
             {children}
+            <AppUpdateGateBridge />
           </PosRuntimeProvider>
         </PaperProvider>
       </QueryClientProvider>

@@ -1,16 +1,29 @@
 import { useEffect, useRef } from "react";
 import { Alert, AppState, type AppStateStatus } from "react-native";
 import { i18n } from "@/shared/i18n/i18n";
-import { createAutomaticAppUpdateController } from "./automatic-app-update";
+import {
+  createAutomaticAppUpdateApplyHandler,
+  createAutomaticAppUpdateController,
+  type AutomaticAppUpdateOptions,
+} from "./automatic-app-update";
 import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "./app-update-runtime";
 
-export function useAutomaticAppUpdate(options: { enabled: boolean }) {
+export function useAutomaticAppUpdate(options: AutomaticAppUpdateOptions) {
   const optionsRef = useRef(options);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const controllerRef = useRef(
     createAutomaticAppUpdateController({
       checkAndDownload: checkAndDownloadAppUpdate,
-      promptRestart: () => {
+      promptRestart: ({ beforeApply }) => {
+        const applyUpdate = createAutomaticAppUpdateApplyHandler({
+          beforeApply: async () => (
+            optionsRef.current.enabled && await beforeApply()
+          ),
+          apply: reloadAppToApplyUpdate,
+          warn: (error) => {
+            console.warn("[updates] automatic OTA apply failed", error);
+          },
+        });
         Alert.alert(
           i18n.t("settings:dialogs.autoUpdateReadyTitle"),
           i18n.t("settings:dialogs.autoUpdateReadyMessage"),
@@ -22,7 +35,7 @@ export function useAutomaticAppUpdate(options: { enabled: boolean }) {
             {
               text: i18n.t("settings:dialogs.autoUpdateRestartAction"),
               onPress: () => {
-                void reloadAppToApplyUpdate();
+                void applyUpdate();
               },
             },
           ]
@@ -34,9 +47,8 @@ export function useAutomaticAppUpdate(options: { enabled: boolean }) {
     })
   );
 
-  useEffect(() => {
-    optionsRef.current = options;
-  }, [options.enabled]);
+  // 前置原生检查完成后 React 可能已提交新门禁；同步更新 ref，避免读取旧 render。
+  optionsRef.current = options;
 
   useEffect(() => {
     if (!options.enabled) {
@@ -44,7 +56,7 @@ export function useAutomaticAppUpdate(options: { enabled: boolean }) {
     }
 
     // 启动准备完成后执行一次自动检查；控制器会处理并发与重复提示。
-    void controllerRef.current.check(options);
+    void controllerRef.current.check(optionsRef.current);
   }, [options.enabled]);
 
   useEffect(() => {

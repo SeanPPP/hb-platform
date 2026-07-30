@@ -9,6 +9,7 @@ import type {
   LocalOrder,
   RecalledHoldCompletion,
 } from "../contracts/order";
+import type { AppUpdateCacheScope } from "../contracts/ota-app-updates";
 import type {
   DatabasePort,
   DatabaseTransactionPort,
@@ -20,6 +21,7 @@ import type { TerminalCartFence } from "../contracts/terminal-cart";
 import { SqliteCatalogLookupOverlayRepository } from "./catalog-lookup-overlay-repository";
 import { SqliteCatalogSnapshotRepository } from "./catalog-repository";
 import { applyMigrations } from "./migrations";
+import { PosIpadOtaUpdatePolicyRepository } from "./pos-ipad-ota-update-policy-repository";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
 import { PosSettingsRepository } from "./pos-settings-repository";
 import { ReceiptCompletionSettlementRepository } from "./receipt-completion-settlement-repository";
@@ -271,8 +273,25 @@ export class PosDatabase implements DatabasePort {
   }
 
   /** 更新策略缓存只经窄 facade 访问，运行时不得读写任意 app_settings。 */
-  public appUpdatePolicy(): PosIpadUpdatePolicyRepository {
-    return new PosIpadUpdatePolicyRepository(this.connection, this.nowIso);
+  public appUpdatePolicy(
+    scope: AppUpdateCacheScope,
+  ): PosIpadUpdatePolicyRepository {
+    return new PosIpadUpdatePolicyRepository(
+      this.connection,
+      this.nowIso,
+      scope,
+    );
+  }
+
+  /** OTA 策略缓存与原生版本策略分离，并固定到门店、runtime 和当前二进制。 */
+  public otaUpdatePolicy(
+    scope: AppUpdateCacheScope,
+  ): PosIpadOtaUpdatePolicyRepository {
+    return new PosIpadOtaUpdatePolicyRepository(
+      this.connection,
+      this.nowIso,
+      scope,
+    );
   }
 
   /** 重打只可读取已持久化完成审计中的找零，不向 feature 暴露审计表或裸连接。 */

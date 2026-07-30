@@ -1,4 +1,7 @@
-import type { AppUpdateRestartSafetySnapshot } from "../../features/app-updates";
+import type {
+  AppUpdateRestartSafetySnapshot,
+  UpdateTransitionLeaseCoordinator,
+} from "../../features/app-updates";
 import type { AttendanceAuditRuntimeFactory } from "../../features/attendance-audit/attendance-audit-runtime";
 import { CashierLockService } from "../../features/cashier-lock";
 import {
@@ -474,6 +477,7 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
   newTransactionGate: Readonly<{
     getGate(): NewTransactionGate;
   }>;
+  appUpdateTransition?: UpdateTransitionLeaseCoordinator;
   cashierLock?: CashierLockRuntimeConfiguration | undefined;
   operationAuthorization?:
     | OperationAuthorizationRuntimeConfiguration
@@ -573,6 +577,15 @@ export function createProductionPosRuntimeServices(
   const activePricingCart = new ActivePricingCartSession(
     new PricingCart(),
     () => new PricingCart(),
+    input.appUpdateTransition
+      ? {
+          canStartMutation: () =>
+            !input.appUpdateTransition?.isTransitionActive(),
+        }
+      : {},
+  );
+  input.appUpdateTransition?.bindTransitionBarrier((operation) =>
+    runUpdateTransitionWithActiveCart(activePricingCart, operation),
   );
   const catalogRepository = input.database.catalogSnapshots();
   const catalogLookupOverlay = input.database.catalogLookupOverlay();
@@ -917,6 +930,9 @@ export function createProductionPosRuntimeServices(
       }
       return Object.freeze({ printerId: current.peripheralId });
     },
+    ...(input.appUpdateTransition
+      ? { operationLease: input.appUpdateTransition }
+      : {}),
   });
   const remoteHistory = createHbposRemoteHistoryPresenterFactory(
     input.transport,
@@ -965,6 +981,9 @@ export function createProductionPosRuntimeServices(
     security: input.syncSecurity,
     now: input.clock.now,
     random: input.random,
+    ...(input.appUpdateTransition
+      ? { operationLease: input.appUpdateTransition }
+      : {}),
   });
   const lifecycle = new SyncLifecycleController(coordinator);
   const syncHistory = createSyncHistoryRuntime(
@@ -1314,8 +1333,11 @@ export function createProductionPosRuntimeServices(
       getSnapshot: async () => {
         const cartBefore = activePricingCart.getSnapshot().lines.length > 0;
         const writeBefore =
-          activePricingCart.hasPendingExclusiveOperation();
+          activePricingCart.hasPendingExclusiveOperation() &&
+          input.appUpdateTransition?.isCriticalSectionActive() !==
+            true;
         let hasUnresolvedPayment = true;
+        let hasRecoveryRequired = true;
         try {
           const regularPaymentRecovery =
             payments.status === "available"
@@ -1333,6 +1355,14 @@ export function createProductionPosRuntimeServices(
         } catch {
           // 无法证明支付已稳定时必须禁止 reload，避免 Unknown 被误当成可安全重启。
         }
+        try {
+          hasRecoveryRequired =
+            returns.status === "available"
+              ? await returns.hasRecoveryRequired()
+              : false;
+        } catch {
+          // 退货恢复读取失败同样不能当成安全；保持 true 等待下一次可信快照。
+        }
         return Object.freeze({
           hasActiveCart:
             cartBefore ||
@@ -1340,7 +1370,12 @@ export function createProductionPosRuntimeServices(
           hasUnresolvedPayment,
           hasPendingDurableWrite:
             writeBefore ||
-            activePricingCart.hasPendingExclusiveOperation(),
+            (activePricingCart.hasPendingExclusiveOperation() &&
+              input.appUpdateTransition?.isCriticalSectionActive() !==
+                true),
+          hasRecoveryRequired,
+          hasSyncOrAuditInFlight: coordinator.isDraining(),
+          hasFulfilmentInFlight: fulfilment.isHardwareBusy(),
         });
       },
     },
@@ -1995,6 +2030,9 @@ function createAvailableReturnRuntime(input: Readonly<{
     sha256Hex: input.input.sha256Hex,
     createId: input.input.createId,
     nowIso: input.input.clock.nowIso,
+    ...(input.input.appUpdateTransition
+      ? { operationLease: input.input.appUpdateTransition }
+      : {}),
   });
   return Object.freeze({
     status: "available" as const,
@@ -2460,6 +2498,25 @@ export function createPostCommitFulfilmentCashCheckout(
       return result;
     },
   };
+}
+
+async function runUpdateTransitionWithActiveCart<T>(
+  activeCart: ActivePricingCartSession,
+  operation: () => Promise<T>,
+): Promise<T> {
+  // transition 已先同步关闭普通购物车入口；这里只等待此前已取得的 lease，
+  // 不持有普通 operation lease，固定锁序因此不会形成 activeCart 反向等待。
+  while (activeCart.hasPendingExclusiveOperation()) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  try {
+    return await activeCart.runUpdateTransitionExclusive(() =>
+      operation(),
+    );
+  } catch (error) {
+    if (!activeCart.hasPendingExclusiveOperation()) throw error;
+    return runUpdateTransitionWithActiveCart(activeCart, operation);
+  }
 }
 
 function receiptSettingsService(

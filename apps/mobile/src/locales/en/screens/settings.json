@@ -191,7 +191,20 @@
     "nativeUpdateOpenSettingsAction": "Open settings",
     "legacyNativeUpdateReadyTitle": "New APK required",
     "legacyNativeUpdateReadyMessage": "This installed APK must be upgraded to {{version}}. Download and reinstall the latest APK.",
-    "legacyNativeUpdateDownloadAction": "Open download"
+    "legacyNativeUpdateDownloadAction": "Open download",
+    "iosNativeUpdateChecking": "Checking the app version…",
+    "iosNativeUpdateAvailableTitle": "Update available",
+    "iosNativeUpdateAvailableMessage": "Version {{version}} is now available on the App Store.",
+    "iosNativeUpdateRequiredEyebrow": "UPDATE REQUIRED",
+    "iosNativeUpdateRequiredTitle": "Update the app to continue",
+    "iosNativeUpdateVersion": "New version {{version}}",
+    "iosNativeUpdateRequiredMessage": "This version is no longer supported. Update before continuing to business features.",
+    "iosNativeUpdateRequiredHelper": "Reopen the app after the App Store installation finishes.",
+    "iosNativeUpdateLaterAction": "Later",
+    "iosNativeUpdateOpenStoreAction": "Open App Store",
+    "iosNativeUpdateRetryAction": "Check Again",
+    "iosNativeUpdateOpenFailedTitle": "Cannot open the App Store",
+    "iosNativeUpdateOpenFailedMessage": "Check your network connection, or search for Hot Bargain directly in the App Store."
   },
   "messages": {
     "profileLoginRequired": "Sign in with an account before opening your profile."

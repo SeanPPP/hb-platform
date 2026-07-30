@@ -19,6 +19,8 @@ export const ACTIVE_PRICING_CART_STALE_SNAPSHOT =
   "ACTIVE_PRICING_CART_STALE_SNAPSHOT";
 export const ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED =
   "ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED";
+export const ACTIVE_PRICING_CART_UPDATE_TRANSITION =
+  "ACTIVE_PRICING_CART_UPDATE_TRANSITION";
 
 const DEFAULT_COMMITTED_ORDER_TOMBSTONE_LIMIT = 128;
 
@@ -33,6 +35,8 @@ export type ActivePricingCartSessionSnapshot = Readonly<{
 
 export type ActivePricingCartSessionOptions = Readonly<{
   committedOrderTombstoneLimit?: number;
+  /** 默认允许；生产组合根在 App 更新切换期间注入同步写门禁。 */
+  canStartMutation?: () => boolean;
 }>;
 
 /**
@@ -67,6 +71,7 @@ export class ActivePricingCartSession {
   private readonly committedOrderGuids = new Set<string>();
   private readonly committedOrderGuidOrder: string[] = [];
   private readonly committedOrderTombstoneLimit: number;
+  private readonly canStartMutation: () => boolean;
   private activeLeaseToken: symbol | null = null;
   private pendingRecallRecovery: RecallActiveBinding | null = null;
   private recallBinding: RecallActiveBinding | null = null;
@@ -84,6 +89,7 @@ export class ActivePricingCartSession {
         DEFAULT_COMMITTED_ORDER_TOMBSTONE_LIMIT,
       "Committed order tombstone limit",
     );
+    this.canStartMutation = options.canStartMutation ?? (() => true);
     // 中文注释：克隆传入对象，调用方即使仍持有 initialCart 也无法绕过 session 变更。
     this.cart = cloneCart(initialCart);
     this.current = this.buildSnapshot();
@@ -321,6 +327,27 @@ export class ActivePricingCartSession {
   public runExclusive<T>(
     operation: (lease: ActivePricingCartLease) => T | Promise<T>,
   ): Promise<T> {
+    try {
+      this.assertMutationAllowed();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.runExclusiveInternal(operation);
+  }
+
+  /**
+   * 只供生产组合根的 App 更新 transition 使用：全局写门已先关闭普通 mutation，
+   * 因此该入口仅绕过外部 guard，仍遵守同一 active lease 与过期 lease 规则。
+   */
+  public runUpdateTransitionExclusive<T>(
+    operation: (lease: ActivePricingCartLease) => T | Promise<T>,
+  ): Promise<T> {
+    return this.runExclusiveInternal(operation);
+  }
+
+  private runExclusiveInternal<T>(
+    operation: (lease: ActivePricingCartLease) => T | Promise<T>,
+  ): Promise<T> {
     if (this.activeLeaseToken !== null) {
       return Promise.reject(
         codedError(
@@ -530,10 +557,20 @@ export class ActivePricingCartSession {
   }
 
   private assertIdle(): void {
+    this.assertMutationAllowed();
     if (this.activeLeaseToken !== null) {
       throw codedError(
         ACTIVE_PRICING_CART_BUSY,
         "Active pricing cart is busy.",
+      );
+    }
+  }
+
+  private assertMutationAllowed(): void {
+    if (!this.canStartMutation()) {
+      throw codedError(
+        ACTIVE_PRICING_CART_UPDATE_TRANSITION,
+        "Active pricing cart is blocked by an app update transition.",
       );
     }
   }

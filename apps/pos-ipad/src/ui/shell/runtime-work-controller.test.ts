@@ -47,12 +47,17 @@ test("启动和前台同时触发时外设 drain 单飞，同步各走对应耐�
   assert.deepEqual(calls, [
     "sync-start",
     "hardware",
-    "updates-start",
     "sync-foreground",
-    "updates-foreground",
   ]);
   releaseHardware?.();
   await Promise.all([started, foreground]);
+  assert.deepEqual(calls, [
+    "sync-start",
+    "hardware",
+    "sync-foreground",
+    "updates-start",
+    "updates-foreground",
+  ]);
 });
 
 test("联网变化只触发同步协调器，不把打印或钱箱与网络状态错误绑定", async () => {

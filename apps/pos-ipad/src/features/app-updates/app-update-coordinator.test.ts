@@ -227,6 +227,9 @@ test("重启决策由注入的风险快照控制，活动购物车、未决支�
       hasActiveCart: true,
       hasUnresolvedPayment: false,
       hasPendingDurableWrite: false,
+      hasRecoveryRequired: false,
+      hasSyncOrAuditInFlight: false,
+      hasFulfilmentInFlight: false,
     }),
     { canRestart: false, reason: "active-cart" },
   );
@@ -235,6 +238,9 @@ test("重启决策由注入的风险快照控制，活动购物车、未决支�
       hasActiveCart: false,
       hasUnresolvedPayment: true,
       hasPendingDurableWrite: false,
+      hasRecoveryRequired: false,
+      hasSyncOrAuditInFlight: false,
+      hasFulfilmentInFlight: false,
     }),
     { canRestart: false, reason: "unresolved-payment" },
   );
@@ -243,6 +249,9 @@ test("重启决策由注入的风险快照控制，活动购物车、未决支�
       hasActiveCart: false,
       hasUnresolvedPayment: false,
       hasPendingDurableWrite: true,
+      hasRecoveryRequired: false,
+      hasSyncOrAuditInFlight: false,
+      hasFulfilmentInFlight: false,
     }),
     { canRestart: false, reason: "pending-durable-write" },
   );
@@ -258,6 +267,9 @@ test("重启决策由注入的风险快照控制，活动购物车、未决支�
           hasActiveCart: false,
           hasUnresolvedPayment: false,
           hasPendingDurableWrite: false,
+          hasRecoveryRequired: false,
+          hasSyncOrAuditInFlight: false,
+          hasFulfilmentInFlight: false,
         };
       },
       async restart() {
@@ -271,6 +283,30 @@ test("重启决策由注入的风险快照控制，活动购物车、未决支�
     reason: null,
   });
   assert.equal(restarts, 1);
+});
+
+test("恢复、同步审计或外设动作仍在进行时不得进入完整更新门禁", () => {
+  const safe = {
+    hasActiveCart: false,
+    hasUnresolvedPayment: false,
+    hasPendingDurableWrite: false,
+    hasRecoveryRequired: false,
+    hasSyncOrAuditInFlight: false,
+    hasFulfilmentInFlight: false,
+  };
+  for (const [field, reason] of [
+    ["hasRecoveryRequired", "recovery-required"],
+    ["hasSyncOrAuditInFlight", "sync-audit-in-flight"],
+    ["hasFulfilmentInFlight", "fulfilment-in-flight"],
+  ] as const) {
+    assert.deepEqual(
+      decideAppUpdateRestart({
+        ...safe,
+        [field]: true,
+      } as never),
+      { canRestart: false, reason },
+    );
+  }
 });
 
 test("并发安全重启共享 single-flight，只执行一次 snapshot 与 restart", async () => {
@@ -291,6 +327,9 @@ test("并发安全重启共享 single-flight，只执行一次 snapshot 与 rest
           hasActiveCart: false,
           hasUnresolvedPayment: false,
           hasPendingDurableWrite: false,
+          hasRecoveryRequired: false,
+          hasSyncOrAuditInFlight: false,
+          hasFulfilmentInFlight: false,
         };
       },
       async restart() {
@@ -323,6 +362,9 @@ test("并发 restart 拒绝只执行一次，清理 single-flight 后允许显�
           hasActiveCart: false,
           hasUnresolvedPayment: false,
           hasPendingDurableWrite: false,
+          hasRecoveryRequired: false,
+          hasSyncOrAuditInFlight: false,
+          hasFulfilmentInFlight: false,
         };
       },
       async restart() {

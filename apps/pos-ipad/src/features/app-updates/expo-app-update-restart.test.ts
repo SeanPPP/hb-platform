@@ -9,6 +9,9 @@ test("EAS 更新只有下载到新 bundle 后才 reload，并严格按 check/fet
     hasActiveCart: false,
     hasUnresolvedPayment: false,
     hasPendingDurableWrite: false,
+    hasRecoveryRequired: false,
+    hasSyncOrAuditInFlight: false,
+    hasFulfilmentInFlight: false,
   };
   const port = new ExpoAppUpdateRestartPort({
     getSafetySnapshot: async () => safety,
@@ -40,6 +43,9 @@ test("没有兼容 OTA 或 fetch 未得到新 bundle 时绝不 reload", async ()
       hasActiveCart: false,
       hasUnresolvedPayment: false,
       hasPendingDurableWrite: false,
+      hasRecoveryRequired: false,
+      hasSyncOrAuditInFlight: false,
+      hasFulfilmentInFlight: false,
     }),
     updates: {
       async checkForUpdateAsync() {

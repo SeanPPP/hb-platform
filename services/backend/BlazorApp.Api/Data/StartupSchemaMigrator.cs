@@ -22,6 +22,7 @@ namespace BlazorApp.Api.Data
             await EnsureStoreTimeZoneSchemaAsync(db, logger);
             await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
+            await AppUpdatePolicySchemaMigrator.EnsureAsync(db, logger);
             await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);
             await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureAttendanceQrSchemaAsync(db, logger);

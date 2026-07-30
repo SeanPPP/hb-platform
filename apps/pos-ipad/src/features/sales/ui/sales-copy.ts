@@ -4,6 +4,7 @@ export const salesEnglishCopy = {
   "app.runtimeUnavailable":
     "Sales services are not connected yet. Transaction actions remain disabled.",
   "updateGate.forceTitle": "Update required before the next sale",
+  "updateGate.otaTitle": "HB POS update required before the next sale",
   "updateGate.disabledTitle": "New iPad sales are temporarily disabled",
   "updateGate.uncheckedTitle":
     "Checking whether this terminal can start a sale",
@@ -184,6 +185,7 @@ const salesChineseCopy = {
   "app.workspace": "收银工作台",
   "app.runtimeUnavailable": "销售服务尚未接入，所有交易操作保持禁用。",
   "updateGate.forceTitle": "更新应用后才能开始下一单",
+  "updateGate.otaTitle": "完成 HB POS 更新后才能开始下一单",
   "updateGate.disabledTitle": "iPad 新交易已暂时停用",
   "updateGate.uncheckedTitle": "正在确认本终端能否开始交易",
   "updateGate.hint": "已有交易、支付恢复和可靠补传仍可继续。",

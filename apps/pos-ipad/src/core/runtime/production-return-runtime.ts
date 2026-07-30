@@ -14,6 +14,7 @@ import type {
   PosRepositoryBundle,
   SensitivePayloadEncryptor,
 } from "@/core/db/sqlite-repositories";
+import type { UpdateOperationLeasePort } from "@/features/app-updates/update-transition-lease-coordinator";
 import {
   OperationAuthorizationService,
   type AuthorizedOperationContext,
@@ -119,6 +120,7 @@ export type ProductionReturnRuntimeDependencies = Readonly<{
   sha256Hex(material: string): Promise<string>;
   createId(): string;
   nowIso(): string;
+  operationLease?: UpdateOperationLeasePort;
 }>;
 
 export class PosReturnRuntimeError extends Error {
@@ -341,7 +343,12 @@ function createPresenterForLease(
   if (context.recovery) {
     workflow.hydrateRecovery(toRecoveryHydration(context.recovery));
   }
-  return new ReturnPresenter(workflow);
+  return new ReturnPresenter(
+    workflow,
+    input.operationLease
+      ? { operationLease: input.operationLease }
+      : {},
+  );
 }
 
 type AuthorizedWorkflowDependencies = Readonly<{

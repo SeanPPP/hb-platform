@@ -1,4 +1,5 @@
 import type { CashDrawerPort, DrawerResult, PrintResult, PrinterPort } from "@/core/contracts";
+import type { UpdateOperationLeasePort } from "@/features/app-updates/update-transition-lease-coordinator";
 
 export type FulfilmentPrintJob = Readonly<{
   jobId: string;
@@ -122,6 +123,7 @@ export type FulfilmentServiceOptions = Readonly<{
   ): Promise<PreparedLastReceiptReprint | null>;
   /** 每次手动开箱只读一次当前持久设置，并冻结该动作使用的打印机。 */
   prepareManualDrawerOpen?(): Promise<PreparedManualDrawerOpen | null>;
+  operationLease?: UpdateOperationLeasePort;
 }>;
 
 export type FulfilmentActionResult = Readonly<{
@@ -135,8 +137,14 @@ export type FulfilmentActionResult = Readonly<{
  */
 export class FulfilmentService {
   private hardwareTail: Promise<void> = Promise.resolve();
+  private hardwareOperationsInFlight = 0;
 
   public constructor(private readonly options: FulfilmentServiceOptions) {}
+
+  /** 包含正在执行和已排队动作；只读状态不改变原有 BLE 串行与 CAS 语义。 */
+  public isHardwareBusy(): boolean {
+    return this.hardwareOperationsInFlight > 0;
+  }
 
   public async drainAutomaticQueue(): Promise<Readonly<{ printed: number; drawersOpened: number }>> {
     return this.serializeHardware(() => this.drainAutomaticQueueUnsafe());
@@ -521,6 +529,18 @@ export class FulfilmentService {
     operation: () => Promise<T>,
     assertActive?: FulfilmentLeaseGuard,
   ): Promise<T> {
+    const execute = () =>
+      this.serializeHardwareWithLease(operation, assertActive);
+    return this.options.operationLease
+      ? this.options.operationLease.runOperation(execute)
+      : execute();
+  }
+
+  private serializeHardwareWithLease<T>(
+    operation: () => Promise<T>,
+    assertActive?: FulfilmentLeaseGuard,
+  ): Promise<T> {
+    this.hardwareOperationsInFlight += 1;
     const guardedOperation = () => {
       // 授权动作必须在真正取得 BLE 队列所有权时复核，而不是只在排队前检查。
       assertActive?.();
@@ -530,12 +550,15 @@ export class FulfilmentService {
       guardedOperation,
       guardedOperation,
     );
+    const tracked = next.finally(() => {
+      this.hardwareOperationsInFlight -= 1;
+    });
     // 中文注释：无论一次作业成败，后续手动动作仍可继续，不让 rejected Promise 卡死 BLE 队列。
-    this.hardwareTail = next.then(
+    this.hardwareTail = tracked.then(
       () => undefined,
       () => undefined,
     );
-    return next;
+    return tracked;
   }
 }
 

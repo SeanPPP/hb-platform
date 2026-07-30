@@ -530,6 +530,9 @@ builder.Services.AddScoped<SeedDataService>(); // 种子数据初始化服务
 builder.Services.AddScoped<IDataInitializationService, DataInitializationService>(); // 数据初始化服务
 builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection("InvoiceEmail"));
 builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
+builder.Services.Configure<AppUpdatePolicyOptions>(
+    builder.Configuration.GetSection("AppUpdatePolicy")
+);
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<PaymentTerminalSettingsService>();
@@ -563,6 +566,39 @@ builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreat
 builder.Services.AddScoped<IDomesticSetTemplateService, DomesticSetTemplateService>(); // 国内套装模板服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
+builder.Services.AddHttpClient<IAppleAppStoreLookupClient, AppleAppStoreLookupClient>(client =>
+{
+    client.BaseAddress = new Uri("https://itunes.apple.com/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddScoped<IIosAppStoreReleaseService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new IosAppStoreReleaseService(
+        context.Db,
+        sp.GetRequiredService<IAppleAppStoreLookupClient>(),
+        sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<AppUpdatePolicyOptions>
+        >(),
+        sp.GetRequiredService<ILogger<IosAppStoreReleaseService>>()
+    );
+});
+builder.Services.AddScoped<INativeAppUpdatePolicyService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new NativeAppUpdatePolicyService(
+        context.Db,
+        sp.GetRequiredService<ILogger<NativeAppUpdatePolicyService>>()
+    );
+});
+builder.Services.AddScoped<IPosIpadOtaPolicyService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new PosIpadOtaPolicyService(
+        context.Db,
+        sp.GetRequiredService<ILogger<PosIpadOtaPolicyService>>()
+    );
+});
 builder.Services.AddScoped<MobileAppBuildService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();

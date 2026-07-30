@@ -8,6 +8,7 @@
     "ios": "expo run:ios",
     "prebuild:ios": "expo prebuild --platform ios",
     "export:ios": "expo export --platform ios",
+    "ota:publish": "node scripts/publish-ota-release.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "generate:hbpos-client": "node scripts/generate-hbpos-client.mjs",
@@ -19,6 +20,9 @@
     "test:display": "node --test modules/hb-external-display/tests/native-source-contract.test.mjs plugins/with-hb-external-display.test.mjs scripts/check-external-display-startup.test.mjs && tsx --test src/core/peripherals/customer-display/native/external-display-bridge.test.ts",
     "test:customer-display": "tsx --test src/features/customer-display/*.test.ts && jest src/core/peripherals/customer-display/native/*.rntl.test.tsx --runInBand",
     "test:app-updates": "tsx --test src/features/app-updates/*.test.ts",
+    "test:app-update-ui": "jest src/features/app-updates/*.rntl.test.tsx --runInBand",
+    "test:app-update-config": "node --test scripts/check-app-update-config.test.mjs",
+    "test:ota-release-script": "node --test scripts/publish-ota-release.test.mjs",
     "test:attendance-security": "tsx --test src/core/peripherals/attendance-security/native/*.test.ts && node --test modules/hb-attendance-security/tests/native-source-contract.test.mjs modules/hb-attendance-security/tests/native-interop.test.mjs",
     "test:attendance-audit": "tsx --test src/features/attendance-audit/*.test.ts && jest src/features/attendance-audit/*.rntl.test.tsx --runInBand",
     "test:ui-shell": "tsx --test src/ui/shell/*.test.ts",
@@ -67,7 +71,7 @@
     "test:codegen": "node scripts/generate-hbpos-client.test.mjs && npm run check:hbpos-client",
     "test:e2e": "node --test e2e/payment/payment-fault-matrix.fixture.test.mjs && tsx --test e2e/payment/*.e2e.test.ts",
     "test:project": "node scripts/check-project-contract.test.mjs && node scripts/check-parity-matrix.test.mjs && node scripts/check-payment-recovery-contract.test.mjs",
-    "test": "npm run test:project && npm run test:e2e && npm run test:contracts && npm run test:printer && npm run test:scanner && npm run test:camera-scanner && npm run test:display && npm run test:customer-display && npm run test:app-updates && npm run test:attendance-security && npm run test:attendance-audit && npm run test:ui-shell && npm run test:ui-preferences && npm run test:ui-controls && npm run test:runtime && npm run test:sync && npm run test:sync-history && npm run test:catalog && npm run test:catalog-maintenance && npm run test:routes && npm run test:pricing && npm run test:sales-ui && npm run test:sales-runtime && npm run test:receipts && npm run test:registration && npm run test:cashier-login && npm run test:cashier-lock && npm run test:operation-authorization && npm run test:held-orders && npm run test:cash && npm run test:fulfilment && npm run test:payments && npm run test:payment-runtime && npm run test:payment-ui && npm run test:mixed-payments && npm run test:square && npm run test:linkly && npm run test:voucher && npm run test:returns && npm run test:remote-history && npm run test:special-products && npm run test:daily-close && npm run test:installments && npm run test:settings && npm run test:locale-parity && npm run test:core-api-security && npm run test:db && npm run test:codegen && npm run typecheck && npm run lint"
+    "test": "npm run test:project && npm run test:app-update-config && npm run test:ota-release-script && npm run test:e2e && npm run test:contracts && npm run test:printer && npm run test:scanner && npm run test:camera-scanner && npm run test:display && npm run test:customer-display && npm run test:app-updates && npm run test:app-update-ui && npm run test:attendance-security && npm run test:attendance-audit && npm run test:ui-shell && npm run test:ui-preferences && npm run test:ui-controls && npm run test:runtime && npm run test:sync && npm run test:sync-history && npm run test:catalog && npm run test:catalog-maintenance && npm run test:routes && npm run test:pricing && npm run test:sales-ui && npm run test:sales-runtime && npm run test:receipts && npm run test:registration && npm run test:cashier-login && npm run test:cashier-lock && npm run test:operation-authorization && npm run test:held-orders && npm run test:cash && npm run test:fulfilment && npm run test:payments && npm run test:payment-runtime && npm run test:payment-ui && npm run test:mixed-payments && npm run test:square && npm run test:linkly && npm run test:voucher && npm run test:returns && npm run test:remote-history && npm run test:special-products && npm run test:daily-close && npm run test:installments && npm run test:settings && npm run test:locale-parity && npm run test:core-api-security && npm run test:db && npm run test:codegen && npm run typecheck && npm run lint"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",

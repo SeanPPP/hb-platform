@@ -16,6 +16,10 @@ import {
   type ReturnExecutionPort,
 } from "./return-workflow";
 
+import {
+  UpdateTransitionLeaseCoordinator,
+} from "@/features/app-updates/update-transition-lease-coordinator";
+
 test("公开 Presenter JSON 不泄露原单、原明细、capacity、PaymentId、RFN、券码或恢复键", async () => {
   const execution = new PresenterExecution();
   execution.executeImpl = async () => ({
@@ -66,6 +70,48 @@ test("Presenter 防重复点击，等待期间不会发起第二次退款", asyn
 
   assert.equal(await first, true);
   assert.equal(execution.executeCalls.length, 1);
+});
+
+test("更新 transition 等待在途退货 action，并拒绝封门后的新异步 action", async () => {
+  const transition = new UpdateTransitionLeaseCoordinator();
+  transition.bindTransitionBarrier((operation) => operation());
+  const pending = deferred<ReturnExecutionOutcome>();
+  const transitionRelease = deferred<void>();
+  const execution = new PresenterExecution();
+  execution.executeImpl = async () => pending.promise;
+  const first = new ReturnPresenter(createWorkflow(execution), {
+    operationLease: transition,
+  });
+  const second = new ReturnPresenter(
+    createWorkflow(new PresenterExecution()),
+    { operationLease: transition },
+  );
+  await first.loadReceipt("HB-1");
+  const lineId = first.getState().lines[0]?.id;
+  assert.ok(lineId);
+  first.incrementLine(lineId);
+
+  const confirm = first.confirm();
+  await waitUntil(() => execution.executeCalls.length === 1);
+  let transitionStarted = false;
+  const update = transition.runTransition(async () => {
+    transitionStarted = true;
+    await transitionRelease.promise;
+  });
+  await Promise.resolve();
+  assert.equal(transitionStarted, false);
+  assert.equal(await second.loadReceipt("HB-2"), false);
+
+  pending.resolve({
+    status: "completed",
+    returnOrderGuid: "return-order-1",
+  });
+  assert.equal(await confirm, true);
+  await Promise.resolve();
+  assert.equal(transitionStarted, true);
+  transitionRelease.resolve();
+  await update;
+  assert.equal(await second.loadReceipt("HB-2"), true);
 });
 
 test("旧会话 Presenter 的行操作失败为稳定码且不执行退款", async () => {

@@ -8,7 +8,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Linking } from "react-native";
 
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -247,7 +246,9 @@ export default function SalesRoute() {
         {...(appStoreUrl
           ? {
               onOpenRequiredUpdate: () => {
-                void Linking.openURL(appStoreUrl).catch(() => undefined);
+                void services.appUpdates
+                  .performSelectedUpdate()
+                  .catch(() => undefined);
               },
             }
           : {})}

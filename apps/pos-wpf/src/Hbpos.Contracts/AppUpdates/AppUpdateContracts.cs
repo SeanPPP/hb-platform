@@ -92,3 +92,15 @@ public sealed record PosIpadAppUpdateResponse(
     bool ForceUpdate,
     string? AppStoreUrl,
     string? ReleaseMessage);
+
+/// <summary>
+/// iPad OTA 投放决策；与 App Store 原生更新及 Windows 安装包合同严格隔离。
+/// </summary>
+public sealed record PosIpadOtaUpdateResponse(
+    string State,
+    string PolicyVersion,
+    string? Channel,
+    string? RuntimeVersion,
+    string? IosUpdateId,
+    string? UpdateGroupId,
+    string? ReleaseMessage);

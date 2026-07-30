@@ -72,3 +72,30 @@ test("请求元数据不合法或响应缺字段时 fail-closed，且非法请�
     /booleans are invalid/,
   );
 });
+
+test("原生决策 runtime 使用 exact compatibility token，不误当营销版本解析", async () => {
+  const transport = new RecordingTransport({ success: true, data: policy });
+  const api = new HbposPosIpadUpdateApi(transport);
+  const maximum = `r${"a".repeat(119)}`;
+
+  await api.getPolicy({
+    ...metadata,
+    runtimeVersion: "ios-sdk54/pos.1_2",
+  });
+  await api.getPolicy({ ...metadata, runtimeVersion: maximum });
+  assert.deepEqual(
+    transport.requests.map(
+      (request) => request.params?.runtimeVersion,
+    ),
+    ["ios-sdk54/pos.1_2", maximum],
+  );
+  await assert.rejects(
+    () =>
+      api.getPolicy({
+        ...metadata,
+        runtimeVersion: `r${"a".repeat(120)}`,
+      }),
+    /runtimeVersion is invalid/,
+  );
+  assert.equal(transport.requests.length, 2);
+});

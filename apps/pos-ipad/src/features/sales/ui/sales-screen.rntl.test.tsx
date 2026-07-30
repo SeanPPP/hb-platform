@@ -1057,6 +1057,31 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("OTA required 在空车时显示专用提示，但交易安全前不提供 reload 入口", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        newTransactionGate={{
+          state: "ota-update",
+          canStartNewTransaction: false,
+          canContinueRecovery: true,
+        }}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(
+      screen.getByText("完成 HB POS 更新后才能开始下一单"),
+    ).toBeTruthy();
+    expect(screen.getByTestId("sales-search-input").props.editable).toBe(false);
+    expect(screen.queryByTestId("sales-open-required-update")).toBeNull();
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("搜索系统键盘切换到自定义编辑器时隐藏键盘并保持 HID 暂停", async () => {
     const onManualInputFocusChange = jest.fn();
     const textInputPrototype = (

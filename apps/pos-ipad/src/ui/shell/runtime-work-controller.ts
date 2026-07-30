@@ -51,11 +51,12 @@ export class RuntimeWorkController {
     sync: () => Promise<unknown>,
     refreshAppUpdate: () => Promise<unknown> | undefined,
   ): Promise<void> {
+    // 先让同步/审计与外设队列到达稳定点，更新门禁才能读取可信安全快照。
     await Promise.all([
       sync(),
       this.drainHardware(),
-      refreshAppUpdate(),
     ]);
+    await refreshAppUpdate();
   }
 
   private drainHardware(): Promise<void> {

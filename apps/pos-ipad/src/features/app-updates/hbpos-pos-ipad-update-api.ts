@@ -55,7 +55,7 @@ function normalizeMetadata(
   return {
     version: requiredVersion(metadata.version, "version"),
     build: requiredBuild(metadata.build),
-    runtimeVersion: requiredVersion(metadata.runtimeVersion, "runtimeVersion"),
+    runtimeVersion: requiredRuntimeVersion(metadata.runtimeVersion),
   };
 }
 
@@ -63,6 +63,14 @@ function requiredVersion(value: unknown, field: string): string {
   const normalized = requiredText(value, field);
   if (!/^v?\d+(?:\.\d+){0,3}$/iu.test(normalized)) {
     throw new TypeError(`iPad update ${field} is invalid.`);
+  }
+  return normalized;
+}
+
+function requiredRuntimeVersion(value: unknown): string {
+  const normalized = requiredText(value, "runtimeVersion", 120);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(normalized)) {
+    throw new TypeError("iPad update runtimeVersion is invalid.");
   }
   return normalized;
 }
@@ -75,14 +83,18 @@ function requiredBuild(value: unknown): string {
   return normalized;
 }
 
-function requiredText(value: unknown, field: string): string {
+function requiredText(
+  value: unknown,
+  field: string,
+  maximum = 64,
+): string {
   if (typeof value !== "string") {
     throw new TypeError(`iPad update ${field} is invalid.`);
   }
   const normalized = value.trim();
   if (
     normalized.length === 0 ||
-    normalized.length > 64 ||
+    normalized.length > maximum ||
     /[\u0000-\u001f\u007f]/u.test(normalized)
   ) {
     throw new TypeError(`iPad update ${field} is invalid.`);

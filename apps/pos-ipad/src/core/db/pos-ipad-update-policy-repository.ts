@@ -3,10 +3,23 @@ import {
   type PosIpadUpdatePolicy,
   type PosIpadUpdatePolicyStorePort,
 } from "../contracts/app-updates";
+import {
+  normalizeAppUpdateCacheScope,
+  type AppUpdateCacheScope,
+} from "../contracts/ota-app-updates";
 
+import {
+  createAppUpdateCacheKey,
+  createStoredAppUpdateCacheScope,
+  isExactRecord,
+  matchesStoredAppUpdateCacheScope,
+  type StoredAppUpdateCacheScope,
+} from "./scoped-app-update-cache";
 import type { SqliteConnectionPort } from "./types";
 
-const UPDATE_POLICY_CACHE_KEY = "pos_ipad_update_policy_v1";
+const NATIVE_POLICY_VERSION = "native-v1";
+const NATIVE_POLICY_CACHE_PREFIX =
+  "pos_ipad_native_update_policy_v2";
 
 type SettingsRow = Readonly<{ setting_value: unknown }>;
 
@@ -16,19 +29,45 @@ type SettingsRow = Readonly<{ setting_value: unknown }>;
 export class PosIpadUpdatePolicyRepository
   implements PosIpadUpdatePolicyStorePort
 {
+  private readonly scope: AppUpdateCacheScope;
+  private readonly storedScope: StoredAppUpdateCacheScope;
+  private readonly cacheKey: string;
+
   public constructor(
     private readonly db: SqliteConnectionPort,
     private readonly nowIso: () => string,
-  ) {}
+    scope: AppUpdateCacheScope,
+  ) {
+    this.scope = normalizeAppUpdateCacheScope(scope);
+    this.storedScope = createStoredAppUpdateCacheScope(
+      this.scope,
+      NATIVE_POLICY_VERSION,
+    );
+    this.cacheKey = createAppUpdateCacheKey(
+      NATIVE_POLICY_CACHE_PREFIX,
+      this.scope,
+      NATIVE_POLICY_VERSION,
+    );
+  }
 
   public async get(): Promise<PosIpadUpdatePolicy | null> {
     const row = await this.db.getFirst<SettingsRow>(
       "SELECT setting_value FROM app_settings WHERE setting_key = ?",
-      [UPDATE_POLICY_CACHE_KEY],
+      [this.cacheKey],
     );
     if (!row || typeof row.setting_value !== "string") return null;
     try {
-      return normalizePosIpadUpdatePolicy(JSON.parse(row.setting_value));
+      const envelope: unknown = JSON.parse(row.setting_value);
+      if (
+        !isExactRecord(envelope, ["scope", "policy"]) ||
+        !matchesStoredAppUpdateCacheScope(
+          envelope.scope,
+          this.storedScope,
+        )
+      ) {
+        return null;
+      }
+      return normalizePosIpadUpdatePolicy(envelope.policy);
     } catch {
       // 损坏或越界缓存不能放行新交易；协调器会继续尝试远端刷新。
       return null;
@@ -46,7 +85,14 @@ export class PosIpadUpdatePolicyRepository
          ON CONFLICT(setting_key) DO UPDATE SET
            setting_value = excluded.setting_value,
            updated_at_iso = excluded.updated_at_iso`,
-        [UPDATE_POLICY_CACHE_KEY, JSON.stringify(policy), this.nowIso()],
+        [
+          this.cacheKey,
+          JSON.stringify({
+            scope: this.storedScope,
+            policy,
+          }),
+          this.nowIso(),
+        ],
       );
     });
     return policy;

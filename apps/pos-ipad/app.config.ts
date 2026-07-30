@@ -7,6 +7,94 @@ const supportedInterfaceOrientations = [
 // Expo 配置在独立 Node 上下文中加载，无法直接解析应用源码的 TS 模块。
 const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
 const localHbposApiBaseUrl = "http://192.168.31.246:5159";
+const posIpadProductionChannel = "pos-ipad-production";
+
+function buildOtaUpdateConfiguration(): Readonly<{
+  buildProfile: string;
+  automaticOtaChecks: boolean;
+  updates: NonNullable<ExpoConfig["updates"]>;
+  easProjectId: string | null;
+  runtimeVersion: NonNullable<ExpoConfig["runtimeVersion"]>;
+}> {
+  const buildProfile =
+    process.env.EAS_BUILD_PROFILE?.trim() ||
+    process.env.EXPO_PUBLIC_HBPOS_BUILD_PROFILE?.trim() ||
+    "development";
+  const easProjectId =
+    process.env.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID?.trim() || null;
+  const updatesUrl =
+    process.env.EXPO_PUBLIC_HBPOS_UPDATES_URL?.trim() || null;
+  const explicitRuntimeVersion =
+    process.env.EXPO_PUBLIC_HBPOS_RUNTIME_VERSION?.trim() || null;
+  const production = buildProfile === "production";
+  if (
+    production &&
+    (!easProjectId || !updatesUrl)
+  ) {
+    throw new Error(
+      "Production HB POS requires EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID and EXPO_PUBLIC_HBPOS_UPDATES_URL.",
+    );
+  }
+  if ((easProjectId === null) !== (updatesUrl === null)) {
+    throw new Error(
+      "HB POS EAS projectId and updates URL must be configured together.",
+    );
+  }
+  if (
+    easProjectId &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      easProjectId,
+    )
+  ) {
+    throw new Error("HB POS EAS projectId must be a UUID.");
+  }
+  if (updatesUrl) {
+    const parsed = new URL(updatesUrl);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== "u.expo.dev" ||
+      parsed.port ||
+      parsed.pathname !== `/${easProjectId}` ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new Error(
+        "HB POS updates URL must exactly match the configured EAS project.",
+      );
+    }
+  }
+  if (
+    explicitRuntimeVersion &&
+    (
+      explicitRuntimeVersion.length > 120 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(explicitRuntimeVersion)
+    )
+  ) {
+    throw new Error("HB POS runtimeVersion is invalid.");
+  }
+  const configured = easProjectId !== null && updatesUrl !== null;
+  const updates: NonNullable<ExpoConfig["updates"]> = {
+    // 所有 EAS 检查都由门店策略状态机显式触发，启动时绝不绕过后台策略。
+    checkAutomatically: "NEVER",
+    requestHeaders: {
+      "expo-channel-name": posIpadProductionChannel,
+    },
+    ...(updatesUrl ? { url: updatesUrl } : {}),
+  };
+  return Object.freeze({
+    buildProfile,
+    automaticOtaChecks:
+      configured &&
+      (buildProfile === "preview" || buildProfile === "production"),
+    updates,
+    easProjectId,
+    // OTA 发布脚本显式注入目标 runtime；普通原生构建仍按 App 版本生成。
+    runtimeVersion:
+      explicitRuntimeVersion ?? ({ policy: "appVersion" } as const),
+  });
+}
 
 function buildHbposApiConfiguration(): Readonly<{
   apiBaseUrl: string;
@@ -20,7 +108,7 @@ function buildHbposApiConfiguration(): Readonly<{
     localHbposApiBaseUrl,
     ...(process.env.EXPO_PUBLIC_HBPOS_TRUSTED_API_ORIGINS ?? "")
       .split(",")
-      .map((value) => value.trim())
+      .map((value: string) => value.trim())
       .filter(Boolean),
   ];
   return Object.freeze({
@@ -33,6 +121,7 @@ function buildHbposApiConfiguration(): Readonly<{
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   const hbpos = buildHbposApiConfiguration();
+  const ota = buildOtaUpdateConfiguration();
   return ({
   ...config,
   name: "HB POS",
@@ -44,9 +133,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   orientation: "landscape",
   userInterfaceStyle: "light",
   newArchEnabled: true,
-  runtimeVersion: {
-    policy: "appVersion",
-  },
+  runtimeVersion: ota.runtimeVersion,
+  updates: ota.updates,
   ios: {
     bundleIdentifier: "com.hbweb.posipad",
     buildNumber: "1",
@@ -114,7 +202,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         process.env.EXPO_PUBLIC_HBPOS_BUSINESS_TIME_ZONE?.trim() ??
         "Australia/Brisbane",
       deviceSystem: "iPadOS",
+      buildProfile: ota.buildProfile,
+      automaticOtaChecks: ota.automaticOtaChecks,
     },
+    ...(ota.easProjectId
+      ? { eas: { projectId: ota.easProjectId } }
+      : {}),
     payments: {
       // 这里只允许公开的终端选择；provider token/secret 始终保留在 Hbpos.Api。
       provider:

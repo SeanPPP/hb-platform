@@ -11,6 +11,8 @@ import {
   type ReturnWorkflowSnapshot,
 } from "./return-workflow";
 
+import type { UpdateOperationLeasePort } from "@/features/app-updates/update-transition-lease-coordinator";
+
 export type ReturnPresenterPhase =
   | "search"
   | "loading"
@@ -70,6 +72,10 @@ const INITIAL_STATE: ReturnPresenterState = {
   result: null,
 };
 
+export type ReturnPresenterOptions = Readonly<{
+  operationLease?: UpdateOperationLeasePort;
+}>;
+
 /**
  * Screen 只消费此脱敏状态。可信订单、明细、容量和恢复键仅留在 workflow 私有图中。
  */
@@ -82,7 +88,10 @@ export class ReturnPresenter {
   private destroyed = false;
   private nextPublicLineId = 1;
 
-  public constructor(private readonly workflow: ReturnWorkflow) {
+  public constructor(
+    private readonly workflow: ReturnWorkflow,
+    private readonly options: ReturnPresenterOptions = {},
+  ) {
     const snapshot = workflow.getSnapshot();
     if (snapshot.status === "unknown") {
       this.syncDraft(snapshot, "unknown");
@@ -284,7 +293,12 @@ export class ReturnPresenter {
   private runExclusive(operation: () => Promise<boolean>): Promise<boolean> {
     if (this.destroyed || this.actionInFlight) return Promise.resolve(false);
     this.patch({ busy: true });
-    const pending = operation()
+    const execute = () => operation();
+    const pending = (
+      this.options.operationLease
+        ? this.options.operationLease.runOperation(execute)
+        : execute()
+    )
       .catch(() => {
         this.patch({
           phase: "failed",

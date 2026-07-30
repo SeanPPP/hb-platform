@@ -8,7 +8,12 @@ export type PosIpadUpdatePolicy = Readonly<{
 }>;
 
 export type NewTransactionGate = Readonly<{
-  state: "enabled" | "disabled" | "force-update" | "unchecked";
+  state:
+    | "enabled"
+    | "disabled"
+    | "force-update"
+    | "ota-update"
+    | "unchecked";
   canStartNewTransaction: boolean;
   /** 同步、审计、支付恢复和支持导出永远不能被新交易门禁截断。 */
   canContinueRecovery: true;

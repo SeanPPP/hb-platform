@@ -154,6 +154,11 @@ public static class ServiceRegistration
             // 本地 WPF 更新检查不应继承 HttpClient 默认 100 秒超时，避免 POS API 线程长时间挂起。
             client.Timeout = TimeSpan.FromSeconds(15);
         });
+        services.AddHttpClient<IPosIpadUpdateDecisionGateway, HttpPosIpadUpdateDecisionGateway>(
+            client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(8);
+            });
 
         return services;
     }

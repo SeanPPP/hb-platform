@@ -895,6 +895,8 @@ export function SalesScreen({
               {t(
                 newTransactionGate?.state === "force-update"
                   ? "updateGate.forceTitle"
+                  : newTransactionGate?.state === "ota-update"
+                    ? "updateGate.otaTitle"
                   : newTransactionGate?.state === "disabled"
                     ? "updateGate.disabledTitle"
                     : "updateGate.uncheckedTitle",

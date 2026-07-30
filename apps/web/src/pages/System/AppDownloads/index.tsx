@@ -51,6 +51,7 @@ import {
   type AppDownloadProfile,
 } from './logic'
 import { formatAppDownloadLocalDateTime } from './time'
+import AppUpdatePolicyPanel from './AppUpdatePolicyPanel'
 import ServiceApiTokensPanel from './ServiceApiTokensPanel'
 
 function formatVersion(build?: MobileAppBuild | null) {
@@ -633,6 +634,8 @@ export default function AppDownloadsPage() {
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <AppUpdatePolicyPanel canManage={canManageAppDownloads} />
+
       <Card title={t('system.appDownloads.latestTitle')} extra={latestActions} loading={buildLoading}>
         {contentState === 'error' ? (
           <Alert

@@ -191,7 +191,20 @@
     "nativeUpdateOpenSettingsAction": "打开设置",
     "legacyNativeUpdateReadyTitle": "需要下载安装新版",
     "legacyNativeUpdateReadyMessage": "当前安装包需要升级到 {{version}}。请下载新版 APK 并重新安装。",
-    "legacyNativeUpdateDownloadAction": "打开下载"
+    "legacyNativeUpdateDownloadAction": "打开下载",
+    "iosNativeUpdateChecking": "正在检查应用版本…",
+    "iosNativeUpdateAvailableTitle": "发现新版本",
+    "iosNativeUpdateAvailableMessage": "App Store 已发布 {{version}}，现在可以升级。",
+    "iosNativeUpdateRequiredEyebrow": "必须更新",
+    "iosNativeUpdateRequiredTitle": "请先更新 App",
+    "iosNativeUpdateVersion": "新版本 {{version}}",
+    "iosNativeUpdateRequiredMessage": "当前版本已停止支持。完成升级后才能继续使用业务功能。",
+    "iosNativeUpdateRequiredHelper": "App Store 安装完成后，请重新打开 App。",
+    "iosNativeUpdateLaterAction": "稍后",
+    "iosNativeUpdateOpenStoreAction": "前往 App Store",
+    "iosNativeUpdateRetryAction": "重新检查",
+    "iosNativeUpdateOpenFailedTitle": "无法打开 App Store",
+    "iosNativeUpdateOpenFailedMessage": "请检查网络连接，或直接在 App Store 中搜索 Hot Bargain。"
   },
   "messages": {
     "profileLoginRequired": "请先使用账号登录，再打开个人信息。"

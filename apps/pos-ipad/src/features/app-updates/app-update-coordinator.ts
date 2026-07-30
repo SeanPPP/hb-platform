@@ -23,6 +23,9 @@ export type AppUpdateRestartSafetySnapshot = Readonly<{
   hasActiveCart: boolean;
   hasUnresolvedPayment: boolean;
   hasPendingDurableWrite: boolean;
+  hasRecoveryRequired: boolean;
+  hasSyncOrAuditInFlight: boolean;
+  hasFulfilmentInFlight: boolean;
 }>;
 
 export type AppUpdateRestartDecision =
@@ -33,6 +36,9 @@ export type AppUpdateRestartDecision =
         | "active-cart"
         | "unresolved-payment"
         | "pending-durable-write"
+        | "recovery-required"
+        | "sync-audit-in-flight"
+        | "fulfilment-in-flight"
         | "restart-unavailable"
         | "invalid-safety-snapshot";
     }>;
@@ -212,6 +218,24 @@ export function decideAppUpdateRestart(
       reason: "pending-durable-write",
     });
   }
+  if (snapshot.hasRecoveryRequired) {
+    return Object.freeze({
+      canRestart: false,
+      reason: "recovery-required",
+    });
+  }
+  if (snapshot.hasSyncOrAuditInFlight) {
+    return Object.freeze({
+      canRestart: false,
+      reason: "sync-audit-in-flight",
+    });
+  }
+  if (snapshot.hasFulfilmentInFlight) {
+    return Object.freeze({
+      canRestart: false,
+      reason: "fulfilment-in-flight",
+    });
+  }
   return Object.freeze({ canRestart: true, reason: null });
 }
 
@@ -226,11 +250,17 @@ function isSafetySnapshot(
     typeof snapshot.hasActiveCart === "boolean" &&
     typeof snapshot.hasUnresolvedPayment === "boolean" &&
     typeof snapshot.hasPendingDurableWrite === "boolean" &&
+    typeof snapshot.hasRecoveryRequired === "boolean" &&
+    typeof snapshot.hasSyncOrAuditInFlight === "boolean" &&
+    typeof snapshot.hasFulfilmentInFlight === "boolean" &&
     Object.keys(snapshot).every((key) =>
       [
         "hasActiveCart",
         "hasUnresolvedPayment",
         "hasPendingDurableWrite",
+        "hasRecoveryRequired",
+        "hasSyncOrAuditInFlight",
+        "hasFulfilmentInFlight",
       ].includes(key),
     )
   );

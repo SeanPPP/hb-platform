@@ -138,6 +138,7 @@
     <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
     <Compile Include="MobileAppBuildServiceTests.cs" />
     <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
+    <Compile Include="AppUpdatePolicyServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
     <Compile Include="WpfAppReleaseTargetingServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />

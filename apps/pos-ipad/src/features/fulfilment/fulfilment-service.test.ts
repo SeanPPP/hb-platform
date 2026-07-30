@@ -11,6 +11,12 @@ import {
   type PreparedLastReceiptReprint,
 } from "./fulfilment-service";
 
+import {
+  UPDATE_TRANSITION_IN_PROGRESS,
+  UpdateTransitionLeaseCoordinator,
+  type UpdateOperationLeasePort,
+} from "@/features/app-updates/update-transition-lease-coordinator";
+
 type PreparedReprintHasRequiredOrderGuid =
   PreparedLastReceiptReprint extends Readonly<{ orderGuid: string }> ? true : false;
 const preparedReprintHasRequiredOrderGuid: PreparedReprintHasRequiredOrderGuid = true;
@@ -168,6 +174,7 @@ function setup(overrides: Readonly<{
     orderGuid: string,
   ) => Promise<PreparedLastReceiptReprint | null>;
   prepareManualDrawerOpen?: () => Promise<PreparedManualDrawerOpen | null>;
+  operationLease?: UpdateOperationLeasePort;
 }> = {}) {
   const store = new MemoryStore();
   const hardwareTrace: string[] = [];
@@ -192,6 +199,9 @@ function setup(overrides: Readonly<{
     ...(overrides.prepareReceiptReprint
       ? { prepareReceiptReprint: overrides.prepareReceiptReprint }
       : {}),
+    ...(overrides.operationLease
+      ? { operationLease: overrides.operationLease }
+      : {}),
   });
   return { store, printer, drawer, audit: store.audits, hardwareTrace, service };
 }
@@ -213,6 +223,17 @@ const drawerAuthorization: FulfilmentAuthorizationContext = {
 };
 
 const activeLease = () => undefined;
+
+function deferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+}> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
 
 test("自动队列只认 Queued/Required；终态、Sending、Ambiguous、Requested、Unknown 一律不重放", async () => {
   assert.equal(preparedReprintHasRequiredOrderGuid, true);
@@ -751,6 +772,87 @@ test("自动队列与手动动作经过同一 BLE 串行队列，不能并发写
   await Promise.all([automatic, manual]);
   assert.equal(printer.maxActive, 1);
   assert.deepEqual(printer.calls, ["queued", "failed"]);
+});
+
+test("排队及执行中的外设动作公开只读 busy 状态，完成后立即清除", async () => {
+  const { store, printer, service } = setup();
+  store.printJobs.set("queued", {
+    jobId: "queued",
+    orderGuid: "O1",
+    printerId: "XP-QUEUE",
+    isReprint: false,
+    bytes: Uint8Array.of(1),
+    state: "Queued",
+    retryCount: 0,
+  });
+  let release!: () => void;
+  printer.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  assert.equal(service.isHardwareBusy(), false);
+  const drain = service.drainAutomaticQueue();
+  assert.equal(service.isHardwareBusy(), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.isHardwareBusy(), true);
+
+  release();
+  await drain;
+  assert.equal(service.isHardwareBusy(), false);
+});
+
+test("更新 transition 等待在途硬件动作，并在封门后拒绝新履约动作", async () => {
+  const transition = new UpdateTransitionLeaseCoordinator();
+  transition.bindTransitionBarrier((operation) => operation());
+  const transitionRelease = deferred<void>();
+  const { store, printer, service } = setup({
+    operationLease: transition,
+  });
+  store.printJobs.set("queued", {
+    jobId: "queued",
+    orderGuid: "O1",
+    printerId: "XP-QUEUE",
+    isReprint: false,
+    bytes: Uint8Array.of(1),
+    state: "Queued",
+    retryCount: 0,
+  });
+  store.printJobs.set("failed", {
+    jobId: "failed",
+    orderGuid: "O2",
+    printerId: "XP-MANUAL",
+    isReprint: false,
+    bytes: Uint8Array.of(1),
+    state: "Failed",
+    retryCount: 0,
+  });
+  const hardwareRelease = deferred<void>();
+  printer.hold = hardwareRelease.promise;
+
+  const drain = service.drainAutomaticQueue();
+  await new Promise((resolve) => setImmediate(resolve));
+  let transitionStarted = false;
+  const update = transition.runTransition(async () => {
+    transitionStarted = true;
+    await transitionRelease.promise;
+  });
+  await Promise.resolve();
+  assert.equal(transitionStarted, false);
+  await assert.rejects(
+    service.retryFailedPrint("failed"),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code ===
+        UPDATE_TRANSITION_IN_PROGRESS,
+  );
+
+  hardwareRelease.resolve();
+  await drain;
+  await Promise.resolve();
+  assert.equal(transitionStarted, true);
+  transitionRelease.resolve();
+  await update;
+  assert.equal(service.isHardwareBusy(), false);
 });
 
 test("每个动作先连接其持久化 printerId；更换当前设置不会改写旧任务路由", async () => {

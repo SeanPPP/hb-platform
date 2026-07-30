@@ -354,7 +354,14 @@ test("PosDatabase 只暴露履约 facade，不向 feature 泄露 SQLCipher 连�
     ) instanceof SqliteVoucherTenderReversalStore,
   );
   assert.ok(database.settings() instanceof PosSettingsRepository);
-  assert.ok(database.appUpdatePolicy() instanceof PosIpadUpdatePolicyRepository);
+  assert.ok(
+    database.appUpdatePolicy({
+      apiOrigin: "https://hotbargain.vip",
+      storeCode: "S001",
+      runtimeVersion: "1.2.3",
+      installedVersion: "1.2.3",
+    }) instanceof PosIpadUpdatePolicyRepository,
+  );
   assert.ok(database.dailyCloses() instanceof SqliteDailyCloseRepository);
   assert.ok(
     database.specialProducts() instanceof SqliteSpecialProductsRepository,

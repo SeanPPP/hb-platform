@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  UPDATE_TRANSITION_IN_PROGRESS,
+  UpdateTransitionLeaseCoordinator,
+} from "../../features/app-updates/update-transition-lease-coordinator";
 import type { AuditEventDraft } from "../contracts/order";
 import type { AuditRepositoryPort, OutboxLease, OutboxRepositoryPort } from "../contracts/repositories";
 import type { OrderSyncPort, SyncOrderResult } from "../contracts/sync";
@@ -218,3 +222,90 @@ test("订单同步适配器意外抛错时保留 pending 并按退避重试", as
 
   assert.deepEqual(outbox.retries, [{ messageId: "throws", nextAttemptAtIso: "2026-07-28T00:00:01.000Z", errorCode: "SYNC_TRANSPORT_EXCEPTION" }]);
 });
+
+test("同步与审计 drain 从排队到完成期间公开只读 in-flight 状态", async () => {
+  const outbox = new FakeOutbox([[lease("one")]]);
+  let releaseSync: (() => void) | undefined;
+  const coordinator = new PosSyncCoordinator({
+    outbox,
+    auditRepository: new FakeAuditRepository(),
+    orderSync: {
+      async sync() {
+        await new Promise<void>((resolve) => {
+          releaseSync = resolve;
+        });
+        return { kind: "synced", alreadySynced: false };
+      },
+    },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+  });
+  assert.equal(coordinator.isDraining(), false);
+  const drain = coordinator.requestDrain();
+  assert.equal(coordinator.isDraining(), true);
+  await Promise.resolve();
+  assert.equal(coordinator.isDraining(), true);
+
+  releaseSync?.();
+  await drain;
+  assert.equal(coordinator.isDraining(), false);
+});
+
+test("更新 transition 等待在途同步，并拒绝 transition 期间的新 drain", async () => {
+  const syncRelease = deferred<void>();
+  const transitionRelease = deferred<void>();
+  const transition = new UpdateTransitionLeaseCoordinator();
+  transition.bindTransitionBarrier((operation) => operation());
+  const coordinator = new PosSyncCoordinator({
+    outbox: new FakeOutbox([[lease("one")], []]),
+    auditRepository: new FakeAuditRepository(),
+    orderSync: {
+      async sync() {
+        await syncRelease.promise;
+        return { kind: "synced", alreadySynced: false };
+      },
+    },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    operationLease: transition,
+  });
+
+  const drain = coordinator.requestDrain();
+  await Promise.resolve();
+  let transitionStarted = false;
+  const update = transition.runTransition(async () => {
+    transitionStarted = true;
+    await transitionRelease.promise;
+  });
+  await Promise.resolve();
+  assert.equal(transitionStarted, false);
+
+  syncRelease.resolve();
+  await drain;
+  await Promise.resolve();
+  assert.equal(transitionStarted, true);
+  await assert.rejects(
+    coordinator.requestDrain(),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code ===
+        UPDATE_TRANSITION_IN_PROGRESS,
+  );
+
+  transitionRelease.resolve();
+  await update;
+  assert.doesNotReject(coordinator.requestDrain());
+});
+
+function deferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+}> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
