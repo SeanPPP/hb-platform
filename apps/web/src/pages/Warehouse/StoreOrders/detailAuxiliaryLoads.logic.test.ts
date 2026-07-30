@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { resolveIsMobileViewport } from '../../../hooks/useIsMobile'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
-import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import { shouldLoadStoreOrderDetailPage, shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -224,15 +225,18 @@ async function main() {
       detailSource.includes('loadedDetailIdRef') &&
         detailSource.includes('useKeepAliveContext') &&
         detailSource.includes('const { active } = useKeepAliveContext()') &&
-        detailSource.includes('if (!active) return') &&
+        detailSource.includes("import { useIsMobile } from '../../../hooks/useIsMobile'") &&
+        detailSource.includes('const isMobileLayout = useIsMobile()') &&
+        detailSource.includes('const canLoadDetail = shouldLoadStoreOrderDetailPage({') &&
+        detailSource.includes('if (!canLoadDetail) return') &&
         detailSource.includes('visibleDetailIdRef') &&
         detailSource.includes('lastLoadedDetailQueryKeyRef') &&
         detailSource.includes('shouldSkipDetailAutoReload({') &&
         detailSource.includes('shouldShowStoreOrderDetailInitialLoading({') &&
-        detailSource.includes('active,') &&
+        detailSource.includes('canLoadDetail,') &&
         detailSource.includes('return () => {') &&
         detailSource.includes('detailRequestControllerRef.current?.abort()'),
-      '详情页缺少 KeepAlive active 守卫，隐藏 Tab 会跟随全局路由变化重新请求',
+      '详情页缺少移动布局加载门禁或桌面 KeepAlive active 守卫',
     )
     assert(
       detailSource.includes('loadedDetailIdRef.current = result.orderGUID || id') &&
@@ -242,6 +246,37 @@ async function main() {
     )
   })
   if (keepAliveSkipAutoReloadFailure) failures.push(keepAliveSkipAutoReloadFailure)
+
+  const mobileDetailLoadGateFailure = await runTest('390px 移动布局无 KeepAlive Provider 时也应加载订货明细', () => {
+    const isMobileLayout = resolveIsMobileViewport({
+      width: 390,
+      height: 844,
+      coarsePointer: true,
+    })
+
+    assert(
+      shouldLoadStoreOrderDetailPage({
+        keepAliveActive: false,
+        isMobileLayout,
+      }),
+      '移动布局直接渲染页面时应忽略 KeepAlive 默认 active=false，避免永久停在 idle Spin',
+    )
+    assert(
+      shouldLoadStoreOrderDetailPage({
+        keepAliveActive: true,
+        isMobileLayout: false,
+      }),
+      '桌面当前激活 Tab 应继续加载订货明细',
+    )
+    assert(
+      !shouldLoadStoreOrderDetailPage({
+        keepAliveActive: false,
+        isMobileLayout: false,
+      }),
+      '桌面隐藏 KeepAlive Tab 仍应阻止详情请求',
+    )
+  })
+  if (mobileDetailLoadGateFailure) failures.push(mobileDetailLoadGateFailure)
 
   const initialLoadingDecisionFailure = await runTest('详情页初始加载和自动刷新跳过判断应覆盖切回和换单边界', () => {
     assert(

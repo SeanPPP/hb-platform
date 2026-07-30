@@ -45,6 +45,7 @@ import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
+import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { useAuthStore } from '../../../store/auth'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
@@ -90,7 +91,7 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
-import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import { shouldLoadStoreOrderDetailPage, shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { InvoiceEmailSentStatusText } from './invoiceEmailSentInfo'
 import { resolveStoreContactDraftValue } from './storeOrderStoreContact'
 import { buildBatchCopyOrderQuantityPayload, shouldSubmitBatchCopyOrderQuantity } from './batchCopyOrderQuantity'
@@ -1212,6 +1213,11 @@ export default function StoreOrderDetailPage() {
   const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
+  const isMobileLayout = useIsMobile()
+  const canLoadDetail = shouldLoadStoreOrderDetailPage({
+    keepAliveActive: active,
+    isMobileLayout,
+  })
   const location = useLocation()
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
@@ -1451,7 +1457,7 @@ export default function StoreOrderDetailPage() {
   }
 
   useEffect(() => {
-    if (!active) return
+    if (!canLoadDetail) return
 
     if (!id) {
       return
@@ -1477,10 +1483,10 @@ export default function StoreOrderDetailPage() {
     return () => {
       detailRequestControllerRef.current?.abort()
     }
-  }, [active, detailQuery, detailQueryKey, id])
+  }, [canLoadDetail, detailQuery, detailQueryKey, id])
 
   useEffect(() => {
-    if (!active) return
+    if (!canLoadDetail) return
 
     if (!id) {
       return
@@ -1489,7 +1495,7 @@ export default function StoreOrderDetailPage() {
       return
     }
     void loadStores()
-  }, [active, storesQueryKey, id])
+  }, [canLoadDetail, storesQueryKey, id])
 
   useEffect(() => {
     if (!containerPickerOpen) {
