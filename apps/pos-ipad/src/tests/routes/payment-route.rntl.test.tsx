@@ -1,5 +1,5 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
 
 import PaymentRoute from "../../../app/payment";
 
@@ -10,12 +10,14 @@ let mockPaymentScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreateRegularPresenter = jest.fn();
 const mockCreateInstallmentPresenter = jest.fn();
+const mockPrepareInstallmentCreate = jest.fn();
 const mockRegularRecoveryRequired = jest.fn<() => Promise<boolean>>();
 const mockInstallmentRecoveryRequired =
   jest.fn<() => Promise<boolean>>();
 const mockDestroyRegularPresenter = jest.fn();
 const mockDestroyInstallmentPresenter = jest.fn();
 const mockRouterReplace = jest.fn();
+let mockRegularPresenters: any[];
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -67,6 +69,8 @@ jest.mock("@/features/cashier-login", () => ({
 }));
 
 jest.mock("@/features/installments", () => ({
+  INSTALLMENTS_CREATE_PERMISSION:
+    "Permissions.PosTerminal.Installments.Create",
   resolveInstallmentsRuntimeFactory: (services: any) => {
     const candidate = services.installments;
     return candidate &&
@@ -129,12 +133,20 @@ beforeEach(() => {
   };
   mockRegularRecoveryRequired.mockResolvedValue(false);
   mockInstallmentRecoveryRequired.mockResolvedValue(false);
-  mockCreateRegularPresenter.mockReturnValue({
-    destroy: mockDestroyRegularPresenter,
+  mockPrepareInstallmentCreate.mockReturnValue({
+    kind: "installment-create",
+    checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+    expectedCartRevision: 7,
   });
-  mockCreateInstallmentPresenter.mockReturnValue({
-    destroy: mockDestroyInstallmentPresenter,
+  mockRegularPresenters = [];
+  mockCreateRegularPresenter.mockImplementation(() => {
+    const presenter = createMockPresenter(mockDestroyRegularPresenter);
+    mockRegularPresenters.push(presenter);
+    return presenter;
   });
+  mockCreateInstallmentPresenter.mockImplementation(() =>
+    createMockPresenter(mockDestroyInstallmentPresenter),
+  );
   mockRuntime = readyRuntime();
 });
 
@@ -183,9 +195,9 @@ test("新建分期和续付参数分别创建对应统一支付 presenter", asyn
   jest.clearAllMocks();
   mockRegularRecoveryRequired.mockResolvedValue(false);
   mockInstallmentRecoveryRequired.mockResolvedValue(false);
-  mockCreateInstallmentPresenter.mockReturnValue({
-    destroy: mockDestroyInstallmentPresenter,
-  });
+  mockCreateInstallmentPresenter.mockImplementation(() =>
+    createMockPresenter(mockDestroyInstallmentPresenter),
+  );
   mockParams = {
     flow: "installment-repayment",
     installmentGuid: "323e4567-e89b-42d3-a456-426614174000",
@@ -301,15 +313,234 @@ test("两条 capability 独立降级，不因另一账本缺失禁用可用入�
     blockers: ["PAYMENTS_DISABLED"],
   };
   mockInstallmentRecoveryRequired.mockResolvedValue(false);
-  mockCreateInstallmentPresenter.mockReturnValue({
-    destroy: mockDestroyInstallmentPresenter,
-  });
   const installment = await render(<PaymentRoute />);
   await waitFor(() => {
     expect(installment.getByTestId("payment-screen")).toBeTruthy();
   });
   expect(mockCreateInstallmentPresenter).toHaveBeenCalledTimes(1);
   await installment.unmount();
+});
+
+test("普通支付可切换为分期并恢复一份新的普通 presenter", async () => {
+  grantInstallmentModePermissions();
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+      issue: null,
+    });
+  });
+
+  await act(async () => {
+    mockPaymentScreenProps.installmentModeControl.onToggle(true);
+  });
+  await waitFor(() => {
+    expect(mockCreateInstallmentPresenter).toHaveBeenCalledWith({
+      kind: "installment-create",
+      checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+      expectedCartRevision: 7,
+    });
+    expect(mockDestroyRegularPresenter).toHaveBeenCalledTimes(1);
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: true,
+      locked: false,
+      issue: null,
+    });
+  });
+
+  await act(async () => {
+    mockPaymentScreenProps.installmentModeControl.onToggle(false);
+  });
+  await waitFor(() => {
+    expect(mockDestroyInstallmentPresenter).toHaveBeenCalledTimes(1);
+    expect(mockCreateRegularPresenter).toHaveBeenCalledTimes(2);
+    expect(mockCreateRegularPresenter).toHaveBeenLastCalledWith({
+      kind: "regular",
+      checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+      expectedCartRevision: 7,
+      total: { currency: "AUD", cents: 1_250 },
+      lines: [],
+    });
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+      issue: null,
+    });
+  });
+
+  await screen.unmount();
+});
+
+test.each([
+  ["缺少分期新建权限", ["Permissions.PosTerminal.Payment.View", "Permissions.PosTerminal.Payment.Confirm"]],
+  ["缺少付款查看权限", ["Permissions.PosTerminal.Installments.Create", "Permissions.PosTerminal.Payment.Confirm"]],
+  ["缺少付款确认权限", ["Permissions.PosTerminal.Installments.Create", "Permissions.PosTerminal.Payment.View"]],
+])("普通支付%s时不显示分期开关", async (_label, permissions) => {
+  mockActiveCashier.permissions = permissions;
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("payment-screen")).toBeTruthy();
+  });
+  expect(mockPaymentScreenProps.installmentModeControl).toBeUndefined();
+  await screen.unmount();
+});
+
+test("分期运行时不可用时普通支付不显示分期开关", async () => {
+  grantInstallmentModePermissions();
+  delete mockRuntime.services.installments;
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("payment-screen")).toBeTruthy();
+  });
+  expect(mockPaymentScreenProps.installmentModeControl).toBeUndefined();
+  await screen.unmount();
+});
+
+test("分期还款和无普通 fallback 的分期新建均保持开启且锁定", async () => {
+  mockParams = {
+    flow: "installment-repayment",
+    installmentGuid: "323e4567-e89b-42d3-a456-426614174000",
+  };
+  const repayment = await render(<PaymentRoute />);
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: true,
+      locked: true,
+      issue: null,
+    });
+  });
+  await repayment.unmount();
+
+  jest.clearAllMocks();
+  mockParams = {
+    flow: "installment-create",
+    checkoutIntentId: "223e4567-e89b-42d3-a456-426614174000",
+    revision: "8",
+  };
+  mockRegularRecoveryRequired.mockResolvedValue(false);
+  mockInstallmentRecoveryRequired.mockResolvedValue(false);
+  mockPrepareInstallmentCreate.mockReturnValue({
+    kind: "installment-create",
+    checkoutIntentId: "223e4567-e89b-42d3-a456-426614174000",
+    expectedCartRevision: 8,
+  });
+  mockCreateRegularPresenter.mockImplementation(() => createMockPresenter(mockDestroyRegularPresenter));
+  mockCreateInstallmentPresenter.mockImplementation(() => createMockPresenter(mockDestroyInstallmentPresenter));
+  const create = await render(<PaymentRoute />);
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: true,
+      locked: true,
+      issue: null,
+    });
+  });
+  await create.unmount();
+});
+
+test("恢复支付隐藏分期开关，进入分期失败仍停在普通支付并返回稳定问题", async () => {
+  grantInstallmentModePermissions();
+  mockRegularRecoveryRequired.mockResolvedValue(true);
+  const recovery = await render(<PaymentRoute />);
+  await waitFor(() => {
+    expect(recovery.getByTestId("payment-screen")).toBeTruthy();
+  });
+  expect(mockPaymentScreenProps.installmentModeControl).toBeUndefined();
+  await recovery.unmount();
+
+  jest.clearAllMocks();
+  mockRegularRecoveryRequired.mockResolvedValue(false);
+  mockInstallmentRecoveryRequired.mockResolvedValue(false);
+  mockPrepareInstallmentCreate.mockImplementation(() => {
+    throw new Error("installment runtime unavailable");
+  });
+  mockCreateRegularPresenter.mockImplementation(() => createMockPresenter(mockDestroyRegularPresenter));
+  mockCreateInstallmentPresenter.mockImplementation(() => createMockPresenter(mockDestroyInstallmentPresenter));
+  const screen = await render(<PaymentRoute />);
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+      issue: null,
+    });
+  });
+
+  await act(async () => {
+    mockPaymentScreenProps.installmentModeControl.onToggle(true);
+  });
+  await waitFor(() => {
+    expect(mockCreateInstallmentPresenter).not.toHaveBeenCalled();
+    expect(mockDestroyRegularPresenter).not.toHaveBeenCalled();
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+      issue: "unavailable",
+    });
+  });
+  await screen.unmount();
+});
+
+test("支付方尝试、恢复或提交阶段锁定分期开关", async () => {
+  grantInstallmentModePermissions();
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+    });
+  });
+
+  for (const state of [
+    { attemptId: "attempt-1", phase: "awaiting-terminal" },
+    {
+      allowedActions: { recover: true },
+      attemptId: null,
+      phase: "recovery-required",
+    },
+    {
+      allowedActions: { recover: false },
+      attemptId: null,
+      busy: true,
+      phase: "submitting",
+    },
+  ]) {
+    await act(async () => {
+      mockRegularPresenters[0].setState(state);
+    });
+    await waitFor(() => {
+      expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+        enabled: false,
+        locked: true,
+      });
+    });
+  }
+  await act(async () => {
+    mockPaymentScreenProps.installmentModeControl.onToggle(true);
+  });
+  expect(mockCreateInstallmentPresenter).not.toHaveBeenCalled();
+
+  await act(async () => {
+    mockRegularPresenters[0].setState({
+      initialized: true,
+      allowedActions: { recover: false },
+      attemptId: null,
+      orderGuid: null,
+      busy: false,
+      phase: "recovery-required",
+    });
+  });
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.installmentModeControl).toMatchObject({
+      enabled: false,
+      locked: false,
+    });
+  });
+
+  await screen.unmount();
 });
 
 test("未登录直链返回登录，且不会读取支付运行时", async () => {
@@ -345,10 +576,42 @@ function readyRuntime() {
         hasRecoveryRequired: mockRegularRecoveryRequired,
       },
       installments: {
-        prepareCreateCheckout: jest.fn(),
+        prepareCreateCheckout: mockPrepareInstallmentCreate,
         createCheckoutPresenter: mockCreateInstallmentPresenter,
         hasRecoveryRequired: mockInstallmentRecoveryRequired,
       },
+    },
+  };
+}
+
+function grantInstallmentModePermissions(): void {
+  mockActiveCashier.permissions = [
+    "Permissions.PosTerminal.Installments.Create",
+    "Permissions.PosTerminal.Payment.View",
+    "Permissions.PosTerminal.Payment.Confirm",
+  ];
+}
+
+function createMockPresenter(destroy: jest.Mock): any {
+  let state = {
+    phase: "ready",
+    busy: false,
+    initialized: true,
+    attemptId: null,
+    orderGuid: null,
+    allowedActions: { recover: false },
+  };
+  const listeners = new Set<() => void>();
+  return {
+    destroy,
+    getState: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setState: (patch: Record<string, unknown>) => {
+      state = { ...state, ...patch };
+      listeners.forEach((listener) => listener());
     },
   };
 }

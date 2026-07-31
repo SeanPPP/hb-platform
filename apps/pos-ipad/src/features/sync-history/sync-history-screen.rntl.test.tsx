@@ -189,6 +189,27 @@ async function chooseDate(
 }
 
 describe("SyncHistoryScreen", () => {
+  it("筛选与恢复操作提供短高度滚动回退，列表工作区允许收缩", async () => {
+    const presenter = screenPresenter(new ScreenHistoryPort([order()]));
+    const screen = await render(
+      <SyncHistoryScreen
+        onExport={jest.fn<(serializedJson: string) => void>()}
+        presenter={presenter}
+      />,
+    );
+    await screen.findByTestId("sync-history-row-order-100");
+
+    const filters = screen.getByTestId("sync-history-filters-scroll");
+    expect(filters.props.showsVerticalScrollIndicator).toBe(true);
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("sync-history-workspace").props.style,
+      ).minHeight,
+    ).toBe(0);
+    expect(screen.getByTestId("sync-history-retransmit-range")).toBeTruthy();
+    expect(screen.getByTestId("sync-history-export")).toBeTruthy();
+  });
+
   it("空日期保持不限筛选，选择与清除都不暴露文本输入", async () => {
     const port = new ScreenHistoryPort([order()]);
     const presenter = screenPresenter(port);

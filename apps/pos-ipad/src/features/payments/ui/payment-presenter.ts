@@ -42,6 +42,9 @@ export type PaymentFieldIssue =
   | "amount-required"
   | "amount-invalid"
   | "amount-exceeds-remaining"
+  | "installment-customer-required"
+  | "installment-down-payment-below-minimum"
+  | "installment-total-below-minimum"
   | "voucher-required"
   | "method-unavailable"
   | "checkout-unavailable";
@@ -96,6 +99,7 @@ export type PaymentCheckoutPresentation = Readonly<{
     changeCents: number;
   }>;
   canConfirm: boolean;
+  fullInstallmentConfirmationRequired: boolean;
 }>;
 
 export type PaymentPresenterState = Readonly<{
@@ -146,13 +150,17 @@ export interface PaymentScreenPresenter {
   sendLinklyKey(key: LinklySafeOperatorKey): Promise<boolean>;
   markLinklyReceiptPrinted(): Promise<boolean>;
   acknowledgeLinkly(): Promise<boolean>;
-  confirm?(): Promise<boolean>;
+  confirm?(options?: PaymentConfirmOptions): Promise<boolean>;
   openInstallmentCustomerEditor?(): void;
   setInstallmentCustomerDraftName?(value: string): void;
   setInstallmentCustomerDraftPhone?(value: string): void;
   saveInstallmentCustomer?(): void;
   cancelInstallmentCustomerEditor?(): void;
 }
+
+export type PaymentConfirmOptions = Readonly<{
+  acknowledgeFullInstallmentPayment?: boolean;
+}>;
 
 export type PaymentCheckoutEntryContext = Readonly<{
   checkoutIntentId: string;
@@ -201,6 +209,7 @@ function emptyRegularCheckout(
       changeCents: 0,
     }),
     canConfirm: false,
+    fullInstallmentConfirmationRequired: false,
   });
 }
 

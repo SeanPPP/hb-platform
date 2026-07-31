@@ -4,10 +4,11 @@ import {
   render,
   waitFor,
 } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { Dimensions, StyleSheet } from "react-native";
 
 import {
   PaymentPresenter,
+  type PaymentConfirmOptions,
   type PaymentPresenterState,
   type PaymentScreenPresenter,
   type PaymentUiMethod,
@@ -22,18 +23,25 @@ import type {
   Money,
   PaymentProvider,
 } from "@/core/contracts";
+import {
+  INSTALLMENTS_CREATE_PERMISSION,
+} from "@/features/installments/installment-authorization";
+import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
+import type { InstallmentWorkflowPort } from "@/features/installments/installment-presenter";
 import type {
   LinklyOperatorPublicResult,
   LinklyOperatorRuntimePort,
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";
-import type {
-  PaymentCheckoutPublicSnapshot,
-  PaymentCheckoutRuntimePort,
+import {
+  PAYMENT_PERMISSION,
+  type PaymentCheckoutPublicSnapshot,
+  type PaymentCheckoutRuntimePort,
 } from "@/features/payments/runtime/payment-checkout-runtime";
 import type {
   PaymentProviderAvailability,
 } from "@/features/payments/runtime/payment-provider-registry";
+import { installmentCreatePaymentEntry } from "@/features/payments/ui/unified-payment-entry";
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -76,6 +84,8 @@ test("横屏付款台保持 44pt 触控，礼券输入只安全遮罩且成功�
   await waitFor(() =>
     expect(screen.getByTestId("payment-status-ready")).toBeTruthy(),
   );
+  await fireEvent.press(screen.getByTestId("payment-key-1"));
+  expect(screen.getByTestId("payment-amount").props.value).toBe("1");
   const voucherMethod = screen.getByTestId("payment-method-voucher");
   expect(
     StyleSheet.flatten(voucherMethod.props.style).minHeight,
@@ -259,6 +269,7 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
 });
 
 test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额", async () => {
+  setPaymentWindowSize(1366, 1024);
   const { presenter, spies } = createUiPresenter({
     selectedMethod: "cash",
   });
@@ -300,11 +311,31 @@ test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额"
   }
   expect(screen.getByTestId("payment-amount").props.showSoftInputOnFocus)
     .toBe(false);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-key-1").props.style)
+      .minHeight,
+  ).toBe(54);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-cash-quick").props.style)
+      .flexWrap,
+  ).toBe("nowrap");
 
-  for (const amount of [5, 10, 20, 50, 100]) {
+  const banknoteColors = {
+    5: "#E7C5DD",
+    10: "#B9DCEB",
+    20: "#EDB5AA",
+    50: "#F4DB7F",
+    100: "#B9D8B4",
+  } as const;
+  for (const amount of [5, 10, 20, 50, 100] as const) {
     expect(
       screen.getByTestId(`payment-cash-quick-${amount}`),
     ).toBeTruthy();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId(`payment-cash-quick-${amount}`).props.style,
+      ).backgroundColor,
+    ).toBe(banknoteColors[amount]);
   }
   expect(screen.queryByText(/exacta?/i)).toBeNull();
 
@@ -343,6 +374,7 @@ test("分期现金超付显示入账与找零，并可确认付款", async () =>
           changeCents: 0,
         },
         canConfirm: false,
+        fullInstallmentConfirmationRequired: false,
       },
       selectedMethod: "cash",
       total: aud(5_000),
@@ -368,6 +400,7 @@ test("分期现金超付显示入账与找零，并可确认付款", async () =>
           changeCents: 1_000,
         },
         canConfirm: true,
+        fullInstallmentConfirmationRequired: true,
       },
     }),
   );
@@ -391,7 +424,26 @@ test("分期现金超付显示入账与找零，并可确认付款", async () =>
     formatAud(1_000, "en"),
   );
   await fireEvent.press(screen.getByTestId("payment-confirm"));
-  expect(spies.confirm).toHaveBeenCalledTimes(1);
+  expect(
+    screen.getByTestId("payment-full-installment-confirmation"),
+  ).toBeTruthy();
+  expect(spies.confirm).not.toHaveBeenCalled();
+
+  await fireEvent.press(
+    screen.getByTestId("payment-full-installment-cancel"),
+  );
+  expect(
+    screen.queryByTestId("payment-full-installment-confirmation"),
+  ).toBeNull();
+  expect(screen.getByTestId("payment-remove-cash-ui-1")).toBeTruthy();
+
+  await fireEvent.press(screen.getByTestId("payment-confirm"));
+  await fireEvent.press(
+    screen.getByTestId("payment-full-installment-confirm"),
+  );
+  expect(spies.confirm).toHaveBeenCalledWith({
+    acknowledgeFullInstallmentPayment: true,
+  });
   await screen.unmount();
 });
 
@@ -415,6 +467,7 @@ test("新建分期顾客可编辑，续付顾客只读且已选 provider 冻结"
         changeCents: 0,
       },
       canConfirm: false,
+      fullInstallmentConfirmationRequired: false,
     },
   });
   const createScreen = await render(
@@ -475,6 +528,7 @@ test("新建分期顾客可编辑，续付顾客只读且已选 provider 冻结"
         changeCents: 0,
       },
       canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
     },
   });
   const repaymentScreen = await render(
@@ -500,6 +554,82 @@ test("新建分期顾客可编辑，续付顾客只读且已选 provider 冻结"
   );
   expect(repayment.spies.selectMethod).not.toHaveBeenCalled();
   await repaymentScreen.unmount();
+});
+
+test("真实分期 presenter 点击客户编辑仍保留实例上下文", async () => {
+  const unusedWorkflowOperation = async (): Promise<never> => {
+    throw new Error("本测试不应执行分期写操作");
+  };
+  const workflow: InstallmentWorkflowPort = {
+    listPaymentProviderAvailability: async () => [
+      providerAvailability("square"),
+      providerAvailability("linkly-cloud"),
+      providerAvailability("voucher"),
+    ],
+    list: async () => [],
+    getDetails: async () => null,
+    recoverBlocking: unusedWorkflowOperation,
+    create: unusedWorkflowOperation,
+    addRepayment: unusedWorkflowOperation,
+    cancelWithRefund: unusedWorkflowOperation,
+    void: unusedWorkflowOperation,
+    confirmPickup: unusedWorkflowOperation,
+  };
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentCreatePaymentEntry({
+      checkoutIntentId: "11111111-1111-4111-8111-111111111111",
+      expectedCartRevision: 7,
+    }),
+    createDrafts: {
+      getSnapshot: () => ({
+        revision: 7,
+        totalCents: 5_000,
+        lines: [
+          {
+            lineKey: "line-real-presenter",
+            displayName: "真实 presenter 商品",
+            quantity: "1",
+            actualAmountCents: 5_000,
+          },
+        ],
+      }),
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: [
+      INSTALLMENTS_CREATE_PERMISSION,
+      PAYMENT_PERMISSION.view,
+      PAYMENT_PERMISSION.confirm,
+      PAYMENT_PERMISSION.takeCash,
+    ],
+    workflow,
+    createTenderId: () => "tender-real-presenter",
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-customer-edit")).toBeTruthy(),
+  );
+  await fireEvent.press(screen.getByTestId("payment-customer-edit"));
+  expect(screen.getByTestId("payment-customer-editor")).toBeTruthy();
+  await fireEvent.changeText(
+    screen.getByTestId("payment-customer-name"),
+    "顾客乙",
+  );
+  await fireEvent.changeText(
+    screen.getByTestId("payment-customer-phone"),
+    "0412345678",
+  );
+  await fireEvent.press(screen.getByTestId("payment-customer-save"));
+  expect(screen.getByText("顾客乙")).toBeTruthy();
+  expect(screen.getByText("0412345678")).toBeTruthy();
+  await screen.unmount();
 });
 
 function createUiPresenter(
@@ -547,6 +677,7 @@ function createUiPresenter(
         changeCents: 0,
       },
       canConfirm: false,
+      fullInstallmentConfirmationRequired: false,
     },
     linkly: {
       status: null,
@@ -599,7 +730,7 @@ function createUiPresenter(
     sendLinklyKey: jest.fn(async (_key: LinklySafeOperatorKey) => true),
     markLinklyReceiptPrinted: jest.fn(async () => true),
     acknowledgeLinkly: jest.fn(async () => true),
-    confirm: jest.fn(async () => true),
+    confirm: jest.fn(async (_options?: PaymentConfirmOptions) => true),
     openInstallmentCustomerEditor: jest.fn(() => {
       patchCustomer((customer) => ({
         ...customer,
@@ -813,4 +944,14 @@ function providerAvailability(
 
 function aud(cents: number): Money {
   return { currency: "AUD", cents };
+}
+
+function setPaymentWindowSize(width: number, height: number): void {
+  const metrics = {
+    width,
+    height,
+    scale: 2,
+    fontScale: 1,
+  };
+  Dimensions.set({ window: metrics, screen: metrics });
 }

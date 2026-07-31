@@ -63,6 +63,11 @@ export type InstallmentWorkflowRepaymentInput = Readonly<{
  * 活动购物车 revision、支付 attempt 与 Unknown 恢复；Presenter 的检查只负责 UX。
  */
 export interface InstallmentWorkflowPort {
+  /**
+   * 只读本地耐久 action；用于区分可安全重试的离线失败与必须恢复的支付事实。
+   * 旧测试/管理页实现可省略，调用方会按 fail-closed 处理。
+   */
+  hasRecoveryRequired?(): Promise<boolean>;
   listPaymentProviderAvailability?(): Promise<
     readonly PaymentProviderAvailability[]
   >;

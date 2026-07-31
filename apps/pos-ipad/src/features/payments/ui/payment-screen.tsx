@@ -1,7 +1,8 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -45,6 +46,15 @@ import { posColors } from "@/ui/theme";
 
 export const PAYMENT_MIN_TOUCH_TARGET = 44;
 
+export type PaymentInstallmentModeIssue = "unavailable";
+
+export type PaymentInstallmentModeControl = Readonly<{
+  enabled: boolean;
+  locked: boolean;
+  issue: PaymentInstallmentModeIssue | null;
+  onToggle(enabled: boolean): void;
+}>;
+
 const PAYMENT_METHODS = Object.freeze([
   "cash",
   "square",
@@ -53,6 +63,7 @@ const PAYMENT_METHODS = Object.freeze([
 ] as const satisfies readonly PaymentUiMethod[]);
 
 type PaymentScreenProps = Readonly<{
+  installmentModeControl?: PaymentInstallmentModeControl;
   presenter: PaymentScreenPresenter;
   locale?: PaymentLocale;
   onBack?(): void;
@@ -66,6 +77,7 @@ type Translate = (
 ) => string;
 
 export function PaymentScreen({
+  installmentModeControl,
   presenter,
   locale: localeOverride,
   onBack,
@@ -82,13 +94,26 @@ export function PaymentScreen({
     localeOverride ??
     resolvePaymentLocale(i18n.resolvedLanguage ?? i18n.language);
   const t: Translate = (key, values) => paymentText(locale, key, values);
-  const { width } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
   const compact = width < 900;
+  const shortLandscape = !compact && height < 900;
+  const [
+    fullInstallmentConfirmationOpen,
+    setFullInstallmentConfirmationOpen,
+  ] = useState(false);
 
   useEffect(() => {
     void presenter.initialize();
     return () => presenter.destroy();
   }, [presenter]);
+
+  useEffect(() => {
+    setFullInstallmentConfirmationOpen(false);
+  }, [
+    presenter,
+    state.busy,
+    state.checkout.fullInstallmentConfirmationRequired,
+  ]);
 
   const canLeave = canSafelyLeave(state);
   const showEntry =
@@ -159,6 +184,7 @@ export function PaymentScreen({
           <PaymentContextPane
             canLeave={canLeave}
             compact={compact}
+            installmentModeControl={installmentModeControl}
             locale={locale}
             onBack={onBack}
             presenter={presenter}
@@ -168,12 +194,19 @@ export function PaymentScreen({
           <View
             style={[
               styles.entryPane,
+              shortLandscape && styles.entryPaneShort,
               compact && styles.entryPaneCompact,
             ]}
             testID="payment-entry-pane"
           >
             {showEntry ? (
-              <View style={styles.form} testID="payment-entry-form">
+              <View
+                style={[
+                  styles.form,
+                  shortLandscape && styles.formShort,
+                ]}
+                testID="payment-entry-form"
+              >
                 <Text style={styles.inputLabel}>{t("amount.label")}</Text>
                 <TextInput
                   accessibilityLabel={t("amount.label")}
@@ -184,27 +217,55 @@ export function PaymentScreen({
                   placeholderTextColor="#7B8793"
                   selectionColor={posColors.blue}
                   showSoftInputOnFocus={false}
-                  style={styles.amountInput}
+                  style={[
+                    styles.amountInput,
+                    shortLandscape && styles.amountInputShort,
+                  ]}
                   testID="payment-amount"
                   value={state.amountText}
                 />
-                <Text style={styles.inputHint}>{t("amount.hint")}</Text>
+                <Text
+                  style={[
+                    styles.inputHint,
+                    shortLandscape && styles.inputHintShort,
+                  ]}
+                >
+                  {t("amount.hint")}
+                </Text>
                 <PaymentKeypad
                   amountText={state.amountText}
+                  dense={shortLandscape}
                   disabled={state.busy}
-                  onChange={presenter.setAmountText}
+                  onChange={(value) => presenter.setAmountText(value)}
                 />
 
                 {state.selectedMethod === "cash" ? (
-                  <View style={styles.quickCashRow} testID="payment-cash-quick">
-                    {[5, 10, 20, 50, 100].map((amount) => (
+                  <View
+                    style={[
+                      styles.quickCashRow,
+                      shortLandscape && styles.quickCashRowShort,
+                    ]}
+                    testID="payment-cash-quick"
+                  >
+                    {(
+                      [
+                        [5, styles.quickCashNote5],
+                        [10, styles.quickCashNote10],
+                        [20, styles.quickCashNote20],
+                        [50, styles.quickCashNote50],
+                        [100, styles.quickCashNote100],
+                      ] as const
+                    ).map(([amount, noteStyle]) => (
                       <ActionButton
                         key={amount}
                         label={`$${amount}`}
                         onPress={() =>
                           presenter.setAmountText(amount.toFixed(2))
                         }
-                        style={styles.quickCashButton}
+                        style={[
+                          styles.quickCashButton,
+                          noteStyle,
+                        ]}
                         testID={`payment-cash-quick-${amount}`}
                         tone="quiet"
                       />
@@ -256,7 +317,12 @@ export function PaymentScreen({
                   </Text>
                 ) : null}
 
-                <View style={styles.formActions}>
+                <View
+                  style={[
+                    styles.formActions,
+                    shortLandscape && styles.formActionsShort,
+                  ]}
+                >
                   <ActionButton
                     disabled={state.busy}
                     label={t("action.cancel")}
@@ -300,6 +366,22 @@ export function PaymentScreen({
           <PaymentSummary
             compact={compact}
             locale={locale}
+            onConfirm={() => {
+              const customer =
+                state.checkout.installmentCustomer;
+              const customerComplete =
+                customer !== null &&
+                customer.name.trim().length > 0 &&
+                customer.phone.trim().length > 0;
+              if (
+                state.checkout.fullInstallmentConfirmationRequired &&
+                customerComplete
+              ) {
+                setFullInstallmentConfirmationOpen(true);
+                return;
+              }
+              void presenter.confirm?.();
+            }}
             presenter={presenter}
             state={state}
             t={t}
@@ -315,6 +397,52 @@ export function PaymentScreen({
           />
         ) : null}
       </ScrollView>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() =>
+          setFullInstallmentConfirmationOpen(false)
+        }
+        transparent
+        visible={fullInstallmentConfirmationOpen}
+      >
+        <View
+          accessibilityViewIsModal
+          style={styles.confirmationBackdrop}
+          testID="payment-full-installment-confirmation"
+        >
+          <View style={styles.confirmationCard}>
+            <Text style={styles.confirmationTitle}>
+              {t("installment.fullPayment.title")}
+            </Text>
+            <Text style={styles.confirmationBody}>
+              {t("installment.fullPayment.body")}
+            </Text>
+            <View style={styles.confirmationActions}>
+              <ActionButton
+                label={t("installment.fullPayment.cancel")}
+                onPress={() =>
+                  setFullInstallmentConfirmationOpen(false)
+                }
+                style={styles.confirmationAction}
+                testID="payment-full-installment-cancel"
+                tone="quiet"
+              />
+              <ActionButton
+                label={t("installment.fullPayment.confirm")}
+                onPress={() => {
+                  setFullInstallmentConfirmationOpen(false);
+                  void presenter.confirm?.({
+                    acknowledgeFullInstallmentPayment: true,
+                  });
+                }}
+                style={styles.confirmationAction}
+                testID="payment-full-installment-confirm"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -322,13 +450,16 @@ export function PaymentScreen({
 function PaymentContextPane({
   canLeave,
   compact,
+  installmentModeControl,
   locale,
   onBack,
   presenter,
   state,
+  t,
 }: Readonly<{
   canLeave: boolean;
   compact: boolean;
+  installmentModeControl: PaymentInstallmentModeControl | undefined;
   locale: PaymentLocale;
   onBack: (() => void) | undefined;
   presenter: PaymentScreenPresenter;
@@ -360,16 +491,24 @@ function PaymentContextPane({
       ]}
       testID="payment-context-pane"
     >
-      {onBack ? (
-        <ActionButton
-          disabled={!canLeave}
-          label={locale === "zh" ? "返回收银" : "Back to sale"}
-          onPress={onBack}
-          style={styles.contextBack}
-          testID="payment-back"
-          tone="quiet"
-        />
-      ) : null}
+      <View style={styles.contextControls}>
+        {onBack ? (
+          <ActionButton
+            disabled={!canLeave}
+            label={locale === "zh" ? "返回收银" : "Back to sale"}
+            onPress={onBack}
+            style={styles.contextBack}
+            testID="payment-back"
+            tone="quiet"
+          />
+        ) : null}
+        {installmentModeControl ? (
+          <PaymentInstallmentToggle
+            control={installmentModeControl}
+            t={t}
+          />
+        ) : null}
+      </View>
       <Text style={styles.contextEyebrow}>{flowLabel}</Text>
 
       {customer ? (
@@ -383,7 +522,9 @@ function PaymentContextPane({
               <Pressable
                 accessibilityRole="button"
                 disabled={state.busy}
-                onPress={presenter.openInstallmentCustomerEditor}
+                onPress={() =>
+                  presenter.openInstallmentCustomerEditor?.()
+                }
                 style={({ pressed }) => [
                   styles.customerEdit,
                   pressed && styles.pressed,
@@ -653,12 +794,14 @@ function LinklyControls({
 function PaymentSummary({
   compact,
   locale,
+  onConfirm,
   presenter,
   state,
   t,
 }: Readonly<{
   compact: boolean;
   locale: PaymentLocale;
+  onConfirm(): void;
   presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
@@ -753,9 +896,7 @@ function PaymentSummary({
         <ActionButton
           disabled={state.busy}
           label={locale === "zh" ? "确认分期付款" : "Confirm installment payment"}
-          onPress={() => {
-            void presenter.confirm?.();
-          }}
+          onPress={onConfirm}
           style={styles.confirmAction}
           testID="payment-confirm"
         />
@@ -766,12 +907,68 @@ function PaymentSummary({
   );
 }
 
+function PaymentInstallmentToggle({
+  control,
+  t,
+}: Readonly<{
+  control: PaymentInstallmentModeControl;
+  t: Translate;
+}>) {
+  return (
+    <View style={styles.installmentToggleGroup}>
+      <Pressable
+        accessibilityLabel={t("installment.toggle")}
+        accessibilityRole="switch"
+        accessibilityState={{
+          checked: control.enabled,
+          disabled: control.locked,
+        }}
+        disabled={control.locked}
+        onPress={() => control.onToggle(!control.enabled)}
+        style={({ pressed }) => [
+          styles.installmentToggle,
+          control.locked && styles.disabled,
+          pressed && !control.locked && styles.pressed,
+        ]}
+        testID="payment-installment-toggle"
+      >
+        <Text style={styles.installmentToggleLabel}>
+          {t("installment.toggle")}
+        </Text>
+        <View
+          style={[
+            styles.installmentToggleTrack,
+            control.enabled && styles.installmentToggleTrackEnabled,
+          ]}
+        >
+          <View
+            style={[
+              styles.installmentToggleThumb,
+              control.enabled && styles.installmentToggleThumbEnabled,
+            ]}
+          />
+        </View>
+      </Pressable>
+      {control.issue ? (
+        <Text
+          accessibilityRole="alert"
+          style={styles.installmentToggleIssue}
+        >
+          {t("installment.unavailable")}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 function PaymentKeypad({
   amountText,
+  dense,
   disabled,
   onChange,
 }: Readonly<{
   amountText: string;
+  dense: boolean;
   disabled: boolean;
   onChange(value: string): void;
 }>) {
@@ -790,7 +987,10 @@ function PaymentKeypad({
     "backspace",
   ] as const;
   return (
-    <View style={styles.keypad} testID="payment-keypad">
+    <View
+      style={[styles.keypad, dense && styles.keypadShort]}
+      testID="payment-keypad"
+    >
       {keys.map((key) => (
         <Pressable
           accessibilityRole="button"
@@ -801,6 +1001,7 @@ function PaymentKeypad({
           }
           style={({ pressed }) => [
             styles.keypadKey,
+            dense && styles.keypadKeyShort,
             disabled && styles.disabled,
             pressed && !disabled && styles.pressed,
           ]}
@@ -997,8 +1198,15 @@ function statusTone(
 }
 
 function canSafelyLeave(state: PaymentPresenterState): boolean {
-  if (state.busy) return false;
-  if (!state.orderGuid) return state.phase === "ready";
+  if (
+    !state.initialized ||
+    state.busy ||
+    state.attemptId !== null ||
+    state.allowedActions.recover
+  ) {
+    return false;
+  }
+  if (!state.orderGuid) return true;
   return (
     state.phase === "cancelled" ||
     state.phase === "declined" ||
@@ -1177,10 +1385,59 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: posColors.border,
   },
+  contextControls: {
+    marginBottom: 14,
+    gap: 8,
+  },
   contextBack: {
     alignSelf: "flex-start",
     marginTop: 0,
-    marginBottom: 14,
+    marginBottom: 0,
+  },
+  installmentToggleGroup: {
+    gap: 5,
+  },
+  installmentToggle: {
+    minHeight: PAYMENT_MIN_TOUCH_TARGET,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  installmentToggleLabel: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  installmentToggleTrack: {
+    width: 42,
+    height: 24,
+    padding: 2,
+    borderRadius: 12,
+    backgroundColor: "#AAB4BE",
+    justifyContent: "center",
+  },
+  installmentToggleTrackEnabled: {
+    backgroundColor: posColors.blue,
+  },
+  installmentToggleThumb: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  installmentToggleThumbEnabled: {
+    alignSelf: "flex-end",
+  },
+  installmentToggleIssue: {
+    color: posColors.red,
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
   },
   contextEyebrow: {
     color: posColors.orange,
@@ -1305,6 +1562,9 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderRightColor: posColors.border,
   },
+  entryPaneShort: {
+    padding: 14,
+  },
   entryPaneCompact: {
     borderRightWidth: 0,
     borderBottomWidth: 1,
@@ -1369,6 +1629,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: posColors.border,
   },
+  formShort: {
+    marginTop: 12,
+    paddingTop: 12,
+  },
   inputLabel: {
     marginBottom: 6,
     color: posColors.ink,
@@ -1386,11 +1650,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontVariant: ["tabular-nums"],
   },
+  amountInputShort: {
+    minHeight: 52,
+    fontSize: 28,
+  },
   keypad: {
     marginTop: 14,
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  keypadShort: {
+    marginTop: 8,
+    gap: 6,
   },
   keypadKey: {
     minHeight: 54,
@@ -1402,6 +1674,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  keypadKeyShort: {
+    minHeight: PAYMENT_MIN_TOUCH_TARGET,
+  },
   keypadKeyText: {
     color: posColors.ink,
     fontSize: 22,
@@ -1411,14 +1686,40 @@ const styles = StyleSheet.create({
   quickCashRow: {
     marginTop: 10,
     flexDirection: "row",
-    flexWrap: "wrap",
+    flexWrap: "nowrap",
     gap: 7,
+  },
+  quickCashRowShort: {
+    marginTop: 8,
+    flexWrap: "nowrap",
+    gap: 6,
   },
   quickCashButton: {
     flexGrow: 1,
-    minWidth: 62,
+    flexBasis: 0,
+    minWidth: PAYMENT_MIN_TOUCH_TARGET,
     marginTop: 0,
-    paddingHorizontal: 9,
+    paddingHorizontal: 4,
+  },
+  quickCashNote5: {
+    backgroundColor: "#E7C5DD",
+    borderColor: "#956485",
+  },
+  quickCashNote10: {
+    backgroundColor: "#B9DCEB",
+    borderColor: "#4F8198",
+  },
+  quickCashNote20: {
+    backgroundColor: "#EDB5AA",
+    borderColor: "#A85848",
+  },
+  quickCashNote50: {
+    backgroundColor: "#F4DB7F",
+    borderColor: "#9C7A18",
+  },
+  quickCashNote100: {
+    backgroundColor: "#B9D8B4",
+    borderColor: "#5C8358",
   },
   voucherInputGroup: {
     marginTop: 16,
@@ -1439,6 +1740,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
+  inputHintShort: {
+    marginTop: 4,
+    lineHeight: 17,
+  },
   secureCapture: {
     marginTop: 6,
     color: posColors.green,
@@ -1455,6 +1760,9 @@ const styles = StyleSheet.create({
     marginTop: 12,
     flexDirection: "row",
     gap: 10,
+  },
+  formActionsShort: {
+    marginTop: 8,
   },
   formAction: {
     flex: 1,
@@ -1576,6 +1884,41 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 15,
     fontWeight: "800",
+  },
+  confirmationBackdrop: {
+    flex: 1,
+    padding: 24,
+    backgroundColor: "rgba(13, 36, 53, 0.58)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmationCard: {
+    width: "100%",
+    maxWidth: 520,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  confirmationTitle: {
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  confirmationBody: {
+    marginTop: 10,
+    color: posColors.mutedInk,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  confirmationActions: {
+    marginTop: 18,
+    flexDirection: "row",
+    gap: 10,
+  },
+  confirmationAction: {
+    flex: 1,
+    marginTop: 0,
   },
   actionSecondary: {
     borderColor: posColors.blue,

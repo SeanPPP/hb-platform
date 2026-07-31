@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -181,8 +182,14 @@ export function SyncHistoryScreen({
         />
       </View>
 
-      <View style={styles.workspace}>
-        <View style={styles.filtersPane}>
+      <View style={styles.workspace} testID="sync-history-workspace">
+        <ScrollView
+          contentContainerStyle={styles.filtersPaneContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+          style={styles.filtersPane}
+          testID="sync-history-filters-scroll"
+        >
           <Text style={styles.paneTitle}>{t("filters.title")}</Text>
           <Text style={styles.sectionLabel}>{t("filters.status")}</Text>
           <View style={styles.filterGrid}>
@@ -276,7 +283,7 @@ export function SyncHistoryScreen({
               tone="danger"
             />
           ) : null}
-        </View>
+        </ScrollView>
 
         <View style={styles.listPane}>
           <View style={styles.listHeader}>
@@ -927,9 +934,12 @@ const styles = StyleSheet.create({
     borderColor: posColors.border,
     borderRadius: 5,
     borderWidth: 1,
+    minHeight: 0,
+    width: 292,
+  },
+  filtersPaneContent: {
     gap: 10,
     padding: 14,
-    width: 292,
   },
   gateText: {
     color: "#8A531A",
@@ -1177,6 +1187,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     gap: 12,
+    minHeight: 0,
     padding: 14,
   },
 });

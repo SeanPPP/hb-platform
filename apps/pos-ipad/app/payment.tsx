@@ -4,7 +4,7 @@ import {
   useLocalSearchParams,
   useRouter,
 } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -12,7 +12,11 @@ import {
   resolveProtectedSalesRouteGate,
   useCashierLoginStore,
 } from "@/features/cashier-login";
-import { resolveInstallmentsRuntimeFactory } from "@/features/installments";
+import {
+  INSTALLMENTS_CREATE_PERMISSION,
+  resolveInstallmentsRuntimeFactory,
+} from "@/features/installments";
+import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
 import {
   installmentCreatePaymentEntry,
   installmentRepaymentPaymentEntry,
@@ -21,6 +25,9 @@ import {
   resolvePaymentLocale,
   UnifiedPaymentFacade,
   type PaymentScreenPresenter,
+  type PaymentInstallmentModeControl,
+  type PaymentPresenterState,
+  type RegularPaymentEntry,
   type UnifiedPaymentEntry,
   type UnifiedPaymentFacadeDependencies,
 } from "@/features/payments/ui";
@@ -29,6 +36,7 @@ import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 type PaymentPresenterBinding = Readonly<{
   services: object;
   cashier: object;
+  entry: UnifiedPaymentEntry;
   presenter: PaymentScreenPresenter;
 }>;
 
@@ -85,6 +93,8 @@ export default function PaymentRoute() {
     () => (entry.kind === "entry" ? entry.entry : null),
     [entry],
   );
+  const regularEntry: RegularPaymentEntry | null =
+    requestedEntry?.kind === "regular" ? requestedEntry : null;
   const unifiedPayment = useMemo<UnifiedPaymentBinding | null>(
     () => {
       const services = runtime.services;
@@ -109,10 +119,15 @@ export default function PaymentRoute() {
   const [binding, setBinding] = useState<PaymentPresenterBinding | null>(null);
   const [creationFailed, setCreationFailed] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const [installmentModeIssue, setInstallmentModeIssue] = useState<
+    PaymentInstallmentModeControl["issue"]
+  >(null);
+  const presenterRef = useRef<PaymentScreenPresenter | null>(null);
   const presenter =
     binding?.services === runtime.services && binding.cashier === activeCashier
       ? binding.presenter
       : null;
+  const presenterState = usePaymentPresenterState(presenter);
 
   useEffect(() => {
     if (
@@ -129,10 +144,10 @@ export default function PaymentRoute() {
     const services = runtime.services;
     const cashier = activeCashier;
     let cancelled = false;
-    let createdPresenter: PaymentScreenPresenter | null = null;
     setBinding(null);
     setCreationFailed(false);
     setUnavailable(false);
+    setInstallmentModeIssue(null);
 
     // 恢复事实始终覆盖 URL；两账本同时阻塞时由 facade 固定选择普通支付。
     void unifiedPayment.facade.resolveRecovery().then(
@@ -152,13 +167,17 @@ export default function PaymentRoute() {
         try {
           const nextPresenter =
             unifiedPayment.facade.createPresenter(nextEntry);
-          createdPresenter = nextPresenter;
           if (cancelled) {
             nextPresenter.destroy();
-            createdPresenter = null;
             return;
           }
-          setBinding({ services, cashier, presenter: nextPresenter });
+          presenterRef.current = nextPresenter;
+          setBinding({
+            services,
+            cashier,
+            entry: nextEntry,
+            presenter: nextPresenter,
+          });
         } catch {
           if (!cancelled) {
             clearActiveCashier();
@@ -176,8 +195,8 @@ export default function PaymentRoute() {
 
     return () => {
       cancelled = true;
-      createdPresenter?.destroy();
-      createdPresenter = null;
+      presenterRef.current?.destroy();
+      presenterRef.current = null;
     };
   }, [
     activeCashier,
@@ -202,13 +221,174 @@ export default function PaymentRoute() {
     return <BootstrapScreen />;
   }
 
+  const installmentModeControl = resolveInstallmentModeControl({
+    entry: binding?.entry ?? null,
+    regularEntry,
+    installmentsAvailable: unifiedPayment?.installmentsAvailable ?? false,
+    permissions: activeCashier?.permissions ?? [],
+    presenterState,
+    issue: installmentModeIssue,
+    onToggle: (enabled) => {
+      const activeBinding = binding;
+      const activeEntry = activeBinding?.entry;
+      if (
+        !activeBinding ||
+        !activeEntry ||
+        !unifiedPayment ||
+        isInstallmentModeSwitchLocked(presenterState)
+      ) {
+        return;
+      }
+
+      const activeIsInstallment = isInstallmentPaymentEntry(activeEntry);
+      if (enabled === activeIsInstallment) return;
+
+      if (
+        enabled &&
+        activeEntry.kind === "regular" &&
+        regularEntry &&
+        canToggleInstallmentMode(
+          activeCashier?.permissions ?? [],
+          unifiedPayment.installmentsAvailable,
+        )
+      ) {
+        try {
+          const nextEntry = unifiedPayment.facade.prepareInstallmentCreate();
+          const nextPresenter = unifiedPayment.facade.createPresenter(nextEntry);
+          activeBinding.presenter.destroy();
+          presenterRef.current = nextPresenter;
+          setInstallmentModeIssue(null);
+          setBinding({
+            services: activeBinding.services,
+            cashier: activeBinding.cashier,
+            entry: nextEntry,
+            presenter: nextPresenter,
+          });
+        } catch {
+          // 新建分期失败时普通付款仍是唯一可信账本，不能登出或导走收银员。
+          setInstallmentModeIssue("unavailable");
+        }
+        return;
+      }
+
+      if (!enabled && activeEntry.kind === "installment-create" && regularEntry) {
+        try {
+          const nextPresenter = unifiedPayment.facade.createPresenter(regularEntry);
+          activeBinding.presenter.destroy();
+          presenterRef.current = nextPresenter;
+          setInstallmentModeIssue(null);
+          setBinding({
+            services: activeBinding.services,
+            cashier: activeBinding.cashier,
+            entry: regularEntry,
+            presenter: nextPresenter,
+          });
+        } catch {
+          setInstallmentModeIssue("unavailable");
+        }
+      }
+    },
+  });
+
   return (
     <PaymentScreen
       locale={resolvePaymentLocale(i18n.resolvedLanguage ?? i18n.language)}
       onBack={() => replace("/sales" as Href)}
       onComplete={() => replace("/sales" as Href)}
       presenter={presenter}
+      {...(installmentModeControl ? { installmentModeControl } : {})}
     />
+  );
+}
+
+function usePaymentPresenterState(
+  presenter: PaymentScreenPresenter | null,
+): PaymentPresenterState | null {
+  const [state, setState] = useState<PaymentPresenterState | null>(null);
+
+  useEffect(() => {
+    if (!presenter) {
+      setState(null);
+      return undefined;
+    }
+    const update = () => setState(presenter.getState());
+    update();
+    return presenter.subscribe(update);
+  }, [presenter]);
+
+  return state;
+}
+
+function resolveInstallmentModeControl(input: Readonly<{
+  entry: UnifiedPaymentEntry | null;
+  regularEntry: RegularPaymentEntry | null;
+  installmentsAvailable: boolean;
+  permissions: readonly string[];
+  presenterState: PaymentPresenterState | null;
+  issue: PaymentInstallmentModeControl["issue"];
+  onToggle(enabled: boolean): void;
+}>): PaymentInstallmentModeControl | undefined {
+  const { entry } = input;
+  if (!entry || entry.kind === "recovery") return undefined;
+
+  if (
+    entry.kind === "installment-repayment" ||
+    (entry.kind === "installment-create" && !input.regularEntry)
+  ) {
+    return {
+      enabled: true,
+      locked: true,
+      issue: null,
+      onToggle: input.onToggle,
+    };
+  }
+
+  if (
+    !input.regularEntry ||
+    !canToggleInstallmentMode(input.permissions, input.installmentsAvailable)
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled: isInstallmentPaymentEntry(entry),
+    locked: isInstallmentModeSwitchLocked(input.presenterState),
+    issue: input.issue,
+    onToggle: input.onToggle,
+  };
+}
+
+function canToggleInstallmentMode(
+  permissions: readonly string[],
+  installmentsAvailable: boolean,
+): boolean {
+  if (!installmentsAvailable) return false;
+  const granted = new Set(permissions.map((permission) => permission.trim()));
+  return (
+    granted.has(INSTALLMENTS_CREATE_PERMISSION) &&
+    granted.has(PAYMENT_PERMISSION.view) &&
+    granted.has(PAYMENT_PERMISSION.confirm)
+  );
+}
+
+function isInstallmentPaymentEntry(entry: UnifiedPaymentEntry): boolean {
+  return (
+    entry.kind === "installment-create" ||
+    entry.kind === "installment-repayment" ||
+    (entry.kind === "recovery" && entry.ledger === "installment")
+  );
+}
+
+function isInstallmentModeSwitchLocked(
+  state: PaymentPresenterState | null,
+): boolean {
+  if (!state) return true;
+  return (
+    !state.initialized ||
+    state.busy ||
+    state.attemptId != null ||
+    state.orderGuid != null ||
+    state.allowedActions.recover
   );
 }
 

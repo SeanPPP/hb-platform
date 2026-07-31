@@ -17,6 +17,7 @@ import type { PaymentProviderAvailability } from "@/features/payments/runtime/pa
 import {
   parseAudInput,
   type PaymentCheckoutPresentation,
+  type PaymentConfirmOptions,
   type PaymentPresenterState,
   type PaymentScreenPresenter,
   type PaymentUiMethod,
@@ -119,7 +120,7 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
             providers,
             total: aud(draft.totalCents),
             remaining: aud(draft.totalCents),
-            fieldIssue: "checkout-unavailable",
+            fieldIssue: "installment-total-below-minimum",
             checkout: Object.freeze({
               ...checkoutPresentation("installment-create"),
               lines: Object.freeze([...draft.lines]),
@@ -289,7 +290,9 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
       this.state.checkout.flow === "installment-create" &&
       appliedCents < INSTALLMENT_MINIMUM_DOWN_PAYMENT_CENTS
     ) {
-      this.patch({ fieldIssue: "amount-invalid" });
+      this.patch({
+        fieldIssue: "installment-down-payment-below-minimum",
+      });
       return Promise.resolve(false);
     }
 
@@ -311,6 +314,9 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
       checkout: Object.freeze({
         ...this.state.checkout,
         canConfirm: true,
+        fullInstallmentConfirmationRequired:
+          this.state.checkout.flow === "installment-create" &&
+          appliedCents === this.state.total.cents,
         cash: Object.freeze({
           tenderedCents: method === "cash" ? tendered.cents : 0,
           appliedCents: method === "cash" ? appliedCents : 0,
@@ -323,7 +329,7 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
     return Promise.resolve(true);
   }
 
-  public confirm(): Promise<boolean> {
+  public confirm(options?: PaymentConfirmOptions): Promise<boolean> {
     const entry = this.options.entry;
     const tender = this.state.tenders[0];
     if (
@@ -353,7 +359,14 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
       entry.kind === "installment-create" &&
       (!customer?.name.trim() || !customer.phone.trim())
     ) {
-      this.patch({ fieldIssue: "checkout-unavailable" });
+      this.patch({ fieldIssue: "installment-customer-required" });
+      return Promise.resolve(false);
+    }
+    if (
+      entry.kind === "installment-create" &&
+      this.state.checkout.fullInstallmentConfirmationRequired &&
+      options?.acknowledgeFullInstallmentPayment !== true
+    ) {
       return Promise.resolve(false);
     }
     const voucherReference =
@@ -391,15 +404,35 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
           checkout: Object.freeze({
             ...this.state.checkout,
             canConfirm: false,
+            fullInstallmentConfirmationRequired: false,
           }),
         });
         return true;
       } catch (error) {
+        const onlineRequired =
+          error instanceof InstallmentWorkflowError &&
+          error.code === "online-required";
+        let recoveryRequired = true;
+        try {
+          recoveryRequired =
+            (await this.options.workflow.hasRecoveryRequired?.()) ??
+            true;
+        } catch {
+          // 本地耐久事实无法核实时必须 fail closed，禁止切换账本。
+        }
+        if (!recoveryRequired) {
+          this.patch({
+            phase: "ready",
+            runtimeErrorCode: onlineRequired
+              ? "ONLINE_REQUIRED"
+              : "PAYMENT_CHECKOUT_FAILED",
+          });
+          return false;
+        }
         this.patch({
           phase: "recovery-required",
           runtimeErrorCode:
-            error instanceof InstallmentWorkflowError &&
-            error.code === "online-required"
+            onlineRequired
               ? "ONLINE_REQUIRED"
               : "PAYMENT_CHECKOUT_FAILED",
           allowedActions: allowedActions({ recover: true }),
@@ -454,6 +487,7 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
       checkout: Object.freeze({
         ...this.state.checkout,
         canConfirm: false,
+        fullInstallmentConfirmationRequired: false,
         cash: Object.freeze({
           tenderedCents: 0,
           appliedCents: 0,
@@ -496,7 +530,7 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
     const name = customer.draftName.trim();
     const phone = customer.draftPhone.trim();
     if (!name || !phone) {
-      this.patch({ fieldIssue: "checkout-unavailable" });
+      this.patch({ fieldIssue: "installment-customer-required" });
       return;
     }
     this.patchCustomer({ name, phone, editorOpen: false });
@@ -702,6 +736,7 @@ function checkoutPresentation(
       changeCents: 0,
     }),
     canConfirm: false,
+    fullInstallmentConfirmationRequired: false,
   });
 }
 
