@@ -31,6 +31,7 @@ internal sealed class MainChildViewModelFactory
     private readonly IRawScannerService _rawScannerService;
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
+    private readonly ILinklySettlementService? _linklySettlementService;
     private readonly IUserFeedbackService? _userFeedbackService;
     private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly IReceiptPrintService? _receiptPrintService;
@@ -77,7 +78,8 @@ internal sealed class MainChildViewModelFactory
         IOperationAuditLogger? operationAuditLogger = null,
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        IOrderUploadExecutionService? orderUploadExecutionService = null)
+        IOrderUploadExecutionService? orderUploadExecutionService = null,
+        ILinklySettlementService? linklySettlementService = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -100,6 +102,7 @@ internal sealed class MainChildViewModelFactory
         _rawScannerService = rawScannerService;
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
+        _linklySettlementService = linklySettlementService;
         _userFeedbackService = userFeedbackService;
         _promotionEvaluationService = promotionEvaluationService;
         _receiptPrintService = receiptPrintService;
@@ -336,7 +339,8 @@ internal sealed class MainChildViewModelFactory
             _cashierSessionContext,
             _enforceCashierPermissions,
             _operationAuditLogger,
-            _operationAuthorizationService);
+            _operationAuthorizationService,
+            _linklySettlementService);
     }
 
     public SettingsViewModel CreateSettingsViewModel(

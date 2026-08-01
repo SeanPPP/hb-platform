@@ -14,6 +14,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 {
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
+    private readonly ILinklySettlementService? _linklySettlementService;
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
@@ -60,6 +61,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private int _transactionCount;
 
     private DailyCloseArchiveListItemViewModel? _selectedArchive;
+    private LocalLinklySettlementRecord? _selectedSettlement;
+    private LocalLinklySettlementManualResolution? _pendingSettlementManualResolution;
 
     public DailyCloseViewModel(
         IDailyCloseService dailyCloseService,
@@ -70,7 +73,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        ILinklySettlementService? linklySettlementService = null)
     {
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
@@ -80,6 +84,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        _linklySettlementService = linklySettlementService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -98,6 +103,18 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         SaveAndPrintCommand = new AsyncRelayCommand(SaveAndPrintAsync, CanSaveAndPrint);
         LoadHistoryCommand = new AsyncRelayCommand(LoadHistoryAsync, () => !IsBusy);
         ReprintSelectedArchiveCommand = new AsyncRelayCommand(ReprintSelectedArchiveAsync, CanReprintSelectedArchive);
+        SettleAndPrintCommand = new AsyncRelayCommand(SettleAndPrintAsync, CanSettleAndPrint);
+        LoadSettlementHistoryCommand = new AsyncRelayCommand(LoadSettlementHistoryAsync, () => !IsBusy && _linklySettlementService is not null);
+        ReprintSelectedSettlementCommand = new AsyncRelayCommand(ReprintSelectedSettlementAsync, CanReprintSelectedSettlement);
+        PrepareSettlementManualResolutionCommand = new RelayCommand<LocalLinklySettlementManualResolution>(
+            PrepareSettlementManualResolution,
+            CanPrepareSettlementManualResolution);
+        ConfirmSettlementManualResolutionCommand = new AsyncRelayCommand(
+            ConfirmSettlementManualResolutionAsync,
+            CanConfirmSettlementManualResolution);
+        CancelSettlementManualResolutionCommand = new RelayCommand(
+            CancelSettlementManualResolution,
+            CanCancelSettlementManualResolution);
         KeypadInputCommand = new RelayCommand<string>(AppendKeypadInput, _ => !IsBusy);
         KeypadBackspaceCommand = new RelayCommand(BackspaceKeypad, () => !IsBusy && KeypadBuffer.Length > 0);
         KeypadClearCommand = new RelayCommand(ClearKeypad, () => !IsBusy && KeypadBuffer.Length > 0);
@@ -114,6 +131,10 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<ReceiptPreviewRow> ArchivePreviewRows { get; } = [];
 
+    public ObservableCollection<LocalLinklySettlementRecord> Settlements { get; } = [];
+
+    public ObservableCollection<string> SettlementReceiptPreviewLines { get; } = [];
+
     public ObservableCollection<CashDenominationCount> SelectedArchiveNoteCounts { get; } = [];
 
     public ObservableCollection<CashDenominationCount> SelectedArchiveCoinCounts { get; } = [];
@@ -125,6 +146,18 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand LoadHistoryCommand { get; }
 
     public IAsyncRelayCommand ReprintSelectedArchiveCommand { get; }
+
+    public IAsyncRelayCommand SettleAndPrintCommand { get; }
+
+    public IAsyncRelayCommand LoadSettlementHistoryCommand { get; }
+
+    public IAsyncRelayCommand ReprintSelectedSettlementCommand { get; }
+
+    public IRelayCommand<LocalLinklySettlementManualResolution> PrepareSettlementManualResolutionCommand { get; }
+
+    public IAsyncRelayCommand ConfirmSettlementManualResolutionCommand { get; }
+
+    public IRelayCommand CancelSettlementManualResolutionCommand { get; }
 
     public IRelayCommand<string> KeypadInputCommand { get; }
 
@@ -163,6 +196,43 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
     }
 
+    public LocalLinklySettlementRecord? SelectedSettlement
+    {
+        get => _selectedSettlement;
+        set
+        {
+            if (SetProperty(ref _selectedSettlement, value))
+            {
+                SettlementReceiptPreviewLines.ReplaceWith(value?.ReceiptTexts ?? []);
+                ClearPendingSettlementManualResolution();
+                ReprintSelectedSettlementCommand.NotifyCanExecuteChanged();
+                PrepareSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+                OnPropertyChanged(nameof(IsSettlementManualResolutionVisible));
+            }
+        }
+    }
+
+    public bool IsSettlementManualResolutionVisible =>
+        CanPrepareSettlementManualResolution(LocalLinklySettlementManualResolution.ConfirmedSucceeded);
+
+    public bool IsSettlementManualResolutionConfirmationVisible =>
+        _pendingSettlementManualResolution is not null &&
+        IsSettlementManualResolutionVisible;
+
+    public string SettlementManualResolutionPrompt => _pendingSettlementManualResolution switch
+    {
+        LocalLinklySettlementManualResolution.ConfirmedSucceeded => T(
+            "dailyClose.linklySettlement.manual.confirmSucceeded",
+            "Confirm that the settlement succeeded at the terminal. This only updates the saved record; it will not send another settlement."),
+        LocalLinklySettlementManualResolution.ConfirmedFailed => T(
+            "dailyClose.linklySettlement.manual.confirmFailed",
+            "Confirm that the settlement failed at the terminal. This only updates the saved record; it will not send another settlement."),
+        LocalLinklySettlementManualResolution.ConfirmedNotSubmitted => T(
+            "dailyClose.linklySettlement.manual.confirmNotSubmitted",
+            "Confirm that the settlement was not submitted. This only updates the saved record; it will not send another settlement."),
+        _ => string.Empty
+    };
+
     private DateTime BusinessDate => (SelectedDate ?? DateTime.Today).Date;
 
     partial void OnSessionChanged(PosSessionState value)
@@ -177,6 +247,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     {
         SelectedTabIndex = 0;
         await RefreshSummaryAsync(cancellationToken);
+        await RefreshSettlementsAsync(cancellationToken);
     }
 
     public async Task RefreshSummaryAsync(CancellationToken cancellationToken = default)
@@ -425,6 +496,319 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task SettleAndPrintAsync(CancellationToken cancellationToken = default)
+    {
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.DailyClose.Save,
+            "daily-close",
+            "linkly-settlement",
+            Session,
+            cancellationToken);
+        if (authorization is null || !CanSettleAndPrint())
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        IsBusy = true;
+        StatusMessage = T("dailyClose.linklySettlement.sending", "Sending Linkly settlement...");
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        var auditRecorded = false;
+        try
+        {
+            var execution = await _linklySettlementService!.SettleAndPrintAsync(Session, BusinessDate, cancellationToken);
+            var settlementSucceeded = execution.Settlement.Status == LocalLinklySettlementStatus.Succeeded &&
+                execution.PrintResult?.Succeeded == true;
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.LinklySettlement,
+                settlementSucceeded ? "Succeeded" : "Failed",
+                Session,
+                reasonCode: execution.ResultUnknown
+                    ? "RESULT_UNKNOWN"
+                    : execution.ReusedFinalEvidence
+                        ? "REUSED_FINAL_EVIDENCE"
+                        : execution.Settlement.Status == LocalLinklySettlementStatus.Pending
+                            ? "SETTLEMENT_BLOCKED"
+                            : execution.Settlement.Status == LocalLinklySettlementStatus.Failed
+                                ? "SETTLEMENT_FAILED"
+                                : execution.PrintResult?.Succeeded == false
+                                    ? "PRINT_FAILED"
+                                    : "SETTLEMENT_COMPLETED",
+                safeMessage: execution.PrintResult?.Succeeded == false ? execution.PrintResult.Message : null,
+                orderGuid: execution.Settlement.SettlementGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            auditRecorded = true;
+            await RefreshSettlementsAsync(cancellationToken, execution.Settlement.SettlementGuid);
+
+            StatusMessage = execution.ResultUnknown
+                ? T(
+                    "dailyClose.linklySettlement.unknown",
+                    "Settlement result is unknown. Do not submit it again.")
+                : execution.ReusedFinalEvidence
+                    ? T(
+                        "dailyClose.linklySettlement.reusedFinalEvidence",
+                        "The existing final settlement record was retained. Reprint it manually if needed.")
+                : execution.Settlement.Status switch
+            {
+                LocalLinklySettlementStatus.Pending => T(
+                    "dailyClose.linklySettlement.blocked",
+                    "An unresolved Linkly settlement already exists for this business date."),
+                LocalLinklySettlementStatus.Unknown => T(
+                    "dailyClose.linklySettlement.unknown",
+                    "Settlement result is unknown. Do not submit it again."),
+                LocalLinklySettlementStatus.Failed when execution.Settlement.ReceiptTexts.Count == 0 => Format(
+                    "dailyClose.linklySettlement.failedNoReceipt",
+                    "Settlement failed: {0}",
+                    execution.Settlement.ResponseText ?? "No bank settlement receipt is available."),
+                LocalLinklySettlementStatus.Failed when execution.PrintResult?.Succeeded == true => Format(
+                    "dailyClose.linklySettlement.failedReceiptPrinted",
+                    "Settlement failed, but the bank response receipt was printed: {0}",
+                    execution.Settlement.ResponseText ?? "No response detail."),
+                LocalLinklySettlementStatus.Failed => Format(
+                    "dailyClose.linklySettlement.failedPrintFailed",
+                    "Settlement failed and its receipt could not be printed: {0}",
+                    execution.PrintResult?.Message ?? "Unknown printer error."),
+                _ when execution.Settlement.ReceiptTexts.Count == 0 => T(
+                    "dailyClose.linklySettlement.noReceipt",
+                    "Settlement result saved. No bank settlement receipt is available to print."),
+                _ when execution.PrintResult?.Succeeded == true => T(
+                    "dailyClose.linklySettlement.succeededPrinted",
+                    "Settlement saved and sent to the POS printer."),
+                _ => Format(
+                    "dailyClose.linklySettlement.succeededPrintFailed",
+                    "Settlement saved, but printing failed: {0}",
+                    execution.PrintResult?.Message ?? "Unknown printer error.")
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!auditRecorded)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.LinklySettlement,
+                    "Failed",
+                    Session,
+                    reasonCode: "SETTLEMENT_EXCEPTION",
+                    safeMessage: ex.GetType().Name,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task LoadSettlementHistoryAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsBusy || _linklySettlementService is null)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        StatusMessage = T("dailyClose.linklySettlement.historyLoading", "Loading Linkly settlement history...");
+        try
+        {
+            await RefreshSettlementsAsync(cancellationToken);
+            StatusMessage = Settlements.Count == 0
+                ? T("dailyClose.linklySettlement.historyEmpty", "No Linkly settlement records found for this business date.")
+                : Format(
+                    "dailyClose.linklySettlement.historyLoaded",
+                    "Loaded {0} Linkly settlement record(s).",
+                    Settlements.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task ReprintSelectedSettlementAsync(CancellationToken cancellationToken = default)
+    {
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.DailyClose.Reprint,
+            "daily-close",
+            "reprint-linkly-settlement",
+            Session,
+            cancellationToken);
+        if (authorization is null || !CanReprintSelectedSettlement())
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        IsBusy = true;
+        StatusMessage = T("dailyClose.linklySettlement.reprinting", "Reprinting Linkly settlement receipt...");
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        var auditRecorded = false;
+        try
+        {
+            var result = await _linklySettlementService!.ReprintAsync(SelectedSettlement!, cancellationToken);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.LinklySettlementReprint,
+                result.Succeeded ? "Succeeded" : "Failed",
+                Session,
+                reasonCode: "REPRINT",
+                safeMessage: result.Succeeded ? null : result.Message,
+                orderGuid: SelectedSettlement!.SettlementGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            auditRecorded = true;
+            await RefreshSettlementsAsync(cancellationToken, SelectedSettlement!.SettlementGuid);
+            StatusMessage = result.Succeeded
+                ? T("dailyClose.linklySettlement.reprintPrinted", "Linkly settlement receipt sent to the POS printer.")
+                : Format(
+                    "dailyClose.linklySettlement.reprintFailed",
+                    "Linkly settlement reprint failed: {0}",
+                    result.Message);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!auditRecorded)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.LinklySettlementReprint,
+                    "Failed",
+                    Session,
+                    reasonCode: "REPRINT_EXCEPTION",
+                    safeMessage: ex.GetType().Name,
+                    orderGuid: SelectedSettlement?.SettlementGuid.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void PrepareSettlementManualResolution(LocalLinklySettlementManualResolution resolution)
+    {
+        if (!CanPrepareSettlementManualResolution(resolution))
+        {
+            return;
+        }
+
+        _pendingSettlementManualResolution = resolution;
+        OnPropertyChanged(nameof(IsSettlementManualResolutionConfirmationVisible));
+        OnPropertyChanged(nameof(SettlementManualResolutionPrompt));
+        ConfirmSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+        CancelSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+        StatusMessage = T(
+            "dailyClose.linklySettlement.manual.confirmRequired",
+            "Review the supervisor decision, then confirm it. This will not send another settlement.");
+    }
+
+    private async Task ConfirmSettlementManualResolutionAsync(CancellationToken cancellationToken = default)
+    {
+        if (!CanConfirmSettlementManualResolution())
+        {
+            return;
+        }
+
+        using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
+            _operationAuthorizationService,
+            TryRequirePermission,
+            Permissions.PosTerminal.DailyClose.Save,
+            "daily-close",
+            "resolve-linkly-settlement",
+            Session,
+            cancellationToken);
+        if (authorization is null || !CanConfirmSettlementManualResolution())
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        var resolution = _pendingSettlementManualResolution!.Value;
+        var settlement = SelectedSettlement!;
+        IsBusy = true;
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        var auditRecorded = false;
+        try
+        {
+            var result = await _linklySettlementService!.ResolveUncertainAsync(
+                Session,
+                settlement,
+                resolution,
+                cancellationToken);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.LinklySettlement,
+                result.Resolved ? "SupervisorResolved" : "Failed",
+                Session,
+                reasonCode: resolution.ToString(),
+                safeMessage: result.Resolved ? null : result.Message,
+                orderGuid: settlement.SettlementGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            auditRecorded = true;
+            await RefreshSettlementsAsync(cancellationToken, settlement.SettlementGuid);
+            if (result.Resolved)
+            {
+                ClearPendingSettlementManualResolution();
+            }
+
+            StatusMessage = result.Resolved
+                ? T(
+                    "dailyClose.linklySettlement.manual.resolved",
+                    "Supervisor decision saved and queued for upload. No new settlement was sent.")
+                : result.Message;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!auditRecorded)
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.LinklySettlement,
+                    "Failed",
+                    Session,
+                    reasonCode: resolution.ToString(),
+                    safeMessage: ex.GetType().Name,
+                    orderGuid: settlement.SettlementGuid.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void CancelSettlementManualResolution()
+    {
+        if (!CanCancelSettlementManualResolution())
+        {
+            return;
+        }
+
+        ClearPendingSettlementManualResolution();
+        StatusMessage = T(
+            "dailyClose.linklySettlement.manual.cancelled",
+            "Supervisor decision was not saved.");
+    }
+
     partial void OnSelectedDateChanged(DateTime? value)
     {
         _currentReport = null;
@@ -434,6 +818,10 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         ArchivePreviewRows.Clear();
         SelectedArchiveNoteCounts.Clear();
         SelectedArchiveCoinCounts.Clear();
+        Settlements.Clear();
+        SelectedSettlement = null;
+        ClearPendingSettlementManualResolution();
+        SettlementReceiptPreviewLines.Clear();
         ClearCashCounts();
         ExpectedCashAmount = 0m;
         GrossAmount = 0m;
@@ -447,6 +835,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
             "Switched to {0:yyyy-MM-dd}. Refresh the summary.",
             BusinessDate);
         SaveAndPrintCommand.NotifyCanExecuteChanged();
+        SettleAndPrintCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnKeypadBufferChanged(string value)
@@ -462,6 +851,12 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         SaveAndPrintCommand.NotifyCanExecuteChanged();
         LoadHistoryCommand.NotifyCanExecuteChanged();
         ReprintSelectedArchiveCommand.NotifyCanExecuteChanged();
+        SettleAndPrintCommand.NotifyCanExecuteChanged();
+        LoadSettlementHistoryCommand.NotifyCanExecuteChanged();
+        ReprintSelectedSettlementCommand.NotifyCanExecuteChanged();
+        PrepareSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+        ConfirmSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+        CancelSettlementManualResolutionCommand.NotifyCanExecuteChanged();
         KeypadInputCommand.NotifyCanExecuteChanged();
         KeypadBackspaceCommand.NotifyCanExecuteChanged();
         KeypadClearCommand.NotifyCanExecuteChanged();
@@ -504,6 +899,25 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         await SelectArchiveAsync(selected, cancellationToken);
     }
 
+    private async Task RefreshSettlementsAsync(
+        CancellationToken cancellationToken,
+        Guid? preferredSettlementGuid = null)
+    {
+        if (_linklySettlementService is null)
+        {
+            Settlements.Clear();
+            SelectedSettlement = null;
+            SettleAndPrintCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
+        var selectedSettlementGuid = preferredSettlementGuid ?? SelectedSettlement?.SettlementGuid;
+        var settlements = await _linklySettlementService.GetHistoryAsync(Session, BusinessDate, cancellationToken);
+        Settlements.ReplaceWith(settlements);
+        SelectedSettlement = settlements.FirstOrDefault(item => item.SettlementGuid == selectedSettlementGuid) ?? settlements.FirstOrDefault();
+        SettleAndPrintCommand.NotifyCanExecuteChanged();
+    }
+
     private bool CanSaveAndPrint()
     {
         return !IsBusy && _currentReport is not null;
@@ -512,6 +926,61 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private bool CanReprintSelectedArchive()
     {
         return !IsBusy && SelectedArchive is not null;
+    }
+
+    private bool CanSettleAndPrint()
+    {
+        return !IsBusy &&
+               _linklySettlementService is not null &&
+               BusinessDate == DateTime.Today;
+    }
+
+    private bool CanReprintSelectedSettlement()
+    {
+        return !IsBusy &&
+               _linklySettlementService is not null &&
+               SelectedSettlement is { ReceiptTexts.Count: > 0 };
+    }
+
+    private bool CanPrepareSettlementManualResolution(LocalLinklySettlementManualResolution resolution)
+    {
+        _ = resolution;
+        return !IsBusy &&
+            _linklySettlementService is not null &&
+            IsManualSettlementResolutionEligible(SelectedSettlement);
+    }
+
+    private bool CanConfirmSettlementManualResolution()
+    {
+        return _pendingSettlementManualResolution is not null &&
+            CanPrepareSettlementManualResolution(_pendingSettlementManualResolution.Value);
+    }
+
+    private bool CanCancelSettlementManualResolution()
+    {
+        return !IsBusy && _pendingSettlementManualResolution is not null;
+    }
+
+    private void ClearPendingSettlementManualResolution()
+    {
+        if (_pendingSettlementManualResolution is null)
+        {
+            return;
+        }
+
+        _pendingSettlementManualResolution = null;
+        OnPropertyChanged(nameof(IsSettlementManualResolutionConfirmationVisible));
+        OnPropertyChanged(nameof(SettlementManualResolutionPrompt));
+        ConfirmSettlementManualResolutionCommand?.NotifyCanExecuteChanged();
+        CancelSettlementManualResolutionCommand?.NotifyCanExecuteChanged();
+    }
+
+    private static bool IsManualSettlementResolutionEligible(LocalLinklySettlementRecord? settlement)
+    {
+        return settlement is not null &&
+            settlement.Status is LocalLinklySettlementStatus.Pending or LocalLinklySettlementStatus.Unknown &&
+            (string.Equals(settlement.ConnectionMode, LinklyConnectionMode.LocalIp.ToString(), StringComparison.Ordinal) ||
+             string.Equals(settlement.ConnectionMode, LinklyConnectionMode.CloudDirectSync.ToString(), StringComparison.Ordinal));
     }
 
     private async Task ApplySelectedArchiveAsync(

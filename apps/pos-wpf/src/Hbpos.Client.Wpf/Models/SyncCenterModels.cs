@@ -26,7 +26,9 @@ public sealed record SyncQueueListItem(
 {
     public RowSelectionState Selection { get; } = new();
 
-    public bool CanRetry => EntityType.Equals("Order", StringComparison.OrdinalIgnoreCase) &&
+    public bool CanRetry =>
+        (EntityType.Equals("Order", StringComparison.OrdinalIgnoreCase) ||
+         EntityType.Equals("LinklySettlement", StringComparison.OrdinalIgnoreCase)) &&
         (Status.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
          Status.Equals("Failed", StringComparison.OrdinalIgnoreCase));
 

@@ -33,6 +33,8 @@ internal static class OperationAuditTypes
     public const string InstallmentRepaymentCancel = "INSTALLMENT_REPAYMENT_CANCEL";
     public const string DailyCloseSave = "DAILY_CLOSE_SAVE";
     public const string DailyCloseReprint = "DAILY_CLOSE_REPRINT";
+    public const string LinklySettlement = "LINKLY_SETTLEMENT";
+    public const string LinklySettlementReprint = "LINKLY_SETTLEMENT_REPRINT";
     public const string PermissionOverride = "PERMISSION_OVERRIDE";
 }
 

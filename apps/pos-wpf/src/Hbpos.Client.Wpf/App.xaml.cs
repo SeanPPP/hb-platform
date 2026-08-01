@@ -75,6 +75,11 @@ public partial class App : Application
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             _startupProgressState?.SetStage(MainWindowPreparingPercent, localization.T("startup.stage.loadingProducts"));
             await mainWindow.InitializeForStartupAsync();
+            if (!mainWindow.IsStartupBlockedByAppUpdate)
+            {
+                _host.Services.GetRequiredService<LocalSchemaService>().SignalReady();
+            }
+
             mainWindow.StartupCompleted += (_, _) => ScheduleStartupGateReleaseAfterClickGuardDelay();
             _startupProgressState?.SetStage(MainWindowInitializedPercent, localization.T("startup.stage.preparingMainWindow"));
             MainWindow = mainWindow;

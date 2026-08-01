@@ -172,7 +172,8 @@ public enum LinklyBankReceiptKind
     SignatureRequired,
     Declined,
     RecoveredApproved,
-    RecoveredFailed
+    RecoveredFailed,
+    Settlement
 }
 
 public interface ILinklyBankReceiptPrinter
@@ -943,6 +944,7 @@ public sealed class LinklyBankReceiptPrinter(
             LinklyBankReceiptKind.Declined => "*** DECLINED ***",
             LinklyBankReceiptKind.RecoveredApproved => "*** APPROVED RECOVERY ***",
             LinklyBankReceiptKind.RecoveredFailed => "*** NOT PAID ***",
+            LinklyBankReceiptKind.Settlement => "*** SETTLEMENT ***",
             _ => "*** SIGNATURE REQUIRED ***"
         };
         AddText(heading, ReceiptPrintAlignment.Center, isEmphasized: true);

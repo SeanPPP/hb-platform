@@ -160,6 +160,15 @@ public sealed class CashierPermissionAuthorizationTests
             options,
             CashierAuthorizationPolicies.DeviceRegistration,
             Permissions.PosTerminal.Settings.DeviceRegistration);
+        AssertPolicyPermissions(
+            options,
+            CashierAuthorizationPolicies.DailyCloseSave,
+            Permissions.PosTerminal.DailyClose.Save);
+        AssertPolicyPermissions(
+            options,
+            CashierAuthorizationPolicies.DailyClosePrint,
+            Permissions.PosTerminal.DailyClose.Save,
+            Permissions.PosTerminal.DailyClose.Reprint);
 
         Assert.Equal(
             CashierAuthorizationPolicies.InstallmentView,

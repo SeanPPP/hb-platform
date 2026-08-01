@@ -2,6 +2,7 @@ using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -267,6 +268,116 @@ public sealed class DailyCloseViewModelTests
             });
     }
 
+    [Fact]
+    public async Task Linkly_settlement_and_reprint_commands_use_persisted_record_without_resubmitting()
+    {
+        var settlementService = new FakeLinklySettlementService();
+        var logger = new RecordingOperationAuditLogger();
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            operationAuditLogger: logger,
+            linklySettlementService: settlementService);
+
+        await viewModel.LoadAsync();
+        await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, settlementService.SettleCallCount);
+        Assert.Single(viewModel.Settlements);
+        Assert.NotNull(viewModel.SelectedSettlement);
+        Assert.Equal(LocalLinklySettlementStatus.Succeeded, viewModel.SelectedSettlement!.Status);
+        Assert.Equal("Settlement saved and sent to the POS printer.", viewModel.StatusMessage);
+
+        await viewModel.ReprintSelectedSettlementCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, settlementService.SettleCallCount);
+        Assert.Equal(1, settlementService.ReprintCallCount);
+        Assert.Equal("Linkly settlement receipt sent to the POS printer.", viewModel.StatusMessage);
+        Assert.Collection(
+            logger.Events,
+            auditEvent =>
+            {
+                Assert.Equal("LINKLY_SETTLEMENT", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+            },
+            auditEvent =>
+            {
+                Assert.Equal("LINKLY_SETTLEMENT_REPRINT", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+            });
+    }
+
+    [Fact]
+    public async Task Linkly_settlement_blocked_by_a_pending_record_uses_a_consistent_audit_reason()
+    {
+        var logger = new RecordingOperationAuditLogger();
+        var settlementService = new FakeLinklySettlementService(LocalLinklySettlementStatus.Pending);
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            operationAuditLogger: logger,
+            linklySettlementService: settlementService);
+
+        await viewModel.LoadAsync();
+        await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
+
+        var auditEvent = Assert.Single(logger.Events);
+        Assert.Equal("LINKLY_SETTLEMENT", auditEvent.OperationType);
+        Assert.Equal("Failed", auditEvent.Outcome);
+        Assert.Equal("SETTLEMENT_BLOCKED", auditEvent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task Linkly_settlement_command_stays_enabled_when_an_unknown_record_exists_for_safe_backend_recovery()
+    {
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            linklySettlementService: new FakeLinklySettlementService(LocalLinklySettlementStatus.Unknown));
+
+        await viewModel.LoadAsync();
+
+        Assert.Single(viewModel.Settlements);
+        Assert.True(viewModel.SettleAndPrintCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Linkly_local_unknown_settlement_requires_a_second_supervisor_confirmation_before_resolution()
+    {
+        var settlementService = new FakeLinklySettlementService(
+            LocalLinklySettlementStatus.Unknown,
+            LinklyConnectionMode.LocalIp.ToString());
+        var logger = new RecordingOperationAuditLogger();
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            operationAuditLogger: logger,
+            linklySettlementService: settlementService);
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.IsSettlementManualResolutionVisible);
+        viewModel.PrepareSettlementManualResolutionCommand.Execute(
+            LocalLinklySettlementManualResolution.ConfirmedSucceeded);
+        Assert.True(viewModel.IsSettlementManualResolutionConfirmationVisible);
+        Assert.Equal(0, settlementService.ResolveCallCount);
+
+        await viewModel.ConfirmSettlementManualResolutionCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, settlementService.ResolveCallCount);
+        Assert.Equal(0, settlementService.SettleCallCount);
+        Assert.False(viewModel.IsSettlementManualResolutionVisible);
+        Assert.Equal(LocalLinklySettlementStatus.Succeeded, viewModel.SelectedSettlement!.Status);
+        var auditEvent = Assert.Single(logger.Events);
+        Assert.Equal("LINKLY_SETTLEMENT", auditEvent.OperationType);
+        Assert.Equal("SupervisorResolved", auditEvent.Outcome);
+        Assert.Equal("ConfirmedSucceeded", auditEvent.ReasonCode);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -400,6 +511,119 @@ public sealed class DailyCloseViewModelTests
             return PrintException is not null
                 ? Task.FromException<ReceiptPrintResult>(PrintException)
                 : Task.FromResult(PrintResult);
+        }
+    }
+
+    private sealed class FakeLinklySettlementService : ILinklySettlementService
+    {
+        private readonly List<LocalLinklySettlementRecord> _settlements = [];
+
+        public FakeLinklySettlementService(
+            LocalLinklySettlementStatus? initialStatus = null,
+            string connectionMode = "CloudBackendAsync")
+        {
+            if (initialStatus is { } status)
+            {
+                _settlements.Add(new LocalLinklySettlementRecord(
+                    Guid.NewGuid(),
+                    "S001",
+                    "POS-01",
+                    DateTime.Today,
+                    connectionMode,
+                    "Production",
+                    "unresolved-settlement-001",
+                    status,
+                    ResponseCode: null,
+                    ResponseText: null,
+                    SettlementData: null,
+                    ReceiptTexts: [],
+                    DateTimeOffset.UtcNow,
+                    CompletedAt: null,
+                    FirstPrintedAt: null,
+                    LastPrintedAt: null,
+                    PrintCount: 0,
+                    LastPrintError: null));
+            }
+        }
+
+        public int SettleCallCount { get; private set; }
+
+        public int ReprintCallCount { get; private set; }
+
+        public int ResolveCallCount { get; private set; }
+
+        public Task<LinklySettlementExecutionResult> SettleAndPrintAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            SettleCallCount++;
+            if (_settlements.FirstOrDefault(item => item.Status == LocalLinklySettlementStatus.Pending) is { } pending)
+            {
+                return Task.FromResult(new LinklySettlementExecutionResult(pending, PrintResult: null));
+            }
+
+            var settlement = new LocalLinklySettlementRecord(
+                Guid.NewGuid(),
+                session.StoreCode,
+                session.DeviceCode,
+                businessDate,
+                "LocalIp",
+                "Production",
+                "settlement-001",
+                LocalLinklySettlementStatus.Succeeded,
+                "00",
+                "Approved",
+                "Totals: 3",
+                ["SETTLEMENT RECEIPT"],
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                1,
+                LastPrintError: null);
+            _settlements.Insert(0, settlement);
+            return Task.FromResult(new LinklySettlementExecutionResult(settlement, new ReceiptPrintResult(true, "printed")));
+        }
+
+        public Task<ReceiptPrintResult> ReprintAsync(
+            LocalLinklySettlementRecord settlement,
+            CancellationToken cancellationToken = default)
+        {
+            ReprintCallCount++;
+            return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+        }
+
+        public Task<IReadOnlyList<LocalLinklySettlementRecord>> GetHistoryAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<LocalLinklySettlementRecord>>(
+                _settlements.Where(item => item.BusinessDate == businessDate.Date).ToArray());
+        }
+
+        public Task<LinklySettlementManualResolutionResult> ResolveUncertainAsync(
+            PosSessionState session,
+            LocalLinklySettlementRecord settlement,
+            LocalLinklySettlementManualResolution resolution,
+            CancellationToken cancellationToken = default)
+        {
+            ResolveCallCount++;
+            var index = _settlements.FindIndex(item => item.SettlementGuid == settlement.SettlementGuid);
+            var current = _settlements[index];
+            var updated = current with
+            {
+                Status = resolution == LocalLinklySettlementManualResolution.ConfirmedSucceeded
+                    ? LocalLinklySettlementStatus.Succeeded
+                    : LocalLinklySettlementStatus.Failed,
+                ProviderSubmissionState = resolution == LocalLinklySettlementManualResolution.ConfirmedNotSubmitted
+                    ? ProviderSubmissionState.NotSubmitted
+                    : ProviderSubmissionState.Submitted,
+                CompletedAt = DateTimeOffset.UtcNow
+            };
+            _settlements[index] = updated;
+            return Task.FromResult(new LinklySettlementManualResolutionResult(true, updated, "resolved"));
         }
     }
 

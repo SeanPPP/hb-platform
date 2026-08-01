@@ -38,10 +38,10 @@ public sealed class LinklyCloudApiClientTests
         Assert.Equal("request", requestLog.RootElement.GetProperty("direction").GetString());
         Assert.Equal("https://auth.example/v1/", requestLog.RootElement.GetProperty("details").GetProperty("authBaseUrl").GetString());
         Assert.Equal("store-user", requestLog.RootElement.GetProperty("request").GetProperty("username").GetString());
-        Assert.Equal("store-password", requestLog.RootElement.GetProperty("request").GetProperty("password").GetString());
-        Assert.Equal("12345", requestLog.RootElement.GetProperty("request").GetProperty("pairCode").GetString());
+        Assert.Equal("<redacted>", requestLog.RootElement.GetProperty("request").GetProperty("password").GetString());
+        Assert.Equal("<redacted>", requestLog.RootElement.GetProperty("request").GetProperty("pairCode").GetString());
         using var successLog = FindLinklyLog(logs.Lines, "pair", "succeeded");
-        Assert.Equal("paired-secret", successLog.RootElement.GetProperty("response").GetProperty("secret").GetString());
+        Assert.Equal("<redacted>", successLog.RootElement.GetProperty("response").GetProperty("secret").GetString());
     }
 
     [Fact]
@@ -96,10 +96,100 @@ public sealed class LinklyCloudApiClientTests
         Assert.Equal("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", ReadJsonString(body, "posId"));
         Assert.Equal(LinklyCloudIdentityConstants.ProductionPosVendorId, ReadJsonString(body, "posVendorId"));
         using var requestLog = FindLinklyLog(logs.Lines, "token", "request");
-        Assert.Equal("paired-secret", requestLog.RootElement.GetProperty("request").GetProperty("secret").GetString());
+        Assert.Equal("<redacted>", requestLog.RootElement.GetProperty("request").GetProperty("secret").GetString());
         Assert.Equal("3e7f5001-58a3-43fa-9129-6e84a7b4f2a0", requestLog.RootElement.GetProperty("request").GetProperty("posId").GetString());
         using var successLog = FindLinklyLog(logs.Lines, "token", "succeeded");
-        Assert.Equal("bearer-token", successLog.RootElement.GetProperty("response").GetProperty("token").GetString());
+        Assert.Equal("<redacted>", successLog.RootElement.GetProperty("response").GetProperty("token").GetString());
+    }
+
+    [Fact]
+    public async Task Cloud_api_logs_redact_credentials_and_card_data_but_keep_business_references()
+    {
+        using var logs = new ConsoleLogCapture();
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            return request.RequestUri!.AbsolutePath.EndsWith("/transaction", StringComparison.Ordinal)
+                ? JsonResponse(
+                    """
+                    { "SessionId": "session-1", "Response": { "Success": true, "ResponseCode": "00", "Pan": "4111111111111234", "CardNumber": "5555555555554444", "Track2": "4111111111111234=2512", "CVV": "123" } }
+                    """)
+                : JsonResponse("""{ "token": "bearer-token", "expirySeconds": 60 }""");
+        })));
+        var settings = CreateCloudSettings() with
+        {
+            LinklyPosVendorId = "a256b7ec-709d-4c7d-8ffe-57cc7ca1fd22"
+        };
+
+        _ = await client.GetTokenAsync(settings, "3e7f5001-58a3-43fa-9129-6e84a7b4f2a0");
+        _ = await client.SendTransactionAsync(
+            settings,
+            "bearer-token",
+            new LinklyCloudTransactionRequest("P", 1000, "RRN-260601120001"),
+            "session-1");
+
+        var text = string.Join(Environment.NewLine, logs.Lines);
+        Assert.DoesNotContain("paired-secret", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("bearer-token", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111111111111234", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("5555555555554444", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=2512", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"123\"", text, StringComparison.Ordinal);
+        Assert.Contains("****1234", text, StringComparison.Ordinal);
+        Assert.Contains("****4444", text, StringComparison.Ordinal);
+        Assert.Contains("RRN-260601120001", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cloud_api_logs_sanitize_non_json_4xx_response_without_losing_business_reference()
+    {
+        using var logs = new ConsoleLogCapture();
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(_ =>
+            TextResponse(
+                HttpStatusCode.BadRequest,
+                "Error=declined; refreshToken=refresh-token-secret; Track2=4111111111111111=2512; CVV=987; CardNumber=5555555555554444; RRN=260601120001"))));
+
+        _ = await Assert.ThrowsAsync<LinklyCloudApiException>(() => client.SendTransactionAsync(
+            CreateCloudSettings(),
+            "request-token-secret",
+            new LinklyCloudTransactionRequest("P", 1000, "RRN-260601120001"),
+            "session-1"));
+
+        var text = string.Join(Environment.NewLine, logs.Lines);
+        Assert.DoesNotContain("request-token-secret", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("refresh-token-secret", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111111111111111", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("=2512", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("987", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("5555555555554444", text, StringComparison.Ordinal);
+        using var responseLog = FindLinklyLog(logs.Lines, "transaction", "response");
+        var sanitizedResponse = responseLog.RootElement.GetProperty("response").GetString();
+        Assert.Contains("****4444", sanitizedResponse, StringComparison.Ordinal);
+        Assert.Contains("260601120001", sanitizedResponse, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Linkly_json_log_preserves_only_single_reference_scalars_and_masks_embedded_pan()
+    {
+        var scalarLog = LinklyJsonLog.Build(
+            "test",
+            "transaction",
+            "response",
+            details: new { TxnRef = "260601120001" });
+        using var scalarDocument = JsonDocument.Parse(scalarLog);
+
+        Assert.Equal(
+            "260601120001",
+            scalarDocument.RootElement.GetProperty("details").GetProperty("txnRef").GetString());
+
+        var compoundLog = LinklyJsonLog.Build(
+            "test",
+            "transaction",
+            "response",
+            details: new { TxnRef = "123456789012 PAN 4111111111111111" });
+
+        Assert.DoesNotContain("4111111111111111", compoundLog, StringComparison.Ordinal);
+        Assert.Contains("****1111", compoundLog, StringComparison.Ordinal);
+        Assert.Equal("<redacted>", LinklyJsonLog.MaskCardNumberForLog("123"));
     }
 
     [Theory]
@@ -307,6 +397,101 @@ public sealed class LinklyCloudApiClientTests
 
         Assert.Equal("session-1", result.SessionId);
         Assert.Equal(LinklyCloudTransactionOutcome.NotSubmitted, result.Outcome);
+    }
+
+    [Fact]
+    public async Task SendSettlementAsync_posts_official_settlement_fields_and_parses_receipt()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            capturedRequest = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {
+                  "SessionId": "settlement-1",
+                  "Response": {
+                    "Success": true,
+                    "ResponseCode": "00",
+                    "ResponseText": "SETTLED",
+                    "SettlementData": "TOTAL=10.00",
+                    "ReceiptText": ["SETTLEMENT", "TOTAL $10.00"]
+                  }
+                }
+                """);
+        })));
+
+        var result = await client.SendSettlementAsync(CreateCloudSettings(), "bearer-token", "settlement-1");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("TOTAL=10.00", result.SettlementData);
+        Assert.Equal(["SETTLEMENT" + Environment.NewLine + "TOTAL $10.00"], result.ReceiptTexts);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(HttpMethod.Post, capturedRequest!.Method);
+        Assert.Equal("https://rest.example/v1/sessions/settlement-1/settlement?async=false", capturedRequest.RequestUri!.AbsoluteUri);
+        var body = await capturedRequest.Content!.ReadAsStringAsync();
+        Assert.Equal("00", ReadNestedJsonString(body, "Request", "Merchant"));
+        Assert.Equal("00", ReadNestedJsonString(body, "Request", "Application"));
+        Assert.Equal("S", ReadNestedJsonString(body, "Request", "SettlementType"));
+        Assert.Equal("7", ReadNestedJsonString(body, "Request", "ReceiptAutoPrint"));
+        Assert.Equal("0", ReadNestedJsonString(body, "Request", "CutReceipt"));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task SendSettlementAsync_treats_uncertain_http_status_as_unknown(HttpStatusCode statusCode)
+    {
+        var requestCount = 0;
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            requestCount++;
+            return TextResponse(statusCode, string.Empty);
+        })));
+
+        var result = await client.SendSettlementAsync(CreateCloudSettings(), "bearer-token", "settlement-1");
+
+        Assert.Equal("settlement-1", result.SessionId);
+        Assert.Equal(LinklyCloudSettlementOutcome.Unknown, result.Outcome);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task SendSettlementAsync_preserves_definitive_4xx_status(HttpStatusCode statusCode)
+    {
+        var requestCount = 0;
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            requestCount++;
+            return TextResponse(statusCode, string.Empty);
+        })));
+
+        var exception = await Assert.ThrowsAsync<LinklyCloudApiException>(() =>
+            client.SendSettlementAsync(CreateCloudSettings(), "bearer-token", "settlement-1"));
+
+        Assert.Equal(statusCode, exception.StatusCode);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task SendSettlementAsync_treats_http_exception_as_unknown()
+    {
+        var requestCount = 0;
+        var client = new LinklyCloudApiClient(new HttpClient(new StubHttpMessageHandler(_ =>
+        {
+            requestCount++;
+            throw new HttpRequestException("connection lost");
+        })));
+
+        var result = await client.SendSettlementAsync(CreateCloudSettings(), "bearer-token", "settlement-1");
+
+        Assert.Equal(LinklyCloudSettlementOutcome.Unknown, result.Outcome);
+        Assert.Equal(1, requestCount);
     }
 
     [Fact]

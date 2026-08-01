@@ -38,6 +38,31 @@ public interface ILinklyBackendTerminalClient
         string? originalReference,
         CancellationToken cancellationToken = default);
 
+    Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklySettlementResult(
+            false,
+            "Linkly settlement is not supported by this backend terminal client."));
+
+    Task<LinklyCloudBackendSessionResponse?> GetResumableSettlementAsync(
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<LinklyCloudBackendSessionResponse?>(null);
+
+    Task AcknowledgeSettlementAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    Task MarkSettlementReceiptPrintedAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
     Task<LinklyCloudBackendSessionResponse?> GetResumableSessionAsync(
         CardTerminalSettings settings,
         CancellationToken cancellationToken = default);
@@ -74,6 +99,8 @@ public sealed class LinklyBackendTerminalClient(
     ILinklyBankReceiptPrinter? bankReceiptPrinter = null) : ILinklyBackendTerminalClient
 {
     private const string ProcessorName = "ANZ";
+    private const string CloudBackendInvalidRequestErrorCode = "LINKLY_CLOUD_BACKEND_REQUEST_INVALID";
+    private const string CloudBackendActiveOperationErrorCode = "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION";
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -223,11 +250,125 @@ public sealed class LinklyBackendTerminalClient(
             : await RunAsync("R", amount, session, settings, refundReference, cancellationToken);
     }
 
+    public async Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new LinklySettlementResult(
+                false,
+                "ANZ Linkly settlement was cancelled.",
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_businessWait);
+        LinklyCloudBackendSessionResponse? status = null;
+        var settlementStartRequested = false;
+        var submitted = false;
+        try
+        {
+            status = await GetResumableSettlementAsync(settings, timeoutCts.Token);
+            if (status is null)
+            {
+                settlementStartRequested = true;
+                status = await StartSettlementAsync(
+                    new LinklyCloudBackendSettlementRequest(settings.Environment.ToString()),
+                    timeoutCts.Token);
+                submitted = true;
+            }
+            else
+            {
+                // 已存在的未完成结算必须继续查询同一 session，禁止新建或重发结算请求。
+                submitted = true;
+            }
+
+            while (!IsSettlementFinal(status))
+            {
+                await DelayAsync(_pollInterval, timeoutCts.Token);
+                status = await GetSettlementStatusAsync(settings, status.SessionId, timeoutCts.Token);
+            }
+
+            var succeeded = !IsSettlementFailureStatus(status.Status) &&
+                IsSuccessfulSettlement(status.OperationSuccess, status.ResponseCode);
+            return new LinklySettlementResult(
+                succeeded,
+                FormatSettlementMessage(status, succeeded),
+                status.SessionId,
+                NormalizeOptional(status.ResponseCode),
+                NormalizeOptional(status.ResponseText),
+                NormalizeOptional(status.SettlementData),
+                status.SettlementReceiptTexts,
+                ProviderSubmissionState: ProviderSubmissionState.Submitted);
+        }
+        catch (OperationCanceledException) when (settlementStartRequested || submitted)
+        {
+            return SettlementUnknown(status?.SessionId);
+        }
+        catch (LinklyBackendHttpException ex) when (
+            status is null &&
+            IsDefinitiveSettlementStartRejection(ex))
+        {
+            // 仅后端的显式错误码可证明尚未创建 settlement session；任意 4xx 都不能推断为未提交。
+            Log($"settlement rejected before submit http={(int)ex.HttpStatus} code={LogValue(ex.ErrorCode)}");
+            if (string.Equals(ex.ErrorCode, CloudBackendActiveOperationErrorCode, StringComparison.Ordinal))
+            {
+                LinklyCloudBackendSessionResponse? activeStatus = null;
+                try
+                {
+                    activeStatus = await GetActiveSessionAsync(settings, timeoutCts.Token);
+                }
+                catch (Exception activeLookupException) when (activeLookupException is HttpRequestException or JsonException)
+                {
+                    Log($"active session lookup after settlement conflict failed error={activeLookupException.GetType().Name}");
+                }
+
+                return RejectActiveSessionForNewSettlement(activeStatus, ex.Message);
+            }
+
+            return new LinklySettlementResult(
+                false,
+                ex.Message,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (Exception ex) when ((settlementStartRequested || submitted) && (ex is LinklyBackendHttpException or HttpRequestException or JsonException))
+        {
+            Log($"settlement unknown sessionId={LogValue(status?.SessionId)} error={ex.GetType().Name}");
+            return SettlementUnknown(status?.SessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            return new LinklySettlementResult(
+                false,
+                cancellationToken.IsCancellationRequested ? "ANZ Linkly settlement was cancelled." : "ANZ Linkly settlement timed out.",
+                status?.SessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (Exception ex) when (ex is LinklyBackendHttpException or HttpRequestException or JsonException)
+        {
+            Log($"settlement failed before submit error={ex.GetType().Name}");
+            return new LinklySettlementResult(
+                false,
+                ex.Message,
+                status?.SessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+    }
+
     public Task<LinklyCloudBackendSessionResponse?> GetResumableSessionAsync(
         CardTerminalSettings settings,
         CancellationToken cancellationToken = default)
     {
         return GetResumableSessionCoreAsync(settings, cancellationToken);
+    }
+
+    public Task<LinklyCloudBackendSessionResponse?> GetResumableSettlementAsync(
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        return GetResumableSettlementCoreAsync(settings, cancellationToken);
     }
 
     public Task<LinklyCloudBackendSessionResponse> RecoverSessionAsync(
@@ -504,12 +645,17 @@ public sealed class LinklyBackendTerminalClient(
         LinklyCloudBackendSessionResponse activeStatus,
         CancellationToken cancellationToken)
     {
-        var message = T(
-            "linkly.backend.activeSessionRequiresRecovery",
-            "Current terminal already has an unfinished card transaction. Recover the previous transaction or ask a supervisor to confirm Linkly before starting a new payment.");
+        var activeOperation = IsSettlementOperation(activeStatus) ? "settlement" : "card transaction";
+        var message = IsSettlementOperation(activeStatus)
+            ? T(
+                "linkly.backend.activeSettlementRequiresRecovery",
+                "Current terminal already has an unfinished Linkly settlement. Resolve that settlement before starting a new card payment.")
+            : T(
+                "linkly.backend.activeSessionRequiresRecovery",
+                "Current terminal already has an unfinished card transaction. Recover the previous transaction or ask a supervisor to confirm Linkly before starting a new payment.");
         Log(
             $"active session rejected for new payment sessionId={activeStatus.SessionId} " +
-            $"txnRef={LogValue(activeStatus.TxnRef)} status={activeStatus.Status}");
+            $"operation={activeOperation} txnRef={LogValue(activeStatus.TxnRef)} status={activeStatus.Status}");
         await PresentFinalFailureAsync(activeStatus.SessionId, message, cancellationToken);
         return new PaymentAuthorizationResult(
             false,
@@ -531,6 +677,42 @@ public sealed class LinklyBackendTerminalClient(
     private static bool IsBackendStartRejectedBeforeSession(LinklyBackendHttpException ex)
     {
         return ex.HttpStatus is HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity;
+    }
+
+    private static bool IsDefinitiveSettlementStartRejection(LinklyBackendHttpException ex)
+    {
+        return ex.HttpStatus is HttpStatusCode.BadRequest or HttpStatusCode.Conflict &&
+            (string.Equals(ex.ErrorCode, CloudBackendInvalidRequestErrorCode, StringComparison.Ordinal) ||
+             string.Equals(ex.ErrorCode, CloudBackendActiveOperationErrorCode, StringComparison.Ordinal));
+    }
+
+    private LinklySettlementResult RejectActiveSessionForNewSettlement(
+        LinklyCloudBackendSessionResponse? activeStatus,
+        string fallbackMessage)
+    {
+        var message = activeStatus is not null && !IsSettlementOperation(activeStatus)
+            ? T(
+                "linkly.backend.activeTransactionBlocksSettlement",
+                "Current terminal already has an unfinished card transaction. Recover it before starting a Linkly settlement.")
+            : activeStatus is not null
+                ? T(
+                    "linkly.backend.activeSettlementRequiresRecovery",
+                    "Current terminal already has an unfinished Linkly settlement. Resolve it before starting another settlement.")
+                : string.IsNullOrWhiteSpace(fallbackMessage)
+                    ? T(
+                        "linkly.backend.activeSessionUnavailable",
+                        "Current terminal has an unfinished Linkly operation. Try again later.")
+                    : fallbackMessage;
+        Log($"active session rejected for settlement operation={activeStatus?.OperationType ?? "unknown"} sessionId={activeStatus?.SessionId ?? "<null>"}");
+        return new LinklySettlementResult(
+            false,
+            message,
+            ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+    }
+
+    private static bool IsSettlementOperation(LinklyCloudBackendSessionResponse status)
+    {
+        return string.Equals(status.OperationType, "Settlement", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<BackendReadinessResult> CheckBackendReadinessAsync(
@@ -599,6 +781,42 @@ public sealed class LinklyBackendTerminalClient(
         return string.IsNullOrWhiteSpace(detail)
             ? guidance
             : $"{detail} {guidance}";
+    }
+
+    private static bool IsSettlementFinal(LinklyCloudBackendSessionResponse status)
+    {
+        if (string.Equals(status.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
+            IsCancelledStatus(status.Status))
+        {
+            return true;
+        }
+
+        // Settlement 完成通知可能先于 Type=S 回单到达；回单可用前不能确认 session，
+        // 否则持久化/ack 后将永久失去需要打印的结算单。
+        return status.OperationSuccess.HasValue &&
+            (status.SettlementReceiptTexts ?? []).Any(receipt => !string.IsNullOrWhiteSpace(receipt));
+    }
+
+    private static string FormatSettlementMessage(
+        LinklyCloudBackendSessionResponse status,
+        bool succeeded)
+    {
+        var text = NormalizeOptional(status.ResponseText);
+        var code = NormalizeOptional(status.ResponseCode);
+        var fallback = succeeded
+            ? "ANZ Linkly settlement completed."
+            : "ANZ Linkly settlement failed.";
+        return code is null ? text ?? fallback : $"{text ?? fallback} ({code})";
+    }
+
+    private static LinklySettlementResult SettlementUnknown(string? sessionId)
+    {
+        return new LinklySettlementResult(
+            false,
+            "ANZ Linkly settlement result is unknown. Confirm the Linkly settlement status before trying again.",
+            sessionId,
+            ResultUnknown: true);
     }
 
     private async Task<LinklyBackendPollResult> PollUntilFinalAsync(
@@ -1291,6 +1509,34 @@ public sealed class LinklyBackendTerminalClient(
         return status;
     }
 
+    private async Task<LinklyCloudBackendSessionResponse> StartSettlementAsync(
+        LinklyCloudBackendSettlementRequest request,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        const string relativeUrl = "api/v1/linkly/cloud-backend/settlements";
+        LogHttpRequest(
+            "start settlement",
+            HttpMethod.Post,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            txnRef: null,
+            bodyJson: SerializeDebugJson(request));
+        using var response = await httpClient.PostAsJsonAsync(
+            relativeUrl,
+            request,
+            JsonOptions,
+            cancellationToken);
+        return await ReadApiResultAsync(
+            response,
+            "start settlement",
+            HttpMethod.Post,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            stopwatch,
+            cancellationToken);
+    }
+
     private async Task<LinklyCloudBackendSessionResponse?> GetActiveSessionAsync(
         CardTerminalSettings settings,
         CancellationToken cancellationToken)
@@ -1377,6 +1623,46 @@ public sealed class LinklyBackendTerminalClient(
         return status;
     }
 
+    private async Task<LinklyCloudBackendSessionResponse?> GetResumableSettlementCoreAsync(
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var relativeUrl = $"api/v1/linkly/cloud-backend/settlements/resumable?environment={Uri.EscapeDataString(settings.Environment.ToString())}";
+        LogHttpRequest(
+            "resumable settlement",
+            HttpMethod.Get,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            txnRef: null,
+            bodyJson: null);
+        using var response = await httpClient.GetAsync(relativeUrl, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            stopwatch.Stop();
+            LogHttpResponse(
+                "resumable settlement",
+                HttpMethod.Get,
+                FormatRequestUrl(relativeUrl),
+                response.StatusCode,
+                stopwatch.ElapsedMilliseconds,
+                txnType: "S",
+                txnRef: null,
+                body);
+            return null;
+        }
+
+        return await ReadApiResultAsync(
+            response,
+            "resumable settlement",
+            HttpMethod.Get,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            stopwatch,
+            cancellationToken);
+    }
+
     private async Task<LinklyCloudBackendSessionResponse> GetStatusAsync(
         CardTerminalSettings settings,
         string sessionId,
@@ -1403,6 +1689,62 @@ public sealed class LinklyBackendTerminalClient(
             stopwatch,
             cancellationToken);
         return status;
+    }
+
+    private async Task<LinklyCloudBackendSessionResponse> GetSettlementStatusAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var relativeUrl = $"api/v1/linkly/cloud-backend/settlements/{Uri.EscapeDataString(sessionId)}/status?environment={Uri.EscapeDataString(settings.Environment.ToString())}";
+        LogHttpRequest(
+            "settlement status",
+            HttpMethod.Get,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            txnRef: null,
+            bodyJson: null);
+        using var response = await httpClient.GetAsync(relativeUrl, cancellationToken);
+        return await ReadApiResultAsync(
+            response,
+            "settlement status",
+            HttpMethod.Get,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            stopwatch,
+            cancellationToken);
+    }
+
+    private async Task PostSettlementSessionMarkerAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        string operation,
+        object request,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var relativeUrl = $"api/v1/linkly/cloud-backend/settlements/{Uri.EscapeDataString(sessionId)}/{operation}";
+        LogHttpRequest(
+            $"settlement {operation}",
+            HttpMethod.Post,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            txnRef: null,
+            bodyJson: SerializeDebugJson(request));
+        using var response = await httpClient.PostAsJsonAsync(
+            relativeUrl,
+            request,
+            JsonOptions,
+            cancellationToken);
+        _ = await ReadApiResultAsync(
+            response,
+            $"settlement {operation}",
+            HttpMethod.Post,
+            FormatRequestUrl(relativeUrl),
+            txnType: "S",
+            stopwatch,
+            cancellationToken);
     }
 
     private async Task<LinklyCloudBackendSessionResponse> RecoverAsync(
@@ -1547,14 +1889,16 @@ public sealed class LinklyBackendTerminalClient(
         {
             throw new LinklyBackendHttpException(
                 result?.Message ?? $"Linkly backend request failed with HTTP {(int)response.StatusCode}.",
-                response.StatusCode);
+                response.StatusCode,
+                result?.ErrorCode);
         }
 
         if (result?.Success != true || result.Data is null)
         {
             throw new LinklyBackendHttpException(
                 result?.Message ?? "Linkly backend returned a failure response.",
-                response.StatusCode);
+                response.StatusCode,
+                result?.ErrorCode);
         }
 
         if (string.IsNullOrWhiteSpace(result.Data.SessionId))
@@ -2321,6 +2665,32 @@ public sealed class LinklyBackendTerminalClient(
             HasOfficialPendingSuccess(status);
     }
 
+    public async Task AcknowledgeSettlementAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await PostSettlementSessionMarkerAsync(
+            settings,
+            sessionId,
+            "acknowledge",
+            new LinklyCloudBackendAcknowledgeRequest(settings.Environment.ToString()),
+            cancellationToken);
+    }
+
+    public async Task MarkSettlementReceiptPrintedAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await PostSettlementSessionMarkerAsync(
+            settings,
+            sessionId,
+            "receipt/printed",
+            new LinklyCloudBackendMarkReceiptPrintedRequest(settings.Environment.ToString()),
+            cancellationToken);
+    }
+
     private static bool HasResolvedCompletedOutcome(LinklyCloudBackendSessionResponse status)
     {
         if (!string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase))
@@ -2683,19 +3053,7 @@ public sealed class LinklyBackendTerminalClient(
 
     private static string? MaskCardNumber(string? pan)
     {
-        var value = NormalizeOptional(pan);
-        if (value is null)
-        {
-            return null;
-        }
-
-        if (value.Contains('*', StringComparison.Ordinal) || value.Contains('X', StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        var digits = new string(value.Where(char.IsDigit).ToArray());
-        return digits.Length <= 4 ? digits : $"****{digits[^4..]}";
+        return LinklyReceiptTextSanitizer.SanitizeCardNumber(pan);
     }
 
     private static string? NormalizeOptional(string? value)
@@ -2957,6 +3315,14 @@ public sealed class LinklyBackendTerminalClient(
 
     private static object? RedactLogJsonElement(JsonElement element, string? propertyName)
     {
+        if (IsMaskedCardLogProperty(propertyName))
+        {
+            var cardNumber = element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : element.GetRawText();
+            return LinklyJsonLog.MaskCardNumberForLog(cardNumber);
+        }
+
         if (IsSensitiveLogProperty(propertyName))
         {
             return DescribeSensitiveLogValue(element);
@@ -2996,10 +3362,19 @@ public sealed class LinklyBackendTerminalClient(
             string.Equals(propertyName, "graphicCode", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(propertyName, "inputType", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(propertyName, "analysisData", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(propertyName, "cardNumber", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(propertyName, "accountNumber", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(propertyName, "pan", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "token", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accessToken", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "authorization", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "secret", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(propertyName, "track2", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsMaskedCardLogProperty(string? propertyName)
+    {
+        return string.Equals(propertyName, "cardNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "maskedCardNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accountNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "pan", StringComparison.OrdinalIgnoreCase);
     }
 
     private static object DescribeSensitiveLogValue(JsonElement element)
@@ -3061,8 +3436,11 @@ public sealed class LinklyBackendTerminalClient(
 
     private sealed class LinklyBackendHttpException(
         string message,
-        HttpStatusCode httpStatus) : HttpRequestException(message)
+        HttpStatusCode httpStatus,
+        string? errorCode = null) : HttpRequestException(message)
     {
         public HttpStatusCode HttpStatus { get; } = httpStatus;
+
+        public string? ErrorCode { get; } = errorCode;
     }
 }

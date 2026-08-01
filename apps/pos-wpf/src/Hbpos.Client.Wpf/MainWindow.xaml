@@ -409,6 +409,22 @@
                                                                   Margin="0,0,10,0" />
                                                         <StackPanel Grid.Column="1">
                                                             <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                                           Margin="0,0,6,0">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Text" Value="{Binding EntityType}" />
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding EntityType}" Value="Order">
+                                                                                    <Setter Property="Text" Value="{loc:Loc shell.sync.entity.order}" />
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding EntityType}" Value="LinklySettlement">
+                                                                                    <Setter Property="Text" Value="{loc:Loc shell.sync.entity.linklySettlement}" />
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
                                                                 <TextBlock Text="{Binding ShortEntityId}" FontWeight="Bold" />
                                                                 <TextBlock Text="{Binding Status, StringFormat='  [{0}]'}"
                                                                            Foreground="{StaticResource PosPrimaryBrush}"

@@ -1,6 +1,7 @@
 using System.Globalization;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using PCEFTPOS.EFTClient.IPInterface;
 
@@ -13,6 +14,14 @@ public interface ILinklyTerminalClient
         int port,
         TimeSpan timeout,
         CancellationToken cancellationToken = default);
+
+    Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklySettlementResult(
+            false,
+            "Linkly settlement is not supported by this terminal client."));
 
     Task<PaymentAuthorizationResult> PurchaseAsync(
         decimal amount,
@@ -70,6 +79,17 @@ public sealed record LinklyConnectionTestResult(
     bool Succeeded,
     string? Message = null,
     LinklyStatusTestDetails? StatusTest = null);
+
+public sealed record LinklySettlementResult(
+    bool Succeeded,
+    string Message,
+    string? SessionId = null,
+    string? ResponseCode = null,
+    string? ResponseText = null,
+    string? SettlementData = null,
+    IReadOnlyList<string>? ReceiptTexts = null,
+    bool ResultUnknown = false,
+    ProviderSubmissionState ProviderSubmissionState = ProviderSubmissionState.Unknown);
 
 public interface ILinklyEftClientFactory
 {
@@ -396,6 +416,115 @@ public sealed class LinklyTerminalClient(
             settings,
             originalReference,
             cancellationToken);
+    }
+
+    public async Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new LinklySettlementResult(
+                false,
+                T("linkly.local.cancelled", CancelledMessage),
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        using var timeoutCts = CreateBusinessWaitTimeoutToken(cancellationToken);
+        var operationId = BuildTxnRef(session);
+        var request = new EFTSettlementRequest
+        {
+            Merchant = Merchant,
+            Application = TerminalApplication.EFTPOS,
+            SettlementType = SettlementType.Settlement,
+            ReceiptAutoPrint = ReceiptPrintModeType.POSPrinter
+        };
+        var receipts = new List<string>();
+        using var client = clientFactory.Create();
+        var requestSent = false;
+
+        try
+        {
+            var connectRequest = CreateConnectRequest(settings.LinklyHost, settings.LinklyPort);
+            LogJson("settlement", "connect-start", "request", settings.Environment, operationId, request: connectRequest);
+            var connected = await client.ConnectAsync(settings.LinklyHost, settings.LinklyPort, useSsl: false, useKeepAlive: false)
+                .WaitAsync(timeoutCts.Token);
+            if (!connected)
+            {
+                LogJson("settlement", "failed", "response", settings.Environment, operationId, success: false, reason: "connection-failed");
+                return new LinklySettlementResult(
+                    false,
+                    T("linkly.local.connectionFailed", "ANZ Linkly EFT-Client connection failed."),
+                    ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+            }
+
+            LogJson("settlement", "sent", "request", settings.Environment, operationId, request: request);
+            if (!await client.WriteRequestAsync(request).WaitAsync(timeoutCts.Token))
+            {
+                LogJson("settlement", "failed", "response", settings.Environment, operationId, success: false, reason: "write-request-failed", request: request);
+                return new LinklySettlementResult(
+                    false,
+                    T("linkly.local.requestSendFailed", "ANZ Linkly settlement request could not be sent."),
+                    ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+            }
+
+            requestSent = true;
+            var response = await ReadSettlementResponseAsync(client, receipts, timeoutCts.Token, settings.Environment, operationId);
+            var succeeded = response.Success && string.Equals(response.ResponseCode, "00", StringComparison.OrdinalIgnoreCase);
+            var message = succeeded
+                ? NormalizeOptional(response.ResponseText) ?? "ANZ Linkly settlement completed."
+                : FormatResponseMessage(response.ResponseText, response.ResponseCode);
+            return new LinklySettlementResult(
+                succeeded,
+                message,
+                operationId,
+                NormalizeOptional(response.ResponseCode),
+                NormalizeOptional(response.ResponseText),
+                NormalizeOptional(response.SettlementData),
+                receipts,
+                ProviderSubmissionState: ProviderSubmissionState.Submitted);
+        }
+        catch (OperationCanceledException) when (requestSent)
+        {
+            LogJson("settlement", "unknown", "response", settings.Environment, operationId, success: false, reason: cancellationToken.IsCancellationRequested ? "caller-cancelled-after-submit" : "timeout-after-submit", request: request);
+            return new LinklySettlementResult(
+                false,
+                T("linkly.local.settlementOutcomeUnknown", "ANZ Linkly settlement outcome could not be confirmed."),
+                operationId,
+                ResultUnknown: true,
+                ProviderSubmissionState: ProviderSubmissionState.Unknown);
+        }
+        catch (Exception ex) when (requestSent)
+        {
+            LogJson("settlement", "unknown", "response", settings.Environment, operationId, success: false, reason: ex.GetType().Name, request: request, details: new { ex.Message });
+            return new LinklySettlementResult(
+                false,
+                T("linkly.local.settlementOutcomeUnknown", "ANZ Linkly settlement outcome could not be confirmed."),
+                operationId,
+                ResultUnknown: true,
+                ProviderSubmissionState: ProviderSubmissionState.Unknown);
+        }
+        catch (OperationCanceledException)
+        {
+            return new LinklySettlementResult(false, cancellationToken.IsCancellationRequested
+                ? T("linkly.local.cancelled", CancelledMessage)
+                : T("linkly.local.timeout", "ANZ Linkly settlement timed out."),
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (Exception ex)
+        {
+            LogJson("settlement", "failed", "response", settings.Environment, operationId, success: false, reason: ex.GetType().Name, request: request, details: new { ex.Message });
+            return new LinklySettlementResult(false, string.Format(
+                CultureInfo.CurrentCulture,
+                T("linkly.local.transactionFailed", "ANZ Linkly settlement failed: {0}"),
+                ex.Message),
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        finally
+        {
+            SafeDisconnect(client, operationId);
+        }
     }
 
     public Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
@@ -1047,6 +1176,34 @@ public sealed class LinklyTerminalClient(
             JoinReceipts(receipts));
     }
 
+    private async Task<EFTSettlementResponse> ReadSettlementResponseAsync(
+        ILinklyEftClient client,
+        ICollection<string> receipts,
+        CancellationToken cancellationToken,
+        CardTerminalEnvironment environment,
+        string operationId)
+    {
+        while (true)
+        {
+            var response = await client.ReadResponseAsync(cancellationToken);
+            switch (response)
+            {
+                case EFTReceiptResponse receipt when receipt.Type == ReceiptType.Settlement:
+                    CaptureReceipt(receipts, receipt);
+                    LogJson("settlement-receipt", "received", "response", environment, operationId, response: receipt);
+                    break;
+                case EFTReceiptResponse receipt:
+                    LogJson("settlement-receipt", "ignored", "response", environment, operationId, reason: "non-settlement-receipt", response: receipt);
+                    break;
+                case EFTSettlementResponse settlement:
+                    LogJson("settlement", "received", "response", environment, operationId, success: settlement.Success, response: settlement);
+                    return settlement;
+                case null:
+                    throw new InvalidOperationException(T("linkly.local.emptyResponse", "ANZ Linkly returned an empty response."));
+            }
+        }
+    }
+
     private static bool HasExplicitLinklyRejection(string? responseCode, string? responseText)
     {
         if (string.Equals(responseCode, "05", StringComparison.OrdinalIgnoreCase) ||
@@ -1159,21 +1316,7 @@ public sealed class LinklyTerminalClient(
 
     private static string? MaskCardNumber(string? pan)
     {
-        var value = NormalizeOptional(pan);
-        if (value is null)
-        {
-            return null;
-        }
-
-        if (value.Contains('*', StringComparison.Ordinal) || value.Contains('X', StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        var digits = new string(value.Where(char.IsDigit).ToArray());
-        return digits.Length <= 4
-            ? digits
-            : $"****{digits[^4..]}";
+        return LinklyReceiptTextSanitizer.SanitizeCardNumber(pan);
     }
 
     private static string? JoinReceipts(IReadOnlyList<string> receipts)
@@ -1257,6 +1400,14 @@ public sealed class LinklyTerminalClient(
                 request.Merchant,
                 request.ReceiptAutoPrint
             },
+            EFTSettlementRequest request => new
+            {
+                request.SettlementType,
+                request.Application,
+                request.Merchant,
+                request.ReceiptAutoPrint,
+                request.CutReceipt
+            },
             EFTGetLastTransactionRequest request => new
             {
                 request.TxnRef,
@@ -1285,6 +1436,14 @@ public sealed class LinklyTerminalClient(
                 response.Stan,
                 response.CardName,
                 response.DateSettlement
+            },
+            EFTSettlementResponse response => new
+            {
+                response.Success,
+                response.ResponseCode,
+                response.ResponseText,
+                response.Merchant,
+                response.SettlementData
             },
             EFTGetLastTransactionResponse response => new
             {

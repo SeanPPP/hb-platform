@@ -1081,7 +1081,7 @@
     <value>同步中心</value>
   </data>
   <data name="shell.sync.orderStatus" xml:space="preserve">
-    <value>订单 {0}/{1}/{2}</value>
+    <value>上传 {0}/{1}/{2}</value>
   </data>
   <data name="shell.sync.detailTitle" xml:space="preserve">
     <value>{0} 个上传任务</value>
@@ -1098,11 +1098,11 @@
   <data name="shell.sync.retryAll" xml:space="preserve">
     <value>全部重试</value>
   </data>
-  <data name="shell.sync.ordersTab" xml:space="preserve"><value>订单</value></data>
+  <data name="shell.sync.ordersTab" xml:space="preserve"><value>上传任务</value></data>
   <data name="shell.sync.auditTab" xml:space="preserve"><value>审计日志</value></data>
   <data name="shell.sync.selectAll" xml:space="preserve"><value>全选可重试项</value></data>
   <data name="shell.sync.retrySelected" xml:space="preserve"><value>重传所选</value></data>
-  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>正在重传所选订单...</value></data>
+  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>正在重传所选上传任务...</value></data>
   <data name="shell.sync.auditRetryQueued" xml:space="preserve"><value>已将 {0} 条审计记录加入重试。</value></data>
   <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>审计日志刷新失败：{0}</value></data>
   <data name="history.reuploadSelected" xml:space="preserve"><value>重传所选订单</value></data>
@@ -1118,20 +1118,24 @@
   <data name="history.reuploadRangeInterrupted" xml:space="preserve"><value>服务器地址切换期间已停止日期范围重传：尝试 {0}，成功 {1}，已启动批次中未完成 {2}。后续批次未启动，已入队订单会在切换后继续上传。</value></data>
   <data name="history.reuploadRangeFailed" xml:space="preserve"><value>日期范围重传已停止：{0}</value></data>
   <data name="shell.sync.retryingOne" xml:space="preserve">
-    <value>正在重试订单上传...</value>
+    <value>正在重试上传...</value>
   </data>
   <data name="shell.sync.retryingAll" xml:space="preserve">
-    <value>正在重试订单上传...</value>
+    <value>正在重试上传...</value>
   </data>
   <data name="shell.sync.retryCompleted" xml:space="preserve">
-    <value>订单上传重试完成：成功 {0}，失败 {1}。</value>
+    <value>上传重试完成：成功 {0}，未完成 {1}。</value>
   </data>
   <data name="shell.sync.retryFailed" xml:space="preserve">
-    <value>订单上传重试失败：{0}</value>
+    <value>上传重试失败：{0}</value>
   </data>
   <data name="shell.sync.caption" xml:space="preserve">
-    <value>查看并重传订单或操作审计日志。</value>
+    <value>查看并重传订单、Linkly 结算或操作审计日志。</value>
   </data>
+  <data name="shell.sync.entity.order" xml:space="preserve"><value>订单</value></data>
+  <data name="shell.sync.entity.linklySettlement" xml:space="preserve"><value>Linkly 结算</value></data>
+  <data name="shell.sync.settlementError" xml:space="preserve"><value>Linkly 结算：{0}</value></data>
+  <data name="shell.sync.settlementLoadFailed" xml:space="preserve"><value>Linkly 结算刷新失败：{0}</value></data>
   <data name="shell.sync.created" xml:space="preserve">
     <value>创建时间：</value>
   </data>
@@ -1915,6 +1919,51 @@
   <data name="dailyClose.status.dateChanged" xml:space="preserve">
     <value>营业日期已切换为 {0:d}。</value>
   </data>
+  <data name="dailyClose.linklySettlement.tab" xml:space="preserve"><value>Linkly 结算</value></data>
+  <data name="dailyClose.linklySettlement.title" xml:space="preserve"><value>Linkly 结算记录</value></data>
+  <data name="dailyClose.linklySettlement.hint" xml:space="preserve"><value>仅当前营业日期可以结算；历史记录仅支持重打。</value></data>
+  <data name="dailyClose.linklySettlement.refresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="dailyClose.linklySettlement.settleAndPrint" xml:space="preserve"><value>结算并打印</value></data>
+  <data name="dailyClose.linklySettlement.time" xml:space="preserve"><value>时间</value></data>
+  <data name="dailyClose.linklySettlement.mode" xml:space="preserve"><value>模式</value></data>
+  <data name="dailyClose.linklySettlement.result" xml:space="preserve"><value>结果</value></data>
+  <data name="dailyClose.linklySettlement.receipt" xml:space="preserve"><value>回单</value></data>
+  <data name="dailyClose.linklySettlement.printCount" xml:space="preserve"><value>打印次数</value></data>
+  <data name="dailyClose.linklySettlement.response" xml:space="preserve"><value>响应</value></data>
+  <data name="dailyClose.linklySettlement.preview" xml:space="preserve"><value>银行结算单预览</value></data>
+  <data name="dailyClose.linklySettlement.reprintSelected" xml:space="preserve"><value>重打所选结算单</value></data>
+  <data name="dailyClose.linklySettlement.sending" xml:space="preserve"><value>正在发送 Linkly 结算...</value></data>
+  <data name="dailyClose.linklySettlement.unknown" xml:space="preserve"><value>结算结果未知，请勿再次提交。</value></data>
+  <data name="dailyClose.linklySettlement.reusedFinalEvidence" xml:space="preserve"><value>已保留既有的最终结算记录；如有需要请手动重打。</value></data>
+  <data name="dailyClose.linklySettlement.blocked" xml:space="preserve"><value>当前营业日期已有未确认的 Linkly 结算，不能再次提交。</value></data>
+  <data name="dailyClose.linklySettlement.failedNoReceipt" xml:space="preserve"><value>结算失败：{0}</value></data>
+  <data name="dailyClose.linklySettlement.failedReceiptPrinted" xml:space="preserve"><value>结算失败，但银行响应回单已打印：{0}</value></data>
+  <data name="dailyClose.linklySettlement.failedPrintFailed" xml:space="preserve"><value>结算失败，且回单打印失败：{0}</value></data>
+  <data name="dailyClose.linklySettlement.noReceipt" xml:space="preserve"><value>结算结果已保存，但没有可打印的银行结算回单。</value></data>
+  <data name="dailyClose.linklySettlement.succeededPrinted" xml:space="preserve"><value>结算已保存并发送到 POS 打印机。</value></data>
+  <data name="dailyClose.linklySettlement.succeededPrintFailed" xml:space="preserve"><value>结算已保存，但打印失败：{0}</value></data>
+  <data name="dailyClose.linklySettlement.historyLoading" xml:space="preserve"><value>正在加载 Linkly 结算记录...</value></data>
+  <data name="dailyClose.linklySettlement.historyEmpty" xml:space="preserve"><value>当前营业日期没有 Linkly 结算记录。</value></data>
+  <data name="dailyClose.linklySettlement.historyLoaded" xml:space="preserve"><value>已加载 {0} 条 Linkly 结算记录。</value></data>
+  <data name="dailyClose.linklySettlement.reprinting" xml:space="preserve"><value>正在重打 Linkly 结算回单...</value></data>
+  <data name="dailyClose.linklySettlement.reprintPrinted" xml:space="preserve"><value>Linkly 结算回单已发送到 POS 打印机。</value></data>
+  <data name="dailyClose.linklySettlement.reprintFailed" xml:space="preserve"><value>Linkly 结算回单重打失败：{0}</value></data>
+  <data name="dailyClose.linklySettlement.submission" xml:space="preserve"><value>提交状态</value></data>
+  <data name="dailyClose.linklySettlement.manual.title" xml:space="preserve"><value>主管人工处理</value></data>
+  <data name="dailyClose.linklySettlement.manual.hint" xml:space="preserve"><value>仅适用于未决的本地直连或云端直连结算；此操作绝不会再次发送结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.succeeded" xml:space="preserve"><value>确认结算成功</value></data>
+  <data name="dailyClose.linklySettlement.manual.failed" xml:space="preserve"><value>确认结算失败</value></data>
+  <data name="dailyClose.linklySettlement.manual.notSubmitted" xml:space="preserve"><value>确认未提交结算</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmRequired" xml:space="preserve"><value>请核对主管结论后再次确认；不会再次发送结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmSucceeded" xml:space="preserve"><value>确认终端结算已成功。此操作仅更新已保存的记录，不会再次发送结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmFailed" xml:space="preserve"><value>确认终端结算已失败。此操作仅更新已保存的记录，不会再次发送结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmNotSubmitted" xml:space="preserve"><value>确认结算请求未提交。此操作仅更新已保存的记录，不会再次发送结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirm" xml:space="preserve"><value>确认结论</value></data>
+  <data name="dailyClose.linklySettlement.manual.cancel" xml:space="preserve"><value>取消</value></data>
+  <data name="dailyClose.linklySettlement.manual.cancelled" xml:space="preserve"><value>主管结论未保存。</value></data>
+  <data name="dailyClose.linklySettlement.manual.resolved" xml:space="preserve"><value>主管结论已保存并进入上传队列；未发送新的结算。</value></data>
+  <data name="dailyClose.linklySettlement.manual.keyboardHint" xml:space="preserve"><value>使用 Tab 聚焦，按 Enter 执行。</value></data>
+  <data name="dailyClose.linklySettlement.manual.automationName" xml:space="preserve"><value>Linkly 结算主管人工处理</value></data>
   <data name="dailyClose.businessDate" xml:space="preserve">
     <value>营业日期</value>
   </data>

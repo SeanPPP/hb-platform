@@ -9,6 +9,13 @@ public interface ILocalSchemaService
 
 public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaService
 {
+    private readonly TaskCompletionSource schemaReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) =>
+        schemaReady.Task.WaitAsync(cancellationToken);
+
+    public void SignalReady() => schemaReady.TrySetResult();
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
@@ -31,6 +38,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         await EnsureLocalInstallmentOperationAttemptColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderLineColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderReturnPaymentCapacityColumnsAsync(connection, cancellationToken);
+        await EnsureLinklySettlementUploadColumnsAsync(connection, cancellationToken);
 
         foreach (var sql in IndexStatements)
         {
@@ -279,6 +287,123 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         {
             await ExecuteAsync(connection, "ALTER TABLE LocalInstallmentOperations ADD COLUMN ApiClaimedAt TEXT NULL;", cancellationToken);
         }
+    }
+
+    private static async Task EnsureLinklySettlementUploadColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var columns = await ReadColumnNamesAsync(connection, "LinklySettlementRecords", cancellationToken);
+        if (!columns.Contains("UploadStatus"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadStatus TEXT NOT NULL DEFAULT 'Pending';", cancellationToken);
+        }
+
+        if (!columns.Contains("PayloadRevision"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN PayloadRevision INTEGER NOT NULL DEFAULT 1;", cancellationToken);
+        }
+
+        if (!columns.Contains("UploadedRevision"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadedRevision INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
+
+        if (!columns.Contains("UploadAttemptCount"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadAttemptCount INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
+
+        if (!columns.Contains("NextUploadAt"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN NextUploadAt TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("LastUploadAttemptAt"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN LastUploadAttemptAt TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("UploadErrorCode"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadErrorCode TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("UploadErrorMessage"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadErrorMessage TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("UploadedAt"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LinklySettlementRecords ADD COLUMN UploadedAt TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("ProviderSubmissionState"))
+        {
+            await ExecuteAsync(
+                connection,
+                "ALTER TABLE LinklySettlementRecords ADD COLUMN ProviderSubmissionState TEXT NOT NULL DEFAULT 'Unknown';",
+                cancellationToken);
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE LinklySettlementRecords
+            SET UploadStatus = 'Pending',
+                PayloadRevision = CASE WHEN PayloadRevision <= 0 THEN 1 ELSE PayloadRevision END,
+                UploadedRevision = CASE WHEN UploadedRevision < 0 THEN 0 ELSE UploadedRevision END
+            WHERE UploadStatus IS NULL OR TRIM(UploadStatus) = '' OR PayloadRevision <= 0 OR UploadedRevision < 0;
+            """,
+            cancellationToken);
+
+        // 旧记录只能依据已经持久化的 provider session 保守判定；没有 session 的记录仍保持 Unknown。
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE LinklySettlementRecords
+            SET ProviderSubmissionState = 'Submitted'
+            WHERE ProviderSessionId IS NOT NULL
+              AND TRIM(ProviderSessionId) <> ''
+              AND ProviderSubmissionState = 'Unknown';
+            """,
+            cancellationToken);
+
+        // 旧客户端在 CloudBackendAsync 启动 provider session 前失败时已写入最终 Failed；这类记录可确定未提交。
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE LinklySettlementRecords
+            SET ProviderSubmissionState = 'NotSubmitted'
+            WHERE ConnectionMode = 'CloudBackendAsync'
+              AND Status = 'Failed'
+              AND ProviderSessionId IS NULL
+              AND ProviderSubmissionState = 'Unknown';
+            """,
+            cancellationToken);
+
+        // 仅修复已知旧版 CloudBackendAsync 预检失败误报，其他 Rejected/Failed 记录不得自动改写。
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE LinklySettlementRecords
+            SET ProviderSubmissionState = 'NotSubmitted',
+                UploadStatus = 'Pending',
+                PayloadRevision = PayloadRevision + 1,
+                UploadAttemptCount = 0,
+                NextUploadAt = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                LastUploadAttemptAt = NULL,
+                UploadErrorCode = NULL,
+                UploadErrorMessage = NULL,
+                UploadedAt = NULL
+            WHERE ConnectionMode = 'CloudBackendAsync'
+              AND Status = 'Failed'
+              AND ProviderSessionId IS NULL
+              AND UploadStatus = 'Rejected'
+              AND UploadErrorCode = 'PROVIDER_SESSION_REQUIRED';
+            """,
+            cancellationToken);
     }
 
     private static async Task EnsureSuspendedOrderLineColumnsAsync(
@@ -749,6 +874,38 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         );
         """,
         """
+        CREATE TABLE IF NOT EXISTS LinklySettlementRecords (
+            SettlementGuid TEXT PRIMARY KEY,
+            StoreCode TEXT NOT NULL,
+            DeviceCode TEXT NOT NULL,
+            BusinessDate TEXT NOT NULL,
+            ConnectionMode TEXT NOT NULL,
+            Environment TEXT NOT NULL,
+            ProviderSessionId TEXT NULL,
+            Status TEXT NOT NULL,
+            ResponseCode TEXT NULL,
+            ResponseText TEXT NULL,
+            SettlementData TEXT NULL,
+            ReceiptTextsJson TEXT NOT NULL,
+            RequestedAt TEXT NOT NULL,
+            CompletedAt TEXT NULL,
+            FirstPrintedAt TEXT NULL,
+            LastPrintedAt TEXT NULL,
+            PrintCount INTEGER NOT NULL DEFAULT 0,
+            LastPrintError TEXT NULL,
+            UploadStatus TEXT NOT NULL DEFAULT 'Pending',
+            PayloadRevision INTEGER NOT NULL DEFAULT 1,
+            UploadedRevision INTEGER NOT NULL DEFAULT 0,
+            UploadAttemptCount INTEGER NOT NULL DEFAULT 0,
+            NextUploadAt TEXT NULL,
+            LastUploadAttemptAt TEXT NULL,
+            UploadErrorCode TEXT NULL,
+            UploadErrorMessage TEXT NULL,
+            UploadedAt TEXT NULL,
+            ProviderSubmissionState TEXT NOT NULL DEFAULT 'Unknown'
+        );
+        """,
+        """
         CREATE TABLE IF NOT EXISTS SyncQueue (
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             EntityId TEXT NOT NULL,
@@ -1006,6 +1163,24 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         """
         CREATE INDEX IF NOT EXISTS IX_LocalDailyCloseCashCounts_DailyCloseGuid
         ON LocalDailyCloseCashCounts (DailyCloseGuid);
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LinklySettlementRecords_ProviderSessionId
+        ON LinklySettlementRecords (ProviderSessionId)
+        WHERE ProviderSessionId IS NOT NULL;
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_LinklySettlementRecords_Store_Device_BusinessDate_Unresolved
+        ON LinklySettlementRecords (StoreCode, DeviceCode, BusinessDate)
+        WHERE Status IN ('Pending', 'Unknown');
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LinklySettlementRecords_Store_Device_BusinessDate_RequestedAt
+        ON LinklySettlementRecords (StoreCode, DeviceCode, BusinessDate, RequestedAt DESC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LinklySettlementRecords_UploadDue
+        ON LinklySettlementRecords (UploadStatus, NextUploadAt, RequestedAt);
         """,
         """
         CREATE INDEX IF NOT EXISTS IX_SuspendedOrders_Store_Status_SuspendedAt

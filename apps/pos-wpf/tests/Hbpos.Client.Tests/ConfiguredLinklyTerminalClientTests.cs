@@ -69,6 +69,52 @@ public sealed class ConfiguredLinklyTerminalClientTests
     }
 
     [Fact]
+    public async Task SettlementAsync_routes_only_configured_backend_mode_without_fallback()
+    {
+        var localFactory = new FakeLinklyEftClientFactory();
+        var cloud = new FakeCloudTerminalClient();
+        var backend = new FakeBackendTerminalClient
+        {
+            SettlementResult = new LinklySettlementResult(
+                false,
+                "Settlement outcome is unknown.",
+                "settlement-1",
+                ResultUnknown: true)
+        };
+        var client = new ConfiguredLinklyTerminalClient(
+            new LinklyTerminalClient(localFactory),
+            cloud,
+            backend);
+
+        var result = await client.SettlementAsync(
+            CreateSession(),
+            CreateSettings(LinklyConnectionMode.CloudBackendAsync,
+                [LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.CloudDirectSync, LinklyConnectionMode.LocalIp]));
+
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(1, backend.SettlementCallCount);
+        Assert.Equal(0, cloud.SettlementCallCount);
+        Assert.Equal(0, localFactory.Client.ConnectCallCount);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_returns_not_submitted_when_backend_adapter_is_unavailable()
+    {
+        var client = new ConfiguredLinklyTerminalClient(
+            new LinklyTerminalClient(new FakeLinklyEftClientFactory()),
+            new FakeCloudTerminalClient());
+
+        var result = await client.SettlementAsync(
+            CreateSession(),
+            CreateSettings(LinklyConnectionMode.CloudBackendAsync));
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Null(result.SessionId);
+        Assert.Equal(ProviderSubmissionState.NotSubmitted, result.ProviderSubmissionState);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_does_not_fallback_when_cloud_backend_communication_fails()
     {
         var localFactory = new FakeLinklyEftClientFactory();
@@ -462,6 +508,11 @@ public sealed class ConfiguredLinklyTerminalClientTests
 
         public int RefundCallCount { get; private set; }
 
+        public int SettlementCallCount { get; private set; }
+
+        public LinklySettlementResult SettlementResult { get; init; } =
+            new(false, "Cloud direct should not be called.");
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalSettings settings,
             string storeCode,
@@ -491,6 +542,15 @@ public sealed class ConfiguredLinklyTerminalClientTests
             RefundCallCount++;
             return Task.FromResult(result ?? new PaymentAuthorizationResult(false, null, "Cloud direct should not be called."));
         }
+
+        public Task<LinklySettlementResult> SettlementAsync(
+            PosSessionState session,
+            CardTerminalSettings settings,
+            CancellationToken cancellationToken = default)
+        {
+            SettlementCallCount++;
+            return Task.FromResult(SettlementResult);
+        }
     }
 
     private sealed class FakeBackendTerminalClient(
@@ -499,6 +559,11 @@ public sealed class ConfiguredLinklyTerminalClientTests
         public int PurchaseCallCount { get; private set; }
 
         public int RefundCallCount { get; private set; }
+
+        public int SettlementCallCount { get; private set; }
+
+        public LinklySettlementResult SettlementResult { get; init; } =
+            new(false, "Backend async should not be called.");
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalEnvironment environment,
@@ -533,6 +598,15 @@ public sealed class ConfiguredLinklyTerminalClientTests
         {
             RefundCallCount++;
             return Task.FromResult(result ?? new PaymentAuthorizationResult(false, null, "Backend async should not be called."));
+        }
+
+        public Task<LinklySettlementResult> SettlementAsync(
+            PosSessionState session,
+            CardTerminalSettings settings,
+            CancellationToken cancellationToken = default)
+        {
+            SettlementCallCount++;
+            return Task.FromResult(SettlementResult);
         }
 
         public Task<LinklyCloudBackendSessionResponse?> GetResumableSessionAsync(

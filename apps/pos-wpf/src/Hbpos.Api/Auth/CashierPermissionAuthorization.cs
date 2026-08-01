@@ -21,6 +21,8 @@ public static class CashierAuthorizationPolicies
     public const string InstallmentPickup = "Cashier.InstallmentPickup";
     public const string InstallmentCancel = "Cashier.InstallmentCancel";
     public const string TakeCard = "Cashier.TakeCard";
+    public const string DailyCloseSave = "Cashier.DailyCloseSave";
+    public const string DailyClosePrint = "Cashier.DailyClosePrint";
     public const string PaymentSettings = "Cashier.PaymentSettings";
     public const string SpecialProductsView = "Cashier.SpecialProductsView";
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
@@ -44,6 +46,11 @@ public static class CashierAuthorizationPolicies
         AddAll(options, TakeCard,
             Permissions.PosTerminal.Payment.TakeCard,
             Permissions.PosTerminal.Payment.Confirm);
+        Add(options, DailyCloseSave, Permissions.PosTerminal.DailyClose.Save);
+        // 结算回单的首次打印与重打均可记录，保持与日结功能的最小授权一致。
+        Add(options, DailyClosePrint,
+            Permissions.PosTerminal.DailyClose.Save,
+            Permissions.PosTerminal.DailyClose.Reprint);
         Add(options, PaymentSettings, Permissions.PosTerminal.Settings.PaymentTerminal);
         Add(options, SpecialProductsView, Permissions.PosTerminal.SpecialProducts.View);
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);

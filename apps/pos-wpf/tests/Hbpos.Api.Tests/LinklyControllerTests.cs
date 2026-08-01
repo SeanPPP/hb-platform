@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Encodings.Web;
 using Hbpos.Api;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
@@ -15,6 +16,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -51,6 +53,41 @@ public sealed class LinklyControllerTests
         Assert.NotNull(typeof(LinklyController)
             .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
             .SingleOrDefault());
+    }
+
+    [Fact]
+    public void LinklyCloudBackendSettlementEndpoints_KeepExpectedRoutesAndAuthorization()
+    {
+        Assert.Equal("cloud-backend/settlements", GetRoute<HttpPostAttribute>(nameof(LinklyController.StartCloudBackendSettlement)));
+        Assert.Equal("cloud-backend/settlements/resumable", GetRoute<HttpGetAttribute>(nameof(LinklyController.GetResumableCloudBackendSettlement)));
+        Assert.Equal("cloud-backend/settlements/{sessionId}/status", GetRoute<HttpGetAttribute>(nameof(LinklyController.GetCloudBackendSettlementStatus)));
+        Assert.Equal("cloud-backend/settlements/{sessionId}/acknowledge", GetRoute<HttpPostAttribute>(nameof(LinklyController.AcknowledgeCloudBackendSettlement)));
+        Assert.Equal("cloud-backend/settlements/{sessionId}/receipt/printed", GetRoute<HttpPostAttribute>(nameof(LinklyController.MarkCloudBackendSettlementReceiptPrinted)));
+
+        foreach (var action in new[]
+                 {
+                     nameof(LinklyController.StartCloudBackendSettlement),
+                     nameof(LinklyController.GetResumableCloudBackendSettlement),
+                     nameof(LinklyController.GetCloudBackendSettlementStatus),
+                     nameof(LinklyController.AcknowledgeCloudBackendSettlement)
+                 })
+        {
+            Assert.Equal(
+                CashierAuthorizationPolicies.DailyCloseSave,
+                typeof(LinklyController).GetMethod(action)?
+                    .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+                    .Cast<AuthorizeAttribute>()
+                    .Single()
+                    .Policy);
+        }
+
+        Assert.Equal(
+            CashierAuthorizationPolicies.DailyClosePrint,
+            typeof(LinklyController).GetMethod(nameof(LinklyController.MarkCloudBackendSettlementReceiptPrinted))?
+                .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+                .Cast<AuthorizeAttribute>()
+                .Single()
+                .Policy);
     }
 
     [Fact]
@@ -558,7 +595,8 @@ public sealed class LinklyControllerTests
               "Response": {
                 "ResponseCode": "00",
                 "ResponseText": "APPROVED",
-                "TxnRef": "260605043452E4C3"
+                "TxnRef": "260605043452E4C3",
+                "CardNumber": "4111111111111111"
               }
             }
             """);
@@ -576,15 +614,19 @@ public sealed class LinklyControllerTests
         Assert.Equal("request", requestLog.RootElement.GetProperty("direction").GetString());
         Assert.Equal("Sandbox", requestLog.RootElement.GetProperty("environment").GetString());
         Assert.Equal("session-123", requestLog.RootElement.GetProperty("sessionId").GetString());
-        var authorization = requestLog.RootElement.GetProperty("request").GetProperty("authorization");
-        Assert.True(authorization.GetProperty("hasValue").GetBoolean());
-        Assert.Equal("Bearer", authorization.GetProperty("scheme").GetString());
+        Assert.Equal(JsonValueKind.Null, requestLog.RootElement.GetProperty("request").ValueKind);
+        var requestCallback = requestLog.RootElement.GetProperty("details").GetProperty("callback");
+        Assert.True(requestCallback.GetProperty("hasPayload").GetBoolean());
+        Assert.Equal("Object", requestCallback.GetProperty("payloadKind").GetString());
+        Assert.Equal(JsonValueKind.Null, requestCallback.GetProperty("cardNumber").ValueKind);
         Assert.DoesNotContain("sandbox-notify", logger.Lines, StringComparer.Ordinal);
-        Assert.Equal("APPROVED", requestLog.RootElement.GetProperty("request").GetProperty("payload").GetProperty("Response").GetProperty("ResponseText").GetString());
+        Assert.DoesNotContain("APPROVED", logger.Lines, StringComparer.Ordinal);
+        Assert.DoesNotContain("4111111111111111", logger.Lines, StringComparer.Ordinal);
         using var responseLog = FindLinklyLog(logger.Lines, "notification-transaction", "response");
         Assert.Equal(200, responseLog.RootElement.GetProperty("httpStatus").GetInt32());
         Assert.True(responseLog.RootElement.GetProperty("response").GetProperty("Success").GetBoolean());
         Assert.Equal("accepted", responseLog.RootElement.GetProperty("response").GetProperty("Data").GetString());
+        Assert.Equal("****1111", responseLog.RootElement.GetProperty("details").GetProperty("callback").GetProperty("cardNumber").GetString());
     }
 
     [Fact]
@@ -928,6 +970,17 @@ public sealed class LinklyControllerTests
             var ticket = new AuthenticationTicket(principal, SchemeName);
             return Task.FromResult(AuthenticateResult.Success(ticket));
         }
+    }
+
+    private static string? GetRoute<TAttribute>(string methodName)
+        where TAttribute : HttpMethodAttribute
+    {
+        return typeof(LinklyController)
+            .GetMethod(methodName)?
+            .GetCustomAttributes(typeof(TAttribute), inherit: false)
+            .Cast<TAttribute>()
+            .Single()
+            .Template;
     }
 
     private static LinklyCloudBackendSessionResponse CreateBackendResponse(

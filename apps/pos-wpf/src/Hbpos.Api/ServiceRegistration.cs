@@ -140,6 +140,10 @@ public static class ServiceRegistration
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaSqlExecutor, SqlSugarLinklyCloudBackendAsyncSchemaSqlExecutor>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaInitializer, SqlSugarLinklyCloudBackendAsyncSchemaInitializer>();
+        services.AddScoped<ILinklySettlementRepository, SqlSugarLinklySettlementRepository>();
+        services.AddScoped<ILinklySettlementSyncService, LinklySettlementSyncService>();
+        services.AddScoped<ILinklySettlementSchemaSqlExecutor, SqlSugarLinklySettlementSchemaSqlExecutor>();
+        services.AddScoped<ILinklySettlementSchemaInitializer, SqlSugarLinklySettlementSchemaInitializer>();
         services.AddScoped<ISquareTokenRepository, SqlSugarSquareTokenRepository>();
         services.AddScoped<ISquareTokenService, SquareTokenService>();
         services.AddScoped<ISquareTokenSchemaSqlExecutor, SqlSugarSquareTokenSchemaSqlExecutor>();

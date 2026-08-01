@@ -14,4 +14,18 @@ public static class LinklyCloudBackendStatusConstants
 
     public const string RecoveryRetry = "Retry";
     public const string RecoveryRefreshToken = "RefreshToken";
+
+    public static bool IsSuccessfulSettlement(bool? operationSuccess, string? responseCode)
+    {
+        return operationSuccess == true &&
+            string.Equals(responseCode?.Trim(), "00", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsSettlementFailureStatus(string? status)
+    {
+        return string.Equals(status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, StatusCancelled, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Canceled", StringComparison.OrdinalIgnoreCase);
+    }
 }

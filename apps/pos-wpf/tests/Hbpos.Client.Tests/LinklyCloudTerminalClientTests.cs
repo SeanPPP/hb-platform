@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Tests;
 
@@ -19,7 +20,7 @@ public sealed class LinklyCloudTerminalClientTests
                 "123456",
                 "VISA",
                 "4",
-                "4111111111111234",
+                "411111******1234",
                 "MID",
                 "00",
                 "APPROVED",
@@ -45,6 +46,50 @@ public sealed class LinklyCloudTerminalClientTests
         Assert.Equal("ANZ", transaction.Processor);
         Assert.Equal("****1234", transaction.MaskedCardNumber);
         Assert.Equal("RFN-1", transaction.RefundReference);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_returns_unknown_without_recovery_or_resubmission()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            SettlementResult = new LinklyCloudSettlementResult("settlement-1", false, null, null, null, null)
+            {
+                Outcome = LinklyCloudSettlementOutcome.Unknown
+            }
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore(), TimeSpan.Zero);
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.Unknown, result.ProviderSubmissionState);
+        Assert.Equal("settlement-1", result.SessionId);
+        Assert.Equal(1, apiClient.SendSettlementCallCount);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task SettlementAsync_returns_not_submitted_when_provider_rejects_start_with_4xx(
+        HttpStatusCode statusCode)
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            SettlementException = new LinklyCloudApiException("settlement request rejected", statusCode)
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore(), TimeSpan.Zero);
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.NotSubmitted, result.ProviderSubmissionState);
+        Assert.Equal(1, apiClient.SendSettlementCallCount);
+        Assert.NotEmpty(result.Message);
     }
 
     [Fact]
@@ -652,9 +697,13 @@ public sealed class LinklyCloudTerminalClientTests
 
         public LinklyCloudApiException? TokenException { get; init; }
 
+        public LinklyCloudApiException? SettlementException { get; init; }
+
         public int TokenCallCount { get; private set; }
 
         public int SendTransactionCallCount { get; private set; }
+
+        public int SendSettlementCallCount { get; private set; }
 
         public string? LastTransactionSessionId { get; private set; }
 
@@ -681,6 +730,9 @@ public sealed class LinklyCloudTerminalClientTests
 
         public LinklyCloudTransactionResult TransactionResult { get; init; } =
             new("session-1", false, null, null, null, null, null, null, "05", "DECLINED", null, null, null);
+
+        public LinklyCloudSettlementResult SettlementResult { get; init; } =
+            new("settlement-1", false, null, null, null, null);
 
         public Task<string> PairAsync(
             string authBaseUrl,
@@ -770,7 +822,22 @@ public sealed class LinklyCloudTerminalClientTests
             return Task.FromResult((LinklyCloudTransactionResult)next);
         }
 
-        public Task SendKeyAsync(
+        public Task<LinklyCloudSettlementResult> SendSettlementAsync(
+            CardTerminalSettings settings,
+            string token,
+            string sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            SendSettlementCallCount++;
+            if (SettlementException is not null)
+            {
+                throw SettlementException;
+            }
+
+            return Task.FromResult(SettlementResult);
+        }
+
+    public Task SendKeyAsync(
             CardTerminalSettings settings,
             string token,
             string sessionId,

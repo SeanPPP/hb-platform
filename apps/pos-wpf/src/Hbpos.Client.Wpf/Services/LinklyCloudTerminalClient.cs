@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using Hbpos.Client.Wpf.Localization;
@@ -15,6 +16,14 @@ public interface ILinklyCloudTerminalClient
         string storeCode,
         string deviceCode,
         CancellationToken cancellationToken = default);
+
+    Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklySettlementResult(
+            false,
+            "Linkly settlement is not supported by this cloud terminal client."));
 
     Task<PaymentAuthorizationResult> PurchaseAsync(
         decimal amount,
@@ -112,6 +121,129 @@ public sealed class LinklyCloudTerminalClient(
                 settings,
                 refundReference,
                 cancellationToken);
+    }
+
+    public async Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new LinklySettlementResult(
+                false,
+                "ANZ Linkly settlement was cancelled.",
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.LinklyCloudSecret))
+        {
+            return new LinklySettlementResult(
+                false,
+                T("linkly.cloud.notPaired", "Linkly Cloud terminal is not paired."),
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        var posVendorId = CardTerminalSettings.ResolveLinklyPosVendorId(settings.Environment, settings.LinklyPosVendorId);
+        if (string.IsNullOrWhiteSpace(posVendorId))
+        {
+            return new LinklySettlementResult(
+                false,
+                T("linkly.cloud.vendorIdMissing", "Linkly POS vendor id is not configured."),
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        var endpointValidationMessage = ValidateEndpointSettings(settings);
+        if (!string.IsNullOrWhiteSpace(endpointValidationMessage))
+        {
+            return new LinklySettlementResult(
+                false,
+                endpointValidationMessage,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(LinklyTimeoutPolicy.BusinessWait);
+        var settlementRequestSent = false;
+        var sessionId = Guid.NewGuid().ToString("D");
+        try
+        {
+            Log($"settlement start environment={settings.Environment} sessionId={sessionId} store={LogValue(session.StoreCode)} device={LogValue(session.DeviceCode)}");
+            var token = await GetTokenAsync(settings, session.StoreCode, session.DeviceCode, timeoutCts.Token);
+            settlementRequestSent = true;
+            var result = await apiClient.SendSettlementAsync(settings, token.Token, sessionId, timeoutCts.Token);
+            if (result.Outcome == LinklyCloudSettlementOutcome.Unknown)
+            {
+                // 官方 Settlement 协议只定义同步 POST，不支持 Transaction 的 GET error recovery。
+                // 不确定结果必须立即阻止重发，由收银员在终端侧人工确认。
+                return SettlementUnknown(result.SessionId);
+            }
+
+            var succeeded = result.Succeeded && string.Equals(result.ResponseCode, "00", StringComparison.OrdinalIgnoreCase);
+            return new LinklySettlementResult(
+                succeeded,
+                FormatSettlementMessage(result, succeeded),
+                result.SessionId,
+                NormalizeOptional(result.ResponseCode),
+                NormalizeOptional(result.ResponseText),
+                NormalizeOptional(result.SettlementData),
+                result.ReceiptTexts,
+                ProviderSubmissionState: ProviderSubmissionState.Submitted);
+        }
+        catch (OperationCanceledException) when (settlementRequestSent)
+        {
+            Log($"settlement unknown sessionId={sessionId} reason={(cancellationToken.IsCancellationRequested ? "caller-cancelled" : "timeout")}");
+            return SettlementUnknown(sessionId);
+        }
+        catch (LinklyCloudApiException ex) when (
+            settlementRequestSent &&
+            ex.StatusCode is >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError)
+        {
+            return new LinklySettlementResult(
+                false,
+                ex.IsAuthenticationFailure
+                    ? T("linkly.cloud.pairingInvalid", "Linkly Cloud pairing is invalid. Pair the terminal again.")
+                    : ex.Message,
+                sessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (Exception ex) when (settlementRequestSent && (ex is LinklyCloudApiException or JsonException or HttpRequestException))
+        {
+            Log($"settlement unknown sessionId={sessionId} error={ex.GetType().Name}");
+            return SettlementUnknown(sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            return new LinklySettlementResult(
+                false,
+                cancellationToken.IsCancellationRequested ? "ANZ Linkly settlement was cancelled." : T("linkly.cloud.timeout", "Linkly Cloud settlement timed out."),
+                sessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (LinklyCloudApiException ex)
+        {
+            return new LinklySettlementResult(false, ex.IsAuthenticationFailure
+                ? T("linkly.cloud.pairingInvalid", "Linkly Cloud pairing is invalid. Pair the terminal again.")
+                : ex.Message,
+                sessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (JsonException)
+        {
+            return new LinklySettlementResult(
+                false,
+                T("linkly.cloud.invalidResponse", "Linkly Cloud returned an invalid response."),
+                sessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
+        catch (HttpRequestException)
+        {
+            return new LinklySettlementResult(
+                false,
+                T("linkly.cloud.communicationFailed", "Linkly Cloud communication failed."),
+                sessionId,
+                ProviderSubmissionState: ProviderSubmissionState.NotSubmitted);
+        }
     }
 
     private async Task<PaymentAuthorizationResult> RunTransactionAsync(
@@ -617,19 +749,7 @@ public sealed class LinklyCloudTerminalClient(
 
     private static string? MaskCardNumber(string? pan)
     {
-        var value = NormalizeOptional(pan);
-        if (value is null)
-        {
-            return null;
-        }
-
-        if (value.Contains('*', StringComparison.Ordinal) || value.Contains('X', StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        var digits = new string(value.Where(char.IsDigit).ToArray());
-        return digits.Length <= 4 ? digits : $"****{digits[^4..]}";
+        return LinklyReceiptTextSanitizer.SanitizeCardNumber(pan);
     }
 
     private string FormatResponseMessage(string? responseText, string? responseCode)
@@ -654,6 +774,26 @@ public sealed class LinklyCloudTerminalClient(
             : T("linkly.cloud.declined", "ANZ Linkly Cloud transaction was declined.");
 
         return code is null ? text ?? fallback : $"{text ?? fallback} ({code})";
+    }
+
+    private string FormatSettlementMessage(LinklyCloudSettlementResult result, bool succeeded)
+    {
+        var text = NormalizeOptional(result.ResponseText);
+        var code = NormalizeOptional(result.ResponseCode);
+        var fallback = succeeded
+            ? "ANZ Linkly settlement completed."
+            : "ANZ Linkly settlement failed.";
+        return code is null ? text ?? fallback : $"{text ?? fallback} ({code})";
+    }
+
+    private LinklySettlementResult SettlementUnknown(string sessionId)
+    {
+        return new LinklySettlementResult(
+            false,
+            "Linkly Cloud settlement result is unknown. Confirm the Linkly settlement status before trying again.",
+            sessionId,
+            ResultUnknown: true,
+            ProviderSubmissionState: ProviderSubmissionState.Unknown);
     }
 
     private string T(string key, string fallback)
@@ -716,6 +856,7 @@ public sealed class LinklyCloudTerminalClient(
     private sealed record PolledLinklyCloudTransaction(
         LinklyCloudTransactionResult Result,
         LinklyCloudToken Token);
+
 }
 
 public sealed class ConfiguredLinklyTerminalClient(
@@ -798,6 +939,26 @@ public sealed class ConfiguredLinklyTerminalClient(
         CancellationToken cancellationToken = default)
     {
         return localClient.VoidAsync(amount, session, settings, originalReference, cancellationToken);
+    }
+
+    public Task<LinklySettlementResult> SettlementAsync(
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+        var modeSettings = settings with { LinklyConnectionMode = mode };
+        return mode switch
+        {
+            LinklyConnectionMode.CloudDirectSync => cloudClient.SettlementAsync(session, modeSettings, cancellationToken),
+            LinklyConnectionMode.CloudBackendAsync => backendClient is null
+                ? Task.FromResult(new LinklySettlementResult(
+                    false,
+                    "ANZ Linkly backend terminal adapter is unavailable.",
+                    ProviderSubmissionState: ProviderSubmissionState.NotSubmitted))
+                : backendClient.SettlementAsync(session, modeSettings, cancellationToken),
+            _ => localClient.SettlementAsync(session, modeSettings, cancellationToken)
+        };
     }
 
     private Task<PaymentAuthorizationResult> PurchaseOneModeAsync(

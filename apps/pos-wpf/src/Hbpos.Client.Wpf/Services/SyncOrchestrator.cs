@@ -7,8 +7,13 @@ namespace Hbpos.Client.Wpf.Services;
 
 internal sealed class SyncOrchestrator
 {
+    private const string OrderEntityType = "Order";
+    private const string LinklySettlementEntityType = "LinklySettlement";
+
     private readonly IShellSyncCenterService _shellSyncCenterService;
     private readonly IOrderUploadExecutionService _orderUploadExecutionService;
+    private readonly ILinklySettlementUploadQueueReader? _linklySettlementUploadQueueReader;
+    private readonly ILinklySettlementUploadExecutionService? _linklySettlementUploadExecutionService;
     private readonly ILocalizationService _localization;
     private readonly Action<string>? _setStatusMessage;
     private readonly Action<int>? _onPendingSyncCountChanged;
@@ -18,6 +23,11 @@ internal sealed class SyncOrchestrator
     private ClientLogOutboxStore? _logOutboxStore;
     private OperationAuditUploadService? _operationAuditUploadService;
     private DeviceAuthorizationState? _deviceAuthorizationState;
+    private SyncQueueOverview _orderOverview = new(0, 0, 0, null);
+    private LinklySettlementUploadOverview _settlementOverview = new(0, 0, 0, null);
+    private IReadOnlyList<LinklySettlementUploadQueueItem> _settlementQueueItems = [];
+    private string? _settlementLoadFailureMessage;
+    private bool _isAutoSyncRetrying;
 
     public SyncOrchestrator(
         IShellSyncCenterService shellSyncCenterService,
@@ -30,10 +40,14 @@ internal sealed class SyncOrchestrator
         Action<string>? notifyPropertyChanged = null,
         ClientLogOutboxStore? logOutboxStore = null,
         OperationAuditUploadService? operationAuditUploadService = null,
-        DeviceAuthorizationState? deviceAuthorizationState = null)
+        DeviceAuthorizationState? deviceAuthorizationState = null,
+        ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null)
     {
         _shellSyncCenterService = shellSyncCenterService;
         _orderUploadExecutionService = orderUploadExecutionService;
+        _linklySettlementUploadQueueReader = linklySettlementUploadQueueReader;
+        _linklySettlementUploadExecutionService = linklySettlementUploadExecutionService;
         _localization = localization;
         _setStatusMessage = setStatusMessage;
         _onPendingSyncCountChanged = onPendingSyncCountChanged;
@@ -45,7 +59,7 @@ internal sealed class SyncOrchestrator
         _deviceAuthorizationState = deviceAuthorizationState;
 
         ToggleSyncCenterCommand = new AsyncRelayCommand(ToggleSyncCenterAsync);
-        RetrySyncOrderCommand = new AsyncRelayCommand<SyncQueueListItem?>(RetrySyncOrderAsync, CanRetrySyncOrder);
+        RetrySyncOrderCommand = new AsyncRelayCommand<SyncQueueListItem?>(RetrySyncOrderAsync, CanRetrySyncEntity);
         RetryAllSyncOrdersCommand = new AsyncRelayCommand(RetryAllSyncOrdersAsync, CanRetryAllSyncOrders);
         RetrySelectedSyncOrdersCommand = new AsyncRelayCommand(RetrySelectedSyncOrdersAsync);
         SelectAllSyncOrdersCommand = new RelayCommand(SelectAllSyncOrders);
@@ -97,10 +111,62 @@ internal sealed class SyncOrchestrator
 
     // ---- Public methods ----
 
-    public async Task RefreshPendingSyncAsync()
+    public async Task RefreshPendingSyncAsync(CancellationToken cancellationToken = default)
     {
-        ApplySyncCenterSnapshot(await _shellSyncCenterService.GetSnapshotAsync());
+        var orderSnapshot = await _shellSyncCenterService.GetSnapshotAsync(cancellationToken);
+        await RefreshSettlementUploadsSafelyAsync(cancellationToken);
+        ApplySyncCenterSnapshot(orderSnapshot);
         await RefreshAuditLogsSafelyAsync();
+    }
+
+    public async Task TryAutoRetryPendingAsync(CancellationToken cancellationToken)
+    {
+        if (_isAutoSyncRetrying || IsOrderSyncRetrying)
+        {
+            return;
+        }
+
+        _isAutoSyncRetrying = true;
+        RefreshSyncRetryCommandStates();
+        try
+        {
+            await RefreshPendingSyncAsync(cancellationToken);
+            if (PendingUploadCount + FailedUploadCount == 0)
+            {
+                return;
+            }
+
+            ConsoleLog.Write("UploadSync", "auto retry pending start");
+            var result = await ExecutePendingUploadsAsync(cancellationToken);
+            await RefreshPendingSyncAsync(cancellationToken);
+            ConsoleLog.Write(
+                "UploadSync",
+                $"auto retry pending completed attempted={result.AttemptedCount} uploaded={result.UploadedCount} failed={result.FailedCount}");
+        }
+        catch (OperationCanceledException)
+        {
+            ConsoleLog.Write("UploadSync", "auto retry pending canceled");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("UploadSync", $"auto retry pending failed error={ex.GetType().Name} message={ex.Message}");
+            try
+            {
+                await RefreshPendingSyncAsync();
+            }
+            catch (Exception refreshEx) when (refreshEx is not OperationCanceledException)
+            {
+                ConsoleLog.Write(
+                    "UploadSync",
+                    $"auto retry pending refresh failed error={refreshEx.GetType().Name} message={refreshEx.Message}");
+            }
+        }
+        finally
+        {
+            _isAutoSyncRetrying = false;
+            RefreshSyncRetryCommandStates();
+        }
     }
 
     public void ConfigureAudit(
@@ -132,25 +198,32 @@ internal sealed class SyncOrchestrator
             _localization.T("shell.sync.detailTitle"),
             SyncCenterOrders.Count);
         _notifyPropertyChanged?.Invoke(nameof(SyncCenterDetailTitle));
+        LastOrderSyncErrorText = BuildLastUploadErrorText();
+        _notifyPropertyChanged?.Invoke(nameof(LastOrderSyncErrorText));
     }
 
     public void ApplySyncCenterSnapshot(ShellSyncCenterSnapshot snapshot)
     {
-        PendingUploadCount = snapshot.Overview.PendingCount;
+        _orderOverview = snapshot.Overview;
+        PendingUploadCount = snapshot.Overview.PendingCount + _settlementOverview.PendingCount;
         _notifyPropertyChanged?.Invoke(nameof(PendingUploadCount));
-        FailedUploadCount = snapshot.Overview.FailedCount;
+        FailedUploadCount = snapshot.Overview.FailedCount + _settlementOverview.FailedCount;
         _notifyPropertyChanged?.Invoke(nameof(FailedUploadCount));
-        SyncingOrderCount = snapshot.Overview.SyncingCount;
+        SyncingOrderCount = snapshot.Overview.SyncingCount + _settlementOverview.UploadingCount;
         _notifyPropertyChanged?.Invoke(nameof(SyncingOrderCount));
-        LastOrderSyncErrorText = snapshot.Overview.LastError ?? _localization.T("shell.sync.noErrors");
+        LastOrderSyncErrorText = BuildLastUploadErrorText();
         _notifyPropertyChanged?.Invoke(nameof(LastOrderSyncErrorText));
         SyncCenterOrders.Clear();
         foreach (var item in snapshot.ActiveItems)
         {
             SyncCenterOrders.Add(item);
         }
+        foreach (var item in _settlementQueueItems.Select(MapSettlementQueueItem))
+        {
+            SyncCenterOrders.Add(item);
+        }
         _notifyPropertyChanged?.Invoke(nameof(SyncCenterOrders));
-        _onPendingSyncCountChanged?.Invoke(snapshot.Overview.PendingCount);
+        _onPendingSyncCountChanged?.Invoke(PendingUploadCount);
         RefreshSyncRetryCommandStates();
         _refreshShell?.Invoke();
     }
@@ -181,42 +254,41 @@ internal sealed class SyncOrchestrator
 
     private async Task RetrySyncOrderAsync(SyncQueueListItem? item)
     {
-        if (item is null)
+        if (!CanRetrySyncEntity(item))
         {
             return;
         }
 
-        await ExecuteOrderSyncRetryAsync(
-            () => _orderUploadExecutionService.ExecuteOneAsync(item.EntityId),
+        await ExecuteUploadSyncRetryAsync(
+            () => ExecuteOneUploadAsync(item!, CancellationToken.None),
             "shell.sync.retryingOne");
     }
 
     private async Task RetryAllSyncOrdersAsync()
     {
-        await ExecuteOrderSyncRetryAsync(
-            () => _orderUploadExecutionService.ExecutePendingAsync(),
+        await ExecuteUploadSyncRetryAsync(
+            () => ExecuteAllUploadsAsync(CancellationToken.None),
             "shell.sync.retryingAll");
     }
 
     private async Task RetrySelectedSyncOrdersAsync()
     {
         var selected = SyncCenterOrders
-            .Where(item => item.CanRetry && item.Selection.IsSelected)
-            .Select(item => item.EntityId)
+            .Where(item => item.Selection.IsSelected && CanRetrySyncEntity(item))
             .ToArray();
         if (selected.Length == 0)
         {
             return;
         }
 
-        await ExecuteOrderSyncRetryAsync(
-            () => _orderUploadExecutionService.ExecuteSelectedAsync(selected),
+        await ExecuteUploadSyncRetryAsync(
+            () => ExecuteSelectedUploadsAsync(selected, CancellationToken.None),
             "shell.sync.retryingSelected");
     }
 
     private void SelectAllSyncOrders()
     {
-        foreach (var item in SyncCenterOrders.Where(item => item.CanRetry))
+        foreach (var item in SyncCenterOrders.Where(CanRetrySyncEntity))
         {
             item.Selection.IsSelected = true;
         }
@@ -272,6 +344,38 @@ internal sealed class SyncOrchestrator
         _notifyPropertyChanged?.Invoke(nameof(LastAuditSyncErrorText));
     }
 
+    private async Task RefreshSettlementUploadsSafelyAsync(CancellationToken cancellationToken)
+    {
+        if (_linklySettlementUploadQueueReader is null)
+        {
+            _settlementOverview = new LinklySettlementUploadOverview(0, 0, 0, null);
+            _settlementQueueItems = [];
+            _settlementLoadFailureMessage = null;
+            return;
+        }
+
+        try
+        {
+            var overviewTask = _linklySettlementUploadQueueReader.GetOverviewAsync(cancellationToken);
+            var itemsTask = _linklySettlementUploadQueueReader.GetActiveItemsAsync(cancellationToken: cancellationToken);
+            await Task.WhenAll(overviewTask, itemsTask);
+            _settlementOverview = await overviewTask;
+            _settlementQueueItems = await itemsTask;
+            _settlementLoadFailureMessage = null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 结算上传队列独立于订单快照，读取失败时保留订单同步中心可用。
+            _settlementOverview = new LinklySettlementUploadOverview(0, 0, 0, null);
+            _settlementQueueItems = [];
+            _settlementLoadFailureMessage = ex.Message;
+        }
+    }
+
     private void SelectAllAuditLogs()
     {
         foreach (var item in SyncCenterAuditLogs)
@@ -312,17 +416,18 @@ internal sealed class SyncOrchestrator
             reset));
     }
 
-    private async Task ExecuteOrderSyncRetryAsync(
-        Func<Task<OrderUploadExecutionResult>> executeAsync,
+    private async Task ExecuteUploadSyncRetryAsync(
+        Func<Task<UploadRetrySummary>> executeAsync,
         string retryingStatusKey)
     {
-        if (IsOrderSyncRetrying)
+        if (_isAutoSyncRetrying || IsOrderSyncRetrying)
         {
             return;
         }
 
         IsOrderSyncRetrying = true;
         _notifyPropertyChanged?.Invoke(nameof(IsOrderSyncRetrying));
+        RefreshSyncRetryCommandStates();
         _setStatusMessage?.Invoke(_localization.T(retryingStatusKey));
         try
         {
@@ -350,25 +455,227 @@ internal sealed class SyncOrchestrator
         {
             IsOrderSyncRetrying = false;
             _notifyPropertyChanged?.Invoke(nameof(IsOrderSyncRetrying));
+            RefreshSyncRetryCommandStates();
         }
     }
 
-    private bool CanRetrySyncOrder(SyncQueueListItem? item)
+    private bool CanRetrySyncEntity(SyncQueueListItem? item)
     {
-        return !IsOrderSyncRetrying &&
-            item is not null &&
-            item.EntityType.Equals("Order", StringComparison.OrdinalIgnoreCase) &&
-            IsRetryableSyncStatus(item.Status);
+        if (_isAutoSyncRetrying || IsOrderSyncRetrying || item is null || !item.CanRetry)
+        {
+            return false;
+        }
+
+        return item.EntityType.Equals(OrderEntityType, StringComparison.OrdinalIgnoreCase) ||
+            (item.EntityType.Equals(LinklySettlementEntityType, StringComparison.OrdinalIgnoreCase) &&
+             _linklySettlementUploadExecutionService is not null);
     }
 
     private bool CanRetryAllSyncOrders()
     {
-        return !IsOrderSyncRetrying && PendingUploadCount + FailedUploadCount > 0;
+        return !_isAutoSyncRetrying &&
+            !IsOrderSyncRetrying &&
+            SyncCenterOrders.Any(CanRetrySyncEntity);
     }
 
-    private static bool IsRetryableSyncStatus(string status)
+    private async Task<UploadRetrySummary> ExecuteOneUploadAsync(
+        SyncQueueListItem item,
+        CancellationToken cancellationToken)
     {
-        return status.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
-            status.Equals("Failed", StringComparison.OrdinalIgnoreCase);
+        if (item.EntityType.Equals(OrderEntityType, StringComparison.OrdinalIgnoreCase))
+        {
+            return ToSummary(await _orderUploadExecutionService.ExecuteOneAsync(item.EntityId, cancellationToken));
+        }
+
+        if (item.EntityType.Equals(LinklySettlementEntityType, StringComparison.OrdinalIgnoreCase) &&
+            _linklySettlementUploadExecutionService is not null)
+        {
+            return ToSummary(await _linklySettlementUploadExecutionService.ExecuteOneAsync(item.EntityId, cancellationToken));
+        }
+
+        return UploadRetrySummary.Empty;
+    }
+
+    private async Task<UploadRetrySummary> ExecutePendingUploadsAsync(CancellationToken cancellationToken)
+    {
+        var tasks = new List<Task<UploadRetrySummary>>
+        {
+            ExecuteOrderPendingAsync(cancellationToken)
+        };
+        if (_linklySettlementUploadExecutionService is not null)
+        {
+            tasks.Add(ExecuteSettlementPendingAsync(cancellationToken));
+        }
+
+        return CombineRetryResults(await Task.WhenAll(tasks));
+    }
+
+    private async Task<UploadRetrySummary> ExecuteAllUploadsAsync(CancellationToken cancellationToken)
+    {
+        var tasks = new List<Task<UploadRetrySummary>>
+        {
+            ExecuteOrderPendingAsync(cancellationToken)
+        };
+        if (_linklySettlementUploadQueueReader is not null &&
+            _linklySettlementUploadExecutionService is not null)
+        {
+            var settlementIds = (await _linklySettlementUploadQueueReader.GetActiveItemsAsync(
+                    int.MaxValue,
+                    cancellationToken))
+                .Where(item => item.Status is
+                    LocalLinklySettlementUploadStatus.Pending or
+                    LocalLinklySettlementUploadStatus.Rejected)
+                .Select(item => item.SettlementGuid)
+                .Distinct()
+                .ToArray();
+            if (settlementIds.Length > 0)
+            {
+                // 手动“全部重试”覆盖整个独立结算队列，并忽略后台退避时间。
+                tasks.Add(ExecuteSelectedSettlementsAsync(settlementIds, cancellationToken));
+            }
+        }
+
+        return CombineRetryResults(await Task.WhenAll(tasks));
+    }
+
+    private async Task<UploadRetrySummary> ExecuteSelectedUploadsAsync(
+        IReadOnlyCollection<SyncQueueListItem> selectedItems,
+        CancellationToken cancellationToken)
+    {
+        var tasks = new List<Task<UploadRetrySummary>>();
+        var orderIds = selectedItems
+            .Where(item => item.EntityType.Equals(OrderEntityType, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.EntityId)
+            .Distinct()
+            .ToArray();
+        if (orderIds.Length > 0)
+        {
+            tasks.Add(ExecuteSelectedOrdersAsync(orderIds, cancellationToken));
+        }
+
+        var settlementIds = selectedItems
+            .Where(item => item.EntityType.Equals(LinklySettlementEntityType, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.EntityId)
+            .Distinct()
+            .ToArray();
+        if (settlementIds.Length > 0 && _linklySettlementUploadExecutionService is not null)
+        {
+            tasks.Add(ExecuteSelectedSettlementsAsync(settlementIds, cancellationToken));
+        }
+
+        return tasks.Count == 0
+            ? UploadRetrySummary.Empty
+            : CombineRetryResults(await Task.WhenAll(tasks));
+    }
+
+    private async Task<UploadRetrySummary> ExecuteOrderPendingAsync(CancellationToken cancellationToken) =>
+        ToSummary(await _orderUploadExecutionService.ExecutePendingAsync(cancellationToken: cancellationToken));
+
+    private async Task<UploadRetrySummary> ExecuteSettlementPendingAsync(CancellationToken cancellationToken) =>
+        ToSummary(await _linklySettlementUploadExecutionService!.ExecutePendingAsync(cancellationToken: cancellationToken));
+
+    private async Task<UploadRetrySummary> ExecuteSelectedOrdersAsync(
+        IReadOnlyCollection<Guid> orderIds,
+        CancellationToken cancellationToken) =>
+        ToSummary(await _orderUploadExecutionService.ExecuteSelectedAsync(orderIds, cancellationToken));
+
+    private async Task<UploadRetrySummary> ExecuteSelectedSettlementsAsync(
+        IReadOnlyCollection<Guid> settlementIds,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<UploadRetrySummary>(settlementIds.Count);
+        foreach (var settlementId in settlementIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            results.Add(ToSummary(await _linklySettlementUploadExecutionService!.ExecuteOneAsync(
+                settlementId,
+                cancellationToken)));
+        }
+
+        return CombineRetryResults(results);
+    }
+
+    private string BuildLastUploadErrorText()
+    {
+        var errors = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_orderOverview.LastError))
+        {
+            errors.Add(_orderOverview.LastError);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_settlementOverview.LastError))
+        {
+            errors.Add(string.Format(
+                _localization.CurrentCulture,
+                _localization.T("shell.sync.settlementError"),
+                _settlementOverview.LastError));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_settlementLoadFailureMessage))
+        {
+            errors.Add(string.Format(
+                _localization.CurrentCulture,
+                _localization.T("shell.sync.settlementLoadFailed"),
+                _settlementLoadFailureMessage));
+        }
+
+        return errors.Count == 0
+            ? _localization.T("shell.sync.noErrors")
+            : string.Join(Environment.NewLine, errors.Distinct(StringComparer.Ordinal));
+    }
+
+    private static SyncQueueListItem MapSettlementQueueItem(LinklySettlementUploadQueueItem item)
+    {
+        var status = item.Status switch
+        {
+            LocalLinklySettlementUploadStatus.Uploading => "Syncing",
+            LocalLinklySettlementUploadStatus.Rejected => "Failed",
+            _ => item.Status.ToString()
+        };
+        var uploadError = !string.IsNullOrWhiteSpace(item.ErrorMessage)
+            ? item.ErrorMessage
+            : item.ErrorCode;
+        var settlementDetails = string.Join(
+            " | ",
+            new[] { item.ConnectionMode, item.SettlementStatus.ToString(), item.ProviderSubmissionState.ToString() }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+        var errorMessage = string.IsNullOrWhiteSpace(uploadError)
+            ? settlementDetails
+            : $"{settlementDetails} - {uploadError}";
+
+        return new SyncQueueListItem(
+            item.SettlementGuid,
+            LinklySettlementEntityType,
+            status,
+            item.CreatedAt,
+            item.LastTriedAt,
+            errorMessage,
+            Amount: null);
+    }
+
+    private static UploadRetrySummary ToSummary(OrderUploadExecutionResult result) =>
+        new(result.AttemptedCount, result.UploadedCount, result.FailedCount);
+
+    private static UploadRetrySummary ToSummary(LinklySettlementUploadExecutionResult result) =>
+        new(result.AttemptedCount, result.UploadedCount, result.FailedCount + result.DeferredCount);
+
+    private static UploadRetrySummary CombineRetryResults(IEnumerable<UploadRetrySummary> results)
+    {
+        var attempted = 0;
+        var uploaded = 0;
+        var failed = 0;
+        foreach (var result in results)
+        {
+            attempted += result.AttemptedCount;
+            uploaded += result.UploadedCount;
+            failed += result.FailedCount;
+        }
+
+        return new UploadRetrySummary(attempted, uploaded, failed);
+    }
+
+    private sealed record UploadRetrySummary(int AttemptedCount, int UploadedCount, int FailedCount)
+    {
+        public static UploadRetrySummary Empty { get; } = new(0, 0, 0);
     }
 }

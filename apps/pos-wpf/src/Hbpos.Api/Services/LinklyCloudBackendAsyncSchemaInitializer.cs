@@ -17,6 +17,18 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
 {
     // 异步交易状态和通知都按环境、门店、设备、会话四段 scope 隔离。
     internal const string EnsureTableSql = """
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+
+        DECLARE @SchemaLockResult INT;
+        EXEC @SchemaLockResult = sys.sp_getapplock
+            @Resource = N'Hbpos.LinklyCloudBackendAsync.Schema.v1',
+            @LockMode = N'Exclusive',
+            @LockOwner = N'Transaction',
+            @LockTimeout = 60000;
+        IF @SchemaLockResult < 0
+            THROW 51000, 'Could not acquire the Linkly Cloud backend async schema lock.', 1;
+
         IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U') IS NULL
         BEGIN
             CREATE TABLE [dbo].[POSM_LinklyCloudBackendSession] (
@@ -28,6 +40,10 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                 [Status] NVARCHAR(32) NOT NULL,
                 [TxnRef] NVARCHAR(16) NULL,
                 [TransactionSuccess] BIT NULL,
+                [OperationType] NVARCHAR(32) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudBackendSession_OperationType] DEFAULT (N'Transaction'),
+                [OperationSuccess] BIT NULL,
+                [SettlementData] NVARCHAR(MAX) NULL,
+                [SettlementReceiptTexts] NVARCHAR(MAX) NULL,
                 [ResponseCode] NVARCHAR(32) NULL,
                 [ResponseText] NVARCHAR(512) NULL,
                 [RecoveryAction] NVARCHAR(64) NULL,
@@ -150,6 +166,31 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                     ADD [TransactionSuccess] BIT NULL;
             END;
 
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'OperationType') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [OperationType] NVARCHAR(32) NOT NULL
+                        CONSTRAINT [DF_POSM_LinklyCloudBackendSession_OperationType_Upgrade] DEFAULT (N'Transaction') WITH VALUES;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'OperationSuccess') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [OperationSuccess] BIT NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'SettlementData') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [SettlementData] NVARCHAR(MAX) NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'SettlementReceiptTexts') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [SettlementReceiptTexts] NVARCHAR(MAX) NULL;
+            END;
+
             IF NOT EXISTS (
                 SELECT 1
                 FROM sys.indexes
@@ -229,6 +270,8 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                     ON [dbo].[POSM_LinklyCloudBackendNotification] ([Environment], [StoreCode], [DeviceCode], [SessionId], [ReceivedAt]);
             END;
         END;
+
+        COMMIT TRANSACTION;
         """;
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)

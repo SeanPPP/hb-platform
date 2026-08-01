@@ -45,6 +45,13 @@ public interface ILinklyCloudApiClient
         string sessionId,
         CancellationToken cancellationToken = default);
 
+    Task<LinklyCloudSettlementResult> SendSettlementAsync(
+        CardTerminalSettings settings,
+        string token,
+        string sessionId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(LinklyCloudSettlementResult.NotSupported(sessionId));
+
     Task SendKeyAsync(
         CardTerminalSettings settings,
         string token,
@@ -338,7 +345,7 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
     {
         HttpResponseMessage response;
         var requestBody = new LinklyCloudApiRequest(request.ToFields());
-        LogEvent("transaction", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, request: requestBody, details: new { token, request.TxnType, request.TxnRef, request.AmtPurchase });
+        LogEvent("transaction", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, request: requestBody, details: new { request.TxnType, request.TxnRef, request.AmtPurchase });
         try
         {
             response = await SendLinklyRequestAsync(
@@ -381,7 +388,7 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        LogEvent("transaction-status", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, details: new { token });
+        LogEvent("transaction-status", "request", direction: "request", environment: settings.Environment, sessionId: sessionId);
         using var response = await SendLinklyRequestAsync(
             settings,
             token,
@@ -413,6 +420,51 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
         return result;
     }
 
+    public async Task<LinklyCloudSettlementResult> SendSettlementAsync(
+        CardTerminalSettings settings,
+        string token,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var requestBody = new LinklyCloudApiRequest(new LinklyCloudSettlementRequest().ToFields());
+        LogEvent("settlement", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, request: requestBody);
+        HttpResponseMessage response;
+        try
+        {
+            response = await SendLinklyRequestAsync(
+                settings,
+                token,
+                "settlement",
+                HttpMethod.Post,
+                requestBody,
+                sessionId,
+                cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogEvent("settlement", "unknown", direction: "request", environment: settings.Environment, sessionId: sessionId, success: false, reason: "http-request-exception", details: new { error = ex.GetType().Name, ex.Message });
+            return UnknownSettlement(sessionId);
+        }
+
+        using (response)
+        {
+            if (response.StatusCode == HttpStatusCode.Accepted ||
+                response.StatusCode == HttpStatusCode.RequestTimeout ||
+                (int)response.StatusCode >= 500)
+            {
+                LogEvent("settlement", "unknown", direction: "response", environment: settings.Environment, sessionId: sessionId, httpStatus: response.StatusCode, success: response.IsSuccessStatusCode);
+                return UnknownSettlement(sessionId);
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            LogEvent("settlement", "response", direction: "response", environment: settings.Environment, sessionId: sessionId, httpStatus: response.StatusCode, success: response.IsSuccessStatusCode, response: RawJsonBody(body));
+            EnsureSuccess(response, body, "Linkly Cloud settlement request");
+            var result = ParseSettlementResult(sessionId, body);
+            LogEvent("settlement", "parsed", direction: "response", environment: settings.Environment, sessionId: sessionId, success: result.Succeeded, response: result);
+            return result;
+        }
+    }
+
     public async Task SendKeyAsync(
         CardTerminalSettings settings,
         string token,
@@ -427,7 +479,7 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             ["Key"] = normalizedKey,
             ["Data"] = string.IsNullOrWhiteSpace(data) ? null : data.Trim()
         });
-        LogEvent("sendkey", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, request: requestBody, details: new { token, key = normalizedKey, data });
+        LogEvent("sendkey", "request", direction: "request", environment: settings.Environment, sessionId: sessionId, request: requestBody, details: new { key = normalizedKey, data });
         using var response = await SendLinklyRequestAsync(
             settings,
             token,
@@ -505,6 +557,14 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
         };
     }
 
+    private static LinklyCloudSettlementResult UnknownSettlement(string sessionId)
+    {
+        return new LinklyCloudSettlementResult(sessionId, false, null, null, null, null)
+        {
+            Outcome = LinklyCloudSettlementOutcome.Unknown
+        };
+    }
+
     private static LinklyCloudTransactionResult ParseTransactionResult(string fallbackSessionId, string body)
     {
         using var document = JsonDocument.Parse(body);
@@ -528,6 +588,21 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             ReadString(response, "Stan"),
             amount,
             ReadString(purchaseAnalysisData, "RFN"));
+    }
+
+    private static LinklyCloudSettlementResult ParseSettlementResult(string fallbackSessionId, string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var response = ReadResponse(root);
+        var sessionId = ReadString(root, "SessionId") ?? ReadString(root, "sessionId") ?? fallbackSessionId;
+        return new LinklyCloudSettlementResult(
+            sessionId,
+            ReadBool(response, "Success") == true,
+            ReadString(response, "ResponseCode"),
+            ReadString(response, "ResponseText"),
+            ReadStringOrJson(response, "SettlementData"),
+            ReadReceiptTexts(response, "ReceiptText"));
     }
 
     private static JsonElement ReadResponse(JsonElement root)
@@ -560,6 +635,47 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
             JsonValueKind.False => "false",
             _ => null
         };
+    }
+
+    private static string? ReadStringOrJson(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value) ||
+            value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.String
+            ? Normalize(value.GetString())
+            : value.GetRawText();
+    }
+
+    private static IReadOnlyList<string>? ReadReceiptTexts(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var single = Normalize(value.GetString());
+            return single is null ? null : [single];
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var lines = value
+            .EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => Normalize(item.GetString()))
+            .Where(item => item is not null)
+            .Select(item => item!)
+            .ToArray();
+        return lines.Length == 0 ? null : [string.Join(Environment.NewLine, lines)];
     }
 
     private static bool? ReadBool(JsonElement element, string propertyName)
@@ -711,11 +827,12 @@ public sealed class LinklyCloudApiClient(HttpClient httpClient) : ILinklyCloudAp
         try
         {
             using var document = JsonDocument.Parse(body);
-            return JsonSerializer.Deserialize<object>(document.RootElement.GetRawText(), JsonOptions);
+            return LinklyJsonLog.SanitizeForLog(
+                JsonSerializer.Deserialize<object>(document.RootElement.GetRawText(), JsonOptions));
         }
         catch (JsonException)
         {
-            return body;
+            return LinklyJsonLog.SanitizeForLog(body);
         }
     }
 
@@ -827,6 +944,21 @@ public sealed record LinklyCloudTransactionRequest(
     }
 }
 
+public sealed record LinklyCloudSettlementRequest
+{
+    public Dictionary<string, object?> ToFields()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["Merchant"] = "00",
+            ["Application"] = "00",
+            ["SettlementType"] = "S",
+            ["ReceiptAutoPrint"] = "7",
+            ["CutReceipt"] = "0"
+        };
+    }
+}
+
 public sealed record LinklyCloudApiRequest(
     [property: JsonPropertyName("Request")] IReadOnlyDictionary<string, object?> Request);
 
@@ -853,6 +985,34 @@ public enum LinklyCloudTransactionOutcome
     Completed,
     Pending,
     NotSubmitted
+}
+
+public sealed record LinklyCloudSettlementResult(
+    string SessionId,
+    bool Succeeded,
+    string? ResponseCode,
+    string? ResponseText,
+    string? SettlementData,
+    IReadOnlyList<string>? ReceiptTexts)
+{
+    public LinklyCloudSettlementOutcome Outcome { get; init; } = LinklyCloudSettlementOutcome.Completed;
+
+    public static LinklyCloudSettlementResult NotSupported(string sessionId)
+    {
+        return new LinklyCloudSettlementResult(
+            sessionId,
+            false,
+            null,
+            "Linkly settlement is not supported by this cloud API client.",
+            null,
+            null);
+    }
+}
+
+public enum LinklyCloudSettlementOutcome
+{
+    Completed,
+    Unknown
 }
 
 public sealed class LinklyCloudApiException : Exception

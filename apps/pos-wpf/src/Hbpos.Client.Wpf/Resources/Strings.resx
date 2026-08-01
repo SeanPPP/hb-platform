@@ -382,17 +382,17 @@
   <data name="shell.catalogDownload.detail" xml:space="preserve"><value>Processed: {0}/{1}  Download pages: {2}  Upserted: {3}  Deleted: {4}  Elapsed: {5}</value></data>
   <data name="shell.catalogDownload.elapsedSeconds" xml:space="preserve"><value>{0:0.0}s</value></data>
   <data name="shell.sync.title" xml:space="preserve"><value>Sync Center</value></data>
-  <data name="shell.sync.orderStatus" xml:space="preserve"><value>Orders {0}/{1}/{2}</value></data>
+  <data name="shell.sync.orderStatus" xml:space="preserve"><value>Uploads {0}/{1}/{2}</value></data>
   <data name="shell.sync.detailTitle" xml:space="preserve"><value>{0} active upload tasks</value></data>
   <data name="shell.sync.noErrors" xml:space="preserve"><value>No sync errors.</value></data>
   <data name="shell.sync.close" xml:space="preserve"><value>Close sync center</value></data>
   <data name="shell.sync.retry" xml:space="preserve"><value>Retry</value></data>
   <data name="shell.sync.retryAll" xml:space="preserve"><value>Retry All</value></data>
-  <data name="shell.sync.ordersTab" xml:space="preserve"><value>Orders</value></data>
+  <data name="shell.sync.ordersTab" xml:space="preserve"><value>Uploads</value></data>
   <data name="shell.sync.auditTab" xml:space="preserve"><value>Audit Logs</value></data>
   <data name="shell.sync.selectAll" xml:space="preserve"><value>Select Retryable</value></data>
   <data name="shell.sync.retrySelected" xml:space="preserve"><value>Retry Selected</value></data>
-  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>Retrying selected order uploads...</value></data>
+  <data name="shell.sync.retryingSelected" xml:space="preserve"><value>Retrying selected uploads...</value></data>
   <data name="shell.sync.auditRetryQueued" xml:space="preserve"><value>{0} audit events queued for retry.</value></data>
   <data name="shell.sync.auditLoadFailed" xml:space="preserve"><value>Audit log refresh failed: {0}</value></data>
   <data name="history.reuploadSelected" xml:space="preserve"><value>Reupload Selected</value></data>
@@ -407,11 +407,15 @@
   <data name="history.reuploadRangeCompleted" xml:space="preserve"><value>Date-range reupload completed: {0} attempted, {1} succeeded, {2} failed.</value></data>
   <data name="history.reuploadRangeInterrupted" xml:space="preserve"><value>Date-range reupload stopped while the server address was switching: {0} attempted, {1} succeeded, {2} did not complete in the batches already started. Later batches were not started; queued orders will continue uploading after the switch.</value></data>
   <data name="history.reuploadRangeFailed" xml:space="preserve"><value>Date-range reupload stopped: {0}</value></data>
-  <data name="shell.sync.retryingOne" xml:space="preserve"><value>Retrying order upload...</value></data>
-  <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying order uploads...</value></data>
-  <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Order upload retry completed: {0} succeeded, {1} failed.</value></data>
-  <data name="shell.sync.retryFailed" xml:space="preserve"><value>Order upload retry failed: {0}</value></data>
-  <data name="shell.sync.caption" xml:space="preserve"><value>Review and retry order uploads or operation audit logs.</value></data>
+  <data name="shell.sync.retryingOne" xml:space="preserve"><value>Retrying upload...</value></data>
+  <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying uploads...</value></data>
+  <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Upload retry completed: {0} succeeded, {1} not completed.</value></data>
+  <data name="shell.sync.retryFailed" xml:space="preserve"><value>Upload retry failed: {0}</value></data>
+  <data name="shell.sync.caption" xml:space="preserve"><value>Review and retry order uploads, Linkly settlements, or operation audit logs.</value></data>
+  <data name="shell.sync.entity.order" xml:space="preserve"><value>Order</value></data>
+  <data name="shell.sync.entity.linklySettlement" xml:space="preserve"><value>Linkly Settlement</value></data>
+  <data name="shell.sync.settlementError" xml:space="preserve"><value>Linkly Settlement: {0}</value></data>
+  <data name="shell.sync.settlementLoadFailed" xml:space="preserve"><value>Linkly settlement refresh failed: {0}</value></data>
   <data name="shell.sync.created" xml:space="preserve"><value>Created:</value></data>
   <data name="shell.sync.lastAttempt" xml:space="preserve"><value>Last attempt:</value></data>
   <data name="shell.sync.pending" xml:space="preserve"><value>Pending</value></data>
@@ -666,6 +670,51 @@
   <data name="dailyClose.status.reprintPrinted" xml:space="preserve"><value>Daily close receipt reprinted.</value></data>
   <data name="dailyClose.status.reprintFailed" xml:space="preserve"><value>Daily close reprint failed: {0}</value></data>
   <data name="dailyClose.status.dateChanged" xml:space="preserve"><value>Business date changed to {0:d}.</value></data>
+  <data name="dailyClose.linklySettlement.tab" xml:space="preserve"><value>Linkly Settlement</value></data>
+  <data name="dailyClose.linklySettlement.title" xml:space="preserve"><value>Linkly Settlement Records</value></data>
+  <data name="dailyClose.linklySettlement.hint" xml:space="preserve"><value>Only the current business date can be settled; historical records can only be reprinted.</value></data>
+  <data name="dailyClose.linklySettlement.refresh" xml:space="preserve"><value>Refresh</value></data>
+  <data name="dailyClose.linklySettlement.settleAndPrint" xml:space="preserve"><value>Settle &amp; Print</value></data>
+  <data name="dailyClose.linklySettlement.time" xml:space="preserve"><value>Time</value></data>
+  <data name="dailyClose.linklySettlement.mode" xml:space="preserve"><value>Mode</value></data>
+  <data name="dailyClose.linklySettlement.result" xml:space="preserve"><value>Result</value></data>
+  <data name="dailyClose.linklySettlement.receipt" xml:space="preserve"><value>Receipts</value></data>
+  <data name="dailyClose.linklySettlement.printCount" xml:space="preserve"><value>Prints</value></data>
+  <data name="dailyClose.linklySettlement.response" xml:space="preserve"><value>Response</value></data>
+  <data name="dailyClose.linklySettlement.preview" xml:space="preserve"><value>Bank Settlement Receipt Preview</value></data>
+  <data name="dailyClose.linklySettlement.reprintSelected" xml:space="preserve"><value>Reprint Selected Settlement</value></data>
+  <data name="dailyClose.linklySettlement.sending" xml:space="preserve"><value>Sending Linkly settlement...</value></data>
+  <data name="dailyClose.linklySettlement.unknown" xml:space="preserve"><value>Settlement result is unknown. Do not submit it again.</value></data>
+  <data name="dailyClose.linklySettlement.reusedFinalEvidence" xml:space="preserve"><value>The existing final settlement record was retained. Reprint it manually if needed.</value></data>
+  <data name="dailyClose.linklySettlement.blocked" xml:space="preserve"><value>An unresolved Linkly settlement already exists for this business date.</value></data>
+  <data name="dailyClose.linklySettlement.failedNoReceipt" xml:space="preserve"><value>Settlement failed: {0}</value></data>
+  <data name="dailyClose.linklySettlement.failedReceiptPrinted" xml:space="preserve"><value>Settlement failed, but the bank response receipt was printed: {0}</value></data>
+  <data name="dailyClose.linklySettlement.failedPrintFailed" xml:space="preserve"><value>Settlement failed and its receipt could not be printed: {0}</value></data>
+  <data name="dailyClose.linklySettlement.noReceipt" xml:space="preserve"><value>Settlement result saved. No bank settlement receipt is available to print.</value></data>
+  <data name="dailyClose.linklySettlement.succeededPrinted" xml:space="preserve"><value>Settlement saved and sent to the POS printer.</value></data>
+  <data name="dailyClose.linklySettlement.succeededPrintFailed" xml:space="preserve"><value>Settlement saved, but printing failed: {0}</value></data>
+  <data name="dailyClose.linklySettlement.historyLoading" xml:space="preserve"><value>Loading Linkly settlement history...</value></data>
+  <data name="dailyClose.linklySettlement.historyEmpty" xml:space="preserve"><value>No Linkly settlement records found for this business date.</value></data>
+  <data name="dailyClose.linklySettlement.historyLoaded" xml:space="preserve"><value>Loaded {0} Linkly settlement record(s).</value></data>
+  <data name="dailyClose.linklySettlement.reprinting" xml:space="preserve"><value>Reprinting Linkly settlement receipt...</value></data>
+  <data name="dailyClose.linklySettlement.reprintPrinted" xml:space="preserve"><value>Linkly settlement receipt sent to the POS printer.</value></data>
+  <data name="dailyClose.linklySettlement.reprintFailed" xml:space="preserve"><value>Linkly settlement reprint failed: {0}</value></data>
+  <data name="dailyClose.linklySettlement.submission" xml:space="preserve"><value>Submission</value></data>
+  <data name="dailyClose.linklySettlement.manual.title" xml:space="preserve"><value>Supervisor resolution</value></data>
+  <data name="dailyClose.linklySettlement.manual.hint" xml:space="preserve"><value>For an unresolved Local IP or Cloud Direct settlement only. This never sends another settlement.</value></data>
+  <data name="dailyClose.linklySettlement.manual.succeeded" xml:space="preserve"><value>Confirmed succeeded</value></data>
+  <data name="dailyClose.linklySettlement.manual.failed" xml:space="preserve"><value>Confirmed failed</value></data>
+  <data name="dailyClose.linklySettlement.manual.notSubmitted" xml:space="preserve"><value>Confirmed not submitted</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmRequired" xml:space="preserve"><value>Review the supervisor decision, then confirm it. This will not send another settlement.</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmSucceeded" xml:space="preserve"><value>Confirm that the settlement succeeded at the terminal. This only updates the saved record; it will not send another settlement.</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmFailed" xml:space="preserve"><value>Confirm that the settlement failed at the terminal. This only updates the saved record; it will not send another settlement.</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirmNotSubmitted" xml:space="preserve"><value>Confirm that the settlement was not submitted. This only updates the saved record; it will not send another settlement.</value></data>
+  <data name="dailyClose.linklySettlement.manual.confirm" xml:space="preserve"><value>Confirm decision</value></data>
+  <data name="dailyClose.linklySettlement.manual.cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="dailyClose.linklySettlement.manual.cancelled" xml:space="preserve"><value>Supervisor decision was not saved.</value></data>
+  <data name="dailyClose.linklySettlement.manual.resolved" xml:space="preserve"><value>Supervisor decision saved and queued for upload. No new settlement was sent.</value></data>
+  <data name="dailyClose.linklySettlement.manual.keyboardHint" xml:space="preserve"><value>Use Tab to focus and Enter to activate.</value></data>
+  <data name="dailyClose.linklySettlement.manual.automationName" xml:space="preserve"><value>Linkly settlement supervisor resolution</value></data>
   <data name="dailyClose.businessDate" xml:space="preserve"><value>Business Date</value></data>
   <data name="dailyClose.title" xml:space="preserve"><value>Daily Settlement</value></data>
   <data name="dailyClose.refresh" xml:space="preserve"><value>Refresh</value></data>

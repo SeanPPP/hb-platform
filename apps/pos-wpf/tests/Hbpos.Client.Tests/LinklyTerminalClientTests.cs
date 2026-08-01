@@ -1,5 +1,6 @@
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Linkly;
 using PCEFTPOS.EFTClient.IPInterface;
 using System.Text.Json;
 
@@ -21,7 +22,7 @@ public sealed class LinklyTerminalClientTests
                 Success = true,
                 TxnRef = "TXN-1",
                 AmtPurchase = 10m,
-                Pan = "4111111111111234",
+                Pan = "411111******1234",
                 CardType = "VISA",
                 AuthCode = 123456,
                 CardName = 4,
@@ -430,6 +431,55 @@ public sealed class LinklyTerminalClientTests
         Assert.Equal(StatusType.Standard, request.StatusType);
         Assert.Equal(1, eftClient.DisconnectCallCount);
         Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_sends_settlement_request_and_collects_settlement_receipt()
+    {
+        var eftClient = new FakeLinklyEftClient(
+            new EFTReceiptResponse
+            {
+                Type = ReceiptType.Settlement,
+                ReceiptText = ["SETTLEMENT", "TOTAL $10.00"]
+            },
+            new EFTSettlementResponse
+            {
+                Success = true,
+                ResponseCode = "00",
+                ResponseText = "APPROVED",
+                SettlementData = "TOTAL=10.00"
+            });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.Submitted, result.ProviderSubmissionState);
+        Assert.Equal("00", result.ResponseCode);
+        Assert.Equal("TOTAL=10.00", result.SettlementData);
+        Assert.Contains("SETTLEMENT", Assert.Single(result.ReceiptTexts!));
+        var request = Assert.IsType<EFTSettlementRequest>(eftClient.LastRequest);
+        Assert.Equal(SettlementType.Settlement, request.SettlementType);
+        Assert.Equal("00", request.Merchant);
+        Assert.Equal(TerminalApplication.EFTPOS, request.Application);
+        Assert.Equal(ReceiptPrintModeType.POSPrinter, request.ReceiptAutoPrint);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_returns_unknown_after_request_is_sent_and_response_fails()
+    {
+        var eftClient = new FakeLinklyEftClient { ThrowOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.Unknown, result.ProviderSubmissionState);
+        Assert.IsType<EFTSettlementRequest>(eftClient.LastRequest);
+        Assert.Single(eftClient.Requests);
     }
 
     [Fact]

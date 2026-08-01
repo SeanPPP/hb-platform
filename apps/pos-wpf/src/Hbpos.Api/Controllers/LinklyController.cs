@@ -190,6 +190,52 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.DailyCloseSave)]
+    [HttpPost("cloud-backend/settlements")]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> StartCloudBackendSettlement(
+        [FromBody] LinklyCloudBackendSettlementRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendSessionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await linklyCloudBackendAsyncService.StartSettlementAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                request,
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendActiveTransactionException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendActiveCode,
+                string.IsNullOrWhiteSpace(ex.ActiveSessionId)
+                    ? "An active Linkly Cloud operation already exists for this terminal."
+                    : $"An active Linkly Cloud operation already exists for this terminal: {ex.ActiveSessionId}."));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+        catch (Exception ex)
+        {
+            Log($"cloud backend settlement failed error={ex.GetType().Name}");
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                    CloudBackendFailedCode,
+                    "Failed to start Linkly Cloud backend settlement."));
+        }
+    }
+
     [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPut("cloud-backend/terminal")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendTerminalCredentialResponse>>> UpsertCloudBackendTerminalCredential(
@@ -290,6 +336,39 @@ public sealed class LinklyController(
                 ? NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
                     CloudBackendNotFoundCode,
                     "Linkly Cloud backend session was not found."))
+                : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.DailyCloseSave)]
+    [HttpGet("cloud-backend/settlements/resumable")]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> GetResumableCloudBackendSettlement(
+        [FromQuery] string? environment,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendSessionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await linklyCloudBackendAsyncService.GetResumableSettlementSessionAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                environment ?? string.Empty,
+                cancellationToken);
+            return response is null
+                ? NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                    CloudBackendNotFoundCode,
+                    "Linkly Cloud backend settlement was not found."))
                 : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
         }
         catch (LinklyCloudBackendValidationException ex)
@@ -440,6 +519,41 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.DailyCloseSave)]
+    [HttpGet("cloud-backend/settlements/{sessionId}/status")]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> GetCloudBackendSettlementStatus(
+        string sessionId,
+        [FromQuery] string? environment,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendSessionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await linklyCloudBackendAsyncService.GetSettlementStatusAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                environment ?? string.Empty,
+                sessionId,
+                cancellationToken);
+            return response is null
+                ? NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                    CloudBackendNotFoundCode,
+                    "Linkly Cloud backend settlement was not found."))
+                : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
     [HttpPost("cloud-backend/transactions/{sessionId}/acknowledge")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> AcknowledgeCloudBackendTransaction(
         string sessionId,
@@ -468,6 +582,43 @@ public sealed class LinklyController(
             return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
                 CloudBackendNotFoundCode,
                 "Linkly Cloud backend session was not found."));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.DailyCloseSave)]
+    [HttpPost("cloud-backend/settlements/{sessionId}/acknowledge")]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> AcknowledgeCloudBackendSettlement(
+        string sessionId,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] LinklyCloudBackendAcknowledgeRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendSessionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await linklyCloudBackendAsyncService.AcknowledgeSettlementSessionAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                request?.Environment ?? string.Empty,
+                sessionId,
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendSessionNotFoundException)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendNotFoundCode,
+                "Linkly Cloud backend settlement was not found."));
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -593,6 +744,43 @@ public sealed class LinklyController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.DailyClosePrint)]
+    [HttpPost("cloud-backend/settlements/{sessionId}/receipt/printed")]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendSessionResponse>>> MarkCloudBackendSettlementReceiptPrinted(
+        string sessionId,
+        [FromBody] LinklyCloudBackendMarkReceiptPrintedRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendSessionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await linklyCloudBackendAsyncService.MarkSettlementReceiptPrintedAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                sessionId,
+                request,
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendSessionNotFoundException)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendNotFoundCode,
+                "Linkly Cloud backend settlement was not found."));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
     [AllowAnonymous]
     [HttpPost("cloud-notifications/{environment}/{sessionId}/{type}")]
     public async Task<ActionResult<ApiResult<string>>> ReceiveCloudBackendNotification(
@@ -609,12 +797,9 @@ public sealed class LinklyController(
             sessionId,
             type,
             statusCode: null,
-            request: new
-            {
-                authorization = DescribeAuthorizationHeader(Request.Headers.Authorization.ToString()),
-                payload
-            },
-            response: null);
+            request: null,
+            response: null,
+            callback: DescribeCallbackPayload(payload, includeCardNumber: false));
         try
         {
             await linklyCloudBackendAsyncService.ReceiveNotificationAsync(
@@ -633,7 +818,8 @@ public sealed class LinklyController(
                 type,
                 StatusCodes.Status200OK,
                 request: null,
-                response: accepted);
+                response: accepted,
+                callback: DescribeCallbackPayload(payload, includeCardNumber: true));
             return Ok(accepted);
         }
         catch (LinklyCloudBackendNotificationUnauthorizedException)
@@ -717,7 +903,8 @@ public sealed class LinklyController(
         string type,
         int? statusCode,
         object? request,
-        object? response)
+        object? response,
+        object? callback = null)
     {
         LogJson(BuildJsonLog(
             source: "api-linkly-controller",
@@ -732,7 +919,8 @@ public sealed class LinklyController(
             details: new
             {
                 type,
-                timestamp = DateTimeOffset.Now.ToString("O")
+                timestamp = DateTimeOffset.Now.ToString("O"),
+                callback
             }));
     }
 
@@ -742,16 +930,16 @@ public sealed class LinklyController(
         logger?.LogInformation("[HBPOS][Api][LinklyCloud] {Message}", json);
     }
 
-    private static object DescribeAuthorizationHeader(string? value)
+    private static object DescribeCallbackPayload(JsonElement payload, bool includeCardNumber)
     {
-        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-        var separator = normalized?.IndexOf(' ', StringComparison.Ordinal) ?? -1;
         // 回调 bearer 属于认证材料，日志只保留存在性和 scheme，禁止记录原文。
         return new
         {
-            hasValue = normalized is not null,
-            scheme = separator > 0 ? normalized![..separator] : null,
-            length = normalized?.Length ?? 0
+            hasPayload = payload.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null,
+            payloadKind = payload.ValueKind.ToString(),
+            cardNumber = includeCardNumber
+                ? LinklyReceiptTextSanitizer.FindSanitizedCardNumber(payload)
+                : null
         };
     }
 

@@ -25,12 +25,25 @@ public interface ILinklyCloudBackendAsyncService
         LinklyCloudBackendTransactionRequest request,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendSessionResponse> StartSettlementAsync(
+        string storeCode,
+        string deviceCode,
+        LinklyCloudBackendSettlementRequest request,
+        CancellationToken cancellationToken) => throw new NotSupportedException("Linkly Cloud backend settlement is not supported by this implementation.");
+
     Task<LinklyCloudBackendSessionResponse?> GetStatusAsync(
         string storeCode,
         string deviceCode,
         string environment,
         string sessionId,
         CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendSessionResponse?> GetSettlementStatusAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        string sessionId,
+        CancellationToken cancellationToken) => Task.FromResult<LinklyCloudBackendSessionResponse?>(null);
 
     Task<LinklyCloudBackendSessionResponse?> GetActiveSessionAsync(
         string storeCode,
@@ -43,6 +56,12 @@ public interface ILinklyCloudBackendAsyncService
         string deviceCode,
         string environment,
         CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendSessionResponse?> GetResumableSettlementSessionAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken) => Task.FromResult<LinklyCloudBackendSessionResponse?>(null);
 
     Task<LinklyCloudBackendHealthResponse> GetHealthAsync(
         string storeCode,
@@ -90,12 +109,26 @@ public interface ILinklyCloudBackendAsyncService
         LinklyCloudBackendMarkReceiptPrintedRequest request,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendSessionResponse> MarkSettlementReceiptPrintedAsync(
+        string storeCode,
+        string deviceCode,
+        string sessionId,
+        LinklyCloudBackendMarkReceiptPrintedRequest request,
+        CancellationToken cancellationToken) => throw new NotSupportedException("Linkly Cloud backend settlement is not supported by this implementation.");
+
     Task<LinklyCloudBackendSessionResponse> AcknowledgeSessionAsync(
         string storeCode,
         string deviceCode,
         string environment,
         string sessionId,
         CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendSessionResponse> AcknowledgeSettlementSessionAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        string sessionId,
+        CancellationToken cancellationToken) => throw new NotSupportedException("Linkly Cloud backend settlement is not supported by this implementation.");
 
     Task ReceiveNotificationAsync(
         string environment,
@@ -145,6 +178,8 @@ public class LinklyCloudBackendAsyncService(
 
     private const string RecoveryRetryNewSession = "RetryNewSession";
     private const int MaxTxnRefCreateAttempts = 5;
+    private const string OperationTypeTransaction = "Transaction";
+    private const string OperationTypeSettlement = "Settlement";
 
     public async Task<LinklyCloudBackendSessionResponse> StartTransactionAsync(
         string storeCode,
@@ -216,6 +251,58 @@ public class LinklyCloudBackendAsyncService(
         return await BuildResponseAsync(savedSession, cancellationToken);
     }
 
+    public async Task<LinklyCloudBackendSessionResponse> StartSettlementAsync(
+        string storeCode,
+        string deviceCode,
+        LinklyCloudBackendSettlementRequest request,
+        CancellationToken cancellationToken)
+    {
+        var environment = NormalizeEnvironment(request.Environment);
+        var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
+        var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
+        var notificationBaseUri = GetPublicNotificationBaseUri();
+        _ = GetRequiredNotificationBearer(environment);
+        var activeSession = await repository.GetActiveSessionAsync(
+            environment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
+        if (activeSession is not null)
+        {
+            throw new LinklyCloudBackendActiveTransactionException(activeSession.SessionId);
+        }
+
+        var token = await tokenProvider.GetTokenAsync(
+            environment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
+        var session = await CreatePendingSessionWithUniqueTxnRefAsync(
+            environment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken,
+            OperationTypeSettlement);
+        var transportRequest = new LinklyCloudBackendTransportSettlementRequest(
+            environment,
+            token.RestBaseUrl,
+            token.AccessToken,
+            session.SessionId,
+            BuildNotificationRequest(environment, session.SessionId, notificationBaseUri),
+            normalizedStoreCode,
+            normalizedDeviceCode);
+        var response = await SendWithRecoverableFailureAsync(
+            () => transport.StartSettlementAsync(transportRequest, cancellationToken));
+        ApplySettlementTransportResponse(session, response);
+        if (IsTransportRecoveryFailure(response.StatusCode))
+        {
+            session.RecoveryCount++;
+        }
+
+        var savedSession = await UpsertSessionAndReadLatestAsync(session, cancellationToken);
+        return await BuildResponseAsync(savedSession, cancellationToken);
+    }
+
     public async Task<LinklyCloudBackendSessionResponse?> GetStatusAsync(
         string storeCode,
         string deviceCode,
@@ -250,6 +337,10 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             cancellationToken);
+        if (!IsOperation(session, OperationTypeTransaction))
+        {
+            return null;
+        }
         if (ShouldRefreshOfficialTransaction(session))
         {
             var refreshesCompletedMissingSuccess = ShouldRefreshCompletedMissingSuccess(session);
@@ -303,6 +394,26 @@ public class LinklyCloudBackendAsyncService(
         return result;
     }
 
+    public async Task<LinklyCloudBackendSessionResponse?> GetSettlementStatusAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var session = await repository.GetSessionAsync(
+            NormalizeEnvironment(environment),
+            NormalizeRequired(storeCode, "storeCode"),
+            NormalizeRequired(deviceCode, "deviceCode"),
+            NormalizeRequired(sessionId, "sessionId"),
+            cancellationToken);
+
+        // Settlement 没有可安全复用的 transaction 查询端点，只以回调持久化结果为准。
+        return IsOperation(session, OperationTypeSettlement)
+            ? await BuildResponseAsync(session!, cancellationToken)
+            : null;
+    }
+
     public async Task<LinklyCloudBackendSessionResponse?> GetActiveSessionAsync(
         string storeCode,
         string deviceCode,
@@ -315,7 +426,9 @@ public class LinklyCloudBackendAsyncService(
             NormalizeRequired(deviceCode, "deviceCode"),
             cancellationToken);
 
-        return session is null ? null : await BuildResponseAsync(session, cancellationToken);
+        return session is null
+            ? null
+            : await BuildResponseAsync(session, cancellationToken);
     }
 
     public async Task<LinklyCloudBackendSessionResponse?> GetResumableSessionAsync(
@@ -368,6 +481,22 @@ public class LinklyCloudBackendAsyncService(
             response: result,
             certCase: "4.1.2");
         return result;
+    }
+
+    public async Task<LinklyCloudBackendSessionResponse?> GetResumableSettlementSessionAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken)
+    {
+        var session = await repository.GetResumableSettlementSessionAsync(
+            NormalizeEnvironment(environment),
+            NormalizeRequired(storeCode, "storeCode"),
+            NormalizeRequired(deviceCode, "deviceCode"),
+            cancellationToken);
+        return IsOperation(session, OperationTypeSettlement)
+            ? await BuildResponseAsync(session!, cancellationToken)
+            : null;
     }
 
     public async Task<LinklyCloudBackendSessionResponse> RecoverAsync(
@@ -526,6 +655,26 @@ public class LinklyCloudBackendAsyncService(
         return result;
     }
 
+    public async Task<LinklyCloudBackendSessionResponse> MarkSettlementReceiptPrintedAsync(
+        string storeCode,
+        string deviceCode,
+        string sessionId,
+        LinklyCloudBackendMarkReceiptPrintedRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = await GetRequiredSessionAsync(
+            storeCode,
+            deviceCode,
+            request.Environment,
+            sessionId,
+            cancellationToken,
+            OperationTypeSettlement);
+        session.ReceiptPrintedAt ??= DateTimeOffset.UtcNow;
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        var savedSession = await UpsertSessionAndReadLatestAsync(session, cancellationToken);
+        return await BuildResponseAsync(savedSession, cancellationToken);
+    }
+
     public async Task<LinklyCloudBackendSessionResponse> AcknowledgeSessionAsync(
         string storeCode,
         string deviceCode,
@@ -585,6 +734,38 @@ public class LinklyCloudBackendAsyncService(
         return result;
     }
 
+    public async Task<LinklyCloudBackendSessionResponse> AcknowledgeSettlementSessionAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedEnvironment = NormalizeEnvironment(environment);
+        var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
+        var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
+        var normalizedSessionId = NormalizeRequired(sessionId, "sessionId");
+        var session = await repository.GetSessionAsync(
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            normalizedSessionId,
+            cancellationToken);
+        if (!IsOperation(session, OperationTypeSettlement))
+        {
+            throw new LinklyCloudBackendSessionNotFoundException();
+        }
+
+        var acknowledged = await repository.AcknowledgeSessionAsync(
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            normalizedSessionId,
+            DateTimeOffset.UtcNow,
+            cancellationToken) ?? throw new LinklyCloudBackendSessionNotFoundException();
+        return await BuildResponseAsync(acknowledged, cancellationToken);
+    }
+
     public async Task ReceiveNotificationAsync(
         string environment,
         string sessionId,
@@ -612,7 +793,8 @@ public class LinklyCloudBackendAsyncService(
 
         var normalizedSessionId = NormalizeRequired(sessionId, "sessionId");
         var normalizedType = NormalizeRequired(type, "type");
-        var payloadJson = payload.GetRawText();
+        // 回调原文仅在当前请求内解析；进入日志、通知事实表和后续响应前必须完成脱敏。
+        var payloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(payload.GetRawText()) ?? "{}";
         var now = DateTimeOffset.UtcNow;
 
         var session = await repository.GetSessionByEnvironmentSessionIdAsync(
@@ -633,9 +815,13 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             normalizedSessionId,
             cancellationToken);
-        if (!existingNotifications.Any(notification =>
+        var isSettlementReceipt =
+            string.Equals(normalizedType, "receipt", StringComparison.OrdinalIgnoreCase) &&
+            IsOperation(session, OperationTypeSettlement);
+        var notificationAlreadyRecorded = !isSettlementReceipt && existingNotifications.Any(notification =>
             string.Equals(notification.Type, normalizedType, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(notification.PayloadJson, payloadJson, StringComparison.Ordinal)))
+            string.Equals(notification.PayloadJson, payloadJson, StringComparison.Ordinal));
+        if (!notificationAlreadyRecorded)
         {
             await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
             {
@@ -649,7 +835,12 @@ public class LinklyCloudBackendAsyncService(
             }, cancellationToken);
         }
 
-        if (string.Equals(normalizedType, "transaction", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(normalizedType, "settlement", StringComparison.OrdinalIgnoreCase) &&
+            IsOperation(session, OperationTypeSettlement))
+        {
+            ApplySettlementCompletedPayload(session, payloadJson, now);
+        }
+        else if (string.Equals(normalizedType, "transaction", StringComparison.OrdinalIgnoreCase))
         {
             LogTransactionNotificationSnapshot(normalizedSessionId, payloadJson);
             var updateOutcomeEvidence = !IsCompleted(session) ||
@@ -675,7 +866,21 @@ public class LinklyCloudBackendAsyncService(
         }
         else if (string.Equals(normalizedType, "receipt", StringComparison.OrdinalIgnoreCase))
         {
-            ApplyReceiptPayload(session, payloadJson, now);
+            if (IsOperation(session, OperationTypeSettlement))
+            {
+                if (!notificationAlreadyRecorded)
+                {
+                    ApplySettlementReceiptPayload(session, payloadJson, now);
+                }
+                else
+                {
+                    session.UpdatedAt = now;
+                }
+            }
+            else
+            {
+                ApplyReceiptPayload(session, payloadJson, now);
+            }
         }
         else
         {
@@ -1069,21 +1274,27 @@ public class LinklyCloudBackendAsyncService(
         string deviceCode,
         string environment,
         string sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedOperationType = null)
     {
-        return await repository.GetSessionAsync(
+        var session = await repository.GetSessionAsync(
             NormalizeEnvironment(environment),
             NormalizeRequired(storeCode, "storeCode"),
             NormalizeRequired(deviceCode, "deviceCode"),
             NormalizeRequired(sessionId, "sessionId"),
-            cancellationToken) ?? throw new LinklyCloudBackendSessionNotFoundException();
+            cancellationToken);
+        return session is null ||
+            expectedOperationType is not null && !IsOperation(session, expectedOperationType)
+            ? throw new LinklyCloudBackendSessionNotFoundException()
+            : session;
     }
 
     private async Task<LinklyCloudBackendSessionRecord> CreatePendingSessionWithUniqueTxnRefAsync(
         string environment,
         string storeCode,
         string deviceCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string operationType = OperationTypeTransaction)
     {
         for (var attempt = 0; attempt < MaxTxnRefCreateAttempts; attempt++)
         {
@@ -1095,7 +1306,10 @@ public class LinklyCloudBackendAsyncService(
                 DeviceCode = deviceCode,
                 SessionId = Guid.NewGuid().ToString("D"),
                 Status = StatusPending,
-                TxnRef = CreateTxnRef(),
+                OperationType = operationType,
+                TxnRef = string.Equals(operationType, OperationTypeTransaction, StringComparison.OrdinalIgnoreCase)
+                    ? CreateTxnRef()
+                    : null,
                 IsActive = true,
                 UpdatedAt = now
             };
@@ -1306,10 +1520,17 @@ public class LinklyCloudBackendAsyncService(
             latest.TransactionSuccess is not null &&
             incoming.TransactionSuccess is not null &&
             latest.TransactionSuccess != incoming.TransactionSuccess;
-        return !SameOptional(latest.TxnRef, incoming.TxnRef) ||
+        var operationSuccessConflict =
+            latest.OperationSuccess is not null &&
+            incoming.OperationSuccess is not null &&
+            latest.OperationSuccess != incoming.OperationSuccess;
+        return !SameOptional(latest.OperationType, incoming.OperationType) ||
+            !SameOptional(latest.TxnRef, incoming.TxnRef) ||
             transactionSuccessConflict ||
+            operationSuccessConflict ||
             !SameOptional(latest.ResponseCode, incoming.ResponseCode) ||
-            !SameOptional(latest.ResponseText, incoming.ResponseText);
+            !SameOptional(latest.ResponseText, incoming.ResponseText) ||
+            !SameOptional(latest.SettlementData, incoming.SettlementData);
     }
 
     private static bool ShouldRefreshOfficialTransaction(LinklyCloudBackendSessionRecord? session)
@@ -1335,6 +1556,11 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             session.SessionId,
             cancellationToken);
+        // Settlement 回单以通知表为事实来源，避免并发 receipt/final 回调整行更新 session 时互相覆盖。
+        var settlementReceiptTexts = IsOperation(session, OperationTypeSettlement)
+            ? BuildSettlementReceiptTexts(session.SettlementReceiptTexts, notifications)
+            : LinklyReceiptTextSanitizer.SanitizeReceipts(
+                ReadSettlementReceiptTexts(session.SettlementReceiptTexts));
         return new LinklyCloudBackendSessionResponse(
             session.Environment,
             session.StoreCode,
@@ -1343,9 +1569,9 @@ public class LinklyCloudBackendAsyncService(
             session.Status,
             session.TxnRef,
             session.ResponseCode,
-            session.ResponseText,
+            SanitizeOptionalText(session.ResponseText),
             session.RecoveryAction,
-            session.DisplayText,
+            SanitizeOptionalText(session.DisplayText),
             session.CancelKeyFlag,
             session.OKKeyFlag,
             session.AcceptYesKeyFlag,
@@ -1353,17 +1579,23 @@ public class LinklyCloudBackendAsyncService(
             session.AuthoriseKeyFlag,
             session.InputType,
             session.GraphicCode,
-            SplitDisplayLines(session.DisplayLines),
-            session.ReceiptText,
+            SplitDisplayLines(session.DisplayLines)
+                .Select(LinklyReceiptTextSanitizer.Sanitize)
+                .ToArray(),
+            SanitizeOptionalText(session.ReceiptText),
             session.RecoveryCount,
             session.ReceiptPrintedAt,
             session.ClientAcknowledgedAt,
             session.LastHttpStatus,
             notifications.Select(notification => new LinklyCloudBackendNotificationDto(
                 notification.Type,
-                notification.PayloadJson,
+                LinklyReceiptTextSanitizer.SanitizeSettlementData(notification.PayloadJson) ?? "{}",
                 notification.ReceivedAt)).ToArray(),
-            session.TransactionSuccess);
+            session.TransactionSuccess,
+            NormalizeOperationType(session.OperationType),
+            session.OperationSuccess,
+            LinklyReceiptTextSanitizer.SanitizeSettlementData(session.SettlementData),
+            settlementReceiptTexts);
     }
 
     private static async Task<LinklyCloudBackendTransportResponse> SendWithRecoverableFailureAsync(
@@ -1431,6 +1663,34 @@ public class LinklyCloudBackendAsyncService(
         session.Status = StatusFailed;
         session.ResponseText = $"Linkly Cloud returned HTTP {code}.";
         session.IsActive = false;
+    }
+
+    private static void ApplySettlementTransportResponse(
+        LinklyCloudBackendSessionRecord session,
+        LinklyCloudBackendTransportResponse response)
+    {
+        if (response.StatusCode == HttpStatusCode.OK)
+        {
+            session.LastHttpStatus = (int)response.StatusCode;
+            ApplySettlementCompletedPayload(session, response.Body, DateTimeOffset.UtcNow);
+            return;
+        }
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            // Settlement 没有 transaction GET 恢复路径；鉴权拒绝表示请求未提交，必须立即释放终端锁。
+            var code = (int)response.StatusCode;
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            session.LastHttpStatus = code;
+            session.Status = StatusNotSubmitted;
+            session.OperationSuccess = false;
+            session.ResponseText = $"Linkly Cloud settlement was not submitted (HTTP {code}).";
+            session.RecoveryAction = null;
+            session.IsActive = false;
+            return;
+        }
+
+        ApplyTransportResponse(session, response);
     }
 
     private static void ApplySendKeyTransportResponse(
@@ -1527,8 +1787,30 @@ public class LinklyCloudBackendAsyncService(
         if (updateOutcomeEvidence)
         {
             session.ResponseCode = responseCode;
-            session.ResponseText = responseText;
+            session.ResponseText = SanitizeOptionalText(responseText);
         }
+    }
+
+    private static void ApplySettlementCompletedPayload(
+        LinklyCloudBackendSessionRecord session,
+        string? payloadJson,
+        DateTimeOffset receivedAt)
+    {
+        session.Status = StatusCompleted;
+        session.IsActive = false;
+        session.RecoveryAction = null;
+        session.UpdatedAt = receivedAt;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return;
+        }
+
+        using var document = JsonDocument.Parse(payloadJson);
+        var response = ReadResponse(document.RootElement);
+        session.OperationSuccess = ReadBool(response, "Success");
+        session.ResponseCode = ReadString(response, "ResponseCode");
+        session.ResponseText = SanitizeOptionalText(ReadString(response, "ResponseText"));
+        session.SettlementData = LinklyReceiptTextSanitizer.SanitizeSettlementData(ReadString(response, "SettlementData"));
     }
 
     private static bool IsCancelledResponse(bool? transactionSuccess, string? responseCode, string? responseText)
@@ -1611,7 +1893,7 @@ public class LinklyCloudBackendAsyncService(
             DeviceCode = session.DeviceCode,
             SessionId = session.SessionId,
             Type = "transaction",
-            PayloadJson = response.Body,
+            PayloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(response.Body) ?? "{}",
             ReceivedAt = DateTimeOffset.UtcNow
         }, cancellationToken);
     }
@@ -1682,10 +1964,90 @@ public class LinklyCloudBackendAsyncService(
         var receiptText = ReadPayloadText(payloadJson, "ReceiptText");
         if (!string.IsNullOrWhiteSpace(receiptText))
         {
-            session.ReceiptText = receiptText;
+            session.ReceiptText = LinklyReceiptTextSanitizer.Sanitize(receiptText);
         }
 
         session.UpdatedAt = receivedAt;
+    }
+
+    private static void ApplySettlementReceiptPayload(
+        LinklyCloudBackendSessionRecord session,
+        string payloadJson,
+        DateTimeOffset receivedAt)
+    {
+        var receiptText = ReadSettlementReceiptText(payloadJson);
+        if (!string.IsNullOrWhiteSpace(receiptText))
+        {
+            receiptText = LinklyReceiptTextSanitizer.Sanitize(receiptText);
+            var savedTexts = ReadSettlementReceiptTexts(session.SettlementReceiptTexts).ToList();
+            savedTexts.Add(receiptText);
+            session.SettlementReceiptTexts = JsonSerializer.Serialize(savedTexts, ServiceJsonOptions);
+        }
+
+        session.UpdatedAt = receivedAt;
+    }
+
+    private static IReadOnlyList<string> BuildSettlementReceiptTexts(
+        string? serializedTexts,
+        IReadOnlyList<LinklyCloudBackendNotificationRecord> notifications)
+    {
+        var receiptTexts = new List<string>();
+        foreach (var notification in notifications)
+        {
+            if (!string.Equals(notification.Type, "receipt", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var receiptText = ReadSettlementReceiptText(notification.PayloadJson);
+            if (!string.IsNullOrWhiteSpace(receiptText))
+            {
+                receiptTexts.Add(receiptText);
+            }
+        }
+
+        // 兼容通知事实表启用前已经保存到 session 的历史结算回单，避免与通知事实重复计数。
+        if (receiptTexts.Count == 0)
+        {
+            receiptTexts.AddRange(ReadSettlementReceiptTexts(serializedTexts));
+        }
+
+        return LinklyReceiptTextSanitizer.SanitizeReceipts(receiptTexts);
+    }
+
+    private static string? ReadSettlementReceiptText(string payloadJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            var response = ReadResponse(root);
+            var receiptType = ReadString(root, "Type") ?? ReadString(response, "Type");
+            return string.Equals(receiptType, "S", StringComparison.OrdinalIgnoreCase)
+                ? ReadText(root, "ReceiptText") ?? ReadText(response, "ReceiptText")
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<string> ReadSettlementReceiptTexts(string? serializedTexts)
+    {
+        if (string.IsNullOrWhiteSpace(serializedTexts))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(serializedTexts, ServiceJsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [serializedTexts];
+        }
     }
 
     private static bool IsTransportRecoveryFailure(HttpStatusCode statusCode)
@@ -1711,6 +2073,24 @@ public class LinklyCloudBackendAsyncService(
         using var document = JsonDocument.Parse(payloadJson);
         return ReadText(document.RootElement, propertyName) ??
             ReadText(ReadResponse(document.RootElement), propertyName);
+    }
+
+    private static string? SanitizeOptionalText(string? value)
+    {
+        return value is null ? null : LinklyReceiptTextSanitizer.Sanitize(value);
+    }
+
+    private static bool IsOperation(LinklyCloudBackendSessionRecord? session, string operationType)
+    {
+        return session is not null &&
+            string.Equals(NormalizeOperationType(session.OperationType), operationType, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeOperationType(string? operationType)
+    {
+        return string.Equals(operationType, OperationTypeSettlement, StringComparison.OrdinalIgnoreCase)
+            ? OperationTypeSettlement
+            : OperationTypeTransaction;
     }
 
     private static bool IsCompleted(LinklyCloudBackendSessionRecord session)
@@ -3052,6 +3432,10 @@ public interface ILinklyCloudBackendAsyncTransport
         LinklyCloudBackendTransportTransactionRequest request,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendTransportResponse> StartSettlementAsync(
+        LinklyCloudBackendTransportSettlementRequest request,
+        CancellationToken cancellationToken) => throw new NotSupportedException("Linkly Cloud backend settlement is not supported by this transport.");
+
     Task<LinklyCloudBackendTransportResponse> RecoverTransactionAsync(
         LinklyCloudBackendTransportSessionRequest request,
         CancellationToken cancellationToken);
@@ -3090,6 +3474,15 @@ public sealed record LinklyCloudBackendTransportTransactionRequest(
     long AmtPurchase,
     string TxnRef,
     IReadOnlyDictionary<string, string>? PurchaseAnalysisData,
+    LinklyCloudBackendNotificationRequest Notification,
+    string StoreCode,
+    string DeviceCode);
+
+public sealed record LinklyCloudBackendTransportSettlementRequest(
+    string Environment,
+    string RestBaseUrl,
+    string AccessToken,
+    string SessionId,
     LinklyCloudBackendNotificationRequest Notification,
     string StoreCode,
     string DeviceCode);
@@ -3164,6 +3557,39 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.TxnRef,
             operation: "transaction",
             endpointSegment: "transaction",
+            asyncMode: true,
+            method: HttpMethod.Post,
+            body: new LinklyCloudBackendApiRequest(
+                fields,
+                new LinklyCloudBackendApiNotification(
+                    request.Notification.Uri,
+                    request.Notification.AuthorizationHeader)),
+            cancellationToken);
+    }
+
+    public Task<LinklyCloudBackendTransportResponse> StartSettlementAsync(
+        LinklyCloudBackendTransportSettlementRequest request,
+        CancellationToken cancellationToken)
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["Merchant"] = "00",
+            ["Application"] = "00",
+            ["SettlementType"] = "S",
+            ["ReceiptAutoPrint"] = "0",
+            ["CutReceipt"] = "0"
+        };
+        return SendAsync(
+            request.Environment,
+            request.StoreCode,
+            request.DeviceCode,
+            request.RestBaseUrl,
+            request.AccessToken,
+            request.SessionId,
+            txnType: null,
+            txnRef: null,
+            operation: "settlement",
+            endpointSegment: "settlement",
             asyncMode: true,
             method: HttpMethod.Post,
             body: new LinklyCloudBackendApiRequest(
@@ -3505,7 +3931,9 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
                     responseDate = responseDetails.Date,
                     responseTime = responseDetails.Time,
                     responseCode = responseDetails.ResponseCode,
-                    responseText = responseDetails.ResponseText
+                    responseText = string.IsNullOrWhiteSpace(responseDetails.ResponseText)
+                        ? null
+                        : LinklyReceiptTextSanitizer.Sanitize(responseDetails.ResponseText)
                 }
             },
             LogJsonOptions);
@@ -3595,14 +4023,15 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             return null;
         }
 
+        var sanitizedBody = LinklyReceiptTextSanitizer.SanitizeSettlementData(bodyJson) ?? string.Empty;
         try
         {
-            using var document = JsonDocument.Parse(bodyJson);
+            using var document = JsonDocument.Parse(sanitizedBody);
             return RedactJsonElement(document.RootElement, propertyName: null);
         }
         catch (JsonException)
         {
-            return bodyJson;
+            return LinklyReceiptTextSanitizer.Sanitize(sanitizedBody);
         }
     }
 
@@ -3727,6 +4156,12 @@ public interface ILinklyCloudBackendAsyncRepository
         string storeCode,
         string deviceCode,
         CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendSessionRecord?> GetResumableSettlementSessionAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken) => Task.FromResult<LinklyCloudBackendSessionRecord?>(null);
 
     Task<LinklyCloudBackendSessionRecord?> AcknowledgeSessionAsync(
         string environment,
@@ -3875,6 +4310,29 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             var session = _sessions.Values
                 .Where(existing =>
                     SameTerminal(existing, environment, storeCode, deviceCode) &&
+                    !string.Equals(existing.OperationType, "Settlement", StringComparison.OrdinalIgnoreCase) &&
+                    (existing.IsActive ||
+                        IsFinalForClientRecovery(existing) && existing.ClientAcknowledgedAt is null))
+                .OrderBy(existing => existing.IsActive ? 0 : 1)
+                .ThenByDescending(existing => existing.UpdatedAt)
+                .ThenByDescending(existing => existing.Id)
+                .FirstOrDefault();
+            return Task.FromResult(session is null ? null : Clone(session));
+        }
+    }
+
+    public Task<LinklyCloudBackendSessionRecord?> GetResumableSettlementSessionAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var session = _sessions.Values
+                .Where(existing =>
+                    SameTerminal(existing, environment, storeCode, deviceCode) &&
+                    string.Equals(existing.OperationType, "Settlement", StringComparison.OrdinalIgnoreCase) &&
                     (existing.IsActive ||
                         IsFinalForClientRecovery(existing) && existing.ClientAcknowledgedAt is null))
                 .OrderBy(existing => existing.IsActive ? 0 : 1)
@@ -3917,7 +4375,8 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
     {
         lock (_gate)
         {
-            if (!_notifications.Any(existing =>
+            if (string.Equals(notification.Type, "receipt", StringComparison.OrdinalIgnoreCase) ||
+                !_notifications.Any(existing =>
                 string.Equals(existing.Environment, notification.Environment, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(existing.StoreCode, notification.StoreCode, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(existing.DeviceCode, notification.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
@@ -4004,6 +4463,10 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             ResponseCode = session.ResponseCode,
             ResponseText = session.ResponseText,
             TransactionSuccess = session.TransactionSuccess,
+            OperationType = session.OperationType,
+            OperationSuccess = session.OperationSuccess,
+            SettlementData = session.SettlementData,
+            SettlementReceiptTexts = session.SettlementReceiptTexts,
             RecoveryAction = session.RecoveryAction,
             DisplayText = session.DisplayText,
             DisplayLines = session.DisplayLines,
@@ -4063,14 +4526,14 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
               AND [TxnRef] = @TxnRef)
         BEGIN
             INSERT INTO [dbo].[POSM_LinklyCloudBackendSession] (
-                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef], [OperationType],
+                [TransactionSuccess], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
-                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef,
-                @TransactionSuccess, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
+                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef, @OperationType,
+                @TransactionSuccess, @OperationSuccess, @SettlementData, @SettlementReceiptTexts, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
                 @RecoveryCount, @ReceiptPrintedAt, @ClientAcknowledgedAt, @LastHttpStatus, @IsActive, @UpdatedAt);
@@ -4091,10 +4554,19 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
                 target.[Status] IN ('Completed', 'Cancelled')
                 AND (
                     @Status NOT IN ('Completed', 'Cancelled')
+                    OR ISNULL(target.[OperationType], N'Transaction') <> ISNULL(@OperationType, N'Transaction')
                     OR ISNULL(target.[TxnRef], N'') <> ISNULL(@TxnRef, N'')
                     OR (
                         target.[TransactionSuccess] IS NOT NULL
                         AND ISNULL(CONVERT(INT, target.[TransactionSuccess]), -1) <> ISNULL(CONVERT(INT, @TransactionSuccess), -1)
+                    )
+                    OR (
+                        target.[OperationSuccess] IS NOT NULL
+                        AND ISNULL(CONVERT(INT, target.[OperationSuccess]), -1) <> ISNULL(CONVERT(INT, @OperationSuccess), -1)
+                    )
+                    OR (
+                        target.[SettlementData] IS NOT NULL
+                        AND ISNULL(target.[SettlementData], N'') <> ISNULL(@SettlementData, N'')
                     )
                     OR ISNULL(target.[ResponseCode], N'') <> ISNULL(@ResponseCode, N'')
                     OR ISNULL(target.[ResponseText], N'') <> ISNULL(@ResponseText, N'')
@@ -4102,7 +4574,11 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             UPDATE SET
                 [Status] = @Status,
                 [TxnRef] = @TxnRef,
+                [OperationType] = @OperationType,
                 [TransactionSuccess] = @TransactionSuccess,
+                [OperationSuccess] = @OperationSuccess,
+                [SettlementData] = @SettlementData,
+                [SettlementReceiptTexts] = @SettlementReceiptTexts,
                 [ResponseCode] = @ResponseCode,
                 [ResponseText] = @ResponseText,
                 [RecoveryAction] = @RecoveryAction,
@@ -4124,14 +4600,14 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
                 [UpdatedAt] = @UpdatedAt
         WHEN NOT MATCHED THEN
             INSERT (
-                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef], [OperationType],
+                [TransactionSuccess], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
-                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef,
-                @TransactionSuccess, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
+                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef, @OperationType,
+                @TransactionSuccess, @OperationSuccess, @SettlementData, @SettlementReceiptTexts, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
                 @RecoveryCount, @ReceiptPrintedAt, @ClientAcknowledgedAt, @LastHttpStatus, @IsActive, @UpdatedAt);
@@ -4202,7 +4678,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -4229,7 +4705,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -4254,7 +4730,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -4284,7 +4760,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -4292,6 +4768,42 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [DeviceCode] = @DeviceCode
+              AND ISNULL([OperationType], N'Transaction') = N'Transaction'
+              AND (
+                    [IsActive] = 1
+                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
+                  )
+            ORDER BY
+                CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
+                [UpdatedAt] DESC,
+                [Id] DESC;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendSessionRecord>(
+            sql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@DeviceCode", deviceCode));
+    }
+
+    public async Task<LinklyCloudBackendSessionRecord?> GetResumableSettlementSessionAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP 1
+                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
+                [InputType], [GraphicCode], [ReceiptText],
+                [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
+            FROM [dbo].[POSM_LinklyCloudBackendSession]
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [DeviceCode] = @DeviceCode
+              AND [OperationType] = N'Settlement'
               AND (
                     [IsActive] = 1
                     OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
@@ -4346,7 +4858,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         CancellationToken cancellationToken)
     {
         const string sql = """
-            IF NOT EXISTS (
+            IF LOWER(@Type) = N'receipt' OR NOT EXISTS (
                 SELECT 1
                 FROM [dbo].[POSM_LinklyCloudBackendNotification] WITH (UPDLOCK, HOLDLOCK)
                 WHERE [Environment] = @Environment
@@ -4410,7 +4922,11 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             new SugarParameter("@SessionId", session.SessionId),
             new SugarParameter("@Status", session.Status),
             new SugarParameter("@TxnRef", session.TxnRef),
+            new SugarParameter("@OperationType", session.OperationType),
             new SugarParameter("@TransactionSuccess", session.TransactionSuccess),
+            new SugarParameter("@OperationSuccess", session.OperationSuccess),
+            new SugarParameter("@SettlementData", session.SettlementData),
+            new SugarParameter("@SettlementReceiptTexts", session.SettlementReceiptTexts),
             new SugarParameter("@ResponseCode", session.ResponseCode),
             new SugarParameter("@ResponseText", session.ResponseText),
             new SugarParameter("@RecoveryAction", session.RecoveryAction),
@@ -4458,6 +4974,14 @@ public sealed class LinklyCloudBackendSessionRecord
     public string? TxnRef { get; set; }
 
     public bool? TransactionSuccess { get; set; }
+
+    public string OperationType { get; set; } = "Transaction";
+
+    public bool? OperationSuccess { get; set; }
+
+    public string? SettlementData { get; set; }
+
+    public string? SettlementReceiptTexts { get; set; }
 
     public string? ResponseCode { get; set; }
 

@@ -14,6 +14,12 @@ public sealed class LinklyCloudBackendAsyncSchemaInitializerTests
 
         Assert.Single(executor.SqlStatements);
         var sql = executor.SqlStatements[0];
+        Assert.Contains("SET XACT_ABORT ON", sql);
+        Assert.Contains("BEGIN TRANSACTION", sql);
+        Assert.Contains("sys.sp_getapplock", sql);
+        Assert.Contains("Hbpos.LinklyCloudBackendAsync.Schema.v1", sql);
+        Assert.Contains("@LockOwner = N'Transaction'", sql);
+        Assert.Contains("COMMIT TRANSACTION", sql);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U') IS NULL", sql);
         Assert.Contains("[Environment] NVARCHAR(32) NOT NULL", sql);
         Assert.Contains("[StoreCode] NVARCHAR(32) NOT NULL", sql);
@@ -35,6 +41,10 @@ public sealed class LinklyCloudBackendAsyncSchemaInitializerTests
         Assert.Contains("[ClientAcknowledgedAt] DATETIME2(7) NULL", sql);
         Assert.Contains("[LastHttpStatus] INT NULL", sql);
         Assert.Contains("[TransactionSuccess] BIT NULL", sql);
+        Assert.Contains("[OperationType] NVARCHAR(32) NOT NULL", sql);
+        Assert.Contains("[OperationSuccess] BIT NULL", sql);
+        Assert.Contains("[SettlementData] NVARCHAR(MAX) NULL", sql);
+        Assert.Contains("[SettlementReceiptTexts] NVARCHAR(MAX) NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayText') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayLines') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'CancelKeyFlag') IS NULL", sql);
@@ -50,6 +60,10 @@ public sealed class LinklyCloudBackendAsyncSchemaInitializerTests
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'ClientAcknowledgedAt') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'LastHttpStatus') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'TransactionSuccess') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'OperationType') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'OperationSuccess') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'SettlementData') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'SettlementReceiptTexts') IS NULL", sql);
         Assert.Contains("UNIQUE ([Environment], [StoreCode], [DeviceCode], [SessionId])", sql);
         Assert.Contains("UX_POSM_LinklyCloudBackendSession_ActiveTerminal", sql);
         Assert.Contains("UX_POSM_LinklyCloudBackendSession_TxnRef", sql);

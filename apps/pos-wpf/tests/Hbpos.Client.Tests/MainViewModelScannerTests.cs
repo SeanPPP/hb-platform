@@ -4084,6 +4084,54 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Startup_online_check_auto_retries_pending_linkly_settlements_and_refreshes_sync_center()
+    {
+        var settlementReader = new FakeSettlementUploadQueueReader
+        {
+            Overview = new LinklySettlementUploadOverview(1, 0, 0, null),
+            ActiveItems =
+            [
+                new LinklySettlementUploadQueueItem(
+                    Guid.NewGuid(),
+                    "1042",
+                    "POS-01",
+                    DateTime.Today,
+                    LocalLinklySettlementUploadStatus.Pending,
+                    DateTimeOffset.UtcNow,
+                    1,
+                    0,
+                    0,
+                    DateTimeOffset.UtcNow,
+                    null,
+                    null,
+                    null,
+                    null)
+            ]
+        };
+        var settlementExecutor = new FakeSettlementUploadExecutionService
+        {
+            OnExecutePending = () =>
+            {
+                settlementReader.Overview = new LinklySettlementUploadOverview(0, 0, 0, null);
+                settlementReader.ActiveItems = [];
+            }
+        };
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            linklySettlementUploadQueueReader: settlementReader,
+            linklySettlementUploadExecutionService: settlementExecutor);
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+
+        Assert.Equal(1, settlementExecutor.ExecutePendingCallCount);
+        Assert.Equal(0, viewModel.PendingUploadCount);
+        Assert.Empty(viewModel.SyncCenterOrders);
+    }
+
+    [Fact]
     public async Task Connectivity_refresh_auto_retries_when_backend_changes_from_offline_to_online()
     {
         var syncQueue = new FakeSyncQueueRepository
@@ -5045,7 +5093,9 @@ public sealed class MainViewModelScannerTests
         IOperationAuthorizationService? operationAuthorizationService = null,
         IUserFeedbackService? userFeedbackService = null,
         IMainShellStartupService? mainShellStartupService = null,
-        bool enforceCashierPermissions = false)
+        bool enforceCashierPermissions = false,
+        ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null)
     {
         var priceIndex = new LocalSellableItemIndex();
         var effectiveCart = cart ?? new PosCartService();
@@ -5103,7 +5153,9 @@ public sealed class MainViewModelScannerTests
             runtimeStatusApiClient: runtimeStatusApiClient,
             operationAuditLogger: operationAuditLogger,
             operationAuthorizationService: operationAuthorizationService,
-            enforceCashierPermissions: enforceCashierPermissions);
+            enforceCashierPermissions: enforceCashierPermissions,
+            linklySettlementUploadQueueReader: linklySettlementUploadQueueReader,
+            linklySettlementUploadExecutionService: linklySettlementUploadExecutionService);
     }
 
     private static MainViewModel CreateMainViewModelWithShellCatalog(
@@ -6890,6 +6942,42 @@ public sealed class MainViewModelScannerTests
             OnExecutePending?.Invoke();
             return ExecutePendingResult;
         }
+    }
+
+    private sealed class FakeSettlementUploadQueueReader : ILinklySettlementUploadQueueReader
+    {
+        public LinklySettlementUploadOverview Overview { get; set; } = new(0, 0, 0, null);
+
+        public IReadOnlyList<LinklySettlementUploadQueueItem> ActiveItems { get; set; } = [];
+
+        public Task<LinklySettlementUploadOverview> GetOverviewAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Overview);
+
+        public Task<IReadOnlyList<LinklySettlementUploadQueueItem>> GetActiveItemsAsync(
+            int take = 20,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(ActiveItems);
+    }
+
+    private sealed class FakeSettlementUploadExecutionService : ILinklySettlementUploadExecutionService
+    {
+        public int ExecutePendingCallCount { get; private set; }
+
+        public Action? OnExecutePending { get; init; }
+
+        public Task<LinklySettlementUploadExecutionResult> ExecutePendingAsync(
+            int batchSize = 20,
+            CancellationToken cancellationToken = default)
+        {
+            ExecutePendingCallCount++;
+            OnExecutePending?.Invoke();
+            return Task.FromResult(new LinklySettlementUploadExecutionResult(1, 1, 0, 0, false));
+        }
+
+        public Task<LinklySettlementUploadExecutionResult> ExecuteOneAsync(
+            Guid settlementGuid,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new LinklySettlementUploadExecutionResult(1, 1, 0, 0, false));
     }
 
     private sealed class FakeCustomerDisplayWindowService : ICustomerDisplayWindowService

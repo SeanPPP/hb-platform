@@ -11,6 +11,23 @@ namespace Hbpos.Client.Tests;
 public sealed class LinklyBackendTerminalClientTests
 {
     [Fact]
+    public async Task SettlementAsync_returns_not_submitted_when_cancelled_before_any_backend_request()
+    {
+        var client = CreateClient(
+            new StubHttpMessageHandler(_ => throw new InvalidOperationException("HTTP should not be called.")),
+            new FakeLinklyTerminalDialogService());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings(), cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Null(result.SessionId);
+        Assert.Equal(ProviderSubmissionState.NotSubmitted, result.ProviderSubmissionState);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_uses_localized_backend_message_for_invalid_amount()
     {
         var localization = new LocalizationService();
@@ -24,6 +41,262 @@ public sealed class LinklyBackendTerminalClientTests
 
         Assert.False(result.Approved);
         Assert.Equal("刷卡金额必须大于零。", result.Message);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_starts_one_backend_settlement_and_returns_receipts_without_acknowledging()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "settlement-1",
+                        "status": "Completed",
+                        "responseCode": "00",
+                        "responseText": "SETTLED",
+                        "operationType": "Settlement",
+                        "operationSuccess": true,
+                        "settlementData": "TOTAL=10.00",
+                        "settlementReceiptTexts": ["SETTLEMENT", "TOTAL $10.00"],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("settlement-1", result.SessionId);
+        Assert.Equal("TOTAL=10.00", result.SettlementData);
+        Assert.Equal(["SETTLEMENT", "TOTAL $10.00"], result.ReceiptTexts);
+        Assert.Collection(
+            requests,
+            resumable => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/settlements/resumable?environment=Sandbox", resumable.RequestUri!.AbsoluteUri),
+            start => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/settlements", start.RequestUri!.AbsoluteUri));
+        var startBody = await requests[1].Content!.ReadAsStringAsync();
+        Assert.Equal("Sandbox", ReadJsonString(startBody, "environment"));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task SettlementAsync_keeps_unknown_when_backend_rejects_start_without_explicit_not_submitted_code(
+        HttpStatusCode statusCode)
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath.EndsWith("/resumable", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(statusCode)
+                {
+                    Content = new StringContent("settlement request rejected")
+                };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.Unknown, result.ProviderSubmissionState);
+        Assert.Collection(
+            requests,
+            resumable => Assert.EndsWith("/settlements/resumable?environment=Sandbox", resumable.RequestUri!.PathAndQuery, StringComparison.Ordinal),
+            start => Assert.EndsWith("/settlements", start.RequestUri!.AbsolutePath, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SettlementAsync_returns_not_submitted_only_for_explicit_backend_start_rejection_code()
+    {
+        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+            "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                """
+                { "success": false, "errorCode": "LINKLY_CLOUD_BACKEND_REQUEST_INVALID", "message": "Invalid backend configuration" }
+                """,
+                HttpStatusCode.BadRequest),
+            _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.NotSubmitted, result.ProviderSubmissionState);
+        Assert.Contains("Invalid backend configuration", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_names_an_active_card_transaction_when_a_conflict_blocks_new_settlement()
+    {
+        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+            "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                """
+                { "success": false, "errorCode": "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION", "message": "Terminal already has an active operation" }
+                """,
+                HttpStatusCode.Conflict),
+            "/api/v1/linkly/cloud-backend/transactions/active" => JsonResponse(PendingSessionJson("active-payment-1", "TXN-PREVIOUS")),
+            _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(ProviderSubmissionState.NotSubmitted, result.ProviderSubmissionState);
+        Assert.Contains("card transaction", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SettlementAsync_waits_for_late_settlement_receipt_before_returning_success()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "settlement-late-receipt",
+                        "status": "Completed",
+                        "responseCode": "00",
+                        "responseText": "SETTLED",
+                        "operationType": "Settlement",
+                        "operationSuccess": true,
+                        "settlementReceiptTexts": [],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/settlements/settlement-late-receipt/status" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "settlement-late-receipt",
+                        "status": "Completed",
+                        "responseCode": "00",
+                        "responseText": "SETTLED",
+                        "operationType": "Settlement",
+                        "operationSuccess": true,
+                        "settlementReceiptTexts": ["LATE SETTLEMENT RECEIPT"],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(["LATE SETTLEMENT RECEIPT"], result.ReceiptTexts);
+        Assert.Collection(
+            requests,
+            resumable => Assert.EndsWith("/settlements/resumable?environment=Sandbox", resumable.RequestUri!.PathAndQuery, StringComparison.Ordinal),
+            start => Assert.EndsWith("/settlements", start.RequestUri!.AbsolutePath, StringComparison.Ordinal),
+            status => Assert.EndsWith("/settlements/settlement-late-receipt/status?environment=Sandbox", status.RequestUri!.PathAndQuery, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SettlementAsync_waits_for_late_receipt_after_bank_failure_result()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "settlement-failed-late-receipt",
+                        "status": "Completed",
+                        "responseCode": "95",
+                        "responseText": "SETTLEMENT FAILED",
+                        "operationType": "Settlement",
+                        "operationSuccess": false,
+                        "settlementReceiptTexts": [],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/settlements/settlement-failed-late-receipt/status" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "settlement-failed-late-receipt",
+                        "status": "Completed",
+                        "responseCode": "95",
+                        "responseText": "SETTLEMENT FAILED",
+                        "operationType": "Settlement",
+                        "operationSuccess": false,
+                        "settlementReceiptTexts": ["FAILED SETTLEMENT RECEIPT"],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("95", result.ResponseCode);
+        Assert.Equal(["FAILED SETTLEMENT RECEIPT"], result.ReceiptTexts);
+        Assert.Collection(
+            requests,
+            resumable => Assert.EndsWith("/settlements/resumable?environment=Sandbox", resumable.RequestUri!.PathAndQuery, StringComparison.Ordinal),
+            start => Assert.EndsWith("/settlements", start.RequestUri!.AbsolutePath, StringComparison.Ordinal),
+            status => Assert.EndsWith("/settlements/settlement-failed-late-receipt/status?environment=Sandbox", status.RequestUri!.PathAndQuery, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1302,7 +1575,7 @@ public sealed class LinklyBackendTerminalClientTests
                         "notifications": [
                           {
                             "type": "transaction",
-                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120038\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008,\"CardType\":\"VISA\",\"Pan\":\"4111111111111234\"}}",
+                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120038\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008,\"CardType\":\"VISA\",\"Pan\":\"411111******1234\"}}",
                             "receivedAt": "2026-06-01T02:00:04Z"
                           }
                         ]

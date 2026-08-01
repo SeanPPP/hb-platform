@@ -72,6 +72,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
+    private readonly ILinklySettlementService? _linklySettlementService;
     private readonly ICashDrawerService _cashDrawerService;
     private readonly IApplicationExitService _applicationExitService;
     private readonly IConfirmationDialogService _confirmationDialogService;
@@ -104,7 +105,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly object _connectivityRefreshSync = new();
 
     private bool _isApplyingCulture;
-    private bool _isAutoOrderSyncRetrying;
     private bool _schemaReady;
     private LocalOrder? _lastCompletedOrder;
     private LocalDeviceCache? _pendingDeviceRegistrationCache;
@@ -406,7 +406,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         ApiRuntimeEndpointState? runtimeEndpointState = null,
-        AttendanceQrPanelViewModel? attendanceQrPanel = null)
+        AttendanceQrPanelViewModel? attendanceQrPanel = null,
+        ILinklySettlementService? linklySettlementService = null,
+        ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null)
     {
         _core = core;
         _infra = infra;
@@ -454,6 +457,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _localization);
         _dailyCloseService = dailyCloseService ?? NoopDailyCloseService.Instance;
         _dailyClosePrintService = dailyClosePrintService ?? NoopDailyClosePrintService.Instance;
+        _linklySettlementService = linklySettlementService;
         _cashDrawerService = cashDrawerService ?? new NoopCashDrawerService(_localization);
         _applicationExitService = infra.ApplicationExitService ?? new WpfApplicationExitService();
         _confirmationDialogService = infra.ConfirmationDialogService ?? new WpfConfirmationDialogService(_localization);
@@ -486,7 +490,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         _cardRecoveryPresenter = CreateCardRecoveryPresenter();
 
-        _syncOrchestrator = CreateSyncOrchestrator();
+        _syncOrchestrator = CreateSyncOrchestrator(
+            linklySettlementUploadQueueReader,
+            linklySettlementUploadExecutionService);
 
         _screenNavigator = CreateScreenNavigator();
 
@@ -605,7 +611,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              apiServerSettings: _apiServerSettings,
              // 中文说明：主壳与全部子页面共享同一个单次操作授权服务，授权不会变成新的登录会话。
              operationAuthorizationService: _operationAuthorizationService,
-             orderUploadExecutionService: _orderUploadExecutionService);
+             orderUploadExecutionService: _orderUploadExecutionService,
+             linklySettlementService: _linklySettlementService);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -662,7 +669,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             operationAuditLogger: _operationAuditLogger,
             requirePermission: TryRequireShellPermission);
 
-    private SyncOrchestrator CreateSyncOrchestrator() =>
+    private SyncOrchestrator CreateSyncOrchestrator(
+        ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader,
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService) =>
         new(
             _shellSyncCenterService,
             _orderUploadExecutionService,
@@ -671,7 +680,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onPendingSyncCountChanged: count => Session = Session with { PendingSyncCount = count },
             getPendingSyncCount: () => Session.PendingSyncCount,
             refreshShell: () => RefreshLocalizedShell(),
-            notifyPropertyChanged: name => OnPropertyChanged(name));
+            notifyPropertyChanged: name => OnPropertyChanged(name),
+            linklySettlementUploadQueueReader: linklySettlementUploadQueueReader,
+            linklySettlementUploadExecutionService: linklySettlementUploadExecutionService);
 
     internal void ConfigureAuditSyncCenter(
         ClientLogOutboxStore logOutboxStore,
@@ -1999,54 +2010,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task TryAutoRetryPendingOrdersAsync(CancellationToken cancellationToken)
-    {
-        if (_isAutoOrderSyncRetrying || IsOrderSyncRetrying)
-        {
-            return;
-        }
-
-        _isAutoOrderSyncRetrying = true;
-        try
-        {
-            var snapshot = await _shellSyncCenterService.GetSnapshotAsync();
-            ApplySyncCenterSnapshot(snapshot);
-            if (snapshot.Overview.PendingCount + snapshot.Overview.FailedCount == 0)
-            {
-                return;
-            }
-
-            ConsoleLog.Write("OrderSync", "auto retry pending start");
-            var result = await _orderUploadExecutionService.ExecutePendingAsync(cancellationToken: cancellationToken);
-            await RefreshPendingSyncAsync();
-            ConsoleLog.Write(
-                "OrderSync",
-                $"auto retry pending completed attempted={result.AttemptedCount} uploaded={result.UploadedCount} failed={result.FailedCount}");
-        }
-        catch (OperationCanceledException)
-        {
-            ConsoleLog.Write("OrderSync", "auto retry pending canceled");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            ConsoleLog.Write("OrderSync", $"auto retry pending failed error={ex.GetType().Name} message={ex.Message}");
-            try
-            {
-                await RefreshPendingSyncAsync();
-            }
-            catch (Exception refreshEx) when (refreshEx is not OperationCanceledException)
-            {
-                ConsoleLog.Write(
-                    "OrderSync",
-                    $"auto retry pending refresh failed error={refreshEx.GetType().Name} message={refreshEx.Message}");
-            }
-        }
-        finally
-        {
-            _isAutoOrderSyncRetrying = false;
-        }
-    }
+    private Task TryAutoRetryPendingOrdersAsync(CancellationToken cancellationToken) =>
+        _syncOrchestrator?.TryAutoRetryPendingAsync(cancellationToken) ?? Task.CompletedTask;
 
     private Task<RemoteLookupRefreshResult> RefreshRemoteLookupAsync(
         string storeCode,

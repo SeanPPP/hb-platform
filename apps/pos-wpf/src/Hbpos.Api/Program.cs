@@ -62,6 +62,9 @@ using (var scope = app.Services.CreateScope())
         var linklyCloudBackendAsyncSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklyCloudBackendAsyncSchemaInitializer>();
         await linklyCloudBackendAsyncSchemaInitializer.InitializeAsync();
 
+        var linklySettlementSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklySettlementSchemaInitializer>();
+        await linklySettlementSchemaInitializer.InitializeAsync();
+
         var squareWebhookSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISquareWebhookSchemaInitializer>();
         await squareWebhookSchemaInitializer.InitializeAsync();
     }

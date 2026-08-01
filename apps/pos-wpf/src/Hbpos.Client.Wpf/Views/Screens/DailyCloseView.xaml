@@ -6,6 +6,7 @@
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
@@ -853,6 +854,210 @@
                             <StackPanel Orientation="Horizontal">
                                 <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
                                 <TextBlock Text="{loc:Loc dailyClose.reprint}" Foreground="White" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="{loc:Loc dailyClose.linklySettlement.tab}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.12*" />
+                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition Width="0.88*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource SettlementCardStyle}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="16" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc dailyClose.linklySettlement.title}" Style="{StaticResource SettlementTitleStyle}" />
+                                    <TextBlock Text="{loc:Loc dailyClose.linklySettlement.hint}"
+                                               Margin="0,4,0,0"
+                                               Foreground="#FF737785" />
+                                </StackPanel>
+                                <Button Grid.Column="1"
+                                        Command="{Binding LoadSettlementHistoryCommand}"
+                                        Height="42"
+                                        MinWidth="104"
+                                        Margin="0,0,10,0"
+                                        Style="{StaticResource PosSecondaryButtonStyle}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="Sync" Width="17" Height="17" Margin="0,0,7,0" />
+                                        <TextBlock Text="{loc:Loc dailyClose.linklySettlement.refresh}" FontWeight="Bold" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Grid.Column="2"
+                                        Command="{Binding SettleAndPrintCommand}"
+                                        Height="42"
+                                        MinWidth="142"
+                                        Style="{StaticResource PosPrimaryButtonStyle}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="Printer" Width="17" Height="17" Margin="0,0,7,0" Foreground="White" />
+                                        <TextBlock Text="{loc:Loc dailyClose.linklySettlement.settleAndPrint}" Foreground="White" FontWeight="Bold" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+
+                            <DataGrid Grid.Row="2"
+                                      ItemsSource="{Binding Settlements}"
+                                      SelectedItem="{Binding SelectedSettlement, Mode=TwoWay}"
+                                      Style="{StaticResource SettlementDataGridStyle}"
+                                      RowHeight="52">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.time}" Binding="{Binding RequestedAtDisplay}" Width="145" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.mode}" Binding="{Binding ConnectionMode}" Width="120" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.result}" Binding="{Binding Status}" Width="88" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.submission}" Binding="{Binding ProviderSubmissionState}" Width="104" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.receipt}" Binding="{Binding ReceiptTexts.Count}" Width="58" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.printCount}" Binding="{Binding PrintCount}" Width="78" />
+                                    <DataGridTextColumn Header="{loc:Loc dailyClose.linklySettlement.response}" Binding="{Binding ResponseText}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Border Style="{StaticResource SettlementCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.preview}" Style="{StaticResource SettlementTitleStyle}" />
+                                <ScrollViewer Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding SettlementReceiptPreviewLines}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}"
+                                                           Margin="0,0,0,3"
+                                                           FontFamily="Consolas"
+                                                           FontSize="11"
+                                                           Foreground="#FF191C1E"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="1"
+                                Margin="0,14,0,0"
+                                Padding="12"
+                                Background="#FFFDF8E8"
+                                BorderBrush="#FFE0C56B"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Visibility="{Binding IsSettlementManualResolutionVisible, Converter={StaticResource BoolToVis}}"
+                                AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.automationName}">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.title}"
+                                           FontWeight="Bold"
+                                           Foreground="#FF694F00" />
+                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.hint}"
+                                           Margin="0,3,0,8"
+                                           FontSize="11"
+                                           Foreground="#FF5F5A4D"
+                                           TextWrapping="Wrap" />
+                                <WrapPanel>
+                                    <Button Command="{Binding PrepareSettlementManualResolutionCommand}"
+                                            CommandParameter="{x:Static services:LocalLinklySettlementManualResolution.ConfirmedSucceeded}"
+                                            MinHeight="32"
+                                            Margin="0,0,6,6"
+                                            Padding="10,4"
+                                            IsTabStop="True"
+                                            ToolTip="{loc:Loc dailyClose.linklySettlement.manual.keyboardHint}"
+                                            AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.succeeded}"
+                                            Style="{StaticResource PosSecondaryButtonStyle}">
+                                        <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.succeeded}" />
+                                    </Button>
+                                    <Button Command="{Binding PrepareSettlementManualResolutionCommand}"
+                                            CommandParameter="{x:Static services:LocalLinklySettlementManualResolution.ConfirmedFailed}"
+                                            MinHeight="32"
+                                            Margin="0,0,6,6"
+                                            Padding="10,4"
+                                            IsTabStop="True"
+                                            ToolTip="{loc:Loc dailyClose.linklySettlement.manual.keyboardHint}"
+                                            AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.failed}"
+                                            Style="{StaticResource PosSecondaryButtonStyle}">
+                                        <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.failed}" />
+                                    </Button>
+                                    <Button Command="{Binding PrepareSettlementManualResolutionCommand}"
+                                            CommandParameter="{x:Static services:LocalLinklySettlementManualResolution.ConfirmedNotSubmitted}"
+                                            MinHeight="32"
+                                            Margin="0,0,6,6"
+                                            Padding="10,4"
+                                            IsTabStop="True"
+                                            ToolTip="{loc:Loc dailyClose.linklySettlement.manual.keyboardHint}"
+                                            AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.notSubmitted}"
+                                            Style="{StaticResource PosSecondaryButtonStyle}">
+                                        <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.notSubmitted}" />
+                                    </Button>
+                                </WrapPanel>
+                                <Border Margin="0,4,0,0"
+                                        Padding="9"
+                                        Background="#FFFFFDF5"
+                                        BorderBrush="#FFE0C56B"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Visibility="{Binding IsSettlementManualResolutionConfirmationVisible, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding SettlementManualResolutionPrompt}"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Button Command="{Binding ConfirmSettlementManualResolutionCommand}"
+                                                    MinHeight="32"
+                                                    Padding="10,4"
+                                                    IsTabStop="True"
+                                                    ToolTip="{loc:Loc dailyClose.linklySettlement.manual.keyboardHint}"
+                                                    AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.confirm}"
+                                                    Style="{StaticResource PosPrimaryButtonStyle}">
+                                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.confirm}" Foreground="White" />
+                                            </Button>
+                                            <Button Command="{Binding CancelSettlementManualResolutionCommand}"
+                                                    MinHeight="32"
+                                                    Margin="8,0,0,0"
+                                                    Padding="10,4"
+                                                    IsTabStop="True"
+                                                    ToolTip="{loc:Loc dailyClose.linklySettlement.manual.keyboardHint}"
+                                                    AutomationProperties.Name="{loc:Loc dailyClose.linklySettlement.manual.cancel}"
+                                                    Style="{StaticResource PosSecondaryButtonStyle}">
+                                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.manual.cancel}" />
+                                            </Button>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Button Grid.Row="2"
+                                Command="{Binding ReprintSelectedSettlementCommand}"
+                                Height="50"
+                                Margin="0,14,0,0"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
+                                <TextBlock Text="{loc:Loc dailyClose.linklySettlement.reprintSelected}" Foreground="White" FontWeight="Bold" />
                             </StackPanel>
                         </Button>
                     </Grid>

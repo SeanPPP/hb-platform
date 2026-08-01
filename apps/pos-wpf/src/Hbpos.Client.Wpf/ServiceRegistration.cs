@@ -38,7 +38,8 @@ public static class ServiceRegistration
         // 正式与调试 API 共用同一业务数据库，本地数据也固定落在同一个文件中。
         services.AddSingleton(new LocalSqliteStore(Path.Combine(localDataDirectory, "hbpos_client.db")));
         services.AddSingleton<ILocalSqliteCheckpointService>(sp => sp.GetRequiredService<LocalSqliteStore>());
-        services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
+        services.AddSingleton<LocalSchemaService>();
+        services.AddSingleton<ILocalSchemaService>(sp => sp.GetRequiredService<LocalSchemaService>());
         services.AddSingleton<IAppUpdateDeviceCacheInitializer, AppUpdateDeviceCacheInitializer>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
         services.AddSingleton<DeviceAuthorizationState>();
@@ -150,6 +151,7 @@ public static class ServiceRegistration
         services.AddSingleton<ISuspendedOrderRepository, SuspendedOrderRepository>();
         services.AddSingleton<ISyncQueueRepository, SyncQueueRepository>();
         services.AddSingleton<ILocalDailyCloseRepository, LocalDailyCloseRepository>();
+        services.AddSingleton<ILocalLinklySettlementRepository, LocalLinklySettlementRepository>();
         services.AddSingleton<ITestSalesDataResetService, TestSalesDataResetService>();
         services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
         {
@@ -352,6 +354,23 @@ public static class ServiceRegistration
         services.AddSingleton<ILinklyFallbackPromptCoordinator>(sp => sp.GetRequiredService<LinklyFallbackPromptCoordinator>());
         services.AddSingleton<ILinklyFallbackPromptService>(sp => sp.GetRequiredService<LinklyFallbackPromptCoordinator>());
         services.AddSingleton<ILinklyTerminalClient, ConfiguredLinklyTerminalClient>();
+        services.AddHttpClient<ILinklySettlementSyncApiClient, LinklySettlementSyncApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(30);
+        })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddSingleton<LinklySettlementUploadService>();
+        services.AddSingleton<ILinklySettlementUploadQueueReader>(sp =>
+            sp.GetRequiredService<LinklySettlementUploadService>());
+        services.AddSingleton<ILinklySettlementUploadExecutionService>(sp =>
+            sp.GetRequiredService<LinklySettlementUploadService>());
+        services.AddSingleton<LinklySettlementUploadWorker>();
+        services.AddSingleton<ILinklySettlementUploadScheduler>(sp =>
+            sp.GetRequiredService<LinklySettlementUploadWorker>());
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<LinklySettlementUploadWorker>());
+        services.AddSingleton<ILinklySettlementService, LinklySettlementService>();
         services.AddHttpClient<ISquareTerminalSetupClient, SquareTerminalSetupClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -488,7 +507,10 @@ public static class ServiceRegistration
                 apiServerSettings: sp.GetRequiredService<ApiServerSettingsViewModel>(),
                 operationAuthorizationService: sp.GetRequiredService<IOperationAuthorizationService>(),
                 runtimeEndpointState: sp.GetRequiredService<ApiRuntimeEndpointState>(),
-                attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>());
+                attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>(),
+                linklySettlementService: sp.GetRequiredService<ILinklySettlementService>(),
+                linklySettlementUploadQueueReader: sp.GetRequiredService<ILinklySettlementUploadQueueReader>(),
+                linklySettlementUploadExecutionService: sp.GetRequiredService<ILinklySettlementUploadExecutionService>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),
