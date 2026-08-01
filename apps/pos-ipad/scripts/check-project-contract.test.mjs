@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const appRoot = new URL("../", import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL("package.json", appRoot), "utf8"));
@@ -19,6 +21,12 @@ const routeFiles = readdirSync(new URL("app/", appRoot), {
 assert.equal(packageJson.name, "@hb/pos-ipad");
 assert.equal(packageJson.main, "expo-router/entry");
 assert.equal(packageJson.private, true);
+assert.match(packageJson.version, /^\d+\.\d+\.\d+$/u);
+assert.notEqual(
+  packageJson.version,
+  "0.1.0",
+  "新增 expo-audio 原生依赖后必须提升应用版本与 runtimeVersion。",
+);
 assert.equal(packageJson.scripts.android, undefined);
 assert.match(
   packageJson.scripts["test:sync-history"],
@@ -29,6 +37,16 @@ assert.match(appConfigSource, /com\.hbweb\.posipad/);
 assert.match(appConfigSource, /supportedInterfaceOrientations/);
 assert.match(appConfigSource, /UIRequiresFullScreen/);
 assert.match(appConfigSource, /useSQLCipher:\s*true/);
+assert.match(
+  appConfigSource,
+  /"expo-audio"[\s\S]*microphonePermission:\s*false[\s\S]*recordAudioAndroid:\s*false/u,
+  "仅播放的 POS 音效必须显式禁用麦克风与 Android 录音权限。",
+);
+assert.match(
+  appConfigSource,
+  /"expo-camera"[\s\S]*microphonePermission:\s*false[\s\S]*recordAudioAndroid:\s*false/u,
+  "仅扫码的相机插件必须显式禁用麦克风与 Android 录音权限。",
+);
 assert.match(appConfigSource, /\.\/plugins\/with-hb-printer/);
 assert.match(appConfigSource, /\.\/plugins\/with-hb-external-display/);
 assert.match(appProvidersSource, /PeripheralStatusBridge/);
@@ -40,5 +58,63 @@ assert.equal(
 assert.equal(easConfig.build.development.developmentClient, true);
 assert.equal(easConfig.build.preview.distribution, "internal");
 assert.equal(easConfig.build.production.distribution, "store");
+
+const introspectedConfig = JSON.parse(
+  execFileSync("npx", ["expo", "config", "--type", "introspect", "--json"], {
+    cwd: fileURLToPath(appRoot),
+    encoding: "utf8",
+  }),
+);
+const audioPlugin = introspectedConfig.plugins?.find(
+  (plugin) => Array.isArray(plugin) && plugin[0] === "expo-audio",
+);
+const cameraPlugin = introspectedConfig.plugins?.find(
+  (plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera",
+);
+assert.equal(
+  introspectedConfig.version,
+  packageJson.version,
+  "Expo 应用版本必须与 package.json 保持一致。",
+);
+assert.deepEqual(
+  introspectedConfig.runtimeVersion,
+  { policy: "appVersion" },
+  "原生依赖构建必须继续使用 appVersion 隔离 OTA runtime。",
+);
+assert.equal(
+  Number.isSafeInteger(Number(introspectedConfig.ios?.buildNumber)) &&
+    Number(introspectedConfig.ios?.buildNumber) >= 2,
+  true,
+  "新增原生依赖后的 iOS build number 必须至少为 2。",
+);
+assert.ok(Array.isArray(audioPlugin), "必须保留 expo-audio 插件。");
+assert.ok(Array.isArray(cameraPlugin), "必须保留 expo-camera 插件。");
+assert.equal(audioPlugin[1]?.microphonePermission, false);
+assert.equal(audioPlugin[1]?.recordAudioAndroid, false);
+assert.equal(cameraPlugin[1]?.microphonePermission, false);
+assert.equal(cameraPlugin[1]?.recordAudioAndroid, false);
+
+const finalInfoPlist = introspectedConfig.ios?.infoPlist ?? {};
+const backgroundModes = Array.isArray(finalInfoPlist.UIBackgroundModes)
+  ? finalInfoPlist.UIBackgroundModes
+  : [finalInfoPlist.UIBackgroundModes].filter(Boolean);
+const androidPermissions = Array.isArray(introspectedConfig.android?.permissions)
+  ? introspectedConfig.android.permissions
+  : [];
+assert.equal(
+  Object.hasOwn(finalInfoPlist, "NSMicrophoneUsageDescription"),
+  false,
+  "最终 iOS 配置不得包含麦克风用途说明。",
+);
+assert.equal(
+  backgroundModes.includes("audio"),
+  false,
+  "最终 iOS 配置不得启用后台音频模式。",
+);
+assert.equal(
+  androidPermissions.includes("android.permission.RECORD_AUDIO"),
+  false,
+  "最终 Android 配置不得申请录音权限。",
+);
 
 console.log("pos-ipad project contract: ok");

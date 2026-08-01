@@ -12,6 +12,7 @@ import {
   type SalesCapabilities,
   type SalesCartPort,
   type SalesCashCompletion,
+  type SalesFeedbackEvent,
   type SalesPresenterDependencies,
   type SalesWorkflowPort,
 } from "./sales-presenter";
@@ -433,8 +434,11 @@ test("更新门禁关闭后禁止空车加入商品和开始下一单，但不�
   committedPresenter.destroy();
 });
 
-test("扫码提交立即清空输入，连续扫码不等待前一次在线查询", async () => {
-  const lookups: string[] = [];
+test("HID 扫码把来源贯穿工作流，手动输入仍默认 manual", async () => {
+  const lookups: Readonly<{
+    lookupCode: string;
+    source: "manual" | "hid" | "camera" | undefined;
+  }>[] = [];
   const completions: (() => void)[] = [];
   const { presenter } = createPresenter({
     workflow: {
@@ -446,8 +450,8 @@ test("扫码提交立即清空输入，连续扫码不等待前一次在线查�
         changeCents: 5,
         postCommit: { drawerDisposition: "queued" },
       })),
-      addByLookupCode(lookupCode) {
-        lookups.push(lookupCode);
+      addByLookupCode(lookupCode, options) {
+        lookups.push({ lookupCode, source: options?.source });
         return new Promise<void>((resolve) => {
           completions.push(resolve);
         });
@@ -456,17 +460,56 @@ test("扫码提交立即清空输入，连续扫码不等待前一次在线查�
   });
 
   presenter.setQuery("930000000001");
-  const first = presenter.addLookupCode();
+  const first = presenter.addLookupCode("hid");
   assert.equal(presenter.getState().query, "");
 
   presenter.setQuery("930000000002");
   const second = presenter.addLookupCode();
   assert.equal(presenter.getState().query, "");
-  assert.deepEqual(lookups, ["930000000001", "930000000002"]);
+  assert.deepEqual(lookups, [
+    { lookupCode: "930000000001", source: "hid" },
+    { lookupCode: "930000000002", source: undefined },
+  ]);
 
   completions.forEach((complete) => complete());
   assert.equal(await first, true);
   assert.equal(await second, true);
+  presenter.destroy();
+});
+
+test("改写查询只 fence 迟到响应，保留当前结果和展示状态", async () => {
+  const results = [
+    {
+      productCode: "P-TEA",
+      itemNumber: "100",
+      lookupCode: "930000000001",
+      displayName: "Tea",
+      unitPriceCents: 500,
+    },
+  ] as const;
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-query-preservation",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      async searchProducts() {
+        return results;
+      },
+    },
+  });
+
+  presenter.setQuery("tea");
+  assert.equal(await presenter.searchProducts(), true);
+  presenter.setQuery("coffee");
+
+  assert.equal(presenter.getState().query, "coffee");
+  assert.equal(presenter.getState().searchStatus, "ready");
+  assert.deepEqual(presenter.getState().searchResults, results);
   presenter.destroy();
 });
 
@@ -492,6 +535,146 @@ test("扫码后台未找到或网络失败不弹出噪声错误", async () => {
   assert.equal(presenter.getState().query, "");
   assert.equal(presenter.getState().errorCode, null);
   presenter.destroy();
+});
+
+test("商品查询只按当前权威结果发布 found、empty 与 error 反馈", async () => {
+  let mode: "found" | "empty" | "error" = "found";
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-query-feedback",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      async searchProducts() {
+        if (mode === "error") throw new Error("catalog unavailable");
+        return mode === "empty"
+          ? []
+          : [
+              {
+                productCode: "P-TEA",
+                itemNumber: "100",
+                lookupCode: "930000000001",
+                displayName: "Tea",
+                unitPriceCents: 500,
+              },
+            ];
+      },
+    },
+  });
+  const events: SalesFeedbackEvent[] = [];
+  presenter.subscribeFeedback((event) => events.push(event));
+
+  presenter.setQuery("tea");
+  assert.equal(await presenter.searchProducts(), true);
+  mode = "empty";
+  presenter.setQuery("coffee");
+  assert.equal(await presenter.searchProducts(), true);
+  mode = "error";
+  presenter.setQuery("milk");
+  assert.equal(await presenter.searchProducts(), false);
+
+  assert.deepEqual(events.map((event) => event.kind), [
+    "query-found",
+    "query-empty",
+    "query-error",
+  ]);
+  presenter.destroy();
+});
+
+test("目录能力优先于空查询，前置失败不发布 query-error", async () => {
+  const { presenter } = createPresenter({
+    capabilities: { ...ALL_CAPABILITIES, catalog: false },
+  });
+  const events: SalesFeedbackEvent[] = [];
+  presenter.subscribeFeedback((event) => events.push(event));
+
+  assert.equal(await presenter.searchProducts(), false);
+  assert.equal(presenter.getState().errorCode, "runtime-unavailable");
+  assert.deepEqual(events, []);
+  presenter.destroy();
+});
+
+test("实际加购在能力、输入或新交易门禁前置失败时各发布一次 blocked", async () => {
+  const capability = createPresenter({
+    capabilities: { ...ALL_CAPABILITIES, catalog: false },
+  }).presenter;
+  const capabilityEvents: SalesFeedbackEvent[] = [];
+  capability.subscribeFeedback((event) => capabilityEvents.push(event));
+  capability.setQuery("930000000001");
+  assert.equal(await capability.addLookupCode(), false);
+  assert.deepEqual(capabilityEvents.map((event) => event.kind), [
+    "failed-blocked",
+  ]);
+  capability.destroy();
+
+  const input = createPresenter().presenter;
+  const inputEvents: SalesFeedbackEvent[] = [];
+  input.subscribeFeedback((event) => inputEvents.push(event));
+  assert.equal(await input.addLookupCode(), false);
+  assert.deepEqual(inputEvents.map((event) => event.kind), [
+    "failed-blocked",
+  ]);
+  input.destroy();
+
+  const gated = createPresenter({
+    cart: new MemoryCartPort(EMPTY_SALE_CART),
+    canStartNewTransaction: () => false,
+  }).presenter;
+  const gatedEvents: SalesFeedbackEvent[] = [];
+  gated.subscribeFeedback((event) => gatedEvents.push(event));
+  gated.setQuery("930000000001");
+  assert.equal(await gated.addLookupCode(), false);
+  assert.deepEqual(
+    gatedEvents.map(({ kind, source }) => ({ kind, source })),
+    [{ kind: "failed-blocked", source: "manual" }],
+  );
+  gated.destroy();
+});
+
+test("Presenter 原样转发工作流终态，并在退订和销毁时清理", () => {
+  const subscription: { listener?: (event: SalesFeedbackEvent) => void } = {};
+  let workflowUnsubscribeCount = 0;
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-feedback-subscription",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      subscribeLookupOutcome(listener) {
+        subscription.listener = listener;
+        return () => {
+          delete subscription.listener;
+          workflowUnsubscribeCount += 1;
+        };
+      },
+    },
+  });
+  const events: SalesFeedbackEvent[] = [];
+  const unsubscribe = presenter.subscribeFeedback((event) => events.push(event));
+  const outcome: SalesFeedbackEvent = {
+    attemptId: "lookup-1",
+    source: "manual",
+    kind: "incremented",
+    lineId: "line-1",
+  };
+
+  subscription.listener?.(outcome);
+  assert.deepEqual(events, [outcome]);
+  unsubscribe();
+  subscription.listener?.({ ...outcome, attemptId: "lookup-2" });
+  assert.deepEqual(events, [outcome]);
+
+  presenter.destroy();
+  assert.equal(subscription.listener, undefined);
+  assert.equal(workflowUnsubscribeCount, 1);
 });
 
 test("Presenter 订阅目录核验数量并在销毁时解除订阅", () => {

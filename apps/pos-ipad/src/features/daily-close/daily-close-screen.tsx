@@ -11,14 +11,13 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type FocusEvent,
   type StyleProp,
+  type TextInput,
   type ViewStyle,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -40,6 +39,8 @@ import type {
   DailyCloseTenderBreakdown,
 } from "@/core/contracts";
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const DAILY_CLOSE_MIN_TOUCH_TARGET = 44;
@@ -142,6 +143,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                 <ActionButton
                   label={dailyCloseText(locale, "action.back")}
                   onPress={onBack}
+                  sound="navigate"
                   testID="daily-close-back"
                   tone="quiet"
                 />
@@ -150,6 +152,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                 disabled={state.busy}
                 label={dailyCloseText(locale, "action.count")}
                 onPress={showCount}
+                sound="navigate"
                 selected={state.activePane === "count"}
                 testID="daily-close-show-count"
                 tone="secondary"
@@ -158,6 +161,7 @@ export function DailyCloseScreen({ onBack, presenter }: DailyCloseScreenProps) {
                 disabled={state.busy}
                 label={dailyCloseText(locale, "action.history")}
                 onPress={() => presenter.showHistory()}
+                sound="navigate"
                 selected={state.activePane === "history"}
                 testID="daily-close-show-history"
                 tone="secondary"
@@ -431,6 +435,7 @@ export function DailyCloseUnavailableScreen({
         <ActionButton
           label={dailyCloseText(locale, "unavailable.back")}
           onPress={onBack}
+          sound="navigate"
           testID="daily-close-unavailable-back"
           wide
         />
@@ -497,7 +502,7 @@ function DenominationField({
         </Text>
         <Text style={styles.denominationSubtotal}>{money(subtotalCents)}</Text>
       </View>
-      <TextInput
+      <PosTextInput
         accessibilityLabel={dailyCloseText(
           locale,
           "denomination.accessibility",
@@ -539,7 +544,7 @@ function ArchiveRow({
   selected: boolean;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
       onPress={onPress}
@@ -558,7 +563,7 @@ function ArchiveRow({
       <Text style={styles.archiveAmount}>
         {money(archive.countedCashCents)}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -621,6 +626,7 @@ function ActionButton({
   label,
   onPress,
   selected = false,
+  sound = "tap",
   style,
   testID,
   tone = "primary",
@@ -630,17 +636,19 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
+  sound?: "navigate" | "tap";
   style?: StyleProp<ViewStyle>;
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
   wide?: boolean;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={[
         styles.action,
         tone === "secondary" && styles.actionSecondary,
@@ -661,7 +669,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

@@ -97,6 +97,23 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
   );
 });
 
+test("加购 disposition 明确区分新增与既有行增量，并保留旧 string API", () => {
+  const cart = new PricingCart({ asOfIso });
+
+  assert.deepEqual(
+    cart.addItemWithDisposition(item("first", { lookupCode: "same-code" })),
+    { lineId: "first", kind: "added" },
+  );
+  assert.deepEqual(
+    cart.addItemWithDisposition(
+      item("ignored", { lookupCode: " SAME-CODE ", quantity: 2 }),
+    ),
+    { lineId: "first", kind: "incremented" },
+  );
+  assert.equal(cart.addItem(item("legacy", { lookupCode: "legacy" })), "legacy");
+  assert.equal(cart.snapshot().lines[0]?.quantity, "3");
+});
+
 test("quantity, unit price and remove mutations use integer cents", () => {
   const cart = new PricingCart({ asOfIso });
   cart.addItem(item("line-a"));

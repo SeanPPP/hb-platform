@@ -14,6 +14,7 @@ import {
   SpecialProductsUnavailableScreen,
   type SpecialProductsPresenter,
 } from "@/features/special-products";
+import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type SpecialProductsBinding = Readonly<{
@@ -140,9 +141,40 @@ export default function SpecialProductsRoute() {
   }
 
   return (
-    <SpecialProductsScreen
-      onBack={() => router.replace("/sales" as Href)}
-      presenter={presenter}
-    />
+    <>
+      <SpecialProductsSoundBridge presenter={presenter} />
+      <SpecialProductsScreen
+        onBack={() => router.replace("/sales" as Href)}
+        presenter={presenter}
+      />
+    </>
   );
+}
+
+function SpecialProductsSoundBridge({
+  presenter,
+}: Readonly<{ presenter: SpecialProductsPresenter }>) {
+  const { play } = usePosSound();
+  useEffect(
+    () =>
+      presenter.subscribeFeedback((event) => {
+        switch (event.kind) {
+          case "query-found":
+          case "query-empty":
+          case "query-error":
+            play(event.kind);
+            return;
+          case "added":
+            play("cart-added");
+            return;
+          case "incremented":
+            play("cart-incremented");
+            return;
+          case "failed-blocked":
+            play("cart-failed-blocked");
+        }
+      }),
+    [play, presenter],
+  );
+  return null;
 }

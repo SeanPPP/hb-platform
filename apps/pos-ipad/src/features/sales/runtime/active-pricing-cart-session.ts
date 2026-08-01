@@ -9,6 +9,7 @@ import {
   PricingCart,
   type AddCartItemInput,
   type AddOpenItemInput,
+  type CartAddDisposition,
   type RefreshCatalogItemInput,
 } from "@/features/sales/domain";
 
@@ -135,12 +136,18 @@ export class ActivePricingCartSession {
   }
 
   public addItem(input: AddCartItemInput): string {
+    return this.addItemWithDisposition(input).lineId;
+  }
+
+  public addItemWithDisposition(
+    input: AddCartItemInput,
+  ): CartAddDisposition {
     this.assertIdle();
     this.assertTerminalRecoveryResolved();
     this.assertCanAdvance();
-    const lineId = this.cart.addItem(input);
+    const disposition = this.cart.addItemWithDisposition(input);
     this.commitCurrentCartMutation();
-    return lineId;
+    return disposition;
   }
 
   public addOpenItem(input: AddOpenItemInput): string {

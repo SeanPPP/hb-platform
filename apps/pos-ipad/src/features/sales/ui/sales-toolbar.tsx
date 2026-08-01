@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   Animated,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +19,7 @@ import {
   type SalesToolbarActionId,
 } from "./sales-toolbar-order";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export type SalesToolbarActionTone =
@@ -468,7 +468,7 @@ export function SalesToolbar({
               ]}
               testID={`${action.testID ?? `sales-toolbar-${action.id}`}-layout`}
             >
-              <Pressable
+              <PosPressable
                 {...pressMoveProps}
                 accessibilityActions={accessibilityActions}
                 accessibilityHint={accessibilityCopy.reorderHint}
@@ -492,6 +492,8 @@ export function SalesToolbar({
                   suppressBusinessPressRef.current = false;
                   if (!suppress && !action.disabled) action.onPress();
                 }}
+                longPressSound="navigate"
+                sound="navigate"
                 onPressIn={(event) => beginPointer(action.id, event)}
                 onTouchCancel={cancelDrag}
                 onTouchEnd={finishDrag}
@@ -515,7 +517,7 @@ export function SalesToolbar({
                 >
                   {action.label}
                 </Text>
-              </Pressable>
+              </PosPressable>
             </Animated.View>
           );
         })}

@@ -47,6 +47,21 @@ export type SalesProductSearchItem = Readonly<{
   unitPriceCents: number;
 }>;
 
+/** 业务反馈与声音解耦；路由层只负责把结构化终态映射为本机提示音。 */
+export type SalesFeedbackEvent = Readonly<{
+  kind:
+    | "query-found"
+    | "query-empty"
+    | "query-error"
+    | "added"
+    | "incremented"
+    | "not-found"
+    | "failed-blocked";
+  attemptId?: string;
+  source?: "manual" | "hid" | "camera";
+  lineId?: string;
+}>;
+
 export type SalesCapabilities = Readonly<{
   catalog: boolean;
   cartEditing: boolean;
@@ -128,7 +143,13 @@ export interface SalesCartPort {
 export interface SalesWorkflowPort {
   searchProducts(query: string): Promise<readonly SalesProductSearchItem[]>;
   addProduct(product: SalesProductSearchItem): Promise<void>;
-  addByLookupCode(lookupCode: string): Promise<void>;
+  addByLookupCode(
+    lookupCode: string,
+    options?: Readonly<{ source?: "manual" | "hid" | "camera" }>,
+  ): Promise<void>;
+  subscribeLookupOutcome?(
+    listener: (outcome: SalesFeedbackEvent) => void,
+  ): () => void;
   addOpenItem(unitPriceCents: number): Promise<void>;
   getPendingCatalogWorkCount(): number;
   subscribePendingCatalogWork(listener: () => void): () => void;
@@ -188,12 +209,17 @@ const DISCONNECTED_CAPABILITIES: SalesCapabilities = {
 export class SalesPresenter {
   private state: SalesPresenterState;
   private readonly listeners = new Set<() => void>();
+  private readonly feedbackListeners = new Set<
+    (event: SalesFeedbackEvent) => void
+  >();
   private readonly unsubscribeCart: () => void;
   private readonly unsubscribePendingCatalogWork: () => void;
+  private readonly unsubscribeLookupOutcome: () => void;
   private cashIntentId: string | null = null;
   private cashSubmission: Promise<boolean> | null = null;
   private checkoutPreparation: Promise<CartSnapshot | null> | null = null;
   private searchGeneration = 0;
+  private nextPresenterAttemptId = 0;
   private destroyed = false;
 
   public constructor(private readonly dependencies: SalesPresenterDependencies) {
@@ -219,6 +245,10 @@ export class SalesPresenter {
             dependencies.workflow.getPendingCatalogWorkCount(),
         });
       });
+    this.unsubscribeLookupOutcome =
+      dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+        if (!this.destroyed) this.publishFeedback(outcome);
+      }) ?? (() => undefined);
   }
 
   public readonly getState = (): SalesPresenterState => this.state;
@@ -226,6 +256,13 @@ export class SalesPresenter {
   public readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  public readonly subscribeFeedback = (
+    listener: (event: SalesFeedbackEvent) => void,
+  ): (() => void) => {
+    this.feedbackListeners.add(listener);
+    return () => this.feedbackListeners.delete(listener);
   };
 
   public destroy(): void {
@@ -238,11 +275,15 @@ export class SalesPresenter {
     } finally {
       this.unsubscribeCart();
       this.unsubscribePendingCatalogWork();
+      this.unsubscribeLookupOutcome();
       this.listeners.clear();
+      this.feedbackListeners.clear();
     }
   }
 
   public setQuery(query: string): void {
+    // 查询文本变化即令上一轮结果失效，避免迟到响应播放错误反馈。
+    this.searchGeneration += 1;
     this.patchState({
       query,
       errorCode:
@@ -280,6 +321,9 @@ export class SalesPresenter {
           searchStatus: "ready",
           searchResults: [...results],
         });
+        this.publishFeedback({
+          kind: results.length === 0 ? "query-empty" : "query-found",
+        });
         return true;
       })
       .catch((error: unknown) => {
@@ -293,34 +337,45 @@ export class SalesPresenter {
               ? "authorization-denied"
               : "search-failed",
           });
+          this.publishFeedback({ kind: "query-error" });
         }
         return false;
       });
   }
 
-  public addLookupCode(): Promise<boolean> {
+  public addLookupCode(
+    source: "manual" | "hid" | "camera" = "manual",
+  ): Promise<boolean> {
     const lookupCode = this.state.query.trim();
     if (!this.dependencies.capabilities.catalog) {
       this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishBlockedAddAttempt(source);
       return Promise.resolve(false);
     }
     if (!lookupCode) {
       this.patchState({ errorCode: "search-required" });
+      this.publishBlockedAddAttempt(source);
       return Promise.resolve(false);
     }
     if (!this.canMutateNewTransaction()) {
+      this.publishBlockedAddAttempt(source);
       return Promise.resolve(false);
     }
 
     // 扫码输入属于高频主路径：先释放输入框，远程校准和本地 miss 回查在后台完成。
+    this.searchGeneration += 1;
     this.patchState({
       query: "",
       searchStatus: "idle",
       searchResults: [],
       errorCode: null,
     });
-    return this.dependencies.workflow
-      .addByLookupCode(lookupCode)
+    // 手输沿用既有 Port 调用形状；工作流会把省略的来源默认成 manual。
+    const lookup =
+      source === "manual"
+        ? this.dependencies.workflow.addByLookupCode(lookupCode)
+        : this.dependencies.workflow.addByLookupCode(lookupCode, { source });
+    return lookup
       .then(() => {
         this.patchState({ cart: this.dependencies.cart.getSnapshot() });
         return true;
@@ -339,9 +394,11 @@ export class SalesPresenter {
   public addProduct(product: SalesProductSearchItem): Promise<boolean> {
     if (!this.dependencies.capabilities.catalog) {
       this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     if (!this.canMutateNewTransaction()) {
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     return this.runProductMutation(() =>
@@ -352,13 +409,16 @@ export class SalesPresenter {
   public addOpenItem(unitPriceCents: number): Promise<boolean> {
     if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents <= 0) {
       this.patchState({ errorCode: "invalid-price" });
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     if (!this.dependencies.capabilities.catalog) {
       this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     if (!this.canMutateNewTransaction()) {
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     return this.runProductMutation(() =>
@@ -899,6 +959,28 @@ export class SalesPresenter {
         });
         return false;
       });
+  }
+
+  private publishFeedback(event: SalesFeedbackEvent): void {
+    if (this.destroyed) return;
+    for (const listener of [...this.feedbackListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // 提示层故障不能影响已确认的查询或购物车变更。
+      }
+    }
+  }
+
+  private publishBlockedAddAttempt(
+    source: "manual" | "hid" | "camera",
+  ): void {
+    this.nextPresenterAttemptId += 1;
+    this.publishFeedback({
+      attemptId: `presenter-blocked-${this.nextPresenterAttemptId}`,
+      source,
+      kind: "failed-blocked",
+    });
   }
 
   private patchState(patch: Partial<SalesPresenterState>): void {

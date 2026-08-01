@@ -3,13 +3,12 @@ import {
   FlatList,
   Image,
   Modal,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type StyleProp,
+  type TextInput,
   type ViewStyle,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -44,6 +43,8 @@ import {
 
 import type { CartSnapshot } from "@/core/contracts";
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
@@ -106,6 +107,7 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
+  sound?: "danger" | "navigate" | "tap";
   tone?: "primary" | "secondary" | "danger" | "quiet";
   testID?: string;
   style?: StyleProp<ViewStyle>;
@@ -1129,7 +1131,7 @@ export function SalesScreen({
               {t("functions.productEntry")}
             </Text>
             <View style={styles.searchInputRow}>
-              <TextInput
+              <PosTextInput
                 ref={searchInputRef}
                 accessibilityLabel={t("catalog.searchPlaceholder")}
                 autoCapitalize="none"
@@ -1357,10 +1359,11 @@ export function SalesScreen({
         visible={searchDrawerVisible}
       >
         <View style={styles.searchDrawerBackdrop}>
-          <Pressable
+          <PosPressable
             accessibilityLabel={t("catalog.closeResults")}
             accessibilityRole="button"
             onPress={() => setSearchDrawerVisible(false)}
+            sound="navigate"
             style={styles.searchDrawerDismissArea}
             testID="sales-search-results-backdrop"
           />
@@ -2095,7 +2098,7 @@ function ErrorBanner({
   return (
     <View accessibilityRole="alert" style={styles.errorBanner}>
       <Text style={styles.errorBannerText}>{message}</Text>
-      <Pressable
+      <PosPressable
         accessibilityLabel={dismissLabel}
         accessibilityRole="button"
         hitSlop={8}
@@ -2103,7 +2106,7 @@ function ErrorBanner({
         style={styles.errorDismiss}
       >
         <Text style={styles.errorDismissText}>×</Text>
-      </Pressable>
+      </PosPressable>
     </View>
   );
 }
@@ -2113,17 +2116,19 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound,
   style,
   testID,
   tone = "primary",
 }: ActionButtonProps) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityLabel={accessibilityLabel ?? label}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound ?? (tone === "danger" ? "danger" : "tap")}
       style={({ pressed }) => [
         styles.actionButton,
         actionToneStyles[tone],
@@ -2143,7 +2148,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

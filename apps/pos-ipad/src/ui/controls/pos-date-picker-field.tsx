@@ -5,13 +5,14 @@ import { useState } from "react";
 import {
   Keyboard,
   Modal,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 
 import { posColors } from "../theme";
+
+import { PosPressable } from "./pos-pressable";
 
 export type PosDatePickerLocale = "en" | "zh";
 
@@ -120,13 +121,14 @@ export function PosDatePickerField({
 
   return (
     <>
-      <Pressable
+      <PosPressable
         accessibilityHint={text.openHint}
         accessibilityLabel={accessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ disabled }}
         disabled={disabled}
         onPress={openPicker}
+        sound="navigate"
         style={({ pressed }) => [
           styles.trigger,
           disabled && styles.triggerDisabled,
@@ -143,7 +145,7 @@ export function PosDatePickerField({
         <Text accessibilityElementsHidden style={styles.disclosure}>
           ▾
         </Text>
-      </Pressable>
+      </PosPressable>
 
       {open ? (
         <Modal
@@ -178,10 +180,11 @@ export function PosDatePickerField({
               />
               <View style={styles.actions}>
                 {allowClear ? (
-                  <Pressable
+                  <PosPressable
                     accessibilityLabel={text.clear}
                     accessibilityRole="button"
                     onPress={clear}
+                    sound="danger"
                     style={({ pressed }) => [
                       styles.button,
                       styles.clearButton,
@@ -190,12 +193,13 @@ export function PosDatePickerField({
                     testID={`${testID}-clear`}
                   >
                     <Text style={styles.clearLabel}>{text.clear}</Text>
-                  </Pressable>
+                  </PosPressable>
                 ) : null}
-                <Pressable
+                <PosPressable
                   accessibilityLabel={text.cancel}
                   accessibilityRole="button"
                   onPress={closePicker}
+                  sound="tap"
                   style={({ pressed }) => [
                     styles.button,
                     styles.cancelButton,
@@ -204,11 +208,12 @@ export function PosDatePickerField({
                   testID={`${testID}-cancel`}
                 >
                   <Text style={styles.cancelLabel}>{text.cancel}</Text>
-                </Pressable>
-                <Pressable
+                </PosPressable>
+                <PosPressable
                   accessibilityLabel={text.confirm}
                   accessibilityRole="button"
                   onPress={confirm}
+                  sound="navigate"
                   style={({ pressed }) => [
                     styles.button,
                     styles.confirmButton,
@@ -217,7 +222,7 @@ export function PosDatePickerField({
                   testID={`${testID}-confirm`}
                 >
                   <Text style={styles.confirmLabel}>{text.confirm}</Text>
-                </Pressable>
+                </PosPressable>
               </View>
             </View>
           </View>

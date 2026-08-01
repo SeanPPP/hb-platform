@@ -16,6 +16,7 @@ import type {
   CashCheckoutInput,
   CashCheckoutResult,
 } from "@/features/checkout/cash/cash-checkout-service";
+import type { CartAddDisposition } from "@/features/sales/domain";
 import {
   ACTIVE_PRICING_CART_STALE_SNAPSHOT,
   ActivePricingCartSession,
@@ -32,6 +33,25 @@ import {
 export const SALES_NEW_TRANSACTIONS_DISABLED =
   "NEW_TRANSACTIONS_DISABLED";
 export const SALES_CHECKOUT_PREPARED = "SALES_CHECKOUT_PREPARED";
+
+export type LookupSource = "manual" | "hid" | "camera";
+
+export type LookupOutcome = Readonly<{
+  attemptId: string;
+  source: LookupSource;
+  kind: "added" | "incremented" | "not-found" | "failed-blocked";
+  lineId?: string;
+}>;
+
+export type LookupAttemptOptions = Readonly<{
+  source?: LookupSource;
+}>;
+
+type LookupAttempt = {
+  readonly attemptId: string;
+  readonly source: LookupSource;
+  terminalPublished: boolean;
+};
 
 export interface LocalCatalogPort {
   findExact(lookupCode: string): Promise<LocalCatalogMatch | null>;
@@ -395,6 +415,13 @@ export class PricingCartSalesAdapter implements SalesCartPort {
   }
 
   public addCatalogItem(item: LocalCatalogMatch, lineId: string): string {
+    return this.addCatalogItemWithDisposition(item, lineId).lineId;
+  }
+
+  public addCatalogItemWithDisposition(
+    item: LocalCatalogMatch,
+    lineId: string,
+  ): CartAddDisposition {
     this.preparedCheckoutGate.assertMutable();
     return this.addCatalogItemInternal(item, lineId);
   }
@@ -403,15 +430,25 @@ export class PricingCartSalesAdapter implements SalesCartPort {
     item: LocalCatalogMatch,
     lineId: string,
   ): string {
+    return this.addCatalogItemFromTrustedContinuationWithDisposition(
+      item,
+      lineId,
+    ).lineId;
+  }
+
+  public addCatalogItemFromTrustedContinuationWithDisposition(
+    item: LocalCatalogMatch,
+    lineId: string,
+  ): CartAddDisposition {
     return this.addCatalogItemInternal(item, lineId);
   }
 
   private addCatalogItemInternal(
     item: LocalCatalogMatch,
     lineId: string,
-  ): string {
+  ): CartAddDisposition {
     this.sessionGuard.assertActive();
-    return this.activeCart.addItem({
+    return this.activeCart.addItemWithDisposition({
       lineId: requiredText(lineId, "Cart line id"),
       productCode: item.productCode,
       itemNumber: item.itemNumber,
@@ -598,8 +635,12 @@ export function createConnectedSalesPresenter(
 class ConnectedSalesWorkflow implements SalesWorkflowPort {
   private readonly pendingCatalogWork = new Set<Promise<void>>();
   private readonly pendingCatalogWorkListeners = new Set<() => void>();
+  private readonly lookupOutcomeListeners = new Set<
+    (outcome: LookupOutcome) => void
+  >();
   private checkoutFence = 0;
   private catalogWorkDisposed = false;
+  private nextLookupAttemptId = 0;
 
   public constructor(
     private readonly cart: PricingCartSalesAdapter,
@@ -645,101 +686,129 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
   }
 
   public async addProduct(product: SalesProductSearchItem): Promise<void> {
-    this.sessionGuard.assertActive();
-    this.preparedCheckoutGate.assertMutable();
-    this.assertCanStartOrContinueTransaction();
-    await this.operations.runCartMutation({
-      permissionCode: SALES_PERMISSIONS.addItem,
-      action: "add-selected",
-      eventType: "CART_ITEM_ADD",
-      getCart: () => this.cart.getSnapshot(),
-      operation: async () => {
-        const match = await this.requireExactCatalogItem(
-          product.lookupCode,
-        );
-        this.assertCanStartOrContinueTransaction();
-        if (
-          match.productCode !== product.productCode ||
-          match.lookupCode !== product.lookupCode
-        ) {
-          throw new Error(
-            "Catalog product identity does not match the active local snapshot.",
+    const attempt = this.createLookupAttempt("manual");
+    try {
+      this.sessionGuard.assertActive();
+      this.preparedCheckoutGate.assertMutable();
+      this.assertCanStartOrContinueTransaction();
+      await this.operations.runCartMutation({
+        permissionCode: SALES_PERMISSIONS.addItem,
+        action: "add-selected",
+        eventType: "CART_ITEM_ADD",
+        getCart: () => this.cart.getSnapshot(),
+        operation: async () => {
+          const match = await this.requireExactCatalogItem(
+            product.lookupCode,
           );
-        }
-        this.cart.addCatalogItem(match, this.createLineId());
-      },
-    });
+          this.assertCanStartOrContinueTransaction();
+          if (
+            match.productCode !== product.productCode ||
+            match.lookupCode !== product.lookupCode
+          ) {
+            throw new Error(
+              "Catalog product identity does not match the active local snapshot.",
+            );
+          }
+          const disposition = this.cart.addCatalogItemWithDisposition(
+            match,
+            this.createLineId(),
+          );
+          this.completeLookupAttempt(attempt, disposition);
+        },
+      });
+    } catch (error) {
+      this.notifyFailedLookupAttempt(attempt, error);
+      throw error;
+    }
   }
 
-  public async addByLookupCode(lookupCode: string): Promise<void> {
-    this.sessionGuard.assertActive();
-    this.preparedCheckoutGate.assertMutable();
-    this.assertCanStartOrContinueTransaction();
-    if (!this.catalogRevalidation) {
+  public async addByLookupCode(
+    lookupCode: string,
+    options: LookupAttemptOptions = {},
+  ): Promise<void> {
+    const attempt = this.createLookupAttempt(options.source ?? "manual");
+    try {
+      this.sessionGuard.assertActive();
+      this.preparedCheckoutGate.assertMutable();
+      this.assertCanStartOrContinueTransaction();
+      if (!this.catalogRevalidation) {
+        await this.operations.runCartMutation({
+          permissionCode: SALES_PERMISSIONS.addItem,
+          action: "scan-add-item",
+          eventType: "CART_ITEM_ADD",
+          getCart: () => this.cart.getSnapshot(),
+          operation: async () => {
+            const match = await this.requireExactCatalogItem(lookupCode);
+            this.assertCanStartOrContinueTransaction();
+            const disposition = this.cart.addCatalogItemWithDisposition(
+              match,
+              this.createLineId(),
+            );
+            this.completeLookupAttempt(attempt, disposition);
+          },
+        });
+        return;
+      }
+
+      const normalizedLookupCode = normalizeLookupCode(
+        requiredText(lookupCode, "Catalog lookup code"),
+      );
+      const checkoutFence = this.checkoutFence;
+      const transactionEpoch = this.activeCart.read().transactionEpoch;
+      let anchor: CatalogIdentity | null = null;
       await this.operations.runCartMutation({
         permissionCode: SALES_PERMISSIONS.addItem,
         action: "scan-add-item",
         eventType: "CART_ITEM_ADD",
         getCart: () => this.cart.getSnapshot(),
         operation: async () => {
-          const match = await this.requireExactCatalogItem(lookupCode);
+          let match: LocalCatalogMatch | null = null;
+          try {
+            match = await this.requireCatalog().findExact(
+              normalizedLookupCode,
+            );
+          } catch {
+            // 本地目录暂不可读仍可进入在线校准；失败结果保持当前购物车。
+          }
+          this.sessionGuard.assertActive();
+          // 授权或本地查询可能跨越结账准备边界，回调真正继续前必须再次检查。
+          this.preparedCheckoutGate.assertMutable();
           this.assertCanStartOrContinueTransaction();
-          this.cart.addCatalogItem(match, this.createLineId());
+          if (
+            match !== null &&
+            (match.storeCode !== this.identity.storeCode ||
+              normalizeLookupCode(match.lookupCodeNormalized) !==
+                normalizedLookupCode)
+          ) {
+            match = null;
+          }
+          anchor = match === null ? null : catalogIdentity(match);
+          if (match !== null) {
+            const disposition = this.cart.addCatalogItemWithDisposition(
+              match,
+              this.createLineId(),
+            );
+            this.completeLookupAttempt(attempt, disposition);
+          }
         },
       });
-      return;
+      if (!this.preparedCheckoutGate.isMutable()) {
+        // 本地命中与 ADD 审计已经完成，但冻结后不得再登记新的目录续作。
+        return;
+      }
+      // 本地未命中时，终态只能由当前远程权威结果发布；不得在 Promise 返回时猜测。
+      const task = this.applyRemoteScanResult({
+        lookupCode: normalizedLookupCode,
+        anchor,
+        checkoutFence,
+        transactionEpoch,
+        attempt,
+      });
+      this.trackCatalogWork(task);
+    } catch (error) {
+      this.notifyFailedLookupAttempt(attempt, error);
+      throw error;
     }
-
-    const normalizedLookupCode = normalizeLookupCode(
-      requiredText(lookupCode, "Catalog lookup code"),
-    );
-    const checkoutFence = this.checkoutFence;
-    const transactionEpoch = this.activeCart.read().transactionEpoch;
-    let anchor: CatalogIdentity | null = null;
-    await this.operations.runCartMutation({
-      permissionCode: SALES_PERMISSIONS.addItem,
-      action: "scan-add-item",
-      eventType: "CART_ITEM_ADD",
-      getCart: () => this.cart.getSnapshot(),
-      operation: async () => {
-        let match: LocalCatalogMatch | null = null;
-        try {
-          match = await this.requireCatalog().findExact(
-            normalizedLookupCode,
-          );
-        } catch {
-          // 本地目录暂不可读仍可进入在线校准；失败结果保持当前购物车。
-        }
-        this.sessionGuard.assertActive();
-        // 授权或本地查询可能跨越结账准备边界，回调真正继续前必须再次检查。
-        this.preparedCheckoutGate.assertMutable();
-        this.assertCanStartOrContinueTransaction();
-        if (
-          match !== null &&
-          (match.storeCode !== this.identity.storeCode ||
-            normalizeLookupCode(match.lookupCodeNormalized) !==
-              normalizedLookupCode)
-        ) {
-          match = null;
-        }
-        anchor = match === null ? null : catalogIdentity(match);
-        if (match !== null) {
-          this.cart.addCatalogItem(match, this.createLineId());
-        }
-      },
-    });
-    if (!this.preparedCheckoutGate.isMutable()) {
-      // 本地命中与 ADD 审计已经完成，但冻结后不得再登记新的目录续作。
-      return;
-    }
-    // 本地授权和 ADD 审计完成后才启动远程任务，避免同一价格差异被两类事件重复覆盖。
-    const task = this.applyRemoteScanResult({
-      lookupCode: normalizedLookupCode,
-      anchor,
-      checkoutFence,
-      transactionEpoch,
-    });
-    this.trackCatalogWork(task);
   }
 
   public getPendingCatalogWorkCount(): number {
@@ -753,6 +822,18 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
       if (!subscribed) return;
       subscribed = false;
       this.pendingCatalogWorkListeners.delete(listener);
+    };
+  }
+
+  public subscribeLookupOutcome(
+    listener: (outcome: LookupOutcome) => void,
+  ): () => void {
+    this.lookupOutcomeListeners.add(listener);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.lookupOutcomeListeners.delete(listener);
     };
   }
 
@@ -800,6 +881,7 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     this.preparedCheckoutGate.dispose();
     this.pendingCatalogWork.clear();
     this.pendingCatalogWorkListeners.clear();
+    this.lookupOutcomeListeners.clear();
   }
 
   public releasePreparedCheckout(): void {
@@ -807,29 +889,33 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
   }
 
   public async addOpenItem(unitPriceCents: number): Promise<void> {
-    if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents <= 0) {
-      throw cartMutationRejected(
-        "Open item price must be positive AUD cents.",
-      );
-    }
-    this.sessionGuard.assertActive();
-    this.preparedCheckoutGate.assertMutable();
-    this.assertCanStartOrContinueTransaction();
-    await this.operations.runCartMutation({
-      permissionCode: SALES_PERMISSIONS.addOpenItem,
-      action: "add-open-item",
-      eventType: "CART_ITEM_ADD",
-      getCart: () => this.cart.getSnapshot(),
-      operation: async () => {
-        const match = await this.requireExactCatalogItem("OPENITEM");
-        this.assertCanStartOrContinueTransaction();
-        this.cart.addOpenCatalogItem(
-          match,
-          this.createLineId(),
-          unitPriceCents,
+    const attempt = this.createLookupAttempt("manual");
+    try {
+      if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents <= 0) {
+        throw cartMutationRejected(
+          "Open item price must be positive AUD cents.",
         );
-      },
-    });
+      }
+      this.sessionGuard.assertActive();
+      this.preparedCheckoutGate.assertMutable();
+      this.assertCanStartOrContinueTransaction();
+      await this.operations.runCartMutation({
+        permissionCode: SALES_PERMISSIONS.addOpenItem,
+        action: "add-open-item",
+        eventType: "CART_ITEM_ADD",
+        getCart: () => this.cart.getSnapshot(),
+        operation: async () => {
+          const match = await this.requireExactCatalogItem("OPENITEM");
+          this.assertCanStartOrContinueTransaction();
+          const lineId = this.createLineId();
+          this.cart.addOpenCatalogItem(match, lineId, unitPriceCents);
+          this.completeLookupAttempt(attempt, { lineId, kind: "added" });
+        },
+      });
+    } catch (error) {
+      this.notifyFailedLookupAttempt(attempt, error);
+      throw error;
+    }
   }
 
   public async completeCash(input: Readonly<{
@@ -905,7 +991,10 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     const match = await this.requireCatalog().findExact(lookupCode);
     this.sessionGuard.assertActive();
     if (!match || match.storeCode !== this.identity.storeCode) {
-      throw new Error("Catalog item is unavailable for this store.");
+      throw Object.assign(
+        new Error("Catalog item is unavailable for this store."),
+        { code: "CATALOG_LOOKUP_NOT_FOUND" },
+      );
     }
     return match;
   }
@@ -915,6 +1004,7 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     anchor: CatalogIdentity | null;
     checkoutFence: number;
     transactionEpoch: number;
+    attempt: LookupAttempt;
   }>): Promise<void> {
     const revalidation = this.catalogRevalidation;
     if (!revalidation) return;
@@ -922,30 +1012,59 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
       await this.catalogWorkScheduler.yieldToUi();
       const result = await revalidation.revalidate(input.lookupCode);
       await this.catalogWorkScheduler.yieldToUi();
-      if (
-        result.kind !== "found" ||
-        input.checkoutFence !== this.checkoutFence ||
-        input.transactionEpoch !==
-          this.activeCart.read().transactionEpoch
-      ) {
+      if (!this.isCurrentRemoteLookupAttempt(input)) return;
+      if (result.kind === "not-found") {
+        const isCurrentBaseSnapshot =
+          await revalidation.isCurrentBaseSnapshot(result.baseSnapshotId);
+        // 等待快照校验期间，session、交易或结账 fence 已失效时必须静默丢弃。
+        if (!this.isCurrentRemoteLookupAttempt(input)) return;
+        if (!isCurrentBaseSnapshot) {
+          // 仅目录基线换代时，本次仍有效的扫码必须得到唯一的失败终态。
+          this.completeLookupAttempt(input.attempt, {
+            kind: "failed-blocked",
+          });
+          return;
+        }
+        this.completeLookupAttempt(input.attempt, { kind: "not-found" });
+        return;
+      }
+      if (result.kind === "unavailable") {
+        this.completeLookupAttempt(input.attempt, {
+          kind: "failed-blocked",
+        });
         return;
       }
       if (
-        !(await revalidation.isCurrentBaseSnapshot(
-          result.baseSnapshotId,
-        ))
+        result.kind !== "found" ||
+        !this.isCurrentRemoteLookupAttempt(input)
       ) {
+        return;
+      }
+      const isCurrentBaseSnapshot =
+        await revalidation.isCurrentBaseSnapshot(result.baseSnapshotId);
+      // 快照检查本身可以异步；先判业务 attempt 是否仍有效，避免失效会话报音。
+      if (!this.isCurrentRemoteLookupAttempt(input)) return;
+      if (!isCurrentBaseSnapshot) {
+        this.completeLookupAttempt(input.attempt, {
+          kind: "failed-blocked",
+        });
         return;
       }
       this.sessionGuard.assertActive();
       if (
         input.checkoutFence !== this.checkoutFence ||
-        input.transactionEpoch !==
-          this.activeCart.read().transactionEpoch ||
+        input.transactionEpoch !== this.activeCart.read().transactionEpoch
+      ) {
+        return;
+      }
+      if (
         result.item.storeCode !== this.identity.storeCode ||
         normalizeLookupCode(result.item.lookupCodeNormalized) !==
           input.lookupCode
       ) {
+        this.completeLookupAttempt(input.attempt, {
+          kind: "failed-blocked",
+        });
         return;
       }
 
@@ -956,11 +1075,15 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
           action: "catalog-revalidation-auto-add",
           eventType: "CART_ITEM_ADD",
           getCart: () => this.cart.getSnapshot(),
-          operation: () =>
-            this.cart.addCatalogItemFromTrustedContinuation(
-              result.item,
-              this.createLineId(),
-            ),
+          operation: () => {
+            const disposition =
+              this.cart.addCatalogItemFromTrustedContinuationWithDisposition(
+                result.item,
+                this.createLineId(),
+              );
+            this.completeLookupAttempt(input.attempt, disposition);
+            return disposition.lineId;
+          },
         });
         return;
       }
@@ -979,6 +1102,11 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
       });
     } catch {
       // 在线失败、锁屏、换收银员或支付 exclusive lease 均只保留本地结果。
+      if (this.isCurrentRemoteLookupAttempt(input)) {
+        this.completeLookupAttempt(input.attempt, {
+          kind: "failed-blocked",
+        });
+      }
     }
   }
 
@@ -1009,6 +1137,86 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
       }
     }
   }
+
+  private createLookupAttempt(source: LookupSource): LookupAttempt {
+    this.nextLookupAttemptId += 1;
+    return {
+      attemptId: `lookup-${this.nextLookupAttemptId}`,
+      source,
+      terminalPublished: false,
+    };
+  }
+
+  private isCurrentLookupAttempt(): boolean {
+    if (this.catalogWorkDisposed || !this.preparedCheckoutGate.isMutable()) {
+      return false;
+    }
+    try {
+      this.sessionGuard.assertActive();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isCurrentRemoteLookupAttempt(input: Readonly<{
+    checkoutFence: number;
+    transactionEpoch: number;
+  }>): boolean {
+    if (
+      this.catalogWorkDisposed ||
+      input.checkoutFence !== this.checkoutFence
+    ) {
+      return false;
+    }
+    try {
+      this.sessionGuard.assertActive();
+      return (
+        input.transactionEpoch === this.activeCart.read().transactionEpoch
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private completeLookupAttempt(
+    attempt: LookupAttempt,
+    terminal: Readonly<{
+      kind: LookupOutcome["kind"];
+      lineId?: string;
+    }>,
+  ): boolean {
+    if (attempt.terminalPublished) return false;
+    attempt.terminalPublished = true;
+    this.notifyLookupOutcome({
+      attemptId: attempt.attemptId,
+      source: attempt.source,
+      ...terminal,
+    });
+    return true;
+  }
+
+  private notifyLookupOutcome(outcome: LookupOutcome): void {
+    for (const listener of [...this.lookupOutcomeListeners]) {
+      try {
+        listener(outcome);
+      } catch {
+        // 已卸载的提示桥不能中断本次交易的权威结果。
+      }
+    }
+  }
+
+  private notifyFailedLookupAttempt(
+    attempt: LookupAttempt,
+    error: unknown,
+  ): void {
+    if (!this.isCurrentLookupAttempt()) return;
+    this.completeLookupAttempt(attempt, {
+      kind: hasErrorCode(error, "CATALOG_LOOKUP_NOT_FOUND")
+        ? "not-found"
+        : "failed-blocked",
+    });
+  }
 }
 
 type CatalogIdentity = Readonly<{
@@ -1023,6 +1231,15 @@ function catalogIdentity(item: LocalCatalogMatch): CatalogIdentity {
     referenceCode: item.referenceCode,
     lookupCode: item.lookupCode,
   };
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as Readonly<{ code?: unknown }>).code === code
+  );
 }
 
 function hasSameCatalogIdentity(

@@ -6,12 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 import {
   resolveAppUpdateCopy,
@@ -23,6 +18,7 @@ import type {
 } from "./app-update-orchestrator";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 const HIDDEN_PRESENTATION: AppUpdatePresentation = Object.freeze({
@@ -182,61 +178,65 @@ export function AppUpdateGateBridge() {
         <View style={styles.actions}>
           {required && !preserveRecoveryAccess ? (
             <>
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 onPress={() =>
                   router.push(
                     "/update-recovery?section=settings" as Href,
                   )
                 }
+                sound="navigate"
                 style={styles.secondaryButton}
                 testID="app-update-settings-entry"
               >
                 <Text style={styles.secondaryButtonText}>
                   {copy["action.settings"]}
                 </Text>
-              </Pressable>
-              <Pressable
+              </PosPressable>
+              <PosPressable
                 accessibilityRole="button"
                 onPress={() =>
                   router.push(
                     "/update-recovery?section=support" as Href,
                   )
                 }
+                sound="navigate"
                 style={styles.secondaryButton}
                 testID="app-update-support-entry"
               >
                 <Text style={styles.secondaryButtonText}>
                   {copy["action.support"]}
                 </Text>
-              </Pressable>
-              <Pressable
+              </PosPressable>
+              <PosPressable
                 accessibilityRole="button"
                 onPress={() =>
                   router.push("/registration" as Href)
                 }
+                sound="navigate"
                 style={styles.secondaryButton}
                 testID="app-update-registration-entry"
               >
                 <Text style={styles.secondaryButtonText}>
                   {copy["action.registration"]}
                 </Text>
-              </Pressable>
+              </PosPressable>
             </>
           ) : null}
           {!required ? (
-            <Pressable
+            <PosPressable
               accessibilityRole="button"
               onPress={() => setDismissedKey(presentation.key)}
+              sound="navigate"
               style={styles.secondaryButton}
               testID="app-update-dismiss"
             >
               <Text style={styles.secondaryButtonText}>
                 {copy["action.later"]}
               </Text>
-            </Pressable>
+            </PosPressable>
           ) : null}
-          <Pressable
+          <PosPressable
             accessibilityRole="button"
             disabled={working}
             onPress={performUpdate}
@@ -249,7 +249,7 @@ export function AppUpdateGateBridge() {
             <Text style={styles.primaryButtonText}>
               {copy[working ? "action.working" : actionKey]}
             </Text>
-          </Pressable>
+          </PosPressable>
         </View>
       </View>
     </View>

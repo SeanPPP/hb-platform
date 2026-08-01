@@ -2,6 +2,7 @@
 
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,9 @@ import { fileURLToPath } from "node:url";
 export const POS_IPAD_PRODUCTION_CHANNEL = "pos-ipad-production";
 export const POS_IPAD_RELEASE_CHANNEL_PREFIX = "pos-ipad-release-";
 export const EAS_CLI_VERSION = "21.3.0";
+export const POS_IPAD_APP_VERSION = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
 
 const PLATFORM = "ios";
 const REGISTRATION_PATH = "/api/pos-ipad/ota-releases";
@@ -148,10 +152,8 @@ function buildEasEnvironment(options, environment) {
       environment.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID,
     "EAS projectId",
   );
-  const runtimeVersion = requiredToken(
+  const runtimeVersion = requiredCurrentRuntimeVersion(
     options.runtimeVersion,
-    "--runtime-version",
-    RUNTIME_VERSION_MAX_LENGTH,
   );
   // 管理员凭据绝不能进入 EAS；旧 service token 环境变量也只剔除、不兼容读取。
   const {
@@ -485,11 +487,7 @@ export function parsePublishOtaArgs(argv) {
 }
 
 function validateOptions(options) {
-  requiredToken(
-    options.runtimeVersion,
-    "--runtime-version",
-    RUNTIME_VERSION_MAX_LENGTH,
-  );
+  requiredCurrentRuntimeVersion(options.runtimeVersion);
   requiredReleaseChannel(options.releaseChannel);
   requiredText(options.message, "--message", 1_000);
   if (options.accessToken !== undefined) {
@@ -500,6 +498,20 @@ function validateOptions(options) {
   if (options.mockOutputFile && options.dryRun !== true) {
     throw new Error("--mock-output-file 只能与 --dry-run 一起使用");
   }
+}
+
+function requiredCurrentRuntimeVersion(value) {
+  const runtimeVersion = requiredToken(
+    value,
+    "--runtime-version",
+    RUNTIME_VERSION_MAX_LENGTH,
+  );
+  if (runtimeVersion !== POS_IPAD_APP_VERSION) {
+    throw new Error(
+      `--runtime-version 必须与当前应用版本 ${POS_IPAD_APP_VERSION} 完全一致`,
+    );
+  }
+  return runtimeVersion;
 }
 
 async function resolveConfiguration(

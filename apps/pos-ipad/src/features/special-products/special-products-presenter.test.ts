@@ -18,6 +18,7 @@ import type {
   SpecialProductsRemotePort,
   SpecialProductsRepositoryPort,
 } from "@/core/contracts";
+import type { CartAddDisposition } from "@/features/sales/domain";
 
 const ALL_PERMISSIONS = [
   SPECIAL_PRODUCTS_VIEW_PERMISSION,
@@ -208,6 +209,73 @@ test("搜索候选的陈旧响应不会覆盖最新查询", async () => {
   );
 });
 
+test("候选查询与加购发布结构化反馈，不由状态文本推断声音", async () => {
+  const cart = new MemorySpecialProductsCart();
+  const presenter = createPresenter({
+    cart,
+    repository: new MemorySpecialProductsRepository([product("A")]),
+  });
+  const events: { kind: string }[] = [];
+  presenter.subscribeFeedback((event) => events.push(event));
+
+  await presenter.load();
+  presenter.setSearchQuery("tea");
+  await presenter.searchCandidates();
+  await presenter.addToCart("A");
+
+  assert.deepEqual(events.map((event) => event.kind), [
+    "query-empty",
+    "added",
+  ]);
+});
+
+test("非空候选查询被权限拒绝时只发布 query-error，空查询不伪造结果", async () => {
+  const presenter = createPresenter({
+    permissions: [
+      SPECIAL_PRODUCTS_VIEW_PERMISSION,
+      SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION,
+    ],
+  });
+  const events: { kind: string }[] = [];
+  presenter.subscribeFeedback((event) => events.push(event));
+
+  presenter.setSearchQuery("tea");
+  await presenter.searchCandidates();
+  assert.deepEqual(events.map((event) => event.kind), ["query-error"]);
+
+  presenter.setSearchQuery("");
+  await presenter.searchCandidates();
+  assert.deepEqual(events.map((event) => event.kind), ["query-error"]);
+});
+
+test("特殊商品权限或目标前置失败时各发布一次 failed-blocked", async () => {
+  const denied = createPresenter({
+    permissions: [
+      SPECIAL_PRODUCTS_VIEW_PERMISSION,
+      SPECIAL_PRODUCTS_MANAGE_PERMISSION,
+    ],
+    repository: new MemorySpecialProductsRepository([product("A")]),
+  });
+  const deniedEvents: { kind: string }[] = [];
+  denied.subscribeFeedback((event) => deniedEvents.push(event));
+  await denied.load();
+  await denied.addToCart("A");
+  assert.deepEqual(deniedEvents.map((event) => event.kind), [
+    "failed-blocked",
+  ]);
+
+  const missing = createPresenter({
+    repository: new MemorySpecialProductsRepository([product("A")]),
+  });
+  const missingEvents: { kind: string }[] = [];
+  missing.subscribeFeedback((event) => missingEvents.push(event));
+  await missing.load();
+  await missing.addToCart("MISSING");
+  assert.deepEqual(missingEvents.map((event) => event.kind), [
+    "failed-blocked",
+  ]);
+});
+
 function createPresenter(
   overrides: Partial<{
     cart: SpecialProductsCartPort;
@@ -231,8 +299,9 @@ function createPresenter(
 class MemorySpecialProductsCart implements SpecialProductsCartPort {
   public readonly added: SpecialProductItem[] = [];
 
-  public async add(item: SpecialProductItem): Promise<void> {
+  public async add(item: SpecialProductItem): Promise<CartAddDisposition> {
     this.added.push(item);
+    return { lineId: item.productCode, kind: "added" };
   }
 }
 

@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   EAS_CLI_VERSION,
+  POS_IPAD_APP_VERSION,
   POS_IPAD_PRODUCTION_CHANNEL,
   POS_IPAD_RELEASE_CHANNEL_PREFIX,
   buildEasChannelCreateCommand,
@@ -37,7 +38,7 @@ const jsonOutput = JSON.stringify([
     createdAt: "2026-07-30T01:02:03.000Z",
     group: groupId,
     branch: "release-branch-20260730-a",
-    runtimeVersion: "1.2.3",
+    runtimeVersion: POS_IPAD_APP_VERSION,
     platform: "ios",
     manifestPermalink:
       `https://expo.dev/projects/${projectId}/updates/${groupId}`,
@@ -50,7 +51,7 @@ test("按 EAS 真实数组结构解析 iOS update/group，branch 不冒充 relea
     updateGroupId: groupId,
     iosUpdateId,
     channel: "",
-    runtimeVersion: "1.2.3",
+    runtimeVersion: POS_IPAD_APP_VERSION,
     gitCommitHash: "abcdef1234567890",
     dashboardUrl:
       `https://expo.dev/projects/${projectId}/updates/${groupId}`,
@@ -77,14 +78,14 @@ test("按 EAS 真实数组结构解析 iOS update/group，branch 不冒充 relea
 test("登记 payload 精确使用冻结字段且不携带 rollout 激活参数", () => {
   const payload = buildOtaReleasePayload(
     parseEasUpdateOutput(jsonOutput),
-    { runtimeVersion: "1.2.3", releaseChannel },
+    { runtimeVersion: POS_IPAD_APP_VERSION, releaseChannel },
     "2026-07-30T02:00:00.000Z",
   );
   assert.deepEqual(payload, {
     updateGroupId: groupId,
     iosUpdateId,
     channel: releaseChannel,
-    runtimeVersion: "1.2.3",
+    runtimeVersion: POS_IPAD_APP_VERSION,
     gitCommitHash: "abcdef1234567890",
     dashboardUrl:
       `https://expo.dev/projects/${projectId}/updates/${groupId}`,
@@ -98,7 +99,7 @@ test("登记 payload 精确使用冻结字段且不携带 rollout 激活参数",
 
 test("EAS 先创建独立 channel 再发布 iOS update，两个子进程都移除管理员 token", () => {
   const options = {
-    runtimeVersion: "1.2.3",
+    runtimeVersion: POS_IPAD_APP_VERSION,
     message: "门店修复",
     releaseChannel,
   };
@@ -141,7 +142,7 @@ test("EAS 先创建独立 channel 再发布 iOS update，两个子进程都移�
 
   const fromArgument = buildEasUpdateCommand(
     {
-      runtimeVersion: "1.2.3",
+      runtimeVersion: POS_IPAD_APP_VERSION,
       message: "门店修复",
       projectId,
       releaseChannel,
@@ -154,11 +155,10 @@ test("EAS 先创建独立 channel 再发布 iOS update，两个子进程都移�
   );
 });
 
-test("runtime compatibility token 最长 120，且只接受冻结字符集", () => {
-  const maximum = `r${"a".repeat(119)}`;
+test("runtime compatibility token 必须精确匹配当前应用版本", () => {
   const command = buildEasUpdateCommand(
     {
-      runtimeVersion: maximum,
+      runtimeVersion: POS_IPAD_APP_VERSION,
       message: "边界验证",
       releaseChannel,
     },
@@ -166,22 +166,17 @@ test("runtime compatibility token 最长 120，且只接受冻结字符集", () 
   );
   assert.equal(
     command.env.EXPO_PUBLIC_HBPOS_RUNTIME_VERSION,
-    maximum,
+    POS_IPAD_APP_VERSION,
   );
 
-  assert.throws(
-    () =>
-      buildEasUpdateCommand(
-        {
-          runtimeVersion: `r${"a".repeat(120)}`,
-          message: "越界",
-          releaseChannel,
-        },
-        { EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId },
-      ),
-    /runtime-version/,
-  );
-  for (const runtimeVersion of ["-leading", "bad:runtime", "bad runtime"]) {
+  for (const runtimeVersion of [
+    "0.1.0",
+    "0.1.2",
+    `r${"a".repeat(120)}`,
+    "-leading",
+    "bad:runtime",
+    "bad runtime",
+  ]) {
     assert.throws(
       () =>
         buildEasUpdateCommand(
@@ -205,7 +200,7 @@ test("dry-run 零网络零 EAS，只打印两个预期命令和待登记 payload
   const result = await runPublishPosIpadOtaRelease(
     {
       dryRun: true,
-      runtimeVersion: "1.2.3",
+      runtimeVersion: POS_IPAD_APP_VERSION,
       message: "门店修复",
       releaseChannel,
       mockOutputFile: "mock.json",
@@ -257,7 +252,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
       runPublishPosIpadOtaRelease(
         {
           dryRun: true,
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
           releaseChannel,
         },
@@ -270,7 +265,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
       runPublishPosIpadOtaRelease(
         {
           dryRun: true,
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
         },
         {
@@ -287,7 +282,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
       runPublishPosIpadOtaRelease(
         {
           dryRun: true,
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
           releaseChannel: POS_IPAD_PRODUCTION_CHANNEL,
         },
@@ -304,7 +299,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
     () =>
       runPublishPosIpadOtaRelease(
         {
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
           releaseChannel,
         },
@@ -322,7 +317,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
     () =>
       runPublishPosIpadOtaRelease(
         {
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
           releaseChannel,
         },
@@ -349,7 +344,7 @@ test("缺 projectId、独立 channel 或管理员 access token 在 EAS 发布前
       () =>
         runPublishPosIpadOtaRelease(
           {
-            runtimeVersion: "1.2.3",
+            runtimeVersion: POS_IPAD_APP_VERSION,
             message: "门店修复",
             releaseChannel,
           },
@@ -519,7 +514,7 @@ test("live 的 401、403、冲突或网络预检失败均在零 EAS 命令时停
     await assert.rejects(
       () =>
         runPublishPosIpadOtaRelease(
-          { runtimeVersion: "1.2.3", message: "门店修复", releaseChannel },
+          { runtimeVersion: POS_IPAD_APP_VERSION, message: "门店修复", releaseChannel },
           {
             environment: liveEnvironment,
             logger: { log() {} },
@@ -543,7 +538,7 @@ test("live 严格按 Center 预检、创建 channel、发布 update、登记 rel
   const registrationConfigs = [];
   const events = [];
   await runPublishPosIpadOtaRelease(
-    { runtimeVersion: "1.2.3", message: "门店修复", releaseChannel },
+    { runtimeVersion: POS_IPAD_APP_VERSION, message: "门店修复", releaseChannel },
     {
       environment: liveEnvironment,
       logger: { log() {} },
@@ -588,7 +583,7 @@ test("live 严格按 Center 预检、创建 channel、发布 update、登记 rel
   await assert.rejects(
     () =>
       runPublishPosIpadOtaRelease(
-        { runtimeVersion: "1.2.3", message: "门店修复", releaseChannel },
+        { runtimeVersion: POS_IPAD_APP_VERSION, message: "门店修复", releaseChannel },
         {
           environment: liveEnvironment,
           logger: { log() {} },
@@ -615,7 +610,7 @@ test("EAS channel 已存在或创建失败时不发布 update、不登记且不�
   await assert.rejects(
     () =>
       runPublishPosIpadOtaRelease(
-        { runtimeVersion: "1.2.3", message: "门店修复", releaseChannel },
+        { runtimeVersion: POS_IPAD_APP_VERSION, message: "门店修复", releaseChannel },
         {
           environment: liveEnvironment,
           logger: { log() {} },
@@ -647,7 +642,7 @@ test("EAS 已发布但登记失败时打印可重试 payload，绝不重新 publ
   await assert.rejects(
     () =>
       runPublishPosIpadOtaRelease(
-        { runtimeVersion: "1.2.3", message: "门店修复", releaseChannel },
+        { runtimeVersion: POS_IPAD_APP_VERSION, message: "门店修复", releaseChannel },
         {
           environment: liveEnvironment,
           logger: { log: (value) => logs.push(String(value)) },
@@ -681,7 +676,7 @@ test("POST 使用专用路径和管理员 Bearer access token，并拒绝只读 
   const calls = [];
   const payload = buildOtaReleasePayload(
     parseEasUpdateOutput(jsonOutput),
-    { runtimeVersion: "1.2.3", releaseChannel },
+    { runtimeVersion: POS_IPAD_APP_VERSION, releaseChannel },
   );
   const result = await registerOtaRelease(
     payload,
@@ -755,7 +750,7 @@ test("连续 release 的命令与登记 payload 各自使用独立 channel", () 
   const commands = channels.map((channel) =>
     buildEasUpdateCommand(
       {
-        runtimeVersion: "1.2.3",
+        runtimeVersion: POS_IPAD_APP_VERSION,
         message: "门店修复",
         releaseChannel: channel,
       },
@@ -765,7 +760,7 @@ test("连续 release 的命令与登记 payload 各自使用独立 channel", () 
   const payloads = channels.map((channel) =>
     buildOtaReleasePayload(
       parseEasUpdateOutput(jsonOutput),
-      { runtimeVersion: "1.2.3", releaseChannel: channel },
+      { runtimeVersion: POS_IPAD_APP_VERSION, releaseChannel: channel },
     ),
   );
 
@@ -788,7 +783,7 @@ test("EAS JSON 显式返回 channel 时必须与命令及 payload 一致", async
     () =>
       runPublishPosIpadOtaRelease(
         {
-          runtimeVersion: "1.2.3",
+          runtimeVersion: POS_IPAD_APP_VERSION,
           message: "门店修复",
           releaseChannel,
         },
@@ -817,7 +812,7 @@ test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
   assert.equal(
     parsePublishOtaArgs([
       "--runtime-version",
-      "1.2.3",
+      POS_IPAD_APP_VERSION,
       "--release-channel",
       releaseChannel,
       "--message",
@@ -830,7 +825,7 @@ test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
     () =>
       parsePublishOtaArgs([
         "--runtime-version",
-        "1.2.3",
+        POS_IPAD_APP_VERSION,
         "--release-channel",
         releaseChannel,
         "--message",
@@ -844,7 +839,7 @@ test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
     () =>
       parsePublishOtaArgs([
         "--runtime-version",
-        "1.2.3",
+        POS_IPAD_APP_VERSION,
         "--release-channel",
         releaseChannel,
         "--message",
@@ -860,7 +855,7 @@ test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
     () =>
       parsePublishOtaArgs([
         "--runtime-version",
-        "1.2.3",
+        POS_IPAD_APP_VERSION,
         "--release-channel",
         releaseChannel,
         "--message",
@@ -875,7 +870,7 @@ test("CLI 禁止 argv token，只接受无值的 --access-token-stdin", () => {
 test("stdin token 仅允许单行有限 JWT，TTY、超长与环境变量冲突均在 EAS 前失败", async () => {
   const baseOptions = {
     accessTokenStdin: true,
-    runtimeVersion: "1.2.3",
+    runtimeVersion: POS_IPAD_APP_VERSION,
     message: "门店修复",
     releaseChannel,
   };

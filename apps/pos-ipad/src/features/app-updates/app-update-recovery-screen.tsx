@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +13,7 @@ import {
   type AppUpdateRecoverySnapshot,
 } from "./app-update-recovery-contract";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export type AppUpdateRecoverySection = "settings" | "support";
@@ -135,26 +135,28 @@ export function AppUpdateRecoveryScreen({
             <Text style={styles.title}>{text.title}</Text>
             <Text style={styles.subtitle}>{text.subtitle}</Text>
           </View>
-          <Pressable
+          <PosPressable
             accessibilityRole="button"
             onPress={onOpenRegistration}
+            sound="navigate"
             style={styles.registrationButton}
             testID="app-update-recovery-registration"
           >
             <Text style={styles.registrationButtonText}>
               {text.registration}
             </Text>
-          </Pressable>
+          </PosPressable>
         </View>
 
         <View style={styles.workspace}>
           <View style={styles.navigation}>
             {(["settings", "support"] as const).map((item) => (
-              <Pressable
+              <PosPressable
                 accessibilityRole="tab"
                 accessibilityState={{ selected: section === item }}
                 key={item}
                 onPress={() => onSelectSection(item)}
+                sound="navigate"
                 style={[
                   styles.navigationButton,
                   section === item
@@ -173,7 +175,7 @@ export function AppUpdateRecoveryScreen({
                 >
                   {text[item]}
                 </Text>
-              </Pressable>
+              </PosPressable>
             ))}
           </View>
 
@@ -191,7 +193,7 @@ export function AppUpdateRecoveryScreen({
                 <Text style={styles.errorCode}>
                   {text.unavailableCode}: {state.errorCode}
                 </Text>
-                <Pressable
+                <PosPressable
                   accessibilityRole="button"
                   onPress={onRetry}
                   style={styles.secondaryButton}
@@ -200,7 +202,7 @@ export function AppUpdateRecoveryScreen({
                   <Text style={styles.secondaryButtonText}>
                     {text.retry}
                   </Text>
-                </Pressable>
+                </PosPressable>
               </View>
             ) : (
               <>
@@ -221,7 +223,7 @@ export function AppUpdateRecoveryScreen({
                         {text.exportFailed}
                       </Text>
                     ) : null}
-                    <Pressable
+                    <PosPressable
                       accessibilityRole="button"
                       disabled={exporting}
                       onPress={onExport}
@@ -234,7 +236,7 @@ export function AppUpdateRecoveryScreen({
                       <Text style={styles.primaryButtonText}>
                         {exporting ? text.exporting : text.export}
                       </Text>
-                    </Pressable>
+                    </PosPressable>
                   </View>
                 ) : null}
                 <View style={styles.detailsCard}>

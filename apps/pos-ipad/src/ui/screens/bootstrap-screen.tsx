@@ -1,16 +1,11 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
@@ -116,7 +111,7 @@ export function BootstrapScreen() {
               {runtime.error ?? t("bootstrap.footer")}
             </Text>
             {runtime.phase === "failed" ? (
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 onPress={() => {
                   void retry().catch(() => undefined);
@@ -125,9 +120,10 @@ export function BootstrapScreen() {
                   styles.retryButton,
                   pressed && styles.retryButtonPressed,
                 ]}
+                testID="bootstrap-retry"
               >
                 <Text style={styles.retryLabel}>{t("bootstrap.retry")}</Text>
-              </Pressable>
+              </PosPressable>
             ) : null}
           </View>
         </View>

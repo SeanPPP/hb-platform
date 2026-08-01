@@ -8,7 +8,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Modal,
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -25,6 +24,7 @@ import {
   normalizeScanValue,
   type ScannerCaptureContext,
 } from "@/core/peripherals/scanner";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const CAMERA_SCANNER_MIN_TOUCH_TARGET = 44;
@@ -215,15 +215,16 @@ export function CameraScannerModal({
             />
           )}
 
-          <Pressable
+          <PosPressable
             accessibilityLabel={t("action.closeLabel")}
             accessibilityRole="button"
             onPress={close}
+            sound="navigate"
             style={({ pressed }) => [styles.closeButton, pressed && styles.buttonPressed]}
             testID="camera-scanner-close"
           >
             <Text style={styles.closeButtonLabel}>{t("action.cancel")}</Text>
-          </Pressable>
+          </PosPressable>
         </View>
       </View>
     </Modal>
@@ -266,14 +267,14 @@ function CameraState({
       <View style={styles.state} testID="camera-scanner-permission-request-state">
         <Text style={styles.stateTitle}>{t("permission.required.title")}</Text>
         <Text style={styles.stateCopy}>{t("permission.required.body")}</Text>
-        <Pressable
+        <PosPressable
           accessibilityRole="button"
           onPress={onRequestPermission}
           style={({ pressed }) => [styles.permissionButton, pressed && styles.buttonPressed]}
           testID="camera-scanner-request-permission"
         >
           <Text style={styles.permissionButtonLabel}>{t("action.allowCamera")}</Text>
-        </Pressable>
+        </PosPressable>
       </View>
     );
   }

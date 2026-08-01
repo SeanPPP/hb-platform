@@ -9,11 +9,23 @@ import type {
   SpecialProductsRepositoryPort,
 } from "@/core/contracts";
 import { normalizeSpecialProductOrder } from "@/core/contracts";
+import type { CartAddDisposition } from "@/features/sales/domain";
 
 
 export interface SpecialProductsCartPort {
-  add(item: SpecialProductItem): Promise<void>;
+  add(item: SpecialProductItem): Promise<CartAddDisposition>;
 }
+
+export type SpecialProductsFeedbackEvent = Readonly<{
+  kind:
+    | "query-found"
+    | "query-empty"
+    | "query-error"
+    | "added"
+    | "incremented"
+    | "failed-blocked";
+  lineId?: string;
+}>;
 
 export type SpecialProductsStatusCode =
   | "added-to-cart"
@@ -59,6 +71,9 @@ export class SpecialProductsPresenter {
   private static readonly MAX_REMOTE_PAGES = 10_000;
 
   private readonly listeners = new Set<() => void>();
+  private readonly feedbackListeners = new Set<
+    (event: SpecialProductsFeedbackEvent) => void
+  >();
   private readonly options: SpecialProductsPresenterOptions;
   private readonly storeCode: string;
   private state: SpecialProductsState;
@@ -91,12 +106,21 @@ export class SpecialProductsPresenter {
     return () => this.listeners.delete(listener);
   };
 
+  public readonly subscribeFeedback = (
+    listener: (event: SpecialProductsFeedbackEvent) => void,
+  ): (() => void) => {
+    if (this.destroyed) return () => undefined;
+    this.feedbackListeners.add(listener);
+    return () => this.feedbackListeners.delete(listener);
+  };
+
   public destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
     this.loadGeneration += 1;
     this.searchGeneration += 1;
     this.listeners.clear();
+    this.feedbackListeners.clear();
   }
 
   public setOnline(online: boolean): void {
@@ -148,11 +172,14 @@ export class SpecialProductsPresenter {
 
   public async searchCandidates(): Promise<void> {
     if (this.destroyed) return;
+    const query = this.state.searchQuery.trim();
     if (!this.state.access.canManage) {
       this.patch({ statusCode: "permission-required" });
+      if (query.length > 0) {
+        this.publishFeedback({ kind: "query-error" });
+      }
       return;
     }
-    const query = this.state.searchQuery.trim();
     const generation = ++this.searchGeneration;
     if (query.length === 0) {
       this.patch({ candidates: [], searching: false, statusCode: null });
@@ -171,6 +198,9 @@ export class SpecialProductsPresenter {
         candidates: freezeStoreItems(candidates, this.storeCode),
         searching: false,
       });
+      this.publishFeedback({
+        kind: candidates.length === 0 ? "query-empty" : "query-found",
+      });
     } catch {
       if (!this.isCurrentSearch(generation)) return;
       this.patch({
@@ -178,6 +208,7 @@ export class SpecialProductsPresenter {
         searching: false,
         statusCode: "search-failed",
       });
+      this.publishFeedback({ kind: "query-error" });
     }
   }
 
@@ -185,6 +216,7 @@ export class SpecialProductsPresenter {
     if (this.destroyed) return;
     if (!this.state.access.canAddToCart) {
       this.patch({ statusCode: "permission-required" });
+      this.publishFeedback({ kind: "failed-blocked" });
       return;
     }
     const item = this.state.items.find(
@@ -192,14 +224,20 @@ export class SpecialProductsPresenter {
     );
     if (!item) {
       this.patch({ statusCode: "add-to-cart-failed" });
+      this.publishFeedback({ kind: "failed-blocked" });
       return;
     }
 
     try {
-      await this.options.addToCart.add(item);
-      if (!this.destroyed) this.patch({ statusCode: "added-to-cart" });
+      const disposition = await this.options.addToCart.add(item);
+      if (this.destroyed) return;
+      this.patch({ statusCode: "added-to-cart" });
+      this.publishFeedback(disposition);
     } catch {
-      if (!this.destroyed) this.patch({ statusCode: "add-to-cart-failed" });
+      if (!this.destroyed) {
+        this.patch({ statusCode: "add-to-cart-failed" });
+        this.publishFeedback({ kind: "failed-blocked" });
+      }
     }
   }
 
@@ -435,6 +473,17 @@ export class SpecialProductsPresenter {
         listener();
       } catch {
         // 已卸载页面的订阅异常不能阻止其余观察者接收脱敏状态。
+      }
+    }
+  }
+
+  private publishFeedback(event: SpecialProductsFeedbackEvent): void {
+    if (this.destroyed) return;
+    for (const listener of [...this.feedbackListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // 提示层不得影响特殊商品写入或查询的权威结果。
       }
     }
   }

@@ -35,6 +35,7 @@ import { reconcileSalesToolbarOrder } from "@/features/sales/ui/sales-toolbar-or
 import { SETTINGS_VIEW_PERMISSION } from "@/features/settings";
 import { SPECIAL_PRODUCTS_VIEW_PERMISSION } from "@/features/special-products";
 import { toggleAppLanguage } from "@/i18n";
+import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import {
   readSalesToolbarOrder,
   saveSalesToolbarOrder,
@@ -115,7 +116,7 @@ export default function SalesRoute() {
       if (!presenter || presenter.getState().phase !== "selling") return;
       // presenter 在同步 setQuery 后立即读取查询值，连续扫码不会把前一条码拼入下一条。
       presenter.setQuery(barcode);
-      void presenter.addLookupCode();
+      void presenter.addLookupCode("hid");
     },
     [presenter],
   );
@@ -236,6 +237,7 @@ export default function SalesRoute() {
         onScan={addScannedProduct}
         path="/sales"
       />
+      <SalesSoundBridge presenter={presenter} />
       <SalesScreen
         locale={resolveSalesLocale(i18n.resolvedLanguage ?? i18n.language)}
         newTransactionGate={updateGate}
@@ -328,6 +330,37 @@ export default function SalesRoute() {
       />
     </>
   );
+}
+
+function SalesSoundBridge({
+  presenter,
+}: Readonly<{ presenter: SalesPresenter }>) {
+  const { play } = usePosSound();
+  useEffect(
+    () =>
+      presenter.subscribeFeedback((event) => {
+        switch (event.kind) {
+          case "query-found":
+          case "query-empty":
+          case "query-error":
+            play(event.kind);
+            return;
+          case "added":
+            play("cart-added");
+            return;
+          case "incremented":
+            play("cart-incremented");
+            return;
+          case "not-found":
+            play("cart-not-found");
+            return;
+          case "failed-blocked":
+            play("cart-failed-blocked");
+        }
+      }),
+    [play, presenter],
+  );
+  return null;
 }
 
 function mapSalesUtilityResult(

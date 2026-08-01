@@ -8,6 +8,7 @@ const supportedInterfaceOrientations = [
 const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
 const localHbposApiBaseUrl = "http://192.168.31.246:5159";
 const posIpadProductionChannel = "pos-ipad-production";
+const posIpadAppVersion = "0.1.1";
 
 function buildOtaUpdateConfiguration(): Readonly<{
   buildProfile: string;
@@ -74,6 +75,14 @@ function buildOtaUpdateConfiguration(): Readonly<{
   ) {
     throw new Error("HB POS runtimeVersion is invalid.");
   }
+  if (
+    explicitRuntimeVersion &&
+    explicitRuntimeVersion !== posIpadAppVersion
+  ) {
+    throw new Error(
+      `HB POS runtimeVersion must match app version ${posIpadAppVersion}.`,
+    );
+  }
   const configured = easProjectId !== null && updatesUrl !== null;
   const updates: NonNullable<ExpoConfig["updates"]> = {
     // 所有 EAS 检查都由门店策略状态机显式触发，启动时绝不绕过后台策略。
@@ -126,7 +135,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   ...config,
   name: "HB POS",
   slug: "hb-pos-ipad",
-  version: "0.1.0",
+  version: posIpadAppVersion,
   icon: "./assets/icon.png",
   scheme: "hbpos-ipad",
   platforms: ["ios"],
@@ -137,7 +146,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   updates: ota.updates,
   ios: {
     bundleIdentifier: "com.hbweb.posipad",
-    buildNumber: "1",
+    buildNumber: "2",
     supportsTablet: true,
     requireFullScreen: true,
     infoPlist: {
@@ -153,9 +162,20 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     "expo-router",
     "expo-localization",
     [
+      "expo-audio",
+      {
+        // POS 仅播放短提示音，绝不申请麦克风或 Android 录音权限。
+        microphonePermission: false,
+        recordAudioAndroid: false,
+      },
+    ],
+    [
       "expo-camera",
       {
         cameraPermission: "允许 HB POS 使用相机扫描商品条码。",
+        // 相机仅用于扫码，禁用所有麦克风与录音权限。
+        microphonePermission: false,
+        recordAudioAndroid: false,
       },
     ],
     [

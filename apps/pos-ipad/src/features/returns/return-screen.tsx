@@ -2,11 +2,9 @@ import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -23,6 +21,8 @@ import {
   type ReturnPresenterLine,
 } from "./return-presenter";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const RETURN_MIN_TOUCH_TARGET = 44;
@@ -127,6 +127,7 @@ export function ReturnScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
+            sound="navigate"
             testID="return-back"
             tone="quiet"
           />
@@ -353,6 +354,7 @@ export function ReturnScreen({
               disabled={!state.canConfirm || state.busy}
               label={t("action.confirm")}
               onPress={() => void presenter.confirm()}
+              sound="danger"
               testID="return-confirm"
             />
           </View>
@@ -509,7 +511,7 @@ function LabeledInput({
   return (
     <View style={styles.inputGroup}>
       <Text style={styles.inputLabel}>{label}</Text>
-      <TextInput
+      <PosTextInput
         autoCapitalize="none"
         autoCorrect={false}
         editable={editable}
@@ -541,18 +543,19 @@ function ModeTab({
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="tab"
       accessibilityState={{ disabled, selected: active }}
       disabled={disabled}
       onPress={onPress}
+      sound="navigate"
       style={[styles.modeTab, active && styles.modeTabActive]}
       testID={testID}
     >
       <Text style={[styles.modeTabText, active && styles.modeTabTextActive]}>
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -568,7 +571,7 @@ function MethodButton({
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="radio"
       accessibilityState={{ checked: active }}
       onPress={onPress}
@@ -580,7 +583,7 @@ function MethodButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -598,7 +601,7 @@ function IconButton({
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
@@ -608,7 +611,7 @@ function IconButton({
       testID={testID}
     >
       <Text style={styles.iconButtonText}>{label}</Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -616,21 +619,24 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "danger" | "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={({ pressed }) => [
         styles.actionButton,
         tone === "primary"
@@ -651,7 +657,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

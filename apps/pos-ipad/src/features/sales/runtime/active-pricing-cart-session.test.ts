@@ -92,6 +92,34 @@ test("两个 Presenter 委托同一 session；销毁一个只取消自身订阅"
   second.destroy();
 });
 
+test("active session 原样返回领域加购 disposition，并继续发布单次快照", () => {
+  const activeCart = session();
+  let notifications = 0;
+  activeCart.subscribe(() => {
+    notifications += 1;
+  });
+  const input = {
+    lineId: "line-1",
+    productCode: "P1",
+    itemNumber: null,
+    lookupCode: "930000000001",
+    displayName: "Tea",
+    unitPrice: { currency: "AUD" as const, cents: 500 },
+    syncProvenance: { referenceCode: null, priceSource: 0 as const },
+  };
+
+  assert.deepEqual(activeCart.addItemWithDisposition(input), {
+    lineId: "line-1",
+    kind: "added",
+  });
+  assert.deepEqual(
+    activeCart.addItemWithDisposition({ ...input, lineId: "ignored" }),
+    { lineId: "line-1", kind: "incremented" },
+  );
+  assert.equal(activeCart.addItem({ ...input, lineId: "legacy", lookupCode: "other" }), "legacy");
+  assert.equal(notifications, 3);
+});
+
 test("整体清车后旧 adapter 只会访问新车，不能继续修改旧 PricingCart", async () => {
   const original = cartWithLine();
   const activeCart = session(original);

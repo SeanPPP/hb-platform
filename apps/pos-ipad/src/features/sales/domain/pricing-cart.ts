@@ -12,6 +12,7 @@ import {
 import type {
   AddCartItemInput,
   AddOpenItemInput,
+  CartAddDisposition,
   PricingCartLineState,
   PricingCartOptions,
   PricingCartStateSnapshot,
@@ -376,7 +377,12 @@ export class PricingCart {
     return cart;
   }
 
+  /** 保持已有调用方的 string API；需要业务反馈的新调用方消费 disposition。 */
   addItem(input: AddCartItemInput): string {
+    return this.addItemWithDisposition(input).lineId;
+  }
+
+  addItemWithDisposition(input: AddCartItemInput): CartAddDisposition {
     const quantity = input.quantity ?? 1;
     this.assertNewLineInput(input, quantity);
     const syncProvenance = normalizeLineSyncProvenance(
@@ -411,7 +417,7 @@ export class PricingCart {
         existing.quantity = nextQuantity;
         this.normalizeDiscountAfterGrossChange(existing);
         this.finishMutation();
-        return existing.lineId;
+        return { lineId: existing.lineId, kind: "incremented" };
       }
     }
 
@@ -444,7 +450,7 @@ export class PricingCart {
       discountState: NONE_DISCOUNT,
     });
     this.finishMutation();
-    return input.lineId;
+    return { lineId: input.lineId, kind: "added" };
   }
 
   addOpenItem(input: AddOpenItemInput): string {

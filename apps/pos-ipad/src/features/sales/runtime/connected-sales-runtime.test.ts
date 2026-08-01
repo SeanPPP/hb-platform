@@ -26,6 +26,7 @@ import type {
   CatalogLookupRevalidationResult,
 } from "@/features/catalog/catalog-lookup-revalidation";
 import { PricingCart } from "@/features/sales/domain";
+import type { SalesFeedbackEvent } from "@/features/sales/ui/sales-presenter";
 
 const item = (overrides: Partial<LocalCatalogMatch> = {}): LocalCatalogMatch => ({
   storeCode: "S1", productCode: "P-TEA", referenceCode: null, itemNumber: "100", displayName: "Tea", barcode: "930000000001", lookupCode: "930000000001", lookupCodeNormalized: "930000000001", retailPriceCents: 500, priceSource: 0, priceSourceLabel: "Retail", quantityFactor: 1, taxRateBasisPoints: 1_000, updatedAtIso: null, rowVersion: "1", productImage: null, discountRate: null, isSpecialProduct: false,
@@ -70,6 +71,192 @@ test("目录搜索和 HID 精确扫码只使用本地目录，并以稳定 produ
     () => dependencies.workflow.addProduct({ ...results[0]!, productCode: "forged" }),
     /identity/i,
   );
+});
+
+test("每次商品加购只发布一个权威 outcome，并由领域 disposition 区分新增和增量", async () => {
+  const dependencies = connected({
+    catalog: new Catalog([
+      item(),
+      item({
+        productCode: "OPENITEM",
+        itemNumber: null,
+        lookupCode: "OPENITEM",
+        lookupCodeNormalized: "OPENITEM",
+      }),
+    ]),
+  });
+  const outcomes: SalesFeedbackEvent[] = [];
+  dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    outcomes.push(outcome);
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001", {
+    source: "hid",
+  });
+  await dependencies.workflow.addByLookupCode("930000000001", {
+    source: "hid",
+  });
+  await dependencies.workflow.addProduct({
+    productCode: "P-TEA",
+    itemNumber: "100",
+    lookupCode: "930000000001",
+    displayName: "Tea",
+    unitPriceCents: 500,
+  });
+  await dependencies.workflow.addOpenItem(120);
+
+  assert.deepEqual(
+    outcomes.map(({ source, kind, lineId }) => ({ source, kind, lineId })),
+    [
+      { source: "hid", kind: "added", lineId: "line-1" },
+      { source: "hid", kind: "incremented", lineId: "line-1" },
+      { source: "manual", kind: "incremented", lineId: "line-1" },
+      { source: "manual", kind: "added", lineId: "line-4" },
+    ],
+  );
+  assert.equal(new Set(outcomes.map((outcome) => outcome.attemptId)).size, 4);
+});
+
+test("同步未找到与交易门禁分别发布 not-found 和 failed-blocked", async () => {
+  const missing = connected({ catalog: new Catalog([]) });
+  const missingOutcomes: SalesFeedbackEvent[] = [];
+  missing.workflow.subscribeLookupOutcome?.((outcome) => {
+    missingOutcomes.push(outcome);
+  });
+
+  await assert.rejects(() =>
+    missing.workflow.addByLookupCode("MISSING", { source: "camera" }),
+  );
+  assert.deepEqual(
+    missingOutcomes.map(({ source, kind }) => ({ source, kind })),
+    [{ source: "camera", kind: "not-found" }],
+  );
+
+  const blocked = connected({
+    catalog: new Catalog([item()]),
+    newTransactionGate: { canStartNewTransaction: () => false },
+  });
+  const blockedOutcomes: SalesFeedbackEvent[] = [];
+  blocked.workflow.subscribeLookupOutcome?.((outcome) => {
+    blockedOutcomes.push(outcome);
+  });
+  await assert.rejects(() =>
+    blocked.workflow.addByLookupCode("930000000001"),
+  );
+  assert.deepEqual(
+    blockedOutcomes.map(({ source, kind }) => ({ source, kind })),
+    [{ source: "manual", kind: "failed-blocked" }],
+  );
+});
+
+test("本地 miss 等远程权威结果后再发布 added 或 not-found", async () => {
+  const found = deferred<CatalogLookupRevalidationResult>();
+  const foundDependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(found.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  const foundOutcomes: SalesFeedbackEvent[] = [];
+  foundDependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    foundOutcomes.push(outcome);
+  });
+
+  await foundDependencies.workflow.addByLookupCode("930000000001", {
+    source: "hid",
+  });
+  assert.deepEqual(foundOutcomes, []);
+  found.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item(),
+  });
+  await waitFor(
+    () => foundDependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+  assert.deepEqual(
+    foundOutcomes.map(({ source, kind, lineId }) => ({ source, kind, lineId })),
+    [{ source: "hid", kind: "added", lineId: "line-1" }],
+  );
+
+  const notFound = deferred<CatalogLookupRevalidationResult>();
+  const missingDependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(notFound.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  const missingOutcomes: SalesFeedbackEvent[] = [];
+  missingDependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    missingOutcomes.push(outcome);
+  });
+  await missingDependencies.workflow.addByLookupCode("930000000001");
+  notFound.resolve({ kind: "not-found", baseSnapshotId: "snapshot-1" });
+  await waitFor(
+    () => missingDependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+  assert.deepEqual(missingOutcomes.map((outcome) => outcome.kind), [
+    "not-found",
+  ]);
+});
+
+test("远程 found 的过期目录基线以唯一 failed-blocked 完成本次扫码", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(remote.promise, false),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  const outcomes: SalesFeedbackEvent[] = [];
+  dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    outcomes.push(outcome);
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001", {
+    source: "hid",
+  });
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-expired",
+    item: item(),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+  assert.deepEqual(
+    outcomes.map(({ source, kind }) => ({ source, kind })),
+    [{ source: "hid", kind: "failed-blocked" }],
+  );
+  assert.equal(outcomes.length, 1);
+  assert.equal(new Set(outcomes.map((outcome) => outcome.attemptId)).size, 1);
+});
+
+test("远程 not-found 的过期目录基线以唯一 failed-blocked 完成本次扫码", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const dependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(remote.promise, false),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  const outcomes: SalesFeedbackEvent[] = [];
+  dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    outcomes.push(outcome);
+  });
+
+  await dependencies.workflow.addByLookupCode("930000000001", {
+    source: "camera",
+  });
+  remote.resolve({
+    kind: "not-found",
+    baseSnapshotId: "snapshot-expired",
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  assert.equal(dependencies.cart.getSnapshot().lines.length, 0);
+  assert.deepEqual(
+    outcomes.map(({ source, kind }) => ({ source, kind })),
+    [{ source: "camera", kind: "failed-blocked" }],
+  );
+  assert.equal(outcomes.length, 1);
+  assert.equal(new Set(outcomes.map((outcome) => outcome.attemptId)).size, 1);
 });
 
 test("更新策略未启用时空车在目录查询前 fail-closed，已有购物车仍可继续当前交易", async () => {
@@ -1010,6 +1197,7 @@ function deferred<T>() {
 class SharedRevalidation implements CatalogLookupRevalidationPort {
   public constructor(
     private readonly result: Promise<CatalogLookupRevalidationResult>,
+    private readonly currentBaseSnapshot = true,
   ) {}
 
   public revalidate(): Promise<CatalogLookupRevalidationResult> {
@@ -1017,7 +1205,7 @@ class SharedRevalidation implements CatalogLookupRevalidationPort {
   }
 
   public async isCurrentBaseSnapshot(): Promise<boolean> {
-    return true;
+    return this.currentBaseSnapshot;
   }
 }
 

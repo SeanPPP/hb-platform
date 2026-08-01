@@ -9,11 +9,10 @@ import {
 import {
   ActivityIndicator,
   Modal,
-  Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  type TextInput,
 } from "react-native";
 
 import {
@@ -27,6 +26,8 @@ import type {
   OperationAuthorizationService,
 } from "./operation-authorization-service";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const OPERATION_AUTHORIZATION_MIN_TOUCH_TARGET = 44;
@@ -292,7 +293,7 @@ export function OperationAuthorizationModal({
 
           <Text style={styles.inputLabel}>{t("inputLabel")}</Text>
           <View style={styles.inputRow}>
-            <TextInput
+            <PosTextInput
               ref={inputRef}
               accessibilityLabel={t("inputLabel")}
               autoCapitalize="none"
@@ -316,12 +317,13 @@ export function OperationAuthorizationModal({
               textContentType="none"
               value={barcode}
             />
-            <Pressable
+            <PosPressable
               accessibilityLabel={t("keyboard")}
               accessibilityRole="button"
               accessibilityState={{ disabled: verifying }}
               disabled={verifying}
               onPress={requestManualKeyboard}
+              sound="navigate"
               style={({ pressed }) => [
                 styles.keyboardButton,
                 (pressed || verifying) && styles.buttonPressed,
@@ -329,7 +331,7 @@ export function OperationAuthorizationModal({
               testID="operation-authorization-show-keyboard"
             >
               <Text style={styles.keyboardLabel}>{t("keyboard")}</Text>
-            </Pressable>
+            </PosPressable>
           </View>
 
           {feedbackKey ? (
@@ -345,9 +347,10 @@ export function OperationAuthorizationModal({
 
           <Text style={styles.privacy}>{t("privacy")}</Text>
           <View style={styles.actions}>
-            <Pressable
+            <PosPressable
               accessibilityRole="button"
               onPress={cancel}
+              sound="navigate"
               style={({ pressed }) => [
                 styles.button,
                 styles.cancelButton,
@@ -356,8 +359,8 @@ export function OperationAuthorizationModal({
               testID="operation-authorization-cancel"
             >
               <Text style={styles.cancelLabel}>{t("cancel")}</Text>
-            </Pressable>
-            <Pressable
+            </PosPressable>
+            <PosPressable
               accessibilityRole="button"
               accessibilityState={{ disabled: verifying }}
               disabled={verifying}
@@ -375,7 +378,7 @@ export function OperationAuthorizationModal({
               <Text style={styles.submitLabel}>
                 {t(verifying ? "verifying" : "submit")}
               </Text>
-            </Pressable>
+            </PosPressable>
           </View>
         </View>
       </View>

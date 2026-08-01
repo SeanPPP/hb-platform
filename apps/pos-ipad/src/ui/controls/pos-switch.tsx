@@ -1,0 +1,40 @@
+import { forwardRef, useCallback } from "react";
+import { Switch, type SwitchProps } from "react-native";
+
+import {
+  type TouchSoundKind,
+  usePosSound,
+} from "@/ui/feedback/pos-sound-context";
+
+export type PosSwitchProps = SwitchProps &
+  Readonly<{ sound?: TouchSoundKind | false }>;
+
+/** 保持原生 Switch 合同，并在业务状态切换前同步播放反馈。 */
+export const PosSwitch = forwardRef<Switch, PosSwitchProps>(
+  function PosSwitch(
+    { disabled = false, onValueChange, sound = "tap", ...props },
+    ref,
+  ) {
+    const { play } = usePosSound();
+
+    const handleValueChange = useCallback(
+      (nextValue: boolean) => {
+        if (disabled) return;
+        if (sound) play(sound);
+        onValueChange?.(nextValue);
+      },
+      [disabled, onValueChange, play, sound],
+    );
+
+    return (
+      <Switch
+        {...props}
+        disabled={disabled}
+        onValueChange={handleValueChange}
+        ref={ref}
+      />
+    );
+  },
+);
+
+PosSwitch.displayName = "PosSwitch";

@@ -2,11 +2,18 @@ import { beforeEach, expect, jest, test } from "@jest/globals";
 import Storage from "expo-sqlite/kv-store";
 
 import {
+  BUTTON_SOUND_PREFERENCE_KEY,
   LANGUAGE_PREFERENCE_KEY,
+  SPECIAL_NODE_SOUND_PREFERENCE_KEY,
+  TOUCH_SOUND_PREFERENCE_KEY,
+  readButtonSoundEnabled,
   readSalesToolbarOrder,
+  readSpecialNodeSoundEnabled,
   readStoredLanguage,
   SALES_TOOLBAR_ORDER_PREFERENCE_KEY,
+  saveButtonSoundEnabled,
   saveSalesToolbarOrder,
+  saveSpecialNodeSoundEnabled,
   saveStoredLanguage,
 } from "./terminal-ui-preferences";
 
@@ -78,4 +85,73 @@ test("异步保存使用固定键且吞掉存储异常", async () => {
   mockSetItem.mockRejectedValue(new Error("disk full"));
   await expect(saveStoredLanguage("zh")).resolves.toBeUndefined();
   await expect(saveSalesToolbarOrder(["payment"])).resolves.toBeUndefined();
+});
+
+test("双音效新键严格读取 true/false，且有效新值优先于旧总开关", () => {
+  mockGetItemSync.mockImplementation((key) => {
+    if (key === BUTTON_SOUND_PREFERENCE_KEY) return "false";
+    if (key === SPECIAL_NODE_SOUND_PREFERENCE_KEY) return "true";
+    if (key === TOUCH_SOUND_PREFERENCE_KEY) return "false";
+    return null;
+  });
+
+  expect(readButtonSoundEnabled()).toBe(false);
+  expect(readSpecialNodeSoundEnabled()).toBe(true);
+  expect(mockGetItemSync).not.toHaveBeenCalledWith(TOUCH_SOUND_PREFERENCE_KEY);
+});
+
+test("每个新音效键缺失或损坏时独立只读回退旧总开关", () => {
+  mockGetItemSync.mockImplementation((key) => {
+    if (key === BUTTON_SOUND_PREFERENCE_KEY) return null;
+    if (key === SPECIAL_NODE_SOUND_PREFERENCE_KEY) return "TRUE";
+    if (key === TOUCH_SOUND_PREFERENCE_KEY) return "false";
+    return null;
+  });
+
+  expect(readButtonSoundEnabled()).toBe(false);
+  expect(readSpecialNodeSoundEnabled()).toBe(false);
+  expect(mockGetItemSync).toHaveBeenCalledWith(BUTTON_SOUND_PREFERENCE_KEY);
+  expect(mockGetItemSync).toHaveBeenCalledWith(
+    SPECIAL_NODE_SOUND_PREFERENCE_KEY,
+  );
+  expect(mockGetItemSync).toHaveBeenCalledTimes(4);
+});
+
+test("新安装、旧值损坏或读取异常时双音效均默认开启", () => {
+  mockGetItemSync.mockReturnValue(null);
+  expect(readButtonSoundEnabled()).toBe(true);
+  expect(readSpecialNodeSoundEnabled()).toBe(true);
+
+  mockGetItemSync.mockReturnValue("TRUE");
+  expect(readButtonSoundEnabled()).toBe(true);
+
+  mockGetItemSync.mockImplementation(() => {
+    throw new Error("SQLite unavailable");
+  });
+  expect(readButtonSoundEnabled()).toBe(true);
+  expect(readSpecialNodeSoundEnabled()).toBe(true);
+});
+
+test("双音效只写各自新键，写入异常不抛错且不触碰旧键", async () => {
+  await saveButtonSoundEnabled(false);
+  await saveSpecialNodeSoundEnabled(true);
+
+  expect(mockSetItem).toHaveBeenNthCalledWith(
+    1,
+    BUTTON_SOUND_PREFERENCE_KEY,
+    "false",
+  );
+  expect(mockSetItem).toHaveBeenNthCalledWith(
+    2,
+    SPECIAL_NODE_SOUND_PREFERENCE_KEY,
+    "true",
+  );
+  expect(mockSetItem).not.toHaveBeenCalledWith(
+    TOUCH_SOUND_PREFERENCE_KEY,
+    expect.any(String),
+  );
+
+  mockSetItem.mockRejectedValue(new Error("disk full"));
+  await expect(saveButtonSoundEnabled(true)).resolves.toBeUndefined();
+  await expect(saveSpecialNodeSoundEnabled(false)).resolves.toBeUndefined();
 });

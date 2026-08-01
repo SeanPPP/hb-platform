@@ -3,10 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -24,6 +22,8 @@ import {
 } from "./special-products-presenter";
 
 import type { SpecialProductItem } from "@/core/contracts";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 export const SPECIAL_PRODUCTS_MIN_TOUCH_TARGET = 44;
 
@@ -88,6 +88,7 @@ export function SpecialProductsScreen({
               <ActionButton
                 label={t("action.back")}
                 onPress={onBack}
+                sound="navigate"
                 testID="special-products-back"
                 tone="quiet"
               />
@@ -196,7 +197,7 @@ export function SpecialProductsScreen({
             >
               <Text style={styles.panelTitle}>{t("management.title")}</Text>
               <Text style={styles.managementHint}>{t("management.hint")}</Text>
-              <TextInput
+              <PosTextInput
                 accessibilityLabel={t("management.searchLabel")}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -284,6 +285,7 @@ export function SpecialProductsUnavailableScreen({
         <ActionButton
           label={t("unavailable.back")}
           onPress={onBack}
+          sound="navigate"
           testID="special-products-unavailable-back"
         />
       </View>
@@ -388,6 +390,7 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound,
   testID,
   tone = "primary",
 }: Readonly<{
@@ -396,15 +399,17 @@ function ActionButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "danger" | "navigate" | "tap";
   testID: string;
   tone?: "primary" | "quiet" | "secondary";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound ?? (danger ? "danger" : "tap")}
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
@@ -424,7 +429,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

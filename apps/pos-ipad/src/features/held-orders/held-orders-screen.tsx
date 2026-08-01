@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -17,6 +16,7 @@ import {
 } from "./held-orders-copy";
 import { HeldOrdersPresenter } from "./held-orders-presenter";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const HELD_ORDERS_MIN_TOUCH_TARGET = 44;
@@ -58,6 +58,7 @@ export function HeldOrdersScreen({
             <ActionButton
               label={t("action.back")}
               onPress={onBack}
+              sound="navigate"
               testID="held-orders-back"
               tone="quiet"
             />
@@ -232,21 +233,24 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={({ pressed }) => [
         styles.button,
         tone === "primary" ? styles.buttonPrimary : tone === "secondary" ? styles.buttonSecondary : styles.buttonQuiet,
@@ -256,7 +260,7 @@ function ActionButton({
       testID={testID}
     >
       <Text style={[styles.buttonText, tone !== "primary" && styles.buttonTextDark]}>{label}</Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

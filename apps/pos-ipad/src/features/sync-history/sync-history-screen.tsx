@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -31,6 +30,7 @@ import {
 } from "./sync-history-presenter";
 
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const SYNC_HISTORY_MIN_TOUCH_TARGET = 44;
@@ -57,6 +57,7 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
+  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
   style?: StyleProp<ViewStyle>;
@@ -158,6 +159,7 @@ export function SyncHistoryScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
+            sound="navigate"
             testID="sync-history-back"
             tone="quiet"
           />
@@ -381,7 +383,7 @@ function SyncHistoryOrderRow({
     : null;
 
   return (
-    <Pressable
+    <PosPressable
       accessibilityLabel={`${t("list.order", { orderGuid: row.orderGuid })}, ${t(`status.${row.state}`)}`}
       accessibilityRole="checkbox"
       accessibilityState={{ checked: row.isSelected }}
@@ -466,7 +468,7 @@ function SyncHistoryOrderRow({
           </Text>
         ) : null}
       </View>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -531,7 +533,7 @@ function FilterChip({
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: selected }}
       onPress={onPress}
@@ -550,7 +552,7 @@ function FilterChip({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -586,16 +588,18 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound = "tap",
   style,
   testID,
   tone = "primary",
 }: ActionButtonProps) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={({ pressed }) => [
         styles.actionButton,
         actionToneStyles[tone],
@@ -614,7 +618,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

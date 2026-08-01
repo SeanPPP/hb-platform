@@ -2,7 +2,6 @@ import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -29,6 +28,7 @@ import type {
   CatalogRefreshWarningCode,
 } from "./catalog-maintenance-presenter";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const CATALOG_MAINTENANCE_MIN_TOUCH_TARGET = 44;
@@ -81,6 +81,7 @@ export function CatalogMaintenanceScreen({
               <CatalogMaintenanceButton
                 label={t("action.back")}
                 onPress={onBack}
+                sound="navigate"
                 testID="catalog-maintenance-back"
                 tone="secondary"
               />
@@ -416,21 +417,24 @@ function CatalogMaintenanceButton({
   disabled = false,
   label,
   onPress,
+  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={({ pressed }) => [
         styles.button,
         tone === "secondary" && styles.secondaryButton,
@@ -447,7 +451,7 @@ function CatalogMaintenanceButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

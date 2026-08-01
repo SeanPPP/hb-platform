@@ -9,16 +9,27 @@ let mockSalesScreenProps: any;
 let mockRouteCaptureProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
+type MockSalesFeedbackEvent = Readonly<{ kind: string }>;
+const mockSalesFeedbackSubscription: {
+  listener?: (event: MockSalesFeedbackEvent) => void;
+} = {};
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
+const mockUnsubscribeSalesFeedback = jest.fn();
+const mockSubscribeSalesFeedback = jest.fn<
+  (listener: (event: MockSalesFeedbackEvent) => void) => () => void
+>();
+const mockPlaySound = jest.fn();
 const mockRouterPush = jest.fn();
 const mockRouterReplace = jest.fn();
 const mockHasRecoveryRequired = jest.fn<() => Promise<boolean>>();
 const mockInstallmentHasRecoveryRequired =
   jest.fn<() => Promise<boolean>>();
 const mockRandomUUID = jest.fn();
-const mockAddLookupCode = jest.fn<() => Promise<boolean>>();
+const mockAddLookupCode = jest.fn<
+  (source?: "manual" | "hid" | "camera") => Promise<boolean>
+>();
 const mockPrepareOnlineCheckout = jest.fn<() => Promise<any>>();
 const mockReleasePreparedCheckout = jest.fn();
 const mockCatalogFindExact =
@@ -59,6 +70,10 @@ jest.mock("react-i18next", () => ({
 
 jest.mock("@/i18n", () => ({
   toggleAppLanguage: () => mockToggleAppLanguage(),
+}));
+
+jest.mock("@/ui/feedback/pos-sound-context", () => ({
+  usePosSound: () => ({ play: mockPlaySound }),
 }));
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
@@ -144,6 +159,11 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSalesScreenProps = null;
   mockRouteCaptureProps = null;
+  delete mockSalesFeedbackSubscription.listener;
+  mockSubscribeSalesFeedback.mockImplementation((listener) => {
+    mockSalesFeedbackSubscription.listener = listener;
+    return mockUnsubscribeSalesFeedback;
+  });
   mockHasRecoveryRequired.mockResolvedValue(false);
   mockInstallmentHasRecoveryRequired.mockResolvedValue(false);
   mockAddLookupCode.mockResolvedValue(true);
@@ -202,6 +222,7 @@ beforeEach(() => {
     prepareOnlineCheckout: mockPrepareOnlineCheckout,
     releasePreparedCheckout: mockReleasePreparedCheckout,
     setQuery: mockSetQuery,
+    subscribeFeedback: mockSubscribeSalesFeedback,
   });
   mockUpdateGate = {
     state: "enabled",
@@ -270,6 +291,33 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("销售反馈逐项映射声音 cue，并在路由卸载时解除订阅", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+  expect(mockSubscribeSalesFeedback).toHaveBeenCalledTimes(1);
+
+  const cases = [
+    ["query-found", "query-found"],
+    ["query-empty", "query-empty"],
+    ["query-error", "query-error"],
+    ["added", "cart-added"],
+    ["incremented", "cart-incremented"],
+    ["not-found", "cart-not-found"],
+    ["failed-blocked", "cart-failed-blocked"],
+  ] as const;
+  for (const [kind] of cases) {
+    mockSalesFeedbackSubscription.listener?.({ kind });
+  }
+
+  expect(mockPlaySound.mock.calls).toEqual(
+    cases.map(([, cue]) => [cue]),
+  );
+  await screen.unmount();
+  expect(mockUnsubscribeSalesFeedback).toHaveBeenCalledTimes(1);
 });
 
 test("销售功能按钮只调用受保护履约 facade，并完整映射终态", async () => {
@@ -427,7 +475,7 @@ test("HID 扫码回调不等待后台在线查询，连续扫码可立即进入 
     ["930000000001"],
     ["930000000002"],
   ]);
-  expect(mockAddLookupCode).toHaveBeenCalledTimes(2);
+  expect(mockAddLookupCode.mock.calls).toEqual([["hid"], ["hid"]]);
   await screen.unmount();
 });
 

@@ -10,11 +10,10 @@ import {
 import {
   ActivityIndicator,
   Keyboard,
-  Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  type TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -26,6 +25,8 @@ import {
 import { useCashierLoginStore } from "./cashier-login-store";
 
 import { HbposApiError } from "@/core/api/hbpos-api";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
@@ -287,7 +288,7 @@ export function CashierLoginScreen({
             </View>
           </View>
           <View style={styles.inputRow}>
-            <TextInput
+            <PosTextInput
               ref={barcodeRef}
               accessibilityLabel={text.inputLabel}
               autoFocus
@@ -309,12 +310,13 @@ export function CashierLoginScreen({
               testID="cashier-login-barcode"
               value={barcode}
             />
-            <Pressable
+            <PosPressable
               accessibilityLabel={text.keyboard}
               accessibilityRole="button"
               accessibilityState={{ disabled: submitting || blocked }}
               disabled={submitting || blocked}
               onPress={requestManualKeyboard}
+              sound="navigate"
               style={({ pressed }) => [
                 styles.keyboardButton,
                 (pressed || submitting || blocked) &&
@@ -328,7 +330,7 @@ export function CashierLoginScreen({
                 size={22}
               />
               <Text style={styles.keyboardLabel}>{text.keyboard}</Text>
-            </Pressable>
+            </PosPressable>
           </View>
           {error ? (
             <View
@@ -339,7 +341,7 @@ export function CashierLoginScreen({
               <Text style={styles.errorText}>{error}</Text>
             </View>
           ) : null}
-          <Pressable
+          <PosPressable
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting || blocked }}
             disabled={submitting || blocked}
@@ -358,7 +360,7 @@ export function CashierLoginScreen({
             <Text style={styles.submitLabel}>
               {submitting ? text.submitting : text.submit}
             </Text>
-          </Pressable>
+          </PosPressable>
           <View style={styles.offlineNote}>
             <MaterialCommunityIcons
               color={posColors.blue}

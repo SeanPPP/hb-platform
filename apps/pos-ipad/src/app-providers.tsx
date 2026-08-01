@@ -13,6 +13,7 @@ import {
 import { AppUpdateGateBridge } from "@/features/app-updates";
 import { CashierSessionInvalidationBridge } from "@/features/cashier-login";
 import { OperationAuthorizationModal } from "@/features/operation-authorization/operation-authorization-modal";
+import { PosSoundProvider } from "@/ui/feedback/pos-sound-provider";
 import { NetworkStatusBridge } from "@/ui/shell/network-status-bridge";
 import { PeripheralStatusBridge } from "@/ui/shell/peripheral-status-bridge";
 import { RuntimeStatusBridge } from "@/ui/shell/runtime-status-bridge";
@@ -39,16 +40,18 @@ export function AppProviders({ children }: PropsWithChildren) {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <PaperProvider theme={posTheme}>
-          <PosRuntimeProvider>
-            <CashierSessionInvalidationBridge />
-            <NetworkStatusBridge />
-            <PeripheralStatusBridge />
-            <RuntimeStatusBridge />
-            <RuntimeWorkBridge />
-            <OperationAuthorizationModalBridge />
-            {children}
-            <AppUpdateGateBridge />
-          </PosRuntimeProvider>
+          <PosSoundProvider>
+            <PosRuntimeProvider>
+              <CashierSessionInvalidationBridge />
+              <NetworkStatusBridge />
+              <PeripheralStatusBridge />
+              <RuntimeStatusBridge />
+              <RuntimeWorkBridge />
+              <OperationAuthorizationModalBridge />
+              {children}
+              <AppUpdateGateBridge />
+            </PosRuntimeProvider>
+          </PosSoundProvider>
         </PaperProvider>
       </QueryClientProvider>
     </SafeAreaProvider>

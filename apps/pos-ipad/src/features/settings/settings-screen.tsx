@@ -3,11 +3,9 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Modal,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type StyleProp,
   type ViewStyle,
@@ -38,6 +36,10 @@ import {
   DEFAULT_REMOTE_HBPOS_API_BASE_URL,
 } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosSwitch } from "@/ui/controls/pos-switch";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
+import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { posColors } from "@/ui/theme";
 
@@ -344,6 +346,12 @@ function GeneralPane({
 }>) {
   const locked = state.busy || state.confirmation !== null;
   const catalogRefreshRunning = state.catalogRefresh.kind === "running";
+  const {
+    buttonSoundEnabled,
+    setButtonSoundEnabled,
+    setSpecialNodeSoundEnabled,
+    specialNodeSoundEnabled,
+  } = usePosSound();
   const t = (
     key: SettingsCopyKey,
     values?: Readonly<Record<string, string | number>>,
@@ -355,10 +363,63 @@ function GeneralPane({
         title={t("general.title")}
       />
       <SectionCard
+        eyebrow={t("eyebrow.interaction")}
+        title={t("general.soundFeedback")}
+      >
+        <View
+          style={[styles.soundPreferenceRow, styles.soundPreferenceDivider]}
+        >
+          <View style={styles.soundPreferenceCopy}>
+            <Text style={styles.soundPreferenceLabel}>
+              {t("general.buttonSound")}
+            </Text>
+            <Text style={[styles.sectionCopy, styles.soundPreferenceHint]}>
+              {t("general.buttonSoundHint")}
+            </Text>
+          </View>
+          <PosSwitch
+            accessibilityLabel={t("general.buttonSound")}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: buttonSoundEnabled }}
+            ios_backgroundColor={posColors.border}
+            onValueChange={setButtonSoundEnabled}
+            sound={false}
+            style={styles.soundSwitch}
+            testID="settings-button-sound"
+            thumbColor={buttonSoundEnabled ? posColors.blue : "#FFFFFF"}
+            trackColor={{ false: posColors.border, true: posColors.blueSoft }}
+            value={buttonSoundEnabled}
+          />
+        </View>
+        <View style={styles.soundPreferenceRow}>
+          <View style={styles.soundPreferenceCopy}>
+            <Text style={styles.soundPreferenceLabel}>
+              {t("general.specialNodeSound")}
+            </Text>
+            <Text style={[styles.sectionCopy, styles.soundPreferenceHint]}>
+              {t("general.specialNodeSoundHint")}
+            </Text>
+          </View>
+          <PosSwitch
+            accessibilityLabel={t("general.specialNodeSound")}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: specialNodeSoundEnabled }}
+            ios_backgroundColor={posColors.border}
+            onValueChange={setSpecialNodeSoundEnabled}
+            sound={false}
+            style={styles.soundSwitch}
+            testID="settings-special-node-sound"
+            thumbColor={specialNodeSoundEnabled ? posColors.blue : "#FFFFFF"}
+            trackColor={{ false: posColors.border, true: posColors.blueSoft }}
+            value={specialNodeSoundEnabled}
+          />
+        </View>
+      </SectionCard>
+      <SectionCard
         eyebrow={t("eyebrow.network")}
         title={t("general.apiAddress")}
       >
-        <TextInput
+        <PosTextInput
           accessibilityLabel={t("general.apiAddress")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -727,7 +788,7 @@ function PaymentsPane({
             prefix="settings-square"
           />
           <FieldLabel label={t("field.locationId")} />
-          <TextInput
+          <PosTextInput
             accessibilityLabel={t("field.squareLocationId")}
             autoCapitalize="none"
             autoCorrect={false}
@@ -738,7 +799,7 @@ function PaymentsPane({
             value={state.squareDraft.locationId}
           />
           <FieldLabel label={t("field.deviceId")} />
-          <TextInput
+          <PosTextInput
             accessibilityLabel={t("field.squareDeviceId")}
             autoCapitalize="none"
             autoCorrect={false}
@@ -874,7 +935,7 @@ function PeripheralsPane({
           />
         </View>
         <FieldLabel label={t("field.peripheralId")} />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={t("field.printerPeripheralId")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -1030,7 +1091,7 @@ function DevicePane({
         title={t("device.reregister")}
       >
         <FieldLabel label={t("field.targetStoreCode")} />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={t("field.targetStoreCode")}
           autoCapitalize="characters"
           autoCorrect={false}
@@ -1041,7 +1102,7 @@ function DevicePane({
           value={state.reregisterStoreCode}
         />
         <FieldLabel label={t("field.terminalName")} />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={t("field.terminalName")}
           editable={!disabled}
           onChangeText={(value) => presenter.setTerminalName(value)}
@@ -1421,11 +1482,14 @@ function ActionButton({
   tone?: "danger" | "nav" | "primary" | "quiet" | "secondary";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
+      sound={
+        tone === "danger" ? "danger" : tone === "nav" ? "navigate" : "tap"
+      }
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
@@ -1450,7 +1514,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -1647,6 +1711,28 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 14,
   },
+  soundPreferenceRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 16,
+    minHeight: SETTINGS_MIN_TOUCH_TARGET,
+  },
+  soundPreferenceCopy: { flex: 1 },
+  soundPreferenceDivider: {
+    borderBottomColor: posColors.border,
+    borderBottomWidth: 1,
+    marginBottom: 14,
+    paddingBottom: 14,
+  },
+  soundPreferenceLabel: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  soundPreferenceHint: { fontSize: 13, lineHeight: 19, marginBottom: 0 },
+  soundSwitch: { minHeight: SETTINGS_MIN_TOUCH_TARGET, minWidth: 52 },
   twoColumn: { flexDirection: "row", gap: 14 },
   actionRow: {
     alignItems: "center",

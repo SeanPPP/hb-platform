@@ -3,11 +3,9 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Modal,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
   type StyleProp,
@@ -41,6 +39,8 @@ import {
 import type {
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
@@ -158,7 +158,7 @@ export function PaymentScreen({
               {t(paymentRuntimeErrorCopyKey(state.runtimeErrorCode))}
             </Text>
             {!state.busy ? (
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 onPress={() => presenter.dismissError()}
                 style={({ pressed }) => [
@@ -170,7 +170,7 @@ export function PaymentScreen({
                 <Text style={styles.errorDismissText}>
                   {t("action.dismiss")}
                 </Text>
-              </Pressable>
+              </PosPressable>
             ) : null}
           </View>
         ) : null}
@@ -208,7 +208,7 @@ export function PaymentScreen({
                 testID="payment-entry-form"
               >
                 <Text style={styles.inputLabel}>{t("amount.label")}</Text>
-                <TextInput
+                <PosTextInput
                   accessibilityLabel={t("amount.label")}
                   editable={!state.busy}
                   keyboardType="decimal-pad"
@@ -281,7 +281,7 @@ export function PaymentScreen({
                     <Text style={styles.inputLabel}>
                       {t("voucher.label")}
                     </Text>
-                    <TextInput
+                    <PosTextInput
                       accessibilityLabel={t("voucher.label")}
                       autoCapitalize="characters"
                       autoCorrect={false}
@@ -519,7 +519,7 @@ function PaymentContextPane({
             </Text>
             {customer.editable &&
             presenter.openInstallmentCustomerEditor ? (
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 disabled={state.busy}
                 onPress={() =>
@@ -534,7 +534,7 @@ function PaymentContextPane({
                 <Text style={styles.customerEditText}>
                   {locale === "zh" ? "编辑" : "Edit"}
                 </Text>
-              </Pressable>
+              </PosPressable>
             ) : null}
           </View>
           {customer.installmentNumber ? (
@@ -550,7 +550,7 @@ function PaymentContextPane({
           </Text>
           {customer.editorOpen ? (
             <View style={styles.customerEditor} testID="payment-customer-editor">
-              <TextInput
+              <PosTextInput
                 autoCorrect={false}
                 editable={!state.busy}
                 onChangeText={(value) =>
@@ -561,7 +561,7 @@ function PaymentContextPane({
                 testID="payment-customer-name"
                 value={customer.draftName}
               />
-              <TextInput
+              <PosTextInput
                 autoCorrect={false}
                 editable={!state.busy}
                 keyboardType="phone-pad"
@@ -916,7 +916,7 @@ function PaymentInstallmentToggle({
 }>) {
   return (
     <View style={styles.installmentToggleGroup}>
-      <Pressable
+      <PosPressable
         accessibilityLabel={t("installment.toggle")}
         accessibilityRole="switch"
         accessibilityState={{
@@ -948,7 +948,7 @@ function PaymentInstallmentToggle({
             ]}
           />
         </View>
-      </Pressable>
+      </PosPressable>
       {control.issue ? (
         <Text
           accessibilityRole="alert"
@@ -992,10 +992,11 @@ function PaymentKeypad({
       testID="payment-keypad"
     >
       {keys.map((key) => (
-        <Pressable
+        <PosPressable
           accessibilityRole="button"
           disabled={disabled}
           key={key}
+          sound="key"
           onPress={() =>
             onChange(nextKeypadAmount(amountText, key))
           }
@@ -1012,7 +1013,7 @@ function PaymentKeypad({
           <Text style={styles.keypadKeyText}>
             {key === "backspace" ? "⌫" : key}
           </Text>
-        </Pressable>
+        </PosPressable>
       ))}
     </View>
   );
@@ -1111,7 +1112,7 @@ function PaymentMethodButton({
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled, selected: active }}
       disabled={disabled}
@@ -1132,7 +1133,7 @@ function PaymentMethodButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -1152,11 +1153,12 @@ function ActionButton({
   tone?: "primary" | "secondary" | "danger" | "quiet";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={tone === "danger" ? "danger" : "tap"}
       style={({ pressed }) => [
         styles.actionButton,
         tone === "secondary" && styles.actionSecondary,
@@ -1177,7 +1179,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

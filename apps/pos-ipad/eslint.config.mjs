@@ -22,7 +22,45 @@ export default defineConfig([
             caseInsensitive: true
           }
         }
-      ]
-    }
-  }
+      ],
+    },
+  },
+  {
+    files: ["app/**/*.tsx", "src/**/*.tsx"],
+    ignores: [
+      "**/*.test.tsx",
+      "**/*.spec.tsx",
+      "**/*.rntl.test.tsx",
+      "src/ui/controls/**",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react-native",
+              importNames: [
+                "Pressable",
+                "TouchableOpacity",
+                "TouchableHighlight",
+                "TouchableWithoutFeedback",
+                "Button",
+                "Switch",
+                "TextInput",
+              ],
+              allowTypeImports: true,
+              message: "业务触控请使用 @/ui/controls 下对应 POS 控件。",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/core/peripherals/scanner/hid-scanner-capture.tsx"],
+    rules: {
+      "no-restricted-imports": "off",
+    },
+  },
 ]);

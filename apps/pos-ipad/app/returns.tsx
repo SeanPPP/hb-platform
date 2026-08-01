@@ -1,12 +1,7 @@
 import { Redirect, type Href, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -19,6 +14,7 @@ import {
   type ReturnPresenter,
   ReturnScreen,
 } from "@/features/returns";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 import { posColors } from "@/ui/theme";
 
@@ -195,6 +191,7 @@ function ReturnRouteError({
             label={chinese ? "返回销售" : "Back to sales"}
             onPress={onBack}
             secondary={Boolean(onRetry)}
+            sound="navigate"
             testID="returns-route-back"
           />
         </View>
@@ -207,18 +204,21 @@ function RouteButton({
   label,
   onPress,
   secondary = false,
+  sound = "tap",
   testID,
 }: Readonly<{
   label: string;
   onPress(): void;
   secondary?: boolean;
+  sound?: "navigate" | "tap";
   testID: string;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityLabel={label}
       accessibilityRole="button"
       onPress={onPress}
+      sound={sound}
       style={({ pressed }) => [
         styles.button,
         secondary && styles.buttonSecondary,
@@ -234,7 +234,7 @@ function RouteButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

@@ -22,6 +22,14 @@ export const settingsEnglishCopy = {
   "general.title": "System & catalog",
   "general.subtitle":
     "Endpoint changes require confirmation and a clear local queue.",
+  "eyebrow.interaction": "INTERACTION",
+  "general.soundFeedback": "Sound feedback",
+  "general.buttonSound": "Button sounds",
+  "general.buttonSoundHint":
+    "Covers buttons, keys, page navigation and dangerous actions. Turn it on to hear a sample; turn it off to keep them silent.",
+  "general.specialNodeSound": "Special event sounds",
+  "general.specialNodeSoundHint":
+    "Covers product lookup, cart add/increment, not-found and blocked results. Turn it on to hear a sample; turn it off to keep them silent.",
   "eyebrow.network": "NETWORK",
   "general.apiAddress": "API address",
   "general.useLocalApi": "Local backend",
@@ -220,6 +228,14 @@ export const settingsChineseCopy = {
   "general.title": "系统与商品目录",
   "general.subtitle":
     "切换服务地址会改变数据分区，必须确认且本机无待处理交易。",
+  "eyebrow.interaction": "交互反馈",
+  "general.soundFeedback": "音效反馈",
+  "general.buttonSound": "普通按钮音效",
+  "general.buttonSoundHint":
+    "覆盖按钮、按键、页面导航和危险操作；开启时播放一次示例，关闭后保持静音。",
+  "general.specialNodeSound": "特殊节点音效",
+  "general.specialNodeSoundHint":
+    "覆盖商品查询、加购/累加、未找到和受阻结果；开启时播放一次示例，关闭后保持静音。",
   "eyebrow.network": "网络",
   "general.apiAddress": "API 地址",
   "general.useLocalApi": "本地后端",

@@ -1,7 +1,8 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 import { MIN_TOUCH_TARGET } from "./sales-presenter";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export type SalesNumberKey =
@@ -102,13 +103,14 @@ export function SalesNumberKeypad({
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {row.map((key) => (
-            <Pressable
+            <PosPressable
               accessibilityLabel={getAccessibilityLabel(key, labels)}
               accessibilityRole="button"
               accessibilityState={{ disabled }}
               disabled={disabled}
               key={key}
               onPress={() => onKeyPress(key)}
+              sound={key === "clear" ? "danger" : "key"}
               style={({ pressed }) => [
                 styles.key,
                 isQuickKey(key) && styles.quickKey,
@@ -128,7 +130,7 @@ export function SalesNumberKeypad({
               >
                 {getVisibleLabel(key, labels)}
               </Text>
-            </Pressable>
+            </PosPressable>
           ))}
         </View>
       ))}

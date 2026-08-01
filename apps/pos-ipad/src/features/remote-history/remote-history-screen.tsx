@@ -3,11 +3,9 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -29,6 +27,8 @@ import type {
   RemoteOrderPaymentPreview,
 } from "@/core/contracts/remote-history";
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const REMOTE_HISTORY_MIN_TOUCH_TARGET = 44;
@@ -94,6 +94,7 @@ export function RemoteHistoryScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
+            sound="navigate"
             testID="remote-history-back"
             tone="quiet"
           />
@@ -288,7 +289,7 @@ function OrderRow({
 }>) {
   const t = copyFor(locale);
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
       onPress={onPress}
@@ -316,7 +317,7 @@ function OrderRow({
           <Text style={styles.statusPill}>{row.statusLabel}</Text>
         ) : null}
       </View>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -543,7 +544,7 @@ function FilterField({
   return (
     <View style={[styles.filterField, grow && styles.filterFieldGrow]}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
+      <PosTextInput
         autoCapitalize="none"
         autoCorrect={false}
         onChangeText={onChangeText}
@@ -588,21 +589,24 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={[
         styles.actionButton,
         tone === "primary"
@@ -622,7 +626,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

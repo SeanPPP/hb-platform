@@ -9,13 +9,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { reconcileDeviceSessionRuntime } from "./device-registration-state";
@@ -27,6 +21,7 @@ import {
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import type { DeviceSessionState } from "@/core/security/device-session";
 import { toggleAppLanguage } from "@/i18n";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
@@ -154,11 +149,12 @@ export function DeviceRegistrationScreen() {
       <StatusBar style="dark" />
       <PosStatusStrip />
       <View style={styles.languageBar}>
-        <Pressable
+        <PosPressable
           accessibilityLabel={t("registration.languageSwitchLabel")}
           accessibilityRole="button"
           hitSlop={8}
           onPress={() => void toggleAppLanguage()}
+          sound="navigate"
           style={({ pressed }) => [
             styles.languageButton,
             pressed && styles.languageButtonPressed,
@@ -173,7 +169,7 @@ export function DeviceRegistrationScreen() {
           <Text style={styles.languageButtonLabel}>
             {t("registration.languageSwitch")}
           </Text>
-        </Pressable>
+        </PosPressable>
       </View>
       <View style={styles.page}>
         <View style={styles.contextPanel}>
@@ -211,7 +207,7 @@ export function DeviceRegistrationScreen() {
           {runtime.state.phase !== "pending-approval" ? (
             <>
               <FieldLabel>{t("registration.storeCode")}</FieldLabel>
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 accessibilityState={{
                   disabled:
@@ -222,6 +218,7 @@ export function DeviceRegistrationScreen() {
                   storeLoadState !== "ready" || stores.length === 0
                 }
                 onPress={() => setPickerVisible(true)}
+                sound="navigate"
                 style={({ pressed }) => [
                   styles.storePicker,
                   pressed && styles.storePickerPressed,
@@ -245,7 +242,7 @@ export function DeviceRegistrationScreen() {
                   name="chevron-down"
                   size={24}
                 />
-              </Pressable>
+              </PosPressable>
 
               {storeLoadState === "failed" ||
               (storeLoadState === "ready" && stores.length === 0) ? (
@@ -257,7 +254,7 @@ export function DeviceRegistrationScreen() {
                         : t("registration.storeEmpty")
                     )}
                   </Text>
-                  <Pressable
+                  <PosPressable
                     accessibilityRole="button"
                     onPress={() => void loadStores()}
                     style={({ pressed }) => [
@@ -269,7 +266,7 @@ export function DeviceRegistrationScreen() {
                     <Text style={styles.retryButtonLabel}>
                       {t("registration.storeRetry")}
                     </Text>
-                  </Pressable>
+                  </PosPressable>
                 </View>
               ) : null}
             </>
@@ -298,7 +295,7 @@ export function DeviceRegistrationScreen() {
           ) : null}
 
           {runtime.state.phase !== "pending-approval" ? (
-            <Pressable
+            <PosPressable
               accessibilityRole="button"
               accessibilityState={{ disabled: submitDisabled }}
               disabled={submitDisabled}
@@ -315,9 +312,9 @@ export function DeviceRegistrationScreen() {
                   ? t("registration.submitting")
                   : t("registration.submit")}
               </Text>
-            </Pressable>
+            </PosPressable>
           ) : (
-            <Pressable
+            <PosPressable
               accessibilityRole="button"
               onPress={() => void poll()}
               style={({ pressed }) => [
@@ -328,7 +325,7 @@ export function DeviceRegistrationScreen() {
               <Text style={styles.secondaryButtonLabel}>
                 {t("registration.checkNow")}
               </Text>
-            </Pressable>
+            </PosPressable>
           )}
         </View>
       </View>
@@ -376,9 +373,10 @@ function StorePickerOverlay({
           <Text style={styles.modalTitle}>
             {t("registration.storePickerTitle")}
           </Text>
-          <Pressable
+          <PosPressable
             accessibilityRole="button"
             onPress={onClose}
+            sound="navigate"
             style={({ pressed }) => [
               styles.modalClose,
               pressed && styles.modalClosePressed,
@@ -387,7 +385,7 @@ function StorePickerOverlay({
             <Text style={styles.modalCloseLabel}>
               {t("registration.storePickerClose")}
             </Text>
-          </Pressable>
+          </PosPressable>
         </View>
         <ScrollView
           contentContainerStyle={styles.storeList}
@@ -396,7 +394,7 @@ function StorePickerOverlay({
           {stores.map((store) => {
             const selected = store.storeCode === selectedStoreCode;
             return (
-              <Pressable
+              <PosPressable
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
                 key={store.storeCode}
@@ -423,7 +421,7 @@ function StorePickerOverlay({
                     size={22}
                   />
                 ) : null}
-              </Pressable>
+              </PosPressable>
             );
           })}
         </ScrollView>

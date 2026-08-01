@@ -3,11 +3,9 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Image,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -30,6 +28,8 @@ import type {
   OperationAuditUploadState,
 } from "./operation-audit-presenter";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const ATTENDANCE_AUDIT_MIN_TOUCH_TARGET = 44;
@@ -115,6 +115,7 @@ function Header({
         <ActionButton
           label={t("action.back")}
           onPress={onBack}
+          sound="navigate"
           testID="attendance-audit-back"
           tone="quiet"
         />
@@ -308,7 +309,7 @@ function AuditFilters({
         ))}
       </View>
       <View style={styles.searchRow}>
-        <TextInput
+        <PosTextInput
           accessibilityLabel={t("audit.searchLabel")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -409,7 +410,7 @@ function AuditRow({
   t: AttendanceAuditTranslate;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
       onPress={onPress}
@@ -439,7 +440,7 @@ function AuditRow({
       <Text style={styles.auditMeta}>
         {formatTimestamp(record.occurredAtIso)} · {record.cashierName ?? "—"}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -559,6 +560,7 @@ export function AttendanceAuditUnavailableScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
+            sound="navigate"
             testID="attendance-audit-unavailable-back"
           />
         ) : null}
@@ -615,6 +617,7 @@ function ActionButton({
   label,
   onPress,
   selected = false,
+  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
@@ -623,15 +626,17 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
+  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "quiet" | "secondary";
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound}
       style={[
         styles.button,
         compact && styles.compactButton,
@@ -651,7 +656,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

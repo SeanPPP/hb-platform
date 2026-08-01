@@ -2,11 +2,9 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -25,6 +23,8 @@ import type {
 } from "./installment-presenter";
 
 import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
+import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const INSTALLMENTS_MIN_TOUCH_TARGET = 44;
@@ -195,6 +195,7 @@ function Header({
           <ActionButton
             label={installmentText(locale, "action.back")}
             onPress={onBack}
+            sound="navigate"
             testID="installments-back"
             tone="quiet"
           />
@@ -203,6 +204,7 @@ function Header({
           disabled={busy}
           label={installmentText(locale, "action.history")}
           onPress={showHistory}
+          sound="navigate"
           selected={pane === "history"}
           testID="installments-history-tab"
           tone="secondary"
@@ -212,6 +214,7 @@ function Header({
             disabled={busy}
             label={installmentText(locale, "action.new")}
             onPress={showCreate}
+            sound="navigate"
             selected={pane === "create"}
             testID="installments-create-tab"
           />
@@ -258,7 +261,7 @@ function HistoryPane({
         ) : null}
       </View>
       <View style={styles.searchRow}>
-        <TextInput
+        <PosTextInput
           accessibilityLabel={installmentText(locale, "search.accessibility")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -331,7 +334,7 @@ function OrderRow({
   selected: boolean;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [
@@ -357,7 +360,7 @@ function OrderRow({
           {installmentText(locale, "balance.label")}
         </Text>
       </View>
-    </Pressable>
+    </PosPressable>
   );
 }
 
@@ -578,7 +581,7 @@ function RepaymentPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "repayment.title")}
       </Text>
-      <TextInput
+      <PosTextInput
         accessibilityLabel={installmentText(
           locale,
           "repayment.amountAccessibility",
@@ -600,7 +603,7 @@ function RepaymentPanel({
       />
       {state.repaymentMethod === "voucher" ? (
         <>
-          <TextInput
+          <PosTextInput
             accessibilityLabel={installmentText(
               locale,
               "repayment.voucherAccessibility",
@@ -655,7 +658,7 @@ function CancellationPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "cancel.title")}
       </Text>
-      <TextInput
+      <PosTextInput
         accessibilityLabel={installmentText(
           locale,
           "cancel.reasonAccessibility",
@@ -675,7 +678,7 @@ function CancellationPanel({
           testID="installment-cancel-refund"
           tone="danger"
         />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={installmentText(
             locale,
             "void.reasonAccessibility",
@@ -734,7 +737,7 @@ function PickupPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "pickup.title")}
       </Text>
-      <TextInput
+      <PosTextInput
         accessibilityLabel={installmentText(locale, "pickup.noteAccessibility")}
         editable={!disabled}
         onChangeText={presenter.setPickupNote}
@@ -788,6 +791,7 @@ function ConfirmationStrip({
         <ActionButton
           label={installmentText(locale, "action.back")}
           onPress={onCancel}
+          sound="navigate"
           testID="installment-confirm-operation-cancel"
           tone="quiet"
         />
@@ -843,7 +847,7 @@ function CreateWorkspace({
         <Text style={styles.panelTitle}>
           {installmentText(locale, "create.title")}
         </Text>
-        <TextInput
+        <PosTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.customerNameAccessibility",
@@ -858,7 +862,7 @@ function CreateWorkspace({
           testID="installment-create-customer-name"
           value={state.customerName}
         />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.customerPhoneAccessibility",
@@ -874,7 +878,7 @@ function CreateWorkspace({
           testID="installment-create-customer-phone"
           value={state.customerPhone}
         />
-        <TextInput
+        <PosTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.noteAccessibility",
@@ -891,7 +895,7 @@ function CreateWorkspace({
           <Text style={styles.fieldLabel}>
             {installmentText(locale, "create.downPayment")}
           </Text>
-          <TextInput
+          <PosTextInput
             accessibilityLabel={installmentText(
               locale,
               "create.downPaymentAccessibility",
@@ -920,7 +924,7 @@ function CreateWorkspace({
         />
         {state.createPaymentMethod === "voucher" ? (
           <>
-            <TextInput
+            <PosTextInput
               accessibilityLabel={installmentText(
                 locale,
                 "create.voucherAccessibility",
@@ -1137,6 +1141,7 @@ export function InstallmentsUnavailableScreen({
         <ActionButton
           label={installmentText(locale, "action.backToSales")}
           onPress={onBack}
+          sound="navigate"
           testID="installments-unavailable-back"
           wide
         />
@@ -1151,6 +1156,7 @@ function ActionButton({
   label,
   onPress,
   selected = false,
+  sound,
   testID,
   tone = "primary",
   wide = false,
@@ -1160,16 +1166,18 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
+  sound?: "danger" | "navigate" | "tap";
   testID: string;
   tone?: "primary" | "secondary" | "quiet" | "danger";
   wide?: boolean;
 }>) {
   return (
-    <Pressable
+    <PosPressable
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
+      sound={sound ?? (tone === "danger" ? "danger" : "tap")}
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
@@ -1193,7 +1201,7 @@ function ActionButton({
       >
         {label}
       </Text>
-    </Pressable>
+    </PosPressable>
   );
 }
 

@@ -902,7 +902,7 @@ export function createProductionPosRuntimeServices(
                 { code: SALES_NEW_TRANSACTIONS_DISABLED },
               );
             }
-            activePricingCart.addItem({
+            return activePricingCart.addItemWithDisposition({
               lineId: input.createId(),
               productCode: item.productCode,
               itemNumber: item.itemNumber,

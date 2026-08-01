@@ -1,4 +1,11 @@
-import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
@@ -26,6 +33,7 @@ import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
+import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import { posColors } from "@/ui/theme";
 
 jest.mock("react-i18next", () => ({
@@ -34,7 +42,26 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@/ui/feedback/pos-sound-context", () => ({
+  usePosSound: jest.fn(),
+}));
+
+const mockPlay = jest.fn();
+const mockSetButtonSoundEnabled = jest.fn();
+const mockSetSpecialNodeSoundEnabled = jest.fn();
+
 const presenters: SettingsPresenter[] = [];
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.mocked(usePosSound).mockReturnValue({
+    buttonSoundEnabled: true,
+    play: mockPlay,
+    setButtonSoundEnabled: mockSetButtonSoundEnabled,
+    setSpecialNodeSoundEnabled: mockSetSpecialNodeSoundEnabled,
+    specialNodeSoundEnabled: false,
+  });
+});
 
 afterEach(() => {
   for (const presenter of presenters.splice(0)) presenter.destroy();
@@ -86,6 +113,76 @@ describe("SettingsScreen", () => {
 
     await fireEvent.press(screen.getByTestId("settings-back"));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("普通按钮与特殊节点音效以两个独立开关呈现，并提供中英文说明", async () => {
+    const presenter = createPresenter(new ScreenSettingsPort());
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    expect(screen.getByText("Sound feedback")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Covers buttons, keys, page navigation and dangerous actions. Turn it on to hear a sample; turn it off to keep them silent.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Covers product lookup, cart add/increment, not-found and blocked results. Turn it on to hear a sample; turn it off to keep them silent.",
+      ),
+    ).toBeTruthy();
+
+    const buttonSound = screen.getByTestId("settings-button-sound");
+    const specialNodeSound = screen.getByTestId(
+      "settings-special-node-sound",
+    );
+    expect(buttonSound.props).toEqual(
+      expect.objectContaining({
+        accessibilityLabel: "Button sounds",
+        accessibilityRole: "switch",
+        accessibilityState: { checked: true },
+        value: true,
+      }),
+    );
+    expect(specialNodeSound.props).toEqual(
+      expect.objectContaining({
+        accessibilityLabel: "Special event sounds",
+        accessibilityRole: "switch",
+        accessibilityState: { checked: false },
+        value: false,
+      }),
+    );
+    for (const control of [buttonSound, specialNodeSound]) {
+      expect(StyleSheet.flatten(control.props.style).minHeight).toBeGreaterThanOrEqual(
+        SETTINGS_MIN_TOUCH_TARGET,
+      );
+    }
+
+    await fireEvent(buttonSound, "valueChange", false);
+    await fireEvent(specialNodeSound, "valueChange", true);
+    expect(mockSetButtonSoundEnabled).toHaveBeenCalledWith(false);
+    expect(mockSetSpecialNodeSoundEnabled).toHaveBeenCalledWith(true);
+    expect(mockPlay).not.toHaveBeenCalled();
+
+    await screen.rerender(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    expect(screen.getByText("音效反馈")).toBeTruthy();
+    expect(screen.getByLabelText("普通按钮音效")).toBeTruthy();
+    expect(screen.getByLabelText("特殊节点音效")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "覆盖按钮、按键、页面导航和危险操作；开启时播放一次示例，关闭后保持静音。",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "覆盖商品查询、加购/累加、未找到和受阻结果；开启时播放一次示例，关闭后保持静音。",
+      ),
+    ).toBeTruthy();
   });
 
   it("当前终端卡片按分店名称、设备代码、分店代码展示完整身份", async () => {

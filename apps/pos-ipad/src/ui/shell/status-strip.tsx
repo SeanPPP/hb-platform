@@ -1,8 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 import { usePosShellStore } from "./pos-shell-store";
 
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 type IndicatorTone = "good" | "warning" | "neutral" | "danger";
@@ -154,12 +155,13 @@ export function PosStatusStrip({
         value={t(`status.peripheral.${display}`)}
       />
       {onSwitchLanguage ? (
-        <Pressable
+        <PosPressable
           accessibilityHint={t("status.languageSwitchHint")}
           accessibilityLabel={t("status.languageSwitchLabel")}
           accessibilityRole="button"
           hitSlop={4}
           onPress={onSwitchLanguage}
+          sound="navigate"
           style={({ pressed }) => [
             styles.languageButton,
             pressed && styles.languageButtonPressed,
@@ -173,7 +175,7 @@ export function PosStatusStrip({
           >
             {targetLanguageGlyph}
           </Text>
-        </Pressable>
+        </PosPressable>
       ) : null}
     </View>
   );
