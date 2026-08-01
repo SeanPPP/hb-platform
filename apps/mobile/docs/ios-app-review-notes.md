@@ -19,6 +19,19 @@ No external hardware is required:
 - Label and receipt printing show the existing preview flow and report a simulated success.
 - Attendance uses a fixed demonstration location in Brisbane.
 - Image uploads retain a local preview and do not upload the selected file.
+- Advertisement videos recorded inside the app are silent and limited to 30 seconds. The app does not request microphone permission. Reviewers can also select an existing photo or video from the media library; an existing video may contain audio.
 - Report and data exports create local sample files.
 
+Permission use is limited to the feature the reviewer opens:
+
+- Camera: barcode scanning, inventory/leave/employee photos, and silent advertisement video recording.
+- Photo Library: employee profile media, business attachments, and advertisement photos or videos.
+- Precise and background location: attendance verification during an active shift only.
+
 The persistent banner **App Review Demo / Local sample data / Resets on restart or sign-out** identifies the demo session throughout the app.
+
+## Unlisted distribution
+
+This app is intended for unlisted App Store distribution to Hot Bargain employees and authorised store managers only. It is not a consumer app and has no public sign-up. Accounts are pre-provisioned by the employer or an authorised organisation administrator through the organisation's administrative systems; access is enforced by account, role, store and device permissions. The unlisted link will be shared only through internal or authorised organisation channels. The app can be used on employer-managed devices and authorised employee-owned devices.
+
+Sign-in details are entered in App Review Information and are not repeated here.

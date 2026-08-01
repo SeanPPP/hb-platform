@@ -3692,27 +3692,6 @@ function registerUserRoutes(
   register(transport, ["POST"], "/react/v1/store-users/grid", () => ({
     data: page(state().users),
   }));
-  register(transport, ["POST"], "/react/v1/store-users", ({ body }) => {
-    const current = state();
-    const payload = asRecord(body);
-    const user: JsonRecord = {
-      ...payload,
-      userGuid: nextId(current, "review-user"),
-      status: "Active",
-      isActive: true,
-      createdAt: current.now,
-      updatedAt: current.now,
-    };
-    current.users.push(user);
-    mirrorCreate(
-      current,
-      dataStore,
-      "users",
-      user.userGuid,
-      String(user.fullName ?? user.username ?? "Demo user"),
-    );
-    return { data: clone(user), status: 201 };
-  });
   register(
     transport,
     ["GET", "PUT"],

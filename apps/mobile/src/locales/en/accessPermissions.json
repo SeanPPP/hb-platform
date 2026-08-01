@@ -185,6 +185,10 @@
       "name": "Local Purchase Edit",
       "description": "Allows access to Local Purchase Edit."
     },
+    "LocalPurchase.MobileView": {
+      "name": "Mobile local purchases",
+      "description": "View Australian local purchase order lists and details for authorised stores"
+    },
     "LocalPurchase.PushToHq": {
       "name": "Local Purchase Push To Hq",
       "description": "Allows access to Local Purchase Push To Hq."

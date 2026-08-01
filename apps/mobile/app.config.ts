@@ -31,8 +31,7 @@ export default {
       nativeIosUpdateCenterUrl,
       logCenter: {
         endpoint: process.env.EXPO_PUBLIC_LOG_CENTER_ENDPOINT?.trim() || "",
-        // 只从本地环境变量读取日志中心密钥，示例配置也不要写入真实值。
-        key: process.env.HB_LOG_CENTER_KEY?.trim() || "",
+        // 客户端包不得携带长期凭据；无服务端签发的短期凭据时日志中心保持停用。
         environment:
           process.env.EXPO_PUBLIC_LOG_CENTER_ENVIRONMENT?.trim()
           || process.env.APP_ENV?.trim()

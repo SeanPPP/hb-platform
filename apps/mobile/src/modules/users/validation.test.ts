@@ -25,26 +25,19 @@ const validForm = {
   fullName: "Staff One",
   email: "staff@example.com",
   phone: "",
-  password: "secret1",
   status: true,
 };
 
 assertEqual(
-  validateStoreUserForm({ ...validForm, password: "12345" }, "create", t),
-  "Password must be at least 6 characters",
-  "create form rejects short passwords"
-);
-
-assertEqual(
-  validateStoreUserForm({ ...validForm, email: "not-email" }, "create", t),
+  validateStoreUserForm({ ...validForm, email: "not-email" }, t),
   "Invalid email",
-  "create form rejects invalid email"
+  "edit form rejects invalid email"
 );
 
 assertEqual(
-  validateStoreUserForm({ ...validForm, username: "ab" }, "create", t),
+  validateStoreUserForm({ ...validForm, username: "ab" }, t),
   "Username must be 3 to 50 characters",
-  "create form rejects short usernames"
+  "edit form rejects short usernames"
 );
 
 assertEqual(

@@ -433,9 +433,8 @@ function ProductQueryContent() {
     activePromotionCoordinatorRef.current = createActivePromotionRequestCoordinator({
       fetchPromotions: fetchValidPromotionsByProduct,
       applyPromotions: setActivePromotions,
-      onFailure: (error, context) => {
+      onFailure: (error) => {
         console.warn("[product-query] active promotions load failed", {
-          ...context,
           message: isAxiosError(error) ? error.message : String(error),
           status: isAxiosError(error) ? error.response?.status : undefined,
         });
@@ -621,7 +620,7 @@ function ProductQueryContent() {
       }
 
       invalidateActivePromotions();
-      console.log("[product-query] load detail", { productCode, selectedStoreCode: targetStoreCode });
+      console.log("[product-query] load detail", { selectedStoreCode: targetStoreCode });
       const payload = await getProductFastDetail(productCode, targetStoreCode);
       loadActivePromotions(payload.productCode, targetStoreCode);
       setDetail(payload);
@@ -903,11 +902,8 @@ function ProductQueryContent() {
       setPrintingAction(action);
       try {
         console.log("[product-query] sendProductLabel", {
-          productCode: targetDetail.productCode,
           action,
           printType: options?.printType,
-          barcode: options?.barcode,
-          retailPrice: options?.retailPrice,
         });
         await printProductLabel(targetDetail, {
           barcode: options?.barcode,
@@ -1228,7 +1224,6 @@ function ProductQueryContent() {
       invalidateActivePromotions();
 
       console.log("[product-query] lookup start", {
-        keyword: nextKeyword,
         selectedStoreCode,
         trigger,
       });
@@ -1241,8 +1236,8 @@ function ProductQueryContent() {
           storeCode: selectedStoreCode,
         });
         console.log("[product-query] lookup success", {
-          keyword: nextKeyword,
           count: items.length,
+          trigger,
         });
         setLookupItems(items);
         if (!items.length) {
@@ -1298,8 +1293,8 @@ function ProductQueryContent() {
           message = getErrorMessage(error, "messages.lookupFailed");
         }
         console.error("[product-query] lookup failed", {
-          keyword: nextKeyword,
           selectedStoreCode,
+          trigger,
           message,
         });
         setDetail(null);
@@ -1444,7 +1439,6 @@ function ProductQueryContent() {
       if (isProductQueryBusy()) {
         return;
       }
-      console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
       if (cameraScanMode === "single") {
         // 单次扫码命中后立即隐藏预览，查询结果继续由原有反馈流处理。
@@ -1461,7 +1455,6 @@ function ProductQueryContent() {
       if (isProductQueryBusy()) {
         return;
       }
-      console.log("[product-query] hid barcode scanned", { barcode });
       setKeyword(barcode);
       await handleLookup(barcode, "scan", "hid");
     },

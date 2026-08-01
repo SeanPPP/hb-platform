@@ -16,7 +16,6 @@ export const IOS_REVIEW_PERMISSION_CODES = [
   "Prices.Modify",
   "Prices.Delete",
   "Users.View",
-  "Users.Create",
   "Users.Edit",
   "Users.Delete",
   "Users.ManagePosTerminalPermissions",

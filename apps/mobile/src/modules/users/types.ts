@@ -49,12 +49,6 @@ export interface StoreUserMutationInput {
   status: number;
 }
 
-export interface StoreUserCreatePayload extends StoreUserMutationInput {
-  storeCode: string;
-  roleNames?: string[];
-  employmentType?: "casual";
-}
-
 export interface StoreUserUpdatePayload extends StoreUserMutationInput {
   userGuid: string;
   storeCode: string;
@@ -79,7 +73,6 @@ export interface StoreUserFormValues {
   fullName: string;
   email: string;
   phone: string;
-  password: string;
   status: boolean;
 }
 

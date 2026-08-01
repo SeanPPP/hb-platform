@@ -66,6 +66,13 @@
       "failedDescription": "Check the network and try again, or pick another asset."
     }
   },
+  "cameraVideo": {
+    "title": "Record silent video",
+    "description": "Records without microphone audio and stops after 30 seconds.",
+    "start": "Start recording",
+    "stop": "Stop recording",
+    "recording": "Recording…"
+  },
   "actions": {
     "create": "Create",
     "edit": "Edit",

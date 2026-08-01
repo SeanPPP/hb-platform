@@ -1,6 +1,5 @@
 import { apiClient } from "@/shared/api/client";
 import type {
-  StoreUserCreatePayload,
   StoreUserDetail,
   StoreUserGridParams,
   StoreUserListItem,
@@ -53,12 +52,6 @@ export async function fetchStoreUserProfile(
   );
 
   return normalizeStoreUserProfile(response.data);
-}
-
-export async function createStoreUser(payload: StoreUserCreatePayload): Promise<StoreUserDetail> {
-  const response = await apiClient.post("/react/v1/store-users", sanitizeMutationPayload(payload));
-
-  return normalizeStoreUserDetail(response.data);
 }
 
 export async function updateStoreUser(payload: StoreUserUpdatePayload): Promise<StoreUserDetail> {

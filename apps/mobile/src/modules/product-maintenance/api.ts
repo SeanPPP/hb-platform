@@ -1,5 +1,4 @@
 import type { AxiosRequestConfig } from "axios";
-import { isAxiosError } from "axios";
 import { apiClient } from "@/shared/api/client";
 import { useDeviceStore } from "@/store/device-store";
 import type {
@@ -235,14 +234,8 @@ function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
-  console.log("[product-maintenance-api] lookup request", payload);
   const response = await apiClient.post(BASE_PATH + "/lookup", payload, buildRequestConfig());
-  const items = Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
-  console.log("[product-maintenance-api] lookup response", {
-    keyword: payload.keyword,
-    count: items.length,
-  });
-  return items;
+  return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
 }
 
 export async function fetchActiveLocalSuppliers(): Promise<LocalSupplierOption[]> {
@@ -266,7 +259,6 @@ export async function getProductDetail(
   storeCode?: string | null,
   options?: { includeCodes?: boolean }
 ): Promise<ProductDetail> {
-  console.log("[product-maintenance-api] detail request", { productCode, storeCode, options });
   const response = await apiClient.get(
     `${BASE_PATH}/${encodeURIComponent(productCode)}`,
     {
@@ -277,21 +269,13 @@ export async function getProductDetail(
       },
     }
   );
-  const detail = normalizeDetail(response.data);
-  console.log("[product-maintenance-api] detail response", {
-    productCode: detail.productCode,
-    clearancePriceFound: Boolean(detail.clearancePrice),
-    multiCodeCount: detail.multiCodes.length,
-    setCodeCount: detail.setCodes.length,
-  });
-  return detail;
+  return normalizeDetail(response.data);
 }
 
 export async function getProductFastDetail(
   productCode: string,
   storeCode?: string | null
 ): Promise<ProductDetail> {
-  console.log("[product-maintenance-api] fast-detail request", { productCode, storeCode });
   const response = await apiClient.get(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/fast-detail`,
     {
@@ -301,16 +285,7 @@ export async function getProductFastDetail(
       },
     }
   );
-  const detail = normalizeDetail(response.data);
-  console.log("[product-maintenance-api] fast-detail response", {
-    productCode: detail.productCode,
-    productType: detail.productType,
-    clearancePriceFound: Boolean(detail.clearancePrice),
-    multiCodeCount: detail.multiCodeCount,
-    setCodeCount: detail.setCodeCount,
-    codesIncluded: detail.codesIncluded,
-  });
-  return detail;
+  return normalizeDetail(response.data);
 }
 
 function normalizeCodePage<T>(
@@ -466,23 +441,10 @@ export async function upsertClearancePrice(
   productCode: string,
   payload: UpsertClearancePriceRequest
 ): Promise<StoreClearancePriceItem> {
-  try {
-    const response = await apiClient.put(
-      `${BASE_PATH}/products/${encodeURIComponent(productCode)}/clearance-price`,
-      payload,
-      buildRequestConfig()
-    );
-    return normalizeClearancePrice(response.data)!;
-  } catch (error) {
-    console.error("[product-maintenance-api] clearance-price request failed", {
-      productCode,
-      payload,
-      isAxiosError: isAxiosError(error),
-      message: error instanceof Error ? error.message : String(error),
-      responseStatus: isAxiosError(error) ? error.response?.status ?? null : null,
-      responseData: isAxiosError(error) ? error.response?.data ?? null : null,
-      requestHeaders: buildRequestConfig().headers ?? null,
-    });
-    throw error;
-  }
+  const response = await apiClient.put(
+    `${BASE_PATH}/products/${encodeURIComponent(productCode)}/clearance-price`,
+    payload,
+    buildRequestConfig()
+  );
+  return normalizeClearancePrice(response.data)!;
 }

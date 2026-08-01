@@ -22,16 +22,6 @@ function normalizeBarcode(rawValue: string) {
   return rawValue.trim();
 }
 
-function summarizeBarcodeForLog(value: string) {
-  const parts = value.split(".");
-  return {
-    length: value.length,
-    prefix: value.slice(0, 12),
-    partsCount: parts.length,
-    firstPart: parts[0]?.slice(0, 24) ?? "",
-  };
-}
-
 export function useCameraScan({
   cooldownMs = 1200,
   disabled = false,
@@ -57,10 +47,6 @@ export function useCameraScan({
       }
 
       const barcode = normalizeBarcode(data);
-      console.log("[camera-scan] raw barcode event", {
-        raw: summarizeBarcodeForLog(data),
-        normalized: summarizeBarcodeForLog(barcode),
-      });
       if (!barcode) {
         return;
       }
@@ -76,7 +62,6 @@ export function useCameraScan({
         return;
       }
 
-      console.log("[camera-scan] forwarding barcode", summarizeBarcodeForLog(barcode));
       try {
         await onBarcode(barcode);
       } finally {

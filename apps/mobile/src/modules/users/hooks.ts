@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createStoreUser,
   fetchStoreUserDetail,
   fetchStoreUserProfile,
   fetchStoreUsers,
@@ -9,7 +8,6 @@ import {
   updateStoreUserStatus,
 } from "@/modules/users/api";
 import type {
-  StoreUserCreatePayload,
   StoreUserPasswordPayload,
   StoreUserStatusPayload,
   StoreUserUpdatePayload,
@@ -53,11 +51,6 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
     ]);
   };
 
-  const createMutation = useMutation({
-    mutationFn: (payload: StoreUserCreatePayload) => createStoreUser(payload),
-    onSuccess: invalidateUsers,
-  });
-
   const updateMutation = useMutation({
     mutationFn: (payload: StoreUserUpdatePayload) => updateStoreUser(payload),
     onSuccess: async (_, variables) => {
@@ -93,7 +86,6 @@ export function useStoreUserMutations(storeCode?: string | null, keyword?: strin
   });
 
   return {
-    createMutation,
     updateMutation,
     statusMutation,
     passwordMutation,

@@ -1,6 +1,5 @@
 import type { StoreUserFormValues } from "@/modules/users/types";
 
-export type UserDialogMode = "create" | "edit";
 type Translate = (key: string) => string;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -28,7 +27,6 @@ export function validatePasswordValue(password: string, t: Translate) {
 
 export function validateStoreUserForm(
   values: StoreUserFormValues,
-  mode: UserDialogMode,
   t: Translate
 ) {
   const username = values.username.trim();
@@ -43,10 +41,6 @@ export function validateStoreUserForm(
   const email = values.email.trim();
   if (email && !EMAIL_PATTERN.test(email)) {
     return t("messages.emailInvalid");
-  }
-
-  if (mode === "create") {
-    return validatePasswordValue(values.password, t);
   }
 
   return null;

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  AppState,
   Image,
   RefreshControl,
   ScrollView,
@@ -7,6 +8,8 @@ import {
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { useFocusEffect } from "expo-router";
 import {
   ActivityIndicator,
   Button,
@@ -59,10 +62,21 @@ import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { reviewAwareFetch } from "@/modules/ios-review/network";
+import {
+  cancelAdvertisementVideoCaptureSession,
+  captureAdvertisementVideo,
+  createAdvertisementVideoCaptureSession,
+  type AdvertisementVideoCaptureSession,
+  type RecordedAdvertisementVideoAsset,
+} from "@/modules/advertisements/advertisement-video-capture";
 
 const PAGE_SIZE = 20;
 
 type FilterEnabledValue = "all" | "enabled" | "disabled";
+
+type AdvertisementUploadRequest =
+  | { source: "library" | "cameraPhoto" }
+  | { source: "cameraVideo"; asset: RecordedAdvertisementVideoAsset };
 
 function createEmptyDraft(): AdvertisementDraft {
   return {
@@ -238,6 +252,14 @@ export function AdvertisementsScreen() {
   const [filterEnabled, setFilterEnabled] = useState<FilterEnabledValue>("all");
   const [selectedStorePicker, setSelectedStorePicker] = useState<"filter" | "form" | null>(null);
   const [mediaTypePickerVisible, setMediaTypePickerVisible] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const cameraVideoRef = useRef<CameraView | null>(null);
+  const cameraVideoSessionRef = useRef<AdvertisementVideoCaptureSession | null>(null);
+  const cameraVideoVisibleRef = useRef(false);
+  const advertisementScreenFocusedRef = useRef(false);
+  const [cameraVideoVisible, setCameraVideoVisible] = useState(false);
+  const [cameraVideoReady, setCameraVideoReady] = useState(false);
+  const [cameraVideoRecording, setCameraVideoRecording] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AdvertisementDraft>(createEmptyDraft);
@@ -250,6 +272,54 @@ export function AdvertisementsScreen() {
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
   const effectiveFilterStoreCode = deviceBoundStoreCode ?? filterStoreCode;
   const canUseAllStoreScope = !deviceBoundStoreCode && managedStoreCodes === null;
+
+  const cancelCameraVideoForLifecycle = useCallback((updateUi: boolean) => {
+    if (!cameraVideoVisibleRef.current && !cameraVideoSessionRef.current) {
+      return;
+    }
+    cancelAdvertisementVideoCaptureSession(
+      cameraVideoSessionRef,
+      () => cameraVideoRef.current?.stopRecording(),
+      () => {
+        if (updateUi) {
+          setCameraVideoRecording(false);
+        }
+      }
+    );
+    cameraVideoVisibleRef.current = false;
+    if (updateUi) {
+      setCameraVideoVisible(false);
+      setCameraVideoReady(false);
+      setUploadFeedbackState({ status: "canceled", source: "cameraVideo" });
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    return () => {
+      advertisementScreenFocusedRef.current = false;
+      cancelCameraVideoForLifecycle(false);
+    };
+  }, [cancelCameraVideoForLifecycle]);
+
+  useFocusEffect(
+    useCallback(() => {
+      advertisementScreenFocusedRef.current = true;
+      return () => {
+        advertisementScreenFocusedRef.current = false;
+        cancelCameraVideoForLifecycle(true);
+      };
+    }, [cancelCameraVideoForLifecycle])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        return;
+      }
+      cancelCameraVideoForLifecycle(true);
+    });
+    return () => subscription.remove();
+  }, [cancelCameraVideoForLifecycle]);
 
   const advertisementsQuery = useQuery({
     queryKey: [
@@ -351,36 +421,55 @@ export function AdvertisementsScreen() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (source: AdvertisementUploadSource) => {
-      const ImagePicker = await import("expo-image-picker");
-      const permission =
-        source === "library"
-          ? await ImagePicker.requestMediaLibraryPermissionsAsync()
-          : await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        throw new Error(source === "library" ? "permission-denied" : "camera-permission-denied");
+    mutationFn: async (request: AdvertisementUploadRequest) => {
+      const { source } = request;
+      let asset: {
+        uri: string;
+        type: "image" | "video";
+        fileName?: string | null;
+        mimeType?: string | null;
+        fileSize?: number;
+      };
+
+      if (source === "cameraVideo") {
+        asset = request.asset;
+      } else {
+        const ImagePicker = await import("expo-image-picker");
+        const permission =
+          source === "library"
+            ? await ImagePicker.requestMediaLibraryPermissionsAsync()
+            : await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          throw new Error(source === "library" ? "permission-denied" : "camera-permission-denied");
+        }
+
+        const result =
+          source === "library"
+            ? await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ["images", "videos"],
+                allowsEditing: false,
+                quality: 1,
+                selectionLimit: 1,
+              })
+            : await ImagePicker.launchCameraAsync({
+                mediaTypes: ["images"],
+                allowsEditing: false,
+                quality: 1,
+              });
+
+        if (result.canceled || !result.assets?.[0]) {
+          return null;
+        }
+        const pickedAsset = result.assets[0];
+        asset = {
+          uri: pickedAsset.uri,
+          type: pickedAsset.type === "video" ? "video" : "image",
+          fileName: pickedAsset.fileName,
+          mimeType: pickedAsset.mimeType,
+          fileSize: pickedAsset.fileSize,
+        };
       }
 
-      const result =
-        source === "library"
-          ? await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ["images", "videos"],
-              allowsEditing: false,
-              quality: 1,
-              selectionLimit: 1,
-            })
-          : await ImagePicker.launchCameraAsync({
-              mediaTypes: source === "cameraVideo" ? ["videos"] : ["images"],
-              allowsEditing: false,
-              quality: 1,
-              videoMaxDuration: 30,
-            });
-
-      if (result.canceled || !result.assets?.[0]) {
-        return null;
-      }
-
-      const asset = result.assets[0];
       const fileName = asset.fileName || `advertisement-${Date.now()}`;
       const contentType =
         asset.mimeType ||
@@ -410,7 +499,8 @@ export function AdvertisementsScreen() {
         fileSize,
       };
     },
-    onSuccess: (result, source) => {
+    onSuccess: (result, request) => {
+      const { source } = request;
       if (!result) {
         setUploadFeedbackState({ status: "canceled", source });
         setSnackbar(t("messages.uploadCanceled"));
@@ -430,7 +520,8 @@ export function AdvertisementsScreen() {
       setUploadFeedbackState({ status: "uploaded", source });
       setSnackbar(t("messages.uploadSuccess"));
     },
-    onError: (error, source) => {
+    onError: (error, request) => {
+      const { source } = request;
       const nextStatus = resolveAdvertisementUploadErrorStatus(error);
       setUploadFeedbackState({ status: nextStatus, source });
       const message =
@@ -567,10 +658,95 @@ export function AdvertisementsScreen() {
     saveMutation.mutate(buildPayloadFromDraft(bindAdvertisementDraftStoreCodes(draft, deviceBoundStoreCode)));
   }
 
-  function startUpload(source: AdvertisementUploadSource) {
+  function startUpload(source: Exclude<AdvertisementUploadSource, "cameraVideo">) {
     // 上传状态先于异步流程更新，避免用户选图、签名和直传阶段没有明确反馈。
     setUploadFeedbackState({ status: "uploading", source });
-    uploadMutation.mutate(source);
+    uploadMutation.mutate({ source });
+  }
+
+  async function openCameraVideoRecorder() {
+    const permission = cameraPermission?.granted
+      ? cameraPermission
+      : await requestCameraPermission();
+    if (!permission.granted) {
+      setUploadFeedbackState({ status: "cameraPermissionDenied", source: "cameraVideo" });
+      setSnackbar(t("messages.cameraPermissionDenied"));
+      return;
+    }
+    if (!advertisementScreenFocusedRef.current) {
+      return;
+    }
+
+    setCameraVideoReady(false);
+    cameraVideoVisibleRef.current = true;
+    setCameraVideoVisible(true);
+  }
+
+  function closeCameraVideoRecorder() {
+    cancelAdvertisementVideoCaptureSession(
+      cameraVideoSessionRef,
+      () => cameraVideoRef.current?.stopRecording(),
+      () => setCameraVideoRecording(false)
+    );
+    cameraVideoVisibleRef.current = false;
+    setCameraVideoVisible(false);
+    setCameraVideoReady(false);
+    setUploadFeedbackState({ status: "canceled", source: "cameraVideo" });
+    setSnackbar(t("messages.uploadCanceled"));
+  }
+
+  function stopCameraVideoRecording() {
+    cameraVideoRef.current?.stopRecording();
+  }
+
+  async function recordCameraVideo() {
+    if (!cameraVideoRef.current || cameraVideoRecording) {
+      return;
+    }
+    const session = createAdvertisementVideoCaptureSession();
+    cameraVideoSessionRef.current = session;
+    await captureAdvertisementVideo({
+      // 静音由 CameraView 的 mute 属性保证；recordAsync 只负责 30 秒上限。
+      record: async () => cameraVideoRef.current?.recordAsync({ maxDuration: 30 }),
+      isCanceled: () => session.canceled,
+      onCaptured: (asset) => {
+        cameraVideoVisibleRef.current = false;
+        setCameraVideoVisible(false);
+        setCameraVideoReady(false);
+        setUploadFeedbackState({ status: "uploading", source: "cameraVideo" });
+        uploadMutation.mutate({ source: "cameraVideo", asset });
+      },
+      onError: () => {
+        cameraVideoVisibleRef.current = false;
+        setCameraVideoVisible(false);
+        setCameraVideoReady(false);
+        setUploadFeedbackState({ status: "failed", source: "cameraVideo" });
+        setSnackbar(t("messages.uploadFailed"));
+      },
+      onPendingChange: (pending) => {
+        // 旧会话的 finally 不能覆盖用户随后打开的新录制会话状态。
+        if (cameraVideoSessionRef.current !== session) {
+          return;
+        }
+        setCameraVideoRecording(pending);
+        if (!pending) {
+          cameraVideoSessionRef.current = null;
+        }
+      },
+    });
+  }
+
+  function handleCameraVideoMountError() {
+    cancelAdvertisementVideoCaptureSession(
+      cameraVideoSessionRef,
+      () => cameraVideoRef.current?.stopRecording(),
+      () => setCameraVideoRecording(false)
+    );
+    cameraVideoVisibleRef.current = false;
+    setCameraVideoVisible(false);
+    setCameraVideoReady(false);
+    setUploadFeedbackState({ status: "failed", source: "cameraVideo" });
+    setSnackbar(t("messages.uploadFailed"));
   }
 
   const items = advertisementsQuery.data?.items ?? [];
@@ -862,7 +1038,7 @@ export function AdvertisementsScreen() {
               <Button
                 mode="outlined"
                 icon="video"
-                onPress={() => startUpload("cameraVideo")}
+                onPress={() => void openCameraVideoRecorder()}
                 disabled={uploadMutation.isPending}
               >
                 {t("actions.recordVideo")}
@@ -1085,6 +1261,54 @@ export function AdvertisementsScreen() {
         }}
       />
 
+      <Portal>
+        <Modal
+          visible={cameraVideoVisible}
+          dismissable={false}
+          contentContainerStyle={styles.cameraVideoModal}
+        >
+          <CameraView
+            ref={cameraVideoRef}
+            style={styles.cameraVideoPreview}
+            facing="back"
+            mode="video"
+            mute
+            onCameraReady={() => setCameraVideoReady(true)}
+            onMountError={handleCameraVideoMountError}
+          />
+          <Surface style={styles.cameraVideoControls}>
+            <Text variant="titleMedium">{t("cameraVideo.title")}</Text>
+            <Text variant="bodySmall" style={styles.cardMeta}>
+              {t("cameraVideo.description")}
+            </Text>
+            <View style={styles.cameraVideoActions}>
+              <Button mode="outlined" onPress={closeCameraVideoRecorder}>
+                {t("common:actions.cancel")}
+              </Button>
+              {cameraVideoRecording ? (
+                <Button mode="contained" icon="stop" onPress={stopCameraVideoRecording}>
+                  {t("cameraVideo.stop")}
+                </Button>
+              ) : (
+                <Button
+                  mode="contained"
+                  icon="record-rec"
+                  disabled={!cameraVideoReady}
+                  onPress={() => void recordCameraVideo()}
+                >
+                  {t("cameraVideo.start")}
+                </Button>
+              )}
+            </View>
+            {cameraVideoRecording ? (
+              <Text variant="labelMedium" style={styles.cameraVideoRecordingText}>
+                {t("cameraVideo.recording")}
+              </Text>
+            ) : null}
+          </Surface>
+        </Modal>
+      </Portal>
+
       <Snackbar visible={Boolean(snackbar)} onDismiss={() => setSnackbar("")} duration={2500}>
         {snackbar}
       </Snackbar>
@@ -1098,6 +1322,35 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
     justifyContent: "flex-end",
+  },
+  cameraVideoActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    justifyContent: "flex-end",
+  },
+  cameraVideoControls: {
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
+    gap: 10,
+    padding: 16,
+  },
+  cameraVideoModal: {
+    alignSelf: "center",
+    backgroundColor: "#000000",
+    borderRadius: 8,
+    height: "88%",
+    overflow: "hidden",
+    width: "94%",
+  },
+  cameraVideoPreview: {
+    flex: 1,
+    minHeight: 240,
+    width: "100%",
+  },
+  cameraVideoRecordingText: {
+    color: "#B00020",
+    textAlign: "right",
   },
   card: {
     borderRadius: 8,

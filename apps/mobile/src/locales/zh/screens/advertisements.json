@@ -66,6 +66,13 @@
       "failedDescription": "请检查网络后重试，或重新选择一个素材。"
     }
   },
+  "cameraVideo": {
+    "title": "录制静音视频",
+    "description": "不录制麦克风声音，最长30秒。",
+    "start": "开始录制",
+    "stop": "停止录制",
+    "recording": "录制中…"
+  },
   "actions": {
     "create": "新建",
     "edit": "编辑",

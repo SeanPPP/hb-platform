@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createIosReviewDataStore } from "./data-store";
 import { IOS_REVIEW_STORES } from "./identity";
 import { createIosReviewTransport } from "./transport";
@@ -357,6 +359,16 @@ async function run() {
     (await request("GET", "/Roles/permissions")).length > 0,
     "审核模式必须提供权限目录",
   );
+  assert.equal(
+    (await request("GET", "/Roles/permissions")).some(
+      (category: { permissions?: Array<{ name?: string }> }) =>
+        category.permissions?.some(
+          (permission) => permission.name === "Users.Create",
+        ),
+    ),
+    false,
+    "Review 权限管理目录不得展示创建员工能力",
+  );
 
   const readContracts: Array<{
     name: string;
@@ -521,6 +533,75 @@ async function run() {
     const data = await request(contract.method, contract.path, contract.body);
     contract.assertData(data);
   }
+
+  await assert.rejects(
+    () => request("POST", "/react/v1/store-users", {
+      username: "review-created-user",
+      password: "must-not-be-accepted",
+    }),
+    /IOS_REVIEW_UNHANDLED_REQUEST: POST \/react\/v1\/store-users/,
+    "Review mock 不得提供员工账号创建端点",
+  );
+
+  const mobileRoot = resolve(import.meta.dirname, "../../..");
+  const accountProvisioningSources = await Promise.all([
+    readFile(resolve(mobileRoot, "app/(tabs)/users.tsx"), "utf8"),
+    readFile(resolve(mobileRoot, "src/modules/users/api.ts"), "utf8"),
+    readFile(resolve(mobileRoot, "src/modules/users/hooks.ts"), "utf8"),
+    readFile(resolve(mobileRoot, "src/modules/users/types.ts"), "utf8"),
+    readFile(resolve(mobileRoot, "src/modules/ios-review/app-routes.ts"), "utf8"),
+    readFile(resolve(mobileRoot, "src/modules/ios-review/identity.ts"), "utf8"),
+  ]);
+  const accountProvisioningSource = accountProvisioningSources.join("\n");
+  assert.doesNotMatch(
+    accountProvisioningSource,
+    /createStoreUser|StoreUserCreatePayload|createMutation|openCreateDialog|account-plus-outline|Users\.Create/,
+    "移动端不得暴露员工账号创建 API、mutation 或 UI 入口",
+  );
+  assert.doesNotMatch(
+    accountProvisioningSources[4],
+    /register\(transport, \["POST"\], "\/react\/v1\/store-users"/,
+    "Review mock 不得重新注册员工账号创建端点",
+  );
+
+  const editedReviewUser = await request(
+    "PUT",
+    "/react/v1/store-users/review-staff-001",
+    {
+      storeCode: "REV001",
+      username: "demo_staff",
+      fullName: "Edited Demo Staff",
+      status: 1,
+    },
+  );
+  assert.equal(editedReviewUser.fullName, "Edited Demo Staff");
+  assert.deepEqual(
+    await request(
+      "PUT",
+      "/react/v1/store-users/review-staff-001/status",
+      { storeCode: "REV001", status: 0 },
+    ),
+    { success: true },
+    "移除创建能力后必须保留停用员工能力",
+  );
+  assert.equal(
+    (await request("GET", "/react/v1/store-users/review-staff-001")).status,
+    0,
+    "员工状态更新必须仍可读回",
+  );
+  assert.deepEqual(
+    await request(
+      "PUT",
+      "/react/v1/store-users/review-staff-001/password",
+      {
+        storeCode: "REV001",
+        newPassword: "review-reset-password",
+        passwordFormat: "raw",
+      },
+    ),
+    { success: true },
+    "移除创建能力后必须保留重置密码能力",
+  );
 
   const filteredInstallments = await request(
     "POST",

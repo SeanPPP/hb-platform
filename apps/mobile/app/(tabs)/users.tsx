@@ -9,7 +9,6 @@ import {
   Card,
   Chip,
   Dialog,
-  FAB,
   IconButton,
   Portal,
   Searchbar,
@@ -35,7 +34,7 @@ import {
 } from "@/modules/users";
 import { getUserAccessEligibility } from "@/modules/users/access-management";
 import { calculateAge } from "@/modules/users/profile-display";
-import { validatePasswordValue, validateStoreUserForm, type UserDialogMode } from "@/modules/users/validation";
+import { validatePasswordValue, validateStoreUserForm } from "@/modules/users/validation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { PERMISSIONS } from "@/shared/utils/access";
@@ -48,7 +47,6 @@ const EMPTY_FORM: StoreUserFormValues = {
   fullName: "",
   email: "",
   phone: "",
-  password: "",
   status: true,
 };
 
@@ -100,7 +98,6 @@ export default function UsersScreen() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [dialogVisible, setDialogVisible] = useState(false);
-  const [dialogMode, setDialogMode] = useState<UserDialogMode>("create");
   const [editingUserGuid, setEditingUserGuid] = useState<string | null>(null);
   const [editingStoreCode, setEditingStoreCode] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<StoreUserFormValues>(EMPTY_FORM);
@@ -158,21 +155,19 @@ export default function UsersScreen() {
     [managedStoreCode, stores]
   );
   const selectedStoreCanModify = canModifyUsers && isStoreManageable(managedStoreCode, manageableStores);
-  const canCreateInCurrentScope = Boolean(managedStoreCode && selectedStoreCanModify);
 
   const usersQuery = useStoreUsers(
     canViewUsers ? (isDeviceMode ? deviceBoundStoreCode : managedStoreCode) : undefined,
     keyword
   );
   const detailQuery = useStoreUserDetail(
-    dialogMode === "edit" ? editingUserGuid : null,
-    dialogMode === "edit" ? editingStoreCode : null
+    editingUserGuid,
+    editingStoreCode
   );
-  const { createMutation, updateMutation, statusMutation, passwordMutation } =
+  const { updateMutation, statusMutation, passwordMutation } =
     useStoreUserMutations(managedStoreCode, keyword);
 
   const isBusy =
-    createMutation.isPending ||
     updateMutation.isPending ||
     statusMutation.isPending ||
     passwordMutation.isPending;
@@ -187,7 +182,7 @@ export default function UsersScreen() {
   );
 
   useEffect(() => {
-    if (!detailQuery.isSuccess || dialogMode !== "edit" || !dialogVisible) {
+    if (!detailQuery.isSuccess || !dialogVisible) {
       return;
     }
 
@@ -196,31 +191,16 @@ export default function UsersScreen() {
       fullName: detailQuery.data.fullName ?? "",
       email: detailQuery.data.email ?? "",
       phone: detailQuery.data.phone ?? "",
-      password: "",
       status: detailQuery.data.status === 1,
     });
-  }, [detailQuery.data, detailQuery.isSuccess, dialogMode, dialogVisible]);
+  }, [detailQuery.data, detailQuery.isSuccess, dialogVisible]);
 
   const resetDialogState = useCallback(() => {
     setDialogVisible(false);
-    setDialogMode("create");
     setEditingUserGuid(null);
     setEditingStoreCode(null);
     setFormValues(EMPTY_FORM);
   }, []);
-
-  const openCreateDialog = useCallback(() => {
-    if (!canCreateInCurrentScope) {
-      setSnackbarMessage(t(managedStoreCode ? "messages.storeReadOnly" : "messages.selectManageableStoreFirst"));
-      return;
-    }
-
-    setDialogMode("create");
-    setEditingUserGuid(null);
-    setEditingStoreCode(null);
-    setFormValues(EMPTY_FORM);
-    setDialogVisible(true);
-  }, [canCreateInCurrentScope, managedStoreCode, t]);
 
   const openEditDialog = useCallback(
     (user: StoreUserListItem) => {
@@ -234,7 +214,6 @@ export default function UsersScreen() {
         return;
       }
 
-      setDialogMode("edit");
       setEditingUserGuid(user.userGUID);
       setEditingStoreCode(targetStoreCode);
       setFormValues({
@@ -242,7 +221,6 @@ export default function UsersScreen() {
         fullName: user.fullName ?? "",
         email: user.email ?? "",
         phone: user.phone ?? "",
-        password: "",
         status: user.status === 1,
       });
       setDialogVisible(true);
@@ -316,18 +294,18 @@ export default function UsersScreen() {
   }, [language, t, usersQuery]);
 
   const validateForm = useCallback(() => {
-    const validationMessage = validateStoreUserForm(formValues, dialogMode, t);
+    const validationMessage = validateStoreUserForm(formValues, t);
     if (validationMessage) {
       setSnackbarMessage(validationMessage);
       return false;
     }
 
     return true;
-  }, [dialogMode, formValues, t]);
+  }, [formValues, t]);
 
   const handleSubmit = useCallback(async () => {
-    const targetStoreCode = dialogMode === "edit" ? editingStoreCode : managedStoreCode;
-    if (!targetStoreCode) {
+    const targetStoreCode = editingStoreCode;
+    if (!targetStoreCode || !editingUserGuid) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
@@ -345,21 +323,14 @@ export default function UsersScreen() {
       fullName: formValues.fullName.trim() || undefined,
       email: formValues.email.trim() || undefined,
       phone: formValues.phone.trim() || undefined,
-      password: formValues.password.trim() || undefined,
-      passwordFormat: "raw" as const,
       status: formValues.status ? 1 : 0,
       storeCode: targetStoreCode,
       roleNames: [STORE_STAFF_ROLE],
     };
 
     try {
-      if (dialogMode === "edit" && editingUserGuid) {
-        await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
-        setSnackbarMessage(t("messages.userUpdated"));
-      } else {
-        await createMutation.mutateAsync({ ...payload, employmentType: "casual" });
-        setSnackbarMessage(t("messages.userCreated"));
-      }
+      await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
+      setSnackbarMessage(t("messages.userUpdated"));
 
       resetDialogState();
     } catch (error) {
@@ -367,9 +338,7 @@ export default function UsersScreen() {
       setSnackbarMessage(resolveLocalizedErrorMessage(error, { t, language, fallbackKey: "messages.saveFailed" }));
     }
   }, [
-    createMutation,
     canModifyUsers,
-    dialogMode,
     editingStoreCode,
     editingUserGuid,
     formValues,
@@ -715,9 +684,6 @@ export default function UsersScreen() {
                   {storeCaption}
                 </Text>
               </View>
-              <Button mode="contained" icon="account-plus-outline" onPress={openCreateDialog} disabled={!canCreateInCurrentScope || isBusy}>
-                {t("actions.create")}
-              </Button>
             </View>
 
             <View style={styles.filterPanel}>
@@ -800,19 +766,9 @@ export default function UsersScreen() {
         }
       />
 
-      <FAB
-        icon="account-plus-outline"
-        label={t("actions.create")}
-        style={styles.fab}
-        onPress={openCreateDialog}
-        disabled={!canCreateInCurrentScope || isBusy}
-      />
-
       <Portal>
         <Dialog visible={dialogVisible} onDismiss={resetDialogState}>
-          <Dialog.Title>
-            {dialogMode === "edit" ? t("dialogs.editTitle") : t("dialogs.createTitle")}
-          </Dialog.Title>
+          <Dialog.Title>{t("dialogs.editTitle")}</Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView contentContainerStyle={styles.dialogContent}>
               <TextInput
@@ -821,7 +777,7 @@ export default function UsersScreen() {
                 value={formValues.username}
                 onChangeText={(value) => setFormValues((current) => ({ ...current, username: value }))}
                 autoCapitalize="none"
-                disabled={dialogMode === "edit" || isBusy}
+                disabled
               />
               <TextInput
                 mode="outlined"
@@ -847,17 +803,6 @@ export default function UsersScreen() {
                 keyboardType="phone-pad"
                 disabled={isBusy}
               />
-              {dialogMode === "create" ? (
-                <TextInput
-                  mode="outlined"
-                  label={t("fields.initialPassword")}
-                  value={formValues.password}
-                  onChangeText={(value) => setFormValues((current) => ({ ...current, password: value }))}
-                  secureTextEntry
-                  autoCapitalize="none"
-                  disabled={isBusy}
-                />
-              ) : null}
               <View style={styles.switchRow}>
                 <Text variant="bodyLarge">{t("fields.enabled")}</Text>
                 <Switch
@@ -869,7 +814,7 @@ export default function UsersScreen() {
               <Text variant="bodySmall" style={styles.secondaryText}>
                 {t("fields.fixedRoleHint")}
               </Text>
-              {dialogMode === "edit" && detailQuery.isFetching ? (
+              {detailQuery.isFetching ? (
                 <View style={styles.inlineLoading}>
                   <ActivityIndicator />
                 </View>
@@ -880,8 +825,8 @@ export default function UsersScreen() {
             <Button onPress={resetDialogState} disabled={isBusy}>
               {t("actions.cancel")}
             </Button>
-            <Button onPress={handleSubmit} loading={createMutation.isPending || updateMutation.isPending}>
-              {dialogMode === "edit" ? t("actions.save") : t("actions.create")}
+            <Button onPress={handleSubmit} loading={updateMutation.isPending}>
+              {t("actions.save")}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -952,11 +897,6 @@ const styles = StyleSheet.create({
   dialogContent: {
     gap: 12,
     paddingBottom: 8,
-  },
-  fab: {
-    bottom: 24,
-    position: "absolute",
-    right: 20,
   },
   filterActions: {
     alignItems: "center",
