@@ -8,6 +8,11 @@
   "password": "Password",
   "userMode": "User login",
   "rememberUsername": "Remember username",
+  "privacy": {
+    "accountNotice": "Employee accounts are provisioned by the employer or an authorised administrator. This app does not offer self-registration.",
+    "deviceNotice": "Device mode uses store-device authorisation and is not a personal employee account.",
+    "openPolicy": "View Privacy Policy"
+  },
   "device": {
     "mode": "Device login",
     "title": "Registered device detected",

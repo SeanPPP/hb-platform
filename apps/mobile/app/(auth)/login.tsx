@@ -637,6 +637,20 @@ export default function Login() {
               </>
             )}
           </View>
+          <View style={styles.privacyFooter}>
+            <Text style={styles.privacyNotice}>
+              {t(loginMode === "device" ? "privacy.deviceNotice" : "privacy.accountNotice")}
+            </Text>
+            <Button
+              compact
+              mode="text"
+              icon="shield-check-outline"
+              textColor={BRAND_RED}
+              onPress={() => router.push("/privacy")}
+            >
+              {t("privacy.openPolicy")}
+            </Button>
+          </View>
         </View>
       </ScrollView>
 
@@ -785,6 +799,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
+  },
+  privacyFooter: {
+    alignItems: "center",
+    gap: 2,
+    marginTop: 12,
+    paddingHorizontal: 4,
+  },
+  privacyNotice: {
+    color: "#616873",
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: "center",
   },
   loginModeRow: {
     flexDirection: "row",

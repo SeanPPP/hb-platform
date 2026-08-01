@@ -17,6 +17,12 @@
   "language": {
     "description": "Change the app display language and apply it immediately."
   },
+  "privacy": {
+    "title": "Privacy and data",
+    "employeeDescription": "Employee accounts are provisioned by the employer. Contact your manager or organisational administrator to access, correct or request deletion of personal information.",
+    "deviceDescription": "The app is in store-device authorisation mode, so personal-account data actions are not shown.",
+    "openPolicy": "View Privacy Policy"
+  },
   "apiHost": {
     "title": "Server address",
     "description": "View and change the backend server address used by this app.",

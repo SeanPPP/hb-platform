@@ -17,6 +17,12 @@
   "language": {
     "description": "切换 App 显示语言，立即生效。"
   },
+  "privacy": {
+    "title": "隐私与数据",
+    "employeeDescription": "员工账号由雇主预配。如需查阅、更正或删除个人信息，请联系直属经理或组织管理员。",
+    "deviceDescription": "当前为门店设备授权模式，不显示个人账号数据操作。",
+    "openPolicy": "查看隐私政策"
+  },
   "apiHost": {
     "title": "服务器地址",
     "description": "查看并修改当前 App 连接的后端服务器地址。",

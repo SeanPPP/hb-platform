@@ -8,6 +8,11 @@
   "password": "密码",
   "userMode": "用户登录",
   "rememberUsername": "记住用户名",
+  "privacy": {
+    "accountNotice": "员工账号由雇主或获授权管理员预配，本 App 不提供自行注册。",
+    "deviceNotice": "设备模式使用门店设备授权，不代表个人员工账号。",
+    "openPolicy": "查看隐私政策"
+  },
   "device": {
     "mode": "设备登录",
     "title": "已识别注册设备",

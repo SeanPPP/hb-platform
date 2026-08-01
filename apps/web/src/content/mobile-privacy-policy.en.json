@@ -1,0 +1,129 @@
+{
+  "policyVersion": "2026-08-01",
+  "language": "en",
+  "title": "Mobile App Privacy Policy",
+  "subtitle": "Hot Bargain employee and store-device app",
+  "effectiveDateLabel": "Effective date",
+  "effectiveDate": "1 August 2026",
+  "summary": "This policy explains how HOT BARGAIN INTERNATIONAL PTY LTD (we, us or our) handles personal information when employees and authorised store devices use this app. Please read it before using the app.",
+  "organization": {
+    "label": "Responsible entity",
+    "name": "HOT BARGAIN INTERNATIONAL PTY LTD",
+    "contactLabel": "Privacy contact",
+    "email": "inquiries@hotbargain.com.au"
+  },
+  "sections": [
+    {
+      "id": "account",
+      "title": "1. Accounts and scope",
+      "paragraphs": [
+        "This app is an internal business tool for Hot Bargain employees and authorised store devices. It does not offer public registration. Employee accounts are provisioned, managed or disabled by the employer or an authorised administrator through organisational systems. Device mode uses store-device authorisation and is not a personal employee account.",
+        "To access, correct or request deletion of personal information connected to your account, contact your manager or organisational administrator first, or contact us using the email in this policy. Some employment, payroll, tax, security or other statutory records may need to be retained for legally required periods."
+      ],
+      "items": []
+    },
+    {
+      "id": "collection",
+      "title": "2. Information we handle",
+      "paragraphs": [
+        "The information handled depends on your duties, granted permissions and the features you use. It may include:",
+        "We collect information through the employer's or authorised administrators' organisational systems; when you submit forms, upload business content or scan barcodes or QR codes in the app; when you allow a device permission for a feature; and automatically through app usage, security and diagnostic information."
+      ],
+      "items": [
+        "Account and contact details: name, username, user identifier, email address, phone number and address.",
+        "Employment, identity and sensitive details: date of birth, gender, profile image, identity documents, tax file number, position and employment records, medical certificates or related health information.",
+        "Financial and payroll details: bank account, pay, superannuation and other payment or financial information.",
+        "Device and location information: device identifiers, hardware identifier, system device number, IP/network information, and precise or background location needed for attendance and authorised on-shift location features.",
+        "Photos, video, audio and business content: employee records and evidence, product or inventory photos, advertising images or videos, audio contained in selected videos, barcode or QR input, and submitted form content.",
+        "Usage and diagnostics: app version, operating system, feature activity, errors, crashes, performance and security diagnostic logs."
+      ]
+    },
+    {
+      "id": "purposes",
+      "title": "3. Why we handle information",
+      "paragraphs": [
+        "We handle information only as needed to operate and manage the Hot Bargain business."
+      ],
+      "items": [
+        "Authenticate employee accounts and store devices, and enforce role, store and terminal access.",
+        "Support employee profiles, rostering, attendance, leave, payroll and other employment processes.",
+        "Verify location at login or attendance events, support safety, and enable authorised on-shift operational auditing.",
+        "Provide store, inventory, order, advertising, printing, scanning and other business functions.",
+        "Prevent misuse, diagnose faults, maintain security and reliability, and meet legal obligations."
+      ]
+    },
+    {
+      "id": "permissions",
+      "title": "4. Device permissions",
+      "paragraphs": [
+        "The app requests system permissions only when a related feature needs them. You can withdraw permissions in iOS Settings, but the related feature may stop working."
+      ],
+      "items": [
+        "Camera: scan barcodes or QR codes and capture inventory, employee-profile, leave-evidence and muted advertising video content.",
+        "Photos: select employee records, business attachments and advertising images or videos; a selected video may contain audio.",
+        "Location: verify login or attendance location and support background location only during an authorised shift.",
+        "Bluetooth or local connections: discover, connect to and use store printers on authorised devices."
+      ]
+    },
+    {
+      "id": "sharing",
+      "title": "5. Sharing information",
+      "paragraphs": [
+        "We make necessary information available to the employer, authorised administrators and relevant business personnel according to their duties and permissions. Service providers that support hosting, storage, notifications, technical support or diagnostics may also process information only on our instructions and for agreed purposes. We require them to protect personal information with safeguards at least equivalent to those described in this policy.",
+        "We may also disclose necessary information when required by law, to protect people or systems, to resolve disputes, or to maintain lawful rights."
+      ],
+      "items": []
+    },
+    {
+      "id": "overseas",
+      "title": "6. Overseas processing",
+      "paragraphs": [
+        "Personal information may be processed in Singapore by service providers supporting the app. Before this occurs, we take reasonable steps to ensure that the information receives protection consistent with this policy and applicable privacy law."
+      ],
+      "items": []
+    },
+    {
+      "id": "tracking",
+      "title": "7. Tracking and sale",
+      "paragraphs": [
+        "We do not sell or rent personal information. We do not use this app to track you across other companies' apps or websites, and we do not deliver third-party targeted advertising. Business advertising content is used only for Hot Bargain's own business functions."
+      ],
+      "items": []
+    },
+    {
+      "id": "retention",
+      "title": "8. Retention and security",
+      "paragraphs": [
+        "We retain information according to business, employment, payroll, tax, audit, security and statutory record requirements. Information that is no longer needed is deleted or de-identified where practicable. The period varies by record category and applicable law.",
+        "We use access controls, transmission safeguards, audit logging and other reasonable measures appropriate to the sensitivity of the information. No storage or transmission method can guarantee absolute security."
+      ],
+      "items": []
+    },
+    {
+      "id": "rights",
+      "title": "9. Your choices and requests",
+      "paragraphs": [
+        "You may ask your manager or organisational administrator to access, correct, export, restrict use of, or delete personal information, or contact us through the privacy email. We will verify identity and authority and explain the action taken, any legal or operational reason a request cannot be fulfilled, and any applicable complaint channel.",
+        "When employment ends or access is no longer needed, the employer or authorised administrator disables the account and handles related information under the organisation's record-retention process."
+      ],
+      "items": []
+    },
+    {
+      "id": "changes",
+      "title": "10. Changes, complaints and contact",
+      "paragraphs": [
+        "We may update this policy when features, processing activities or legal requirements change. The latest version will be published in the app and on the public web page. Contact us at the email below with questions about this policy or our handling of personal information.",
+        "To make a privacy complaint, email us with the details. We will acknowledge and investigate the complaint and normally provide a written response within 30 days. If you are not satisfied with our response, you may complain to the Office of the Australian Information Commissioner (OAIC)."
+      ],
+      "items": []
+    }
+  ],
+  "footer": {
+    "backLabel": "Back",
+    "publicCopy": "View the public version in your browser",
+    "publicUrl": "https://hotbargain.vip/privacy/mobile",
+    "emailLabel": "Email privacy enquiries",
+    "openFailedTitle": "Could not open link",
+    "openFailedMessage": "Please try again later or email inquiries@hotbargain.com.au."
+  }
+}

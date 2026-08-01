@@ -731,6 +731,24 @@ export default function Settings() {
           ) : null}
         </CompactSection>
 
+        <CompactSection
+          title={t("privacy.title")}
+          description={t(
+            showProfileAction
+              ? "privacy.employeeDescription"
+              : "privacy.deviceDescription"
+          )}
+        >
+          <Button
+            compact
+            mode="outlined"
+            icon="shield-check-outline"
+            onPress={() => router.push("/privacy")}
+          >
+            {t("privacy.openPolicy")}
+          </Button>
+        </CompactSection>
+
         <CompactSection title={t("groups.app")}>
           <CompactRow
             label={t("common:language.title")}

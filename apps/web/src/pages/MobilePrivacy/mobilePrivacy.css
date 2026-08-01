@@ -1,0 +1,233 @@
+.mobile-privacy-page {
+  min-height: 100vh;
+  background: #f5f7fa;
+  color: #20242c;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.mobile-privacy-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: 8px max(20px, calc((100vw - 880px) / 2));
+  border-bottom: 1px solid #e1e5eb;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.mobile-privacy-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #20242c;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.mobile-privacy-mark {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e53935;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+}
+
+.mobile-privacy-language {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #d7dce4;
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+
+.mobile-privacy-language button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+}
+
+.mobile-privacy-language button.is-active {
+  background: #fff;
+  color: #b4231f;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.12);
+}
+
+.mobile-privacy-language button:focus-visible,
+.mobile-privacy-brand:focus-visible,
+.mobile-privacy-document a:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.36);
+  outline-offset: 2px;
+}
+
+.mobile-privacy-document {
+  width: min(880px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 48px 0 36px;
+}
+
+.mobile-privacy-intro h1 {
+  margin: 5px 0 8px;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+}
+
+.mobile-privacy-eyebrow,
+.mobile-privacy-effective {
+  margin: 0;
+  color: #b4231f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mobile-privacy-summary {
+  max-width: 760px;
+  margin: 22px 0 0;
+  color: #394150;
+  font-size: 17px;
+  line-height: 1.7;
+}
+
+.mobile-privacy-organization {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.7fr);
+  gap: 22px;
+  margin: 30px 0 6px;
+  padding: 18px;
+  border: 1px solid #e1e5eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.mobile-privacy-organization div {
+  min-width: 0;
+}
+
+.mobile-privacy-organization dt {
+  margin-bottom: 4px;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mobile-privacy-organization dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.mobile-privacy-document a {
+  color: #1467c9;
+  text-underline-offset: 3px;
+}
+
+.mobile-privacy-sections section {
+  padding: 28px 2px 22px;
+  border-bottom: 1px solid #dfe3e9;
+  scroll-margin-top: 82px;
+}
+
+.mobile-privacy-sections h2 {
+  margin: 0 0 12px;
+  font-size: 21px;
+  line-height: 1.35;
+}
+
+.mobile-privacy-sections p,
+.mobile-privacy-sections li {
+  color: #394150;
+  font-size: 16px;
+  line-height: 1.72;
+}
+
+.mobile-privacy-sections p {
+  margin: 0 0 10px;
+}
+
+.mobile-privacy-sections ul {
+  margin: 8px 0 2px;
+  padding-left: 24px;
+}
+
+.mobile-privacy-sections li {
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+
+.mobile-privacy-sections li::marker {
+  color: #e53935;
+}
+
+.mobile-privacy-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 26px 2px 8px;
+  color: #687180;
+  font-size: 14px;
+}
+
+@media (max-width: 640px) {
+  .mobile-privacy-header {
+    min-height: 58px;
+    padding: 7px 12px;
+  }
+
+  .mobile-privacy-brand > span:last-child {
+    display: none;
+  }
+
+  .mobile-privacy-language button {
+    padding-inline: 10px;
+  }
+
+  .mobile-privacy-document {
+    width: min(100% - 28px, 880px);
+    padding-top: 30px;
+  }
+
+  .mobile-privacy-organization {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 15px;
+  }
+
+  .mobile-privacy-sections section {
+    padding-block: 23px 18px;
+  }
+}
+
+@media print {
+  .mobile-privacy-header {
+    position: static;
+  }
+
+  .mobile-privacy-language {
+    display: none;
+  }
+
+  .mobile-privacy-page {
+    background: #fff;
+  }
+
+  .mobile-privacy-document {
+    width: 100%;
+    padding: 20px;
+  }
+}

@@ -6,6 +6,8 @@ import GlobalErrorBoundary from './components/GlobalErrorBoundary'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
 import LoginPage from './pages/Login'
+import MobilePrivacyPage from './pages/MobilePrivacy'
+import { isPublicAppPath } from './pages/MobilePrivacy/publicPath'
 import ShopBestSellersPage from './pages/ShopBestSellers'
 import ShopComingSoonPage from './pages/ShopComingSoon'
 import ShopHomePage from './pages/ShopHome'
@@ -23,13 +25,13 @@ function AppBootstrap() {
   const { t } = useTranslation()
   const { initialized, loading, currentUser, access, fetchCurrentUser, clearAuth } = useAuthStore()
   const location = useLocation()
-  const isLoginPath = location.pathname === '/login'
+  const isPublicPath = isPublicAppPath(location.pathname)
 
   useEffect(() => {
-    if (!initialized && !loading && !isLoginPath) {
+    if (!initialized && !loading && !isPublicPath) {
       void fetchCurrentUser()
     }
-  }, [fetchCurrentUser, initialized, isLoginPath, loading])
+  }, [fetchCurrentUser, initialized, isPublicPath, loading])
 
   useEffect(() => {
     window.addEventListener(AUTH_EXPIRED_EVENT, clearAuth)
@@ -41,7 +43,7 @@ function AppBootstrap() {
     ? <Navigate to={WEB_NO_ACCESS_PATH} replace />
     : <ForbiddenPage />
 
-  if ((!initialized || loading) && !isLoginPath) {
+  if ((!initialized || loading) && !isPublicPath) {
     return (
       <div className="app-loading">
         <Spin size="large" fullscreen />
@@ -56,6 +58,7 @@ function AppBootstrap() {
         path="/login"
         element={currentUser ? <Navigate to={homePage} replace /> : <LoginPage />}
       />
+      <Route path="/privacy/mobile" element={<MobilePrivacyPage />} />
       <Route
         path={WEB_NO_ACCESS_PATH}
         element={

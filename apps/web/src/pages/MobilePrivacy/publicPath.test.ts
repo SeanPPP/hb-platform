@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict'
+import {
+  preserveMobilePrivacyDocumentMetadata,
+  updateMobilePrivacyDocumentMetadata,
+} from './documentMetadata'
+import { isPublicAppPath } from './publicPath'
+
+assert.equal(isPublicAppPath('/login'), true)
+assert.equal(isPublicAppPath('/privacy/mobile'), true)
+assert.equal(isPublicAppPath('/privacy/mobile/'), true)
+assert.equal(isPublicAppPath('/'), false)
+assert.equal(isPublicAppPath('/shop'), false)
+
+const documentMetadata = {
+  documentElement: { lang: 'en-AU' },
+  title: 'Hot Bargain Admin',
+}
+const restoreDocumentMetadata = preserveMobilePrivacyDocumentMetadata(documentMetadata)
+
+updateMobilePrivacyDocumentMetadata(documentMetadata, 'zh', '移动应用隐私政策')
+assert.equal(documentMetadata.documentElement.lang, 'zh-CN')
+assert.equal(documentMetadata.title, '移动应用隐私政策 | Hot Bargain')
+
+updateMobilePrivacyDocumentMetadata(documentMetadata, 'en', 'Mobile App Privacy Policy')
+assert.equal(documentMetadata.documentElement.lang, 'en')
+assert.equal(documentMetadata.title, 'Mobile App Privacy Policy | Hot Bargain')
+
+restoreDocumentMetadata()
+assert.equal(documentMetadata.documentElement.lang, 'en-AU')
+assert.equal(documentMetadata.title, 'Hot Bargain Admin')
+
+console.log('mobile privacy public route tests passed')
