@@ -327,6 +327,61 @@ test("首次进入支付页可直接现金结账，超付只提交应收并公�
   });
 });
 
+test("移除最后一笔现金后清空实收展示，并开放继续支付或取消", async () => {
+  const runtime = new FakePaymentRuntime();
+  runtime.startCashImpl = async () =>
+    snapshot({
+      status: "partial",
+      remaining: aud(600),
+      tenders: [
+        {
+          tenderGuid: "cash-removable",
+          method: "cash",
+          amount: aud(400),
+          reversible: true,
+        },
+      ],
+      allowedActions: actions({
+        start: true,
+        changeProvider: true,
+        addCash: true,
+        removeTender: true,
+      }),
+    });
+  runtime.removeImpl = async () =>
+    snapshot({
+      status: "draft-prepared",
+      remaining: aud(1_000),
+      tenders: [],
+      allowedActions: actions({
+        start: true,
+        changeProvider: true,
+        cancel: true,
+        addCash: true,
+      }),
+    });
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("4.00");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.deepEqual(presenter.getState().checkout.cash, {
+    tenderedCents: 400,
+    appliedCents: 400,
+    changeCents: 0,
+  });
+
+  assert.equal(await presenter.removeTender("cash-removable"), true);
+
+  assert.deepEqual(presenter.getState().checkout.cash, {
+    tenderedCents: 0,
+    appliedCents: 0,
+    changeCents: 0,
+  });
+  assert.equal(presenter.getState().allowedActions.cancel, true);
+  assert.equal(presenter.getState().allowedActions.addCash, true);
+});
+
 test("Linkly UI 仅发送 attemptId 与枚举安全键，完成后走同一 attempt 恢复", async () => {
   const runtime = new FakePaymentRuntime();
   runtime.recovery = snapshot({
@@ -451,6 +506,8 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
     async () => snapshot({ status: "cancelled" });
   public addCashImpl: () => Promise<PaymentCheckoutPublicSnapshot> =
     async () => snapshot({ status: "partial" });
+  public removeImpl: () => Promise<PaymentCheckoutPublicSnapshot> =
+    async () => snapshot({ status: "partial" });
 
   public listProviderAvailability(): readonly PaymentProviderAvailability[] {
     return [
@@ -519,7 +576,7 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
   }
 
   public async removeTender(): Promise<PaymentCheckoutPublicSnapshot> {
-    return snapshot({ status: "partial" });
+    return this.removeImpl();
   }
 }
 

@@ -444,20 +444,17 @@ function paymentDraftPort(
           "PAYMENT_DRAFT_NOT_FOUND",
         );
       }
-      const result = await store.abandonPreparedDraft({
+      const command = {
         ...scope,
         orderGuid: draft.orderGuid,
         draftId: draft.checkoutIntentId,
         actionId: request.actionId,
-      });
-      assertActive();
-      const abandoned = await read(result.orderGuid);
-      if (!abandoned) {
-        throw new PaymentCheckoutRuntimeError(
-          "PAYMENT_DRAFT_NOT_FOUND",
-        );
-      }
-      return { draft: abandoned, replayed: result.replayed };
+      };
+      const result = draft.cancellableAfterReversal
+        ? await store.closeFullyReversedDraft(command)
+        : await store.abandonPreparedDraft(command);
+      // store resolve 即 durable commit；之后不再读取或复核可能已过期的收银员会话。
+      return { replayed: result.replayed };
     },
     async closeCancelled(request) {
       assertActive();

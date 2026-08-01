@@ -719,6 +719,9 @@ export class PaymentPresenter {
           : {}),
       }),
       tenderReversalRecovery,
+      checkout: tenders.some((tender) => tender.method === "cash")
+        ? this.state.checkout
+        : resetCashPresentation(this.state.checkout),
       linkly: linklyStateForSnapshot(snapshot, this.state.linkly),
     };
     this.emit();

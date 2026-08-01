@@ -875,6 +875,7 @@ test("真实 SQLite：readDraft 始终投影当前订单和未被 reversal 抵�
         state: "Draft",
         total: { currency: "AUD", cents: 900 },
         remaining: { currency: "AUD", cents: 900 },
+        cancellableAfterReversal: false,
         tenders: [],
       },
     );
@@ -1004,6 +1005,7 @@ test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重
       state: "Draft",
       total: { currency: "AUD", cents: 900 },
       remaining: { currency: "AUD", cents: 900 },
+      cancellableAfterReversal: false,
       tenders: [],
     });
     assert.equal(await store.findBlockingRecovery(input.identity), null);
@@ -2558,6 +2560,333 @@ test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删�
     assert.notEqual(next.orderGuid, created.orderGuid);
     assert.equal(next.localSequence, created.localSequence + 1);
   });
+});
+
+test("真实 SQLite：全部现金 tender 已反冲时可幂等关闭，且保留原款、反向款和关联", async () => {
+  await withDatabase("draft-fully-reversed-close", async (connection) => {
+    await migrateFresh(connection);
+    const input = draftInput({ draftId: "draft-fully-reversed-close" });
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds(
+        "order-fully-reversed-close",
+        "audit-fully-reversed-close",
+      ),
+      () => T1,
+    );
+    const created = await store.createOrReuseDraft(input);
+    await connection.run(
+      `UPDATE local_orders
+       SET state = 'Completing', updated_at_iso = ?
+       WHERE order_guid = ?`,
+      [T1, created.orderGuid],
+    );
+    await insertTender(
+      connection,
+      "cash-source-fully-reversed",
+      created.orderGuid,
+      "cash",
+      400,
+    );
+    const command = {
+      actionId: "close-fully-reversed",
+      draftId: input.draftId,
+      orderGuid: created.orderGuid,
+      storeCode: input.identity.storeCode,
+      deviceCode: input.identity.deviceCode,
+    };
+    await assert.rejects(
+      () => store.closeFullyReversedDraft(command),
+      /fully reversed cash payment draft/,
+    );
+    await insertTender(
+      connection,
+      "cash-reversal-fully-reversed",
+      created.orderGuid,
+      "cash",
+      -400,
+    );
+    await connection.run(
+      `INSERT INTO payment_tender_reversal_links (
+        order_guid, action_id, source_tender_guid,
+        reversal_tender_guid, created_at_iso
+      ) VALUES (?, 'reverse-fully-reversed',
+        'cash-source-fully-reversed',
+        'cash-reversal-fully-reversed', ?)`,
+      [created.orderGuid, T1],
+    );
+
+    const closed = await store.closeFullyReversedDraft(command);
+    const replay = await store.closeFullyReversedDraft(command);
+
+    assert.equal(closed.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM order_tenders
+         WHERE order_guid = ?`,
+        [created.orderGuid],
+      ),
+      2,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_tender_reversal_links
+         WHERE order_guid = ?`,
+        [created.orderGuid],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_order_draft_bindings
+         WHERE order_guid = ? AND state = 'Abandoned'
+           AND abandon_action_id = ?`,
+        [created.orderGuid, command.actionId],
+      ),
+      1,
+    );
+  });
+});
+
+test("真实 SQLite：全反冲关闭拒绝不完整或不安全的历史 payment 账本", async () => {
+  const scenarios = [
+    {
+      name: "部分现金未反冲",
+      activeTenderCount: 1,
+      balanceRestored: false,
+      expectedRecoveryKind: "DraftPrepared",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "partial-cash-reversed",
+          "cash",
+          400,
+        );
+        await insertTender(
+          connection,
+          "partial-cash-still-active",
+          orderGuid,
+          "cash",
+          500,
+        );
+      },
+    },
+    {
+      name: "混入 card",
+      activeTenderCount: 0,
+      balanceRestored: true,
+      expectedRecoveryKind: "DraftPrepared",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "mixed-cash",
+          "cash",
+          400,
+        );
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "mixed-card",
+          "card",
+          500,
+        );
+      },
+    },
+    {
+      name: "混入 voucher",
+      activeTenderCount: 0,
+      balanceRestored: true,
+      expectedRecoveryKind: "DraftPrepared",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "voucher-cash",
+          "cash",
+          400,
+        );
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "mixed-voucher",
+          "voucher",
+          500,
+        );
+      },
+    },
+    {
+      name: "孤立负 tender",
+      activeTenderCount: 0,
+      balanceRestored: true,
+      expectedRecoveryKind: "DraftPrepared",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "cash-with-orphan-negative",
+          "cash",
+          900,
+        );
+        await insertTender(
+          connection,
+          "orphan-negative-cash",
+          orderGuid,
+          "cash",
+          -1,
+        );
+      },
+    },
+    {
+      name: "存在 payment attempt",
+      activeTenderCount: 0,
+      balanceRestored: true,
+      expectedRecoveryKind: "AttemptBlocking",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "cash-with-attempt",
+          "cash",
+          900,
+        );
+        await insertAttempt(connection, {
+          attemptId: "reversed-close-attempt",
+          idempotencyKey: "reversed-close-idempotency",
+          orderGuid,
+          provider: "square",
+          operation: "purchase",
+          amountCents: 900,
+          state: "Unknown",
+        });
+      },
+    },
+    {
+      name: "存在 payment action binding",
+      activeTenderCount: 0,
+      balanceRestored: true,
+      expectedRecoveryKind: "DraftPrepared",
+      prepare: async (
+        connection: SqliteConnectionPort,
+        orderGuid: string,
+      ) => {
+        await insertImmutableTenderReversal(
+          connection,
+          orderGuid,
+          "cash-with-action-binding",
+          "cash",
+          900,
+        );
+        await insertActionBinding(
+          connection,
+          orderGuid,
+          "reversed-close-action-binding",
+          "reversed-close-bound-attempt",
+          "reversed-close-bound-idempotency",
+        );
+      },
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await withDatabase(
+      `draft-fully-reversed-close-${scenario.name}`,
+      async (connection) => {
+        await migrateFresh(connection);
+        const input = draftInput({
+          draftId: `draft-fully-reversed-close-${scenario.name}`,
+        });
+        const store = new SqlitePaymentDraftRecoveryStore(
+          connection,
+          sequenceIds(
+            `order-fully-reversed-close-${scenario.name}`,
+            `audit-fully-reversed-close-${scenario.name}`,
+          ),
+          () => T1,
+        );
+        const created = await store.createOrReuseDraft(input);
+        await connection.run(
+          `UPDATE local_orders
+           SET state = 'Completing', updated_at_iso = ?
+           WHERE order_guid = ?`,
+          [T1, created.orderGuid],
+        );
+        await scenario.prepare(connection, created.orderGuid);
+        const command = {
+          actionId: `close-fully-reversed-${scenario.name}`,
+          draftId: input.draftId,
+          orderGuid: created.orderGuid,
+          storeCode: input.identity.storeCode,
+          deviceCode: input.identity.deviceCode,
+        };
+
+        const draft = await store.readDraft(created.orderGuid, input.identity);
+        assert.equal(draft?.state, "Completing", scenario.name);
+        assert.equal(
+          draft?.tenders.length,
+          scenario.activeTenderCount,
+          scenario.name,
+        );
+        assert.equal(
+          draft?.remaining.cents === draft?.total.cents,
+          scenario.balanceRestored,
+          scenario.name,
+        );
+        assert.equal(
+          draft?.cancellableAfterReversal,
+          false,
+          scenario.name,
+        );
+        await assert.rejects(
+          () => store.closeFullyReversedDraft(command),
+          /fully reversed cash payment draft/,
+          scenario.name,
+        );
+        assert.equal(
+          await scalar(
+            connection,
+            `SELECT COUNT(*) AS count
+             FROM payment_order_draft_bindings
+             WHERE order_guid = ? AND state = 'Active'`,
+            [created.orderGuid],
+          ),
+          1,
+          scenario.name,
+        );
+        const recovery = await store.findBlockingRecovery(input.identity);
+        assert.equal(recovery?.orderGuid, created.orderGuid, scenario.name);
+        assert.equal(
+          recovery?.kind,
+          scenario.expectedRecoveryKind,
+          scenario.name,
+        );
+      },
+    );
+  }
 });
 
 test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重启恢复，完成态 binding 不再阻塞", async () => {
@@ -4179,6 +4508,44 @@ function insertTender(
       T0,
     ],
   ).then(() => undefined);
+}
+
+async function insertImmutableTenderReversal(
+  connection: SqliteConnectionPort,
+  orderGuid: string,
+  tenderPrefix: string,
+  method: string,
+  amountCents: number,
+): Promise<void> {
+  const sourceTenderGuid = `${tenderPrefix}-source`;
+  const reversalTenderGuid = `${tenderPrefix}-reversal`;
+  await insertTender(
+    connection,
+    sourceTenderGuid,
+    orderGuid,
+    method,
+    amountCents,
+  );
+  await insertTender(
+    connection,
+    reversalTenderGuid,
+    orderGuid,
+    method,
+    -amountCents,
+  );
+  await connection.run(
+    `INSERT INTO payment_tender_reversal_links (
+      order_guid, action_id, source_tender_guid,
+      reversal_tender_guid, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?)`,
+    [
+      orderGuid,
+      `reverse-${tenderPrefix}`,
+      sourceTenderGuid,
+      reversalTenderGuid,
+      T1,
+    ],
+  );
 }
 
 async function assertDraftHasNoTender(

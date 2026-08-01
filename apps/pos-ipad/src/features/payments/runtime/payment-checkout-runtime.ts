@@ -101,6 +101,8 @@ export type PaymentCheckoutDraft = Readonly<{
   state: PaymentCheckoutDraftState;
   total: Money;
   remaining: Money;
+  /** 仅当历史付款全部是已建立不可变 reversal 关联的现金时为 true。 */
+  cancellableAfterReversal: boolean;
   /**
    * 仅包含尚未被 reversal 抵消的活动正 tender。不可变原始/reversal ledger 行由
    * DB 内部保留；公开运行时每种 method 最多一行。
@@ -120,7 +122,7 @@ export type PaymentCheckoutRecoveryRecord = Readonly<{
 }>;
 
 export type PaymentCheckoutDraftAbandonResult = Readonly<{
-  draft: PaymentCheckoutDraft;
+  /** resolve 即代表 SQLite 的 abandon/close CAS 已耐久提交。 */
   replayed: boolean;
 }>;
 
@@ -158,8 +160,9 @@ export interface PaymentCheckoutDraftPort {
   findBlockingRecovery(): Promise<PaymentCheckoutRecoveryRecord | null>;
 
   /**
-   * 仅允许 Draft/DraftPrepared、无 action binding/attempt、无活动 tender 的纯草稿。
-   * DB 必须以 actionId 幂等并用状态 CAS 标记放弃；有任何支付歧义时必须拒绝。
+   * 仅允许无支付事实的 Draft/DraftPrepared，或全部现金已建立不可变 reversal
+   * 关联且余额恢复全额的 Completing 草稿。DB 必须以 actionId 幂等并用状态
+   * CAS 标记放弃；有任何支付歧义时必须拒绝。
    */
   abandonPrepared(input: {
     orderGuid: string;
@@ -663,8 +666,7 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       recovery.attemptId !== null ||
       recovery.preparedAction !== null ||
       recovery.draft.tenders.length !== 0 ||
-      (recovery.draft.state !== "Draft" &&
-        recovery.draft.state !== "DraftPrepared")
+      !canAbandonDraft(recovery.draft)
     ) {
       throw new PaymentCheckoutRuntimeError(
         "PAYMENT_DRAFT_ABANDON_FORBIDDEN",
@@ -672,30 +674,19 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     }
     const lease = await this.acquireDraftLease(recovery.draft);
     await this.assertExact(lease);
-    const abandoned = await this.options.drafts.abandonPrepared({
+    await this.options.drafts.abandonPrepared({
       orderGuid: recovery.draft.orderGuid,
       actionId: requiredText(
         input.actionId,
         "PAYMENT_DRAFT_ABANDON_FORBIDDEN",
       ),
     });
-    await this.assertPreparedAbandon();
-    await this.assertExact(lease);
-    if (
-      abandoned.draft.orderGuid !== recovery.draft.orderGuid ||
-      abandoned.draft.checkoutIntentId !==
-        recovery.draft.checkoutIntentId ||
-      abandoned.draft.cartRevision !== recovery.draft.cartRevision ||
-      abandoned.draft.tenders.length !== 0
-    ) {
-      throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
-    }
+    // durable close 已是唯一提交屏障；会话可在 await 期间过期，仍必须马上解锁购物车。
     await this.options.cartLease.releaseAfterSafeCancel(
       lease,
       recovery.draft.orderGuid,
     );
-    await this.assertPreparedAbandon();
-    return abandonedSnapshot(abandoned.draft);
+    return abandonedSnapshot(recovery.draft);
   }
 
   public async addCash(
@@ -863,7 +854,9 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     const snapshot = publicSnapshot(
       draft,
       attempt,
-      result.status,
+      result.status === "partial" && draft.cancellableAfterReversal
+        ? "draft-prepared"
+        : result.status,
       stableMixedError(result.errorCode),
     );
     if (result.status === "completed") {
@@ -1130,7 +1123,7 @@ function publicSnapshot(
             preparedAction === null &&
             status === "draft-prepared" &&
             draft.tenders.length === 0 &&
-            (draft.state === "Draft" || draft.state === "DraftPrepared"))),
+            canAbandonDraft(draft))),
       addCash: !completed && !blocking && draft.remaining.cents > 0,
       removeTender:
         !completed &&
@@ -1352,7 +1345,8 @@ function validateDraft(draft: PaymentCheckoutDraft): void {
     !Number.isSafeInteger(draft.remaining.cents) ||
     draft.total.cents <= 0 ||
     draft.remaining.cents < 0 ||
-    draft.remaining.cents > draft.total.cents
+    draft.remaining.cents > draft.total.cents ||
+    typeof draft.cancellableAfterReversal !== "boolean"
   ) {
     throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
   }
@@ -1374,6 +1368,14 @@ function validateDraft(draft: PaymentCheckoutDraft): void {
   if (draft.total.cents - paid !== draft.remaining.cents) {
     throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
   }
+  if (
+    draft.cancellableAfterReversal &&
+    (draft.state !== "Completing" ||
+      draft.tenders.length !== 0 ||
+      draft.remaining.cents !== draft.total.cents)
+  ) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
+  }
   const methods = new Set<TenderMethod>();
   for (const tender of draft.tenders) {
     if (methods.has(tender.method)) {
@@ -1383,6 +1385,19 @@ function validateDraft(draft: PaymentCheckoutDraft): void {
     }
     methods.add(tender.method);
   }
+}
+
+function canAbandonDraft(draft: PaymentCheckoutDraft): boolean {
+  return (
+    draft.tenders.length === 0 &&
+    draft.remaining.currency === draft.total.currency &&
+    draft.remaining.cents === draft.total.cents &&
+    ((draft.cancellableAfterReversal &&
+      draft.state === "Completing") ||
+      (!draft.cancellableAfterReversal &&
+        (draft.state === "Draft" ||
+          draft.state === "DraftPrepared")))
+  );
 }
 
 function assertNoActiveTenderMethod(

@@ -517,6 +517,57 @@ test("纯 DraftPrepared 可显式 CAS 放弃并安全释放 lease；已有 bindi
   assert.equal(bound.lease.releaseCalls, 0);
 });
 
+test("耐久关闭提交后收银员会话失效仍立即且仅释放一次购物车 lease", async () => {
+  for (const draftToClose of [
+    draft(),
+    draft({
+      state: "Completing",
+      cancellableAfterReversal: true,
+    }),
+  ]) {
+    const harness = createHarness(draftToClose);
+    harness.drafts.recovery = {
+      draft: draftToClose,
+      attemptId: null,
+      preparedAction: null,
+    };
+    harness.drafts.onAbandonCommitted = () => {
+      harness.session.active = false;
+    };
+
+    const cancelled = await harness.runtime().abandonPrepared({
+      orderGuid: draftToClose.orderGuid,
+      actionId: `close-${draftToClose.cancellableAfterReversal ? "reversed" : "prepared"}`,
+    });
+
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.orderGuid, draftToClose.orderGuid);
+    assert.equal(harness.drafts.abandonCalls, 1);
+    assert.equal(harness.lease.releaseCalls, 1);
+  }
+});
+
+test("耐久关闭在提交前被 store 拒绝时不得释放购物车 lease", async () => {
+  const harness = createHarness();
+  harness.drafts.recovery = {
+    draft: harness.drafts.current,
+    attemptId: null,
+    preparedAction: null,
+  };
+  harness.drafts.abandonError = new Error("sqlite compare-and-swap rejected");
+
+  await assert.rejects(
+    () =>
+      harness.runtime().abandonPrepared({
+        orderGuid: "order-1",
+        actionId: "abandon-rejected",
+      }),
+    /sqlite compare-and-swap rejected/,
+  );
+  assert.equal(harness.drafts.abandonCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 0);
+});
+
 test("Unknown 冷恢复只复用同一 attempt；恢复 Approved 完成后才清购物车", async () => {
   const harness = createHarness();
   const unknown = attempt({ state: "Unknown" });
@@ -722,6 +773,60 @@ test("每种活动 tender 最多一个；reversal 后 draft 移除活动行才�
   assert.equal(activeCash.mixed.cashCalls, 0);
 });
 
+test("最后一笔现金已追加 reversal 后可继续支付，也可耐久取消并释放购物车", async () => {
+  const harness = createHarness(
+    draft({
+      state: "Completing",
+      remaining: aud(600),
+      tenders: [
+        {
+          tenderGuid: "cash-to-remove",
+          method: "cash",
+          amount: aud(400),
+          reversible: true,
+        },
+      ],
+    }),
+  );
+  const fullyReversed = draft({
+    state: "Completing",
+    remaining: aud(1_000),
+    cancellableAfterReversal: true,
+    tenders: [],
+  });
+  harness.mixed.removeResult = mixed("partial", {
+    tenderGuid: "cash-reversal",
+    remaining: aud(1_000),
+  });
+  harness.drafts.afterRemove = fullyReversed;
+
+  const removed = await harness.runtime().removeTender({
+    orderGuid: "order-1",
+    actionId: "remove-last-cash",
+    tenderGuid: "cash-to-remove",
+  });
+
+  assert.equal(removed.status, "draft-prepared");
+  assert.equal(removed.allowedActions.addCash, true);
+  assert.equal(removed.allowedActions.start, true);
+  assert.equal(removed.allowedActions.cancel, true);
+  assert.deepEqual(removed.tenders, []);
+  harness.drafts.recovery = {
+    draft: fullyReversed,
+    attemptId: null,
+    preparedAction: null,
+  };
+
+  const cancelled = await harness.runtime().abandonPrepared({
+    orderGuid: "order-1",
+    actionId: "cancel-fully-reversed",
+  });
+
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(harness.drafts.abandonCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 1);
+});
+
 function createHarness(initialDraft = draft()) {
   const events: string[] = [];
   const session = new SessionGuard();
@@ -858,6 +963,8 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
   } | null = null;
   public afterCash: PaymentCheckoutDraft | null = null;
   public afterRemove: PaymentCheckoutDraft | null = null;
+  public abandonError: unknown = null;
+  public onAbandonCommitted: (() => void) | null = null;
 
   public constructor(
     public current: PaymentCheckoutDraft,
@@ -894,8 +1001,9 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
     assert.equal(input.orderGuid, this.current.orderGuid);
     assert.ok(input.actionId.trim());
     this.abandonCalls += 1;
+    if (this.abandonError) throw this.abandonError;
+    this.onAbandonCommitted?.();
     return {
-      draft: this.current,
       replayed: false,
     };
   }
@@ -1171,6 +1279,7 @@ function draft(
     state: "DraftPrepared",
     total: aud(1_000),
     remaining: aud(1_000),
+    cancellableAfterReversal: false,
     tenders: [],
     ...overrides,
   };

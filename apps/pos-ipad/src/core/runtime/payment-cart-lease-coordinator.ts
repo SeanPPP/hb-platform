@@ -126,8 +126,7 @@ implements PaymentCartLeasePort {
   ): Promise<void> {
     const held = this.requireHeld(lease);
     requiredText(orderGuid, "order guid");
-    // DB adapter 已先以 Draft/无 action/无 tender 做 CAS；这里仅释放内存写锁。
-    held.sessionLease.read();
+    // DB adapter 已确认该草稿可关闭并耐久完成 CAS；这里仅释放内存写锁。
     await this.releaseHeld(held);
   }
 

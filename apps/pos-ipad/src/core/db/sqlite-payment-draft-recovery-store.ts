@@ -149,6 +149,14 @@ type CheckoutTenderRow = Readonly<{
   amount_cents: unknown;
 }>;
 
+type FullyReversedCashRow = Readonly<{
+  tender_count: unknown;
+  reversal_count: unknown;
+  invalid_tender_count: unknown;
+  attempt_count: unknown;
+  action_count: unknown;
+}>;
+
 type CancelledAttemptRow = Readonly<{
   action_id: unknown;
   request_signature: unknown;
@@ -792,6 +800,124 @@ implements PersistedOrderDraftPort {
       };
     });
   }
+
+  /**
+   * 现金付款全部通过不可变 reversal 抵消后，允许显式取消并释放购物车。
+   * 原 tender、反向 tender、关联和订单都保留；这里只关闭 active draft binding。
+   */
+  public closeFullyReversedDraft(
+    input: PaymentDraftAbandonInput,
+  ): Promise<PaymentDraftAbandonResult> {
+    const scope = normalizeScope(input);
+    const actionId = strictId(input.actionId, "reversed draft close action id");
+    const draftId = strictId(input.draftId, "payment draft id");
+    const orderGuid = strictId(input.orderGuid, "payment order guid");
+    return this.connection.withExclusiveTransaction(async (transaction) => {
+      const binding = await transaction.getFirst<DraftBindingRow>(
+        `SELECT draft_id, request_fingerprint, pricing_state_json,
+          order_guid, store_code, device_code, state, abandon_action_id,
+          close_action_id, close_attempt_id
+         FROM payment_order_draft_bindings
+         WHERE draft_id = ?`,
+        [draftId],
+      );
+      if (
+        !binding ||
+        text(binding.order_guid, "draft order guid") !== orderGuid ||
+        text(binding.store_code, "draft store code") !== scope.storeCode ||
+        text(binding.device_code, "draft device code") !== scope.deviceCode
+      ) {
+        throw new Error("Reversed payment draft scope does not match.");
+      }
+      const recovery = await recoveryBase(
+        transaction,
+        await requireRecoveryOrder(transaction, orderGuid),
+      );
+      const bindingState = text(binding.state, "draft binding state");
+      if (bindingState === "Abandoned") {
+        if (nullableText(binding.abandon_action_id) !== actionId) {
+          throw new Error(
+            "Payment draft was abandoned by a different immutable action.",
+          );
+        }
+        return {
+          replayed: true,
+          draftId,
+          orderGuid,
+          cart: recovery.cart,
+          pricingState: recovery.pricingState,
+        };
+      }
+      if (bindingState !== "Active") {
+        throw new Error("Payment draft binding state is invalid.");
+      }
+      const draft = await readCheckoutDraftInTransaction(
+        transaction,
+        orderGuid,
+        scope,
+      );
+      if (!draft?.cancellableAfterReversal) {
+        throw new Error(
+          "Only a fully reversed cash payment draft can be closed.",
+        );
+      }
+
+      const auditEventId = strictId(
+        this.ids.createAuditEventId(),
+        "reversed draft close audit event id",
+      );
+      const abandonedAtIso = canonicalIso(
+        this.nowIso(),
+        "reversed draft close time",
+      );
+      await transaction.run(
+        `INSERT INTO audit_events (
+          event_id, event_type, occurred_at_iso, order_guid,
+          correlation_id, payload_json, uploaded_at_iso
+        ) VALUES (?, 'PAYMENT_DRAFT_ABANDONED', ?, ?, ?, ?, NULL)`,
+        [
+          auditEventId,
+          abandonedAtIso,
+          orderGuid,
+          actionId,
+          JSON.stringify({
+            action: "payment-fully-reversed-draft-closed",
+            reason: "ALL_CASH_TENDERS_REVERSED",
+            draftId,
+          }),
+        ],
+      );
+      const changed = await transaction.run(
+        `UPDATE payment_order_draft_bindings
+         SET state = 'Abandoned', abandon_action_id = ?,
+           abandon_audit_event_id = ?, abandoned_at_iso = ?
+         WHERE draft_id = ? AND order_guid = ? AND store_code = ?
+           AND device_code = ? AND state = 'Active'
+           AND abandon_action_id IS NULL
+           AND abandon_audit_event_id IS NULL
+           AND abandoned_at_iso IS NULL`,
+        [
+          actionId,
+          auditEventId,
+          abandonedAtIso,
+          draftId,
+          orderGuid,
+          scope.storeCode,
+          scope.deviceCode,
+        ],
+      );
+      if (changed.changes !== 1) {
+        throw new Error("Reversed payment draft close CAS failed.");
+      }
+      return {
+        replayed: false,
+        draftId,
+        orderGuid,
+        cart: recovery.cart,
+        pricingState: recovery.pricingState,
+      };
+    });
+  }
 }
 
 type NormalizedDraft = Readonly<{
@@ -890,6 +1016,13 @@ async function readCheckoutDraftInTransaction(
   ) {
     throw new Error("Payment checkout active tender total is invalid.");
   }
+  const state = orderState(row.order_state);
+  const cancellableAfterReversal =
+    bindingState === "Active" &&
+    state === "Completing" &&
+    tenders.length === 0 &&
+    remainingCents === totalCents &&
+    await hasFullyReversedCashLedger(transaction, orderGuid);
   return Object.freeze({
     checkoutIntentId: strictId(
       text(row.draft_id, "payment checkout intent id"),
@@ -900,11 +1033,76 @@ async function readCheckoutDraftInTransaction(
       "payment checkout order guid",
     ),
     cartRevision: decoded.cart.revision,
-    state: orderState(row.order_state),
+    state,
     total: createAud(totalCents),
     remaining: createAud(remainingCents),
+    cancellableAfterReversal,
     tenders: Object.freeze(tenders),
   });
+}
+
+async function hasFullyReversedCashLedger(
+  transaction: SqliteConnectionPort,
+  orderGuid: string,
+): Promise<boolean> {
+  const row = await transaction.getFirst<FullyReversedCashRow>(
+    `SELECT
+      COUNT(*) AS tender_count,
+      (
+        SELECT COUNT(*)
+        FROM payment_tender_reversal_links link
+        WHERE link.order_guid = ?
+      ) AS reversal_count,
+      COALESCE(SUM(
+        CASE
+          WHEN tender.method <> 'cash'
+            OR tender.amount_cents = 0
+            OR (
+              tender.amount_cents > 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM payment_tender_reversal_links source_link
+                WHERE source_link.order_guid = tender.order_guid
+                  AND source_link.source_tender_guid = tender.tender_guid
+              )
+            )
+            OR (
+              tender.amount_cents < 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM payment_tender_reversal_links reversal_link
+                WHERE reversal_link.order_guid = tender.order_guid
+                  AND reversal_link.reversal_tender_guid = tender.tender_guid
+              )
+            )
+          THEN 1
+          ELSE 0
+        END
+      ), 0) AS invalid_tender_count,
+      (
+        SELECT COUNT(*)
+        FROM payment_attempts attempt
+        WHERE attempt.order_guid = ?
+      ) AS attempt_count,
+      (
+        SELECT COUNT(*)
+        FROM payment_action_bindings action
+        WHERE action.order_guid = ?
+      ) AS action_count
+     FROM order_tenders tender
+     WHERE tender.order_guid = ?`,
+    [orderGuid, orderGuid, orderGuid, orderGuid],
+  );
+  return (
+    integer(row?.tender_count, "reversed draft tender count") >= 2 &&
+    integer(row?.reversal_count, "reversed draft link count") >= 1 &&
+    integer(
+      row?.invalid_tender_count,
+      "reversed draft invalid tender count",
+    ) === 0 &&
+    integer(row?.attempt_count, "reversed draft attempt count") === 0 &&
+    integer(row?.action_count, "reversed draft action count") === 0
+  );
 }
 
 function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft {

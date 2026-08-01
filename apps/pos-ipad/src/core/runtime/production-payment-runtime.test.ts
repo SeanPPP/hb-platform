@@ -311,6 +311,70 @@ test("公开 draft 只有现金和具备 release capability 的礼券可撤，�
   }
 });
 
+test("生产 draft port 的 durable close 是唯一提交屏障，提交后不再读取草稿或复核会话", async () => {
+  for (const branch of [
+    { name: "DraftPrepared", cancellableAfterReversal: false },
+    { name: "fully-reversed", cancellableAfterReversal: true },
+  ]) {
+    const cart = pricedCart();
+    const cashier = activeCashier();
+    const draft: PaymentCheckoutDraft = {
+      checkoutIntentId: "checkout-1",
+      orderGuid: "order-1",
+      cartRevision: cart.snapshot().revision,
+      state: branch.cancellableAfterReversal ? "Completing" : "DraftPrepared",
+      total: aud(1_000),
+      remaining: aud(1_000),
+      cancellableAfterReversal: branch.cancellableAfterReversal,
+      tenders: [],
+    };
+    const durable = durableCloseDatabase({
+      draft,
+      recovery: draftRecovery(cart),
+      onCommitted: () => cashier.clear(),
+    });
+    const activeCart = new ActivePricingCartSession(
+      new PricingCart(),
+      () => new PricingCart(),
+    );
+    const runtime = createProductionPaymentRuntime({
+      database: durable.database,
+      repositories: repositories(),
+      encryptor,
+      activeCart,
+      currentCashier: cashier,
+      terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+      clock: {
+        now: () => new Date("2026-07-28T00:00:00.000Z"),
+        nowIso: () => "2026-07-28T00:00:00.000Z",
+      },
+      createId: idFactory(),
+      connectivity: { async isOnline() { return true; } },
+      bootstrap: bootstrap(() => undefined),
+      async drainFulfilment() {},
+    });
+    await runtime.initializeRecovery();
+    assert.equal(runtime.service.status, "available");
+    if (runtime.service.status !== "available") continue;
+    const presenter = runtime.service.createPresenter(null);
+    assert.equal(await presenter.initialize(), true, branch.name);
+    assert.equal(presenter.getState().allowedActions.cancel, true);
+
+    assert.equal(await presenter.cancel(), true, branch.name);
+    assert.equal(durable.readAfterCommit, 0, branch.name);
+    assert.equal(
+      branch.cancellableAfterReversal
+        ? durable.closeFullyReversedCalls
+        : durable.abandonPreparedCalls,
+      1,
+      branch.name,
+    );
+    activeCart.increaseLine("line-1");
+    assert.equal(activeCart.read().cart.lines[0]?.quantity, "2");
+    presenter.destroy();
+  }
+});
+
 test("礼券 reversal Unknown 后即时关闭换 provider、加现金和再次移除，provider/cash 均零新增调用", async () => {
   let releaseCalls = 0;
   let providerCalls = 0;
@@ -827,6 +891,63 @@ function database(draft: PaymentCheckoutDraft | null = null): PosDatabase {
   } as unknown as PosDatabase;
 }
 
+function durableCloseDatabase(input: Readonly<{
+  draft: PaymentCheckoutDraft;
+  recovery: PaymentDraftRecovery;
+  onCommitted(): void;
+}>): Readonly<{
+  database: PosDatabase;
+  readonly abandonPreparedCalls: number;
+  readonly closeFullyReversedCalls: number;
+  readonly readAfterCommit: number;
+}> {
+  let committed = false;
+  let abandonPreparedCalls = 0;
+  let closeFullyReversedCalls = 0;
+  let readAfterCommit = 0;
+  const close = () => {
+    committed = true;
+    input.onCommitted();
+    return { replayed: false };
+  };
+  const draftStore = {
+    async assertPersisted() {},
+    async findBlockingRecovery() {
+      return input.recovery;
+    },
+    async readDraft() {
+      if (committed) {
+        readAfterCommit += 1;
+        throw new Error("draft must not be read after durable close");
+      }
+      return input.draft;
+    },
+    async abandonPreparedDraft() {
+      abandonPreparedCalls += 1;
+      return close();
+    },
+    async closeFullyReversedDraft() {
+      closeFullyReversedCalls += 1;
+      return close();
+    },
+  };
+  return {
+    database: {
+      ...database(input.draft),
+      paymentDraftRecovery: () => draftStore,
+    } as unknown as PosDatabase,
+    get abandonPreparedCalls() {
+      return abandonPreparedCalls;
+    },
+    get closeFullyReversedCalls() {
+      return closeFullyReversedCalls;
+    },
+    get readAfterCommit() {
+      return readAfterCommit;
+    },
+  };
+}
+
 function repositories(
   initialAttempt: PaymentAttempt | null = null,
 ): PosRepositoryBundle {
@@ -918,6 +1039,7 @@ function checkoutDraft(): PaymentCheckoutDraft {
     state: "Completing",
     total: aud(1_000),
     remaining: aud(400),
+    cancellableAfterReversal: false,
     tenders: [
       checkoutTender("cash-1", "cash", 100),
       checkoutTender("card-1", "card", 200),
@@ -1058,6 +1180,7 @@ function voucherCheckoutDraft(
     state: "Completing",
     total: aud(1_000),
     remaining: aud(500),
+    cancellableAfterReversal: false,
     tenders: [checkoutTender("voucher-1", "voucher", 500)],
   };
 }
