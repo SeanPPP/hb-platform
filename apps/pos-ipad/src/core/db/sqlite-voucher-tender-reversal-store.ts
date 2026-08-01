@@ -1,5 +1,8 @@
 import {
+  auditActorPayload,
+  auditActorSnapshotFromPayload,
   createAud,
+  type AuditActorSnapshot,
   type LocalOrder,
   type Money,
   type OrderTender,
@@ -30,6 +33,7 @@ export type VoucherTenderReversalCommand = Readonly<{
   orderGuid: string;
   sourceTenderGuid: string;
   reason: VoucherTenderReversalReason;
+  actor: AuditActorSnapshot;
 }>;
 
 export type VoucherTenderReversalRecord = Readonly<{
@@ -43,6 +47,7 @@ export type VoucherTenderReversalRecord = Readonly<{
   attemptCount: number;
   lastErrorCode: string | null;
   reversalTenderGuid: string | null;
+  actor: AuditActorSnapshot;
   truth: MixedPaymentOrderTruth;
 }>;
 
@@ -99,6 +104,7 @@ type ActionRow = Readonly<{
   attempt_count: unknown;
   last_error_code: unknown;
   reversal_tender_guid: unknown;
+  audit_actor_json: unknown;
 }>;
 
 type SourceRow = Readonly<{
@@ -106,6 +112,7 @@ type SourceRow = Readonly<{
   order_state: unknown;
   store_code: unknown;
   cashier_id: unknown;
+  cashier_name: unknown;
   tender_guid: unknown;
   tender_method: unknown;
   tender_amount_cents: unknown;
@@ -176,7 +183,7 @@ implements
           action.source_tender_guid, action.source_attempt_id,
           action.amount_cents, action.reason, action.state,
           action.attempt_count, action.last_error_code,
-          action.reversal_tender_guid
+          action.reversal_tender_guid, action.audit_actor_json
          FROM voucher_tender_reversal_actions action
          INNER JOIN local_orders order_row
            ON order_row.order_guid = action.order_guid
@@ -201,7 +208,8 @@ implements
         row.order_guid,
         "voucher reversal recovery order",
       );
-      const record = recordFromRow(
+      const record = await readRecord(
+        transaction,
         row,
         await requireTruth(transaction, orderGuid),
       );
@@ -235,7 +243,8 @@ implements
       const existing = await readAction(transaction, command.actionId);
       if (existing) {
         assertCommandMatches(existing, command);
-        return recordFromRow(
+        return readRecord(
+          transaction,
           existing,
           await requireTruth(transaction, command.orderGuid),
         );
@@ -244,7 +253,7 @@ implements
       const unresolved = await transaction.getFirst<ActionRow>(
         `SELECT action_id, order_guid, source_tender_guid, source_attempt_id,
           amount_cents, reason, state, attempt_count, last_error_code,
-          reversal_tender_guid
+          reversal_tender_guid, audit_actor_json
          FROM voucher_tender_reversal_actions
          WHERE order_guid = ?
            AND state IN ('Prepared', 'Submitted', 'Unknown', 'Blocked')
@@ -272,11 +281,12 @@ implements
         `INSERT INTO voucher_tender_reversal_actions (
           action_id, order_guid, source_tender_guid, source_attempt_id,
           amount_cents, reason, state, attempt_count, last_error_code,
-          reversal_tender_guid, terminal_audit_event_id, submitted_at_iso,
+          reversal_tender_guid, audit_actor_json,
+          terminal_audit_event_id, submitted_at_iso,
           terminal_at_iso, created_at_iso, updated_at_iso
         ) VALUES (
           ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
-          NULL, NULL, NULL, NULL, ?, ?
+          NULL, ?, NULL, NULL, NULL, ?, ?
         )`,
         [
           command.actionId,
@@ -285,13 +295,15 @@ implements
           sourceAttemptId,
           amountCents,
           command.reason,
+          safeJson(auditActorPayload(command.actor)),
           now,
           now,
         ],
       );
       const inserted = await requireAction(transaction, command.actionId);
       assertCommandMatches(inserted, command);
-      return recordFromRow(
+      return readRecord(
+        transaction,
         inserted,
         await requireTruth(transaction, command.orderGuid),
       );
@@ -305,9 +317,11 @@ implements
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const current = await requireAction(transaction, expected.actionId);
       assertImmutableRecord(current, expected);
+      await assertPersistedActor(transaction, current, expected.actor);
 
       if (isSubmittedReplay(current, expected)) {
-        return recordFromRow(
+        return readRecord(
+          transaction,
           current,
           await requireTruth(transaction, expected.orderGuid),
         );
@@ -316,7 +330,8 @@ implements
         current.state === "Reversed" ||
         current.state === "Blocked"
       ) {
-        return recordFromRow(
+        return readRecord(
+          transaction,
           current,
           await requireTruth(transaction, expected.orderGuid),
         );
@@ -354,7 +369,8 @@ implements
       if (changed.changes !== 1) {
         throw new Error("Voucher reversal submission CAS failed.");
       }
-      return recordFromRow(
+      return readRecord(
+        transaction,
         await requireAction(transaction, expected.actionId),
         await requireTruth(transaction, expected.orderGuid),
       );
@@ -370,6 +386,7 @@ implements
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const current = await requireAction(transaction, expected.actionId);
       assertImmutableRecord(current, expected);
+      await assertPersistedActor(transaction, current, expected.actor);
       if (current.state === "Unknown") {
         if (
           nullableText(current.last_error_code, "voucher error code") !==
@@ -379,7 +396,8 @@ implements
             "Voucher reversal was replayed with a different terminal fact.",
           );
         }
-        return recordFromRow(
+        return readRecord(
+          transaction,
           current,
           await requireTruth(transaction, expected.orderGuid),
         );
@@ -402,7 +420,8 @@ implements
       if (changed.changes !== 1) {
         throw new Error("Voucher reversal unknown CAS failed.");
       }
-      return recordFromRow(
+      return readRecord(
+        transaction,
         await requireAction(transaction, expected.actionId),
         await requireTruth(transaction, expected.orderGuid),
       );
@@ -418,6 +437,7 @@ implements
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const current = await requireAction(transaction, expected.actionId);
       assertImmutableRecord(current, expected);
+      await assertPersistedActor(transaction, current, expected.actor);
       if (current.state === "Blocked") {
         if (
           nullableText(current.last_error_code, "voucher error code") !==
@@ -427,7 +447,8 @@ implements
             "Voucher reversal was replayed with a different terminal fact.",
           );
         }
-        return recordFromRow(
+        return readRecord(
+          transaction,
           current,
           await requireTruth(transaction, expected.orderGuid),
         );
@@ -461,6 +482,7 @@ implements
             sourceTenderGuid: expected.sourceTenderGuid,
             sourceAttemptId: expected.sourceAttemptId,
             errorCode,
+            ...auditActorPayload(expected.actor),
           }),
         ],
       );
@@ -490,7 +512,8 @@ implements
       if (changed.changes !== 1) {
         throw new Error("Voucher reversal blocked CAS failed.");
       }
-      return recordFromRow(
+      return readRecord(
+        transaction,
         await requireAction(transaction, expected.actionId),
         await requireTruth(transaction, expected.orderGuid),
       );
@@ -511,8 +534,10 @@ implements
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const current = await requireAction(transaction, expected.actionId);
       assertImmutableRecord(current, expected);
+      await assertPersistedActor(transaction, current, expected.actor);
       if (current.state === "Reversed") {
-        const replay = recordFromRow(
+        const replay = await readRecord(
+          transaction,
           current,
           await requireTruth(transaction, expected.orderGuid),
         );
@@ -529,7 +554,8 @@ implements
       if (current.state !== "Submitted" && current.state !== "Unknown") {
         throw new Error("Voucher reversal has no submitted release to commit.");
       }
-      const currentRecord = recordFromRow(
+      const currentRecord = await readRecord(
+        transaction,
         current,
         await requireTruth(transaction, expected.orderGuid),
       );
@@ -587,6 +613,7 @@ implements
             sourceTenderGuid: expected.sourceTenderGuid,
             sourceAttemptId: expected.sourceAttemptId,
             reversalTenderGuid,
+            ...auditActorPayload(expected.actor),
           }),
         ],
       );
@@ -617,7 +644,8 @@ implements
       if (changed.changes !== 1) {
         throw new Error("Voucher reversal completion CAS failed.");
       }
-      const completed = recordFromRow(
+      const completed = await readRecord(
+        transaction,
         await requireAction(transaction, expected.actionId),
         await requireTruth(transaction, expected.orderGuid),
       );
@@ -681,7 +709,7 @@ async function readAction(
   return connection.getFirst<ActionRow>(
     `SELECT action_id, order_guid, source_tender_guid, source_attempt_id,
       amount_cents, reason, state, attempt_count, last_error_code,
-      reversal_tender_guid
+      reversal_tender_guid, audit_actor_json
      FROM voucher_tender_reversal_actions
      WHERE action_id = ?`,
     [actionId],
@@ -708,6 +736,7 @@ async function readSource(
       order_row.state AS order_state,
       order_row.store_code,
       order_row.cashier_id,
+      order_row.cashier_name,
       source.tender_guid,
       source.method AS tender_method,
       source.amount_cents AS tender_amount_cents,
@@ -739,7 +768,10 @@ async function readSource(
 
 function assertPreparedSource(
   row: SourceRow,
-  command: VoucherTenderReversalCommand,
+  command: Pick<
+    VoucherTenderReversalCommand,
+    "actionId" | "orderGuid" | "sourceTenderGuid" | "reason"
+  >,
 ): string {
   const orderGuid = text(row.order_guid, "voucher source order");
   const sourceTenderGuid = text(row.tender_guid, "voucher source tender");
@@ -844,9 +876,83 @@ function mapLink(row: TruthLinkRow): MixedTenderReversalLink {
   });
 }
 
+async function readRecord(
+  connection: SqliteConnectionPort,
+  row: ActionRow,
+  truth: MixedPaymentOrderTruth,
+): Promise<VoucherTenderReversalRecord> {
+  return recordFromRow(
+    row,
+    truth,
+    await readPersistedActor(connection, row),
+  );
+}
+
+async function readPersistedActor(
+  connection: SqliteConnectionPort,
+  row: ActionRow,
+): Promise<AuditActorSnapshot> {
+  const encoded = row.audit_actor_json;
+  if (encoded === null || encoded === undefined) {
+    // 中文注释：M26 前未决动作没有 actor 列；只能整体回退原订单员工，
+    // userGuid 明确置空，禁止与当前登录会话拼接。
+    const source = await readSource(
+      connection,
+      text(row.order_guid, "voucher reversal order"),
+      text(row.source_tender_guid, "voucher reversal source tender"),
+    );
+    return Object.freeze({
+      cashierId: text(source.cashier_id, "voucher cashier id"),
+      cashierName: text(source.cashier_name, "voucher cashier name"),
+      userGuid: null,
+    });
+  }
+  if (typeof encoded !== "string") {
+    throw new Error("Invalid persisted voucher reversal audit actor.");
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(encoded);
+  } catch {
+    throw new Error("Invalid persisted voucher reversal audit actor.");
+  }
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    throw new Error("Invalid persisted voucher reversal audit actor.");
+  }
+  const actor = auditActorSnapshotFromPayload(
+    payload as Readonly<Record<string, unknown>>,
+  );
+  if (!actor) {
+    throw new Error("Invalid persisted voucher reversal audit actor.");
+  }
+  return actor;
+}
+
+async function assertPersistedActor(
+  connection: SqliteConnectionPort,
+  row: ActionRow,
+  expected: AuditActorSnapshot,
+): Promise<void> {
+  const persisted = await readPersistedActor(connection, row);
+  if (
+    persisted.cashierId !== expected.cashierId ||
+    persisted.cashierName !== expected.cashierName ||
+    persisted.userGuid !== expected.userGuid
+  ) {
+    throw new Error(
+      "Voucher reversal record has different immutable audit actor.",
+    );
+  }
+}
+
 function recordFromRow(
   row: ActionRow,
   truth: MixedPaymentOrderTruth,
+  actor: AuditActorSnapshot,
 ): VoucherTenderReversalRecord {
   return Object.freeze({
     actionId: text(row.action_id, "voucher reversal action"),
@@ -876,6 +982,7 @@ function recordFromRow(
       row.reversal_tender_guid,
       "voucher reversal tender",
     ),
+    actor,
     truth,
   });
 }
@@ -891,6 +998,7 @@ function normalizeCommand(
       "voucher reversal source tender",
     ),
     reason: reversalReason(command.reason),
+    actor: normalizeActor(command.actor),
   });
 }
 
@@ -929,9 +1037,21 @@ function normalizeRecord(
           record.reversalTenderGuid,
           "voucher reversal tender",
         ),
+    actor: normalizeActor(record.actor),
     truth: record.truth,
   });
   return normalized;
+}
+
+function normalizeActor(value: AuditActorSnapshot): AuditActorSnapshot {
+  if (!value || typeof value !== "object") {
+    throw new TypeError("Voucher reversal audit actor is required.");
+  }
+  const actor = auditActorSnapshotFromPayload(auditActorPayload(value));
+  if (!actor) {
+    throw new TypeError("Voucher reversal audit actor is invalid.");
+  }
+  return actor;
 }
 
 function assertCommandMatches(

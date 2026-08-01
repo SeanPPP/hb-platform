@@ -1,4 +1,5 @@
 export type OperationAuditOutcome = 'Succeeded' | 'Denied' | 'Failed'
+export type OperationAuditDeviceSystem = 'Windows' | 'iPadOS' | 'Unknown'
 export type OperationAuditSortField =
   | 'occurredAtUtc'
   | 'storeCode'
@@ -14,6 +15,8 @@ export interface OperationAuditQueryParams {
   storeCode?: string
   cashierKeyword?: string
   deviceCode?: string
+  // Unknown 表示服务端历史记录尚未写入设备平台。
+  deviceSystem?: OperationAuditDeviceSystem
   operationType?: string
   outcome?: string
   productKeyword?: string
@@ -39,6 +42,7 @@ export interface OperationAuditListItem {
   isEmergencyOverride: boolean
   storeCode: string
   deviceCode: string
+  deviceSystem?: string | null
   appVersion?: string
   instanceId?: string
   orderGuid?: string

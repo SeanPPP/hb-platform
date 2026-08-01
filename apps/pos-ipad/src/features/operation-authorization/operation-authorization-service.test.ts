@@ -17,6 +17,7 @@ const PERMISSION = "Permissions.PosTerminal.Sales.ChangePrice";
 function cashier(overrides: Partial<RequestingCashierAuthorizationIdentity> = {}): RequestingCashierAuthorizationIdentity {
   return {
     cashierId: "REQUESTER",
+    cashierName: "Requester",
     userGuid: "requester-user-guid",
     storeCode: "STORE-1",
     deviceCode: "IPAD-1",
@@ -143,6 +144,18 @@ test("主管授权审计脱敏，票据既不在回调也不留在可 JSON 化�
   assert.equal(serialized.includes("supervisor-secret-ticket"), false);
   assert.equal(serialized.includes("supervisor-barcode"), false);
   assert.equal(audits[0]?.payload.outcome, "Succeeded");
+  assert.deepEqual(
+    {
+      requestingCashierId: audits[0]?.payload.requestingCashierId,
+      requestingCashierName: audits[0]?.payload.requestingCashierName,
+      requestingUserGuid: audits[0]?.payload.requestingUserGuid,
+    },
+    {
+      requestingCashierId: "REQUESTER",
+      requestingCashierName: "Requester",
+      requestingUserGuid: "requester-user-guid",
+    },
+  );
 });
 
 test("主管必须同店同设备、非紧急、票据未过期且精确拥有权限", async () => {

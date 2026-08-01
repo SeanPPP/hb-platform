@@ -73,13 +73,10 @@ class AcceptingAuditTransport implements HbposTransport {
     return {
       status: 200,
       data: {
-        success: true,
-        data: {
-          results: events?.map((event) => ({
-            eventId: event.eventId,
-            status: "accepted",
-          })) ?? [],
-        },
+        results: events?.map((event) => ({
+          eventId: event.eventId,
+          status: "accepted",
+        })) ?? [],
       } as T,
     };
   }
@@ -92,6 +89,7 @@ test("M16 撤券终态审计映射后上传并不阻塞后续审计", async () =
       nowIso: () => T2,
       createLeaseId: () => "lease-unused-for-audit-only-drain",
       encryptor,
+      auditScope: { storeCode: "STORE-1", deviceCode: "DEVICE-1" },
     });
 
     await seedApprovedVoucherPurchase(connection, ids.success, 500);
@@ -144,6 +142,7 @@ test("M16 撤券终态审计映射后上传并不阻塞后续审计", async () =
     const coordinator = new PosSyncCoordinator({
       outbox: repositories.outbox,
       auditRepository: repositories.audit,
+      auditDelivery: repositories.auditDelivery,
       orderSync: { async sync() { throw new Error("No order outbox is expected."); } },
       auditUploader: new HbposAuditBatchAdapter(
         transport,
@@ -170,6 +169,10 @@ test("M16 撤券终态审计映射后上传并不阻塞后续审计", async () =
       auditUploaded: 3,
     });
     assert.equal(await pendingAuditCount(connection), 0);
+    const uploadedAt = await connection.getAll<{ uploaded_at_iso: string }>(
+      "SELECT uploaded_at_iso FROM audit_events ORDER BY event_id",
+    );
+    assert.deepEqual(uploadedAt.map((row) => row.uploaded_at_iso), [T2, T2, T2]);
 
     const sent = transport.calls[0]?.data as {
       events: readonly {
@@ -189,10 +192,16 @@ test("M16 撤券终态审计映射后上传并不阻塞后续审计", async () =
     assert.deepEqual(sent.events[0]?.properties, {
       action: "payment-tender-remove",
       reason: "SALE",
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Cashier One",
+      requestingUserGuid: "user-guid-1",
     });
     assert.deepEqual(sent.events[1]?.properties, {
       action: "payment-tender-remove",
       reason: "SALE",
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Cashier One",
+      requestingUserGuid: "user-guid-1",
     });
     // 审计上传体中既不携带券码/预留 token，也不暴露本地 payment attempt 身份。
     assert.doesNotMatch(JSON.stringify(sent), /voucher-|reservation|attempt/i);
@@ -212,6 +221,11 @@ function command(seed: ReversalSeed): VoucherTenderReversalCommand {
     orderGuid: seed.order,
     sourceTenderGuid: seed.tender,
     reason: "SALE",
+    actor: {
+      cashierId: "cashier-1",
+      cashierName: "Cashier One",
+      userGuid: "user-guid-1",
+    },
   };
 }
 

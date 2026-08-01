@@ -19,12 +19,40 @@ public sealed class SqlSugarOperationAuditSchemaInitializer(HbposSqlSugarContext
         // 操作审计属于 POSM；由 Hbpos.Api 统一建表，避免多个服务竞争迁移所有权。
         var db = dbContext.PosmDb;
         db.CodeFirst.InitTables<PosOperationAudit, PosOperationAuditItem>();
+        await EnsureDeviceSystemColumnAsync(db, cancellationToken);
 
         var sql = db.CurrentConnectionConfig.DbType switch
         {
             DbType.Sqlite => SqliteIndexSql,
             DbType.PostgreSQL => PostgreSqlIndexSql,
             _ => SqlServerIndexSql
+        };
+        await db.Ado.ExecuteCommandAsync(sql);
+    }
+
+    private static async Task EnsureDeviceSystemColumnAsync(
+        ISqlSugarClient db,
+        CancellationToken cancellationToken)
+    {
+        var exists = db.DbMaintenance.GetColumnInfosByTableName("pos_operation_audit", false)
+            .Any(column => string.Equals(
+                column.DbColumnName,
+                "device_system",
+                StringComparison.OrdinalIgnoreCase));
+        if (exists)
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var sql = db.CurrentConnectionConfig.DbType switch
+        {
+            DbType.Sqlite => "ALTER TABLE [pos_operation_audit] ADD COLUMN [device_system] varchar(32) NULL;",
+            DbType.PostgreSQL => "ALTER TABLE \"pos_operation_audit\" ADD COLUMN IF NOT EXISTS \"device_system\" varchar(32) NULL;",
+            _ => """
+                IF COL_LENGTH(N'dbo.pos_operation_audit', N'device_system') IS NULL
+                    ALTER TABLE [dbo].[pos_operation_audit] ADD [device_system] varchar(32) NULL;
+                """
         };
         await db.Ado.ExecuteCommandAsync(sql);
     }
@@ -36,6 +64,8 @@ public sealed class SqlSugarOperationAuditSchemaInitializer(HbposSqlSugarContext
             ON pos_operation_audit(cashier_id, occurred_at_utc);
         CREATE INDEX IF NOT EXISTS IX_pos_operation_audit_device_time
             ON pos_operation_audit(device_code, occurred_at_utc);
+        CREATE INDEX IF NOT EXISTS IX_pos_operation_audit_device_system_time
+            ON pos_operation_audit(device_system, occurred_at_utc);
         CREATE INDEX IF NOT EXISTS IX_pos_operation_audit_type_time
             ON pos_operation_audit(operation_type, occurred_at_utc);
         CREATE INDEX IF NOT EXISTS IX_pos_operation_audit_outcome_time
@@ -59,6 +89,8 @@ public sealed class SqlSugarOperationAuditSchemaInitializer(HbposSqlSugarContext
             ON "pos_operation_audit" ("cashier_id", "occurred_at_utc");
         CREATE INDEX IF NOT EXISTS "IX_pos_operation_audit_device_time"
             ON "pos_operation_audit" ("device_code", "occurred_at_utc");
+        CREATE INDEX IF NOT EXISTS "IX_pos_operation_audit_device_system_time"
+            ON "pos_operation_audit" ("device_system", "occurred_at_utc");
         CREATE INDEX IF NOT EXISTS "IX_pos_operation_audit_type_time"
             ON "pos_operation_audit" ("operation_type", "occurred_at_utc");
         CREATE INDEX IF NOT EXISTS "IX_pos_operation_audit_outcome_time"
@@ -82,6 +114,8 @@ public sealed class SqlSugarOperationAuditSchemaInitializer(HbposSqlSugarContext
             CREATE INDEX [IX_pos_operation_audit_cashier_time] ON [dbo].[pos_operation_audit]([cashier_id], [occurred_at_utc]);
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_pos_operation_audit_device_time' AND object_id = OBJECT_ID(N'[dbo].[pos_operation_audit]'))
             CREATE INDEX [IX_pos_operation_audit_device_time] ON [dbo].[pos_operation_audit]([device_code], [occurred_at_utc]);
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_pos_operation_audit_device_system_time' AND object_id = OBJECT_ID(N'[dbo].[pos_operation_audit]'))
+            CREATE INDEX [IX_pos_operation_audit_device_system_time] ON [dbo].[pos_operation_audit]([device_system], [occurred_at_utc]);
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_pos_operation_audit_type_time' AND object_id = OBJECT_ID(N'[dbo].[pos_operation_audit]'))
             CREATE INDEX [IX_pos_operation_audit_type_time] ON [dbo].[pos_operation_audit]([operation_type], [occurred_at_utc]);
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_pos_operation_audit_outcome_time' AND object_id = OBJECT_ID(N'[dbo].[pos_operation_audit]'))

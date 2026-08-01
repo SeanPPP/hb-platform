@@ -11,6 +11,7 @@ import {
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import { SqliteDailyCloseRepository } from "./sqlite-daily-close-repository";
+import { createSqliteRepositories } from "./sqlite-repositories";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
@@ -333,6 +334,66 @@ test("归档、11 种面额和 DAILY_CLOSE_SAVE 审计同事务提交且冲突�
     const failed = archive("close-rollback", "occupied-audit");
     await assert.rejects(repository.saveArchive(failed));
     assert.equal(await repository.getArchive("close-rollback"), null);
+  });
+});
+
+test("真实 SQLite：日结非订单审计冻结归档 scope，且只由相同终端投递", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(connection, () => T0);
+    const commit = archive("close-audit-scope", "audit-close-audit-scope");
+    const repository = new SqliteDailyCloseRepository(connection);
+
+    await repository.saveArchive(commit);
+
+    const persisted = await connection.getFirst<{
+      store_code: unknown;
+      device_code: unknown;
+    }>(
+      `SELECT scope_store_code AS store_code, scope_device_code AS device_code
+       FROM audit_events
+       WHERE event_id = ?`,
+      [commit.audit.eventId],
+    );
+    assert.equal(persisted?.store_code, commit.archive.storeCode);
+    assert.equal(persisted?.device_code, commit.archive.deviceCode);
+
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+      createLeaseId: () => "audit-delivery-lease",
+      encryptor: {
+        async encrypt(plaintext) {
+          return new TextEncoder().encode(plaintext);
+        },
+        async decrypt(ciphertext) {
+          return new TextDecoder().decode(ciphertext);
+        },
+      },
+      auditScope: {
+        storeCode: commit.archive.storeCode,
+        deviceCode: commit.archive.deviceCode,
+      },
+    });
+    assert.deepEqual(
+      (await repositories.auditDelivery.listReady(10)).map((event) => event.eventId),
+      [commit.audit.eventId],
+    );
+    const otherTerminal = createSqliteRepositories(connection, {
+      nowIso: () => "2026-07-29T00:00:00.000Z",
+      createLeaseId: () => "other-audit-delivery-lease",
+      encryptor: {
+        async encrypt(plaintext) {
+          return new TextEncoder().encode(plaintext);
+        },
+        async decrypt(ciphertext) {
+          return new TextDecoder().decode(ciphertext);
+        },
+      },
+      auditScope: {
+        storeCode: commit.archive.storeCode,
+        deviceCode: "DEVICE-OTHER",
+      },
+    });
+    assert.deepEqual(await otherTerminal.auditDelivery.listReady(10), []);
   });
 });
 

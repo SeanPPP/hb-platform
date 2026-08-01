@@ -1,3 +1,7 @@
+import {
+  freezeAuditScope,
+  type AuditScope,
+} from "../contracts/audit-scope";
 import { normalizeLineSyncProvenance } from "../contracts/line-sync-provenance";
 import type {
   ApprovedPaymentOrderCommit,
@@ -6,6 +10,7 @@ import type {
   CompleteCashOrderCommand,
   DurableCashOrderCommit,
   DurableCashOrderCommitResult,
+  AuditEventDraft,
   LocalOrder,
   RecalledHoldCompletion,
 } from "../contracts/order";
@@ -17,6 +22,7 @@ import type {
   DurableCashOrderCommitPort,
 } from "../contracts/repositories";
 import type { TerminalCartFence } from "../contracts/terminal-cart";
+import { SqliteApplicationLogOutbox } from "../logging/application-log";
 
 import { SqliteCatalogLookupOverlayRepository } from "./catalog-lookup-overlay-repository";
 import { SqliteCatalogSnapshotRepository } from "./catalog-repository";
@@ -163,8 +169,22 @@ export class PosDatabase implements DatabasePort {
   }
 
   /** 业务层仅取得冻结 Port 的实现，永不取得裸 SQLite connection。 */
-  public repositories(encryptor: SensitivePayloadEncryptor, createLeaseId: () => string): PosRepositoryBundle {
-    return createSqliteRepositories(this.connection, { nowIso: this.nowIso, createLeaseId, encryptor });
+  public repositories(
+    encryptor: SensitivePayloadEncryptor,
+    createLeaseId: () => string,
+    auditScope?: AuditScope,
+  ): PosRepositoryBundle {
+    return createSqliteRepositories(this.connection, {
+      nowIso: this.nowIso,
+      createLeaseId,
+      encryptor,
+      ...(auditScope ? { auditScope } : {}),
+    });
+  }
+
+  /** 程序日志独立于业务 outbox；上传失败不得阻塞订单、支付或员工审计。 */
+  public applicationLogOutbox(): SqliteApplicationLogOutbox {
+    return new SqliteApplicationLogOutbox(this.connection, this.nowIso);
   }
 
   /**
@@ -698,6 +718,8 @@ type ApprovedPaymentOrderRow = Readonly<{
   order_guid: unknown;
   state: unknown;
   actual_amount_cents: unknown;
+  store_code: unknown;
+  device_code: unknown;
 }>;
 
 type ApprovedPaymentTenderRow = Readonly<{
@@ -744,7 +766,9 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
     assertApprovedPaymentAmount(intentText(attempt.operation), amountCents);
 
     const order = await transaction.getFirst<ApprovedPaymentOrderRow>(
-      "SELECT order_guid, state, actual_amount_cents FROM local_orders WHERE order_guid = ?",
+      `SELECT order_guid, state, actual_amount_cents, store_code, device_code
+       FROM local_orders
+       WHERE order_guid = ?`,
       [input.orderGuid],
     );
     if (!order) throw new Error("Approved payment order no longer exists.");
@@ -811,13 +835,11 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
       return { replayed: false, orderGuid: input.orderGuid, tenderGuid: input.tenderGuid, completed: false, signedTenderAmountCents: amountCents };
     }
 
-    for (const event of input.completionAuditEvents) {
-      await transaction.run(
-        "INSERT INTO audit_events (event_id, event_type, occurred_at_iso, order_guid, correlation_id, payload_json, uploaded_at_iso) VALUES (?, ?, ?, ?, ?, ?, NULL)",
-        [event.eventId, event.eventType, event.occurredAtIso, event.orderGuid, event.correlationId, JSON.stringify(event.payload)],
-      );
-    }
     const now = this.nowIso();
+    const auditScope = auditScopeFromPersistedOrder(order);
+    for (const event of input.completionAuditEvents) {
+      await appendScopedAuditEvent(transaction, event, auditScope, now);
+    }
     await transaction.run(
       "INSERT INTO outbox_messages (message_id, aggregate_id, kind, payload_json, state, attempt_count, next_attempt_at_iso, lease_id, lease_expires_at_iso, last_error_code, created_at_iso, updated_at_iso) VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, ?, ?)",
       [input.outbox.messageId, input.outbox.aggregateId, input.outbox.kind, input.outbox.payloadJson, input.outbox.nextAttemptAtIso, now, now],
@@ -825,6 +847,50 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
     await persistApprovedPaymentFulfilment(transaction, input.fulfilment, input.orderGuid, this.encryptor, now);
     return { replayed: false, orderGuid: input.orderGuid, tenderGuid: input.tenderGuid, completed: true, signedTenderAmountCents: amountCents };
   }
+}
+
+/** 订单账本是订单审计唯一可信的门店/终端来源，避免重注册后回读 runtime metadata。 */
+function auditScopeFromLocalOrder(order: LocalOrder): AuditScope {
+  return freezeAuditScope({
+    storeCode: order.storeCode,
+    deviceCode: order.deviceCode,
+  });
+}
+
+function auditScopeFromPersistedOrder(
+  order: ApprovedPaymentOrderRow,
+): AuditScope {
+  return freezeAuditScope({
+    storeCode: strictIdentifier(order.store_code, "approved payment order store code"),
+    deviceCode: strictIdentifier(order.device_code, "approved payment order device code"),
+  });
+}
+
+/** 事务写入统一显式固化 scope；M30 trigger 只是旧写入点的兼容防线。 */
+async function appendScopedAuditEvent(
+  transaction: SqliteConnectionPort,
+  event: AuditEventDraft,
+  scope: AuditScope,
+  nextAttemptAtIso: string,
+): Promise<void> {
+  await transaction.run(
+    `INSERT INTO audit_events (
+      event_id, event_type, occurred_at_iso, order_guid, correlation_id,
+      payload_json, uploaded_at_iso, delivery_state, attempt_count,
+      next_attempt_at_iso, last_error_code, scope_store_code, scope_device_code
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', 0, ?, NULL, ?, ?)`,
+    [
+      event.eventId,
+      event.eventType,
+      event.occurredAtIso,
+      event.orderGuid,
+      event.correlationId,
+      JSON.stringify(event.payload),
+      nextAttemptAtIso,
+      scope.storeCode,
+      scope.deviceCode,
+    ],
+  );
 }
 
 function tenderMethodForProvider(provider: string): "card" | "voucher" {
@@ -1404,19 +1470,11 @@ async function completeRecalledHoldInCashTransaction(
     throw new Error("Recalled hold changed before cash completion.");
   }
   const audit = completion.recallAudit;
-  await transaction.run(
-    `INSERT INTO audit_events (
-      event_id, event_type, occurred_at_iso, order_guid, correlation_id,
-      payload_json, uploaded_at_iso
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-    [
-      audit.eventId,
-      audit.eventType,
-      audit.occurredAtIso,
-      audit.orderGuid,
-      audit.correlationId,
-      JSON.stringify(audit.payload),
-    ],
+  await appendScopedAuditEvent(
+    transaction,
+    audit,
+    freezeAuditScope(binding.scope),
+    completion.recalledAtIso,
   );
   const deleted = await transaction.run(
     `DELETE FROM terminal_cart_fences
@@ -1472,6 +1530,7 @@ class PosDatabaseTransaction implements DatabaseTransactionPort {
       assertSafeAuditPayload(event.payload);
     }
     const { order } = command;
+    const auditScope = auditScopeFromLocalOrder(order);
     const createdAtIso = this.nowIso();
 
     // 退款容量与订单写入共用同一事务；未知或已耗尽容量时不能离线生成退款单。
@@ -1545,18 +1604,11 @@ class PosDatabaseTransaction implements DatabaseTransactionPort {
     }
 
     for (const event of command.auditEvents) {
-      await this.transaction.run(
-        `INSERT INTO audit_events (
-          event_id, event_type, occurred_at_iso, order_guid, correlation_id, payload_json, uploaded_at_iso
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-        [
-          event.eventId,
-          event.eventType,
-          event.occurredAtIso,
-          event.orderGuid,
-          event.correlationId,
-          JSON.stringify(event.payload),
-        ],
+      await appendScopedAuditEvent(
+        this.transaction,
+        event,
+        auditScope,
+        createdAtIso,
       );
     }
 

@@ -496,6 +496,7 @@ test("prepare 已存在的非 Created attempt 只返回真实现状，不恢复�
       attemptId: `attempt-prepare-${state}`,
       idempotencyKey: `key-prepare-${state}`,
       createdAtIso: "2026-07-28T00:00:00.000Z",
+      actor: auditActor(),
     };
     await bindings.bindOrGet(binding);
     ledger.seed(
@@ -820,6 +821,7 @@ test("trusted refund seed 拒绝额外/冲突引用，且已有 Created 引用�
     attemptId: "attempt-existing-refund",
     idempotencyKey: "key-existing-refund",
     createdAtIso: "2026-07-28T00:00:00.000Z",
+    actor: auditActor(),
   };
   await existingBindings.bindOrGet(binding);
   existingLedger.seed(
@@ -1406,6 +1408,7 @@ test("绑定已提交但 attempt 尚不存在时只能用绑定的 attemptId 和
     attemptId: "attempt-from-binding",
     idempotencyKey: "key-from-binding",
     createdAtIso: "2026-07-28T00:00:00.000Z",
+    actor: auditActor(),
   };
   await bindings.bindOrGet(persisted);
   const provider = new FakeProvider("square");
@@ -1504,6 +1507,7 @@ test("prepare/start 遇到绑定 attempt 的不可变身份变化都进入 durab
     attemptId: "attempt-bound",
     idempotencyKey: "key-bound",
     createdAtIso: "2026-07-28T00:00:00.000Z",
+    actor: auditActor(),
   };
   await bindings.bindOrGet(binding);
   ledger.seed(
@@ -1620,6 +1624,15 @@ class MemoryActionBindings implements PaymentActionBindingPort {
     this.bindings.set(key, { ...proposed });
     return { ...proposed };
   }
+
+  public async getByAttempt(
+    attemptId: string,
+  ): Promise<PaymentActionBinding | null> {
+    const binding = [...this.bindings.values()].find(
+      (candidate) => candidate.attemptId === attemptId,
+    );
+    return binding ? { ...binding, actor: { ...binding.actor } } : null;
+  }
 }
 
 class DraftGuard implements PersistedOrderDraftPort {
@@ -1714,6 +1727,7 @@ function input() {
     provider: "square" as const,
     operation: "purchase" as const,
     amount,
+    actor: auditActor(),
   };
 }
 
@@ -1727,6 +1741,14 @@ function refundInput(index: number, provider: PaymentProvider) {
     amount: { currency: "AUD" as const, cents: -1_250 },
     refundCapacityId: `capacity-seeded-${index}`,
   };
+}
+
+function auditActor() {
+  return {
+    cashierId: "cashier-alice",
+    cashierName: "Alice",
+    userGuid: "user-alice",
+  } as const;
 }
 
 function trustedRefundSeed(

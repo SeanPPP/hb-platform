@@ -7,6 +7,7 @@ import type {
 } from "./cash-checkout-service";
 
 import {
+  auditActorPayload,
   createAud,
   type CashFulfilmentDraft,
   type CompleteCashOrderCommand,
@@ -256,7 +257,13 @@ function createCommand(
       orderGuid,
       correlationId: orderGuid,
       // 预渲染小票从同一耐久命令读取取整应收与找零，不能再根据浮动 UI 状态重算。
-      payload: { checkoutIntentId: input.checkoutIntentId, localSequence, cashDueCents, changeCents },
+      payload: {
+        checkoutIntentId: input.checkoutIntentId,
+        localSequence,
+        cashDueCents,
+        changeCents,
+        ...auditActorPayload(input),
+      },
     }],
     outbox: {
       messageId: requiredId(createId(), "outbox id"),
@@ -312,6 +319,7 @@ function createRequestSignature(
     deviceCode: input.deviceCode,
     cashierId: input.cashierId,
     cashierName: input.cashierName,
+    userGuid: input.userGuid,
     terminalContext,
   })}`;
 }
@@ -379,6 +387,7 @@ function createRecalledHoldCompletion(
         storeCode: command.order.storeCode,
         deviceCode: command.order.deviceCode,
         cashierId: command.order.cashierId,
+        ...auditActorPayload(input),
         itemCount: input.cart.lines.length,
         actualAmountCents: input.cart.actualAmount.cents,
         localSequence: command.order.localSequence,

@@ -1,4 +1,7 @@
-import type { AuditEventDraft } from "@/core/contracts";
+import {
+  auditActorPayload,
+  type AuditEventDraft,
+} from "@/core/contracts";
 import type { AuditRepositoryPort } from "@/core/contracts/repositories";
 
 export type CashierLockIdentity = Readonly<{
@@ -6,6 +9,7 @@ export type CashierLockIdentity = Readonly<{
   deviceCode: string;
   cashierId: string;
   cashierName: string;
+  userGuid: string | null;
 }>;
 
 export type CashierLockServiceOptions = Readonly<{
@@ -75,7 +79,7 @@ function createLogoutAudit(
       outcome: "Succeeded",
       reason: "MANUAL_LOCK",
       source: "ipad-pos",
-      requestingCashierId: identity.cashierId,
+      ...auditActorPayload(identity),
       action: "lock-terminal",
       screen: "pos-terminal",
     },
@@ -88,6 +92,7 @@ function validateIdentity(identity: CashierLockIdentity): CashierLockIdentity {
     deviceCode: requiredText(identity.deviceCode, "Device code"),
     cashierId: requiredText(identity.cashierId, "Cashier id"),
     cashierName: requiredText(identity.cashierName, "Cashier name"),
+    userGuid: identity.userGuid,
   };
 }
 

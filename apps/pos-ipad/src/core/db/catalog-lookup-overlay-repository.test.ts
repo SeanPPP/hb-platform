@@ -64,7 +64,7 @@ test("M23 从 M22 增量新增目录在线校准覆盖层", async () => {
   });
 });
 
-test("M25 从 M24 增量补齐目录代次与 delta tombstone，并可重复开库", async () => {
+test("M25/M26 从 M24 增量补齐目录代次与日志投递 outbox，并可重复开库", async () => {
   await withDatabase(async (connection) => {
     await applyMigrations(
       connection,
@@ -73,8 +73,12 @@ test("M25 从 M24 增量补齐目录代次与 delta tombstone，并可重复开�
     );
     await insertSnapshot(connection, "snapshot-before-m25", "active");
 
-    await applyMigrations(connection, () => T1);
-    assert.equal(await schemaVersion(connection), 25);
+    await applyMigrations(
+      connection,
+      () => T1,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 26),
+    );
+    assert.equal(await schemaVersion(connection), 26);
 
     const snapshotColumns = await connection.getAll<{ name: string }>(
       "PRAGMA table_info('catalog_snapshots')",
@@ -93,6 +97,16 @@ test("M25 从 M24 增量补齐目录代次与 delta tombstone，并可重复开�
         "base_snapshot_id",
         "base_catalog_version",
       ],
+    );
+    const auditColumns = await connection.getAll<{ name: string }>(
+      "PRAGMA table_info('audit_events')",
+    );
+    assert.ok(auditColumns.some((column) => column.name === "delivery_state"));
+    assert.ok(auditColumns.some((column) => column.name === "next_attempt_at_iso"));
+    assert.ok(
+      await connection.getFirst(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'application_log_outbox'",
+      ),
     );
     const migratedSnapshot = await connection.getFirst<{
         generation_id: string;
@@ -122,9 +136,13 @@ test("M25 从 M24 增量补齐目录代次与 delta tombstone，并可重复开�
       ["snapshot_id", "store_code", "lookup_code_normalized"],
     );
 
-    // 中文注释：已应用 M25 的数据库再次开库时，M17 目录结构核验也必须接受加法列。
-    await applyMigrations(connection, () => T1);
-    assert.equal(await schemaVersion(connection), 25);
+    // 中文注释：已应用 M25/M26 的数据库再次开库时，M17 目录结构核验也必须接受加法列。
+    await applyMigrations(
+      connection,
+      () => T1,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 26),
+    );
+    assert.equal(await schemaVersion(connection), 26);
   });
 });
 

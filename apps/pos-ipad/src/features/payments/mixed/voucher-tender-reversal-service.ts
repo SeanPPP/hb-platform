@@ -4,7 +4,11 @@ import type {
   MixedTenderReversalPort,
 } from "./mixed-payment-coordinator";
 
-import type { PaymentAttempt } from "@/core/contracts";
+import {
+  auditActorPayload,
+  auditActorSnapshotFromPayload,
+  type PaymentAttempt,
+} from "@/core/contracts";
 import type {
   VoucherTenderReversalRecord,
   VoucherTenderReversalStorePort,
@@ -65,6 +69,7 @@ implements MixedTenderReversalPort {
     const signature = [
       normalized.orderGuid,
       normalized.tenderGuid,
+      JSON.stringify(auditActorPayload(normalized.actor)),
     ].join("|");
     const active = sharedVoucherReversals.get(normalized.actionId);
     if (active) {
@@ -92,6 +97,7 @@ implements MixedTenderReversalPort {
       orderGuid: command.orderGuid,
       sourceTenderGuid: command.tenderGuid,
       reason: REVERSAL_REASON,
+      actor: command.actor,
     });
     if (prepared.state === "Reversed") {
       return terminalMutation(prepared, "reversed");
@@ -306,11 +312,18 @@ function safeResponseCode(value: string | null): string | null {
 function normalizeCommand(
   command: MixedTenderReversalCommand,
 ): MixedTenderReversalCommand {
-  return {
+  const actor = auditActorSnapshotFromPayload(
+    auditActorPayload(command.actor),
+  );
+  if (!actor) {
+    throw new TypeError("Voucher tender reversal actor is invalid.");
+  }
+  return Object.freeze({
     actionId: requiredId(command.actionId),
     orderGuid: requiredId(command.orderGuid),
     tenderGuid: requiredId(command.tenderGuid),
-  };
+    actor,
+  });
 }
 
 function requiredId(value: string): string {

@@ -11,12 +11,14 @@ import {
 
 import type {
   ApprovedPaymentOrderCommitResult,
+  AuditActorSnapshot,
   LocalOrder,
   Money,
   OrderTender,
   PaymentAttempt,
   PaymentProvider,
 } from "@/core/contracts";
+import { auditActorPayload } from "@/core/contracts";
 
 export type MixedPaymentOrderTruth = Readonly<
   Pick<LocalOrder, "orderGuid" | "state" | "actualAmount" | "tenders">
@@ -39,7 +41,11 @@ export interface MixedPaymentOrderTruthPort {
 
 export type MixedPaymentAttemptPort = Pick<
   PaymentAttemptService,
-  "startAttempt" | "recoverAttempt" | "getAttempt" | "getBlockingAttempt"
+  | "startAttempt"
+  | "recoverAttempt"
+  | "getAttempt"
+  | "getBlockingAttempt"
+  | "getActionActor"
 >;
 
 export type MixedApprovedPaymentCompletionPort = Pick<
@@ -50,6 +56,7 @@ export type MixedApprovedPaymentCompletionPort = Pick<
 export type MixedCashTenderCommand = Readonly<{
   actionId: string;
   orderGuid: string;
+  actor: AuditActorSnapshot;
   /** 实际计入订单 tender 的金额。 */
   amount: Money;
   /** 新版调用显式冻结顾客实收；旧 action 缺失时等同 amount。 */
@@ -78,6 +85,7 @@ export type MixedTenderReversalCommand = Readonly<{
   actionId: string;
   orderGuid: string;
   tenderGuid: string;
+  actor: AuditActorSnapshot;
 }>;
 
 export type MixedTenderReversalMutation = Readonly<{
@@ -139,10 +147,11 @@ export type RecoverMixedOnlineAttemptInput = Readonly<{
   attemptId: string;
 }>;
 
-export type AddMixedCashTenderInput = MixedCashTenderCommand;
-export type RemoveMixedTenderInput = MixedTenderReversalCommand;
+export type AddMixedCashTenderInput = Omit<MixedCashTenderCommand, "actor">;
+export type RemoveMixedTenderInput = Omit<MixedTenderReversalCommand, "actor">;
 
 export type MixedPaymentCoordinatorOptions = Readonly<{
+  actor: AuditActorSnapshot;
   orderTruth: MixedPaymentOrderTruthPort;
   paymentAttempts: MixedPaymentAttemptPort;
   approvedCompletion: MixedApprovedPaymentCompletionPort;
@@ -198,6 +207,7 @@ export class MixedPaymentCoordinator {
         input.provider,
         input.amount.currency,
         String(input.amount.cents),
+        actorSignature(this.options.actor),
       ].join("|"),
       () => this.addOnlineTenderOnce(input),
     );
@@ -227,6 +237,7 @@ export class MixedPaymentCoordinator {
         input.actionId,
         input.amount.currency,
         String(input.amount.cents),
+        actorSignature(this.options.actor),
       ].join("|"),
       () => this.addCashTenderOnce(input),
     );
@@ -239,7 +250,7 @@ export class MixedPaymentCoordinator {
     assertRequiredId(input.tenderGuid, "tenderGuid");
     return this.runOrderAction(
       input.orderGuid,
-      `reverse|${input.actionId}|${input.tenderGuid}`,
+      `reverse|${input.actionId}|${input.tenderGuid}|${actorSignature(this.options.actor)}`,
       () => this.removeTenderOnce(input),
     );
   }
@@ -291,6 +302,7 @@ export class MixedPaymentCoordinator {
       provider: input.provider,
       operation: "purchase",
       amount: input.amount,
+      actor: this.options.actor,
     };
     let execution: PaymentAttemptExecutionResult;
     try {
@@ -401,7 +413,14 @@ export class MixedPaymentCoordinator {
 
     let committed: ApprovedPaymentOrderCommitResult;
     try {
-      committed = await this.options.approvedCompletion.complete(execution);
+      const actor = await this.options.paymentAttempts.getActionActor(
+        attempt.attemptId,
+        attempt.orderGuid,
+      );
+      committed = await this.options.approvedCompletion.complete(
+        execution,
+        actor,
+      );
     } catch {
       return result("recovery-required", before, {
         attemptId: attempt.attemptId,
@@ -472,7 +491,10 @@ export class MixedPaymentCoordinator {
 
     let mutation: MixedCashTenderMutation;
     try {
-      mutation = await cashTender.appendCashTenderAtomically(input);
+      mutation = await cashTender.appendCashTenderAtomically({
+        ...input,
+        actor: this.options.actor,
+      });
       const after = snapshotFromTruth(mutation.truth, input.orderGuid);
       assertPersistedTender(
         after.truth.tenders,
@@ -545,7 +567,10 @@ export class MixedPaymentCoordinator {
 
     let mutation: MixedTenderReversalMutation;
     try {
-      mutation = await reversal.reverseTender(input);
+      mutation = await reversal.reverseTender({
+        ...input,
+        actor: this.options.actor,
+      });
     } catch {
       return result("recovery-required", before, {
         errorCode: "TENDER_REVERSAL_FAILED",
@@ -889,6 +914,16 @@ async function safelyFindBlockingAttempt(
 function assertActionInput(actionId: string, orderGuid: string): void {
   assertRequiredId(actionId, "actionId");
   assertRequiredId(orderGuid, "orderGuid");
+}
+
+function actorSignature(actor: AuditActorSnapshot): string {
+  return JSON.stringify(
+    auditActorPayload({
+      cashierId: actor.cashierId,
+      cashierName: actor.cashierName,
+      userGuid: actor.userGuid,
+    }),
+  );
 }
 
 function assertRequiredId(value: string, label: string): void {

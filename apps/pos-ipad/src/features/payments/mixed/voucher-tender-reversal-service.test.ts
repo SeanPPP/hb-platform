@@ -317,6 +317,7 @@ implements VoucherTenderReversalStorePort {
       orderGuid: "order-1",
       sourceTenderGuid: "voucher-tender-1",
       reason: "SALE",
+      actor: paymentActor(),
     });
     return this.current;
   }
@@ -412,6 +413,7 @@ function command() {
     actionId: "voucher-reversal-action-1",
     orderGuid: "order-1",
     tenderGuid: "voucher-tender-1",
+    actor: paymentActor(),
   };
 }
 
@@ -432,9 +434,18 @@ function record(
     attemptCount: 0,
     lastErrorCode: null,
     reversalTenderGuid: null,
+    actor: paymentActor(),
     truth: orderTruth(source),
     ...overrides,
   };
+}
+
+function paymentActor() {
+  return {
+    cashierId: "cashier-1",
+    cashierName: "Alice",
+    userGuid: "user-guid-1",
+  } as const;
 }
 
 function orderTruth(source: OrderTender): MixedPaymentOrderTruth {

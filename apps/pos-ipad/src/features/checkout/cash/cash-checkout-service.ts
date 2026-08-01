@@ -1,10 +1,16 @@
-import { createAud, type CartSnapshot, type DatabasePort, type LocalOrder } from "@/core/contracts";
+import {
+  auditActorPayload,
+  createAud,
+  type CartSnapshot,
+  type DatabasePort,
+  type LocalOrder,
+} from "@/core/contracts";
 import { calculateCashSettlement } from "@/features/sales/domain";
 
 export interface LocalSequencePort { nextLocalSequence(): Promise<number>; }
 export interface OfflineReturnCapacityPort { hasCapacity(snapshot: CartSnapshot): Promise<boolean>; }
 export type CashCheckoutDependencies = Readonly<{ createId: () => string; nowIso: () => string; returnCapacity: (snapshot: CartSnapshot) => Promise<boolean> }>;
-export type CashCheckoutInput = Readonly<{ checkoutIntentId: string; cart: CartSnapshot; cashTenderedCents: number | null; storeCode: string; deviceCode: string; cashierId: string; cashierName: string }>;
+export type CashCheckoutInput = Readonly<{ checkoutIntentId: string; cart: CartSnapshot; cashTenderedCents: number | null; storeCode: string; deviceCode: string; cashierId: string; cashierName: string; userGuid: string | null }>;
 export type CashDrawerDisposition =
   | "not-required"
   | "queued"
@@ -35,7 +41,7 @@ export class CashCheckoutService {
     if (actual === 0 && input.cashTenderedCents !== null && input.cashTenderedCents !== 0) throw new Error("Zero order cannot accept cash tender.");
     const orderGuid = this.deps.createId(); const soldAtIso = this.deps.nowIso(); const sequence = await this.sequences.nextLocalSequence();
     const order: LocalOrder = { orderGuid, localSequence: sequence, storeCode: input.storeCode, deviceCode: input.deviceCode, cashierId: input.cashierId, cashierName: input.cashierName, soldAtIso, state: "PendingSync", total: input.cart.subtotal, discount: input.cart.discount, actualAmount: input.cart.actualAmount, lines: input.cart.lines, tenders: actual === 0 ? [] : [{ tenderGuid: this.deps.createId(), method: "cash", amount: createAud(actual), reference: null, reservationToken: null }], originalOrderGuid: input.cart.lines.find((line) => line.originalOrderGuid)?.originalOrderGuid ?? null };
-    await this.database.runInTransaction((tx) => tx.completeCashOrder({ order, auditEvents: [{ eventId: this.deps.createId(), eventType: actual < 0 ? "RETURN_REFUND_COMPLETE" : "SALE_COMPLETE", occurredAtIso: soldAtIso, orderGuid, correlationId: orderGuid, payload: { checkoutIntentId: input.checkoutIntentId, localSequence: sequence, cashDueCents: settlement.cashDue.cents, changeCents: settlement.change.cents } }], outbox: { messageId: this.deps.createId(), aggregateId: orderGuid, kind: "order-sync", payloadJson: JSON.stringify({ orderGuid }), nextAttemptAtIso: soldAtIso }, requiresDrawer: actual !== 0, printPolicy: "automatic" }));
+    await this.database.runInTransaction((tx) => tx.completeCashOrder({ order, auditEvents: [{ eventId: this.deps.createId(), eventType: actual < 0 ? "RETURN_REFUND_COMPLETE" : "SALE_COMPLETE", occurredAtIso: soldAtIso, orderGuid, correlationId: orderGuid, payload: { checkoutIntentId: input.checkoutIntentId, localSequence: sequence, cashDueCents: settlement.cashDue.cents, changeCents: settlement.change.cents, ...auditActorPayload(input) } }], outbox: { messageId: this.deps.createId(), aggregateId: orderGuid, kind: "order-sync", payloadJson: JSON.stringify({ orderGuid }), nextAttemptAtIso: soldAtIso }, requiresDrawer: actual !== 0, printPolicy: "automatic" }));
     return { completed: true, canClearCart: true, orderGuid, cashDueCents: settlement.cashDue.cents, changeCents: settlement.change.cents, postCommit: { requestDrawer: actual !== 0, drawerDisposition: actual !== 0 ? "queued" : "not-required", printPolicy: "automatic" } };
   }
 }

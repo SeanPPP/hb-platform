@@ -12,6 +12,8 @@ public sealed class OperationAuditQueryDto
 
     public string? DeviceCode { get; set; }
 
+    public string? DeviceSystem { get; set; }
+
     public string? OperationType { get; set; }
 
     public string? Outcome { get; set; }
@@ -58,6 +60,8 @@ public class OperationAuditListItemDto
     public string StoreCode { get; set; } = string.Empty;
 
     public string DeviceCode { get; set; } = string.Empty;
+
+    public string? DeviceSystem { get; set; }
 
     public string? AppVersion { get; set; }
 

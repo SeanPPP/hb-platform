@@ -128,9 +128,33 @@ function buildHbposApiConfiguration(): Readonly<{
   });
 }
 
+function buildLogCenterConfiguration(
+  buildProfile: string,
+): Readonly<{
+  enabled: boolean;
+  ingestUrl: string;
+  writeKey: string;
+  environment: string;
+}> {
+  return Object.freeze({
+    enabled:
+      process.env.EXPO_PUBLIC_HBPOS_LOG_CENTER_ENABLED?.trim().toLowerCase() ===
+      "true",
+    ingestUrl:
+      process.env.EXPO_PUBLIC_HBPOS_LOG_CENTER_INGEST_URL?.trim() ?? "",
+    // 这是受限、可撤销的仅写凭据；绝不把服务端 hash 或管理凭据放入安装包。
+    writeKey:
+      process.env.EXPO_PUBLIC_HBPOS_LOG_CENTER_WRITE_KEY?.trim() ?? "",
+    environment:
+      process.env.EXPO_PUBLIC_HBPOS_LOG_CENTER_ENVIRONMENT?.trim() ??
+      buildProfile,
+  });
+}
+
 export default ({ config }: ConfigContext): ExpoConfig => {
   const hbpos = buildHbposApiConfiguration();
   const ota = buildOtaUpdateConfiguration();
+  const logCenter = buildLogCenterConfiguration(ota.buildProfile);
   return ({
   ...config,
   name: "HB POS",
@@ -224,6 +248,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       deviceSystem: "iPadOS",
       buildProfile: ota.buildProfile,
       automaticOtaChecks: ota.automaticOtaChecks,
+      logCenter,
     },
     ...(ota.easProjectId
       ? { eas: { projectId: ota.easProjectId } }

@@ -186,6 +186,45 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task QueryAsync_filters_device_system_and_maps_unknown_to_legacy_rows()
+    {
+        var now = DateTime.UtcNow;
+        var windows = CreateAudit("windows", "BRI", now.AddMinutes(-1));
+        windows.DeviceSystem = "Windows";
+        var ipad = CreateAudit("ipad", "BRI", now.AddMinutes(-2));
+        ipad.DeviceSystem = "iPadOS";
+        var legacyNull = CreateAudit("legacy-null", "BRI", now.AddMinutes(-3));
+        var legacyEmpty = CreateAudit("legacy-empty", "BRI", now.AddMinutes(-4));
+        legacyEmpty.DeviceSystem = string.Empty;
+        await _db.Insertable(new[] { windows, ipad, legacyNull, legacyEmpty }).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var windowsResult = await service.QueryAsync(
+            new OperationAuditQueryDto { DeviceSystem = "windows" },
+            now);
+        var ipadResult = await service.QueryAsync(
+            new OperationAuditQueryDto { DeviceSystem = "iPadOS" },
+            now);
+        var unknownResult = await service.QueryAsync(
+            new OperationAuditQueryDto { DeviceSystem = "Unknown" },
+            now);
+        var unsupportedResult = await service.QueryAsync(
+            new OperationAuditQueryDto { DeviceSystem = "Android" },
+            now);
+
+        Assert.Equal(windows.EventId, Assert.Single(windowsResult.Items).EventId);
+        Assert.Equal("Windows", windowsResult.Items[0].DeviceSystem);
+        Assert.Equal(ipad.EventId, Assert.Single(ipadResult.Items).EventId);
+        Assert.Equal("iPadOS", ipadResult.Items[0].DeviceSystem);
+        Assert.Equal(
+            new[] { legacyNull.EventId, legacyEmpty.EventId }.Order(),
+            unknownResult.Items.Select(item => item.EventId).Order());
+        Assert.All(unknownResult.Items, item => Assert.Null(item.DeviceSystem));
+        Assert.Empty(unsupportedResult.Items);
+        Assert.Equal(0, unsupportedResult.Total);
+    }
+
     [Theory]
     [InlineData("storeCode", "asc", "value-a,value-b,value-c")]
     [InlineData("storeCode", "desc", "value-c,value-b,value-a")]
@@ -391,6 +430,10 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
     {
         var now = DateTime.UtcNow;
         var eventId = await InsertAuditAsync("detail", "BRI", now.AddMinutes(-1));
+        await _db.Updateable<PosOperationAudit>()
+            .SetColumns(item => item.DeviceSystem == "iPadOS")
+            .Where(item => item.EventId == eventId)
+            .ExecuteCommandAsync();
         await _db.Insertable(new PosOperationAuditItem
         {
             EventId = eventId,
@@ -407,6 +450,7 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
 
         Assert.Equal(OperationAuditDetailAccessStatus.Found, result.Status);
         Assert.NotNull(result.Data);
+        Assert.Equal("iPadOS", result.Data.DeviceSystem);
         var item = Assert.Single(result.Data.Items);
         Assert.Equal("P-DETAIL", item.ProductCode);
         Assert.Equal(-2m, item.ActualAmountDelta);
@@ -460,7 +504,8 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
     private static PosOperationAudit CreateAudit(
         string receiptNumber,
         string storeCode,
-        DateTime occurredAtUtc
+        DateTime occurredAtUtc,
+        string? deviceSystem = null
     ) => new()
     {
         EventId = Guid.NewGuid(),
@@ -473,6 +518,7 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
         CashierName = "Alice",
         StoreCode = storeCode,
         DeviceCode = "POS-1",
+        DeviceSystem = deviceSystem,
         ReceiptNumber = receiptNumber,
         CurrencyCode = "AUD",
         AmountDelta = 10m,

@@ -1,5 +1,7 @@
 import { isDeviceRevocationCode } from "../api/forbidden-response";
 import { HbposApiError, type HbposEnvelope, type HbposTransport, unwrapHbposEnvelope } from "../api/hbpos-api";
+import { auditActorSnapshotFromPayload } from "../contracts/audit-actor";
+import { freezeAuditScope, type AuditScope } from "../contracts/audit-scope";
 import { normalizeLineSyncProvenance } from "../contracts/line-sync-provenance";
 import type { AuditEventDraft, LocalOrder, OrderTender } from "../contracts/order";
 import {
@@ -23,11 +25,12 @@ type OperationAuditItemDto = components["schemas"]["OperationAuditItemDto"];
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const decimalPattern = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+const maximumAuditRequestBytes = 4 * 1024 * 1024;
 
 const safeAuditPropertyKeys = new Set([
   "source", "action", "status", "screen", "mode", "reason", "result",
   "paymentMethod", "cashDrawerMode", "itemCount", "requestingCashierId",
-  "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode",
+  "requestingCashierName", "requestingUserGuid", "authorizingCashierId", "authorizingUserGuid", "permissionCode", "authorizationMode",
 ]);
 
 const operationTypes = new Set([
@@ -101,6 +104,8 @@ function mapFailure(error: unknown): AdapterFailure {
               code: error.code ?? "HTTP_403",
             };
       }
+      // 限流不是业务拒绝：保留本地事件并交给分钟级 durable retry。
+      if (error.status === 429) return { kind: "retry", failure: "server" };
       if ((error.status ?? 0) >= 500) return { kind: "retry", failure: "server" };
       return { kind: "rejected", code: error.code ?? `HTTP_${error.status ?? "UNKNOWN"}` };
     }
@@ -507,52 +512,184 @@ export class HbposAuditBatchAdapter implements AuditBatchUploadPort {
   ) {}
 
   public async upload(events: readonly AuditEventDraft[]): Promise<AuditUploadResult> {
-    if (events.length === 0 || events.length > 100) return { kind: "rejected", code: "AUDIT_BATCH_SIZE_INVALID" };
+    if (events.length === 0 || events.length > 8) return { kind: "rejected", code: "AUDIT_BATCH_SIZE_INVALID" };
     const mapped: OperationAuditEventDto[] = [];
+    const mappedEventIds: string[] = [];
+    const rejected: { eventId: string; code: string }[] = [];
     for (const event of events) {
       const item = await this.mapEvent(event);
-      if ("kind" in item) return { kind: "rejected", code: item.code ?? "AUDIT_MAPPING_FAILED" };
-      mapped.push(item);
+      if ("kind" in item) {
+        // 一条遗留或损坏审计不能阻塞同一设备后续的可上传员工操作。
+        rejected.push({ eventId: event.eventId, code: item.code ?? "AUDIT_MAPPING_FAILED" });
+        continue;
+      }
+      // 后端 EventId 是 Guid，wire 与回执都会 canonical 为小写；本地主键仍另行保留原值。
+      mapped.push({ ...item, eventId: event.eventId.toLowerCase() });
+      mappedEventIds.push(event.eventId);
+    }
+    if (!mapped.length) {
+      return { kind: "acknowledged", uploadedEventIds: [], rejected };
+    }
+    const requestEvents: OperationAuditEventDto[] = [];
+    const requestEventIds: string[] = [];
+    for (let index = 0; index < mapped.length; index += 1) {
+      const candidate = [...requestEvents, mapped[index]!];
+      if (auditRequestSize(candidate) <= maximumAuditRequestBytes) {
+        requestEvents.push(mapped[index]!);
+        requestEventIds.push(mappedEventIds[index]!);
+        continue;
+      }
+      if (!requestEvents.length) {
+        // 单条记录本身超过网关上限，隔离它后让下一轮处理后续事件。
+        rejected.push({ eventId: mappedEventIds[index]!, code: "AUDIT_REQUEST_TOO_LARGE" });
+      }
+      // 保持 FIFO：不跨过未发送事件，避免新操作先于旧操作抵达服务端。
+      break;
+    }
+    if (!requestEvents.length) {
+      return { kind: "acknowledged", uploadedEventIds: [], rejected };
     }
     try {
-      const response = await this.transport.request<HbposEnvelope<OperationAuditBatchResultDto>>({ method: "POST", url: "/api/v1/operation-audits/batch", data: { events: mapped } satisfies OperationAuditBatchRequestDto });
+      // 员工审计端点直接返回 OperationAuditBatchResultDto；订单接口才使用 HbposEnvelope。
+      const response = await this.transport.request<OperationAuditBatchResultDto>({ method: "POST", url: "/api/v1/operation-audits/batch", data: { events: requestEvents } satisfies OperationAuditBatchRequestDto });
       if (response.status < 200 || response.status >= 300) throw new HbposApiError("Audit upload HTTP failure.", { kind: "http", status: response.status });
-      const body = unwrapHbposEnvelope(response.data);
-      const statuses = new Map((body.results ?? []).map((result) => [result.eventId, result]));
-      if (statuses.size !== events.length || events.some((event) => !statuses.has(event.eventId))) return { kind: "rejected", code: "AUDIT_RESPONSE_INVALID" };
-      for (const event of events) {
-        const status = statuses.get(event.eventId)?.status?.toLowerCase();
-        if (status === "rejected") return { kind: "rejected", code: statuses.get(event.eventId)?.errorCode ?? "AUDIT_REJECTED" };
-        if (status !== "accepted" && status !== "duplicate") return { kind: "rejected", code: "AUDIT_RESPONSE_INVALID" };
+      const body = response.data;
+      const statuses = new Map(
+        (body.results ?? []).flatMap((result) =>
+          typeof result.eventId === "string"
+            ? [[result.eventId.toLowerCase(), result] as const]
+            : [],
+        ),
+      );
+      const uploadedEventIds: string[] = [];
+      const retryEventIds: string[] = [];
+      for (const eventId of requestEventIds) {
+        const result = statuses.get(eventId.toLowerCase());
+        const status = result?.status?.toLowerCase();
+        if (!result || (status !== "accepted" && status !== "duplicate" && status !== "rejected")) {
+          retryEventIds.push(eventId);
+          continue;
+        }
+        if (status === "rejected") {
+          rejected.push({
+            eventId,
+            code: result?.errorCode ?? "AUDIT_REJECTED",
+          });
+          continue;
+        }
+        uploadedEventIds.push(eventId);
       }
-      return { kind: "uploaded" };
+      // 容量截断后的事件仍在本地 pending；只能确认实际发送并收到终态的前缀。
+      return rejected.length > 0 || retryEventIds.length > 0 || requestEventIds.length !== mappedEventIds.length
+        ? {
+            kind: "acknowledged",
+            uploadedEventIds,
+            rejected,
+            ...(retryEventIds.length ? { retryEventIds } : {}),
+          }
+        : { kind: "uploaded" };
     } catch (error) {
       return mapFailure(error);
     }
   }
 
   private async mapEvent(event: AuditEventDraft): Promise<OperationAuditEventDto | AdapterFailure> {
-    if (!validUuid(event.eventId) || !validUuid(event.correlationId) || !operationTypes.has(event.eventType)) return reject("AUDIT_EVENT_INVALID");
+    if (!validUuid(event.eventId) || !validUuid(event.correlationId)) return reject("AUDIT_EVENT_INVALID");
+    const auditScope = auditScopeFromEvent(event);
+    if (!auditScope) return reject("AUDIT_SCOPE_UNPROVEN");
     const outcome = auditOutcome(event.payload);
     if (outcome === null) return reject("AUDIT_OUTCOME_INVALID");
-    let identity = { storeCode: this.metadata.storeCode, deviceCode: this.metadata.deviceCode, cashierId: null as string | null, cashierName: null as string | null, order: null as LocalOrder | null };
+    const payloadActor = auditActorSnapshotFromPayload(event.payload);
+    let identity = {
+      // scope 在事实入库时冻结；设备重注册后绝不能回退当前 metadata 或订单重算。
+      storeCode: auditScope.storeCode,
+      deviceCode: auditScope.deviceCode,
+      // 非订单操作在发生时把 actor 写入 payload；上传时不得改用当前登录者。
+      cashierId: payloadActor?.cashierId ?? null,
+      cashierName: payloadActor?.cashierName ?? null,
+      userGuid: payloadActor?.userGuid ?? null,
+      order: null as LocalOrder | null,
+    };
     if (event.orderGuid !== null) {
       if (!validUuid(event.orderGuid)) return reject("AUDIT_ORDER_REFERENCE_INVALID");
       const order = await this.orders.getByGuid(event.orderGuid);
       if (!order || order.orderGuid !== event.orderGuid) return reject("AUDIT_ORDER_NOT_FOUND");
-      identity = { storeCode: order.storeCode, deviceCode: order.deviceCode, cashierId: order.cashierId, cashierName: order.cashierName, order };
+      // 新事件的完整 payload 快照优先；遗留事件才整套回退至订单身份，禁止逐字段混搭。
+      const actor = payloadActor ?? {
+        cashierId: order.cashierId,
+        cashierName: order.cashierName,
+        // LocalOrder 未持久化 userGuid，遗留订单绝不猜测或回填当前会话。
+        userGuid: null,
+      };
+      identity = {
+        storeCode: auditScope.storeCode,
+        deviceCode: auditScope.deviceCode,
+        cashierId: actor.cashierId,
+        cashierName: actor.cashierName,
+        userGuid: actor.userGuid,
+        order,
+      };
     }
+    const operationType = normalizedOperationType(event.eventType, identity.order);
+    if (isAdapterFailure(operationType)) return operationType;
     const cartAmounts = auditCartAmounts(event.payload);
     if ("kind" in cartAmounts) return cartAmounts;
     const items = identity.order ? auditItems(identity.order) : auditPayloadItems(event.payload);
     if (items && "kind" in items) return items;
     return {
       eventId: event.eventId, schemaVersion: 1, occurredAtUtc: event.occurredAtIso,
-      operationType: event.eventType, outcome, cashierId: identity.cashierId, cashierName: identity.cashierName,
-      isOfflineCached: true, isEmergencyOverride: false, storeCode: identity.storeCode, deviceCode: identity.deviceCode,
+      operationType, outcome, cashierId: identity.cashierId, userGuid: identity.userGuid, cashierName: identity.cashierName,
+      isOfflineCached: event.payload.isOfflineCached === true,
+      isEmergencyOverride: event.payload.isEmergencyOverride === true,
+      storeCode: identity.storeCode, deviceCode: identity.deviceCode,
       appVersion: this.metadata.appVersion, instanceId: this.metadata.instanceId, orderGuid: event.orderGuid,
       correlationId: event.correlationId, currencyCode: "AUD", properties: safeProperties(event.payload), items,
       ...cartAmounts,
     };
   }
+}
+
+function auditScopeFromEvent(event: AuditEventDraft): AuditScope | null {
+  if (!event.auditScope) return null;
+  try {
+    return freezeAuditScope(event.auditScope);
+  } catch {
+    return null;
+  }
+}
+
+function normalizedOperationType(
+  eventType: string,
+  order: LocalOrder | null,
+): string | AdapterFailure {
+  if (eventType === "PAYMENT_DRAFT_ABANDONED" || eventType === "DAILY_CLOSE_MIGRATED") {
+    // 这两类是本地迁移/恢复诊断，后端操作审计没有等价业务语义；隔离而不阻塞队头。
+    return reject("AUDIT_LOCAL_DIAGNOSTIC");
+  }
+  if (eventType === "MIXED_CASH_TENDER_APPENDED") return "PAYMENT_TENDER_ADD";
+  if (eventType === "MIXED_CASH_TENDER_REVERSED") return "PAYMENT_TENDER_REMOVE";
+  if (eventType === "PAYMENT_DRAFT_CANCELLED_CLOSED") return "PAYMENT_CANCEL";
+  if (eventType === "RETURN_ORDER_COMPLETED") return "RETURN_REFUND_COMPLETE";
+  if (eventType === "PAYMENT_MIXED_CASH_COMPLETE" || eventType === "PAYMENT_APPROVED_COMPLETE") {
+    if (!order) return reject("AUDIT_ORDER_REFERENCE_REQUIRED");
+    return isRefundOrder(order) ? "RETURN_REFUND_COMPLETE" : "SALE_COMPLETE";
+  }
+  return operationTypes.has(eventType) ? eventType : reject("AUDIT_EVENT_INVALID");
+}
+
+function isAdapterFailure(value: string | AdapterFailure): value is AdapterFailure {
+  return typeof value === "object" && value !== null && "kind" in value;
+}
+
+function isRefundOrder(order: LocalOrder): boolean {
+  if (order.total.cents < 0 || order.actualAmount.cents < 0) return true;
+  // 历史订单可能混入退货行；净额仍为正的混合单是销售完成，不能误记为整单退款。
+  const validLines = order.lines.filter(
+    (line) => line.kind === "sale" || line.kind === "return",
+  );
+  return validLines.length > 0 && validLines.every((line) => line.kind === "return");
+}
+
+function auditRequestSize(events: readonly OperationAuditEventDto[]): number {
+  return new TextEncoder().encode(JSON.stringify({ events })).byteLength;
 }

@@ -553,6 +553,7 @@ class LeaseBoundReturnIdentity implements ReturnTrustedIdentityPort {
       deviceCode: session.deviceCode,
       cashierId: session.cashierId,
       cashierName: session.cashierName,
+      userGuid: session.userGuid,
       sessionEpoch: String(session.epoch),
     });
   }
@@ -834,6 +835,7 @@ function activateAuthorization(
 ): void {
   authorization.activateRequestingCashier({
     cashierId: session.cashierId,
+    cashierName: session.cashierName,
     userGuid: session.userGuid,
     storeCode: session.storeCode,
     deviceCode: session.deviceCode,

@@ -11,7 +11,7 @@ class Database implements DatabasePort {
   public async runInTransaction<T>(operation: (tx: DatabaseTransactionPort) => Promise<T>): Promise<T> { if (this.fail) throw new Error("disk full"); return operation({ completeCashOrder: async (command) => { this.commands.push(command); } }); }
 }
 const cart = (amount: number, kind: "sale" | "return" = "sale"): CartSnapshot => ({ revision: 1, mode: kind === "return" ? "return" : "sale", subtotal: { currency: "AUD", cents: amount }, discount: { currency: "AUD", cents: 0 }, actualAmount: { currency: "AUD", cents: amount }, lines: [{ lineId: "L1", productCode: "P1", itemNumber: null, lookupCode: "1", displayName: "Tea", quantity: "1", unitPrice: { currency: "AUD", cents: Math.abs(amount) }, discount: { currency: "AUD", cents: 0 }, actualAmount: { currency: "AUD", cents: amount }, priceSource: "catalog", kind, returnSourceKey: kind === "return" ? "R1" : null, originalOrderGuid: kind === "return" ? "O1" : null, originalOrderDetailGuid: null }] });
-const input = (snapshot: CartSnapshot, tendered: number | null) => ({ checkoutIntentId: "intent-1", cart: snapshot, cashTenderedCents: tendered, storeCode: "S1", deviceCode: "D1", cashierId: "C1", cashierName: "Alice" });
+const input = (snapshot: CartSnapshot, tendered: number | null) => ({ checkoutIntentId: "intent-1", cart: snapshot, cashTenderedCents: tendered, storeCode: "S1", deviceCode: "D1", cashierId: "C1", cashierName: "Alice", userGuid: "user-guid-c1" });
 
 test("7.82/7.83 现金应付按 0.05 取整，实收足额才完成", async () => {
   const db = new Database(); const service = new CashCheckoutService(db, { nextLocalSequence: async () => 1 }, ids());

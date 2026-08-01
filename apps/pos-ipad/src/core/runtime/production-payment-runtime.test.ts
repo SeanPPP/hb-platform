@@ -50,6 +50,11 @@ const ALL_PAYMENT_PERMISSIONS = [
   "Permissions.PosTerminal.Payment.RemoveTender",
   "Permissions.PosTerminal.Payment.Confirm",
 ] as const;
+const TEST_AUDIT_ACTOR = Object.freeze({
+  cashierId: "cashier-1",
+  cashierName: "Cashier",
+  userGuid: null,
+});
 
 test("生产支付只公开 presenter/恢复布尔值，启动前和无可信收银员均 fail closed", async () => {
   let voucherBindCount = 0;
@@ -239,17 +244,20 @@ test("生产 reversal router 只把现金和礼券交给各自实现，银行卡
     actionId: "reverse-cash",
     orderGuid: "order-1",
     tenderGuid: "cash-1",
+    actor: TEST_AUDIT_ACTOR,
   });
   await router.reverseTender({
     actionId: "reverse-voucher",
     orderGuid: "order-1",
     tenderGuid: "voucher-1",
+    actor: TEST_AUDIT_ACTOR,
   });
   await assert.rejects(
     router.reverseTender({
       actionId: "reverse-card",
       orderGuid: "order-1",
       tenderGuid: "card-1",
+      actor: TEST_AUDIT_ACTOR,
     }),
     /TENDER_REVERSAL_UNAVAILABLE/,
   );
@@ -1230,6 +1238,7 @@ function voucherReversalRecord(
     attemptCount: 0,
     lastErrorCode: null,
     reversalTenderGuid: null,
+    actor: TEST_AUDIT_ACTOR,
     truth,
   };
 }

@@ -26,20 +26,20 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
 
 assertDeepEqual(
   DEFAULT_OPERATION_LOG_COLUMN_ORDER,
-  ['occurredAtUtc', 'storeCode', 'employee', 'operationType', 'products', 'amountDelta', 'deviceCode', 'outcome'],
-  '默认顺序应包含全部八个业务列且不包含操作列',
+  ['occurredAtUtc', 'storeCode', 'employee', 'operationType', 'products', 'amountDelta', 'deviceCode', 'deviceSystem', 'outcome'],
+  '默认顺序应包含全部九个业务列且不包含操作列',
 )
 assertDeepEqual(
   mergeOperationLogColumnOrder(
     ['products', 'invalid', 'products', 1, 'storeCode'],
     DEFAULT_OPERATION_LOG_COLUMN_ORDER,
   ),
-  ['products', 'storeCode', 'occurredAtUtc', 'employee', 'operationType', 'amountDelta', 'deviceCode', 'outcome'],
+  ['products', 'storeCode', 'occurredAtUtc', 'employee', 'operationType', 'amountDelta', 'deviceCode', 'deviceSystem', 'outcome'],
   '已保存列序应过滤非法项和重复项并补齐新增列',
 )
 assertDeepEqual(
   moveOperationLogColumnOrder(DEFAULT_OPERATION_LOG_COLUMN_ORDER, 'outcome', 'storeCode'),
-  ['occurredAtUtc', 'outcome', 'storeCode', 'employee', 'operationType', 'products', 'amountDelta', 'deviceCode'],
+  ['occurredAtUtc', 'outcome', 'storeCode', 'employee', 'operationType', 'products', 'amountDelta', 'deviceCode', 'deviceSystem'],
   '拖拽应将活动列移动到目标列位置',
 )
 assertDeepEqual(

@@ -5,6 +5,8 @@ import test from "node:test";
 import { createAud } from "../contracts";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
+import { SqliteOperationAuditRead } from "./sqlite-operation-audit-read";
+import { createSqliteRepositories } from "./sqlite-repositories";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
 import {
@@ -179,11 +181,15 @@ test("M16 金额列只接受 SQLite integer，拒绝 REAL 绕过整数分币", a
         `INSERT INTO voucher_tender_reversal_actions (
           action_id, order_guid, source_tender_guid, source_attempt_id,
           amount_cents, reason, state, attempt_count, last_error_code,
-          reversal_tender_guid, terminal_audit_event_id, submitted_at_iso,
+          reversal_tender_guid, audit_actor_json,
+          terminal_audit_event_id, submitted_at_iso,
           terminal_at_iso, created_at_iso, updated_at_iso
         ) VALUES (
           'fractional-action', ?, ?, ?, 500.5, 'SALE', 'Prepared', 0,
-          NULL, NULL, NULL, NULL, NULL, ?, ?
+          NULL,
+          NULL,
+          '{"requestingCashierId":"cashier-1","requestingCashierName":"Alice","requestingUserGuid":"user-guid-1"}',
+          NULL, NULL, NULL, ?, ?
         )`,
         [
           command.orderGuid,
@@ -194,6 +200,265 @@ test("M16 金额列只接受 SQLite integer，拒绝 REAL 绕过整数分币", a
         ],
       ),
       /CHECK constraint failed/,
+    );
+  });
+});
+
+test("M29 fresh 建立 voucher actor JSON 约束并拒绝不完整快照", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(connection, () => T0);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('voucher_tender_reversal_actions')
+         WHERE name = 'audit_actor_json' AND "notnull" = 0`,
+      ),
+      1,
+    );
+    const command = await seedApprovedVoucherPurchase(
+      connection,
+      "invalid-actor",
+      500,
+    );
+    await assert.rejects(
+      connection.run(
+        `INSERT INTO voucher_tender_reversal_actions (
+          action_id, order_guid, source_tender_guid, source_attempt_id,
+          amount_cents, reason, state, attempt_count, last_error_code,
+          reversal_tender_guid, audit_actor_json,
+          terminal_audit_event_id, submitted_at_iso,
+          terminal_at_iso, created_at_iso, updated_at_iso
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
+          NULL, NULL,
+          NULL, NULL, NULL, ?, ?
+        )`,
+        [
+          command.actionId,
+          command.orderGuid,
+          command.sourceTenderGuid,
+          command.expectedSourceAttemptId,
+          command.expectedAmountCents,
+          command.reason,
+          T0,
+          T0,
+        ],
+      ),
+      /VOUCHER_TENDER_REVERSAL_ACTOR_REQUIRED/,
+    );
+    await assert.rejects(
+      connection.run(
+        `INSERT INTO voucher_tender_reversal_actions (
+          action_id, order_guid, source_tender_guid, source_attempt_id,
+          amount_cents, reason, state, attempt_count, last_error_code,
+          reversal_tender_guid, audit_actor_json,
+          terminal_audit_event_id, submitted_at_iso,
+          terminal_at_iso, created_at_iso, updated_at_iso
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
+          NULL,
+          '{"requestingCashierName":"Alice","requestingUserGuid":"user-guid-1"}',
+          NULL, NULL, NULL, ?, ?
+        )`,
+        [
+          command.actionId,
+          command.orderGuid,
+          command.sourceTenderGuid,
+          command.expectedSourceAttemptId,
+          command.expectedAmountCents,
+          command.reason,
+          T0,
+          T0,
+        ],
+      ),
+      /CHECK constraint failed/,
+    );
+  });
+});
+
+test("已记录旧 M26 时 M28 补齐支付 actor 列，撤券恢复可读", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 25),
+    );
+    // 历史 M26 只包含日志投递结构，已被写入版本表后不能被重写。
+    await applyMigrations(connection, () => T0, [
+      {
+        version: 26,
+        name: "M26_log_delivery_outboxes",
+        sql: `
+          ALTER TABLE audit_events
+            ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (
+              delivery_state IN ('pending', 'uploaded', 'rejected')
+            );
+          ALTER TABLE audit_events
+            ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+          ALTER TABLE audit_events
+            ADD COLUMN next_attempt_at_iso TEXT NULL;
+          ALTER TABLE audit_events
+            ADD COLUMN last_error_code TEXT NULL;
+          UPDATE audit_events
+          SET next_attempt_at_iso = occurred_at_iso
+          WHERE next_attempt_at_iso IS NULL;
+          CREATE INDEX ix_audit_events_delivery_ready
+            ON audit_events (delivery_state, next_attempt_at_iso, occurred_at_iso);
+          CREATE TABLE application_log_outbox (
+            event_id TEXT PRIMARY KEY,
+            occurred_at_iso TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (
+              delivery_state IN ('pending', 'rejected')
+            ),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            next_attempt_at_iso TEXT NOT NULL,
+            last_error_code TEXT NULL,
+            created_at_iso TEXT NOT NULL
+          );
+          CREATE INDEX ix_application_log_outbox_ready
+            ON application_log_outbox (delivery_state, next_attempt_at_iso, occurred_at_iso);
+        `,
+      },
+    ]);
+
+    await applyMigrations(connection, () => T1);
+    assert.equal(
+      await createStore(connection).findBlocking({
+        storeCode: "STORE-1",
+        deviceCode: "DEVICE-1",
+      }),
+      null,
+    );
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('payment_action_bindings')
+         WHERE name = 'audit_actor_json'`,
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('voucher_tender_reversal_actions')
+         WHERE name = 'audit_actor_json'`,
+      ),
+      1,
+    );
+  });
+});
+
+test("已应用 M28 且无 required trigger 时，M29 拒绝新 NULL actor 并保留 legacy 行可读", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 27),
+    );
+    // 已记录的 M28 只含 actor 列与 immutable trigger，不能靠重写 M28 补 required trigger。
+    await applyMigrations(connection, () => T0, [
+      {
+        version: 28,
+        name: "M28_payment_actor_snapshots",
+        sql: `
+          ALTER TABLE payment_action_bindings
+            ADD COLUMN audit_actor_json TEXT NULL;
+          ALTER TABLE voucher_tender_reversal_actions
+            ADD COLUMN audit_actor_json TEXT NULL;
+          CREATE TRIGGER trg_voucher_tender_reversal_actor_immutable
+          BEFORE UPDATE OF audit_actor_json
+          ON voucher_tender_reversal_actions
+          FOR EACH ROW
+          WHEN NEW.audit_actor_json IS NOT OLD.audit_actor_json
+          BEGIN
+            SELECT RAISE(
+              ABORT,
+              'VOUCHER_TENDER_REVERSAL_ACTOR_IMMUTABLE'
+            );
+          END;
+        `,
+      },
+    ]);
+    const legacy = await seedApprovedVoucherPurchase(
+      connection,
+      "m29-legacy",
+      500,
+    );
+    await connection.run(
+      `INSERT INTO voucher_tender_reversal_actions (
+        action_id, order_guid, source_tender_guid, source_attempt_id,
+        amount_cents, reason, state, attempt_count, last_error_code,
+        reversal_tender_guid, terminal_audit_event_id, submitted_at_iso,
+        terminal_at_iso, created_at_iso, updated_at_iso
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
+        NULL, NULL, NULL, NULL, ?, ?
+      )`,
+      [
+        legacy.actionId,
+        legacy.orderGuid,
+        legacy.sourceTenderGuid,
+        legacy.expectedSourceAttemptId,
+        legacy.expectedAmountCents,
+        legacy.reason,
+        T0,
+        T0,
+      ],
+    );
+
+    await applyMigrations(connection, () => T1);
+    const restored = await createStore(connection).findBlocking({
+      storeCode: "STORE-1",
+      deviceCode: "DEVICE-1",
+    });
+    assert.equal(restored?.actionId, legacy.actionId);
+
+    const fresh = await seedApprovedVoucherPurchase(
+      connection,
+      "m29-new",
+      500,
+    );
+    await assert.rejects(
+      connection.run(
+        `INSERT INTO voucher_tender_reversal_actions (
+          action_id, order_guid, source_tender_guid, source_attempt_id,
+          amount_cents, reason, state, attempt_count, last_error_code,
+          reversal_tender_guid, audit_actor_json,
+          terminal_audit_event_id, submitted_at_iso,
+          terminal_at_iso, created_at_iso, updated_at_iso
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
+          NULL, NULL,
+          NULL, NULL, NULL, ?, ?
+        )`,
+        [
+          fresh.actionId,
+          fresh.orderGuid,
+          fresh.sourceTenderGuid,
+          fresh.expectedSourceAttemptId,
+          fresh.expectedAmountCents,
+          fresh.reason,
+          T1,
+          T1,
+        ],
+      ),
+      /VOUCHER_TENDER_REVERSAL_ACTOR_REQUIRED/,
+    );
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
     );
   });
 });
@@ -225,6 +490,7 @@ test("重启后按门店设备恢复同一未决撤券动作，公开恢复查�
     assert.equal(recovered?.sourceTenderGuid, command.sourceTenderGuid);
     assert.equal(recovered?.state, "Unknown");
     assert.equal(recovered?.attemptCount, 1);
+    assert.deepEqual(recovered?.actor, paymentActor());
     const encoded = JSON.stringify(recovered);
     assert.equal(encoded.includes("VOUCHER-"), false);
     assert.equal(encoded.includes("reservation-"), false);
@@ -236,6 +502,157 @@ test("重启后按门店设备恢复同一未决撤券动作，公开恢复查�
       }),
       null,
     );
+  });
+});
+
+test("prepare 只冻结 actor、不产生可上传或本地可见审计，重启仍使用原 actor", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(connection, () => T0);
+    const command = await seedApprovedVoucherPurchase(
+      connection,
+      "actor-recovery",
+      500,
+    );
+    const prepared = await createStore(connection).prepareOrLoad(command);
+    assert.deepEqual(prepared.actor, paymentActor());
+
+    const persisted = await connection.getFirst<{
+      audit_actor_json: unknown;
+    }>(
+      `SELECT audit_actor_json
+       FROM voucher_tender_reversal_actions
+       WHERE action_id = ?`,
+      [command.actionId],
+    );
+    assert.deepEqual(JSON.parse(String(persisted?.audit_actor_json)), {
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-guid-1",
+    });
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM audit_events WHERE correlation_id = ?",
+        [command.actionId],
+      ),
+      0,
+    );
+
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => T1,
+      createLeaseId: () => "voucher-audit-lease-unused",
+      encryptor,
+    });
+    assert.deepEqual(await repositories.audit.listPending(100), []);
+    assert.deepEqual(await repositories.auditDelivery.listReady(100), []);
+    const localRead = new SqliteOperationAuditRead(connection, {
+      storeCode: "STORE-1",
+      deviceCode: "DEVICE-1",
+    });
+    assert.deepEqual(
+      await localRead.list({
+        source: "local",
+        storeCode: "STORE-1",
+        deviceCode: "DEVICE-1",
+        keyword: null,
+        uploadState: null,
+        limit: 100,
+      }),
+      [],
+    );
+
+    const recovered = await createStore(connection).prepareOrLoad({
+      ...command,
+      actor: {
+        cashierId: "cashier-other",
+        cashierName: "Other Employee",
+        userGuid: "user-guid-other",
+      },
+    });
+    assert.deepEqual(recovered.actor, paymentActor());
+    await assert.rejects(
+      connection.run(
+        `UPDATE voucher_tender_reversal_actions
+         SET audit_actor_json = ?
+         WHERE action_id = ?`,
+        [
+          JSON.stringify({
+            requestingCashierId: "cashier-other",
+            requestingCashierName: "Other Employee",
+            requestingUserGuid: "user-guid-other",
+          }),
+          command.actionId,
+        ],
+      ),
+      /VOUCHER_TENDER_REVERSAL_ACTOR_IMMUTABLE/,
+    );
+  });
+});
+
+test("legacy 未决 action 无 actor 列时整体回退原订单员工，终态 audit 不拼接当前会话", async () => {
+  await withDatabase(async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 25),
+    );
+    const command = await seedApprovedVoucherPurchase(
+      connection,
+      "legacy-actor",
+      600,
+    );
+    await connection.run(
+      `INSERT INTO voucher_tender_reversal_actions (
+        action_id, order_guid, source_tender_guid, source_attempt_id,
+        amount_cents, reason, state, attempt_count, last_error_code,
+        reversal_tender_guid, terminal_audit_event_id, submitted_at_iso,
+        terminal_at_iso, created_at_iso, updated_at_iso
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, 'Prepared', 0, NULL,
+        NULL, NULL, NULL, NULL, ?, ?
+      )`,
+      [
+        command.actionId,
+        command.orderGuid,
+        command.sourceTenderGuid,
+        command.expectedSourceAttemptId,
+        command.expectedAmountCents,
+        command.reason,
+        T0,
+        T0,
+      ],
+    );
+    await applyMigrations(connection, () => T1);
+    assert.equal(
+      await schemaVersion(connection),
+      POS_DATABASE_MIGRATIONS.at(-1)?.version,
+    );
+
+    const store = createStore(connection);
+    const legacy = await store.prepareOrLoad({
+      ...command,
+      actor: {
+        cashierId: "current-cashier",
+        cashierName: "Current Employee",
+        userGuid: "current-user-guid",
+      },
+    });
+    assert.deepEqual(legacy.actor, {
+      cashierId: "cashier-1",
+      cashierName: "Cashier",
+      userGuid: null,
+    });
+    await store.markBlocked(legacy, "VOUCHER_RELEASE_REJECTED");
+    const audit = await connection.getFirst<{ payload_json: unknown }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE correlation_id = ?`,
+      [command.actionId],
+    );
+    const payload = JSON.parse(String(audit?.payload_json));
+    assert.equal(payload.requestingCashierId, "cashier-1");
+    assert.equal(payload.requestingCashierName, "Cashier");
+    assert.equal(payload.requestingUserGuid, null);
   });
 });
 
@@ -364,6 +781,9 @@ test("prepare/submit/unknown/retry/released 原子追加精确负券 tender，�
       sourceTenderGuid: command.sourceTenderGuid,
       sourceAttemptId: command.expectedSourceAttemptId,
       reversalTenderGuid: "voucher-reversal-1",
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-guid-1",
     });
 
     const replay = await store.commitReleased(retry, {
@@ -519,8 +939,8 @@ test("所有重放必须保持 action/order/tender/attempt/reason/amount 一致�
       connection.run(
         `INSERT INTO payment_action_bindings (
           order_guid, action_id, request_signature,
-          attempt_id, idempotency_key, created_at_iso
-        ) VALUES (?, 'blocked-binding', '[]', ?, ?, ?)`,
+          attempt_id, idempotency_key, created_at_iso, audit_actor_json
+        ) VALUES (?, 'blocked-binding', '[]', ?, ?, ?, ?)`,
         [
           command.orderGuid,
           command.expectedSourceAttemptId,
@@ -529,6 +949,11 @@ test("所有重放必须保持 action/order/tender/attempt/reason/amount 一致�
             "voucher-idempotency-",
           ),
           T1,
+          JSON.stringify({
+            requestingCashierId: "cashier-1",
+            requestingCashierName: "Alice",
+            requestingUserGuid: "user-guid-1",
+          }),
         ],
       ),
       /VOUCHER_TENDER_REVERSAL_ORDER_UNRESOLVED/,
@@ -745,11 +1170,20 @@ async function seedApprovedVoucherPurchase(
     orderGuid,
     sourceTenderGuid,
     reason: "SALE",
+    actor: paymentActor(),
     expectedSourceAttemptId: sourceAttemptId,
     expectedAmountCents: amountCents,
   };
   await saveApprovedProtectedState(connection, command);
   return command;
+}
+
+function paymentActor() {
+  return {
+    cashierId: "cashier-1",
+    cashierName: "Alice",
+    userGuid: "user-guid-1",
+  } as const;
 }
 
 async function saveApprovedProtectedState(

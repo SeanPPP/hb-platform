@@ -75,6 +75,18 @@ test("商品搜索和扫码加入分别请求 Sales.View 与 Sales.AddItem，加
   assert.equal(harness.audits[0]?.eventType, "CART_ITEM_ADD");
   assert.equal(harness.audits[0]?.payload.outcome, "Succeeded");
   assert.equal(harness.audits[0]?.payload.permissionCode, "Permissions.PosTerminal.Sales.AddItem");
+  assert.deepEqual(
+    {
+      requestingCashierId: harness.audits[0]?.payload.requestingCashierId,
+      requestingCashierName: harness.audits[0]?.payload.requestingCashierName,
+      requestingUserGuid: harness.audits[0]?.payload.requestingUserGuid,
+    },
+    {
+      requestingCashierId: "CASHIER-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "USER-1",
+    },
+  );
   assert.deepEqual(harness.audits[0]?.payload.items, [
     {
       productCode: "SKU-TEA",
@@ -508,6 +520,7 @@ function connected(
       deviceCode: "IPAD-1",
       cashierId: "CASHIER-1",
       cashierName: "Alice",
+      userGuid: "USER-1",
     },
     sessionGuard: { assertActive() {} },
     newTransactionGate: {

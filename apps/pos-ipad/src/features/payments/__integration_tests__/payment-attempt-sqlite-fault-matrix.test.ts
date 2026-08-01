@@ -5,11 +5,22 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { PaymentAttempt, PaymentProvider, PaymentProviderReferences, PaymentProviderResult } from "@/core/contracts";
+import {
+  auditActorPayload,
+  type AuditActorSnapshot,
+  type PaymentAttempt,
+  type PaymentProvider,
+  type PaymentProviderReferences,
+  type PaymentProviderResult,
+} from "@/core/contracts";
 import { POS_DATABASE_MIGRATIONS } from "@/core/db/migrations";
+import { SqliteApprovedPaymentOrderCommitter } from "@/core/db/pos-database";
+import { SqliteMixedPaymentOrderTruthStore } from "@/core/db/sqlite-mixed-payment-order-truth-store";
 import { SqlitePaymentActionBindingStore } from "@/core/db/sqlite-payment-action-binding-store";
 import { createSqliteRepositories } from "@/core/db/sqlite-repositories";
 import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@/core/db/types";
+import { ApprovedPaymentOrderCompletionService } from "@/features/payments/approved-payment-order-completion";
+import { MixedPaymentCoordinator } from "@/features/payments/mixed";
 import {
   PaymentAttemptBlockedError,
   PaymentAttemptOfflineError,
@@ -34,6 +45,17 @@ test("fault matrix: known offline binds the action but never creates an attempt 
 
     assert.equal(await scalar(connection, "SELECT COUNT(*) AS count FROM payment_attempts"), 0);
     assert.equal(await scalar(connection, "SELECT COUNT(*) AS count FROM payment_action_bindings"), 1);
+    const binding = await connection.getFirst<{ audit_actor_json: unknown }>(
+      `SELECT audit_actor_json
+       FROM payment_action_bindings
+       WHERE order_guid = 'order-payment-matrix'
+         AND action_id = 'payment-action-1'`,
+    );
+    assert.deepEqual(JSON.parse(String(binding?.audit_actor_json)), {
+      requestingCashierId: "cashier-alice",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-alice",
+    });
     assert.equal(harness.square.submitCalls, 0);
   });
 });
@@ -124,15 +146,95 @@ test("fault matrix: Approved local-completion crash keeps its OrderGuid blocked 
   });
 });
 
+test("真实 SQLite：Alice 批准后崩溃，Bob 冷恢复完成订单仍写入 Alice 的员工审计", async () => {
+  await withSqlite(async (connection, restartConnection) => {
+    const first = await createHarness(connection, true);
+    first.square.submitImpl = async () =>
+      approved({ paymentId: "payment-alice-approved" });
+    const approvedAttempt = await first.service.startAttempt(input());
+    assert.equal(approvedAttempt.attempt.state, "Approved");
+
+    // 模拟进程重启与员工切换；当前会话是 Bob，但 action binding 已由 Alice 冻结。
+    const reopened = await restartConnection();
+    const restarted = await createHarness(reopened, true);
+    const bob: AuditActorSnapshot = {
+      cashierId: "cashier-bob",
+      cashierName: "Bob",
+      userGuid: "user-bob",
+    };
+    const completion = new ApprovedPaymentOrderCompletionService({
+      planner: {
+        async plan(execution, actor) {
+          return {
+            tenderGuid: "tender-alice-recovered",
+            completionAuditEvents: [
+              {
+                eventId: "audit-alice-recovered",
+                eventType: "PAYMENT_APPROVED_COMPLETE",
+                occurredAtIso: T0,
+                orderGuid: execution.attempt.orderGuid,
+                correlationId: execution.attempt.attemptId,
+                payload: {
+                  attemptId: execution.attempt.attemptId,
+                  ...auditActorPayload(actor),
+                },
+              },
+            ],
+            outbox: {
+              messageId: "outbox-alice-recovered",
+              aggregateId: execution.attempt.orderGuid,
+              kind: "order-sync",
+              payloadJson: JSON.stringify({
+                orderGuid: execution.attempt.orderGuid,
+              }),
+              nextAttemptAtIso: T0,
+            },
+            fulfilment: { print: null, drawer: null },
+          };
+        },
+      },
+      committer: new SqliteApprovedPaymentOrderCommitter(
+        reopened,
+        testEncryptor,
+        () => T0,
+      ),
+    });
+    const coordinator = new MixedPaymentCoordinator({
+      actor: bob,
+      orderTruth: new SqliteMixedPaymentOrderTruthStore(reopened),
+      paymentAttempts: restarted.service,
+      approvedCompletion: completion,
+    });
+
+    const recovered = await coordinator.recoverOnlineAttempt({
+      orderGuid: approvedAttempt.attempt.orderGuid,
+      attemptId: approvedAttempt.attempt.attemptId,
+    });
+    const audit = await reopened.getFirst<{ payload_json: unknown }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE event_id = 'audit-alice-recovered'`,
+    );
+
+    assert.equal(recovered.status, "completed");
+    assert.deepEqual(JSON.parse(String(audit?.payload_json)), {
+      attemptId: approvedAttempt.attempt.attemptId,
+      requestingCashierId: "cashier-alice",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-alice",
+    });
+    assert.equal(String(audit?.payload_json).includes("cashier-bob"), false);
+    assert.equal(restarted.square.submitCalls, 0);
+    assert.equal(restarted.square.recoverCalls, 0);
+  });
+});
+
 async function createHarness(connection: NodeSqliteConnection, online: boolean) {
   await insertDraftOrder(connection, "order-payment-matrix");
   const repositories = createSqliteRepositories(connection, {
     nowIso: () => T0,
     createLeaseId: () => "lease-payment-matrix",
-    encryptor: {
-      async encrypt(value) { return new TextEncoder().encode(value); },
-      async decrypt(value) { return new TextDecoder().decode(value); },
-    },
+    encryptor: testEncryptor,
   });
   const square = new FakeProvider("square");
   const linkly = new FakeProvider("linkly-cloud");
@@ -165,6 +267,11 @@ function input() {
     provider: "square" as const,
     operation: "purchase" as const,
     amount: { currency: "AUD" as const, cents: 500 },
+    actor: {
+      cashierId: "cashier-alice",
+      cashierName: "Alice",
+      userGuid: "user-alice",
+    },
   };
 }
 
@@ -201,6 +308,15 @@ class FakeProvider {
   public async refund(): Promise<PaymentProviderResult> { return approved(); }
 }
 
+const testEncryptor = {
+  async encrypt(value: string) {
+    return new TextEncoder().encode(value);
+  },
+  async decrypt(value: Uint8Array) {
+    return new TextDecoder().decode(value);
+  },
+};
+
 class NodeSqliteConnection implements SqliteConnectionPort {
   private readonly database: DatabaseSync;
   public constructor(path: string) { this.database = new DatabaseSync(path); this.database.exec("PRAGMA foreign_keys = ON"); }
@@ -224,12 +340,22 @@ class NodeSqliteConnection implements SqliteConnectionPort {
   public async close(): Promise<void> { this.database.close(); }
 }
 
-async function withSqlite(operation: (connection: NodeSqliteConnection) => Promise<void>): Promise<void> {
+async function withSqlite(
+  operation: (
+    connection: NodeSqliteConnection,
+    restartConnection: () => Promise<NodeSqliteConnection>,
+  ) => Promise<void>,
+): Promise<void> {
   const folder = mkdtempSync(join(tmpdir(), "hb-pos-ipad-payment-matrix-"));
-  const connection = new NodeSqliteConnection(join(folder, "pos.db"));
+  const databasePath = join(folder, "pos.db");
+  let connection = new NodeSqliteConnection(databasePath);
   try {
     await connection.exec(POS_DATABASE_MIGRATIONS.map((migration) => migration.sql).join("\n"));
-    await operation(connection);
+    await operation(connection, async () => {
+      await connection.close();
+      connection = new NodeSqliteConnection(databasePath);
+      return connection;
+    });
   } finally {
     await connection.close();
     rmSync(folder, { recursive: true, force: true });

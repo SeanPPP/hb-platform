@@ -358,6 +358,7 @@ export type ProductionPosRuntimeServices = Readonly<{
     onApplicationStarted: SyncLifecycleController["onApplicationStarted"];
     onForeground: SyncLifecycleController["onForeground"];
     onNetworkChanged: SyncLifecycleController["onNetworkChanged"];
+    shutdown: SyncLifecycleController["shutdown"];
   }>;
   payments: PosPaymentRuntimeService;
   operationAuthorization: PosOperationAuthorizationRuntimeService;
@@ -498,7 +499,12 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
 export function createProductionPosRuntimeServices(
   input: ProductionPosRuntimeCompositionDependencies,
 ): ProductionPosRuntimeComposition {
-  const repositories = input.database.repositories(input.encryptor, input.createId);
+  // 员工审计 scope 仅在组合根交给持久层；feature 继续只写业务事实，不能伪造上传身份。
+  const repositories = input.database.repositories(
+    input.encryptor,
+    input.createId,
+    input.auditMetadata,
+  );
   const currentCashier = new CurrentCashierSession(
     input.systemUptimeMilliseconds,
     () => {
@@ -652,6 +658,27 @@ export function createProductionPosRuntimeServices(
         asOfIso: input.clock.nowIso(),
       });
       customerDisplayAdvertisementPlayback?.start(summary.storeCode);
+      try {
+        await repositories.audit.append([{
+          eventId: createOperationAuditId(),
+          eventType: "CASHIER_LOGIN",
+          occurredAtIso: input.clock.nowIso(),
+          orderGuid: null,
+          correlationId: createOperationAuditId(),
+          payload: {
+            outcome: "Succeeded",
+            source: "ipad-pos",
+            action: "cashier-login",
+            requestingCashierId: summary.cashierId,
+            requestingCashierName: summary.cashierName,
+            requestingUserGuid: summary.userGuid,
+            isOfflineCached: summary.source === "offline-cache",
+            isEmergencyOverride: summary.source === "emergency-override",
+          },
+        }]);
+      } catch {
+        // 已完成的可信登录不能因旁路审计故障被回滚或重新暴露旧会话。
+      }
       return summary;
     },
   };
@@ -980,6 +1007,7 @@ export function createProductionPosRuntimeServices(
   const coordinator = new PosSyncCoordinator({
     outbox: repositories.outbox,
     auditRepository: repositories.audit,
+    auditDelivery: repositories.auditDelivery,
     orderSync: new HbposOrderSyncAdapter(
       input.transport,
       repositories.orders,
@@ -1026,6 +1054,17 @@ export function createProductionPosRuntimeServices(
         ),
       assertActive: () => {
         trustedSalesSession(cashierLease, input.auditMetadata);
+      },
+      actor: () => {
+        const session = trustedSalesSession(
+          cashierLease,
+          input.auditMetadata,
+        );
+        return Object.freeze({
+          cashierId: session.cashierId,
+          cashierName: session.cashierName,
+          userGuid: session.userGuid,
+        });
       },
     });
   };
@@ -1418,6 +1457,7 @@ export function createProductionPosRuntimeServices(
       onApplicationStarted: () => lifecycle.onApplicationStarted(),
       onForeground: () => lifecycle.onForeground(),
       onNetworkChanged: (isOnline) => lifecycle.onNetworkChanged(isOnline),
+      shutdown: () => lifecycle.shutdown(),
     },
     payments,
     operationAuthorization: operationAuthorization
@@ -1510,9 +1550,11 @@ export function createProductionPosRuntimeServices(
             input.businessTimeZone,
           ),
           createId: input.createId,
+          audit: repositories.audit,
           identity: {
             cashierId: session.cashierId,
             cashierName: session.cashierName,
+            userGuid: session.userGuid,
             deviceCode: session.deviceCode,
             permissions: session.permissionCodes,
             storeCode: session.storeCode,
@@ -1742,6 +1784,11 @@ function createAuthorizedFulfilmentAction(input: Readonly<{
   createAuthorization(): Readonly<{
     authorization: SalesOperationAuthorizationPort;
     assertActive(): void;
+    actor(): Readonly<{
+      cashierId: string;
+      cashierName: string | null;
+      userGuid: string | null;
+    }>;
   }>;
   execute(
     authorization: FulfilmentAuthorizationContext,
@@ -1770,12 +1817,18 @@ function createAuthorizedFulfilmentAction(input: Readonly<{
             },
             async (context) => {
               authorization.assertActive();
+              const actor = authorization.actor();
+              if (actor.cashierId !== context.requestingCashierId) {
+                throw new Error("FULFILMENT_REQUESTING_CASHIER_MISMATCH");
+              }
               const result = await input.execute(
                 {
                   actionId,
                   permissionCode: context.permissionCode,
                   authorizationMode: context.authorizationMode,
                   requestingCashierId: context.requestingCashierId,
+                  requestingCashierName: actor.cashierName,
+                  requestingUserGuid: actor.userGuid,
                   authorizingCashierId: context.authorizingCashierId,
                 },
                 authorization.assertActive,
@@ -2480,6 +2533,7 @@ async function signInCashier(input: Readonly<{
     const session = input.currentCashier.require();
     input.operationAuthorization?.activateRequestingCashier({
       cashierId: session.cashierId,
+      cashierName: session.cashierName,
       userGuid: session.userGuid,
       storeCode: session.storeCode,
       deviceCode: session.deviceCode,
@@ -2496,6 +2550,17 @@ async function signInCashier(input: Readonly<{
     }
     throw error;
   }
+}
+
+/**
+ * 登录审计是旁路事实，不得消耗订单/支付/目录测试共用的业务 ID 序列。
+ * 它只作为审计幂等键使用，不承载安全凭据或金额身份。
+ */
+function createOperationAuditId(): string {
+  return "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(
+    /[x]/gu,
+    () => Math.floor(Math.random() * 16).toString(16),
+  );
 }
 
 function requiredCashierSessionText(value: unknown, label: string): string {

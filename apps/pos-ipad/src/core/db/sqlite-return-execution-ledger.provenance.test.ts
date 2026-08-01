@@ -90,6 +90,11 @@ test("退货账本绑定同一交易行同步来源，数据库拒绝写后篡�
 
     const replayed = await ledger.load(draft.actionId);
     assert.ok(replayed);
+    assert.equal(
+      replayed.identity.userGuid,
+      "cashier-user",
+      "恢复必须使用首次持久化的 actor userGuid，而不是读取当前登录会话",
+    );
     assert.deepEqual(
       replayed.lines[0]?.syncProvenance,
       draft.lines[0]?.syncProvenance,
@@ -114,6 +119,7 @@ function noReceiptDraft(): PrepareDurableReturnAction {
       deviceCode: "IPAD-1",
       cashierId: "CASHIER-1",
       cashierName: "Cashier",
+      userGuid: "cashier-user",
       sessionEpoch: "epoch-1",
     },
     plan: {

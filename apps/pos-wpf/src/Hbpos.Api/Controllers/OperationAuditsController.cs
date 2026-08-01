@@ -82,6 +82,7 @@ public sealed class OperationAuditsController(IOperationAuditIngestService inges
 
         var storeCode = User.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
         var deviceCode = User.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
+        var deviceSystem = User.FindFirstValue(DeviceAuthConstants.DeviceSystemClaim);
         if (string.IsNullOrWhiteSpace(storeCode) || string.IsNullOrWhiteSpace(deviceCode))
         {
             return Unauthorized(new { code = "DEVICE_AUTH_REQUIRED", message = "Device scope claims are required." });
@@ -123,7 +124,8 @@ public sealed class OperationAuditsController(IOperationAuditIngestService inges
             request,
             storeCode,
             deviceCode,
-            cancellationToken);
+            cancellationToken,
+            deviceSystem);
         return Ok(result);
     }
 

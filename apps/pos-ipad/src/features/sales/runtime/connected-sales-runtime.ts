@@ -88,6 +88,7 @@ export type ConnectedSalesIdentity = Readonly<{
   deviceCode: string;
   cashierId: string;
   cashierName: string;
+  userGuid: string | null;
 }>;
 
 export type ConnectedSalesRuntimeDependencies = Readonly<{
@@ -1281,6 +1282,9 @@ function assertIdentity(identity: ConnectedSalesIdentity): void {
   requiredText(identity.deviceCode, "Device code");
   requiredText(identity.cashierId, "Cashier id");
   requiredText(identity.cashierName, "Cashier name");
+  if (identity.userGuid !== null) {
+    requiredText(identity.userGuid, "Cashier user guid");
+  }
 }
 
 function requiredText(value: string, label: string): string {

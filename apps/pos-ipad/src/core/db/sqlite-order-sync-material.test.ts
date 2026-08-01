@@ -28,6 +28,11 @@ import type {
 } from "./types";
 
 const NOW = "2026-07-28T00:00:00.000Z";
+const VOUCHER_REVERSAL_ACTOR = Object.freeze({
+  cashierId: "cashier-1",
+  cashierName: "Cashier One",
+  userGuid: "user-guid-1",
+});
 const EXPIRES = "2026-07-29T00:00:00.000Z";
 const DEFAULT_LINE_SYNC_PROVENANCE = Object.freeze({
   referenceCode: null,
@@ -522,6 +527,7 @@ test("M16 voucher reversal：普通读取保留完整账本，同步只在严格
       orderGuid: fixture.order.orderGuid,
       sourceTenderGuid: fixture.order.tenders[0]?.tenderGuid ?? "",
       reason: "SALE",
+      actor: VOUCHER_REVERSAL_ACTOR,
     });
     const submitted = await store.markSubmitted(prepared);
     await fixture.tokens.save({
@@ -595,6 +601,7 @@ test("M16 voucher reversal：Prepared/Unknown/Blocked 均以同一稳定码阻�
           orderGuid: fixture.order.orderGuid,
           sourceTenderGuid: fixture.order.tenders[0]?.tenderGuid ?? "",
           reason: "SALE",
+          actor: VOUCHER_REVERSAL_ACTOR,
         });
         if (state === "Unknown") {
           const submitted = await store.markSubmitted(prepared);
@@ -641,6 +648,7 @@ test("M16 voucher reversal 错绑/成功 audit 损坏稳定 MISMATCH，真实 vo
         orderGuid: fixture.order.orderGuid,
         sourceTenderGuid: fixture.order.tenders[0]?.tenderGuid ?? "",
         reason: "SALE",
+        actor: VOUCHER_REVERSAL_ACTOR,
       }),
     );
     for (const phase of ["release-submitted", "released"] as const) {

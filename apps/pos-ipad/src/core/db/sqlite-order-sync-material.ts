@@ -1,3 +1,4 @@
+import { auditActorSnapshotFromPayload } from "../contracts/audit-actor";
 import type { CartLine } from "../contracts/cart";
 import {
   normalizeLineSyncProvenance,
@@ -1693,6 +1694,9 @@ function validVoucherReversalAudit(
       "amountCents",
       "outcome",
       "reason",
+      "requestingCashierId",
+      "requestingCashierName",
+      "requestingUserGuid",
       "reversalTenderGuid",
       "sourceAttemptId",
       "sourceTenderGuid",
@@ -1702,6 +1706,7 @@ function validVoucherReversalAudit(
       record.action === "payment-tender-remove" &&
       record.outcome === "success" &&
       record.reason === identity.reason &&
+      auditActorSnapshotFromPayload(record) !== null &&
       record.amountCents === identity.amountCents &&
       record.sourceTenderGuid === identity.sourceTenderGuid &&
       record.sourceAttemptId === identity.sourceAttemptId &&

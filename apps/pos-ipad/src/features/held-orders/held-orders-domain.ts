@@ -7,6 +7,7 @@ import type {
   PricingCartStateSnapshot,
   RecallActiveBinding,
 } from "@/core/contracts";
+import { auditActorPayload } from "@/core/contracts";
 import type { AuditEventDraft } from "@/core/contracts/order";
 
 export const HOLD_ORDER_PERMISSION =
@@ -21,6 +22,7 @@ export type HeldOrderIdentity = Readonly<{
   deviceCode: string;
   cashierId: string;
   cashierName: string;
+  userGuid: string | null;
 }>;
 
 export type ActivePricingCartSnapshot = Readonly<{
@@ -227,6 +229,7 @@ function createHeldOrderAudit(
       cashierId: requiredText(input.identity.cashierId, "Cashier id"),
       beforeActualAmountCents: input.beforeActualAmountCents,
       afterActualAmountCents: input.afterActualAmountCents,
+      ...auditActorPayload(input.identity),
     },
   };
 }

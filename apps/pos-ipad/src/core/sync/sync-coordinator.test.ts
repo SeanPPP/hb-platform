@@ -162,8 +162,8 @@ test("启动、前台、联网恢复共享同一个单飞 drain，不会重复�
   assert.deepEqual(outbox.succeeded, ["one"]);
 });
 
-test("审计上传每批最多100；403 保持未上传并触发同一锁机回调", async () => {
-  const events = Array.from({ length: 101 }, (_, index) => audit(`audit-${index}`));
+test("审计上传每批最多8；403 保持未上传并触发同一锁机回调", async () => {
+  const events = Array.from({ length: 9 }, (_, index) => audit(`audit-${index}`));
   const auditRepository = new FakeAuditRepository(events);
   const batchSizes: number[] = [];
   const coordinator = createCoordinator(
@@ -179,8 +179,8 @@ test("审计上传每批最多100；403 保持未上传并触发同一锁机回�
   );
 
   await coordinator.requestDrain();
-  assert.deepEqual(batchSizes, [100, 1]);
-  assert.equal(auditRepository.uploaded.length, 101);
+  assert.deepEqual(batchSizes, [8, 1]);
+  assert.equal(auditRepository.uploaded.length, 9);
 
   const locked: string[] = [];
   const blockedAudit = new FakeAuditRepository([audit("audit-blocked")]);

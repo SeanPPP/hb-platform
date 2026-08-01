@@ -4322,6 +4322,600 @@ CREATE TABLE catalog_delta_deletions (
 );
 `;
 
+const M26 = `
+-- 员工操作事实仍保留在 audit_events；投递状态单独推进，绝不影响订单/支付原子写入。
+ALTER TABLE audit_events
+  ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (
+    delivery_state IN ('pending', 'uploaded', 'rejected')
+  );
+
+ALTER TABLE audit_events
+  ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+
+ALTER TABLE audit_events
+  ADD COLUMN next_attempt_at_iso TEXT NULL;
+
+ALTER TABLE audit_events
+  ADD COLUMN last_error_code TEXT NULL;
+
+UPDATE audit_events
+SET next_attempt_at_iso = occurred_at_iso
+WHERE next_attempt_at_iso IS NULL;
+
+CREATE INDEX ix_audit_events_delivery_ready
+  ON audit_events (delivery_state, next_attempt_at_iso, occurred_at_iso);
+
+-- 程序日志与员工审计严格分表，避免运行错误改变员工行为的可追溯语义。
+CREATE TABLE application_log_outbox (
+  event_id TEXT PRIMARY KEY,
+  occurred_at_iso TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (
+    delivery_state IN ('pending', 'rejected')
+  ),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  next_attempt_at_iso TEXT NOT NULL,
+  last_error_code TEXT NULL,
+  created_at_iso TEXT NOT NULL
+);
+
+CREATE INDEX ix_application_log_outbox_ready
+  ON application_log_outbox (delivery_state, next_attempt_at_iso, occurred_at_iso);
+`;
+
+const M28 = `
+-- 已批准支付也可能跨员工登录与进程重启后才完成；actor 与 action binding 同事务冻结。
+-- NULL 仅兼容 M28 前已有绑定，运行时会整体回退订单员工且 userGuid 置空。
+ALTER TABLE payment_action_bindings
+  ADD COLUMN audit_actor_json TEXT NULL CHECK (
+    audit_actor_json IS NULL
+    OR (
+      json_valid(audit_actor_json) = 1
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierId'
+      ) IS NOT NULL
+      AND json_type(audit_actor_json, '$.requestingCashierId') = 'text'
+      AND LENGTH(TRIM(
+        json_extract(audit_actor_json, '$.requestingCashierId')
+      )) BETWEEN 1 AND 256
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierName'
+      ) IS NOT NULL
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierName'
+      ) IN ('text', 'null')
+      AND (
+        json_type(audit_actor_json, '$.requestingCashierName') = 'null'
+        OR LENGTH(TRIM(
+          json_extract(audit_actor_json, '$.requestingCashierName')
+        )) BETWEEN 1 AND 256
+      )
+      AND json_type(
+        audit_actor_json,
+        '$.requestingUserGuid'
+      ) IS NOT NULL
+      AND json_type(
+        audit_actor_json,
+        '$.requestingUserGuid'
+      ) IN ('text', 'null')
+      AND (
+        json_type(audit_actor_json, '$.requestingUserGuid') = 'null'
+        OR LENGTH(TRIM(
+          json_extract(audit_actor_json, '$.requestingUserGuid')
+        )) BETWEEN 1 AND 256
+      )
+    )
+  );
+
+CREATE TRIGGER trg_payment_action_binding_actor_required
+BEFORE INSERT
+ON payment_action_bindings
+FOR EACH ROW
+WHEN NEW.audit_actor_json IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'PAYMENT_ACTION_BINDING_ACTOR_REQUIRED');
+END;
+
+CREATE TRIGGER trg_payment_action_binding_actor_immutable
+BEFORE UPDATE OF audit_actor_json
+ON payment_action_bindings
+FOR EACH ROW
+WHEN NEW.audit_actor_json IS NOT OLD.audit_actor_json
+BEGIN
+  SELECT RAISE(ABORT, 'PAYMENT_ACTION_BINDING_IMMUTABLE');
+END;
+
+-- 撤券可能跨重启恢复；actor 必须与 action 一起冻结，不能在终态回读当前登录员工。
+-- NULL 仅兼容 M28 前已经存在的未决 action，运行时会整体回退订单员工且 userGuid 置空。
+ALTER TABLE voucher_tender_reversal_actions
+  ADD COLUMN audit_actor_json TEXT NULL CHECK (
+    audit_actor_json IS NULL
+    OR (
+      json_valid(audit_actor_json) = 1
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierId'
+      ) IS NOT NULL
+      AND json_type(audit_actor_json, '$.requestingCashierId') = 'text'
+      AND LENGTH(TRIM(
+        json_extract(audit_actor_json, '$.requestingCashierId')
+      )) BETWEEN 1 AND 256
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierName'
+      ) IS NOT NULL
+      AND json_type(
+        audit_actor_json,
+        '$.requestingCashierName'
+      ) IN ('text', 'null')
+      AND (
+        json_type(audit_actor_json, '$.requestingCashierName') = 'null'
+        OR LENGTH(TRIM(
+          json_extract(audit_actor_json, '$.requestingCashierName')
+        )) BETWEEN 1 AND 256
+      )
+      AND json_type(
+        audit_actor_json,
+        '$.requestingUserGuid'
+      ) IS NOT NULL
+      AND json_type(
+        audit_actor_json,
+        '$.requestingUserGuid'
+      ) IN ('text', 'null')
+      AND (
+        json_type(audit_actor_json, '$.requestingUserGuid') = 'null'
+        OR LENGTH(TRIM(
+          json_extract(audit_actor_json, '$.requestingUserGuid')
+        )) BETWEEN 1 AND 256
+      )
+    )
+  );
+
+CREATE TRIGGER trg_voucher_tender_reversal_actor_immutable
+BEFORE UPDATE OF audit_actor_json
+ON voucher_tender_reversal_actions
+FOR EACH ROW
+WHEN NEW.audit_actor_json IS NOT OLD.audit_actor_json
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'VOUCHER_TENDER_REVERSAL_ACTOR_IMMUTABLE'
+  );
+END;
+`;
+
+const M29 = `
+CREATE TRIGGER trg_voucher_tender_reversal_actor_required
+BEFORE INSERT
+ON voucher_tender_reversal_actions
+FOR EACH ROW
+WHEN NEW.audit_actor_json IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'VOUCHER_TENDER_REVERSAL_ACTOR_REQUIRED');
+END;
+`;
+
+/**
+ * 员工审计的门店/设备身份必须在本地事实入库时冻结。
+ *
+ * 已存在的 audit_events 无法从可靠来源证明范围，因此保持 NULL；投递查询会
+ * fail-closed 排除它们，绝不在设备重新注册后用当前身份改写旧事实。
+ */
+const M30 = `
+ALTER TABLE audit_events
+  ADD COLUMN scope_store_code TEXT NULL;
+
+ALTER TABLE audit_events
+  ADD COLUMN scope_device_code TEXT NULL;
+
+CREATE INDEX ix_audit_events_scope_delivery_ready
+  ON audit_events (
+    scope_store_code,
+    scope_device_code,
+    delivery_state,
+    next_attempt_at_iso,
+    occurred_at_iso,
+    event_id
+  );
+
+-- 旧的订单内审计写入点没有显式 scope 参数，但订单账本本身是可信事实。
+-- 仅在 INSERT 当下从同一库的订单复制一次；找不到订单或非订单记录仍保持 NULL。
+CREATE TRIGGER trg_audit_events_freeze_scope_from_order
+AFTER INSERT ON audit_events
+FOR EACH ROW
+WHEN NEW.scope_store_code IS NULL
+  AND NEW.scope_device_code IS NULL
+  AND NEW.order_guid IS NOT NULL
+BEGIN
+  UPDATE audit_events
+  SET scope_store_code = (
+        SELECT store_code FROM local_orders
+        WHERE order_guid = NEW.order_guid
+      ),
+      scope_device_code = (
+        SELECT device_code FROM local_orders
+        WHERE order_guid = NEW.order_guid
+      )
+  WHERE event_id = NEW.event_id;
+END;
+`;
+
+/**
+ * M31 将 M30 的 scope 冻结规则下沉到 SQLite：
+ * - 新事实只能是完整非空 scope，或无法证明身份的 legacy NULL,NULL；
+ * - 已冻结 scope 永不允许改写；
+ * - 唯一例外是 M30 对新插入订单审计的 NULL,NULL -> 订单账本精确回填。
+ */
+const M31 = `
+CREATE TRIGGER trg_audit_events_scope_insert_valid
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN (
+  (NEW.scope_store_code IS NULL AND NEW.scope_device_code IS NOT NULL)
+  OR (NEW.scope_store_code IS NOT NULL AND NEW.scope_device_code IS NULL)
+  OR (
+    NEW.scope_store_code IS NOT NULL
+    AND (
+      LENGTH(TRIM(NEW.scope_store_code)) = 0
+      OR LENGTH(TRIM(NEW.scope_device_code)) = 0
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_INVALID');
+END;
+
+CREATE TRIGGER trg_audit_events_scope_update_valid
+BEFORE UPDATE OF scope_store_code, scope_device_code ON audit_events
+FOR EACH ROW
+WHEN (
+  (NEW.scope_store_code IS NULL AND NEW.scope_device_code IS NOT NULL)
+  OR (NEW.scope_store_code IS NOT NULL AND NEW.scope_device_code IS NULL)
+  OR (
+    NEW.scope_store_code IS NOT NULL
+    AND (
+      LENGTH(TRIM(NEW.scope_store_code)) = 0
+      OR LENGTH(TRIM(NEW.scope_device_code)) = 0
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_INVALID');
+END;
+
+CREATE TRIGGER trg_audit_events_scope_immutable
+BEFORE UPDATE OF scope_store_code, scope_device_code ON audit_events
+FOR EACH ROW
+WHEN (
+  NEW.scope_store_code IS NOT OLD.scope_store_code
+  OR NEW.scope_device_code IS NOT OLD.scope_device_code
+)
+AND NOT (
+  -- 无效 scope 交给上方 trigger 返回明确错误，绝不能作为回填例外。
+  (NEW.scope_store_code IS NULL AND NEW.scope_device_code IS NOT NULL)
+  OR (NEW.scope_store_code IS NOT NULL AND NEW.scope_device_code IS NULL)
+  OR (
+    NEW.scope_store_code IS NOT NULL
+    AND (
+      LENGTH(TRIM(NEW.scope_store_code)) = 0
+      OR LENGTH(TRIM(NEW.scope_device_code)) = 0
+    )
+  )
+  OR (
+    OLD.scope_store_code IS NULL
+    AND OLD.scope_device_code IS NULL
+    AND NEW.scope_store_code IS NOT NULL
+    AND NEW.scope_device_code IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM local_orders
+      WHERE order_guid = OLD.order_guid
+        AND store_code = NEW.scope_store_code
+        AND device_code = NEW.scope_device_code
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_IMMUTABLE');
+END;
+`;
+
+/**
+ * M32 收紧 M31 的订单 scope 回填例外：只有 audit_events INSERT 本身建立的
+ * 一次性 guard 才能执行 NULL,NULL -> 订单账本精确 scope。guard 在同一条
+ * INSERT 的 AFTER trigger 内立即删除；任一步失败都会随外层语句原子回滚。
+ *
+ * guard 外键与“父行已存在即拒绝”共同保证普通 SQL 不能为 legacy audit 行
+ * 补造授权；无论 recursive_triggers 开关，scope UPDATE 都仍经过 immutable
+ * trigger。已经升级到 M30/M31 的 NULL scope 事实继续 fail-closed。
+ */
+const M32 = `
+-- SQLite 在 BEFORE INSERT 阶段会把“未指定 rowid”和显式 -1 都暴露为
+-- NEW.rowid=-1，无法在该阶段可靠区分。先把历史保留值搬到确定未占用的
+-- 正整数，再由 AFTER INSERT 在 SQLite 完成隐式分配后只拒绝仍为 -1 的行。
+CREATE TRIGGER trg_audit_events_m32_rowid_rehome_overflow
+BEFORE UPDATE ON audit_events
+FOR EACH ROW
+WHEN OLD.rowid = -1
+  AND EXISTS (
+    SELECT 1 FROM audit_events WHERE rowid = 9223372036854775807
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_ROWID_REHOME_OVERFLOW');
+END;
+
+UPDATE audit_events
+SET rowid = CASE
+  -- 避免先计算 max+1 而退化为 REAL；上方 trigger 会用稳定错误原子中止。
+  WHEN EXISTS (
+    SELECT 1 FROM audit_events WHERE rowid = 9223372036854775807
+  ) THEN -1
+  ELSE MAX(
+    0,
+    COALESCE((
+      SELECT MAX(existing.rowid)
+      FROM audit_events existing
+      WHERE existing.rowid <> -1
+    ), 0)
+  ) + 1
+END
+WHERE rowid = -1;
+
+DROP TRIGGER trg_audit_events_m32_rowid_rehome_overflow;
+
+CREATE TRIGGER trg_audit_events_reserved_rowid_insert_rejected
+AFTER INSERT ON audit_events
+FOR EACH ROW
+WHEN NEW.rowid = -1
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_ROWID_RESERVED');
+END;
+
+-- SQLite rowid 表的 TEXT PRIMARY KEY 不隐含 NOT NULL，TEXT affinity 也仍可
+-- 保存 BLOB。遗留非文本/空 ID 先退出投递队列但保留全部业务事实；后续写入
+-- 由 trigger 失败关闭。
+UPDATE audit_events
+SET delivery_state = 'rejected',
+    last_error_code = 'AUDIT_EVENT_ID_INVALID'
+WHERE delivery_state = 'pending'
+  AND (
+    TYPEOF(event_id) <> 'text'
+    OR LENGTH(TRIM(event_id)) = 0
+  );
+
+CREATE TRIGGER trg_audit_events_event_id_insert_valid
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN TYPEOF(NEW.event_id) <> 'text'
+  OR LENGTH(TRIM(NEW.event_id)) = 0
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_EVENT_ID_INVALID');
+END;
+
+CREATE TRIGGER trg_audit_events_event_id_update_valid
+BEFORE UPDATE OF event_id ON audit_events
+FOR EACH ROW
+WHEN TYPEOF(NEW.event_id) <> 'text'
+  OR LENGTH(TRIM(NEW.event_id)) = 0
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_EVENT_ID_INVALID');
+END;
+
+CREATE TABLE audit_scope_insert_guard (
+  event_id TEXT NOT NULL PRIMARY KEY
+    REFERENCES audit_events(event_id) ON DELETE CASCADE,
+  scope_store_code TEXT NOT NULL CHECK (
+    LENGTH(TRIM(scope_store_code)) > 0
+  ),
+  scope_device_code TEXT NOT NULL CHECK (
+    LENGTH(TRIM(scope_device_code)) > 0
+  )
+);
+
+-- guard 只能在 audit_events 的 BEFORE INSERT（父行尚不存在）中创建。
+-- 已存在的 legacy/new audit 行均不能由普通 SQL 借用 guard 解封。
+CREATE TRIGGER trg_audit_scope_guard_reject_existing
+BEFORE INSERT ON audit_scope_insert_guard
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM audit_events WHERE event_id = NEW.event_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_GUARD_FORBIDDEN');
+END;
+
+CREATE TRIGGER trg_audit_scope_guard_immutable
+BEFORE UPDATE ON audit_scope_insert_guard
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_GUARD_IMMUTABLE');
+END;
+
+-- REPLACE/UPSERT 都会先执行 BEFORE INSERT；必须在冲突处理删除或改写
+-- legacy 行之前主动阻断，不能依赖 recursive_triggers 控制的隐式 DELETE。
+CREATE TRIGGER trg_audit_events_legacy_fact_insert_protected
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN TYPEOF(NEW.event_id) = 'text'
+  AND LENGTH(TRIM(NEW.event_id)) > 0
+  AND EXISTS (
+  SELECT 1
+  FROM audit_events existing
+  WHERE existing.event_id IS NEW.event_id
+    AND existing.scope_store_code IS NULL
+    AND existing.scope_device_code IS NULL
+)
+BEGIN
+  -- 保持普通重复 eventId 的既有主键错误语义；RAISE(ABORT) 不会被
+  -- INSERT OR REPLACE / REPLACE / UPSERT 的冲突策略吞掉。
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: audit_events.event_id');
+END;
+
+-- 未显式提供 rowid 时 SQLite 在 BEFORE INSERT 中暴露 NEW.rowid=-1；对
+-- 其余显式正/负 rowid 的精确 legacy 冲突做保护，避免误杀普通 INSERT。
+CREATE TRIGGER trg_audit_events_legacy_rowid_insert_protected
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN TYPEOF(NEW.event_id) = 'text'
+  AND LENGTH(TRIM(NEW.event_id)) > 0
+  AND NEW.rowid <> -1
+  AND EXISTS (
+    SELECT 1
+    FROM audit_events existing
+    WHERE existing.rowid = NEW.rowid
+      AND existing.scope_store_code IS NULL
+      AND existing.scope_device_code IS NULL
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: audit_events.rowid');
+END;
+
+CREATE TRIGGER trg_audit_events_legacy_fact_delete_protected
+BEFORE DELETE ON audit_events
+FOR EACH ROW
+WHEN OLD.scope_store_code IS NULL
+  AND OLD.scope_device_code IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_LEGACY_FACT_IMMUTABLE');
+END;
+
+-- UPDATE OR REPLACE 在 recursive_triggers=OFF 时不会为被抢占行触发 DELETE。
+-- 因此既冻结 legacy 自身 ID，也在 UPDATE 冲突处理前保护目标 legacy ID。
+CREATE TRIGGER trg_audit_events_legacy_identity_update_protected
+BEFORE UPDATE OF event_id ON audit_events
+FOR EACH ROW
+WHEN (
+  OLD.scope_store_code IS NULL
+  AND OLD.scope_device_code IS NULL
+  AND NEW.event_id IS NOT OLD.event_id
+)
+OR EXISTS (
+  SELECT 1
+  FROM audit_events existing
+  WHERE existing.event_id IS NEW.event_id
+    AND existing.scope_store_code IS NULL
+    AND existing.scope_device_code IS NULL
+    AND existing.rowid <> OLD.rowid
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_LEGACY_FACT_IMMUTABLE');
+END;
+
+CREATE TRIGGER trg_audit_events_legacy_rowid_update_protected
+BEFORE UPDATE ON audit_events
+FOR EACH ROW
+WHEN (
+  OLD.scope_store_code IS NULL
+  AND OLD.scope_device_code IS NULL
+  AND NEW.rowid IS NOT OLD.rowid
+)
+OR EXISTS (
+  SELECT 1
+  FROM audit_events existing
+  WHERE existing.rowid = NEW.rowid
+    AND existing.scope_store_code IS NULL
+    AND existing.scope_device_code IS NULL
+    AND existing.rowid <> OLD.rowid
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_LEGACY_FACT_IMMUTABLE');
+END;
+
+DROP TRIGGER trg_audit_events_freeze_scope_from_order;
+DROP TRIGGER trg_audit_events_scope_immutable;
+
+-- BEFORE/AFTER 阶段是稳定边界，不依赖同阶段多个 trigger 的创建顺序。
+CREATE TRIGGER trg_audit_events_prepare_scope_guard
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN NEW.scope_store_code IS NULL
+  AND NEW.scope_device_code IS NULL
+  AND TYPEOF(NEW.event_id) = 'text'
+  AND LENGTH(TRIM(NEW.event_id)) > 0
+  AND NEW.order_guid IS NOT NULL
+  -- 重复 eventId 仍交给 audit_events 原主键返回 UNIQUE，保持既有回滚语义。
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events WHERE event_id IS NEW.event_id
+  )
+  AND EXISTS (
+    SELECT 1 FROM local_orders WHERE order_guid = NEW.order_guid
+  )
+BEGIN
+  INSERT INTO audit_scope_insert_guard (
+    event_id, scope_store_code, scope_device_code
+  )
+  SELECT NEW.event_id, store_code, device_code
+  FROM local_orders
+  WHERE order_guid = NEW.order_guid;
+END;
+
+CREATE TRIGGER trg_audit_events_scope_immutable
+BEFORE UPDATE OF scope_store_code, scope_device_code ON audit_events
+FOR EACH ROW
+WHEN (
+  NEW.scope_store_code IS NOT OLD.scope_store_code
+  OR NEW.scope_device_code IS NOT OLD.scope_device_code
+)
+AND NOT (
+  -- 无效 scope 交给 validation trigger 返回明确错误。
+  (NEW.scope_store_code IS NULL AND NEW.scope_device_code IS NOT NULL)
+  OR (NEW.scope_store_code IS NOT NULL AND NEW.scope_device_code IS NULL)
+  OR (
+    NEW.scope_store_code IS NOT NULL
+    AND (
+      LENGTH(TRIM(NEW.scope_store_code)) = 0
+      OR LENGTH(TRIM(NEW.scope_device_code)) = 0
+    )
+  )
+  OR (
+    OLD.scope_store_code IS NULL
+    AND OLD.scope_device_code IS NULL
+    AND NEW.scope_store_code IS NOT NULL
+    AND NEW.scope_device_code IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM audit_scope_insert_guard guard
+      JOIN local_orders orders
+        ON orders.order_guid = OLD.order_guid
+       AND orders.store_code = guard.scope_store_code
+       AND orders.device_code = guard.scope_device_code
+      WHERE guard.event_id = OLD.event_id
+        AND guard.scope_store_code = NEW.scope_store_code
+        AND guard.scope_device_code = NEW.scope_device_code
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_SCOPE_IMMUTABLE');
+END;
+
+CREATE TRIGGER trg_audit_events_freeze_scope_from_order
+AFTER INSERT ON audit_events
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM audit_scope_insert_guard WHERE event_id = NEW.event_id
+)
+BEGIN
+  UPDATE audit_events
+  SET scope_store_code = (
+        SELECT scope_store_code
+        FROM audit_scope_insert_guard
+        WHERE event_id = NEW.event_id
+      ),
+      scope_device_code = (
+        SELECT scope_device_code
+        FROM audit_scope_insert_guard
+        WHERE event_id = NEW.event_id
+      )
+  WHERE event_id = NEW.event_id;
+
+  DELETE FROM audit_scope_insert_guard WHERE event_id = NEW.event_id;
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -4348,6 +4942,12 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 23, name: "M23_catalog_lookup_overlays", sql: M23 },
   { version: 24, name: "M24_mixed_cash_amount_facts", sql: M24 },
   { version: 25, name: "M25_catalog_delta_generations", sql: M25 },
+  { version: 26, name: "M26_log_delivery_outboxes", sql: M26 },
+  { version: 28, name: "M28_payment_actor_snapshots", sql: M28 },
+  { version: 29, name: "M29_voucher_actor_required", sql: M29 },
+  { version: 30, name: "M30_audit_scope_delivery", sql: M30 },
+  { version: 31, name: "M31_audit_scope_immutability", sql: M31 },
+  { version: 32, name: "M32_audit_scope_insert_guard", sql: M32 },
 ];
 
 export async function applyMigrations(

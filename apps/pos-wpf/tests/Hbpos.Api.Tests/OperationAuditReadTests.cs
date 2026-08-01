@@ -186,7 +186,8 @@ public sealed class OperationAuditReadControllerTests
             OperationAuditBatchRequestDto request,
             string storeCode,
             string deviceCode,
-            CancellationToken cancellationToken) =>
+            CancellationToken cancellationToken,
+            string? deviceSystem = null) =>
             Task.FromResult(new OperationAuditBatchResultDto());
     }
 

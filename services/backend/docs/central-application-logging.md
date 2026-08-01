@@ -43,9 +43,9 @@ Content-Type: application/json
 
 必填字段：`level`、`message`、`timestampUtc`、`projectCode`、`environment`、`sourceType`。
 
-单次最多写入 200 条。日志客户端必须异步旁路上报，不能阻塞用户请求、移动端 PDA 操作、收银支付或订单同步。
+单次最多写入 200 条。公开入口的原始请求体上限为 4 MiB；默认单字段为 32 KiB、单条日志为 64 KiB、单批聚合为 1 MiB。字段按 JSON 解码后的 UTF-8 计量；单条按保留 `null`、直接编码非 ASCII 且保留必要 JSON 转义的规范 JSON UTF-8 计量；单批在有效 `Content-Length` 存在时按实际请求体字节计量，分块请求则回退到整份规范 JSON。客户端应在超出这些边界前拆分或截断。日志客户端必须异步旁路上报，不能阻塞用户请求、移动端 PDA 操作、收银支付或订单同步。
 
-后端会按项目做每分钟写入限流，默认 `MaxIngestRequestsPerMinute=120`、`MaxIngestLogsPerMinute=5000`。浏览器和移动端的写入 key 会进入运行包，只能视为公开写入凭据；生产环境需要配合限流、项目级保留天数和异常审计使用，不能把它当作长期强密钥。
+后端会按项目做每分钟写入限流，默认 `MaxIngestRequestsPerMinute=120`、`MaxIngestLogsPerMinute=5000`、`MaxIngestBytesPerMinute=16777216`。MVC 资源过滤器会在模型绑定读取请求体前完成项目头鉴权；鉴权失败直接返回 401，鉴权成功则先扣 request 和 bytes 额度。bytes 优先使用有效 `Content-Length`，无法预知长度的分块请求保守按 4 MiB 扣除，避免畸形 JSON 获得免费解析预算。字段、单条和单批校验随后执行，只有验证通过的日志才扣 log 数量额度，因此不会双扣 request/bytes，也不会让无效请求消耗 log 额度。字段和聚合预算分别由 `MaxIngestFieldBytes`、`MaxIngestItemBytes`、`MaxIngestBatchBytes` 配置；这些预算仅适用于公开 HTTP 入口，不改变后端本地队列的批处理契约。浏览器和移动端的写入 key 会进入运行包，只能视为公开写入凭据；生产环境需要配合限流、项目级保留天数和异常审计使用，不能把它当作长期强密钥。
 
 ## 项目配置
 
@@ -65,11 +65,12 @@ Content-Type: application/json
 
 `ApiKeyHash` 是项目日志密钥的 SHA-256 小写十六进制摘要。明文密钥只放部署环境变量或服务器配置，不提交仓库。
 
-生产 compose 已连续配置五个项目。只有已启用的外部项目需要注入合法的 64 位十六进制 SHA-256 摘要：
+生产 compose 已连续配置六个项目。只有已启用的外部项目需要注入合法的 64 位十六进制 SHA-256 摘要：
 
 ```bash
 CENTER_LOG_HBWEB_RV_KEY_SHA256=<sha256-lower-hex>
 CENTER_LOG_HBPOS_API_KEY_SHA256=<sha256-lower-hex>
+CENTER_LOG_HBPOS_IPAD_KEY_SHA256=<sha256-lower-hex>
 ```
 
 项目清单和默认保留期：
@@ -79,8 +80,21 @@ CENTER_LOG_HBPOS_API_KEY_SHA256=<sha256-lower-hex>
 - `HbwebExpo`：移动端，禁用，7 天。
 - `hbpos_win`：WPF 客户端，禁用，30 天。
 - `hbpos_api`：WPF 收银后端，启用，7 天。
+- `hbpos_ipad`：iPad 客户端，启用，30 天，`sourceType=POS`。
 
 清理任务会覆盖 `Projects` 中的全部项目，包括已禁用项目，避免停用后遗留日志无限保留。
+
+## 发布门槛：POSM 审计迁移先行
+
+`pos_operation_audit` 的 schema 迁移唯一所有者是 `Hbpos.Api`；`services/backend` 的 `BlazorApp.Api` 只查询同一 POSM 数据，不得增加第二个迁移器。
+
+本次及后续包含 POSM 审计字段的发布必须按以下顺序执行：
+
+1. 先部署并启动单一 `Hbpos.Api` migration owner；当前 [`apps/pos-wpf/docker-compose.hotbargain.yml`](../../apps/pos-wpf/docker-compose.hotbargain.yml) 只声明一个 `hbpos-api` 实例。
+2. 在 POSM 验证 `pos_operation_audit.device_system` 为 nullable，且 `IX_pos_operation_audit_device_system_time` 已存在。
+3. 仅在上述结构检查通过后，依次部署 `BlazorApp.Api`、Web 后台和 iPad 客户端。
+
+当前初始化逻辑是 check-then-DDL，不能并发运行。未来如扩容 `Hbpos.Api` 多实例，必须先引入分布式迁移锁或独立 migration job；未完成前禁止多个实例同时执行这段 schema 初始化。
 
 ## 查询接口
 
@@ -103,6 +117,7 @@ GET /api/system/logs/summary?startUtc=2026-06-05T00:00:00Z
 - 移动端：`HbwebExpo`，`sourceType=Mobile`
 - 收银端：`hbpos_win`，`sourceType=POS`
 - 收银后端：`hbpos_api`，`sourceType=Backend`
+- iPad 收银端：`hbpos_ipad`，`sourceType=POS`
 
 ## 上报原则
 

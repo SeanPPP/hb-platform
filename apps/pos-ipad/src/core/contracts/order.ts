@@ -1,3 +1,4 @@
+import type { AuditScope } from "./audit-scope";
 import type { CartLine } from "./cart";
 import type { Money } from "./money";
 import type { LocalOrderState } from "./state-machines";
@@ -120,6 +121,11 @@ export type AuditEventDraft = Readonly<{
   orderGuid: string | null;
   correlationId: string;
   payload: Readonly<Record<string, unknown>>;
+  /**
+   * 仅由审计持久层在读回已入库事实时填充；业务 feature 不得依赖上传 DTO
+   * 或直接设置它。缺失表示遗留事实无法证明归属，投递必须 fail-closed。
+   */
+  auditScope?: AuditScope;
 }>;
 
 export type OutboxMessageDraft = Readonly<{

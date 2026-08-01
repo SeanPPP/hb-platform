@@ -1,10 +1,12 @@
 import type {
+  AuditActorSnapshot,
   AuditEventDraft,
   CashFulfilmentDraft,
   Money,
   OutboxMessageDraft,
   PaymentProvider,
 } from "@/core/contracts";
+import { auditActorPayload } from "@/core/contracts";
 import type {
   ApprovedPaymentOrderCompletionPlan,
   ApprovedPaymentOrderCompletionPlannerPort,
@@ -62,6 +64,7 @@ export type MixedCashFinalCompletionInput = Readonly<{
   orderGuid: string;
   amount: Money;
   expectedRemaining: Money;
+  actor: AuditActorSnapshot;
 }>;
 
 export interface MixedCashOrderCompletionPlannerPort {
@@ -114,6 +117,7 @@ export class PaymentFinalCompletionPlanner
       provider: null,
       eventType: "PAYMENT_MIXED_CASH_COMPLETE",
       allowDrawer: true,
+      actor: input.actor,
     });
   }
 
@@ -123,6 +127,7 @@ export class PaymentFinalCompletionPlanner
       attemptId: string;
       provider: PaymentProvider;
       amount: Money;
+      actor: AuditActorSnapshot;
     }>,
   ): Promise<PaymentFinalCompletionPlan> {
     assertPositiveAud(input.amount, "APPROVED_PAYMENT_AMOUNT_INVALID");
@@ -135,6 +140,7 @@ export class PaymentFinalCompletionPlanner
       provider: input.provider,
       eventType: "PAYMENT_APPROVED_COMPLETE",
       allowDrawer: false,
+      actor: input.actor,
     });
   }
 
@@ -147,6 +153,7 @@ export class PaymentFinalCompletionPlanner
     provider: PaymentProvider | null;
     eventType: string;
     allowDrawer: boolean;
+    actor: AuditActorSnapshot;
   }): Promise<PaymentFinalCompletionPlan> {
     const occurredAtIso = requiredIso(this.dependencies.nowIso());
     const settings = await safelyLoadSettings(this.dependencies.settings);
@@ -175,6 +182,7 @@ export class PaymentFinalCompletionPlanner
       amountCents: input.amount.cents,
       printPlanned: print !== null,
       drawerPlanned: drawer !== null,
+      ...auditActorPayload(input.actor),
     });
     return {
       completionAuditEvents: [
@@ -269,6 +277,7 @@ export class SafeApprovedPaymentCompletionPlanner
 
   public async plan(
     execution: PaymentAttemptExecutionResult,
+    actor: AuditActorSnapshot,
   ): Promise<ApprovedPaymentOrderCompletionPlan> {
     const { attempt } = execution;
     if (attempt.state !== "Approved" || attempt.operation !== "purchase") {
@@ -311,6 +320,7 @@ export class SafeApprovedPaymentCompletionPlanner
       attemptId: attempt.attemptId,
       provider: attempt.provider,
       amount: attempt.amount,
+      actor,
     });
     return { tenderGuid, ...final };
   }

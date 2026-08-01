@@ -1,4 +1,10 @@
-import type { CashDrawerPort, DrawerResult, PrintResult, PrinterPort } from "@/core/contracts";
+import {
+  auditActorPayload,
+  type CashDrawerPort,
+  type DrawerResult,
+  type PrintResult,
+  type PrinterPort,
+} from "@/core/contracts";
 import type { UpdateOperationLeasePort } from "@/features/app-updates/update-transition-lease-coordinator";
 
 export type FulfilmentPrintJob = Readonly<{
@@ -22,6 +28,8 @@ export type FulfilmentDrawerEvent = Readonly<{
   state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown";
   reason: string;
   retryCount: number;
+  /** 手动钱箱从首份耐久授权审计恢复执行员工；自动订单钱箱始终没有该字段。 */
+  authorization?: FulfilmentAuthorizationContext;
 }>;
 
 export type FulfilmentAuthorizationContext = Readonly<{
@@ -30,6 +38,8 @@ export type FulfilmentAuthorizationContext = Readonly<{
   permissionCode: string;
   authorizationMode: "current-cashier" | "offline-cache" | "online";
   requestingCashierId: string;
+  requestingCashierName: string | null;
+  requestingUserGuid: string | null;
   authorizingCashierId: string | null;
 }>;
 
@@ -447,6 +457,8 @@ export class FulfilmentService {
     manual: boolean,
     authorization?: FulfilmentAuthorizationContext,
   ): Promise<FulfilmentActionResult> {
+    // 重试/崩溃恢复必须使用首份审计冻结的员工，禁止回读当前登录收银员。
+    const durableAuthorization = authorization ?? event.authorization;
     let result: DrawerResult;
     const connectionErrorCode = await this.connectPersistedPrinter(event.printerId);
     if (connectionErrorCode) {
@@ -470,10 +482,10 @@ export class FulfilmentService {
         event.orderGuid,
         event.eventId,
         {
-          action: authorization ? "open-cash-drawer" : "open",
+          action: durableAuthorization ? "open-cash-drawer" : "open",
           status: state,
           reason: safeAuditText(event.reason),
-          source: authorization
+          source: durableAuthorization
             ? "sales"
             : manual
               ? "manual-retry"
@@ -481,7 +493,7 @@ export class FulfilmentService {
           outcome: state === "Completed" ? "Succeeded" : "Failed",
           printerId: safeAuditText(event.printerId),
           errorCode: safeAuditText(result.errorCode),
-          ...authorizationAuditPayload(authorization),
+          ...authorizationAuditPayload(durableAuthorization),
         },
       );
     } catch {
@@ -596,6 +608,18 @@ function normalizeAuthorization(
     input.requestingCashierId,
     "Requesting cashier id",
   );
+  const requestingCashierName = input.requestingCashierName === null
+    ? null
+    : requiredAuditText(
+        input.requestingCashierName,
+        "Requesting cashier name",
+      );
+  const requestingUserGuid = input.requestingUserGuid === null
+    ? null
+    : requiredAuditText(
+        input.requestingUserGuid,
+        "Requesting user guid",
+      );
   const authorizingCashierId = input.authorizingCashierId === null
     ? null
     : requiredAuditText(
@@ -615,6 +639,8 @@ function normalizeAuthorization(
     permissionCode,
     authorizationMode: input.authorizationMode,
     requestingCashierId,
+    requestingCashierName,
+    requestingUserGuid,
     authorizingCashierId,
   };
 }
@@ -624,7 +650,11 @@ function authorizationAuditPayload(
 ): Readonly<Record<string, string | null>> {
   if (!authorization) return {};
   return {
-    requestingCashierId: authorization.requestingCashierId,
+    ...auditActorPayload({
+      cashierId: authorization.requestingCashierId,
+      cashierName: authorization.requestingCashierName,
+      userGuid: authorization.requestingUserGuid,
+    }),
     authorizingCashierId: authorization.authorizingCashierId,
     permissionCode: authorization.permissionCode,
     authorizationMode: authorization.authorizationMode,

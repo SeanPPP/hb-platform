@@ -52,6 +52,7 @@ function createHarness(
   });
   service.activateRequestingCashier({
     cashierId: "REQUESTER",
+    cashierName: "Requester",
     deviceCode: "IPAD-1",
     permissions: [],
     storeCode: "STORE-1",

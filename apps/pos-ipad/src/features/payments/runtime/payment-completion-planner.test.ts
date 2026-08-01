@@ -21,6 +21,7 @@ test("partial Approved 只规划 tender，不读取打印设置、不渲染、�
 
   const plan = await approved.plan(
     execution({ amount: aud(500) }),
+    actor(),
   );
 
   assert.equal(events.includes("settings"), false);
@@ -54,7 +55,7 @@ test("卡/券 Approved 足额计划只含脱敏 audit/outbox，按设置打印�
     },
   });
 
-  const plan = await approved.plan(value);
+  const plan = await approved.plan(value, actor());
 
   assert.equal(plan.fulfilment.print?.printerId, "printer-1");
   assert.equal(plan.fulfilment.drawer, null);
@@ -78,6 +79,7 @@ test("final mixed cash 金额必须精确等于 expectedRemaining，按权限冻
     orderGuid: "order-cash",
     amount: aud(500),
     expectedRemaining: aud(500),
+    actor: actor(),
   });
 
   assert.equal(plan.fulfilment.print?.orderGuid, "order-cash");
@@ -105,6 +107,7 @@ test("final mixed cash 金额必须精确等于 expectedRemaining，按权限冻
         orderGuid: "order-cash",
         amount: aud(499),
         expectedRemaining: aud(500),
+        actor: actor(),
       }),
     /MIXED_CASH_FINAL_AMOUNT_MUST_EQUAL_EXPECTED_REMAINING/,
   );
@@ -134,12 +137,32 @@ test("settings/renderer 故障只降级为无打印；已批准计划仍可原�
     attemptId: "attempt-approved",
     provider: "square",
     amount: aud(1_000),
+    actor: actor(),
   });
 
   assert.deepEqual(plan.fulfilment, { print: null, drawer: null });
   assert.equal(plan.completionAuditEvents.length, 1);
+  assert.deepEqual(plan.completionAuditEvents[0]?.payload, {
+    attemptId: "attempt-approved",
+    provider: "square",
+    method: "card",
+    amountCents: 1_000,
+    printPlanned: false,
+    drawerPlanned: false,
+    requestingCashierId: "cashier-1",
+    requestingCashierName: "Alice",
+    requestingUserGuid: "user-guid-1",
+  });
   assert.equal(plan.outbox.kind, "order-sync");
 });
+
+function actor() {
+  return {
+    cashierId: "cashier-1",
+    cashierName: "Alice",
+    userGuid: "user-guid-1",
+  } as const;
+}
 
 function approvedPlanner(
   projection: PaymentCompletionProjection,

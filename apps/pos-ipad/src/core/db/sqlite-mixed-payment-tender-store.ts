@@ -1,5 +1,8 @@
 import {
+  auditActorPayload,
+  auditActorSnapshotFromPayload,
   createAud,
+  type AuditActorSnapshot,
   type AuditEventDraft,
   type CashFulfilmentDraft,
   type LocalOrder,
@@ -39,6 +42,7 @@ export interface MixedCashOrderCompletionPlannerPort {
     orderGuid: string;
     amount: Money;
     expectedRemaining: Money;
+    actor: AuditActorSnapshot;
   }>): Promise<MixedCashOrderCompletionPlan>;
 }
 
@@ -58,6 +62,7 @@ type CashActionRow = Readonly<{
   tendered_cents: unknown;
   change_cents: unknown;
   tender_guid: unknown;
+  audit_event_id: unknown;
 }>;
 
 type OrderRow = Readonly<{
@@ -97,6 +102,7 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
   ): Promise<MixedCashTenderMutation> {
     const actionId = strictId(command.actionId, "cash action id");
     const orderGuid = strictId(command.orderGuid, "cash order guid");
+    const actor = normalizedActor(command.actor);
     const amountCents = positiveAud(command.amount);
     const tenderedCents = command.tenderedAmount
       ? positiveAud(command.tenderedAmount)
@@ -135,6 +141,7 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
         orderGuid,
         amount: createAud(amountCents),
         expectedRemaining: createAud(observedRemaining),
+        actor,
       });
       validateCompletionPlan(plan, orderGuid);
       const receiptCiphertext = plan.fulfilment.print
@@ -149,7 +156,7 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const replay = await transaction.getFirst<CashActionRow>(
         `SELECT order_guid, amount_cents, tendered_cents,
-           change_cents, tender_guid
+           change_cents, tender_guid, audit_event_id
          FROM mixed_cash_tender_actions
          WHERE order_guid = ? AND action_id = ?`,
         [orderGuid, actionId],
@@ -203,6 +210,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           tenderGuid,
           "cash",
           amountCents,
+        );
+        await assertPersistedAuditActor(
+          transaction,
+          text(replay.audit_event_id, "cash action audit event"),
+          actor,
         );
         return {
           replayed: true,
@@ -281,6 +293,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
             tenderedCents,
             changeCents,
             tenderGuid,
+            ...auditActorPayload({
+              cashierId: actor.cashierId,
+              cashierName: actor.cashierName,
+              userGuid: actor.userGuid,
+            }),
           }),
         ],
       );
@@ -327,6 +344,7 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
       command.tenderGuid,
       "source tender guid",
     );
+    const actor = normalizedActor(command.actor);
 
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const actionReplay = await transaction.getFirst<ReversalLinkRow>(
@@ -355,6 +373,12 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           actionId,
           sourceTenderGuid,
           reversalTenderGuid,
+        );
+        await assertPersistedCorrelationActor(
+          transaction,
+          orderGuid,
+          actionId,
+          actor,
         );
         return {
           state: "reversed",
@@ -443,6 +467,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
             amountCents: -source.amount.cents,
             reversalTenderGuid,
             sourceTenderGuid,
+            ...auditActorPayload({
+              cashierId: actor.cashierId,
+              cashierName: actor.cashierName,
+              userGuid: actor.userGuid,
+            }),
           }),
         ],
       );
@@ -736,6 +765,91 @@ function assertSafeObject(value: unknown, label: string): void {
     )
   ) {
     throw new TypeError(`${label} contains protected payment data.`);
+  }
+}
+
+function normalizedActor(actor: AuditActorSnapshot): AuditActorSnapshot {
+  const payload = auditActorPayload({
+    cashierId: actor.cashierId,
+    cashierName: actor.cashierName,
+    userGuid: actor.userGuid,
+  });
+  const normalized = auditActorSnapshotFromPayload(payload);
+  if (!normalized) {
+    throw new TypeError("Payment audit actor is invalid.");
+  }
+  return normalized;
+}
+
+async function assertPersistedAuditActor(
+  transaction: SqliteConnectionPort,
+  eventId: string,
+  expected: AuditActorSnapshot,
+): Promise<void> {
+  const row = await transaction.getFirst<{ payload_json: unknown }>(
+    "SELECT payload_json FROM audit_events WHERE event_id = ?",
+    [eventId],
+  );
+  assertPersistedActorPayload(row?.payload_json, expected);
+}
+
+async function assertPersistedCorrelationActor(
+  transaction: SqliteConnectionPort,
+  orderGuid: string,
+  correlationId: string,
+  expected: AuditActorSnapshot,
+): Promise<void> {
+  const rows = await transaction.getAll<{ payload_json: unknown }>(
+    `SELECT payload_json
+     FROM audit_events
+     WHERE order_guid = ? AND correlation_id = ?
+     ORDER BY occurred_at_iso, event_id
+     LIMIT 2`,
+    [orderGuid, correlationId],
+  );
+  if (rows.length !== 1) {
+    throw new Error("Persisted payment audit actor is ambiguous.");
+  }
+  assertPersistedActorPayload(rows[0]?.payload_json, expected);
+}
+
+function assertPersistedActorPayload(
+  payloadJson: unknown,
+  expected: AuditActorSnapshot,
+): void {
+  if (typeof payloadJson !== "string") {
+    throw new Error("Persisted payment audit actor is missing.");
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(payloadJson);
+  } catch {
+    throw new Error("Persisted payment audit actor is invalid.");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Persisted payment audit actor is invalid.");
+  }
+  const actual = auditActorSnapshotFromPayload(
+    payload as Readonly<Record<string, unknown>>,
+  );
+  // 中文注释：M26 前历史 action 没有 actor；只允许整体缺失，禁止半新半旧身份。
+  if (actual === null) {
+    const record = payload as Readonly<Record<string, unknown>>;
+    const hasAnyActorField =
+      Object.hasOwn(record, "requestingCashierId") ||
+      Object.hasOwn(record, "requestingCashierName") ||
+      Object.hasOwn(record, "requestingUserGuid");
+    if (!hasAnyActorField) return;
+    throw new Error("Persisted payment audit actor is incomplete.");
+  }
+  if (
+    actual.cashierId !== expected.cashierId ||
+    actual.cashierName !== expected.cashierName ||
+    actual.userGuid !== expected.userGuid
+  ) {
+    throw new Error(
+      "Payment action was replayed with a different immutable actor.",
+    );
   }
 }
 

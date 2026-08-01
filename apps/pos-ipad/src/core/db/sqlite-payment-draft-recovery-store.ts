@@ -1,5 +1,8 @@
 import {
+  auditActorPayload,
+  auditActorSnapshotFromPayload,
   createAud,
+  type AuditActorSnapshot,
   type CartLine,
   type CartSnapshot,
   type LocalOrder,
@@ -53,6 +56,7 @@ export type PaymentDraftAbandonInput = PaymentRecoveryScope &
     actionId: string;
     draftId: string;
     orderGuid: string;
+    actor: AuditActorSnapshot;
   }>;
 
 export type PaymentDraftAbandonResult = Readonly<{
@@ -67,6 +71,7 @@ export type PaymentDraftCancelledCloseInput = PaymentRecoveryScope &
   Readonly<{
     actionId: string;
     orderGuid: string;
+    actor: AuditActorSnapshot;
   }>;
 
 export type PaymentDraftCancelledCloseResult = Readonly<{
@@ -452,6 +457,7 @@ implements PersistedOrderDraftPort {
     const scope = normalizeScope(input);
     const orderGuid = strictId(input.orderGuid, "payment order guid");
     const actionId = strictId(input.actionId, "payment cancel action id");
+    const actor = normalizeAuditActor(input.actor);
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const binding = await transaction.getFirst<DraftBindingRow>(
         `SELECT draft_id, request_fingerprint, pricing_state_json,
@@ -621,6 +627,7 @@ implements PersistedOrderDraftPort {
           JSON.stringify({
             action: "payment-draft-cancelled-closed",
             draftId,
+            ...auditActorPayload(actor),
           }),
         ],
       );
@@ -675,6 +682,7 @@ implements PersistedOrderDraftPort {
     const actionId = strictId(input.actionId, "draft abandon action id");
     const draftId = strictId(input.draftId, "payment draft id");
     const orderGuid = strictId(input.orderGuid, "payment order guid");
+    const actor = normalizeAuditActor(input.actor);
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const binding = await transaction.getFirst<DraftBindingRow>(
         `SELECT draft_id, request_fingerprint, pricing_state_json,
@@ -766,6 +774,7 @@ implements PersistedOrderDraftPort {
           JSON.stringify({
             action: "payment-draft-abandoned",
             draftId,
+            ...auditActorPayload(actor),
           }),
         ],
       );
@@ -812,6 +821,7 @@ implements PersistedOrderDraftPort {
     const actionId = strictId(input.actionId, "reversed draft close action id");
     const draftId = strictId(input.draftId, "payment draft id");
     const orderGuid = strictId(input.orderGuid, "payment order guid");
+    const actor = normalizeAuditActor(input.actor);
     return this.connection.withExclusiveTransaction(async (transaction) => {
       const binding = await transaction.getFirst<DraftBindingRow>(
         `SELECT draft_id, request_fingerprint, pricing_state_json,
@@ -884,6 +894,7 @@ implements PersistedOrderDraftPort {
             action: "payment-fully-reversed-draft-closed",
             reason: "ALL_CASH_TENDERS_REVERSED",
             draftId,
+            ...auditActorPayload(actor),
           }),
         ],
       );
@@ -1821,6 +1832,19 @@ function normalizeScope(input: PaymentRecoveryScope): PaymentRecoveryScope {
     storeCode: strictText(input.storeCode, "payment store code", 64),
     deviceCode: strictId(input.deviceCode, "payment device code"),
   };
+}
+
+function normalizeAuditActor(
+  input: AuditActorSnapshot,
+): AuditActorSnapshot {
+  if (!input || typeof input !== "object") {
+    throw new TypeError("Payment draft audit actor is required.");
+  }
+  const actor = auditActorSnapshotFromPayload(auditActorPayload(input));
+  if (!actor) {
+    throw new TypeError("Payment draft audit actor is invalid.");
+  }
+  return actor;
 }
 
 function audInteger(

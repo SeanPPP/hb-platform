@@ -77,6 +77,18 @@ public sealed class OperationAuditControllerTests
     }
 
     [Fact]
+    public async Task Batch_passes_trusted_device_system_claim_to_ingest_service()
+    {
+        var service = new RecordingOperationAuditIngestService();
+        var controller = CreateController(service, "STORE-1", "POS-1", DeviceSystems.IpadOs);
+
+        var action = await controller.Batch(CreateRequest(), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(action.Result);
+        Assert.Equal(DeviceSystems.IpadOs, service.DeviceSystem);
+    }
+
+    [Fact]
     public async Task Batch_rejects_more_than_one_hundred_events()
     {
         var service = new RecordingOperationAuditIngestService();
@@ -155,6 +167,7 @@ public sealed class OperationAuditControllerTests
         Assert.Equal(1, payload!.AcceptedCount);
         Assert.Equal("STORE-1", service.StoreCode);
         Assert.Equal("POS-1", service.DeviceCode);
+        Assert.Equal(DeviceSystems.Windows, service.DeviceSystem);
     }
 
     [Fact]
@@ -187,16 +200,23 @@ public sealed class OperationAuditControllerTests
     private static OperationAuditsController CreateController(
         IOperationAuditIngestService service,
         string? storeCode = null,
-        string? deviceCode = null)
+        string? deviceCode = null,
+        string? deviceSystem = null)
     {
         var httpContext = new DefaultHttpContext();
         if (storeCode is not null && deviceCode is not null)
         {
-            httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
-            [
-                new Claim(DeviceAuthConstants.StoreCodeClaim, storeCode),
-                new Claim(DeviceAuthConstants.DeviceCodeClaim, deviceCode)
-            ], DeviceAuthConstants.Scheme));
+            var claims = new List<Claim>
+            {
+                new(DeviceAuthConstants.StoreCodeClaim, storeCode),
+                new(DeviceAuthConstants.DeviceCodeClaim, deviceCode)
+            };
+            if (!string.IsNullOrWhiteSpace(deviceSystem))
+            {
+                claims.Add(new Claim(DeviceAuthConstants.DeviceSystemClaim, deviceSystem));
+            }
+
+            httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(claims, DeviceAuthConstants.Scheme));
         }
 
         return new OperationAuditsController(service)
@@ -232,15 +252,19 @@ public sealed class OperationAuditControllerTests
 
         public string? DeviceCode { get; private set; }
 
+        public string? DeviceSystem { get; private set; }
+
         public Task<OperationAuditBatchResultDto> IngestAsync(
             OperationAuditBatchRequestDto request,
             string storeCode,
             string deviceCode,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? deviceSystem = null)
         {
             Request = request;
             StoreCode = storeCode;
             DeviceCode = deviceCode;
+            DeviceSystem = deviceSystem;
             return Task.FromResult(new OperationAuditBatchResultDto
             {
                 AcceptedCount = request.Events.Count,

@@ -32,6 +32,7 @@ const identity = {
   deviceCode: "IPAD-1",
   cashierId: "CASHIER-1",
   cashierName: "Cashier",
+  userGuid: "USER-1",
 };
 
 function saleSnapshot(
@@ -469,6 +470,18 @@ test("挂单使用精确权限，Pending+审计提交后才清车并确认 HoldC
   assert.equal(cart.value.cart.lines.length, 0);
   assert.equal(repository.holds[0]?.payload.pricingState.lines.length, 1);
   assert.equal(repository.confirms.length, 1);
+  assert.deepEqual(repository.holds[0]?.audit.payload, {
+    source: "ipad-pos",
+    action: "hold",
+    storeCode: "BNE",
+    deviceCode: "IPAD-1",
+    cashierId: "CASHIER-1",
+    beforeActualAmountCents: 1_100,
+    afterActualAmountCents: 0,
+    requestingCashierId: "CASHIER-1",
+    requestingCashierName: "Cashier",
+    requestingUserGuid: "USER-1",
+  });
   assert.equal(repository.fence, null);
   assert.equal(
     JSON.stringify(repository.holds[0]?.audit.payload).includes("Product"),

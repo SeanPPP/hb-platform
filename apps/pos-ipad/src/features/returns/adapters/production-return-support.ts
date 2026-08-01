@@ -419,7 +419,16 @@ function planMaterial(plan: ReturnRefundPlan): Readonly<Record<string, unknown>>
 function identityMaterial(identity: TrustedReturnIdentity): Readonly<Record<string, string>> { return { storeCode: identity.storeCode, deviceCode: identity.deviceCode, cashierId: identity.cashierId, cashierName: identity.cashierName, sessionEpoch: identity.sessionEpoch }; }
 function canonicalJson(value: unknown): string { return JSON.stringify(canonicalize(value)); }
 function canonicalize(value: unknown): unknown { if (Array.isArray(value)) return value.map(canonicalize); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, canonicalize(child)])); return value; }
-function validateIdentity(identity: TrustedReturnIdentity): void { for (const value of Object.values(identity)) requiredText(value); }
+function validateIdentity(identity: TrustedReturnIdentity): void {
+  requiredText(identity.storeCode);
+  requiredText(identity.deviceCode);
+  requiredText(identity.cashierId);
+  requiredText(identity.cashierName);
+  if (identity.userGuid !== null && identity.userGuid !== undefined) {
+    requiredText(identity.userGuid);
+  }
+  requiredText(identity.sessionEpoch);
+}
 function sameIdentity(left: TrustedReturnIdentity, right: TrustedReturnIdentity): boolean { return left.storeCode === right.storeCode && left.deviceCode === right.deviceCode && left.cashierId === right.cashierId && left.cashierName === right.cashierName && left.sessionEpoch === right.sessionEpoch; }
 function sameStore(left: string, right: string): boolean { return left.trim().toUpperCase() === right.trim().toUpperCase(); }
 function isGuid(value: string): boolean { return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }

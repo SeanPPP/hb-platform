@@ -10,6 +10,7 @@ const identity = {
   deviceCode: "IPAD-1",
   cashierId: "C1",
   cashierName: "Alice",
+  userGuid: "U1",
 } as const;
 
 test("手动锁屏撤销临时授权和活动票据，写 WPF 等价审计后通知重新登录", async () => {
@@ -60,6 +61,8 @@ test("手动锁屏撤销临时授权和活动票据，写 WPF 等价审计后通
       reason: "MANUAL_LOCK",
       source: "ipad-pos",
       requestingCashierId: "C1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "U1",
       action: "lock-terminal",
       screen: "pos-terminal",
     },

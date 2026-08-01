@@ -1,3 +1,4 @@
+import type { AuditScope } from "./audit-scope";
 import type { CartSnapshot } from "./cart";
 import type {
   ApprovedPaymentOrderCommit,
@@ -97,6 +98,26 @@ export interface AuditRepositoryPort {
   listPending(limit: number): Promise<readonly AuditEventDraft[]>;
   markUploaded(eventIds: readonly string[]): Promise<void>;
 }
+
+/**
+ * 员工操作日志的投递状态与业务审计写入解耦：append 仍可参与订单/支付原子事务，
+ * 同步器仅通过本接口推进上传、拒绝和退避，不改变通用 AuditRepositoryPort。
+ */
+export interface OperationAuditDeliveryPort {
+  listReady(limit: number): Promise<readonly OperationAuditDeliveryEvent[]>;
+  /** 仅用于同步器定时唤醒；不得影响订单 outbox 的租约语义。 */
+  nextReadyAtIso(): Promise<string | null>;
+  markUploaded(eventIds: readonly string[]): Promise<void>;
+  markRejected(entries: readonly Readonly<{ eventId: string; code: string }>[]): Promise<void>;
+  releaseRetry(
+    eventIds: readonly string[],
+    nextAttemptAtIso: string,
+    errorCode: string,
+  ): Promise<void>;
+}
+
+export type OperationAuditDeliveryEvent = AuditEventDraft &
+  Readonly<{ attemptCount: number; auditScope?: AuditScope }>;
 
 export interface PrintJobRepositoryPort {
   transition(jobId: string, expected: PrintJobState, next: PrintJobState): Promise<boolean>;

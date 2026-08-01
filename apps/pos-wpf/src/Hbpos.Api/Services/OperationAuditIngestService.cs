@@ -13,7 +13,8 @@ public interface IOperationAuditIngestService
         OperationAuditBatchRequestDto request,
         string storeCode,
         string deviceCode,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? deviceSystem = null);
 }
 
 public sealed class SqlSugarOperationAuditIngestService(
@@ -66,7 +67,8 @@ public sealed class SqlSugarOperationAuditIngestService(
         OperationAuditBatchRequestDto request,
         string storeCode,
         string deviceCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? deviceSystem = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         var result = new OperationAuditBatchResultDto();
@@ -87,7 +89,12 @@ public sealed class SqlSugarOperationAuditIngestService(
                 continue;
             }
 
-            var status = await PersistAsync(auditEvent, storeCode, deviceCode, cancellationToken);
+            var status = await PersistAsync(
+                auditEvent,
+                storeCode,
+                deviceCode,
+                deviceSystem,
+                cancellationToken);
             if (status == "accepted")
             {
                 result.AcceptedCount++;
@@ -111,6 +118,7 @@ public sealed class SqlSugarOperationAuditIngestService(
         OperationAuditEventDto auditEvent,
         string storeCode,
         string deviceCode,
+        string? deviceSystem,
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
@@ -125,7 +133,12 @@ public sealed class SqlSugarOperationAuditIngestService(
                 return "duplicate";
             }
 
-            var parent = MapParent(auditEvent, storeCode, deviceCode, clock.GetUtcNow().UtcDateTime);
+            var parent = MapParent(
+                auditEvent,
+                storeCode,
+                deviceCode,
+                deviceSystem,
+                clock.GetUtcNow().UtcDateTime);
             var items = (auditEvent.Items ?? [])
                 .Select((item, index) => MapItem(auditEvent.EventId, index, item))
                 .ToList();
@@ -202,6 +215,7 @@ public sealed class SqlSugarOperationAuditIngestService(
         OperationAuditEventDto source,
         string storeCode,
         string deviceCode,
+        string? deviceSystem,
         DateTime receivedAtUtc)
     {
         var items = source.Items ?? [];
@@ -222,6 +236,8 @@ public sealed class SqlSugarOperationAuditIngestService(
             IsEmergencyOverride = source.IsEmergencyOverride,
             StoreCode = CleanRequiredStructured(storeCode, 50),
             DeviceCode = CleanRequiredStructured(deviceCode, 64),
+            // 设备系统只由控制器从已认证设备 claim 传入，绝不相信审计请求体。
+            DeviceSystem = CleanStructured(deviceSystem, 32),
             AppVersion = CleanStructured(source.AppVersion, 32),
             InstanceId = CleanStructured(source.InstanceId, 64),
             OrderGuid = CleanStructured(source.OrderGuid, 100),

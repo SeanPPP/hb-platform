@@ -200,6 +200,8 @@ function initialAuthorization(
       : "Permissions.PosTerminal.CashDrawer.Open",
     authorizationMode: "online" as const,
     requestingCashierId: "cashier-1",
+    requestingCashierName: "Cashier One",
+    requestingUserGuid: "user-1",
     authorizingCashierId: "supervisor-1",
   };
   return {
@@ -221,6 +223,8 @@ function initialAuthorization(
         printerId: input.printerId,
         errorCode: null,
         requestingCashierId: context.requestingCashierId,
+        requestingCashierName: context.requestingCashierName,
+        requestingUserGuid: context.requestingUserGuid,
         authorizingCashierId: context.authorizingCashierId,
         permissionCode: context.permissionCode,
         authorizationMode: context.authorizationMode,
@@ -428,6 +432,8 @@ test("真实 SQLite：授权重打与首份审计同事务，崩溃恢复终态�
         correlationId: row.correlationId,
         status: payload.status,
         requestingCashierId: payload.requestingCashierId,
+        requestingCashierName: payload.requestingCashierName,
+        requestingUserGuid: payload.requestingUserGuid,
         authorizingCashierId: payload.authorizingCashierId,
         permissionCode: payload.permissionCode,
         authorizationMode: payload.authorizationMode,
@@ -438,6 +444,8 @@ test("真实 SQLite：授权重打与首份审计同事务，崩溃恢复终态�
         correlationId: "action-authorized-reprint",
         status: "Authorized",
         requestingCashierId: "cashier-1",
+        requestingCashierName: "Cashier One",
+        requestingUserGuid: "user-1",
         authorizingCashierId: "supervisor-1",
         permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
         authorizationMode: "online",
@@ -446,6 +454,8 @@ test("真实 SQLite：授权重打与首份审计同事务，崩溃恢复终态�
         correlationId: "action-authorized-reprint",
         status: "Printed",
         requestingCashierId: "cashier-1",
+        requestingCashierName: "Cashier One",
+        requestingUserGuid: "user-1",
         authorizingCashierId: "supervisor-1",
         permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
         authorizationMode: "online",
@@ -515,6 +525,95 @@ test("真实 SQLite：Requested 手动开箱不在重启后补脉冲，首份授
     audits: 1,
     status: "Authorized",
   });
+});
+
+test("真实 SQLite：手动钱箱重试从首份授权审计恢复完整员工，而非当前会话", async () => {
+  const { connection, store } = createHarness();
+  await seedOrder(connection);
+  const authorization = initialAuthorization({
+    actionId: "action-drawer-retry-actor",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-MANUAL",
+  });
+  await store.beginManualDrawerOpen(
+    {
+      eventId: authorization.context.actionId,
+      printerId: "XP-MANUAL",
+      reason: "MANUAL",
+    },
+    authorization,
+  );
+  await store.finishDrawerEvent(
+    authorization.context.actionId,
+    "Requested",
+    "Failed",
+    "PULSE_TIMEOUT",
+    {
+      eventId: "audit-drawer-retry-failed",
+      eventType: "CASH_DRAWER_OPEN",
+      occurredAtIso: "2026-07-28T04:01:00.000Z",
+      orderGuid: null,
+      correlationId: authorization.context.actionId,
+      payload: {
+        action: "open-cash-drawer",
+        status: "Failed",
+        reason: "MANUAL",
+        source: "sales",
+        outcome: "Failed",
+        printerId: "XP-MANUAL",
+        errorCode: "PULSE_TIMEOUT",
+      },
+    },
+  );
+  const restarted = new FulfilmentService({
+    store,
+    printer: {
+      async connect() {},
+      async print() {
+        return { status: "printed", errorCode: null };
+      },
+    },
+    drawer: {
+      async open() {
+        return { status: "completed", errorCode: null };
+      },
+    },
+    nowIso: () => "2026-07-28T04:02:00.000Z",
+    createAuditId: () => "audit-drawer-retry-completed",
+    createCorrelationId: () => "unused-correlation",
+    async prepareLastReceiptReprint() {
+      return null;
+    },
+  });
+
+  assert.deepEqual(
+    await restarted.retryFailedDrawer(authorization.context.actionId),
+    { state: "Completed", errorCode: null },
+  );
+  const payload = await connection.getFirst<{ payloadJson: string }>(
+    `SELECT payload_json AS payloadJson
+     FROM audit_events
+     WHERE event_id = 'audit-drawer-retry-completed'`,
+  );
+  assert.deepEqual(
+    JSON.parse(payload?.payloadJson ?? "{}"),
+    {
+      action: "open-cash-drawer",
+      status: "Completed",
+      reason: "MANUAL",
+      source: "sales",
+      outcome: "Succeeded",
+      printerId: "XP-MANUAL",
+      errorCode: null,
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Cashier One",
+      requestingUserGuid: "user-1",
+      authorizingCashierId: "supervisor-1",
+      permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
+      authorizationMode: "online",
+    },
+  );
 });
 
 test("真实 SQLite：首次授权审计插入失败时重打 job 与手动开箱 event 都整体回滚", async () => {

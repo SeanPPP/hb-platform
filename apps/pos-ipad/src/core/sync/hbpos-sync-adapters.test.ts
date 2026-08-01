@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HbposApiError, type HbposTransport, type HbposTransportRequest, type HbposTransportResponse } from "../api/hbpos-api";
-import type { LocalOrder } from "../contracts/order";
+import type { AuditEventDraft, LocalOrder } from "../contracts/order";
 import type { CardSyncEvidenceV1 } from "../contracts/payment";
 import type { OrderRepositoryPort } from "../contracts/repositories";
 import { OrderSyncMaterialError } from "../db/sqlite-order-sync-material";
@@ -17,6 +17,20 @@ const orderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d01";
 const lineGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d02";
 const tenderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d03";
 const eventGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d04";
+const persistedAuditScope = {
+  storeCode: "1003",
+  deviceCode: "IPAD_1",
+} as const;
+
+/** 单元测试模拟的是已由审计仓储读回的事实，必须显式带入库时 scope。 */
+function persistedAudits(
+  events: readonly AuditEventDraft[],
+): readonly AuditEventDraft[] {
+  return events.map((event) => ({
+    ...event,
+    auditScope: event.auditScope ?? persistedAuditScope,
+  }));
+}
 
 function order(method: "cash" | "card" | "voucher" = "cash"): LocalOrder {
   return {
@@ -400,25 +414,531 @@ test("券退款允许已签发券码且不得携带购买 reservation token", as
   });
 });
 
-test("审计从原订单加载身份；duplicate 成功、rejected 失败，并从载荷剔除 token/PAN", async () => {
-  const transport = new FakeTransport({ status: 200, data: { success: true, data: { results: [{ eventId: eventGuid, status: "duplicate" }] } } });
+test("审计从原订单加载身份；裸 DTO duplicate 成功、rejected 失败，并从载荷剔除 token/PAN", async () => {
+  // OperationAuditsController 直接返回 OperationAuditBatchResultDto，不包 HbposEnvelope。
+  const transport = new FakeTransport({ status: 200, data: { results: [{ eventId: eventGuid, status: "duplicate" }] } });
   const adapter = new HbposAuditBatchAdapter(transport, new FakeOrders(order()), { storeCode: "bad", deviceCode: "bad", appVersion: "1.0.0", instanceId: "ipad-install" });
   const event = { eventId: eventGuid, eventType: "SALE_COMPLETE", occurredAtIso: "2026-07-28T00:00:00.000Z", orderGuid, correlationId: orderGuid, payload: { source: "cash", authorizationToken: "secret", pan: "4111111111111111" } } as const;
-  assert.deepEqual(await adapter.upload([event]), { kind: "uploaded" });
+  assert.deepEqual(await adapter.upload(persistedAudits([event])), { kind: "uploaded" });
   const body = transport.calls[0]?.data as { events: { storeCode: string; deviceCode: string; properties: Record<string, string> | null }[] };
   assert.deepEqual(body.events[0]?.properties, { source: "cash" });
   assert.equal(body.events[0]?.storeCode, "1003");
   assert.equal(body.events[0]?.deviceCode, "IPAD_1");
   assert.doesNotMatch(JSON.stringify(body), /secret|4111111111111111/);
 
-  const rejected = new HbposAuditBatchAdapter(new FakeTransport({ status: 200, data: { success: true, data: { results: [{ eventId: eventGuid, status: "rejected", errorCode: "INVALID_EVENT" }] } } }), new FakeOrders(order()), { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" });
-  assert.deepEqual(await rejected.upload([event]), { kind: "rejected", code: "INVALID_EVENT" });
+  const rejected = new HbposAuditBatchAdapter(new FakeTransport({ status: 200, data: { results: [{ eventId: eventGuid, status: "rejected", errorCode: "INVALID_EVENT" }] } }), new FakeOrders(order()), { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" });
+  assert.deepEqual(await rejected.upload(persistedAudits([event])), {
+    kind: "acknowledged",
+    uploadedEventIds: [],
+    rejected: [{ eventId: eventGuid, code: "INVALID_EVENT" }],
+  });
+});
+
+test("订单审计完整 actor 快照优先；残缺旧载荷只能整套回退订单身份", async () => {
+  const secondEventGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d10";
+  const thirdEventGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d11";
+  const transport = new FakeTransport({
+    status: 200,
+    data: {
+      results: [
+        { eventId: eventGuid, status: "accepted" },
+        { eventId: secondEventGuid, status: "accepted" },
+        { eventId: thirdEventGuid, status: "accepted" },
+      ],
+    },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(order()),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+
+  assert.deepEqual(await adapter.upload(persistedAudits([
+    {
+      eventId: eventGuid,
+      eventType: "SALE_COMPLETE",
+      occurredAtIso: "2026-07-28T00:00:00.000Z",
+      orderGuid,
+      correlationId: eventGuid,
+      payload: {
+        requestingCashierId: "ACTOR-1",
+        requestingCashierName: "Actor One",
+        requestingUserGuid: "actor-user-guid",
+      },
+    },
+    {
+      eventId: secondEventGuid,
+      eventType: "SALE_COMPLETE",
+      occurredAtIso: "2026-07-28T00:00:00.000Z",
+      orderGuid,
+      correlationId: secondEventGuid,
+      payload: {
+        requestingCashierId: "PARTIAL-ACTOR",
+      },
+    },
+    {
+      eventId: thirdEventGuid,
+      eventType: "SALE_COMPLETE",
+      occurredAtIso: "2026-07-28T00:00:00.000Z",
+      orderGuid,
+      correlationId: thirdEventGuid,
+      payload: {
+        requestingCashierId: "ACTOR-NULLS",
+        requestingCashierName: null,
+        requestingUserGuid: null,
+      },
+    },
+  ])), { kind: "uploaded" });
+
+  const events = (transport.calls[0]?.data as {
+    events: Readonly<{
+      cashierId: string | null;
+      cashierName: string | null;
+      userGuid: string | null;
+    }>[];
+  }).events;
+  assert.deepEqual(
+    events.map(({ cashierId, cashierName, userGuid }) => ({
+      cashierId,
+      cashierName,
+      userGuid,
+    })),
+    [
+      {
+        cashierId: "ACTOR-1",
+        cashierName: "Actor One",
+        userGuid: "actor-user-guid",
+      },
+      {
+        cashierId: "cashier-1",
+        cashierName: "Alice",
+        userGuid: null,
+      },
+      {
+        cashierId: "ACTOR-NULLS",
+        cashierName: null,
+        userGuid: null,
+      },
+    ],
+  );
+});
+
+test("非订单登录审计只使用发生时冻结的 requester userGuid", async () => {
+  const transport = new FakeTransport({
+    status: 200,
+    data: { results: [{ eventId: eventGuid, status: "accepted" }] },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  assert.deepEqual(await adapter.upload(persistedAudits([{
+    eventId: eventGuid,
+    eventType: "CASHIER_LOGIN",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid: null,
+    correlationId: eventGuid,
+    payload: {
+      requestingCashierId: "cashier-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-guid-1",
+    },
+  }])), { kind: "uploaded" });
+  const body = transport.calls[0]?.data as {
+    events: { cashierId: string | null; userGuid: string | null }[];
+  };
+  assert.equal(body.events[0]?.cashierId, "cashier-1");
+  assert.equal(body.events[0]?.userGuid, "user-guid-1");
+});
+
+test("设备重新注册后，订单和非订单审计仍使用入库时冻结的门店与设备范围", async () => {
+  const secondEventGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d23";
+  const transport = new FakeTransport({
+    status: 200,
+    data: {
+      results: [
+        { eventId: eventGuid, status: "accepted" },
+        { eventId: secondEventGuid, status: "accepted" },
+      ],
+    },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(order()),
+    // 模拟设备重注册后的当前身份；它绝不能覆盖旧事实。
+    { storeCode: "STORE-NEW", deviceCode: "IPAD-NEW", appVersion: "1", instanceId: "i" },
+  );
+  const oldScope = { storeCode: "STORE-OLD", deviceCode: "IPAD-OLD" } as const;
+
+  assert.deepEqual(await adapter.upload(persistedAudits([
+    {
+      eventId: eventGuid,
+      eventType: "CASHIER_LOGIN",
+      occurredAtIso: "2026-07-28T00:00:00.000Z",
+      orderGuid: null,
+      correlationId: eventGuid,
+      auditScope: oldScope,
+      payload: {},
+    },
+    {
+      eventId: secondEventGuid,
+      eventType: "SALE_COMPLETE",
+      occurredAtIso: "2026-07-28T00:00:00.000Z",
+      orderGuid,
+      correlationId: secondEventGuid,
+      auditScope: oldScope,
+      payload: {},
+    },
+  ])), { kind: "uploaded" });
+
+  const events = (transport.calls[0]?.data as {
+    events: Readonly<{ storeCode: string; deviceCode: string }>[];
+  }).events;
+  assert.deepEqual(
+    events.map(({ storeCode, deviceCode }) => ({ storeCode, deviceCode })),
+    [oldScope, oldScope],
+  );
+});
+
+test("审计逐项回执会确认 accepted/duplicate 并隔离 rejected，不以单条拒绝堵住队头", async () => {
+  const rejectedEventId = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d06";
+  const transport = new FakeTransport({
+    status: 200,
+    data: {
+      results: [
+        { eventId: eventGuid, status: "accepted" },
+        { eventId: rejectedEventId, status: "rejected", errorCode: "INVALID_EVENT" },
+      ],
+    },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  const base = {
+    eventType: "CART_CLEAR",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid: null,
+    payload: {},
+  } as const;
+
+  assert.deepEqual(await adapter.upload(persistedAudits([
+    { ...base, eventId: eventGuid, correlationId: eventGuid },
+    { ...base, eventId: rejectedEventId, correlationId: rejectedEventId },
+  ])), {
+    kind: "acknowledged",
+    uploadedEventIds: [eventGuid],
+    rejected: [{ eventId: rejectedEventId, code: "INVALID_EVENT" }],
+  });
+});
+
+test("员工审计混合回执先确认已知终态，仅重试缺失回执事件", async () => {
+  const missingEventId = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d19";
+  const transport = new FakeTransport({
+    status: 200,
+    data: { results: [{ eventId: eventGuid, status: "duplicate" }] },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  const base = {
+    eventType: "CART_CLEAR",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid: null,
+    payload: {},
+  } as const;
+  assert.deepEqual(await adapter.upload(persistedAudits([
+    { ...base, eventId: eventGuid, correlationId: eventGuid },
+    { ...base, eventId: missingEventId, correlationId: missingEventId },
+  ])), {
+    kind: "acknowledged",
+    uploadedEventIds: [eventGuid],
+    rejected: [],
+    retryEventIds: [missingEventId],
+  });
+});
+
+test("员工审计用 canonical UUID 匹配回执，写回仍保留本地原始 event_id", async () => {
+  const acceptedEventId =
+    "018F1B9B-47C5-7C1B-9F8E-39C5CB3B9D31";
+  const missingEventId =
+    "018F1B9B-47C5-7C1B-9F8E-39C5CB3B9D32";
+  const duplicateEventId =
+    "018F1B9B-47C5-7C1B-9F8E-39C5CB3B9D33";
+  const rejectedEventId =
+    "018F1B9B-47C5-7C1B-9F8E-39C5CB3B9D34";
+  const unknownEventId =
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d35";
+  const transport = new FakeTransport({
+    status: 200,
+    data: {
+      results: [
+        { eventId: acceptedEventId.toLowerCase(), status: "accepted" },
+        { eventId: duplicateEventId.toLowerCase(), status: "duplicate" },
+        {
+          eventId: rejectedEventId.toLowerCase(),
+          status: "rejected",
+          errorCode: "INVALID_EVENT",
+        },
+        { eventId: unknownEventId, status: "accepted" },
+      ],
+    },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(null),
+    {
+      storeCode: "1003",
+      deviceCode: "IPAD_1",
+      appVersion: "1",
+      instanceId: "i",
+    },
+  );
+  const base = {
+    eventType: "CART_CLEAR",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid: null,
+    payload: {},
+  } as const;
+  const localEventIds = [
+    acceptedEventId,
+    missingEventId,
+    duplicateEventId,
+    rejectedEventId,
+  ];
+
+  assert.deepEqual(
+    await adapter.upload(
+      persistedAudits(
+        localEventIds.map((eventId) => ({
+          ...base,
+          eventId,
+          correlationId: eventId,
+        })),
+      ),
+    ),
+    {
+      kind: "acknowledged",
+      uploadedEventIds: [acceptedEventId, duplicateEventId],
+      rejected: [{ eventId: rejectedEventId, code: "INVALID_EVENT" }],
+      retryEventIds: [missingEventId],
+    },
+  );
+  const request = transport.calls[0]?.data as {
+    events: Readonly<{ eventId: string }>[];
+  };
+  assert.deepEqual(
+    request.events.map((event) => event.eventId),
+    localEventIds.map((eventId) => eventId.toLowerCase()),
+  );
+});
+
+test("历史本地审计事件确定性映射到后端枚举，诊断事件隔离且单批最多 8 条", async () => {
+  const ids = [
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d11",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d12",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d13",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d14",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d15",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d16",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d17",
+    "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d18",
+  ] as const;
+  const transport = new FakeTransport({
+    status: 200,
+    data: { results: ids.slice(0, 6).map((eventId) => ({ eventId, status: "accepted" })) },
+  });
+  const returned = order();
+  const returnedOrder: LocalOrder = {
+    ...returned,
+    total: { cents: -1_200, currency: "AUD" },
+    actualAmount: { cents: -1_200, currency: "AUD" },
+    lines: returned.lines.map((line) => ({
+      ...line,
+      kind: "return" as const,
+      actualAmount: { cents: -1_200, currency: "AUD" },
+    })),
+  };
+  const orders = new FakeOrders(returnedOrder);
+  const adapter = new HbposAuditBatchAdapter(transport, orders, {
+    storeCode: "1003",
+    deviceCode: "IPAD_1",
+    appVersion: "1",
+    instanceId: "i",
+  });
+  const base = {
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    payload: {},
+  } as const;
+  const events = [
+    { ...base, eventId: ids[0], eventType: "PAYMENT_MIXED_CASH_COMPLETE", orderGuid, correlationId: ids[0] },
+    { ...base, eventId: ids[1], eventType: "PAYMENT_APPROVED_COMPLETE", orderGuid, correlationId: ids[1] },
+    { ...base, eventId: ids[2], eventType: "RETURN_ORDER_COMPLETED", orderGuid, correlationId: ids[2] },
+    { ...base, eventId: ids[3], eventType: "MIXED_CASH_TENDER_APPENDED", orderGuid: null, correlationId: ids[3] },
+    { ...base, eventId: ids[4], eventType: "MIXED_CASH_TENDER_REVERSED", orderGuid: null, correlationId: ids[4] },
+    { ...base, eventId: ids[5], eventType: "PAYMENT_DRAFT_CANCELLED_CLOSED", orderGuid: null, correlationId: ids[5] },
+    { ...base, eventId: ids[6], eventType: "PAYMENT_DRAFT_ABANDONED", orderGuid: null, correlationId: ids[6] },
+    { ...base, eventId: ids[7], eventType: "DAILY_CLOSE_MIGRATED", orderGuid: null, correlationId: ids[7] },
+  ];
+
+  assert.deepEqual(await adapter.upload(persistedAudits(events)), {
+    kind: "acknowledged",
+    uploadedEventIds: ids.slice(0, 6),
+    rejected: [
+      { eventId: ids[6], code: "AUDIT_LOCAL_DIAGNOSTIC" },
+      { eventId: ids[7], code: "AUDIT_LOCAL_DIAGNOSTIC" },
+    ],
+  });
+  const body = transport.calls[0]?.data as { events: { operationType: string }[] };
+  assert.deepEqual(body.events.map((event) => event.operationType), [
+    "RETURN_REFUND_COMPLETE",
+    "RETURN_REFUND_COMPLETE",
+    "RETURN_REFUND_COMPLETE",
+    "PAYMENT_TENDER_ADD",
+    "PAYMENT_TENDER_REMOVE",
+    "PAYMENT_CANCEL",
+  ]);
+
+  assert.deepEqual(await adapter.upload(persistedAudits(Array.from({ length: 9 }, (_, index) => ({
+    ...base,
+    eventId: `018f1b9b-47c5-7c1b-9f8e-39c5cb3b9e${index}`,
+    eventType: "CART_CLEAR",
+    orderGuid: null,
+    correlationId: `018f1b9b-47c5-7c1b-9f8e-39c5cb3b9e${index}`,
+  })))), {
+    kind: "rejected",
+    code: "AUDIT_BATCH_SIZE_INVALID",
+  });
+});
+
+test("正数混合销售退货的旧 PAYMENT_APPROVED_COMPLETE 仍映射为销售完成", async () => {
+  const mixedPositive = order();
+  const returnLine = mixedPositive.lines[0]!;
+  const mixedOrder: LocalOrder = {
+    ...mixedPositive,
+    lines: [
+      ...mixedPositive.lines,
+      {
+        ...returnLine,
+        lineId: "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d19",
+        kind: "return",
+        actualAmount: { cents: -100, currency: "AUD" },
+        originalOrderGuid: orderGuid,
+        originalOrderDetailGuid: lineGuid,
+      },
+    ],
+  };
+  const transport = new FakeTransport({
+    status: 200,
+    data: { results: [{ eventId: eventGuid, status: "accepted" }] },
+  });
+  const adapter = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(mixedOrder),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+
+  assert.deepEqual(await adapter.upload(persistedAudits([{
+    eventId: eventGuid,
+    eventType: "PAYMENT_APPROVED_COMPLETE",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid,
+    correlationId: eventGuid,
+    payload: {},
+  }])), { kind: "uploaded" });
+  const body = transport.calls[0]?.data as { events: { operationType: string }[] };
+  assert.equal(body.events[0]?.operationType, "SALE_COMPLETE");
+});
+
+test("员工审计 HTTP 429 保留为可重试；超过 4 MiB 的单条载荷被隔离而不发送", async () => {
+  const event = {
+    eventId: eventGuid,
+    eventType: "CART_CLEAR",
+    occurredAtIso: "2026-07-28T00:00:00.000Z",
+    orderGuid: null,
+    correlationId: eventGuid,
+    payload: {},
+  } as const;
+  const rateLimited = new HbposAuditBatchAdapter(
+    new FakeTransport(new HbposApiError("rate limited", { kind: "http", status: 429 })),
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  assert.deepEqual(await rateLimited.upload(persistedAudits([event])), {
+    kind: "retry",
+    failure: "server",
+  });
+
+  const transport = new FakeTransport({ status: 200, data: { results: [] } });
+  const oversized = new HbposAuditBatchAdapter(
+    transport,
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  const hugeItem = {
+    productCode: "P1",
+    itemNumber: "I1",
+    referenceCode: "R1",
+    lookupCode: "L1",
+    displayName: "x".repeat(4 * 1024 * 1024),
+    lineKind: "sale",
+    beforeQuantity: 1,
+    afterQuantity: 1,
+    quantityDelta: 0,
+    beforeUnitPriceCents: 100,
+    afterUnitPriceCents: 100,
+    unitPriceDeltaCents: 0,
+    beforeDiscountCents: 0,
+    afterDiscountCents: 0,
+    discountDeltaCents: 0,
+    beforeGrossCents: 100,
+    afterGrossCents: 100,
+    grossDeltaCents: 0,
+    beforeActualCents: 100,
+    afterActualCents: 100,
+    actualDeltaCents: 0,
+  };
+  assert.deepEqual(await oversized.upload(persistedAudits([{ ...event, payload: { items: [hugeItem] } }])), {
+    kind: "acknowledged",
+    uploadedEventIds: [],
+    rejected: [{ eventId: eventGuid, code: "AUDIT_REQUEST_TOO_LARGE" }],
+  });
+  assert.equal(transport.calls.length, 0);
+
+  const laterEventId = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d07";
+  const prefixTransport = new FakeTransport({
+    status: 200,
+    data: { results: [{ eventId: eventGuid, status: "accepted" }] },
+  });
+  const prefixAdapter = new HbposAuditBatchAdapter(
+    prefixTransport,
+    new FakeOrders(null),
+    { storeCode: "1003", deviceCode: "IPAD_1", appVersion: "1", instanceId: "i" },
+  );
+  assert.deepEqual(await prefixAdapter.upload(persistedAudits([
+    event,
+    {
+      ...event,
+      eventId: laterEventId,
+      correlationId: laterEventId,
+      payload: { items: [hugeItem] },
+    },
+  ])), {
+    kind: "acknowledged",
+    uploadedEventIds: [eventGuid],
+    rejected: [],
+  });
+  assert.equal((prefixTransport.calls[0]?.data as { events: unknown[] }).events.length, 1);
 });
 
 test("购物车审计将快照明细、分币金额和授权上下文映射为后端合同", async () => {
   const transport = new FakeTransport({
     status: 200,
-    data: { success: true, data: { results: [{ eventId: eventGuid, status: "accepted" }] } },
+    data: { results: [{ eventId: eventGuid, status: "accepted" }] },
   });
   const adapter = new HbposAuditBatchAdapter(transport, new FakeOrders(null), {
     storeCode: "1003",
@@ -439,6 +959,8 @@ test("购物车审计将快照明细、分币金额和授权上下文映射为�
       permissionCode: "POS.CART.PRICE_CHANGE",
       authorizationMode: "supervisor",
       requestingCashierId: "cashier-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "cashier-user-guid",
       authorizingCashierId: "manager-2",
       reason: "supervisor-approved",
       itemCount: 1,
@@ -476,7 +998,7 @@ test("购物车审计将快照明细、分币金额和授权上下文映射为�
     },
   } as const;
 
-  assert.deepEqual(await adapter.upload([event]), { kind: "uploaded" });
+  assert.deepEqual(await adapter.upload(persistedAudits([event])), { kind: "uploaded" });
   const body = transport.calls[0]?.data as { events: Record<string, unknown>[] };
   assert.deepEqual(body.events[0], {
     eventId: eventGuid,
@@ -484,9 +1006,10 @@ test("购物车审计将快照明细、分币金额和授权上下文映射为�
     occurredAtUtc: "2026-07-28T00:00:00.000Z",
     operationType: "CART_ITEM_PRICE_CHANGE",
     outcome: "Succeeded",
-    cashierId: null,
-    cashierName: null,
-    isOfflineCached: true,
+    cashierId: "cashier-1",
+    userGuid: "cashier-user-guid",
+    cashierName: "Alice",
+    isOfflineCached: false,
     isEmergencyOverride: false,
     storeCode: "1003",
     deviceCode: "IPAD_1",
@@ -508,6 +1031,8 @@ test("购物车审计将快照明细、分币金额和授权上下文映射为�
       reason: "supervisor-approved",
       itemCount: "1",
       requestingCashierId: "cashier-1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "cashier-user-guid",
       authorizingCashierId: "manager-2",
       permissionCode: "POS.CART.PRICE_CHANGE",
       authorizationMode: "supervisor",
@@ -539,17 +1064,21 @@ test("购物车审计将快照明细、分币金额和授权上下文映射为�
   assert.doesNotMatch(JSON.stringify(body), /secret/);
 
   assert.deepEqual(
-    await adapter.upload([{
+    await adapter.upload(persistedAudits([{
       ...event,
       payload: { ...event.payload, afterActualCents: Number.MAX_SAFE_INTEGER + 1 },
-    }]),
-    { kind: "rejected", code: "AUDIT_AMOUNT_INVALID" },
+    }])),
+    {
+      kind: "acknowledged",
+      uploadedEventIds: [],
+      rejected: [{ eventId: eventGuid, code: "AUDIT_AMOUNT_INVALID" }],
+    },
   );
   assert.equal(transport.calls.length, 1);
 });
 
 test("硬件失败审计保留 Failed outcome，非法 outcome 在请求前失败关闭", async () => {
-  const transport = new FakeTransport({ status: 200, data: { success: true, data: { results: [{ eventId: eventGuid, status: "accepted" }] } } });
+  const transport = new FakeTransport({ status: 200, data: { results: [{ eventId: eventGuid, status: "accepted" }] } });
   const adapter = new HbposAuditBatchAdapter(transport, new FakeOrders(order()), {
     storeCode: "1003",
     deviceCode: "IPAD_1",
@@ -565,7 +1094,7 @@ test("硬件失败审计保留 Failed outcome，非法 outcome 在请求前失�
     payload: { outcome: "Failed", reason: "cash-sale", status: "Failed" },
   } as const;
 
-  assert.deepEqual(await adapter.upload([event]), { kind: "uploaded" });
+  assert.deepEqual(await adapter.upload(persistedAudits([event])), { kind: "uploaded" });
   const body = transport.calls[0]?.data as {
     events: { outcome: string; properties: Record<string, string> | null }[];
   };
@@ -576,8 +1105,12 @@ test("硬件失败审计保留 Failed outcome，非法 outcome 在请求前失�
   });
 
   assert.deepEqual(
-    await adapter.upload([{ ...event, payload: { outcome: "maybe" } }]),
-    { kind: "rejected", code: "AUDIT_OUTCOME_INVALID" },
+    await adapter.upload(persistedAudits([{ ...event, payload: { outcome: "maybe" } }])),
+    {
+      kind: "acknowledged",
+      uploadedEventIds: [],
+      rejected: [{ eventId: eventGuid, code: "AUDIT_OUTCOME_INVALID" }],
+    },
   );
   assert.equal(transport.calls.length, 1);
 });
@@ -587,13 +1120,10 @@ test("M16 礼券撤销的本地终态事实映射为后端审计枚举，避免�
   const transport = new FakeTransport({
     status: 200,
     data: {
-      success: true,
-      data: {
-        results: [
-          { eventId: eventGuid, status: "accepted" },
-          { eventId: blockedEventGuid, status: "accepted" },
-        ],
-      },
+      results: [
+        { eventId: eventGuid, status: "accepted" },
+        { eventId: blockedEventGuid, status: "accepted" },
+      ],
     },
   });
   const adapter = new HbposAuditBatchAdapter(
@@ -633,7 +1163,7 @@ test("M16 礼券撤销的本地终态事实映射为后端审计枚举，避免�
     },
   ] as const;
 
-  assert.deepEqual(await adapter.upload(terminalFacts), { kind: "uploaded" });
+  assert.deepEqual(await adapter.upload(persistedAudits(terminalFacts)), { kind: "uploaded" });
   const body = transport.calls[0]?.data as {
     events: { outcome: string; properties: Record<string, string> | null }[];
   };

@@ -1,4 +1,5 @@
 import type { CashierSessionDto } from "@/core/api/hbpos-api";
+import { auditActorPayload } from "@/core/contracts";
 import type { AuditRepositoryPort } from "@/core/contracts/repositories";
 import type { CashierAuthenticationService } from "@/core/security/cashier-authentication";
 
@@ -10,6 +11,7 @@ export type OperationAuthorizationMode =
 /** 组合根从已认证的收银员会话构造，业务调用方不得自行伪造。 */
 export type RequestingCashierAuthorizationIdentity = Readonly<{
   cashierId: string;
+  cashierName: string | null;
   userGuid: string | null;
   storeCode: string;
   deviceCode: string;
@@ -86,6 +88,7 @@ export type OperationAuthorizationServiceOptions = Readonly<{
 
 type FrozenRequestingCashier = Readonly<{
   cashierId: string;
+  cashierName: string | null;
   userGuid: string | null;
   storeCode: string;
   deviceCode: string;
@@ -494,8 +497,7 @@ export class OperationAuthorizationService {
         correlationId: requiredText(this.options.createId(), "Audit correlation id"),
         payload: {
           source: "ipad-pos",
-          requestingCashierId: cashier.cashierId,
-          requestingUserGuid: cashier.userGuid,
+          ...auditActorPayload(cashier),
           authorizingCashierId: authorizer?.cashierId ?? null,
           authorizingUserGuid: authorizer?.userGuid ?? null,
           permissionCode: request.permissionCode,
@@ -529,6 +531,7 @@ function freezeCashier(input: RequestingCashierAuthorizationIdentity): FrozenReq
   )].sort());
   const normalized = {
     cashierId: requiredText(input.cashierId, "Requesting cashier id"),
+    cashierName: optionalText(input.cashierName),
     userGuid: optionalText(input.userGuid),
     storeCode: requiredText(input.storeCode, "Requesting store code"),
     deviceCode: requiredText(input.deviceCode, "Requesting device code"),

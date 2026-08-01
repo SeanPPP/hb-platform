@@ -6,6 +6,7 @@ export const DEFAULT_OPERATION_LOG_COLUMN_ORDER = [
   'products',
   'amountDelta',
   'deviceCode',
+  'deviceSystem',
   'outcome',
 ] as const
 

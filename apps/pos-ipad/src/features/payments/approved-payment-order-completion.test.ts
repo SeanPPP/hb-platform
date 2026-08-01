@@ -28,12 +28,13 @@ test("重启后的 Approved execution 只以原 attempt.orderGuid 计划并提�
     orderGuid: "order-before-provider-call",
   });
 
-  const completed = await service.complete(approved);
+  const completed = await service.complete(approved, actor());
 
   assert.equal(planner.inputs.length, 1);
   assert.equal(planner.inputs[0]?.attempt.attemptId, "attempt-restarted");
   assert.equal(planner.inputs[0]?.attempt.orderGuid, "order-before-provider-call");
   assert.equal(planner.inputs[0]?.receiptText, "CARD RECEIPT");
+  assert.deepEqual(planner.actors, [actor()]);
   assert.deepEqual(committer.inputs, [
     {
       attemptId: "attempt-restarted",
@@ -54,7 +55,7 @@ test("DB 判定为 replay 时原样返回已存在的 tender，不用 planner �
     committer: new RecordingCommitter(replayed),
   });
 
-  const completed = await service.complete(execution());
+  const completed = await service.complete(execution(), actor());
 
   assert.strictEqual(completed, replayed);
   assert.equal(completed.replayed, true);
@@ -72,7 +73,7 @@ test("混合支付尚未足额时如实返回 partial，不提前宣称订单完
     committer: new RecordingCommitter(partial),
   });
 
-  const completed = await service.complete(execution());
+  const completed = await service.complete(execution(), actor());
 
   assert.strictEqual(completed, partial);
   assert.equal(completed.completed, false);
@@ -89,7 +90,7 @@ test("committer 异常必须标记 recoveryRequired，不能返回伪成功", as
   });
 
   await assert.rejects(
-    () => service.complete(execution()),
+    () => service.complete(execution(), actor()),
     (error: unknown) => {
       assert.ok(error instanceof ApprovedPaymentOrderCompletionRecoveryRequiredError);
       assert.equal(error.recoveryRequired, true);
@@ -107,11 +108,11 @@ test("非 Approved 或退款 attempt 在 planner 和 committer 前即被拒绝",
   const service = new ApprovedPaymentOrderCompletionService({ planner, committer });
 
   await assert.rejects(
-    () => service.complete(execution({ state: "Pending" })),
+    () => service.complete(execution({ state: "Pending" }), actor()),
     PaymentAttemptStateError,
   );
   await assert.rejects(
-    () => service.complete(execution({ operation: "refund" })),
+    () => service.complete(execution({ operation: "refund" }), actor()),
     PaymentAttemptStateError,
   );
   assert.equal(planner.inputs.length, 0);
@@ -120,13 +121,16 @@ test("非 Approved 或退款 attempt 在 planner 和 committer 前即被拒绝",
 
 class RecordingPlanner implements ApprovedPaymentOrderCompletionPlannerPort {
   public readonly inputs: PaymentAttemptExecutionResult[] = [];
+  public readonly actors: import("@/core/contracts").AuditActorSnapshot[] = [];
 
   public constructor(private readonly value: ApprovedPaymentOrderCompletionPlan) {}
 
   public async plan(
     executionResult: PaymentAttemptExecutionResult,
+    frozenActor: import("@/core/contracts").AuditActorSnapshot,
   ): Promise<ApprovedPaymentOrderCompletionPlan> {
     this.inputs.push(executionResult);
+    this.actors.push(frozenActor);
     return this.value;
   }
 }
@@ -154,6 +158,14 @@ function execution(
     receiptText: "CARD RECEIPT",
     responseCode: "APPROVED",
   };
+}
+
+function actor() {
+  return {
+    cashierId: "cashier-1",
+    cashierName: "Alice",
+    userGuid: "user-guid-1",
+  } as const;
 }
 
 function attempt(overrides: Partial<PaymentAttempt> = {}): PaymentAttempt {

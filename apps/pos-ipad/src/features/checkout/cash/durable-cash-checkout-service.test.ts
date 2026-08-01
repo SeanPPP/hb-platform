@@ -90,6 +90,9 @@ test("同一实例重复确认复用同一持久化订单，且只生成一次�
     localSequence: 1,
     cashDueCents: 780,
     changeCents: 220,
+    requestingCashierId: "C1",
+    requestingCashierName: "Alice",
+    requestingUserGuid: "user-guid-c1",
   });
 });
 
@@ -208,6 +211,9 @@ test("取单购物车把 binding 纳入签名，并以最终订单和成交时�
         storeCode: "S1",
         deviceCode: "IPAD1",
         cashierId: "C1",
+        requestingCashierId: "C1",
+        requestingCashierName: "Alice",
+        requestingUserGuid: "user-guid-c1",
         itemCount: 1,
         actualAmountCents: 782,
         localSequence: 1,
@@ -411,7 +417,16 @@ function createService(
 }
 
 function input(checkoutIntentId: string, snapshot: CartSnapshot, cashTenderedCents: number | null) {
-  return { checkoutIntentId, cart: snapshot, cashTenderedCents, storeCode: "S1", deviceCode: "IPAD1", cashierId: "C1", cashierName: "Alice" };
+  return {
+    checkoutIntentId,
+    cart: snapshot,
+    cashTenderedCents,
+    storeCode: "S1",
+    deviceCode: "IPAD1",
+    cashierId: "C1",
+    cashierName: "Alice",
+    userGuid: "user-guid-c1",
+  };
 }
 
 function cart(amount: number, kind: "sale" | "return" = "sale"): CartSnapshot {

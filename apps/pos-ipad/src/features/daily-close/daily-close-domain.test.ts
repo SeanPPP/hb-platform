@@ -82,6 +82,7 @@ test("归档构造固定补齐 11 种 AUD 面额并以整数分币冻结审计�
     savedAtIso: "2026-07-28T08:00:00.000Z",
     savedCashierId: "C1",
     savedCashierName: "Alice",
+    savedUserGuid: "U1",
     summary,
   });
 
@@ -108,6 +109,9 @@ test("归档构造固定补齐 11 种 AUD 面额并以整数分币冻结审计�
       deviceCode: "IPAD-1",
       storeCode: "S1",
       varianceCents: 10_350,
+      requestingCashierId: "C1",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "U1",
     },
   });
 });

@@ -14,6 +14,7 @@ import {
 
 import type {
   ApprovedPaymentOrderCommitResult,
+  AuditActorSnapshot,
   Money,
   OrderTender,
   PaymentAttempt,
@@ -101,6 +102,7 @@ test("两张卡使用两个独立 action，第二张只扣持久余额并完成�
   );
   assert.equal(completion.inputs[0]?.attempt.orderGuid, "order-1");
   assert.equal(completion.inputs[1]?.attempt.orderGuid, "order-1");
+  assert.deepEqual(completion.actors, [actor(), actor()]);
 });
 
 test("同一 action 的并发重复点击共享一次 attempt 和一次 Approved completion", async () => {
@@ -357,6 +359,44 @@ test("崩溃恢复只恢复指定 OrderGuid/attempt，不创建新 attempt", asy
   assert.equal(completion.inputs[0]?.attempt.orderGuid, "order-1");
   assert.equal(JSON.stringify(result).includes("voucherReservationToken"), false);
   assert.equal(JSON.stringify(result).includes("paymentId"), false);
+});
+
+test("Approved 冷恢复完成订单只使用 action 原员工，不使用当前登录员工", async () => {
+  const truth = new MemoryTruth(orderTruth(500));
+  const attempts = new FakeAttempts();
+  const approved = paymentAttempt({
+    attemptId: "attempt-alice-crash",
+    state: "Approved",
+    amount: aud(500),
+  });
+  attempts.attempts.set(approved.attemptId, approved);
+  attempts.actionActor = actor();
+  attempts.recoverResult = () => ({
+    attempt: approved,
+    receiptText: null,
+    responseCode: "APPROVED",
+  });
+  const completion = new FakeCompletion(truth);
+  const bob = {
+    cashierId: "cashier-2",
+    cashierName: "Bob",
+    userGuid: "user-guid-2",
+  } as const;
+  const coordinator = createCoordinator({
+    truth,
+    attempts,
+    completion,
+    actor: bob,
+  });
+
+  const result = await coordinator.recoverOnlineAttempt({
+    orderGuid: "order-1",
+    attemptId: approved.attemptId,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(completion.actors, [actor()]);
+  assert.notDeepEqual(completion.actors, [bob]);
 });
 
 test("持久余额为零时直接返回 completed，绝不再次请求扣款", async () => {
@@ -694,10 +734,12 @@ function createCoordinator(input: Readonly<{
   truth: MixedPaymentOrderTruthPort;
   attempts: MixedPaymentAttemptPort;
   completion: MixedApprovedPaymentCompletionPort;
+  actor?: AuditActorSnapshot;
   cash?: MixedCashTenderPort;
   reversal?: MixedTenderReversalPort;
 }>): MixedPaymentCoordinator {
   return new MixedPaymentCoordinator({
+    actor: input.actor ?? actor(),
     orderTruth: input.truth,
     paymentAttempts: input.attempts,
     approvedCompletion: input.completion,
@@ -718,9 +760,11 @@ class FakeAttempts implements MixedPaymentAttemptPort {
   public readonly startInputs: StartPaymentAttemptInput[] = [];
   public readonly recoverInputs: string[] = [];
   public readonly attempts = new Map<string, PaymentAttempt>();
+  public readonly actors = new Map<string, AuditActorSnapshot>();
   public blocking: PaymentAttempt | null = null;
   public startFailure: Error | null = null;
   public cancelCalls = 0;
+  public actionActor: AuditActorSnapshot = actor();
   public startResult:
     | ((
         input: StartPaymentAttemptInput,
@@ -740,6 +784,7 @@ class FakeAttempts implements MixedPaymentAttemptPort {
     if (!value) throw new Error("Missing fake start result.");
     const execution = await value;
     this.attempts.set(execution.attempt.attemptId, execution.attempt);
+    this.actors.set(execution.attempt.attemptId, input.actor);
     return execution;
   }
 
@@ -763,18 +808,32 @@ class FakeAttempts implements MixedPaymentAttemptPort {
   public async getBlockingAttempt(orderGuid: string): Promise<PaymentAttempt | null> {
     return this.blocking?.orderGuid === orderGuid ? this.blocking : null;
   }
+
+  public async getActionActor(
+    attemptId: string,
+    orderGuid: string,
+  ): Promise<AuditActorSnapshot> {
+    const attempt = this.attempts.get(attemptId);
+    if (attempt && attempt.orderGuid !== orderGuid) {
+      throw new Error("Fake action actor order mismatch.");
+    }
+    return this.actors.get(attemptId) ?? this.actionActor;
+  }
 }
 
 class FakeCompletion implements MixedApprovedPaymentCompletionPort {
   public readonly inputs: PaymentAttemptExecutionResult[] = [];
+  public readonly actors: (AuditActorSnapshot | undefined)[] = [];
   public failure: Error | null = null;
 
   public constructor(private readonly truth: MemoryTruth) {}
 
   public async complete(
     execution: PaymentAttemptExecutionResult,
+    frozenActor?: AuditActorSnapshot,
   ): Promise<ApprovedPaymentOrderCommitResult> {
     this.inputs.push(execution);
+    this.actors.push(frozenActor);
     if (this.failure) throw this.failure;
     const { attempt } = execution;
     const tenderGuid = `tender-${attempt.attemptId}`;
@@ -814,6 +873,14 @@ class FakeCompletion implements MixedApprovedPaymentCompletionPort {
       signedTenderAmountCents: attempt.amount.cents,
     };
   }
+}
+
+function actor(): AuditActorSnapshot {
+  return Object.freeze({
+    cashierId: "cashier-1",
+    cashierName: "Alice",
+    userGuid: "user-guid-1",
+  });
 }
 
 class FakeCashTender implements MixedCashTenderPort {
@@ -914,7 +981,10 @@ function tender(
 }
 
 function approvedExecution(
-  input: StartPaymentAttemptInput,
+  input: Pick<
+    StartPaymentAttemptInput,
+    "actionId" | "orderGuid" | "provider" | "operation" | "amount"
+  >,
   attemptId: string,
 ): PaymentAttemptExecutionResult {
   return {

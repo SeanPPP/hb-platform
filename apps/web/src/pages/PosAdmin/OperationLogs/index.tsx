@@ -63,6 +63,7 @@ import { useAuthStore } from '../../../store/auth'
 import type {
   OperationAuditDetail,
   OperationAuditDetailItem,
+  OperationAuditDeviceSystem,
   OperationAuditListItem,
   OperationAuditOutcome,
   OperationAuditSortField,
@@ -73,6 +74,7 @@ import {
 } from '../../../utils/managedStoreScope'
 import {
   OPERATION_TYPE_KEYS,
+  OPERATION_AUDIT_DEVICE_SYSTEM_OPTIONS,
   DEFAULT_OPERATION_AUDIT_SORT,
   buildOperationAuditQuery,
   buildSystemLogLink,
@@ -98,6 +100,7 @@ interface OperationAuditFormValues {
   storeCode?: string
   cashierKeyword?: string
   deviceCode?: string
+  deviceSystem?: OperationAuditDeviceSystem
   operationType?: string
   outcome?: string
   productKeyword?: string
@@ -306,6 +309,7 @@ export default function PosAdminOperationLogsPage() {
             storeCode: values.storeCode ?? '',
             cashierKeyword: values.cashierKeyword ?? '',
             deviceCode: values.deviceCode ?? '',
+            deviceSystem: values.deviceSystem ?? '',
             operationType: values.operationType ?? '',
             outcome: values.outcome ?? '',
             productKeyword: values.productKeyword ?? '',
@@ -393,6 +397,16 @@ export default function PosAdminOperationLogsPage() {
     [t],
   )
 
+  const deviceSystemLabel = useCallback(
+    (deviceSystem?: string | null) => {
+      if (deviceSystem === 'Windows' || deviceSystem === 'iPadOS') {
+        return t(`operationLogs.platforms.${deviceSystem}`)
+      }
+      return t('operationLogs.platforms.Unknown')
+    },
+    [t],
+  )
+
   const columnDragSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -407,6 +421,7 @@ export default function PosAdminOperationLogsPage() {
       products: t('operationLogs.columns.products'),
       amountDelta: t('operationLogs.columns.amountChange'),
       deviceCode: t('operationLogs.columns.device'),
+      deviceSystem: t('operationLogs.columns.platform'),
       outcome: t('operationLogs.columns.outcome'),
     }),
     [t],
@@ -497,6 +512,15 @@ export default function PosAdminOperationLogsPage() {
         ),
       },
       {
+        title: t('operationLogs.columns.platform'),
+        dataIndex: 'deviceSystem',
+        key: 'deviceSystem',
+        width: 105,
+        render: (value: string | null | undefined) => (
+          <span style={WRAPPED_TABLE_CELL_STYLE}>{deviceSystemLabel(value)}</span>
+        ),
+      },
+      {
         title: t('operationLogs.columns.outcome'),
         dataIndex: 'outcome',
         key: 'outcome',
@@ -519,7 +543,7 @@ export default function PosAdminOperationLogsPage() {
         ),
       },
     ],
-    [operationLabel, outcomeLabel, sortBy, sortOrder, t],
+    [deviceSystemLabel, operationLabel, outcomeLabel, sortBy, sortOrder, t],
   )
 
   const isColumnOrderCustomized = isOperationLogColumnOrderCustomized(columnOrder)
@@ -659,6 +683,14 @@ export default function PosAdminOperationLogsPage() {
     { label: t('operationLogs.presets.last7Days'), value: [dayjs().subtract(7, 'day'), dayjs()] },
     { label: t('operationLogs.presets.last30Days'), value: [dayjs().subtract(30, 'day'), dayjs()] },
   ]
+  const systemLogLink = detailRecord
+    ? buildSystemLogLink({
+        deviceCode: detailRecord.deviceCode,
+        deviceSystem: detailRecord.deviceSystem,
+        traceId: detailRecord.traceId,
+        occurredAtUtc: detailRecord.occurredAtUtc,
+      })
+    : undefined
 
   return (
     <PageContainer
@@ -709,6 +741,17 @@ export default function PosAdminOperationLogsPage() {
               <Col xs={24} sm={12} lg={4}>
                 <Form.Item label={t('operationLogs.filters.device')} name="deviceCode">
                   <Input allowClear placeholder={t('operationLogs.filters.devicePlaceholder')} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} lg={4}>
+                <Form.Item label={t('operationLogs.filters.platform')} name="deviceSystem">
+                  <Select
+                    allowClear
+                    options={OPERATION_AUDIT_DEVICE_SYSTEM_OPTIONS.map((value) => ({
+                      value,
+                      label: deviceSystemLabel(value),
+                    }))}
+                  />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} lg={4}>
@@ -794,7 +837,7 @@ export default function PosAdminOperationLogsPage() {
                 components={{ header: { cell: DraggableHeaderCell } }}
                 columns={columns}
                 dataSource={data}
-                scroll={{ x: 1280 }}
+                scroll={{ x: 1390 }}
                 locale={{ emptyText: t('operationLogs.empty') }}
                 sortDirections={['descend', 'ascend', 'descend']}
                 pagination={{
@@ -837,6 +880,9 @@ export default function PosAdminOperationLogsPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('operationLogs.columns.device')}>
                 {detailRecord.deviceCode}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('operationLogs.columns.platform')}>
+                {deviceSystemLabel(detailRecord.deviceSystem)}
               </Descriptions.Item>
               <Descriptions.Item label={t('operationLogs.columns.employee')}>
                 {detailRecord.cashierName || '-'}
@@ -894,14 +940,8 @@ export default function PosAdminOperationLogsPage() {
               <Descriptions.Item label={t('operationLogs.detail.traceId')}>
                 <Space>
                   <Typography.Text copyable={Boolean(detailRecord.traceId)}>{detailRecord.traceId || '-'}</Typography.Text>
-                  {access.canViewSystemLogs ? (
-                    <Link
-                      to={buildSystemLogLink({
-                        deviceCode: detailRecord.deviceCode,
-                        traceId: detailRecord.traceId,
-                        occurredAtUtc: detailRecord.occurredAtUtc,
-                      })}
-                    >
+                  {access.canViewSystemLogs && systemLogLink ? (
+                    <Link to={systemLogLink}>
                       <ToolOutlined /> {t('operationLogs.detail.openSystemLogs')}
                     </Link>
                   ) : null}

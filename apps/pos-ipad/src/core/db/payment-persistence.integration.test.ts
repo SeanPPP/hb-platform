@@ -995,6 +995,7 @@ test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重
     const closed = await store.closeCancelledDraft({
       actionId: "cancel-action",
       orderGuid: created.orderGuid,
+      actor: paymentAuditActor(),
       ...input.identity,
     });
     assert.equal(closed.replayed, false);
@@ -1021,6 +1022,19 @@ test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重
       ),
       1,
     );
+    const closeAudit = await connection.getFirst<{
+      payload_json: unknown;
+    }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE event_type = 'PAYMENT_DRAFT_CANCELLED_CLOSED'
+         AND correlation_id = ?`,
+      ["cancel-action"],
+    );
+    const closePayload = JSON.parse(String(closeAudit?.payload_json));
+    assert.equal(closePayload.requestingCashierId, "cashier-actor");
+    assert.equal(closePayload.requestingCashierName, "Actor Alice");
+    assert.equal(closePayload.requestingUserGuid, "user-guid-actor");
     assert.equal(
       await scalar(
         connection,
@@ -1048,6 +1062,7 @@ test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重
     const replay = await reopenedStore.closeCancelledDraft({
       actionId: "cancel-action",
       orderGuid: created.orderGuid,
+      actor: paymentAuditActor(),
       ...input.identity,
     });
     assert.equal(replay.replayed, true);
@@ -1059,6 +1074,7 @@ test("真实 SQLite：Cancelled 零活动 tender 以 actionId 幂等关闭且重
       () => reopenedStore.closeCancelledDraft({
         actionId: "different-cancel-action",
         orderGuid: created.orderGuid,
+        actor: paymentAuditActor(),
         ...input.identity,
       }),
       /different immutable action/,
@@ -1125,6 +1141,7 @@ test("真实 SQLite：Cancelled close 遇到活动 tender、非 Cancelled 或其
       () => store.closeCancelledDraft({
         actionId: "cancel-with-tender",
         orderGuid: tenderOrder.orderGuid,
+        actor: paymentAuditActor(),
         ...withTender.identity,
       }),
       /active positive tender/,
@@ -1160,6 +1177,7 @@ test("真实 SQLite：Cancelled close 遇到活动 tender、非 Cancelled 或其
       () => store.closeCancelledDraft({
         actionId: "declined-action",
         orderGuid: wrongStateOrder.orderGuid,
+        actor: paymentAuditActor(),
         ...wrongState.identity,
       }),
       /identity are inconsistent/,
@@ -1211,6 +1229,7 @@ test("真实 SQLite：Cancelled close 遇到活动 tender、非 Cancelled 或其
       () => store.closeCancelledDraft({
         actionId: "cancel-primary",
         orderGuid: blockedOrder.orderGuid,
+        actor: paymentAuditActor(),
         ...blocked.identity,
       }),
       /Another blocking payment attempt/,
@@ -1268,7 +1287,14 @@ test("真实 SQLite：退货多 allocation 在 provider 前耐久绑定，Unknow
       },
       () => T2,
     );
-    const draft = durableReturnDraft();
+    const baseDraft = durableReturnDraft();
+    const draft = {
+      ...baseDraft,
+      identity: {
+        ...baseDraft.identity,
+        userGuid: "return-user-guid",
+      },
+    };
     const [prepared, replay] = await Promise.all([
       ledger.prepareOrLoad(draft),
       ledger.prepareOrLoad(draft),
@@ -1599,6 +1625,31 @@ test("真实 SQLite：退货多 allocation 在 provider 前耐久绑定，Unknow
     const completed = await ledger.completeAtomically(completion);
     assert.equal(completed.status, "completed");
     assert.equal(completed.returnOrderGuid, draft.returnOrderGuid);
+    const completionAudit = await connection.getFirst<{
+      payload_json: unknown;
+    }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE event_type = 'RETURN_ORDER_COMPLETED'
+         AND order_guid = ?`,
+      [draft.returnOrderGuid],
+    );
+    assert.deepEqual(
+      JSON.parse(String(completionAudit?.payload_json)),
+      {
+        action: "return-order-completed",
+        requestingCashierId: draft.identity.cashierId,
+        requestingCashierName: draft.identity.cashierName,
+        requestingUserGuid: "return-user-guid",
+        sourceKind: draft.plan.sourceKind,
+        totalRefundCents: draft.plan.totalRefundCents,
+        lineCount: draft.lines.length,
+        allocations: draft.allocations.map((allocation) => ({
+          method: allocation.method,
+          amountCents: allocation.signedAmountCents,
+        })),
+      },
+    );
     assert.equal(
       (await ledger.completeAtomically(completion)).status,
       "completed",
@@ -2497,6 +2548,7 @@ test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删�
       orderGuid: created.orderGuid,
       storeCode: input.identity.storeCode,
       deviceCode: input.identity.deviceCode,
+      actor: paymentAuditActor(),
     };
     const abandoned = await store.abandonPreparedDraft(command);
     assert.equal(abandoned.replayed, false);
@@ -2507,6 +2559,19 @@ test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删�
     const abandonReplay = await store.abandonPreparedDraft(command);
     assert.equal(abandonReplay.replayed, true);
     assert.deepEqual(abandonReplay.pricingState, input.pricingState);
+    const abandonAudit = await connection.getFirst<{
+      payload_json: unknown;
+    }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE event_type = 'PAYMENT_DRAFT_ABANDONED'
+         AND correlation_id = ?`,
+      [command.actionId],
+    );
+    const abandonPayload = JSON.parse(String(abandonAudit?.payload_json));
+    assert.equal(abandonPayload.requestingCashierId, "cashier-actor");
+    assert.equal(abandonPayload.requestingCashierName, "Actor Alice");
+    assert.equal(abandonPayload.requestingUserGuid, "user-guid-actor");
     assert.equal(await store.findBlockingRecovery(input.identity), null);
     assert.equal(
       await scalar(
@@ -2594,6 +2659,7 @@ test("真实 SQLite：全部现金 tender 已反冲时可幂等关闭，且保�
       orderGuid: created.orderGuid,
       storeCode: input.identity.storeCode,
       deviceCode: input.identity.deviceCode,
+      actor: paymentAuditActor(),
     };
     await assert.rejects(
       () => store.closeFullyReversedDraft(command),
@@ -2842,6 +2908,7 @@ test("真实 SQLite：全反冲关闭拒绝不完整或不安全的历史 paymen
           orderGuid: created.orderGuid,
           storeCode: input.identity.storeCode,
           deviceCode: input.identity.deviceCode,
+          actor: paymentAuditActor(),
         };
 
         const draft = await store.readDraft(created.orderGuid, input.identity);
@@ -2973,6 +3040,7 @@ test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重�
         actionId: "cannot-abandon",
         draftId: input.draftId,
         orderGuid: created.orderGuid,
+        actor: paymentAuditActor(),
         ...input.identity,
       }),
       /tender, attempt, or action binding/,
@@ -3031,10 +3099,10 @@ test("真实 SQLite：payment action-only recovery 严格解析签名，多 bind
     await connection.run(
       `INSERT INTO payment_action_bindings (
         order_guid, action_id, request_signature,
-        attempt_id, idempotency_key, created_at_iso
+        attempt_id, idempotency_key, created_at_iso, audit_actor_json
       ) VALUES (?, 'invalid-action', 'not-json',
-        'invalid-attempt', 'invalid-idempotency', ?)`,
-      [invalidDraft.orderGuid, T0],
+        'invalid-attempt', 'invalid-idempotency', ?, ?)`,
+      [invalidDraft.orderGuid, T0, paymentActorJson()],
     );
     await assert.rejects(
       () => store.findBlockingRecovery(invalidInput.identity),
@@ -3097,6 +3165,7 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
     const command = {
       actionId: "cash-action",
       orderGuid: "order-mixed",
+      actor: paymentAuditActor(),
       amount: { currency: "AUD", cents: 400 } as const,
       tenderedAmount: { currency: "AUD", cents: 500 } as const,
       change: { currency: "AUD", cents: 100 } as const,
@@ -3161,11 +3230,30 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
       ),
       100,
     );
+    const appendedAudit = await connection.getFirst<{
+      payload_json: unknown;
+    }>(
+      `SELECT payload_json
+       FROM audit_events
+       WHERE order_guid = 'order-mixed'
+         AND correlation_id = 'cash-action'`,
+    );
+    assert.deepEqual(JSON.parse(String(appendedAudit?.payload_json)), {
+      action: "mixed-cash-tender-appended",
+      appliedCents: 400,
+      tenderedCents: 500,
+      changeCents: 100,
+      tenderGuid: one.tenderGuid,
+      requestingCashierId: "cashier-actor",
+      requestingCashierName: "Actor Alice",
+      requestingUserGuid: "user-guid-actor",
+    });
 
     const reversed = await store.reverseTender({
       actionId: "reverse-shared",
       orderGuid: "order-mixed",
       tenderGuid: one.tenderGuid,
+      actor: paymentAuditActor(),
     });
     assert.equal(reversed.state, "reversed");
     assert.equal(reversed.replayed, false);
@@ -3186,6 +3274,7 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
         actionId: "reverse-shared",
         orderGuid: "order-mixed",
         tenderGuid: one.tenderGuid,
+        actor: paymentAuditActor(),
       })).replayed,
       true,
     );
@@ -3194,6 +3283,7 @@ test("真实 SQLite：mixed partial cash 并发/重放只追加一次，现金 r
         actionId: "reverse-other",
         orderGuid: "order-mixed",
         tenderGuid: one.tenderGuid,
+        actor: paymentAuditActor(),
       }),
       /already has an immutable reversal/,
     );
@@ -3235,11 +3325,13 @@ test("真实 SQLite：reversal action 以 order+action 查询，两订单同 act
       actionId: "same-action",
       orderGuid: "order-a",
       tenderGuid: "cash-order-a",
+      actor: paymentAuditActor(),
     });
     const b = await store.reverseTender({
       actionId: "same-action",
       orderGuid: "order-b",
       tenderGuid: "cash-order-b",
+      actor: paymentAuditActor(),
     });
     assert.notEqual(a.reversalTenderGuid, b.reversalTenderGuid);
     assert.equal(a.truth.orderGuid, "order-a");
@@ -3256,6 +3348,7 @@ test("真实 SQLite：reversal action 以 order+action 查询，两订单同 act
       actionId: "card-reverse",
       orderGuid: "order-b",
       tenderGuid: "card-source",
+      actor: paymentAuditActor(),
     });
     assert.equal(pending.state, "pending");
     assert.equal(pending.reversalTenderGuid, null);
@@ -3340,6 +3433,7 @@ test("真实 SQLite：M23 旧现金 action 升级 M24 后按实收等于入账�
       actionId: "cash-action-legacy",
       orderGuid: "order-mixed-legacy",
       amount: { currency: "AUD", cents: 400 },
+      actor: paymentAuditActor(),
     });
     assert.equal(replay.replayed, true);
     assert.equal(replay.tenderGuid, "tender-mixed-legacy");
@@ -3382,6 +3476,7 @@ test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写
       actionId: "final-action",
       orderGuid: "order-final",
       amount: { currency: "AUD", cents: 500 },
+      actor: paymentAuditActor(),
     });
     assert.equal(result.truth.state, "PendingSync");
     assert.equal(
@@ -3444,6 +3539,7 @@ test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写
         actionId: "planner-fail",
         orderGuid: "order-plan-fail",
         amount: { currency: "AUD", cents: 300 },
+        actor: paymentAuditActor(),
       }),
       /planner failed/,
     );
@@ -3483,6 +3579,7 @@ test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写
         actionId: "write-fail",
         orderGuid: "order-write-fail",
         amount: { currency: "AUD", cents: 300 },
+        actor: paymentAuditActor(),
       }),
       /UNIQUE constraint failed/,
     );
@@ -3511,6 +3608,7 @@ test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写
         actionId: "no-planner",
         orderGuid: "order-no-planner",
         amount: { currency: "AUD", cents: 300 },
+        actor: paymentAuditActor(),
       }),
       /requires a durable completion planner/,
     );
@@ -3546,6 +3644,7 @@ test("真实 SQLite：final cash 原子完成订单/outbox/履约，规划或写
         actionId: "partial-rollback",
         orderGuid: "order-partial-rollback",
         amount: { currency: "AUD", cents: 100 },
+        actor: paymentAuditActor(),
       }),
       /UNIQUE constraint failed/,
     );
@@ -4354,6 +4453,14 @@ function completionPlan(
   };
 }
 
+function paymentAuditActor() {
+  return {
+    cashierId: "cashier-actor",
+    cashierName: "Actor Alice",
+    userGuid: "user-guid-actor",
+  } as const;
+}
+
 async function migrateFresh(connection: SqliteConnectionPort): Promise<void> {
   await applyMigrations(connection, () => T0);
 }
@@ -4473,8 +4580,8 @@ function insertActionBinding(
   return connection.run(
     `INSERT INTO payment_action_bindings (
       order_guid, action_id, request_signature,
-      attempt_id, idempotency_key, created_at_iso
-    ) VALUES (?, ?, ?, ?, ?, ?)`,
+      attempt_id, idempotency_key, created_at_iso, audit_actor_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       orderGuid,
       actionId,
@@ -4482,8 +4589,17 @@ function insertActionBinding(
       attemptId,
       idempotencyKey,
       T0,
+      paymentActorJson(),
     ],
   ).then(() => undefined);
+}
+
+function paymentActorJson(): string {
+  return JSON.stringify({
+    requestingCashierId: "cashier-test",
+    requestingCashierName: "Test Cashier",
+    requestingUserGuid: "user-test",
+  });
 }
 
 function insertTender(

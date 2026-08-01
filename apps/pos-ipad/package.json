@@ -25,6 +25,7 @@
     "test:ota-release-script": "node --test scripts/publish-ota-release.test.mjs",
     "test:attendance-security": "tsx --test src/core/peripherals/attendance-security/native/*.test.ts && node --test modules/hb-attendance-security/tests/native-source-contract.test.mjs modules/hb-attendance-security/tests/native-interop.test.mjs",
     "test:attendance-audit": "tsx --test src/features/attendance-audit/*.test.ts && jest src/features/attendance-audit/*.rntl.test.tsx --runInBand",
+    "test:logging": "tsx --test src/core/logging/application-log.test.ts && jest src/core/logging/application-error-observer.rntl.test.tsx src/core/runtime/expo-pos-runtime.rntl.test.tsx --runInBand",
     "test:ui-shell": "tsx --test src/ui/shell/*.test.ts",
     "test:bootstrap-ui": "jest src/ui/screens/bootstrap-screen.rntl.test.tsx --runInBand",
     "test:ui-preferences": "jest src/ui/preferences/*.test.ts src/i18n/index.test.ts --runInBand",

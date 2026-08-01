@@ -11,7 +11,9 @@ import {
 
 import {
   AUD_CASH_DENOMINATIONS_CENTS,
+  auditActorPayload,
   normalizeDailyCloseCounts,
+  type AuditRepositoryPort,
   type AudCashDenominationCents,
   type DailyCloseArchive,
   type DailyCloseDenominationCount,
@@ -68,6 +70,8 @@ export interface DailyClosePrinterPort {
 export type DailyClosePresenterOptions = Readonly<{
   businessTimeZone: string;
   createId(): string;
+  /** 日结补打与归档保存解耦：审计故障不得反向改变已发生的硬件结果。 */
+  audit: Pick<AuditRepositoryPort, "append">;
   identity: DailyCloseIdentity;
   initialBusinessDate?: string;
   now(): Date;
@@ -319,6 +323,7 @@ export class DailyClosePresenter {
       savedAtIso,
       savedCashierId: this.options.identity.cashierId,
       savedCashierName: this.options.identity.cashierName,
+      savedUserGuid: this.options.identity.userGuid,
       summary,
     });
     let archive: DailyCloseArchive;
@@ -372,12 +377,15 @@ export class DailyClosePresenter {
       return;
     }
     this.patch({ busy: true, statusCode: null });
+    const job = this.createPrintJob(archive, true);
     try {
-      await this.options.printer.print(this.createPrintJob(archive, true));
+      await this.options.printer.print(job);
+      await this.appendReprintAudit(archive, "Succeeded");
       if (!this.destroyed) {
         this.patch({ busy: false, statusCode: "reprint-printed" });
       }
     } catch {
+      await this.appendReprintAudit(archive, "Failed");
       if (!this.destroyed) {
         this.patch({ busy: false, statusCode: "reprint-failed" });
       }
@@ -399,6 +407,37 @@ export class DailyClosePresenter {
       }),
       reprint,
     });
+  }
+
+  private async appendReprintAudit(
+    archive: DailyCloseArchive,
+    outcome: "Succeeded" | "Failed",
+  ): Promise<void> {
+    try {
+      await this.options.audit.append([
+        {
+          eventId: this.options.createId(),
+          eventType: "DAILY_CLOSE_REPRINT",
+          occurredAtIso: this.options.now().toISOString(),
+          orderGuid: null,
+          correlationId: archive.closeId,
+          payload: {
+            action: "daily-close-reprint",
+            status: outcome === "Succeeded" ? "Printed" : "Failed",
+            reason: "daily-close-reprint",
+            source: "ipad-pos",
+            outcome,
+            ...auditActorPayload({
+              cashierId: this.options.identity.cashierId,
+              cashierName: this.options.identity.cashierName,
+              userGuid: this.options.identity.userGuid,
+            }),
+          },
+        },
+      ]);
+    } catch {
+      // 中文注释：硬件已完成或失败是不可逆事实；旁路员工审计只能尽力追加，不能覆盖打印结果。
+    }
   }
 
   private isCurrentLoad(generation: number): boolean {

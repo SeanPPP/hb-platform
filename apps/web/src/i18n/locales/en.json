@@ -3413,6 +3413,7 @@
       "employeePlaceholder": "Name or employee ID",
       "device": "Terminal",
       "devicePlaceholder": "Terminal code",
+      "platform": "Platform",
       "operation": "Event",
       "outcome": "Outcome",
       "product": "Product",
@@ -3431,7 +3432,13 @@
       "products": "Products",
       "amountChange": "Amount Change",
       "device": "Terminal",
+      "platform": "Platform",
       "outcome": "Outcome"
+    },
+    "platforms": {
+      "Windows": "Windows",
+      "iPadOS": "iPadOS",
+      "Unknown": "Unknown"
     },
     "outcomes": {
       "succeeded": "Succeeded",
@@ -3991,6 +3998,7 @@
         "hbweb_rv": "Web Frontend",
         "HbwebExpo": "Mobile App",
         "hbpos_win": "WPF Client",
+        "hbpos_ipad": "iPad Client",
         "hbpos_api": "WPF POS Backend"
       },
       "status": {

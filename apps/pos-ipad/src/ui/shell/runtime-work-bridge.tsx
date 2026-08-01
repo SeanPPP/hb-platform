@@ -8,6 +8,7 @@ import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 
 export function RuntimeWorkBridge() {
   const runtime = usePosRuntime();
+  const applicationLog = runtime.services?.applicationLog ?? null;
   const connectivity = usePosShellStore((state) => state.connectivity);
   const lastAppState = useRef<AppStateStatus>(AppState.currentState);
   const controller = useMemo(
@@ -20,21 +21,37 @@ export function RuntimeWorkBridge() {
 
   useEffect(() => {
     if (!controller) return undefined;
-    void controller.onApplicationStarted().catch(() => {
+    applicationLog?.onApplicationStarted();
+    void controller.onApplicationStarted().catch((error: unknown) => {
+      applicationLog?.record({
+        level: "Error",
+        message: "Runtime background work failed during application startup.",
+        category: "runtime.background-work",
+        error,
+        properties: { trigger: "application-started" },
+      });
       // 同步/外设队列保留了失败事实；后台触发器不能让 React 树崩溃。
     });
     return undefined;
-  }, [controller]);
+  }, [applicationLog, controller]);
 
   useEffect(() => {
     if (!controller || connectivity === "checking") return undefined;
+    applicationLog?.onNetworkChanged(connectivity === "online");
     void controller
       .onNetworkChanged(connectivity === "online")
-      .catch(() => {
+      .catch((error: unknown) => {
+        applicationLog?.record({
+          level: "Error",
+          message: "Runtime background work failed after network change.",
+          category: "runtime.background-work",
+          error,
+          properties: { trigger: "network-change" },
+        });
         // 网络恢复失败由 outbox 退避，不能在 UI 生命周期中强制重试。
       });
     return undefined;
-  }, [connectivity, controller]);
+  }, [applicationLog, connectivity, controller]);
 
   useEffect(() => {
     if (!controller) return undefined;
@@ -43,13 +60,21 @@ export function RuntimeWorkBridge() {
         next === "active" && lastAppState.current !== "active";
       lastAppState.current = next;
       if (becameActive) {
-        void controller.onForeground().catch(() => {
+        applicationLog?.onForeground();
+        void controller.onForeground().catch((error: unknown) => {
+          applicationLog?.record({
+            level: "Error",
+            message: "Runtime background work failed after foreground resume.",
+            category: "runtime.background-work",
+            error,
+            properties: { trigger: "foreground" },
+          });
           // 前台恢复失败保持队列现状，主管可从同步/履约历史继续处理。
         });
       }
     });
     return () => subscription.remove();
-  }, [controller]);
+  }, [applicationLog, controller]);
 
   return null;
 }

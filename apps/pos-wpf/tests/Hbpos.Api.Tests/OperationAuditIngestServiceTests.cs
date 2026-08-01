@@ -25,9 +25,28 @@ public sealed class OperationAuditIngestServiceTests
 
         Assert.True(await fixture.TableExistsAsync("pos_operation_audit"));
         Assert.True(await fixture.TableExistsAsync("pos_operation_audit_item"));
+        Assert.True(await fixture.ColumnExistsAsync("pos_operation_audit", "device_system"));
         Assert.True(await fixture.IndexExistsAsync("IX_pos_operation_audit_store_time"));
         Assert.Equal(0, await fixture.PosmDb.Queryable<PosOperationAudit>().CountAsync());
         Assert.Equal(0, await fixture.PosmDb.Queryable<PosOperationAuditItem>().CountAsync());
+    }
+
+    [Fact]
+    public async Task InitializeAsync_upgrades_legacy_parent_table_with_nullable_device_system()
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await fixture.PosmDb.Ado.ExecuteCommandAsync("""
+            CREATE TABLE pos_operation_audit (
+                event_id TEXT NOT NULL PRIMARY KEY
+            );
+            """);
+        var initializer = new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext);
+
+        Assert.False(await fixture.ColumnExistsAsync("pos_operation_audit", "device_system"));
+        await initializer.InitializeAsync();
+        await initializer.InitializeAsync();
+
+        Assert.True(await fixture.ColumnExistsAsync("pos_operation_audit", "device_system"));
     }
 
     [Fact]
@@ -54,8 +73,18 @@ public sealed class OperationAuditIngestServiceTests
             ["customerEmail"] = "private@example.test"
         };
 
-        var first = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
-        var second = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+        var first = await service.IngestAsync(
+            request,
+            "STORE-1",
+            "POS-1",
+            CancellationToken.None,
+            deviceSystem: "iPadOS");
+        var second = await service.IngestAsync(
+            request,
+            "STORE-1",
+            "POS-1",
+            CancellationToken.None,
+            deviceSystem: "Windows");
 
         Assert.Equal(1, first.AcceptedCount);
         Assert.Equal("accepted", Assert.Single(first.Results).Status);
@@ -65,6 +94,7 @@ public sealed class OperationAuditIngestServiceTests
         var parent = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
         Assert.Equal("STORE-1", parent.StoreCode);
         Assert.Equal("POS-1", parent.DeviceCode);
+        Assert.Equal("iPadOS", parent.DeviceSystem);
         Assert.Equal("CART_ITEM_PRICE_CHANGE", parent.OperationType);
         Assert.Equal("AUD", parent.CurrencyCode);
         Assert.Equal(receivedAt.UtcDateTime, parent.ReceivedAtUtc);
@@ -460,6 +490,13 @@ public sealed class OperationAuditIngestServiceTests
                 "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = @tableName",
                 new SugarParameter("@tableName", tableName));
             return count > 0;
+        }
+
+        public async Task<bool> ColumnExistsAsync(string tableName, string columnName)
+        {
+            var result = await PosmDb.Ado.GetDataTableAsync($"PRAGMA table_info([{tableName}])");
+            return result.Rows.Cast<System.Data.DataRow>()
+                .Any(row => string.Equals(row["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase));
         }
 
         public async Task<bool> IndexExistsAsync(string indexName)

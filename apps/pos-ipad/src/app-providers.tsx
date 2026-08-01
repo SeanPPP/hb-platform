@@ -1,11 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PropsWithChildren } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PaperProvider } from "react-native-paper";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import "@/i18n";
+import {
+  ApplicationLogErrorBoundary,
+  installApplicationErrorObserver,
+} from "@/core/logging/application-error-observer";
 import {
   PosRuntimeProvider,
   usePosRuntime,
@@ -42,19 +46,38 @@ export function AppProviders({ children }: PropsWithChildren) {
         <PaperProvider theme={posTheme}>
           <PosSoundProvider>
             <PosRuntimeProvider>
-              <CashierSessionInvalidationBridge />
-              <NetworkStatusBridge />
-              <PeripheralStatusBridge />
-              <RuntimeStatusBridge />
-              <RuntimeWorkBridge />
-              <OperationAuthorizationModalBridge />
-              {children}
-              <AppUpdateGateBridge />
+              <ApplicationErrorObservationBridge>
+                <CashierSessionInvalidationBridge />
+                <NetworkStatusBridge />
+                <PeripheralStatusBridge />
+                <RuntimeStatusBridge />
+                <RuntimeWorkBridge />
+                <OperationAuthorizationModalBridge />
+                {children}
+                <AppUpdateGateBridge />
+              </ApplicationErrorObservationBridge>
             </PosRuntimeProvider>
           </PosSoundProvider>
         </PaperProvider>
       </QueryClientProvider>
     </SafeAreaProvider>
+  );
+}
+
+function ApplicationErrorObservationBridge({ children }: PropsWithChildren) {
+  const runtime = usePosRuntime();
+  const applicationLogRef = useRef(runtime.services?.applicationLog ?? null);
+  applicationLogRef.current = runtime.services?.applicationLog ?? null;
+
+  useEffect(
+    () => installApplicationErrorObserver(() => applicationLogRef.current),
+    [],
+  );
+
+  return (
+    <ApplicationLogErrorBoundary applicationLog={applicationLogRef.current}>
+      {children}
+    </ApplicationLogErrorBoundary>
   );
 }
 

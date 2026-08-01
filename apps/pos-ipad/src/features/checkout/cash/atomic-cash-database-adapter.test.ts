@@ -50,6 +50,7 @@ test("现金领域完成命令与预渲染履约草稿只交给一次原子 comm
     deviceCode: "IPAD1",
     cashierId: "C1",
     cashierName: "Cashier",
+    userGuid: "user-guid-c1",
   });
 
   assert.deepEqual(events, ["plan", "commit"]);
@@ -143,6 +144,7 @@ async function completeWith(
     deviceCode: "IPAD1",
     cashierId: "C1",
     cashierName: "Cashier",
+    userGuid: "user-guid-c1",
   });
 }
 

@@ -4,6 +4,7 @@ import {
 } from "./payment-attempt-service";
 
 import type {
+  AuditActorSnapshot,
   ApprovedPaymentOrderCommit,
   ApprovedPaymentOrderCommitPort,
   ApprovedPaymentOrderCommitResult,
@@ -17,6 +18,7 @@ export type ApprovedPaymentOrderCompletionPlan = Pick<
 export interface ApprovedPaymentOrderCompletionPlannerPort {
   plan(
     execution: PaymentAttemptExecutionResult,
+    actor: AuditActorSnapshot,
   ): Promise<ApprovedPaymentOrderCompletionPlan>;
 }
 
@@ -55,6 +57,7 @@ export class ApprovedPaymentOrderCompletionService {
 
   public async complete(
     execution: PaymentAttemptExecutionResult,
+    actor: AuditActorSnapshot,
   ): Promise<ApprovedPaymentOrderCommitResult> {
     const { attempt } = execution;
     if (attempt.state !== "Approved") {
@@ -68,7 +71,7 @@ export class ApprovedPaymentOrderCompletionService {
       );
     }
 
-    const plan = await this.options.planner.plan(execution);
+    const plan = await this.options.planner.plan(execution, actor);
     const commit: ApprovedPaymentOrderCommit = {
       attemptId: attempt.attemptId,
       orderGuid: attempt.orderGuid,

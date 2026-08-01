@@ -40,6 +40,13 @@ import { createExpoKeychainDatabaseKeyProvider } from "../db/expo-keychain-datab
 import { ExpoSqliteDriver } from "../db/expo-sqlite-driver";
 import { PosDatabase } from "../db/pos-database";
 import {
+  ApplicationLogActorBinding,
+  ApplicationLogger,
+  ApplicationLogRuntime,
+  ApplicationLogUploader,
+  resolveApplicationLogCenterConfig,
+} from "../logging/application-log";
+import {
   createExpoAttendanceSecurityAdapter,
 } from "../peripherals/attendance-security/native";
 import {
@@ -88,6 +95,7 @@ import {
 } from "./pos-runtime";
 import {
   createProductionPosRuntimeServices,
+  type PosCashierSessionRuntimeService,
   type ProductionPosRuntimeServices,
 } from "./production-pos-service-composition";
 import {
@@ -112,6 +120,12 @@ type HbposExtraConfig = Readonly<{
     automaticOtaChecks?: boolean;
     buildProfile?: string;
     businessTimeZone?: string;
+    logCenter?: Readonly<{
+      enabled?: boolean;
+      ingestUrl?: string;
+      writeKey?: string;
+      environment?: string;
+    }>;
     trustedApiOrigins?: readonly string[];
   }>;
   payments?: PosPaymentPublicExtra;
@@ -127,6 +141,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     appUpdates: AppUpdateOrchestrator;
     appUpdateRecovery: AppUpdateRecoveryRuntimePort;
     scanner: Readonly<{ router: HidScannerRouter }>;
+    applicationLog: ApplicationLogRuntime;
   }>;
 
 type ExpoSettingsDevicePresentation = Readonly<{
@@ -152,6 +167,55 @@ export async function readSettingsDevicePresentation(
     storeName: presentation.storeName ?? "",
     terminalName: "",
   });
+}
+
+/**
+ * 收银员条码和会话票据只留在收银域。日志仅在可信登录成功后接收身份投影，
+ * 登录失败、锁屏、401/403 都会先清空旧投影，避免把 Alice 的日志归给 Bob。
+ */
+export function bindCashierSessionToApplicationLog(
+  cashierSession: PosCashierSessionRuntimeService,
+  actor: ApplicationLogActorBinding,
+): PosCashierSessionRuntimeService {
+  return Object.freeze({
+    signIn: async (userBarcode) => {
+      actor.clear();
+      const summary = await cashierSession.signIn(userBarcode);
+      actor.bind({
+        userId: summary.userGuid ?? summary.cashierId,
+        userName: summary.cashierName,
+      });
+      return summary;
+    },
+  });
+}
+
+/** 初始化异常必须保持原始抛出语义；这里只在关闭 SQLite 前尽力留下诊断。 */
+export async function recordRuntimeInitializationFailure(
+  applicationLog: Pick<ApplicationLogRuntime, "logger" | "shutdown"> | null,
+  error: unknown,
+  closeDatabase: () => Promise<void>,
+): Promise<void> {
+  try {
+    await applicationLog?.logger.record({
+      level: "Critical",
+      message: "POS runtime initialization failed.",
+      category: "runtime.initialization",
+      error,
+    });
+  } catch {
+    // 日志旁路自身故障不能覆盖初始化异常或阻止 SQLite 收尾。
+  }
+  try {
+    await applicationLog?.shutdown();
+  } catch {
+    // 保留既有 database.close 错误与上层恢复语义。
+  }
+  try {
+    await closeDatabase();
+  } catch {
+    // close 同样属于失败收尾；caller 必须最终重抛原始初始化异常。
+  }
 }
 
 class ExpoNetworkStatus {
@@ -253,6 +317,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
   const publicCashierSessionInvalidation = createPublicCashierInvalidation(
     cashierSessionInvalidation,
   );
+  const applicationLogActor = new ApplicationLogActorBinding();
+  cashierSessionInvalidation.subscribe(() => applicationLogActor.clear());
   const securityBridge = new DeferredSecurityBridge();
   const transport = createAxiosHbposTransport(
     apiBaseUrl,
@@ -342,10 +408,45 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     keyProvider: createExpoKeychainDatabaseKeyProvider(secureStore),
     nowIso: () => new Date().toISOString(),
   });
+  const now = () => new Date();
+  const createId = () => Crypto.randomUUID();
+  const appVersion =
+    Constants.nativeAppVersion ??
+    Constants.expoConfig?.version ??
+    "0.0.0";
+  let applicationLog: ApplicationLogRuntime | null = null;
 
   try {
-    const now = () => new Date();
-    const createId = () => Crypto.randomUUID();
+    // 数据库一旦可用立即创建日志器；后续任一组合步骤失败都可在关闭前持久记录。
+    applicationLog = new ApplicationLogRuntime(
+      new ApplicationLogger(
+        database.applicationLogOutbox(),
+        () => {
+          const actor = applicationLogActor.read();
+          return {
+            storeCode: runtimeCredentials?.storeCode ?? null,
+            deviceCode: runtimeCredentials?.deviceCode ?? null,
+            userId: actor?.userId ?? null,
+            userName: actor?.userName ?? null,
+            appVersion,
+            instanceId: installationId,
+          };
+        },
+        createId,
+        () => now().toISOString(),
+      ),
+      new ApplicationLogUploader(
+        database.applicationLogOutbox(),
+        resolveApplicationLogCenterConfig({
+          enabled: publicExtra?.hbpos?.logCenter?.enabled,
+          ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
+          writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
+          environment: publicExtra?.hbpos?.logCenter?.environment,
+        }),
+        fetch,
+        now,
+      ),
+    );
     const sha256Hex = (material: string) =>
       Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
@@ -430,10 +531,6 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         voucherProtectedTokens:
           installmentPaymentPersistence.voucherProtectedTokens,
       });
-    const appVersion =
-      Constants.nativeAppVersion ??
-      Constants.expoConfig?.version ??
-      "0.0.0";
     const runtimeVersion = Updates.runtimeVersion ?? appVersion;
     let appUpdateSafety:
       | ProductionPosRuntimeServices["appUpdateSafety"]
@@ -707,6 +804,12 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     // 销售路由拿到 runtime 前必须先处理崩溃遗留的 HoldClear/RecallActive fence。
     // 初始化失败保持数据库可恢复并让启动 fail-closed，绝不开放普通收银。
     await composition.initialize();
+    applicationLog.record({
+      level: "Information",
+      message: "POS runtime initialized.",
+      category: "runtime.startup",
+      properties: { backend: startupGate.backend, device: startupGate.device },
+    });
     if (online) {
       // 公钥同步失败只关闭紧急登录；普通在线/离线收银登录保持原有路径。
       void emergencyCashier?.syncPublicKeys();
@@ -717,9 +820,16 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       ...services
     } = composition;
     void _initialize;
+    const cashierSession = bindCashierSessionToApplicationLog(
+      services.cashierSession,
+      applicationLogActor,
+    );
+    // `applicationLog` 仅为 catch 路径保留可空状态；返回的 runtime 闭包固定使用已构造实例。
+    const activeApplicationLog = applicationLog;
 
     return {
       ...services,
+      cashierSession,
       apiBaseUrl,
       deviceSession: publicDeviceSession,
       cashierSessionInvalidation: publicCashierSessionInvalidation,
@@ -739,6 +849,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           ),
       }),
       scanner: Object.freeze({ router: scannerRouter }),
+      applicationLog: activeApplicationLog,
       shutdown: async () => {
         // 先覆盖公共外屏，再与 401/403/手动锁屏使用同一可信桥撤销可信会话。
         if (services.customerDisplay.status === "available") {
@@ -749,6 +860,15 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         }
         cashierSessionInvalidation.notify("manual-lock");
         appUpdates.dispose();
+        // 清除订单/员工审计的延迟重试，不能让旧服务在 database.close 后继续补传。
+        await services.sync.shutdown();
+        // shutdown 日志必须先落入本地 outbox；随后 ApplicationLogRuntime 会在旧单飞后重扫一次。
+        await activeApplicationLog.logger.record({
+          level: "Information",
+          message: "POS runtime shutting down.",
+          category: "runtime.shutdown",
+        });
+        await activeApplicationLog.shutdown();
         // 页面离开不会取消目录刷新；只有 runtime 关闭会先中止并等待 staging 清理。
         await shutdownBackgroundWork();
         await database.close();
@@ -760,7 +880,11 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           : startupGate.device,
     };
   } catch (error) {
-    await database.close();
+    await recordRuntimeInitializationFailure(
+      applicationLog,
+      error,
+      () => database.close(),
+    );
     throw error;
   }
 }

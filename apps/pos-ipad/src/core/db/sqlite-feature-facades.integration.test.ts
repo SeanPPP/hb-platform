@@ -8,6 +8,7 @@ import { SqliteFulfilmentStore } from "./sqlite-fulfilment-store";
 import { SqliteLocalSyncHistoryStore } from "./sqlite-local-sync-history-store";
 import { SqliteMixedPaymentOrderTruthStore } from "./sqlite-mixed-payment-order-truth-store";
 import { SqliteOfflineReturnCapacity } from "./sqlite-offline-return-capacity";
+import { SqlitePaymentActionBindingStore } from "./sqlite-payment-action-binding-store";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
@@ -591,6 +592,7 @@ test("真实 SQLite：PaymentActionBinding bind-or-get 不覆盖旧事实，ID �
 
   assert.deepEqual(await bindings.bindOrGet(proposed), proposed);
   assert.deepEqual(await bindings.bindOrGet({ ...proposed }), proposed);
+  assert.deepEqual(await bindings.getByAttempt(proposed.attemptId), proposed);
   assert.deepEqual(
     await bindings.bindOrGet({
       ...proposed,
@@ -637,6 +639,156 @@ test("真实 SQLite：PaymentActionBinding bind-or-get 不覆盖旧事实，ID �
   );
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0]?.request_signature, proposed.requestSignature);
+  assert.deepEqual(
+    JSON.parse(String(persisted[0]?.audit_actor_json)),
+    {
+      requestingCashierId: "cashier-alice",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-alice",
+    },
+  );
+});
+
+test("真实 SQLite：M28 PaymentActionBinding actor 要求完整三字段并保持不可变", async () => {
+  const { connection } = await openDatabase();
+  await seedOrder(connection, {
+    orderGuid: "binding-actor-order",
+    localSequence: 111,
+    state: "Draft",
+    soldAtIso: "2026-07-28T01:00:00.000Z",
+    actualAmountCents: 1_000,
+  });
+
+  const insert = (actionId: string, actorJson: string) =>
+    connection.run(
+      `INSERT INTO payment_action_bindings (
+        order_guid, action_id, request_signature, attempt_id,
+        idempotency_key, created_at_iso, audit_actor_json
+      ) VALUES (?, ?, '["square","purchase","AUD",1000]', ?, ?, ?, ?)`,
+      [
+        "binding-actor-order",
+        actionId,
+        `attempt-${actionId}`,
+        `idempotency-${actionId}`,
+        nowIso,
+        actorJson,
+      ],
+    );
+
+  await assert.rejects(
+    connection.run(
+      `INSERT INTO payment_action_bindings (
+        order_guid, action_id, request_signature, attempt_id,
+        idempotency_key, created_at_iso, audit_actor_json
+      ) VALUES (?, ?, '["square","purchase","AUD",1000]', ?, ?, ?, NULL)`,
+      [
+        "binding-actor-order",
+        "missing-actor",
+        "attempt-missing-actor",
+        "idempotency-missing-actor",
+        nowIso,
+      ],
+    ),
+    /PAYMENT_ACTION_BINDING_ACTOR_REQUIRED/,
+  );
+  await assert.rejects(
+    insert(
+      "missing-cashier-id",
+      JSON.stringify({
+        requestingCashierName: "Alice",
+        requestingUserGuid: "user-alice",
+      }),
+    ),
+    /CHECK constraint failed/,
+  );
+  await assert.rejects(
+    insert(
+      "missing-user-guid",
+      JSON.stringify({
+        requestingCashierId: "cashier-alice",
+        requestingCashierName: "Alice",
+      }),
+    ),
+    /CHECK constraint failed/,
+  );
+  await insert(
+    "complete-actor",
+    JSON.stringify({
+      requestingCashierId: "cashier-alice",
+      requestingCashierName: "Alice",
+      requestingUserGuid: "user-alice",
+    }),
+  );
+  await assert.rejects(
+    connection.run(
+      `UPDATE payment_action_bindings
+       SET audit_actor_json = ?
+       WHERE order_guid = ? AND action_id = ?`,
+      [
+        JSON.stringify({
+          requestingCashierId: "cashier-bob",
+          requestingCashierName: "Bob",
+          requestingUserGuid: "user-bob",
+        }),
+        "binding-actor-order",
+        "complete-actor",
+      ],
+    ),
+    /PAYMENT_ACTION_BINDING_IMMUTABLE/,
+  );
+});
+
+test("真实 SQLite：M25 历史 PaymentActionBinding NULL actor 经 M28 升级后只整体回退订单员工", async () => {
+  const connection = new NodeSqliteConnection(
+    new DatabaseSync(":memory:", { enableForeignKeyConstraints: true }),
+  );
+  await applyMigrations(
+    connection,
+    () => nowIso,
+    POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 25),
+  );
+  await seedOrder(connection, {
+    orderGuid: "binding-legacy-actor-order",
+    localSequence: 112,
+    state: "Draft",
+    soldAtIso: "2026-07-28T01:00:00.000Z",
+    actualAmountCents: 1_000,
+  });
+  await connection.run(
+    `INSERT INTO payment_action_bindings (
+      order_guid, action_id, request_signature, attempt_id,
+      idempotency_key, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      "binding-legacy-actor-order",
+      "legacy-action",
+      "[\"square\",\"purchase\",\"AUD\",1000]",
+      "legacy-attempt",
+      "legacy-idempotency",
+      nowIso,
+    ],
+  );
+
+  await applyMigrations(
+    connection,
+    () => nowIso,
+    POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 28),
+  );
+
+  const binding = await new SqlitePaymentActionBindingStore(
+    connection,
+  ).getByAttempt("legacy-attempt");
+  assert.deepEqual(binding?.actor, {
+    cashierId: "cashier-1",
+    cashierName: "Cashier",
+    userGuid: null,
+  });
+  const stored = await connection.getFirst<{ audit_actor_json: unknown }>(
+    `SELECT audit_actor_json
+     FROM payment_action_bindings
+     WHERE attempt_id = 'legacy-attempt'`,
+  );
+  assert.equal(stored?.audit_actor_json, null);
 });
 
 test("真实 SQLite：PaymentActionBinding 严格拒绝空值、控制字符、超长值、非法时间与凭据形态", async () => {
@@ -1310,6 +1462,11 @@ function paymentBinding(
     attemptId: "attempt-1",
     idempotencyKey: "idempotency-1",
     createdAtIso: "2026-07-28T06:00:00.000Z",
+    actor: {
+      cashierId: "cashier-alice",
+      cashierName: "Alice",
+      userGuid: "user-alice",
+    },
     ...overrides,
   };
 }

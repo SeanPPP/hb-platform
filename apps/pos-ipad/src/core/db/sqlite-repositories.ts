@@ -1,3 +1,7 @@
+import {
+  freezeAuditScope,
+  type AuditScope,
+} from "../contracts/audit-scope";
 import type { CartSnapshot } from "../contracts/cart";
 import type {
   HeldOrderActor,
@@ -33,6 +37,8 @@ import type {
   OrderRepositoryPort,
   OutboxLease,
   OutboxRepositoryPort,
+  OperationAuditDeliveryPort,
+  OperationAuditDeliveryEvent,
   PaymentAttemptRepositoryPort,
   PrintJobRepositoryPort,
 } from "../contracts/repositories";
@@ -61,21 +67,36 @@ export type PosRepositoryBundle = Readonly<{
   payments: PaymentAttemptRepositoryPort;
   outbox: OutboxRepositoryPort;
   audit: AuditRepositoryPort;
+  auditDelivery: OperationAuditDeliveryPort;
   printJobs: PrintJobRepositoryPort;
   drawerEvents: DrawerEventRepositoryPort;
 }>;
 
 export function createSqliteRepositories(
   connection: SqliteConnectionPort,
-  options: Readonly<{ nowIso: () => string; createLeaseId: () => string; encryptor: SensitivePayloadEncryptor }>,
+  options: Readonly<{
+    nowIso: () => string;
+    createLeaseId: () => string;
+    encryptor: SensitivePayloadEncryptor;
+    /** 组合根注入当前可信终端；缺失时员工审计投递必须 fail-closed。 */
+    auditScope?: AuditScope;
+  }>,
 ): PosRepositoryBundle {
+  const auditScope = options.auditScope
+    ? freezeAuditScope(options.auditScope)
+    : null;
   return {
     orders: new SqliteOrderRepository(connection),
     heldOrders: new SqliteHeldOrderRepository(connection, options.encryptor, options.nowIso),
     heldOrderRecords: new SqliteHeldOrderRecordRepository(connection, options.encryptor),
     payments: new SqlitePaymentAttemptRepository(connection, options.encryptor),
     outbox: new SqliteOutboxRepository(connection, options.nowIso, options.createLeaseId),
-    audit: new SqliteAuditRepository(connection),
+    audit: new SqliteAuditRepository(connection, options.nowIso, auditScope),
+    auditDelivery: new SqliteOperationAuditDelivery(
+      connection,
+      options.nowIso,
+      auditScope,
+    ),
     printJobs: new SqlitePrintJobRepository(connection),
     drawerEvents: new SqliteDrawerEventRepository(connection),
   };
@@ -277,7 +298,8 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
           heldAtIso,
         ],
       );
-      await appendAuditEvent(transaction, audit);
+      // 挂单没有 order_guid 可回查，必须用发生操作时已验证的 command scope 冻结。
+      await appendAuditEvent(transaction, audit, scope);
       await transaction.run(
         `INSERT INTO terminal_cart_fences (
           store_code, device_code, kind, hold_id, recall_attempt_id,
@@ -668,10 +690,172 @@ class SqliteOutboxRepository implements OutboxRepositoryPort {
 }
 
 class SqliteAuditRepository implements AuditRepositoryPort {
-  public constructor(private readonly db: SqliteConnectionPort) {}
-  public async append(events: readonly AuditEventDraft[]): Promise<void> { for (const event of events) { assertSafe(event.payload); await this.db.run("INSERT INTO audit_events (event_id,event_type,occurred_at_iso,order_guid,correlation_id,payload_json,uploaded_at_iso) VALUES (?,?,?,?,?,?,NULL)", [event.eventId,event.eventType,event.occurredAtIso,event.orderGuid,event.correlationId,JSON.stringify(event.payload)]); } }
-  public async listPending(limit: number): Promise<readonly AuditEventDraft[]> { const rows = await this.db.getAll<AuditRow>("SELECT * FROM audit_events WHERE uploaded_at_iso IS NULL ORDER BY occurred_at_iso LIMIT ?", [limit]); return rows.map(r => ({ eventId:text(r.event_id),eventType:text(r.event_type),occurredAtIso:text(r.occurred_at_iso),orderGuid:nullable(r.order_guid),correlationId:text(r.correlation_id),payload:json(r.payload_json) })); }
-  public markUploaded(ids: readonly string[]): Promise<void> { return Promise.all(ids.map(id => this.db.run("UPDATE audit_events SET uploaded_at_iso = occurred_at_iso WHERE event_id = ? AND uploaded_at_iso IS NULL", [id]))).then(() => undefined); }
+  public constructor(
+    private readonly db: SqliteConnectionPort,
+    private readonly nowIso: () => string,
+    private readonly auditScope: AuditScope | null,
+  ) {}
+
+  public async append(events: readonly AuditEventDraft[]): Promise<void> {
+    const scope = requiredAuditScope(this.auditScope);
+    for (const event of events) {
+      assertSafe(event.payload);
+      // order_guid 可证明时只使用订单账本身份；非订单事实使用组合根冻结的终端身份。
+      const eventScope = event.orderGuid === null
+        ? scope
+        : await readOrderAuditScope(this.db, event.orderGuid);
+      await insertAuditEvent(this.db, event, eventScope, this.nowIso());
+    }
+  }
+
+  public async listPending(limit: number): Promise<readonly AuditEventDraft[]> {
+    const scope = this.auditScope;
+    // 兼容旧 Port 读取时同样不能以未证明的 runtime 身份选择事实。
+    if (!scope) return [];
+    const rows = await this.db.getAll<AuditRow>(
+      `SELECT * FROM audit_events
+       WHERE uploaded_at_iso IS NULL
+         AND delivery_state = 'pending'
+         AND scope_store_code = ?
+         AND scope_device_code = ?
+       ORDER BY occurred_at_iso, event_id
+       LIMIT ?`,
+      [scope.storeCode, scope.deviceCode, limit],
+    );
+    return rows.map(readAuditEvent);
+  }
+
+  public async markUploaded(ids: readonly string[]): Promise<void> {
+    const scope = this.auditScope;
+    if (!scope) return;
+    await Promise.all(ids.map((id) => this.db.run(
+      `UPDATE audit_events
+       SET uploaded_at_iso = ?, delivery_state = 'uploaded', last_error_code = NULL
+       WHERE event_id = ?
+         AND uploaded_at_iso IS NULL
+         AND scope_store_code = ?
+         AND scope_device_code = ?`,
+      [this.nowIso(), id, scope.storeCode, scope.deviceCode],
+    )));
+  }
+}
+
+class SqliteOperationAuditDelivery implements OperationAuditDeliveryPort {
+  public constructor(
+    private readonly db: SqliteConnectionPort,
+    private readonly nowIso: () => string,
+    private readonly auditScope: AuditScope | null,
+  ) {}
+
+  public async listReady(limit: number): Promise<readonly OperationAuditDeliveryEvent[]> {
+    if (!this.auditScope) return [];
+    const nowIso = this.nowIso();
+    const rows = await this.db.getAll<AuditRow>(
+      `WITH scoped_pending AS (
+         SELECT *, COALESCE(next_attempt_at_iso, occurred_at_iso) AS ready_at_iso
+         FROM audit_events
+         WHERE uploaded_at_iso IS NULL
+           AND delivery_state = 'pending'
+           AND scope_store_code = ?
+           AND scope_device_code = ?
+       ), ordered_pending AS (
+         SELECT *,
+           MAX(CASE WHEN ready_at_iso > ? THEN 1 ELSE 0 END) OVER (
+             ORDER BY occurred_at_iso, event_id
+             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+           ) AS has_delayed_predecessor
+         FROM scoped_pending
+       )
+       SELECT * FROM ordered_pending
+       WHERE ready_at_iso <= ?
+         AND has_delayed_predecessor = 0
+       ORDER BY occurred_at_iso, event_id
+       LIMIT ?`,
+      [
+        this.auditScope.storeCode,
+        this.auditScope.deviceCode,
+        nowIso,
+        nowIso,
+        limit,
+      ],
+    );
+    return rows.map((row) => ({
+      ...readAuditEvent(row),
+      attemptCount: Math.max(0, Number(row.attempt_count ?? 0) || 0),
+    }));
+  }
+  public async nextReadyAtIso(): Promise<string | null> {
+    if (!this.auditScope) return null;
+    const row = await this.db.getFirst<{ next_attempt_at_iso: unknown }>(
+      `SELECT COALESCE(next_attempt_at_iso, occurred_at_iso) AS next_attempt_at_iso
+       FROM audit_events
+       WHERE uploaded_at_iso IS NULL
+         AND delivery_state = 'pending'
+         AND scope_store_code = ?
+         AND scope_device_code = ?
+       ORDER BY occurred_at_iso, event_id
+       LIMIT 1`,
+      [this.auditScope.storeCode, this.auditScope.deviceCode],
+    );
+    return typeof row?.next_attempt_at_iso === "string"
+      ? row.next_attempt_at_iso
+      : null;
+  }
+  public async markUploaded(eventIds: readonly string[]): Promise<void> {
+    const auditScope = this.auditScope;
+    if (!auditScope) return;
+    await Promise.all(eventIds.map((eventId) => this.db.run(
+      `UPDATE audit_events
+       SET uploaded_at_iso = ?, delivery_state = 'uploaded', last_error_code = NULL
+       WHERE event_id = ?
+         AND delivery_state = 'pending'
+         AND scope_store_code = ?
+         AND scope_device_code = ?`,
+      [
+        this.nowIso(),
+        eventId,
+        auditScope.storeCode,
+        auditScope.deviceCode,
+      ],
+    )));
+  }
+  public async markRejected(entries: readonly Readonly<{ eventId: string; code: string }>[]): Promise<void> {
+    const auditScope = this.auditScope;
+    if (!auditScope) return;
+    await Promise.all(entries.map((entry) => this.db.run(
+      `UPDATE audit_events
+       SET delivery_state = 'rejected', last_error_code = ?
+       WHERE event_id = ?
+         AND delivery_state = 'pending'
+         AND scope_store_code = ?
+         AND scope_device_code = ?`,
+      [
+        entry.code,
+        entry.eventId,
+        auditScope.storeCode,
+        auditScope.deviceCode,
+      ],
+    )));
+  }
+  public async releaseRetry(eventIds: readonly string[], nextAttemptAtIso: string, errorCode: string): Promise<void> {
+    const auditScope = this.auditScope;
+    if (!auditScope) return;
+    await Promise.all(eventIds.map((eventId) => this.db.run(
+      `UPDATE audit_events
+       SET attempt_count = attempt_count + 1, next_attempt_at_iso = ?, last_error_code = ?
+       WHERE event_id = ?
+         AND delivery_state = 'pending'
+         AND scope_store_code = ?
+         AND scope_device_code = ?`,
+      [
+        nextAttemptAtIso,
+        errorCode,
+        eventId,
+        auditScope.storeCode,
+        auditScope.deviceCode,
+      ],
+    )));
+  }
 }
 
 class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
@@ -1407,21 +1591,62 @@ function validateHeldOrderAudit(
 async function appendAuditEvent(
   transaction: SqliteConnectionPort,
   event: AuditEventDraft,
+  scope: AuditScope,
 ): Promise<void> {
-  await transaction.run(
-    `INSERT INTO audit_events (
-      event_id, event_type, occurred_at_iso, order_guid, correlation_id,
-      payload_json, uploaded_at_iso
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-    [
-      event.eventId,
-      event.eventType,
-      event.occurredAtIso,
-      event.orderGuid,
-      event.correlationId,
-      JSON.stringify(event.payload),
-    ],
-  );
+  await insertAuditEvent(transaction, event, scope, event.occurredAtIso);
+}
+
+/** 所有新员工审计写入经此处固定 scope，禁止在上传期读取当前设备身份。 */
+async function insertAuditEvent(
+  transaction: SqliteConnectionPort,
+  event: AuditEventDraft,
+  scope: AuditScope,
+  nextAttemptAtIso: string,
+): Promise<void> {
+  const frozenScope = freezeAuditScope(scope);
+  try {
+    await transaction.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid, correlation_id,
+        payload_json, uploaded_at_iso, delivery_state, attempt_count,
+        next_attempt_at_iso, last_error_code, scope_store_code, scope_device_code
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', 0, ?, NULL, ?, ?)`,
+      [
+        event.eventId,
+        event.eventType,
+        event.occurredAtIso,
+        event.orderGuid,
+        event.correlationId,
+        JSON.stringify(event.payload),
+        nextAttemptAtIso,
+        frozenScope.storeCode,
+        frozenScope.deviceCode,
+      ],
+    );
+  } catch (error) {
+    if (!isLegacyAuditEventsSchema(error)) throw error;
+
+    // 仅供 M26 前数据库逐级升级时的旧挂单回归；现行库必定走上方冻结 scope 的写入。
+    await transaction.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid, correlation_id,
+        payload_json, uploaded_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      [
+        event.eventId,
+        event.eventType,
+        event.occurredAtIso,
+        event.orderGuid,
+        event.correlationId,
+        JSON.stringify(event.payload),
+      ],
+    );
+  }
+}
+
+function isLegacyAuditEventsSchema(error: unknown): boolean {
+  return error instanceof Error
+    && /audit_events has no column named (delivery_state|scope_store_code)/i.test(error.message);
 }
 
 async function allocateLocalSequence(transaction: SqliteConnectionPort): Promise<number> {
@@ -1473,4 +1698,70 @@ function readLineSyncProvenance(
   }
 }
 
-function text(value: unknown): string { if (typeof value !== "string") throw new Error("Invalid database text."); return value; } function nullable(value: unknown): string | null { return value === null || value === undefined ? null : text(value); } function int(value: unknown): number { const n=Number(value); if (!Number.isSafeInteger(n)) throw new Error("Invalid database integer."); return n; } function money(value: unknown) { return MoneySchema.parse(createAud(int(value))); } function json(raw: unknown): Readonly<Record<string, unknown>> { try { const parsed=JSON.parse(text(raw)); if (!parsed || typeof parsed!=="object" || Array.isArray(parsed)) throw new Error(); return parsed as Readonly<Record<string,unknown>>; } catch { throw new Error("Invalid database JSON."); } } function bytesOrNull(value: unknown, error: string): Uint8Array | null { if (value === null || value === undefined) return null; if (!(value instanceof Uint8Array)) throw new Error(error); return value; } function responseCodeOrNull(value: string | null | undefined): string | null { if (value === null || value === undefined) return null; if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value)) throw new Error("Payment response code must be a short safe code."); return value; } function orderState(value: unknown): LocalOrder["state"] { const state=text(value); if (!["Draft","Completing","CompletedLocal","PendingSync","Syncing","Synced","Blocked403","Rejected"].includes(state)) throw new Error("Invalid order state."); return state as LocalOrder["state"]; } function parseCart(raw:string): CartSnapshot { const value=json(raw); if (!Number.isSafeInteger(value.revision) || !Array.isArray(value.lines) || typeof value.mode!=="string") throw new Error("Invalid held cart JSON."); return value as unknown as CartSnapshot; } function assertSafe(value:unknown):void { if (!value || typeof value!=="object") return; for(const [key,item] of Object.entries(value as Record<string,unknown>)){ if(/authorization|token|card|pan|cvv|voucher|secret|payment|session|txn|rfn|reference/i.test(key)) throw new Error("Sensitive audit payload key is not allowed."); assertSafe(item); } }
+function text(value: unknown): string { if (typeof value !== "string") throw new Error("Invalid database text."); return value; } function nullable(value: unknown): string | null { return value === null || value === undefined ? null : text(value); } function int(value: unknown): number { const n=Number(value); if (!Number.isSafeInteger(n)) throw new Error("Invalid database integer."); return n; } function money(value: unknown) { return MoneySchema.parse(createAud(int(value))); } function json(raw: unknown): Readonly<Record<string, unknown>> { try { const parsed=JSON.parse(text(raw)); if (!parsed || typeof parsed!=="object" || Array.isArray(parsed)) throw new Error(); return parsed as Readonly<Record<string,unknown>>; } catch { throw new Error("Invalid database JSON."); } } function bytesOrNull(value: unknown, error: string): Uint8Array | null { if (value === null || value === undefined) return null; if (!(value instanceof Uint8Array)) throw new Error(error); return value; } function responseCodeOrNull(value: string | null | undefined): string | null { if (value === null || value === undefined) return null; if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value)) throw new Error("Payment response code must be a short safe code."); return value; } function orderState(value: unknown): LocalOrder["state"] { const state=text(value); if (!["Draft","Completing","CompletedLocal","PendingSync","Syncing","Synced","Blocked403","Rejected"].includes(state)) throw new Error("Invalid order state."); return state as LocalOrder["state"]; } function parseCart(raw:string): CartSnapshot { const value=json(raw); if (!Number.isSafeInteger(value.revision) || !Array.isArray(value.lines) || typeof value.mode!=="string") throw new Error("Invalid held cart JSON."); return value as unknown as CartSnapshot; }
+
+function readAuditEvent(row: AuditRow): AuditEventDraft {
+  const auditScope = readPersistedAuditScope(row);
+  return {
+    eventId: text(row.event_id),
+    eventType: text(row.event_type),
+    occurredAtIso: text(row.occurred_at_iso),
+    orderGuid: nullable(row.order_guid),
+    correlationId: text(row.correlation_id),
+    payload: json(row.payload_json),
+    ...(auditScope ? { auditScope } : {}),
+  };
+}
+
+async function readOrderAuditScope(
+  database: SqliteConnectionPort,
+  orderGuid: string,
+): Promise<AuditScope> {
+  const row = await database.getFirst<{
+    store_code: unknown;
+    device_code: unknown;
+  }>(
+    `SELECT store_code, device_code
+     FROM local_orders
+     WHERE order_guid = ?`,
+    [orderGuid],
+  );
+  if (!row) throw new Error("AUDIT_ORDER_SCOPE_UNPROVEN");
+  return freezeAuditScope({
+    storeCode: text(row.store_code),
+    deviceCode: text(row.device_code),
+  });
+}
+
+function readPersistedAuditScope(row: AuditRow): AuditScope | null {
+  const storeCode = nullable(row.scope_store_code);
+  const deviceCode = nullable(row.scope_device_code);
+  if (storeCode === null && deviceCode === null) return null;
+  if (storeCode === null || deviceCode === null) {
+    throw new Error("Invalid persisted audit scope.");
+  }
+  return freezeAuditScope({ storeCode, deviceCode });
+}
+
+function requiredAuditScope(scope: AuditScope | null): AuditScope {
+  if (!scope) {
+    // 没有组合根注入的 scope 时不能猜测本机或当前登录员工，必须停止写入/投递。
+    throw new Error("AUDIT_SCOPE_REQUIRED");
+  }
+  return scope;
+}
+
+function assertSafe(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    // authorizationMode 只描述授权方式，不是 token；宽泛匹配会让合法的主管审计永远无法落库。
+    const normalized = key.replaceAll(/[_-]/gu, "").toLowerCase();
+    if (
+      normalized !== "authorizationmode" &&
+      /authorization|token|card|pan|cvv|voucher|secret|payment|session|txn|rfn|reference/i.test(key)
+    ) {
+      throw new Error("Sensitive audit payload key is not allowed.");
+    }
+    assertSafe(item);
+  }
+}

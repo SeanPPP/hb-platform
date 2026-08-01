@@ -1,4 +1,5 @@
 import {
+  auditActorPayload,
   normalizeDailyCloseCounts,
   type DailyCloseArchiveCommit,
   type DailyCloseScope,
@@ -9,6 +10,7 @@ import { businessDayUtcRange } from "@/features/sync-history/business-day-range"
 export type DailyCloseIdentity = Readonly<{
   cashierId: string;
   cashierName: string;
+  userGuid: string | null;
   deviceCode: string;
   permissions: readonly string[];
   storeCode: string;
@@ -80,6 +82,7 @@ export function buildDailyCloseArchiveCommit(input: {
   savedAtIso: string;
   savedCashierId: string;
   savedCashierName: string;
+  savedUserGuid: string | null;
   summary: DailyCloseSummary;
 }): DailyCloseArchiveCommit {
   const closeId = requiredText(input.closeId, "daily close id");
@@ -135,6 +138,11 @@ export function buildDailyCloseArchiveCommit(input: {
         deviceCode: archive.deviceCode,
         storeCode: archive.storeCode,
         varianceCents,
+        ...auditActorPayload({
+          cashierId: archive.savedCashierId,
+          cashierName: archive.savedCashierName,
+          userGuid: input.savedUserGuid,
+        }),
       }),
     }),
   });

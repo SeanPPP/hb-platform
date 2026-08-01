@@ -15,7 +15,12 @@ import {
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import { ProductionReturnRefundAdapter } from "./production-return-refund-adapter";
 
-import type { CartSnapshot, Money, OrderTender } from "@/core/contracts";
+import type {
+  AuditActorSnapshot,
+  CartSnapshot,
+  Money,
+  OrderTender,
+} from "@/core/contracts";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
   PaymentDraftRecovery,
@@ -221,11 +226,15 @@ export function createProductionPaymentRuntime(
       throw new Error("PAYMENT_RUNTIME_NOT_INITIALIZED");
     }
     const cashierLease = input.currentCashier.createLease();
+    const actor = paymentAuditActor(
+      requireScopedLease(cashierLease, input.terminal),
+    );
     const guard = paymentSessionGuard(cashierLease, input.terminal);
     const draftPort = paymentDraftPort(
       drafts,
       terminalScope,
       cashierLease,
+      actor,
       input,
       voucherRelease !== null,
     );
@@ -282,6 +291,7 @@ export function createProductionPaymentRuntime(
         })
       : null;
     const mixed = new MixedPaymentCoordinator({
+      actor,
       orderTruth,
       paymentAttempts: attempts,
       approvedCompletion,
@@ -355,6 +365,16 @@ export function createProductionPaymentRuntime(
   };
 }
 
+function paymentAuditActor(
+  session: TrustedCashierSession,
+): AuditActorSnapshot {
+  return Object.freeze({
+    cashierId: session.cashierId,
+    cashierName: session.cashierName,
+    userGuid: session.userGuid,
+  });
+}
+
 function paymentCartRecovery(
   drafts: SqlitePaymentDraftRecoveryStore,
   scope: PaymentRecoveryScope,
@@ -379,6 +399,7 @@ function paymentDraftPort(
   store: SqlitePaymentDraftRecoveryStore,
   scope: PaymentRecoveryScope,
   cashierLease: TrustedCashierLease,
+  actor: AuditActorSnapshot,
   input: ProductionPaymentRuntimeDependencies,
   voucherReversalAvailable: boolean,
 ): PaymentCheckoutDraftPort {
@@ -449,6 +470,7 @@ function paymentDraftPort(
         orderGuid: draft.orderGuid,
         draftId: draft.checkoutIntentId,
         actionId: request.actionId,
+        actor,
       };
       const result = draft.cancellableAfterReversal
         ? await store.closeFullyReversedDraft(command)
@@ -462,6 +484,7 @@ function paymentDraftPort(
         ...scope,
         orderGuid: request.orderGuid,
         actionId: request.actionId,
+        actor,
       });
       assertActive();
       return {

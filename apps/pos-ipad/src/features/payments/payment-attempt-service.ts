@@ -1,8 +1,10 @@
 import { paymentProviderAmountCents } from "./payment-amount";
 
 import {
+  auditActorPayload,
   canTransitionPaymentAttempt,
   normalizeCardSyncEvidence,
+  type AuditActorSnapshot,
   type CardSyncEvidenceV1,
   type Money,
   type OnlinePaymentPort,
@@ -39,6 +41,7 @@ export type PaymentActionBinding = Readonly<{
   attemptId: string;
   idempotencyKey: string;
   createdAtIso: string;
+  actor: AuditActorSnapshot;
 }>;
 
 /**
@@ -49,6 +52,7 @@ export type PaymentActionBinding = Readonly<{
  */
 export interface PaymentActionBindingPort {
   bindOrGet(proposed: PaymentActionBinding): Promise<PaymentActionBinding>;
+  getByAttempt(attemptId: string): Promise<PaymentActionBinding | null>;
 }
 
 export type TrustedRefundSeedIdentity = Readonly<{
@@ -123,6 +127,8 @@ export type StartPaymentAttemptInput = Readonly<{
   provider: PaymentProvider;
   operation: PaymentOperation;
   amount: Money;
+  /** 在 action 首次绑定时冻结；恢复与完成订单时禁止回读当前登录会话。 */
+  actor: AuditActorSnapshot;
   /** 原支付容量的 opaque Vault 句柄；只允许 refund 使用，绝不能承载 provider reference。 */
   refundCapacityId?: string;
 }>;
@@ -273,6 +279,23 @@ export class PaymentAttemptService {
     return this.options.ledger.findBlocking(orderGuid);
   }
 
+  public async getActionActor(
+    attemptId: string,
+    orderGuid: string,
+  ): Promise<AuditActorSnapshot> {
+    const binding = await this.options.actionBindings.getByAttempt(attemptId);
+    if (
+      !binding ||
+      binding.attemptId !== attemptId ||
+      binding.orderGuid !== orderGuid
+    ) {
+      throw new PaymentAttemptStateError(
+        "Payment attempt has no matching immutable action actor.",
+      );
+    }
+    return normalizedActor(binding.actor);
+  }
+
   private async startAttemptOnce(
     input: StartPaymentAttemptInput,
   ): Promise<PaymentAttemptExecutionResult> {
@@ -368,6 +391,7 @@ export class PaymentAttemptService {
         "idempotency key",
       ),
       createdAtIso: requiredIsoTimestamp(this.options.nowIso(), "binding creation"),
+      actor: normalizedActor(input.actor),
     };
 
     let persisted: PaymentActionBinding;
@@ -953,6 +977,7 @@ function trustedSeedText(value: unknown): string {
 function assertStartInput(input: StartPaymentAttemptInput): void {
   if (!input.actionId.trim()) throw new TypeError("actionId is required.");
   if (!input.orderGuid.trim()) throw new TypeError("orderGuid is required.");
+  normalizedActor(input.actor);
   if (
     input.operation !== "refund" &&
     input.refundCapacityId !== undefined
@@ -992,6 +1017,7 @@ function startSignature(input: StartPaymentAttemptInput): string {
     input.operation,
     input.amount.currency,
     String(input.amount.cents),
+    actorSignature(input.actor),
   ];
   if (input.operation === "refund") {
     signature.push(input.refundCapacityId ?? null);
@@ -1031,6 +1057,14 @@ function assertBindingMatchesRequest(
     throw new PaymentActionBindingConflictError(
       persisted,
       "Persisted payment action binding has invalid immutable identity.",
+    );
+  }
+  try {
+    normalizedActor(persisted.actor);
+  } catch {
+    throw new PaymentActionBindingConflictError(
+      persisted,
+      "Persisted payment action binding has invalid immutable actor.",
     );
   }
 }
@@ -1099,6 +1133,19 @@ function sameImmutableAttemptIdentity(
 function requiredGeneratedValue(value: string, label: string): string {
   if (!value.trim()) throw new Error(`Generated ${label} is empty.`);
   return value;
+}
+
+function actorSignature(actor: AuditActorSnapshot): string {
+  return JSON.stringify(auditActorPayload(actor));
+}
+
+function normalizedActor(actor: AuditActorSnapshot): AuditActorSnapshot {
+  const payload = auditActorPayload(actor);
+  return Object.freeze({
+    cashierId: payload.requestingCashierId,
+    cashierName: payload.requestingCashierName,
+    userGuid: payload.requestingUserGuid,
+  });
 }
 
 function requiredIsoTimestamp(value: string, label: string): string {

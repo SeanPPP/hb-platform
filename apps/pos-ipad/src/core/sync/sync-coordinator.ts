@@ -1,6 +1,11 @@
 import type { UpdateOperationLeasePort } from "../../features/app-updates/update-transition-lease-coordinator";
 import type { AuditEventDraft } from "../contracts/order";
-import type { AuditRepositoryPort, OutboxLease, OutboxRepositoryPort } from "../contracts/repositories";
+import type {
+  AuditRepositoryPort,
+  OperationAuditDeliveryPort,
+  OutboxLease,
+  OutboxRepositoryPort,
+} from "../contracts/repositories";
 import type { OrderSyncPort, SyncOrderResult } from "../contracts/sync";
 
 export interface SyncSecurityPort {
@@ -9,13 +14,20 @@ export interface SyncSecurityPort {
 
 export type AuditUploadResult =
   | Readonly<{ kind: "uploaded" }>
+  | Readonly<{
+      /** 后端针对同一批的逐项终态回执；rejected 不得阻塞其他事件。 */
+      kind: "acknowledged";
+      uploadedEventIds: readonly string[];
+      rejected: readonly Readonly<{ eventId: string; code: string }>[];
+      /** 缺失/未知回执仅重试相应事件，不能撤回已经确认的终态。 */
+      retryEventIds?: readonly string[];
+    }>
   | Readonly<{ kind: "retry"; failure: "network" | "server" | "unauthorized" }>
   | Readonly<{ kind: "blocked"; code: string }>
   | Readonly<{ kind: "rejected"; code: string }>;
 
 /**
  * 审计远端上传契约尚未冻结在 core/contracts；暂由 sync 组合根注入。
- * AuditRepositoryPort 没有 blocked/rejected 的持久化状态，非成功结果必须保留未上传记录。
  */
 export interface AuditBatchUploadPort {
   upload(events: readonly AuditEventDraft[]): Promise<AuditUploadResult>;
@@ -43,6 +55,8 @@ type MutableSyncDrainReport = {
 export type PosSyncCoordinatorOptions = Readonly<{
   outbox: OutboxRepositoryPort;
   auditRepository: AuditRepositoryPort;
+  /** 新版 iPad 使用独立的投递状态表；旧测试/适配器仍可只注入 auditRepository。 */
+  auditDelivery?: OperationAuditDeliveryPort;
   orderSync: OrderSyncPort;
   auditUploader: AuditBatchUploadPort;
   security: SyncSecurityPort;
@@ -56,7 +70,7 @@ export type PosSyncCoordinatorOptions = Readonly<{
   operationLease?: UpdateOperationLeasePort;
 }>;
 
-const auditBatchSize = 100;
+const auditBatchSize = 8;
 const emptyReport = (): MutableSyncDrainReport => ({
   leased: 0,
   orderSucceeded: 0,
@@ -75,6 +89,8 @@ export class PosSyncCoordinator {
   private readonly retryMaxMs: number;
   private readonly retryJitterRatio: number;
   private inFlight: Promise<SyncDrainReport> | undefined;
+  private stopped = false;
+  private shutdownPromise: Promise<void> | undefined;
 
   public constructor(private readonly options: PosSyncCoordinatorOptions) {
     this.random = options.random ?? Math.random;
@@ -90,7 +106,19 @@ export class PosSyncCoordinator {
     return this.inFlight !== undefined;
   }
 
+  public shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.stopped = true;
+    // 停止后不再租用新项目；已在网络中的当前项目仍要完成对应终态写入，
+    // 否则 database.close 会把订单/审计留在半处理状态。
+    this.shutdownPromise = (this.inFlight ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => undefined);
+    return this.shutdownPromise;
+  }
+
   public requestDrain(): Promise<SyncDrainReport> {
+    if (this.stopped) return Promise.resolve(emptyReport());
     if (this.inFlight) {
       return this.inFlight;
     }
@@ -160,7 +188,9 @@ export class PosSyncCoordinator {
     // 审计批次的失败没有对应持久化分类 Port；一律保留 pending，403 额外锁机。
     const errorCode = result.kind === "retry"
       ? `SYNC_AUDIT_${result.failure.toUpperCase()}`
-      : `SYNC_AUDIT_${result.code}`;
+      : result.kind === "acknowledged"
+        ? "SYNC_AUDIT_PARTIAL_ACK"
+        : `SYNC_AUDIT_${result.code}`;
     await this.retry(item, errorCode);
     report.orderRetried += 1;
   }
@@ -194,22 +224,106 @@ export class PosSyncCoordinator {
 
   private async syncPendingAudits(report: { auditUploaded: number }): Promise<void> {
     while (true) {
-      const events = await this.options.auditRepository.listPending(auditBatchSize);
+      if (this.stopped) return;
+      const events = this.options.auditDelivery
+        ? await this.options.auditDelivery.listReady(auditBatchSize)
+        : await this.options.auditRepository.listPending(auditBatchSize);
+      if (this.stopped) return;
       if (!events.length) {
         return;
       }
-      const result = await this.options.auditUploader.upload(events);
+      let result: AuditUploadResult;
+      try {
+        result = await this.options.auditUploader.upload(events);
+      } catch {
+        if (this.options.auditDelivery) {
+          // 映射订单或 adapter 意外抛错时，已选批次必须耐久退避，等待后续生命周期触发重试。
+          await this.options.auditDelivery.releaseRetry(
+            events.map((event) => event.eventId),
+            this.nextAuditRetryAt(events),
+            "AUDIT_UPLOAD_EXCEPTION",
+          );
+        }
+        return;
+      }
       if (result.kind === "uploaded") {
-        await this.options.auditRepository.markUploaded(events.map((event) => event.eventId));
+        await this.markAuditsUploaded(events.map((event) => event.eventId));
         report.auditUploaded += events.length;
+        if (this.stopped) return;
+        continue;
+      }
+      if (result.kind === "acknowledged") {
+        await this.markAuditsUploaded(result.uploadedEventIds);
+        if (this.options.auditDelivery) {
+          await this.options.auditDelivery.markRejected(result.rejected);
+          const retryIds = new Set(result.retryEventIds ?? []);
+          const retryEvents = events.filter((event) => retryIds.has(event.eventId));
+          if (retryEvents.length) {
+            await this.options.auditDelivery.releaseRetry(
+              retryEvents.map((event) => event.eventId),
+              this.nextAuditRetryAt(retryEvents),
+              "AUDIT_SERVER",
+            );
+          }
+        } else {
+          // 旧 AuditRepositoryPort 无法持久化 rejected/retry 分类；本轮到此为止，
+          // 不能把未确认事件立即重新读出形成无穷循环。
+          report.auditUploaded += result.uploadedEventIds.length;
+          return;
+        }
+        report.auditUploaded += result.uploadedEventIds.length;
+        if (this.stopped) return;
+        // 就算本批只有 rejected，也要继续读取后续 ready 事件，避免坏记录堵住队头。
         continue;
       }
       if (result.kind === "blocked") {
         await this.options.security.lockDevice(result.code);
+        if (this.options.auditDelivery) {
+          // 锁机审计保留但不维持到期 pending，防止定时器 0ms 自旋。
+          await this.options.auditDelivery.releaseRetry(
+            events.map((event) => event.eventId),
+            this.nextAuditBlockedRetryAt(),
+            `AUDIT_BLOCKED_${result.code}`,
+          );
+        }
+        return;
       }
-      // AuditRepositoryPort 尚无失败状态列；network/5xx/401/403/业务拒绝均保持未上传。
+      if (result.kind === "retry" && this.options.auditDelivery) {
+        await this.options.auditDelivery.releaseRetry(
+          events.map((event) => event.eventId),
+          this.nextAuditRetryAt(events),
+          `AUDIT_${result.failure.toUpperCase()}`,
+        );
+      } else if (result.kind === "rejected" && this.options.auditDelivery) {
+        await this.options.auditDelivery.markRejected(
+          events.map((event) => ({ eventId: event.eventId, code: result.code })),
+        );
+      }
       return;
     }
+  }
+
+  private markAuditsUploaded(eventIds: readonly string[]): Promise<void> {
+    if (!eventIds.length) return Promise.resolve();
+    return this.options.auditDelivery
+      ? this.options.auditDelivery.markUploaded(eventIds)
+      : this.options.auditRepository.markUploaded(eventIds);
+  }
+
+  private nextAuditRetryAt(
+    events: readonly (AuditEventDraft & Readonly<{ attemptCount?: number }>)[],
+  ): string {
+    const attempt = Math.max(0, ...events.map((event) => event.attemptCount ?? 0));
+    const delayMs = [60_000, 120_000, 300_000, 900_000, 1_800_000][
+      Math.min(attempt, 4)
+    ]!;
+    // 短抖动避免多台离线 iPad 在同一秒集中重连。
+    const jitterMs = Math.round(this.random() * 15_000);
+    return new Date(this.options.now().getTime() + delayMs + jitterMs).toISOString();
+  }
+
+  private nextAuditBlockedRetryAt(): string {
+    return new Date(this.options.now().getTime() + 30 * 60_000).toISOString();
   }
 
   private async retry(item: OutboxLease, errorCode: string): Promise<void> {
@@ -239,5 +353,9 @@ export class SyncLifecycleController {
 
   public onNetworkChanged(isOnline: boolean): Promise<SyncDrainReport> {
     return isOnline ? this.coordinator.requestDrain() : Promise.resolve(emptyReport());
+  }
+
+  public shutdown(): Promise<void> {
+    return this.coordinator.shutdown();
   }
 }

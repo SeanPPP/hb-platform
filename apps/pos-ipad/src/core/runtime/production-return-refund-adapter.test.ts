@@ -30,7 +30,8 @@ test("Square prepare 只创建 Created attempt，不触碰 provider，并用 cap
   });
   assert.deepEqual(payments.prepareInputs, [{
     actionId: "external-1", orderGuid: returnOrderGuid, provider: "square", operation: "refund",
-    amount: { currency: "AUD", cents: -500 }, refundCapacityId: "capacity-1",
+    amount: { currency: "AUD", cents: -500 }, actor: auditActor(),
+    refundCapacityId: "capacity-1",
   }]);
   assert.equal(payments.startInputs.length, 0);
   assert.deepEqual(await adapter.trustedRefundReferenceSeed(seedInput("square")), {
@@ -150,9 +151,10 @@ function providers(): PaymentProviderRegistryPort {
   return { get(provider) { return { provider, submit: async () => providerResult("Approved"), recover: async () => providerResult("Approved"), cancel: async () => providerResult("Cancelled"), refund: async () => providerResult("Approved") }; } };
 }
 
-function input() { return { actionId: "return-action-1", allocationId: "allocation-1", externalAttemptId: "external-1", returnOrderGuid, method: "card" as const, signedAmountCents: -500, capacityId: "capacity-1", originalOrderGuid }; }
+function input() { return { actionId: "return-action-1", allocationId: "allocation-1", externalAttemptId: "external-1", returnOrderGuid, actor: auditActor(), method: "card" as const, signedAmountCents: -500, capacityId: "capacity-1", originalOrderGuid }; }
 function boundInput() { return { ...input(), attemptKind: "payment-provider" as const, externalActionId: "external-1", durableAttemptId: "attempt-1" }; }
-function seedInput(provider: "square" | "linkly-cloud") { return { identity: { attemptId: "attempt-1", idempotencyKey: "idempotency-1", orderGuid: returnOrderGuid, createdAtIso: "2026-07-28T00:00:00.000Z" }, provider, operation: "refund" as const, action: { orderGuid: returnOrderGuid, actionId: "external-1", requestSignature: "signature", attemptId: "attempt-1", idempotencyKey: "idempotency-1", createdAtIso: "2026-07-28T00:00:00.000Z" }, capacity: { capacityId: "capacity-1", actionId: "external-1", orderGuid: returnOrderGuid, provider, operation: "refund" as const, amount: { currency: "AUD" as const, cents: -500 } } }; }
+function seedInput(provider: "square" | "linkly-cloud") { return { identity: { attemptId: "attempt-1", idempotencyKey: "idempotency-1", orderGuid: returnOrderGuid, createdAtIso: "2026-07-28T00:00:00.000Z" }, provider, operation: "refund" as const, action: { orderGuid: returnOrderGuid, actionId: "external-1", requestSignature: "signature", attemptId: "attempt-1", idempotencyKey: "idempotency-1", createdAtIso: "2026-07-28T00:00:00.000Z", actor: auditActor() }, capacity: { capacityId: "capacity-1", actionId: "external-1", orderGuid: returnOrderGuid, provider, operation: "refund" as const, amount: { currency: "AUD" as const, cents: -500 } } }; }
+function auditActor() { return { cashierId: "cashier-alice", cashierName: "Alice", userGuid: "user-alice" } as const; }
 function attempt(state: PaymentAttempt["state"], provider: PaymentAttempt["provider"]): PaymentAttempt { return { attemptId: "attempt-1", idempotencyKey: "idempotency-1", orderGuid: returnOrderGuid, provider, operation: "refund", amount: { currency: "AUD", cents: -500 }, state, references: { checkoutId: null, paymentId: null, sessionId: null, txnRef: null, rfn: null, voucherReservationToken: null }, createdAtIso: "2026-07-28T00:00:00.000Z", updatedAtIso: "2026-07-28T00:00:00.000Z", lastErrorCode: null }; }
 function result(value: PaymentAttempt): PaymentAttemptExecutionResult { return { attempt: value, receiptText: null, responseCode: null }; }
 function providerResult(state: "Approved" | "Cancelled") { return { state, references: { checkoutId: null, paymentId: null, sessionId: null, txnRef: null, rfn: null, voucherReservationToken: null }, receiptText: null, responseCode: null }; }

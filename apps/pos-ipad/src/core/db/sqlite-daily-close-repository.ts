@@ -121,19 +121,7 @@ export class SqliteDailyCloseRepository
         return Object.freeze({ replayed: true, archive: existing });
       }
 
-      await transaction.run(
-        `INSERT INTO audit_events (
-          event_id, event_type, occurred_at_iso, order_guid,
-          correlation_id, payload_json, uploaded_at_iso
-        ) VALUES (?, ?, ?, NULL, ?, ?, NULL)`,
-        [
-          audit.eventId,
-          audit.eventType,
-          audit.occurredAtIso,
-          audit.correlationId,
-          stableJson(audit.payload),
-        ],
-      );
+      await insertDailyCloseAudit(transaction, archive, audit);
       await transaction.run(
         `INSERT INTO local_daily_closes (
           close_id, business_date, period_from_iso, period_to_iso,
@@ -266,6 +254,55 @@ export class SqliteDailyCloseRepository
     }
     return Object.freeze(archives);
   }
+}
+
+/** 日结没有订单可供触发器反查，必须从已验证且即将归档的事实冻结可信终端。 */
+async function insertDailyCloseAudit(
+  transaction: SqliteConnectionPort,
+  archive: DailyCloseArchive,
+  audit: AuditEventDraft,
+): Promise<void> {
+  try {
+    await transaction.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid, correlation_id,
+        payload_json, uploaded_at_iso, delivery_state, attempt_count,
+        next_attempt_at_iso, last_error_code, scope_store_code, scope_device_code
+      ) VALUES (?, ?, ?, NULL, ?, ?, NULL, 'pending', 0, ?, NULL, ?, ?)`,
+      [
+        audit.eventId,
+        audit.eventType,
+        audit.occurredAtIso,
+        audit.correlationId,
+        stableJson(audit.payload),
+        audit.occurredAtIso,
+        archive.storeCode,
+        archive.deviceCode,
+      ],
+    );
+  } catch (error) {
+    if (!isLegacyAuditEventsSchema(error)) throw error;
+
+    // M26 前旧库逐级升级时没有投递列；M30 现行库不会走此兼容分支。
+    await transaction.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid,
+        correlation_id, payload_json, uploaded_at_iso
+      ) VALUES (?, ?, ?, NULL, ?, ?, NULL)`,
+      [
+        audit.eventId,
+        audit.eventType,
+        audit.occurredAtIso,
+        audit.correlationId,
+        stableJson(audit.payload),
+      ],
+    );
+  }
+}
+
+function isLegacyAuditEventsSchema(error: unknown): boolean {
+  return error instanceof Error
+    && /audit_events has no column named (delivery_state|scope_store_code)/i.test(error.message);
 }
 
 async function summarizeSnapshot(

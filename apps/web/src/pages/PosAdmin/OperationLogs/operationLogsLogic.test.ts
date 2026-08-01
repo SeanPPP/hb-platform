@@ -33,6 +33,7 @@ assertDeepEqual(
     storeCode: ' S01 ',
     cashierKeyword: ' Amy ',
     deviceCode: ' POS-01 ',
+    deviceSystem: ' iPadOS ',
     operationType: 'SALE_COMPLETE',
     outcome: 'Succeeded',
     productKeyword: ' 10001 ',
@@ -49,6 +50,7 @@ assertDeepEqual(
     storeCode: 'S01',
     cashierKeyword: 'Amy',
     deviceCode: 'POS-01',
+    deviceSystem: 'iPadOS',
     operationType: 'SALE_COMPLETE',
     outcome: 'Succeeded',
     productKeyword: '10001',
@@ -110,11 +112,43 @@ assertEqual(
 assertEqual(
   buildSystemLogLink({
     deviceCode: 'POS 01',
+    deviceSystem: 'Windows',
     traceId: 'trace/1',
     occurredAtUtc: '2026-07-10T01:02:03.000Z',
   }),
   '/system/center-logs?projectCode=hbpos_win&deviceCode=POS+01&traceId=trace%2F1&fromUtc=2026-07-10T00%3A57%3A03.000Z&toUtc=2026-07-10T01%3A07%3A03.000Z',
   '系统日志跳转应携带项目、设备、Trace 和前后五分钟窗口',
+)
+
+assertEqual(
+  buildSystemLogLink({
+    deviceCode: 'IPAD-01',
+    deviceSystem: 'iPadOS',
+    traceId: 'trace-ipad',
+    occurredAtUtc: '2026-07-10T01:02:03.000Z',
+  }),
+  '/system/center-logs?projectCode=hbpos_ipad&deviceCode=IPAD-01&traceId=trace-ipad&fromUtc=2026-07-10T00%3A57%3A03.000Z&toUtc=2026-07-10T01%3A07%3A03.000Z',
+  'iPad 员工日志跳转应限定到 iPad 程序日志项目',
+)
+
+assertEqual(
+  buildSystemLogLink({
+    deviceCode: 'POS-UNKNOWN',
+    deviceSystem: null,
+    traceId: 'trace-unknown',
+    occurredAtUtc: '2026-07-10T01:02:03.000Z',
+  }),
+  '/system/center-logs?traceId=trace-unknown&fromUtc=2026-07-10T00%3A57%3A03.000Z&toUtc=2026-07-10T01%3A07%3A03.000Z',
+  '未知平台的员工日志跳转只能使用 Trace，不能错误指定项目或终端',
+)
+
+assertEqual(
+  buildSystemLogLink({
+    deviceSystem: 'Unknown',
+    occurredAtUtc: '2026-07-10T01:02:03.000Z',
+  }),
+  undefined,
+  '未知平台且没有 Trace 时不应提供可能错误的系统日志跳转',
 )
 
 assertEqual(
@@ -209,6 +243,16 @@ assertEqual(
   '主管付款结案应提供英文文案',
 )
 assertEqual(
+  zhLocale.operationLogs.platforms.iPadOS,
+  'iPadOS',
+  'iPadOS 应提供中文平台文案',
+)
+assertEqual(
+  enLocale.operationLogs.platforms.Unknown,
+  'Unknown',
+  'Unknown 应提供英文平台文案',
+)
+assertEqual(
   operationLogsPageSource.includes('formatMoney(item.beforeUnitPrice'),
   true,
   '商品详情单价应使用金额格式化',
@@ -228,6 +272,13 @@ assertEqual(
     operationLogsPageSource.includes('detailRecord.isEmergencyOverride'),
   true,
   '员工详情应显示离线缓存和紧急授权快照',
+)
+assertEqual(
+  operationLogsPageSource.includes("name=\"deviceSystem\"") &&
+    operationLogsPageSource.includes("key: 'deviceSystem'") &&
+    operationLogsPageSource.includes('detailRecord.deviceSystem'),
+  true,
+  '操作日志应支持平台筛选、列表列和详情展示',
 )
 assertEqual(
   operationLogsPageSource.includes('KeyboardSensor') &&

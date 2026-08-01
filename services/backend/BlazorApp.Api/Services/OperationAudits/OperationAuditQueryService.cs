@@ -24,6 +24,14 @@ public sealed class OperationAuditDetailQueryResult
 
 public sealed class OperationAuditQueryService
 {
+    private enum DeviceSystemFilter
+    {
+        Windows,
+        IpadOs,
+        Unknown,
+        Invalid,
+    }
+
     private static readonly IReadOnlyList<string> AdminRoleAliases =
         Permissions.SuperAdminRoleNames;
     private static readonly string[] StoreManagerRoleAliases = ["StoreManager", "店长", "经理"];
@@ -99,6 +107,20 @@ public sealed class OperationAuditQueryService
         {
             query = query.Where(item => item.DeviceCode == deviceCode);
         }
+
+        var deviceSystem = ParseDeviceSystemFilter(request.DeviceSystem);
+        if (deviceSystem == DeviceSystemFilter.Invalid)
+        {
+            return empty;
+        }
+
+        query = deviceSystem switch
+        {
+            DeviceSystemFilter.Windows => query.Where(item => item.DeviceSystem == "Windows"),
+            DeviceSystemFilter.IpadOs => query.Where(item => item.DeviceSystem == "iPadOS"),
+            DeviceSystemFilter.Unknown => query.Where(item => item.DeviceSystem == null || item.DeviceSystem == ""),
+            _ => query,
+        };
 
         var operationType = TrimToNull(request.OperationType);
         if (operationType != null)
@@ -290,6 +312,47 @@ public sealed class OperationAuditQueryService
     private static string? TrimToNull(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static DeviceSystemFilter? ParseDeviceSystemFilter(string? value)
+    {
+        var normalized = TrimToNull(value);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        if (string.Equals(normalized, "Windows", StringComparison.OrdinalIgnoreCase))
+        {
+            return DeviceSystemFilter.Windows;
+        }
+
+        if (string.Equals(normalized, "iPadOS", StringComparison.OrdinalIgnoreCase))
+        {
+            return DeviceSystemFilter.IpadOs;
+        }
+
+        return string.Equals(normalized, "Unknown", StringComparison.OrdinalIgnoreCase)
+            ? DeviceSystemFilter.Unknown
+            : DeviceSystemFilter.Invalid;
+    }
+
+    private static string? NormalizeStoredDeviceSystem(string? value)
+    {
+        var normalized = TrimToNull(value);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        if (string.Equals(normalized, "Windows", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Windows";
+        }
+
+        return string.Equals(normalized, "iPadOS", StringComparison.OrdinalIgnoreCase)
+            ? "iPadOS"
+            : normalized;
+    }
+
     private static PagedListReactDto<OperationAuditListItemDto> CreateEmptyPage(
         int pageNumber,
         int pageSize
@@ -314,6 +377,7 @@ public sealed class OperationAuditQueryService
         IsEmergencyOverride = row.IsEmergencyOverride,
         StoreCode = row.StoreCode,
         DeviceCode = row.DeviceCode,
+        DeviceSystem = NormalizeStoredDeviceSystem(row.DeviceSystem),
         AppVersion = row.AppVersion,
         InstanceId = row.InstanceId,
         OrderGuid = row.OrderGuid,
@@ -361,6 +425,7 @@ public sealed class OperationAuditQueryService
             IsEmergencyOverride = listItem.IsEmergencyOverride,
             StoreCode = listItem.StoreCode,
             DeviceCode = listItem.DeviceCode,
+            DeviceSystem = listItem.DeviceSystem,
             AppVersion = listItem.AppVersion,
             InstanceId = listItem.InstanceId,
             OrderGuid = listItem.OrderGuid,

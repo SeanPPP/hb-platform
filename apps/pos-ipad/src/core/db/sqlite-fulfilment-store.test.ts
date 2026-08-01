@@ -225,6 +225,8 @@ function initialAuthorization(
       : "Permissions.PosTerminal.CashDrawer.Open",
     authorizationMode: "online" as const,
     requestingCashierId: "cashier-1",
+    requestingCashierName: "Cashier One",
+    requestingUserGuid: "user-1",
     authorizingCashierId: "supervisor-1",
   };
   return {
@@ -246,6 +248,8 @@ function initialAuthorization(
         printerId: input.printerId,
         errorCode: null,
         requestingCashierId: context.requestingCashierId,
+        requestingCashierName: context.requestingCashierName,
+        requestingUserGuid: context.requestingUserGuid,
         authorizingCashierId: context.authorizingCashierId,
         permissionCode: context.permissionCode,
         authorizationMode: context.authorizationMode,
@@ -320,6 +324,7 @@ test("手动开箱事件直接以 Requested 和空订单写入；同 actionId �
       state: "Requested",
       reason: "MANUAL",
       retryCount: 0,
+      authorization: authorization.context,
     },
   });
   assert.deepEqual(replay, {
@@ -331,12 +336,17 @@ test("手动开箱事件直接以 Requested 和空订单写入；同 actionId �
       state: "Requested",
       reason: "MANUAL",
       retryCount: 0,
+      authorization: authorization.context,
     },
   });
   assert.equal(connection.drawerEvents.get("manual-action-1")?.order_guid, null);
   assert.equal(connection.drawerEvents.get("manual-action-1")?.state, "Requested");
   assert.equal(connection.auditEvents.size, 1);
   assert.deepEqual(await store.listRequiredDrawerEvents(), []);
+
+  connection.drawerEvents.get("manual-action-1")!.state = "Failed";
+  const retry = await store.beginManualDrawerRetry("manual-action-1");
+  assert.deepEqual(retry?.authorization, authorization.context);
 });
 
 test("手动开箱同 actionId 改绑打印机或碰撞订单事件时必须 fail-closed", async () => {
@@ -385,6 +395,37 @@ test("手动开箱同 actionId 改绑打印机或碰撞订单事件时必须 fai
       printerId: "XP-FIRST",
     })),
     /manual drawer action conflict/i,
+  );
+});
+
+test("首份履约授权审计必须整套匹配员工三字段，不能混搭身份", async () => {
+  const { store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "manual-actor-mismatch",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-MANUAL",
+  });
+
+  await assert.rejects(
+    async () => store.beginManualDrawerOpen(
+      {
+        eventId: authorization.context.actionId,
+        printerId: "XP-MANUAL",
+        reason: "MANUAL",
+      },
+      {
+        ...authorization,
+        audit: {
+          ...authorization.audit,
+          payload: {
+            ...authorization.audit.payload,
+            requestingUserGuid: "other-user",
+          },
+        },
+      },
+    ),
+    /authorization audit does not match/i,
   );
 });
 

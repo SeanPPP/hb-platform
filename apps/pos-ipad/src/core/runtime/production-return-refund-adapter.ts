@@ -184,6 +184,7 @@ export class ProductionReturnRefundAdapter
         operation: "refund",
         // PaymentAttempt 是账本模型：退款必须保留负数，provider 再换算正 magnitude。
         amount: { currency: "AUD", cents: signedAmountCents },
+        actor: input.actor,
         refundCapacityId: capacityId,
       },
     };

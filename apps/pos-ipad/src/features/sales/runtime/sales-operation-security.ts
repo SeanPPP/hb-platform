@@ -1,4 +1,8 @@
-import type { AuditEventDraft, CartSnapshot } from "@/core/contracts";
+import {
+  auditActorPayload,
+  type AuditEventDraft,
+  type CartSnapshot,
+} from "@/core/contracts";
 
 export const SALES_OPERATION_NOT_AUTHORIZED =
   "SALES_OPERATION_NOT_AUTHORIZED";
@@ -64,6 +68,8 @@ export type SalesCartAuditEventType =
 
 type SalesOperationIdentity = Readonly<{
   cashierId: string;
+  cashierName: string | null;
+  userGuid: string | null;
 }>;
 
 type SalesOperationSessionGuard = Readonly<{
@@ -287,7 +293,7 @@ export class AuthorizedSalesOperationExecutor {
           screen: "pos-terminal",
           permissionCode: input.context.permissionCode,
           authorizationMode: input.context.authorizationMode,
-          requestingCashierId: input.context.requestingCashierId,
+          ...auditActorPayload(this.identity),
           authorizingCashierId: input.context.authorizingCashierId,
           reason: safeReasonCode(input.reason),
           itemCount: input.after.lines.length,

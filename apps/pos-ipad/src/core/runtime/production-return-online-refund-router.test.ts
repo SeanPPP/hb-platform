@@ -18,6 +18,11 @@ const cashPreparation = Object.freeze({
   allocationId: "return-allocation-1",
   externalAttemptId: "cash-attempt-1",
   returnOrderGuid: "return-order-1",
+  actor: {
+    cashierId: "cashier-alice",
+    cashierName: "Alice",
+    userGuid: "user-alice",
+  },
   method: "cash" as const,
   signedAmountCents: -1_001,
   capacityId: null,

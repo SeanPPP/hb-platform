@@ -2,6 +2,10 @@ import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
 import type { SqliteConnectionPort } from "./types";
 
 import {
+  auditActorPayload,
+  auditActorSnapshotFromPayload,
+} from "@/core/contracts/audit-actor";
+import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
 } from "@/core/contracts/line-sync-provenance";
@@ -184,7 +188,7 @@ implements ReturnExecutionLedgerPort, ReturnRecoveryListPort {
           draft.identity.cashierName,
           draft.identity.sessionEpoch,
           draft.supervisorGrantKey,
-          JSON.stringify(draft.plan),
+          serializePersistedPlan(draft.plan, draft.identity),
           draft.createdAtIso,
           draft.createdAtIso,
         ],
@@ -1292,7 +1296,8 @@ async function loadAction(
     [actionId],
   );
   if (!row) return null;
-  const plan = parsePlan(row.plan_json);
+  const persistedPlan = parsePersistedPlan(row.plan_json);
+  const plan = persistedPlan.plan;
   if (
     plan.sourceKind !== text(row.source_kind, "return source kind") ||
     plan.totalRefundCents !==
@@ -1300,6 +1305,15 @@ async function loadAction(
     plan.online !== booleanInteger(row.online, "return online state")
   ) {
     throw new Error("Persisted return plan header is inconsistent.");
+  }
+  const persistedCashierId = text(row.cashier_id, "return cashier id");
+  const persistedCashierName = text(row.cashier_name, "return cashier name");
+  if (
+    persistedPlan.actor !== null &&
+    (persistedPlan.actor.cashierId !== persistedCashierId ||
+      persistedPlan.actor.cashierName !== persistedCashierName)
+  ) {
+    throw new Error("Persisted return audit actor does not match action identity.");
   }
   const lineRows = await connection.getAll<ReturnLineRow>(
     `SELECT line.line_id, line.line_index, line.selection_key,
@@ -1367,8 +1381,9 @@ async function loadAction(
     identity: normalizeIdentity({
       storeCode: text(row.store_code, "return store code"),
       deviceCode: text(row.device_code, "return device code"),
-      cashierId: text(row.cashier_id, "return cashier id"),
-      cashierName: text(row.cashier_name, "return cashier name"),
+      cashierId: persistedCashierId,
+      cashierName: persistedCashierName,
+      userGuid: persistedPlan.actor?.userGuid ?? null,
       sessionEpoch: text(row.session_epoch, "return session epoch"),
     }),
     plan,
@@ -3023,6 +3038,12 @@ async function insertCompletedReturnOrder(
       action.actionId,
       JSON.stringify({
         action: "return-order-completed",
+        // Actor 来自首次 prepare 时冻结并写入 plan_json；恢复时绝不读取当前会话。
+        ...auditActorPayload({
+          cashierId: action.identity.cashierId,
+          cashierName: action.identity.cashierName,
+          userGuid: action.identity.userGuid ?? null,
+        }),
         sourceKind: action.plan.sourceKind,
         totalRefundCents: action.plan.totalRefundCents,
         lineCount: action.lines.length,
@@ -3298,6 +3319,10 @@ function normalizeIdentity(
       "return cashier name",
       256,
     ),
+    userGuid:
+      input.userGuid === null || input.userGuid === undefined
+        ? null
+        : strictText(input.userGuid, "return user guid", 256),
     sessionEpoch: strictText(
       input.sessionEpoch,
       "return session epoch",
@@ -3306,7 +3331,25 @@ function normalizeIdentity(
   });
 }
 
-function parsePlan(value: unknown): ReturnRefundPlan {
+function serializePersistedPlan(
+  plan: ReturnRefundPlan,
+  identity: TrustedReturnIdentity,
+): string {
+  return JSON.stringify({
+    version: 1,
+    plan,
+    auditActor: auditActorPayload({
+      cashierId: identity.cashierId,
+      cashierName: identity.cashierName,
+      userGuid: identity.userGuid ?? null,
+    }),
+  });
+}
+
+function parsePersistedPlan(value: unknown): Readonly<{
+  plan: ReturnRefundPlan;
+  actor: ReturnType<typeof auditActorSnapshotFromPayload>;
+}> {
   if (typeof value !== "string") {
     throw new Error("Persisted return plan JSON is invalid.");
   }
@@ -3316,7 +3359,34 @@ function parsePlan(value: unknown): ReturnRefundPlan {
   } catch {
     throw new Error("Persisted return plan JSON is corrupt.");
   }
-  return normalizePlan(parsed as ReturnRefundPlan);
+  // Migrate in place through the already-present plan_json envelope: no new column,
+  // and legacy actions remain recoverable with a deliberately unknown userGuid.
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    !Array.isArray(parsed) &&
+    (parsed as { version?: unknown }).version === 1 &&
+    "plan" in parsed &&
+    "auditActor" in parsed
+  ) {
+    const record = parsed as Record<string, unknown>;
+    const actorPayload = record.auditActor;
+    if (!actorPayload || typeof actorPayload !== "object" || Array.isArray(actorPayload)) {
+      throw new Error("Persisted return audit actor is invalid.");
+    }
+    const actor = auditActorSnapshotFromPayload(
+      actorPayload as Readonly<Record<string, unknown>>,
+    );
+    if (!actor) throw new Error("Persisted return audit actor is incomplete.");
+    return Object.freeze({
+      plan: normalizePlan(record.plan as ReturnRefundPlan),
+      actor,
+    });
+  }
+  return Object.freeze({
+    plan: normalizePlan(parsed as ReturnRefundPlan),
+    actor: null,
+  });
 }
 
 async function decryptRecoveryKey(

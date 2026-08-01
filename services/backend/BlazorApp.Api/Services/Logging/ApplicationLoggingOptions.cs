@@ -14,6 +14,11 @@ namespace BlazorApp.Api.Services.Logging
         public int MaxBatchSize { get; set; } = 200;
         public int MaxIngestRequestsPerMinute { get; set; } = 120;
         public int MaxIngestLogsPerMinute { get; set; } = 5000;
+        // 公开写入入口的资源预算；后台队列不使用这些 HTTP 请求体限制。
+        public int MaxIngestBytesPerMinute { get; set; } = 16 * 1024 * 1024;
+        public int MaxIngestFieldBytes { get; set; } = 32 * 1024;
+        public int MaxIngestItemBytes { get; set; } = 64 * 1024;
+        public int MaxIngestBatchBytes { get; set; } = 1024 * 1024;
         public int MaxMessageLength { get; set; } = 4000;
         public int MaxStackTraceLength { get; set; } = 12000;
         public int MaxPropertiesLength { get; set; } = 12000;

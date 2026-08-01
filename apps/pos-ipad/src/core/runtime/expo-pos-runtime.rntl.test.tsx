@@ -1,7 +1,23 @@
 import { describe, expect, it, jest } from "@jest/globals";
 
-import { readSettingsDevicePresentation } from "./expo-pos-runtime";
+import {
+  ApplicationLogActorBinding,
+  ApplicationLogger,
+  type ApplicationLogDraft,
+  type ApplicationLogEntry,
+} from "../logging/application-log";
 
+import {
+  bindCashierSessionToApplicationLog,
+  readSettingsDevicePresentation,
+  recordRuntimeInitializationFailure,
+} from "./expo-pos-runtime";
+
+jest.mock("expo-application", () => ({}));
+jest.mock("expo-router", () => ({}));
+jest.mock("react-native-safe-area-context", () => ({}));
+jest.mock("react-native-paper", () => ({ MD3LightTheme: {} }));
+jest.mock("../../features/app-updates", () => ({}));
 jest.mock("expo-constants", () => ({
   __esModule: true,
   default: { expoConfig: null },
@@ -76,4 +92,137 @@ describe("readSettingsDevicePresentation", () => {
       }),
     ).rejects.toThrow("SETTINGS_DEVICE_IDENTITY_REQUIRED");
   });
+});
+
+describe("程序日志收银员身份绑定", () => {
+  it("Alice、Bob 的日志在记录时冻结身份；失败登录不会沿用 Alice", async () => {
+    const actor = new ApplicationLogActorBinding();
+    const signin = jest.fn(async (barcode: string) => {
+      if (barcode === "fail") throw new Error("CASHIER_LOGIN_FAILED");
+      return barcode === "scan-alice-private"
+        ? {
+            cashierId: "cashier-alice",
+            userGuid: "user-alice",
+            cashierName: "Alice",
+            storeCode: "BNE-01",
+            deviceCode: "IPAD-01",
+            permissions: [],
+            source: "online" as const,
+          }
+        : {
+            cashierId: "cashier-bob",
+            userGuid: null,
+            cashierName: "Bob",
+            storeCode: "BNE-01",
+            deviceCode: "IPAD-01",
+            permissions: [],
+            source: "offline-cache" as const,
+          };
+    });
+    const cashierSession = bindCashierSessionToApplicationLog(
+      { signIn: signin },
+      actor,
+    );
+    const recorded: ApplicationLogEntry[] = [];
+    const logger = new ApplicationLogger(
+      {
+        enqueue: async (entry: ApplicationLogEntry) => {
+          recorded.push(entry);
+        },
+      } as never,
+      () => ({
+        storeCode: "BNE-01",
+        deviceCode: "IPAD-01",
+        userId: actor.read()?.userId ?? null,
+        userName: actor.read()?.userName ?? null,
+        appVersion: "1",
+        instanceId: "instance",
+      }),
+      () => `event-${recorded.length}`,
+      () => "2026-08-01T00:00:00.000Z",
+    );
+
+    await cashierSession.signIn("scan-alice-private");
+    await logger.record({ level: "Error", message: "Alice logged error" });
+    await expect(cashierSession.signIn("fail")).rejects.toThrow(
+      "CASHIER_LOGIN_FAILED",
+    );
+    await logger.record({ level: "Error", message: "No actor error" });
+    await cashierSession.signIn("scan-bob-private");
+    await logger.record({ level: "Error", message: "Bob logged error" });
+
+    expect(recorded.map((entry) => [entry.userId, entry.userName])).toEqual([
+      ["user-alice", "Alice"],
+      [null, null],
+      ["cashier-bob", "Bob"],
+    ]);
+    expect(JSON.stringify(recorded)).not.toContain("scan-");
+  });
+});
+
+describe("初始化异常收尾", () => {
+  it("在关闭数据库前记录并完成日志收尾", async () => {
+    const order: string[] = [];
+    await recordRuntimeInitializationFailure(
+      {
+        logger: {
+          record: async (draft: ApplicationLogDraft) => {
+            order.push(`record:${draft.category}`);
+          },
+        },
+        shutdown: async () => {
+          order.push("shutdown-log");
+        },
+      } as never,
+      new Error("composition failed"),
+      async () => {
+        order.push("close-database");
+      },
+    );
+
+    expect(order).toEqual([
+      "record:runtime.initialization",
+      "shutdown-log",
+      "close-database",
+    ]);
+  });
+
+  it.each(["record", "shutdown", "close"] as const)(
+    "%s 旁路失败不覆盖 caller 重抛的原初始化异常",
+    async (failedStep) => {
+      const order: string[] = [];
+      const initializationError = new Error("original initialization failure");
+      const applicationLog = {
+        logger: {
+          record: async () => {
+            order.push("record");
+            if (failedStep === "record") throw new Error("record failed");
+          },
+        },
+        shutdown: async () => {
+          order.push("shutdown");
+          if (failedStep === "shutdown") throw new Error("shutdown failed");
+        },
+      } as never;
+
+      const caller = async () => {
+        try {
+          throw initializationError;
+        } catch (error) {
+          await recordRuntimeInitializationFailure(
+            applicationLog,
+            error,
+            async () => {
+              order.push("close");
+              if (failedStep === "close") throw new Error("close failed");
+            },
+          );
+          throw error;
+        }
+      };
+
+      await expect(caller()).rejects.toBe(initializationError);
+      expect(order).toEqual(["record", "shutdown", "close"]);
+    },
+  );
 });

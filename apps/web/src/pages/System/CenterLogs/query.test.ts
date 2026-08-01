@@ -165,12 +165,17 @@ const projectDefinitions = (
     CENTER_LOG_PROJECT_DEFINITIONS?: Array<{ projectCode: string; labelKey: string }>
   }
 ).CENTER_LOG_PROJECT_DEFINITIONS
-assertEqual(projectDefinitions?.length, 5, 'center logs should define all five projects')
+assertEqual(projectDefinitions?.length, 6, 'center logs should define all six projects')
 assertEqual(
   projectDefinitions?.map((item) => item.projectCode).join(','),
-  'HBBBackend,hbweb_rv,HbwebExpo,hbpos_win,hbpos_api',
-  'project definitions should keep the supported project order',
+  'HBBBackend,hbweb_rv,HbwebExpo,hbpos_win,hbpos_ipad,hbpos_api',
+  'project definitions should keep the supported project order including iPad',
 )
+
+const zhCenterLogsProjects = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8')).system.centerLogs.projects
+const enCenterLogsProjects = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8')).system.centerLogs.projects
+assertEqual(zhCenterLogsProjects.hbpos_ipad, 'iPad客户端', 'Chinese iPad project label is defined')
+assertEqual(enCenterLogsProjects.hbpos_ipad, 'iPad Client', 'English iPad project label is defined')
 
 const resolveConfigurationState = (
   queryModule as unknown as {

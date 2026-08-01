@@ -44,6 +44,9 @@ public sealed class PosOperationAudit
     [SugarColumn(ColumnName = "device_code", Length = 64, IsNullable = false)]
     public string DeviceCode { get; set; } = string.Empty;
 
+    [SugarColumn(ColumnName = "device_system", Length = 32, IsNullable = true)]
+    public string? DeviceSystem { get; set; }
+
     [SugarColumn(ColumnName = "app_version", Length = 32, IsNullable = true)]
     public string? AppVersion { get; set; }
 

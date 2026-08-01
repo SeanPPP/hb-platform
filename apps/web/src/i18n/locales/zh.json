@@ -3413,6 +3413,7 @@
       "employeePlaceholder": "姓名或员工编号",
       "device": "终端",
       "devicePlaceholder": "终端编号",
+      "platform": "平台",
       "operation": "事件",
       "outcome": "结果",
       "product": "商品",
@@ -3431,7 +3432,13 @@
       "products": "商品摘要",
       "amountChange": "金额变化",
       "device": "终端",
+      "platform": "平台",
       "outcome": "结果"
+    },
+    "platforms": {
+      "Windows": "Windows",
+      "iPadOS": "iPadOS",
+      "Unknown": "未知"
     },
     "outcomes": {
       "succeeded": "成功",
@@ -3991,6 +3998,7 @@
         "hbweb_rv": "Web前端",
         "HbwebExpo": "移动端",
         "hbpos_win": "WPF客户端",
+        "hbpos_ipad": "iPad客户端",
         "hbpos_api": "WPF收银后端"
       },
       "status": {

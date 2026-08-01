@@ -17,6 +17,8 @@ export type PersistedFulfilmentAuthorization = Readonly<{
   permissionCode: string;
   authorizationMode: "current-cashier" | "offline-cache" | "online";
   requestingCashierId: string;
+  requestingCashierName: string | null;
+  requestingUserGuid: string | null;
   authorizingCashierId: string | null;
 }>;
 
@@ -60,6 +62,8 @@ export type StoredFulfilmentDrawerEvent = Readonly<{
   state: DrawerEventState;
   reason: string;
   retryCount: number;
+  /** 仅手动钱箱拥有首份授权审计；自动订单钱箱必须保持无 actor。 */
+  authorization?: PersistedFulfilmentAuthorization;
 }>;
 
 export type ManualDrawerOpenInput = Readonly<{
@@ -177,7 +181,10 @@ export class SqliteFulfilmentStore {
         );
         return {
           kind: "existing",
-          event,
+          event: {
+            ...event,
+            authorization: persistedAuthorization,
+          },
         };
       }
 
@@ -202,6 +209,7 @@ export class SqliteFulfilmentStore {
           state: "Requested",
           reason: "MANUAL",
           retryCount: 0,
+          authorization: authorization.context,
         },
       };
     });
@@ -460,7 +468,28 @@ export class SqliteFulfilmentStore {
         ? await tx.run("UPDATE drawer_events SET state = 'Requested', retry_count = retry_count + 1, requested_at_iso = ?, updated_at_iso = ? WHERE event_id = ? AND state = 'Failed'", [now, now, eventId])
         : await tx.run("UPDATE drawer_events SET state = 'Requested', requested_at_iso = ?, updated_at_iso = ? WHERE event_id = ? AND state = ?", [now, now, eventId, expected]);
       if (result.changes !== 1) return null;
-      return { ...mapDrawerEvent(row), state: "Requested", retryCount: retryCount + (manual ? 1 : 0) };
+      const event = mapDrawerEvent(row);
+      const authorization = event.reason === "MANUAL"
+        ? await loadInitialAuthorization(
+            tx,
+            {
+              eventType: "CASH_DRAWER_OPEN",
+              orderGuid: null,
+              taskId: event.eventId,
+              printerId: event.printerId,
+              action: "open-cash-drawer",
+              reason: "MANUAL",
+              permissionCode:
+                "Permissions.PosTerminal.CashDrawer.Open",
+            },
+          )
+        : null;
+      return {
+        ...event,
+        state: "Requested",
+        retryCount: retryCount + (manual ? 1 : 0),
+        ...(authorization ? { authorization } : {}),
+      };
     });
   }
 }
@@ -510,6 +539,8 @@ const fulfilmentAuditPayloadKeys = new Set([
   "printerId",
   "errorCode",
   "requestingCashierId",
+  "requestingCashierName",
+  "requestingUserGuid",
   "authorizingCashierId",
   "permissionCode",
   "authorizationMode",
@@ -624,6 +655,14 @@ function assertInitialAuthorization(
     payload.printerId !== expected.printerId ||
     payload.errorCode !== null ||
     payload.requestingCashierId !== context.requestingCashierId ||
+    optionalAuditText(
+      payload.requestingCashierName,
+      "Requesting cashier name",
+    ) !== context.requestingCashierName ||
+    optionalAuditText(
+      payload.requestingUserGuid,
+      "Requesting user guid",
+    ) !== context.requestingUserGuid ||
     payload.authorizingCashierId !== context.authorizingCashierId ||
     payload.permissionCode !== context.permissionCode ||
     payload.authorizationMode !== context.authorizationMode
@@ -692,6 +731,16 @@ function authorizationContextFromAudit(
       payload.requestingCashierId,
       "Requesting cashier id",
     ),
+    requestingCashierName:
+      optionalAuditText(
+        payload.requestingCashierName,
+        "Requesting cashier name",
+      ),
+    requestingUserGuid:
+      optionalAuditText(
+        payload.requestingUserGuid,
+        "Requesting user guid",
+      ),
     authorizingCashierId:
       payload.authorizingCashierId === null
         ? null
@@ -711,10 +760,14 @@ function assertSameAuthorization(
     !expected.actionId.trim() ||
     !expected.permissionCode.trim() ||
     !expected.requestingCashierId.trim() ||
+    !isValidOptionalAuditText(expected.requestingCashierName) ||
+    !isValidOptionalAuditText(expected.requestingUserGuid) ||
     actual.actionId !== expected.actionId ||
     actual.permissionCode !== expected.permissionCode ||
     actual.authorizationMode !== expected.authorizationMode ||
     actual.requestingCashierId !== expected.requestingCashierId ||
+    actual.requestingCashierName !== expected.requestingCashierName ||
+    actual.requestingUserGuid !== expected.requestingUserGuid ||
     actual.authorizingCashierId !== expected.authorizingCashierId ||
     (expected.authorizationMode === "current-cashier"
       ? expected.authorizingCashierId !== null
@@ -722,6 +775,10 @@ function assertSameAuthorization(
   ) {
     throw new Error("Fulfilment authorization identity is inconsistent.");
   }
+}
+
+function isValidOptionalAuditText(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && Boolean(value.trim()));
 }
 
 async function assertMatchingAuthorizedReprint(
@@ -767,6 +824,11 @@ function auditText(value: unknown, name: string): string {
     throw new Error(`${name} is required.`);
   }
   return value.trim();
+}
+
+/** M28 前的授权审计没有可选姓名/用户 GUID；恢复时统一视为 null。 */
+function optionalAuditText(value: unknown, name: string): string | null {
+  return value === undefined || value === null ? null : auditText(value, name);
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

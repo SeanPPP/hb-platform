@@ -12,6 +12,7 @@ import {
 } from "./daily-close-presenter";
 
 import type {
+  AuditEventDraft,
   DailyCloseArchive,
   DailyCloseArchiveCommit,
   DailyCloseRepositoryPort,
@@ -139,9 +140,56 @@ test("保存失败保留点钞；补打只打印已选归档并带 reprint 标�
   );
 });
 
+test("日结补打无论成功或失败都记录冻结员工身份", async () => {
+  const succeeded = createHarness();
+  succeeded.repository.archives.push(archive("reprint-success"));
+  await succeeded.presenter.load();
+  await succeeded.presenter.reprintSelected();
+
+  assert.deepEqual(succeeded.audit.events, [
+    {
+      eventId: "close-1",
+      eventType: "DAILY_CLOSE_REPRINT",
+      occurredAtIso: "2026-07-28T08:00:00.000Z",
+      orderGuid: null,
+      correlationId: "reprint-success",
+      payload: {
+        action: "daily-close-reprint",
+        status: "Printed",
+        reason: "daily-close-reprint",
+        source: "ipad-pos",
+        outcome: "Succeeded",
+        requestingCashierId: "C1",
+        requestingCashierName: "Alice",
+        requestingUserGuid: "U1",
+      },
+    },
+  ]);
+
+  const failed = createHarness({ printFails: true });
+  failed.repository.archives.push(archive("reprint-failed"));
+  await failed.presenter.load();
+  await failed.presenter.reprintSelected();
+  assert.equal(failed.presenter.getState().statusCode, "reprint-failed");
+  assert.equal(failed.audit.events[0]?.payload.status, "Failed");
+  assert.equal(failed.audit.events[0]?.payload.outcome, "Failed");
+});
+
+test("日结补打的审计故障不覆盖已经确认的打印结果", async () => {
+  const harness = createHarness({ auditFails: true });
+  harness.repository.archives.push(archive("reprint-audit-failure"));
+  await harness.presenter.load();
+  await harness.presenter.reprintSelected();
+
+  assert.equal(harness.printer.jobs.length, 1);
+  assert.equal(harness.presenter.getState().statusCode, "reprint-printed");
+  assert.deepEqual(harness.audit.events, []);
+});
+
 function createHarness(
   options: Partial<{
     permissions: readonly string[];
+    auditFails: boolean;
     printFails: boolean;
     saveFails: boolean;
   }> = {},
@@ -149,6 +197,13 @@ function createHarness(
   const events: string[] = [];
   const repository = new MemoryRepository(events);
   repository.saveFails = options.saveFails ?? false;
+  const audit = {
+    events: [] as AuditEventDraft[],
+    async append(entries: readonly AuditEventDraft[]) {
+      if (options.auditFails) throw new Error("audit store unavailable");
+      this.events.push(...entries);
+    },
+  };
   const printer = {
     jobs: [] as DailyClosePrintJob[],
     async print(job: DailyClosePrintJob) {
@@ -161,9 +216,11 @@ function createHarness(
   const presenter = new DailyClosePresenter({
     businessTimeZone: "Australia/Brisbane",
     createId: () => ids.shift() ?? "unexpected-id",
+    audit,
     identity: {
       cashierId: "C1",
       cashierName: "Alice",
+      userGuid: "U1",
       deviceCode: "IPAD-1",
       permissions:
         options.permissions ??
@@ -182,7 +239,7 @@ function createHarness(
     repository,
     storeName: "Sunnybank",
   });
-  return { events, presenter, printer, repository };
+  return { audit, events, presenter, printer, repository };
 }
 
 class MemoryRepository implements DailyCloseRepositoryPort {

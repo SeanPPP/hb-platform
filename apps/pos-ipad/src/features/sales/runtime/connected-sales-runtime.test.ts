@@ -378,6 +378,7 @@ test("现金确认透传同一 checkoutIntent，并强制使用安全注入的�
     deviceCode: "IPAD1",
     cashierId: "C1",
     cashierName: "Alice",
+    userGuid: "U1",
   });
 });
 
@@ -1233,7 +1234,7 @@ function hasCode(code: string): (error: unknown) => boolean {
 }
 
 function identity() {
-  return { storeCode: "S1", deviceCode: "IPAD1", cashierId: "C1", cashierName: "Alice" };
+  return { storeCode: "S1", deviceCode: "IPAD1", cashierId: "C1", cashierName: "Alice", userGuid: "U1" };
 }
 
 function cartWithLine(): PricingCart {
@@ -1269,7 +1270,7 @@ function operations(
 ): AuthorizedSalesOperationExecutor {
   return new AuthorizedSalesOperationExecutor(
     security(),
-    { cashierId: "C1" },
+    { cashierId: "C1", cashierName: null, userGuid: null },
     guard,
   );
 }

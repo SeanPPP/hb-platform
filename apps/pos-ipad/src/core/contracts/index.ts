@@ -1,4 +1,6 @@
 export * from "./app-updates";
+export * from "./audit-actor";
+export * from "./audit-scope";
 export * from "./cart";
 export * from "./daily-close";
 export * from "./device-reregistration";

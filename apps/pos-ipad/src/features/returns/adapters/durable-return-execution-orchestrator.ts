@@ -12,6 +12,7 @@ import type {
   ReturnExecutionPort,
 } from "../return-workflow";
 
+import type { AuditActorSnapshot } from "@/core/contracts";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
@@ -22,6 +23,8 @@ export type TrustedReturnIdentity = Readonly<{
   deviceCode: string;
   cashierId: string;
   cashierName: string;
+  /** 审计身份快照；订单表不持久化此字段，恢复时必须来自动作账本。 */
+  userGuid?: string | null;
   /** Keychain/session coordinator 提供的不可伪造 epoch。 */
   sessionEpoch: string;
 }>;
@@ -281,6 +284,7 @@ export type OnlineReturnRefundInput = Readonly<{
   allocationId: string;
   externalAttemptId: string;
   returnOrderGuid: string;
+  actor: AuditActorSnapshot;
   method: ReturnTenderMethod;
   signedAmountCents: number;
   capacityId: string | null;
@@ -1108,6 +1112,9 @@ function validateIdentity(identity: TrustedReturnIdentity): void {
   requiredOpaque(identity.deviceCode);
   requiredOpaque(identity.cashierId);
   requiredOpaque(identity.cashierName);
+  if (identity.userGuid !== null && identity.userGuid !== undefined) {
+    requiredOpaque(identity.userGuid);
+  }
   requiredOpaque(identity.sessionEpoch);
 }
 
@@ -1208,6 +1215,7 @@ function toOnlineRefundInput(
     allocationId: allocation.allocationId,
     externalAttemptId: allocation.externalAttemptId,
     returnOrderGuid: action.returnOrderGuid,
+    actor: returnAuditActor(action.identity),
     method: allocation.method,
     signedAmountCents: allocation.signedAmountCents,
     capacityId: allocation.capacityId,
@@ -1236,11 +1244,22 @@ function toOnlineRefundPreparationInput(
     allocationId: allocation.allocationId,
     externalAttemptId: allocation.externalAttemptId,
     returnOrderGuid: action.returnOrderGuid,
+    actor: returnAuditActor(action.identity),
     method: allocation.method,
     signedAmountCents: allocation.signedAmountCents,
     capacityId: allocation.capacityId,
     originalOrderGuid: allocation.originalOrderGuid,
   };
+}
+
+function returnAuditActor(
+  identity: TrustedReturnIdentity,
+): AuditActorSnapshot {
+  return Object.freeze({
+    cashierId: identity.cashierId,
+    cashierName: identity.cashierName,
+    userGuid: identity.userGuid ?? null,
+  });
 }
 
 function completedOutcome(

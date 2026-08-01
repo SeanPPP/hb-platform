@@ -571,6 +571,7 @@ function identity() {
     deviceCode: "IPAD1",
     cashierId: "C1",
     cashierName: "Alice",
+    userGuid: "U1",
   };
 }
 
@@ -604,7 +605,7 @@ function hasCode(code: string): (error: unknown) => boolean {
 function operations(): AuthorizedSalesOperationExecutor {
   return new AuthorizedSalesOperationExecutor(
     security(),
-    { cashierId: "C1" },
+    { cashierId: "C1", cashierName: null, userGuid: null },
     alwaysActiveSessionGuard,
   );
 }

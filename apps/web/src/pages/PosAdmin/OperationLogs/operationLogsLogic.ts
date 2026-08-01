@@ -1,4 +1,5 @@
 import type {
+  OperationAuditDeviceSystem,
   OperationAuditSortField,
   OperationAuditSortOrder,
 } from '../../../types/operationAudit'
@@ -11,6 +12,7 @@ export interface OperationAuditQueryState {
   storeCode: string
   cashierKeyword: string
   deviceCode: string
+  deviceSystem: string
   operationType: string
   outcome: string
   productKeyword: string
@@ -28,6 +30,7 @@ export interface OperationAuditQueryParams {
   storeCode?: string
   cashierKeyword?: string
   deviceCode?: string
+  deviceSystem?: OperationAuditDeviceSystem
   operationType?: string
   outcome?: string
   productKeyword?: string
@@ -47,6 +50,8 @@ export const OPERATION_AUDIT_SORT_FIELDS = [
   'deviceCode',
   'outcome',
 ] as const satisfies readonly OperationAuditSortField[]
+
+export const OPERATION_AUDIT_DEVICE_SYSTEM_OPTIONS = ['Windows', 'iPadOS', 'Unknown'] as const
 
 export const DEFAULT_OPERATION_AUDIT_SORT = {
   sortBy: 'occurredAtUtc',
@@ -162,12 +167,16 @@ export function normalizeOperationAuditPage<T>(payload: {
 
 export function buildOperationAuditQuery(_state: OperationAuditQueryState): OperationAuditQueryParams {
   const trim = (value: string) => value.trim() || undefined
+  const deviceSystem = trim(_state.deviceSystem)
   return {
     fromUtc: _state.startUtc,
     toUtc: _state.endUtc,
     storeCode: trim(_state.storeCode),
     cashierKeyword: trim(_state.cashierKeyword),
     deviceCode: trim(_state.deviceCode),
+    deviceSystem: OPERATION_AUDIT_DEVICE_SYSTEM_OPTIONS.includes(
+      deviceSystem as OperationAuditDeviceSystem,
+    ) ? deviceSystem as OperationAuditDeviceSystem : undefined,
     operationType: trim(_state.operationType),
     outcome: trim(_state.outcome),
     productKeyword: trim(_state.productKeyword),
@@ -207,13 +216,23 @@ export function summarizeProducts(_summary: {
 
 export function buildSystemLogLink(_input: {
   deviceCode?: string | null
+  deviceSystem?: string | null
   traceId?: string | null
   occurredAtUtc: string
-}): string {
+}): string | undefined {
   const occurredAt = new Date(_input.occurredAtUtc)
-  const params = new URLSearchParams({ projectCode: 'hbpos_win' })
-  if (_input.deviceCode?.trim()) params.set('deviceCode', _input.deviceCode.trim())
-  if (_input.traceId?.trim()) params.set('traceId', _input.traceId.trim())
+  const projectCode = _input.deviceSystem === 'Windows'
+    ? 'hbpos_win'
+    : _input.deviceSystem === 'iPadOS'
+      ? 'hbpos_ipad'
+      : undefined
+  const traceId = _input.traceId?.trim()
+  // 历史记录没有可信平台和 Trace 时，不能猜测 WPF 项目并跳转到错误日志范围。
+  if (!projectCode && !traceId) return undefined
+  const params = new URLSearchParams()
+  if (projectCode) params.set('projectCode', projectCode)
+  if (projectCode && _input.deviceCode?.trim()) params.set('deviceCode', _input.deviceCode.trim())
+  if (traceId) params.set('traceId', traceId)
   if (!Number.isNaN(occurredAt.valueOf())) {
     params.set('fromUtc', new Date(occurredAt.valueOf() - 5 * 60 * 1000).toISOString())
     params.set('toUtc', new Date(occurredAt.valueOf() + 5 * 60 * 1000).toISOString())
