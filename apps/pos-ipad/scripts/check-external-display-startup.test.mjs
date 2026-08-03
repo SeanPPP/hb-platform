@@ -14,6 +14,26 @@ test("应用唯一根入口注册非交互外接屏第二 React surface", async 
   );
 });
 
+test("JS 入口必须先注册外接屏 surface 再启动 Expo Router", async () => {
+  const [packageSource, entrySource] = await Promise.all([
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../index.js", import.meta.url), "utf8"),
+  ]);
+  const packageJson = JSON.parse(packageSource);
+  const registrationIndex = entrySource.indexOf(
+    'import "./src/core/peripherals/customer-display/native/external-display-native-module";',
+  );
+  const routerIndex = entrySource.indexOf('import "expo-router/entry";');
+
+  assert.equal(packageJson.main, "index.js");
+  assert.notEqual(registrationIndex, -1, "入口必须同步加载客显注册模块");
+  assert.notEqual(routerIndex, -1, "入口必须继续加载 Expo Router");
+  assert.ok(
+    registrationIndex < routerIndex,
+    "HBExternalDisplay 必须在 Expo Router 启动 main root 前完成注册",
+  );
+});
+
 test("Expo 生产 runtime 只向业务层暴露冻结的外接客显 Port", async () => {
   const source = await readFile(
     new URL("../src/core/runtime/expo-pos-runtime.ts", import.meta.url),
